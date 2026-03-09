@@ -198,6 +198,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
 
         let tab = tabs[row]
         cell.titleLabel.stringValue = tab.title
+        cell.toolTip = tab.title
         cell.onClose = { [weak self] in
             guard let self else { return }
             self.delegate?.tabSidebar(self, didRequestCloseTabAt: row)
