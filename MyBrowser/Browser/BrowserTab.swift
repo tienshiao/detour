@@ -3,7 +3,7 @@ import WebKit
 import Combine
 
 class BrowserTab {
-    let id = UUID()
+    let id: UUID
     let webView: WKWebView
 
     @Published var title: String = "New Tab"
@@ -14,9 +14,21 @@ class BrowserTab {
     @Published var estimatedProgress: Double = 0
     @Published var latestSnapshot: NSImage?
 
-    init(configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
+    init(id: UUID = UUID(), configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
+        self.id = id
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         setupObservers()
+    }
+
+    convenience init(id: UUID, title: String, archivedInteractionState: Data?, fallbackURL: URL?) {
+        self.init(id: id)
+        self.title = title
+        if let archivedInteractionState,
+           let state = try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(archivedInteractionState) {
+            webView.interactionState = state
+        } else if let fallbackURL {
+            load(fallbackURL)
+        }
     }
 
     func takeSnapshot(completion: ((NSImage?) -> Void)? = nil) {

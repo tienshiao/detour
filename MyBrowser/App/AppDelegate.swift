@@ -6,14 +6,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
 
-        // Create the initial tab in the shared store
-        let tab = TabStore.shared.addTab(url: URL(string: "https://www.apple.com")!)
-
         let wc = BrowserWindowController()
         windowControllers.append(wc)
         wc.showWindow(nil)
-        wc.selectTab(id: tab.id)
+
+        let selectedID = TabStore.shared.restoreSession()
+        if let selectedID, TabStore.shared.tab(withID: selectedID) != nil {
+            wc.selectTab(id: selectedID)
+        } else if let firstTab = TabStore.shared.tabs.first {
+            wc.selectTab(id: firstTab.id)
+        } else {
+            let tab = TabStore.shared.addTab(url: URL(string: "https://www.apple.com")!)
+            wc.selectTab(id: tab.id)
+        }
+
         observeWindowClose(wc)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        TabStore.shared.saveNow()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

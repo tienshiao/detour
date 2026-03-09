@@ -104,6 +104,7 @@ class BrowserWindowController: NSWindowController {
         removeContentViews()
 
         selectedTabID = id
+        store.selectedTabID = id
         activeTabSubscriptions.removeAll()
 
         let tab = store.tab(withID: id)!
