@@ -10,6 +10,8 @@ class BrowserWindowController: NSWindowController {
     private let splitViewController = NSSplitViewController()
     private let tabSidebar = TabSidebarViewController()
     private let contentContainerView = NSView()
+    private var sidebarItem: NSSplitViewItem!
+    private var sidebarCollapseObservation: NSKeyValueObservation?
 
     private var selectedTabID: UUID?
     private var activeTabSubscriptions = Set<AnyCancellable>()
@@ -83,7 +85,7 @@ class BrowserWindowController: NSWindowController {
     private func setupSplitView() {
         tabSidebar.delegate = self
 
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: tabSidebar)
+        sidebarItem = NSSplitViewItem(sidebarWithViewController: tabSidebar)
         sidebarItem.minimumThickness = 200
         sidebarItem.maximumThickness = 350
         sidebarItem.canCollapse = true
@@ -94,6 +96,13 @@ class BrowserWindowController: NSWindowController {
         contentContainerView.wantsLayer = true
         let contentItem = NSSplitViewItem(viewController: contentVC)
         splitViewController.addSplitViewItem(contentItem)
+
+        sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, change in
+            guard let self, let collapsed = change.newValue else { return }
+            self.window?.standardWindowButton(.closeButton)?.isHidden = collapsed
+            self.window?.standardWindowButton(.miniaturizeButton)?.isHidden = collapsed
+            self.window?.standardWindowButton(.zoomButton)?.isHidden = collapsed
+        }
 
         window?.contentViewController = splitViewController
     }
@@ -530,6 +539,10 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didSubmitAddressInput input: String) {
         navigateToAddress(input)
+    }
+
+    func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController) {
+        splitViewController.toggleSidebar(nil)
     }
 }
 

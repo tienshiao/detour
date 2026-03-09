@@ -8,6 +8,7 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestGoForward(_ sidebar: TabSidebarViewController)
     func tabSidebarDidRequestReload(_ sidebar: TabSidebarViewController)
     func tabSidebar(_ sidebar: TabSidebarViewController, didSubmitAddressInput input: String)
+    func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController)
 }
 
 class DraggableTableView: NSTableView {
@@ -41,6 +42,7 @@ class TabSidebarViewController: NSViewController {
     private(set) var backButton = NSButton()
     private(set) var forwardButton = NSButton()
     private(set) var reloadButton = NSButton()
+    private(set) var sidebarToggleButton = NSButton()
 
     var tabs: [BrowserTab] = [] {
         didSet { tableView.reloadData() }
@@ -61,6 +63,10 @@ class TabSidebarViewController: NSViewController {
         backButton = makeNavButton(symbolName: "chevron.left", accessibilityLabel: "Back", action: #selector(goBackClicked))
         forwardButton = makeNavButton(symbolName: "chevron.right", accessibilityLabel: "Forward", action: #selector(goForwardClicked))
         reloadButton = makeNavButton(symbolName: "arrow.clockwise", accessibilityLabel: "Reload", action: #selector(reloadClicked))
+
+        // Sidebar toggle button (positioned next to traffic lights)
+        sidebarToggleButton = makeNavButton(symbolName: "sidebar.left", accessibilityLabel: "Toggle Sidebar", action: #selector(toggleSidebarClicked))
+        sidebarToggleButton.translatesAutoresizingMaskIntoConstraints = false
 
         let navStack = NSStackView(views: [backButton, forwardButton, reloadButton])
         navStack.orientation = .horizontal
@@ -100,6 +106,7 @@ class TabSidebarViewController: NSViewController {
         addButton.imagePosition = .imageLeading
         addButton.translatesAutoresizingMaskIntoConstraints = false
 
+        container.addSubview(sidebarToggleButton)
         container.addSubview(navStack)
         container.addSubview(addressField)
         container.addSubview(scrollView)
@@ -108,6 +115,10 @@ class TabSidebarViewController: NSViewController {
         // The title bar is ~38px tall. Nav buttons sit in that area, right-aligned.
         // Traffic lights occupy roughly the left 70px, so right-aligning the nav buttons avoids overlap.
         NSLayoutConstraint.activate([
+            // Sidebar toggle button: in title bar area, right of traffic lights
+            sidebarToggleButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 7),
+            sidebarToggleButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 72),
+
             // Nav buttons: pinned to top of view (title bar area), right-aligned
             navStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 7),
             navStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
@@ -167,6 +178,10 @@ class TabSidebarViewController: NSViewController {
 
     @objc private func addTabClicked() {
         delegate?.tabSidebarDidRequestNewTab(self)
+    }
+
+    @objc private func toggleSidebarClicked() {
+        delegate?.tabSidebarDidRequestToggleSidebar(self)
     }
 
     func reloadTab(at index: Int) {
