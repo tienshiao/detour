@@ -63,11 +63,19 @@ class BrowserWindowController: NSWindowController {
 
     // MARK: - Tab Management
 
-    func addNewTab(url: URL? = nil) {
+    func addNewTab(url: URL? = nil, afterActiveTab: Bool = false) {
         let tab = BrowserTab()
         tab.webView.navigationDelegate = self
         tab.webView.uiDelegate = self
-        tabs.append(tab)
+
+        let insertionIndex: Int
+        if afterActiveTab, let active = activeTab, let activeIndex = tabs.firstIndex(where: { $0.id == active.id }) {
+            insertionIndex = activeIndex + 1
+            tabs.insert(tab, at: insertionIndex)
+        } else {
+            tabs.append(tab)
+            insertionIndex = tabs.count - 1
+        }
 
         var cancellables = Set<AnyCancellable>()
 
@@ -108,7 +116,7 @@ class BrowserWindowController: NSWindowController {
 
         subscriptions[tab.id] = cancellables
         tabSidebar.tabs = tabs
-        selectTab(at: tabs.count - 1)
+        selectTab(at: insertionIndex)
 
         if let url {
             tab.load(url)
@@ -240,7 +248,13 @@ extension BrowserWindowController: TabSidebarDelegate {
 
 extension BrowserWindowController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
-        .allow
+        if navigationAction.navigationType == .linkActivated && navigationAction.modifierFlags.contains(.command) {
+            if let url = navigationAction.request.url {
+                addNewTab(url: url, afterActiveTab: true)
+            }
+            return .cancel
+        }
+        return .allow
     }
 }
 
@@ -249,7 +263,7 @@ extension BrowserWindowController: WKNavigationDelegate {
 extension BrowserWindowController: WKUIDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = navigationAction.request.url {
-            addNewTab(url: url)
+            addNewTab(url: url, afterActiveTab: true)
         }
         return nil
     }
