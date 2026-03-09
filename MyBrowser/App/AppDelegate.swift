@@ -15,9 +15,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             wc.selectTab(id: selectedID)
         } else if let firstTab = TabStore.shared.tabs.first {
             wc.selectTab(id: firstTab.id)
-        } else {
-            let tab = TabStore.shared.addTab(url: URL(string: "https://www.apple.com")!)
-            wc.selectTab(id: tab.id)
         }
 
         observeWindowClose(wc)
@@ -32,11 +29,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func createNewWindow() {
-        let tab = TabStore.shared.addTab()
         let wc = BrowserWindowController()
         windowControllers.append(wc)
         wc.showWindow(nil)
-        wc.selectTab(id: tab.id)
+        wc.newTab(nil)
         observeWindowClose(wc)
     }
 

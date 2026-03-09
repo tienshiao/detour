@@ -99,18 +99,40 @@ class TabSidebarViewController: NSViewController {
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        // Add tab button
-        let addButton = NSButton(title: "New Tab", target: self, action: #selector(addTabClicked))
-        addButton.bezelStyle = .accessoryBarAction
-        addButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")
-        addButton.imagePosition = .imageLeading
-        addButton.translatesAutoresizingMaskIntoConstraints = false
+        // New Tab button (styled like a tab cell)
+        let newTabButton = HoverButton(frame: .zero)
+        newTabButton.isBordered = false
+        newTabButton.title = ""
+        newTabButton.target = self
+        newTabButton.action = #selector(addTabClicked)
+        newTabButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let plusIcon = NSImageView(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")!)
+        plusIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        let newTabLabel = NSTextField(labelWithString: "New Tab")
+        newTabLabel.lineBreakMode = .byTruncatingTail
+        newTabLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        newTabButton.addSubview(plusIcon)
+        newTabButton.addSubview(newTabLabel)
+
+        NSLayoutConstraint.activate([
+            plusIcon.leadingAnchor.constraint(equalTo: newTabButton.leadingAnchor, constant: 20),
+            plusIcon.centerYAnchor.constraint(equalTo: newTabButton.centerYAnchor),
+            plusIcon.widthAnchor.constraint(equalToConstant: 16),
+            plusIcon.heightAnchor.constraint(equalToConstant: 16),
+
+            newTabLabel.leadingAnchor.constraint(equalTo: plusIcon.trailingAnchor, constant: 8),
+            newTabLabel.centerYAnchor.constraint(equalTo: newTabButton.centerYAnchor),
+            newTabLabel.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.trailingAnchor, constant: -4),
+        ])
 
         container.addSubview(sidebarToggleButton)
         container.addSubview(navStack)
         container.addSubview(addressField)
+        container.addSubview(newTabButton)
         container.addSubview(scrollView)
-        container.addSubview(addButton)
 
         // The title bar is ~38px tall. Nav buttons sit in that area, right-aligned.
         // Traffic lights occupy roughly the left 70px, so right-aligning the nav buttons avoids overlap.
@@ -129,16 +151,17 @@ class TabSidebarViewController: NSViewController {
             addressField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
             addressField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
 
-            // Tab list: below address field, fills remaining space
-            scrollView.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 8),
+            // New Tab button: below address field
+            newTabButton.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 8),
+            newTabButton.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            newTabButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            newTabButton.heightAnchor.constraint(equalToConstant: 36),
+
+            // Tab list: below new tab button, fills remaining space
+            scrollView.topAnchor.constraint(equalTo: newTabButton.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: addButton.topAnchor, constant: -4),
-
-            // Add button: bottom
-            addButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
-            addButton.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
-            addButton.heightAnchor.constraint(equalToConstant: 24),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
         self.view = container
@@ -222,6 +245,10 @@ extension TabSidebarViewController: NSTableViewDelegate {
         return cell
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        TabRowView()
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = tableView.selectedRow
         guard row >= 0 else { return }
@@ -231,6 +258,19 @@ extension TabSidebarViewController: NSTableViewDelegate {
 
 // MARK: - Tab Cell View
 
+class TabRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        // Let the default source list selection draw as normal
+        super.drawSelection(in: dirtyRect)
+    }
+
+    /// The inset rect the source list uses for its selection highlight
+    var selectionRect: NSRect {
+        // Source list selection is inset ~10pt horizontally, ~1pt vertically, with 6pt corner radius
+        return bounds.insetBy(dx: 10, dy: 1)
+    }
+}
+
 class TabCellView: NSTableCellView {
     let titleLabel = NSTextField(labelWithString: "")
     let faviconImageView = NSImageView()
@@ -239,6 +279,7 @@ class TabCellView: NSTableCellView {
     private var titleTrailingDefault: NSLayoutConstraint!
     private var titleTrailingHover: NSLayoutConstraint!
     private var titleLeadingToFavicon: NSLayoutConstraint!
+    private let hoverBackground = NSView()
     var onClose: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
@@ -248,6 +289,11 @@ class TabCellView: NSTableCellView {
             action: nil
         )
         super.init(frame: frameRect)
+
+        hoverBackground.wantsLayer = true
+        hoverBackground.layer?.cornerRadius = 6
+        hoverBackground.isHidden = true
+        addSubview(hoverBackground, positioned: .below, relativeTo: nil)
 
         faviconImageView.imageScaling = .scaleProportionallyUpOrDown
         faviconImageView.translatesAutoresizingMaskIntoConstraints = false
@@ -290,6 +336,12 @@ class TabCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    override func layout() {
+        super.layout()
+        // Match the source list selection inset (same as TabRowView.selectionRect)
+        hoverBackground.frame = bounds.insetBy(dx: -6, dy: 1)
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea {
@@ -309,12 +361,15 @@ class TabCellView: NSTableCellView {
         closeButton.isHidden = false
         titleTrailingDefault.isActive = false
         titleTrailingHover.isActive = true
+        hoverBackground.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+        hoverBackground.isHidden = false
     }
 
     override func mouseExited(with event: NSEvent) {
         closeButton.isHidden = true
         titleTrailingHover.isActive = false
         titleTrailingDefault.isActive = true
+        hoverBackground.isHidden = true
     }
 
     func updateFavicon(_ image: NSImage?) {
@@ -323,5 +378,50 @@ class TabCellView: NSTableCellView {
 
     @objc private func closeTapped() {
         onClose?()
+    }
+}
+
+// MARK: - Hover Button
+
+class HoverButton: NSButton {
+    private var trackingArea: NSTrackingArea?
+    private let hoverBackground = NSView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        hoverBackground.wantsLayer = true
+        hoverBackground.layer?.cornerRadius = 6
+        hoverBackground.isHidden = true
+        addSubview(hoverBackground, positioned: .below, relativeTo: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        // Match the source list selection inset: 10pt from each side of the full sidebar width
+        hoverBackground.frame = bounds.insetBy(dx: 10, dy: 1)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hoverBackground.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+        hoverBackground.isHidden = false
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoverBackground.isHidden = true
     }
 }

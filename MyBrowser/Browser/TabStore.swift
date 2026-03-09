@@ -140,9 +140,6 @@ class TabStore {
         tabs.remove(at: index)
         notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index) }
 
-        if tabs.isEmpty {
-            addTab()
-        }
         scheduleSave()
     }
 

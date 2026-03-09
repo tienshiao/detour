@@ -30,6 +30,8 @@ class BrowserWindowController: NSWindowController {
     private var findMatchIndex = 0
     private var lastFindQuery = ""
 
+    private var commandPaletteView: CommandPaletteView?
+
     private var store: TabStore { TabStore.shared }
 
     private var selectedTab: BrowserTab? {
@@ -346,6 +348,8 @@ class BrowserWindowController: NSWindowController {
     func selectTab(id: UUID) {
         guard store.tab(withID: id) != nil else { return }
 
+        dismissCommandPalette()
+
         // Clean up previous tab's view
         if let previousTab = selectedTab {
             if ownsWebView {
@@ -532,8 +536,38 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func newTab(_ sender: Any?) {
-        let tab = store.addTab(afterTabID: selectedTabID)
-        selectTab(id: tab.id)
+        showCommandPalette()
+    }
+
+    private func showCommandPalette() {
+        guard commandPaletteView == nil, let contentView = window?.contentView else { return }
+        let palette = CommandPaletteView()
+        palette.delegate = self
+        commandPaletteView = palette
+
+        // Let the sidebar region pass through clicks so tabs remain interactive
+        if !sidebarItem.isCollapsed {
+            let sidebarFrame = tabSidebar.view.convert(tabSidebar.view.bounds, to: nil)
+            palette.sidebarPassthroughFrame = sidebarFrame
+        }
+
+        palette.show(in: contentView)
+    }
+
+    private func dismissCommandPalette() {
+        commandPaletteView?.removeFromSuperview()
+        commandPaletteView = nil
+    }
+
+    private func deselectAllTabs() {
+        selectedTabID = nil
+        store.selectedTabID = nil
+        activeTabSubscriptions.removeAll()
+        removeContentViews()
+        tabSidebar.addressField.stringValue = ""
+        tabSidebar.backButton.isEnabled = false
+        tabSidebar.forwardButton.isEnabled = false
+        window?.title = "MyBrowser"
     }
 
     @objc func closeCurrentTab(_ sender: Any?) {
@@ -555,8 +589,8 @@ class BrowserWindowController: NSWindowController {
 
         if let nextID {
             selectTab(id: nextID)
-        } else if let first = store.tabs.first {
-            selectTab(id: first.id)
+        } else {
+            deselectAllTabs()
         }
     }
 }
@@ -600,7 +634,7 @@ extension BrowserWindowController: NSToolbarDelegate {
 
 extension BrowserWindowController: TabSidebarDelegate {
     func tabSidebarDidRequestNewTab(_ sidebar: TabSidebarViewController) {
-        newTab(nil)
+        showCommandPalette()
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didSelectTabAt index: Int) {
@@ -629,8 +663,8 @@ extension BrowserWindowController: TabSidebarDelegate {
         if wasSelected {
             if let nextID {
                 selectTab(id: nextID)
-            } else if let first = store.tabs.first {
-                selectTab(id: first.id)
+            } else {
+                deselectAllTabs()
             }
         }
     }
@@ -679,6 +713,23 @@ extension BrowserWindowController: TabStoreObserver {
 
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int) {
         tabSidebar.reloadTab(at: index)
+    }
+}
+
+// MARK: - CommandPaletteDelegate
+
+extension BrowserWindowController: CommandPaletteDelegate {
+    func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String) {
+        dismissCommandPalette()
+        let tab = store.addTab(afterTabID: selectedTabID)
+        selectTab(id: tab.id)
+        if let url = urlFromInput(input) {
+            tab.load(url)
+        }
+    }
+
+    func commandPaletteDidDismiss(_ palette: CommandPaletteView) {
+        dismissCommandPalette()
     }
 }
 
