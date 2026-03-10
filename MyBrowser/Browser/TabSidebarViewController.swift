@@ -441,8 +441,44 @@ class TabSidebarViewController: NSViewController {
     @objc private func spaceButtonClicked(_ sender: NSButton) {
         let spaces = TabStore.shared.spaces
         guard sender.tag >= 0, sender.tag < spaces.count else { return }
-        let spaceID = spaces[sender.tag].id
-        delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: spaceID)
+        animateToSpace(id: spaces[sender.tag].id)
+    }
+
+    private func animateToSpace(id: UUID) {
+        let spaces = TabStore.shared.spaces
+        guard let targetIndex = spaces.firstIndex(where: { $0.id == id }),
+              targetIndex != activePageIndex,
+              !isAnimatingSwipe else {
+            delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
+            return
+        }
+
+        let pageW = pageClipView.bounds.width
+        guard pageW > 0 else {
+            delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
+            return
+        }
+
+        isAnimatingSwipe = true
+        let targetX = -CGFloat(targetIndex) * pageW
+        let distance = abs(pageStripView.frame.origin.x - targetX)
+        let duration = min(0.15, max(0.08, Double(distance / pageW) * 0.12))
+        let targetColor = spaces[targetIndex].color
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            var frame = pageStripView.frame
+            frame.origin.x = targetX
+            pageStripView.animator().frame = frame
+            view.animator().layer?.backgroundColor = targetColor.withAlphaComponent(0.1).cgColor
+        })
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.02) { [weak self] in
+            guard let self else { return }
+            self.isAnimatingSwipe = false
+            self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
+        }
     }
 
     @objc private func addSpaceClicked() {
