@@ -100,6 +100,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         toggleSidebarItem.keyEquivalentModifierMask = [.command]
         viewMenuItem.submenu = viewMenu
 
+        // Navigate menu
+        let navigateMenuItem = NSMenuItem()
+        mainMenu.addItem(navigateMenuItem)
+        let navigateMenu = NSMenu(title: "Navigate")
+        navigateMenu.addItem(withTitle: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "[")
+        navigateMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
+        navigateMenuItem.submenu = navigateMenu
+
         // Window menu
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)

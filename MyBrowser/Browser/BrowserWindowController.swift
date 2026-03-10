@@ -436,6 +436,7 @@ class BrowserWindowController: NSWindowController {
         webView.removeFromSuperview()
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
 
         webView.translatesAutoresizingMaskIntoConstraints = false
         contentContainerView.addSubview(webView, positioned: .below, relativeTo: dragHandle)
@@ -545,6 +546,16 @@ class BrowserWindowController: NSWindowController {
     }
 
     // MARK: - Actions
+
+    @objc func goBack(_ sender: Any?) {
+        if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }
+        selectedTab?.webView.goBack()
+    }
+
+    @objc func goForward(_ sender: Any?) {
+        if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }
+        selectedTab?.webView.goForward()
+    }
 
     @objc func toggleSidebarMode(_ sender: Any?) {
         toggleSidebarAutoHide()
