@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import WebKit
 
 protocol TabStoreObserver: AnyObject {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space)
@@ -32,11 +33,21 @@ class Space {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
 
+    /// Dedicated data store for this space — isolates cookies, localStorage, cache.
+    lazy var dataStore: WKWebsiteDataStore = WKWebsiteDataStore(forIdentifier: id)
+
     init(id: UUID = UUID(), name: String, emoji: String, colorHex: String) {
         self.id = id
         self.name = name
         self.emoji = emoji
         self.colorHex = colorHex
+    }
+
+    /// Returns a fresh WKWebViewConfiguration wired to this space's isolated storage.
+    func makeWebViewConfiguration() -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = dataStore
+        return config
     }
 
     static let presetColors: [String] = [
@@ -156,7 +167,8 @@ class TabStore {
                     title: tabSession.title,
                     archivedInteractionState: tabSession.interactionState,
                     fallbackURL: tabSession.url,
-                    faviconURL: tabSession.faviconURL
+                    faviconURL: tabSession.faviconURL,
+                    configuration: space.makeWebViewConfiguration()
                 )
                 space.tabs.append(tab)
                 subscribeToTab(tab)
@@ -210,6 +222,7 @@ class TabStore {
         for tab in space.tabs {
             tabSubscriptions.removeValue(forKey: tab.id)
         }
+        WKWebsiteDataStore.remove(forIdentifier: space.id) { _ in }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
     }
@@ -235,7 +248,7 @@ class TabStore {
 
     @discardableResult
     func addTab(in space: Space, url: URL? = nil, afterTabID: UUID? = nil) -> BrowserTab {
-        let tab = BrowserTab()
+        let tab = BrowserTab(configuration: space.makeWebViewConfiguration())
 
         let insertionIndex: Int
         if let afterTabID, let afterIndex = space.tabs.firstIndex(where: { $0.id == afterTabID }) {

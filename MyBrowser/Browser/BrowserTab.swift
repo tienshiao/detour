@@ -27,8 +27,8 @@ class BrowserTab {
         setupObservers()
     }
 
-    convenience init(id: UUID, title: String, archivedInteractionState: Data?, fallbackURL: URL?, faviconURL: URL? = nil) {
-        self.init(id: id)
+    convenience init(id: UUID, title: String, archivedInteractionState: Data?, fallbackURL: URL?, faviconURL: URL? = nil, configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
+        self.init(id: id, configuration: configuration)
         self.title = title
         if let faviconURL {
             self.faviconURL = faviconURL
