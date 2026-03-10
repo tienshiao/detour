@@ -16,6 +16,7 @@ class CommandPaletteTextField: NSTextField {
 class CommandPaletteView: NSView {
     weak var delegate: CommandPaletteDelegate?
     private let textField = CommandPaletteTextField()
+    private let shadowContainer = NSView()
     private let box = NSVisualEffectView()
 
     override init(frame frameRect: NSRect) {
@@ -26,9 +27,15 @@ class CommandPaletteView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func setup() {
-        // Scrim
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+        // Shadow container (draws the shadow without clipping corners)
+        shadowContainer.wantsLayer = true
+        shadowContainer.shadow = NSShadow()
+        shadowContainer.layer?.shadowColor = NSColor.black.cgColor
+        shadowContainer.layer?.shadowOpacity = 0.5
+        shadowContainer.layer?.shadowOffset = CGSize(width: 0, height: -2)
+        shadowContainer.layer?.shadowRadius = 20
+        shadowContainer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(shadowContainer)
 
         // Palette box
         box.material = .hudWindow
@@ -38,7 +45,7 @@ class CommandPaletteView: NSView {
         box.layer?.cornerRadius = 12
         box.layer?.masksToBounds = true
         box.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(box)
+        shadowContainer.addSubview(box)
 
         // Text field
         textField.placeholderString = "Enter URL or search…"
@@ -53,9 +60,15 @@ class CommandPaletteView: NSView {
         box.addSubview(textField)
 
         NSLayoutConstraint.activate([
-            box.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor),
-            box.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 200),
-            box.widthAnchor.constraint(equalToConstant: 500),
+            shadowContainer.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor),
+            NSLayoutConstraint(item: shadowContainer, attribute: .centerY, relatedBy: .equal,
+                               toItem: self, attribute: .bottom, multiplier: 0.4, constant: 0),
+            shadowContainer.widthAnchor.constraint(equalToConstant: 500),
+
+            box.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
+            box.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor),
+            box.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
+            box.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
 
             textField.topAnchor.constraint(equalTo: box.topAnchor, constant: 12),
             textField.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -12),
@@ -67,7 +80,7 @@ class CommandPaletteView: NSView {
     override func mouseDown(with event: NSEvent) {
         // Click landed on scrim (not the box) — dismiss
         let location = convert(event.locationInWindow, from: nil)
-        if !box.frame.contains(location) {
+        if !shadowContainer.frame.contains(location) {
             dismiss()
         }
     }

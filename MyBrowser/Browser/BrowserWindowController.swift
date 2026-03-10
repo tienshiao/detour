@@ -33,6 +33,7 @@ class BrowserWindowController: NSWindowController {
 
     private var commandPaletteView: CommandPaletteView?
     private var splitScrimView: NSView?
+    private var contentScrimView: NSView?
 
     private var store: TabStore { TabStore.shared }
 
@@ -621,20 +622,36 @@ class BrowserWindowController: NSWindowController {
         palette.delegate = self
         commandPaletteView = palette
 
-        let scrim = NSView()
-        scrim.wantsLayer = true
-        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
-        scrim.translatesAutoresizingMaskIntoConstraints = false
-        splitViewController.view.addSubview(scrim, positioned: .below, relativeTo: splitViewController.view.subviews.first)
+        // Two scrims: the liquid glass sidebar is partially transparent, so we need
+        // one behind the sidebar (on splitViewController.view) and one above the
+        // content (on contentContainerView).
+        let splitScrim = NSView()
+        splitScrim.wantsLayer = true
+        splitScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+        splitScrim.translatesAutoresizingMaskIntoConstraints = false
+        splitViewController.view.addSubview(splitScrim, positioned: .below, relativeTo: splitViewController.view.subviews.first)
         NSLayoutConstraint.activate([
-            scrim.topAnchor.constraint(equalTo: splitViewController.view.topAnchor),
-            scrim.bottomAnchor.constraint(equalTo: splitViewController.view.bottomAnchor),
-            scrim.leadingAnchor.constraint(equalTo: splitViewController.view.leadingAnchor),
-            scrim.trailingAnchor.constraint(equalTo: splitViewController.view.trailingAnchor),
+            splitScrim.topAnchor.constraint(equalTo: splitViewController.view.topAnchor),
+            splitScrim.bottomAnchor.constraint(equalTo: splitViewController.view.bottomAnchor),
+            splitScrim.leadingAnchor.constraint(equalTo: splitViewController.view.leadingAnchor),
+            splitScrim.trailingAnchor.constraint(equalTo: splitViewController.view.trailingAnchor),
         ])
-        splitScrimView = scrim
+        splitScrimView = splitScrim
 
-        palette.show(in: contentContainerView)
+        let contentScrim = NSView()
+        contentScrim.wantsLayer = true
+        contentScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+        contentScrim.translatesAutoresizingMaskIntoConstraints = false
+        contentContainerView.addSubview(contentScrim)
+        NSLayoutConstraint.activate([
+            contentScrim.topAnchor.constraint(equalTo: contentContainerView.topAnchor),
+            contentScrim.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor),
+            contentScrim.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
+            contentScrim.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
+        ])
+        contentScrimView = contentScrim
+
+        palette.show(in: window!.contentView!)
     }
 
     private func dismissCommandPalette() {
@@ -642,6 +659,8 @@ class BrowserWindowController: NSWindowController {
         commandPaletteView = nil
         splitScrimView?.removeFromSuperview()
         splitScrimView = nil
+        contentScrimView?.removeFromSuperview()
+        contentScrimView = nil
     }
 
     private func deselectAllTabs() {
