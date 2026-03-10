@@ -108,6 +108,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         navigateMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
         navigateMenuItem.submenu = navigateMenu
 
+        // Develop menu
+        let developMenuItem = NSMenuItem()
+        mainMenu.addItem(developMenuItem)
+        let developMenu = NSMenu(title: "Develop")
+        let inspectorItem = developMenu.addItem(withTitle: "Web Inspector", action: #selector(BrowserWindowController.showWebInspector(_:)), keyEquivalent: "i")
+        inspectorItem.keyEquivalentModifierMask = [.command, .option]
+        developMenuItem.submenu = developMenu
+
         // Window menu
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)

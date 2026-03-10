@@ -347,14 +347,23 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func updateWebViewTopConstraint() {
-        webViewTopConstraint?.isActive = false
-        if let webView = contentContainerView.subviews.first(where: { $0 is WKWebView || $0 is NSImageView }) {
-            if findBar.isHidden {
-                webViewTopConstraint = webView.topAnchor.constraint(equalTo: contentContainerView.topAnchor)
-            } else {
-                webViewTopConstraint = webView.topAnchor.constraint(equalTo: findBar.bottomAnchor)
+        let topOffset: CGFloat = findBar.isHidden ? 0 : findBar.frame.height
+        let bounds = contentContainerView.bounds
+
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle {
+            if subview is WKWebView {
+                // WKWebView uses autoresizing mask — adjust frame directly
+                subview.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - topOffset)
+            } else if subview is NSImageView {
+                // Snapshot image views use Auto Layout
+                webViewTopConstraint?.isActive = false
+                if findBar.isHidden {
+                    webViewTopConstraint = subview.topAnchor.constraint(equalTo: contentContainerView.topAnchor)
+                } else {
+                    webViewTopConstraint = subview.topAnchor.constraint(equalTo: findBar.bottomAnchor)
+                }
+                webViewTopConstraint?.isActive = true
             }
-            webViewTopConstraint?.isActive = true
         }
     }
 
@@ -422,10 +431,21 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func claimWebView(for tab: BrowserTab) {
+        let webView = tab.webView
+
+        // Already owned by this window — nothing to do.
+        if webView.superview?.isDescendant(of: contentContainerView) == true {
+            return
+        }
+
         snapshotSubscription = nil
         removeContentViews()
 
-        let webView = tab.webView
+        // Close the inspector before transfer so the webview returns
+        // to full size for snapshotting and avoids rendering issues in the new window.
+        if let inspector = webView.value(forKey: "_inspector") as? NSObject {
+            inspector.perform(Selector(("close")))
+        }
 
         // Take a snapshot while the webview is still attached to its current window,
         // so the previous owner has a fresh image to display immediately.
@@ -438,17 +458,13 @@ class BrowserWindowController: NSWindowController {
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
 
-        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.translatesAutoresizingMaskIntoConstraints = true
+        webView.autoresizingMask = [.width, .height]
         contentContainerView.addSubview(webView, positioned: .below, relativeTo: dragHandle)
 
-        let topAnchor = findBar.isHidden ? contentContainerView.topAnchor : findBar.bottomAnchor
-        webViewTopConstraint = webView.topAnchor.constraint(equalTo: topAnchor)
-        NSLayoutConstraint.activate([
-            webViewTopConstraint!,
-            webView.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor),
-            webView.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
-        ])
+        let topOffset: CGFloat = findBar.isHidden ? 0 : findBar.frame.height
+        let bounds = contentContainerView.bounds
+        webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - topOffset)
 
         ownsWebView = true
 
@@ -546,6 +562,12 @@ class BrowserWindowController: NSWindowController {
     }
 
     // MARK: - Actions
+
+    @objc func showWebInspector(_ sender: Any?) {
+        guard let webView = selectedTab?.webView else { return }
+        guard let inspector = webView.value(forKey: "_inspector") as? NSObject else { return }
+        inspector.perform(Selector(("show")))
+    }
 
     @objc func goBack(_ sender: Any?) {
         if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }

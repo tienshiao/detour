@@ -21,7 +21,9 @@ class BrowserTab {
 
     init(id: UUID = UUID(), configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
         self.id = id
+        configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         self.webView = WKWebView(frame: .zero, configuration: configuration)
+        self.webView.isInspectable = true
         setupObservers()
     }
 
