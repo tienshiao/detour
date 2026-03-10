@@ -36,9 +36,22 @@ class BrowserWindowController: NSWindowController {
 
     private var store: TabStore { TabStore.shared }
 
+    // MARK: - Per-window space state
+
+    private(set) var activeSpaceID: UUID?
+
+    private var activeSpace: Space? {
+        guard let activeSpaceID else { return nil }
+        return store.space(withID: activeSpaceID)
+    }
+
+    private var currentTabs: [BrowserTab] {
+        activeSpace?.tabs ?? []
+    }
+
     private var selectedTab: BrowserTab? {
         guard let selectedTabID else { return nil }
-        return store.tab(withID: selectedTabID)
+        return currentTabs.first { $0.id == selectedTabID }
     }
 
     convenience init() {
@@ -65,7 +78,14 @@ class BrowserWindowController: NSWindowController {
         window.delegate = self
 
         store.addObserver(self)
-        tabSidebar.tabs = store.tabs
+        tabSidebar.activeSpaceID = activeSpaceID
+        tabSidebar.tabs = currentTabs
+
+        // Apply initial space UI
+        if let space = activeSpace {
+            tabSidebar.tintColor = space.color
+        }
+        tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: activeSpaceID)
 
         NotificationCenter.default.addObserver(
             self,
@@ -78,6 +98,34 @@ class BrowserWindowController: NSWindowController {
     deinit {
         store.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: - Space Switching (per-window)
+
+    func setActiveSpace(id: UUID) {
+        guard let space = store.space(withID: id), activeSpaceID != id else { return }
+
+        // Save current tab selection for the old space
+        activeSpace?.selectedTabID = selectedTabID
+
+        activeSpaceID = id
+        tabSidebar.activeSpaceID = id
+        store.lastActiveSpaceID = id
+
+        tabSidebar.tabs = space.tabs
+        tabSidebar.tintColor = space.color
+        tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: id)
+
+        // Restore the new space's selected tab
+        if let savedTabID = space.selectedTabID, space.tabs.contains(where: { $0.id == savedTabID }) {
+            selectTab(id: savedTabID)
+        } else if let firstTab = space.tabs.first {
+            selectTab(id: firstTab.id)
+        } else {
+            deselectAllTabs()
+        }
+
+        store.scheduleSave()
     }
 
     // MARK: - Setup
@@ -144,7 +192,6 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func setupEdgeHoverTracking() {
-        // Thin invisible view on the left edge for hover detection
         let edgeView = NSView()
         edgeView.translatesAutoresizingMaskIntoConstraints = false
         splitViewController.view.addSubview(edgeView)
@@ -162,7 +209,6 @@ class BrowserWindowController: NSWindowController {
         )
         edgeView.addTrackingArea(edgeArea)
 
-        // Tracking area on sidebar view for exit detection
         let sidebarArea = NSTrackingArea(
             rect: .zero,
             options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
@@ -183,12 +229,10 @@ class BrowserWindowController: NSWindowController {
         }
 
         if sidebarAutoHides {
-            // Switch to auto-hide: collapse the sidebar
             if !sidebarItem.isCollapsed {
                 splitViewController.toggleSidebar(nil)
             }
         } else {
-            // Switch to pinned: show the sidebar
             if sidebarItem.isCollapsed {
                 splitViewController.toggleSidebar(nil)
             }
@@ -352,10 +396,8 @@ class BrowserWindowController: NSWindowController {
 
         for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle {
             if subview is WKWebView {
-                // WKWebView uses autoresizing mask — adjust frame directly
                 subview.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - topOffset)
             } else if subview is NSImageView {
-                // Snapshot image views use Auto Layout
                 webViewTopConstraint?.isActive = false
                 if findBar.isHidden {
                     webViewTopConstraint = subview.topAnchor.constraint(equalTo: contentContainerView.topAnchor)
@@ -370,11 +412,10 @@ class BrowserWindowController: NSWindowController {
     // MARK: - Tab Selection & WebView Ownership
 
     func selectTab(id: UUID) {
-        guard store.tab(withID: id) != nil else { return }
+        guard currentTabs.contains(where: { $0.id == id }) else { return }
 
         dismissCommandPalette()
 
-        // Clean up previous tab's view
         if let previousTab = selectedTab {
             if ownsWebView {
                 previousTab.takeSnapshot()
@@ -383,12 +424,11 @@ class BrowserWindowController: NSWindowController {
         removeContentViews()
 
         selectedTabID = id
-        store.selectedTabID = id
+        activeSpace?.selectedTabID = id
         activeTabSubscriptions.removeAll()
 
-        let tab = store.tab(withID: id)!
+        let tab = currentTabs.first { $0.id == id }!
 
-        // Subscribe to active tab's properties for UI updates
         tab.$url
             .receive(on: RunLoop.main)
             .sink { [weak self] url in
@@ -417,12 +457,10 @@ class BrowserWindowController: NSWindowController {
             }
             .store(in: &activeTabSubscriptions)
 
-        // Update sidebar selection
-        if let index = store.index(of: id) {
+        if let index = currentTabs.firstIndex(where: { $0.id == id }) {
             tabSidebar.selectedTabIndex = index
         }
 
-        // Show live webview or snapshot
         if window?.isKeyWindow == true {
             claimWebView(for: tab)
         } else {
@@ -433,7 +471,6 @@ class BrowserWindowController: NSWindowController {
     private func claimWebView(for tab: BrowserTab) {
         let webView = tab.webView
 
-        // Already owned by this window — nothing to do.
         if webView.superview?.isDescendant(of: contentContainerView) == true {
             return
         }
@@ -441,14 +478,10 @@ class BrowserWindowController: NSWindowController {
         snapshotSubscription = nil
         removeContentViews()
 
-        // Close the inspector before transfer so the webview returns
-        // to full size for snapshotting and avoids rendering issues in the new window.
         if let inspector = webView.value(forKey: "_inspector") as? NSObject {
             inspector.perform(Selector(("close")))
         }
 
-        // Take a snapshot while the webview is still attached to its current window,
-        // so the previous owner has a fresh image to display immediately.
         if webView.superview != nil {
             tab.takeSnapshot()
         }
@@ -496,11 +529,8 @@ class BrowserWindowController: NSWindowController {
         ])
         snapshotImageView = imageView
 
-        // Show current snapshot immediately (may be stale or nil)
         imageView.image = tab.latestSnapshot
 
-        // Always subscribe so we pick up the fresh snapshot when the async
-        // takeSnapshot() call completes after ownership transfer.
         snapshotSubscription = tab.$latestSnapshot
             .compactMap { $0 }
             .receive(on: RunLoop.main)
@@ -526,7 +556,6 @@ class BrowserWindowController: NSWindowController {
               tabID == selectedTabID,
               let tab = selectedTab else { return }
 
-        // Another window took our webview — switch to snapshot
         if ownsWebView {
             ownsWebView = false
             showSnapshot(for: tab)
@@ -540,7 +569,6 @@ class BrowserWindowController: NSWindowController {
         let trimmed = input.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
 
-        // If we don't own the webview, claim it first
         if !ownsWebView, let tab = selectedTab {
             claimWebView(for: tab)
         }
@@ -593,7 +621,6 @@ class BrowserWindowController: NSWindowController {
         palette.delegate = self
         commandPaletteView = palette
 
-        // Add a scrim behind the sidebar and content so it shows through the translucent sidebar
         let scrim = NSView()
         scrim.wantsLayer = true
         scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
@@ -619,7 +646,7 @@ class BrowserWindowController: NSWindowController {
 
     private func deselectAllTabs() {
         selectedTabID = nil
-        store.selectedTabID = nil
+        activeSpace?.selectedTabID = nil
         activeTabSubscriptions.removeAll()
         removeContentViews()
         tabSidebar.addressField.stringValue = ""
@@ -629,27 +656,185 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func closeCurrentTab(_ sender: Any?) {
-        guard let id = selectedTabID else { return }
-        let tabs = store.tabs
-        guard let index = store.index(of: id) else { return }
+        guard let id = selectedTabID, let space = activeSpace else { return }
+        let tabs = currentTabs
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
 
-        // Pre-compute what we'll select next
         let nextID: UUID?
         if tabs.count > 1 {
             let newIndex = min(index, tabs.count - 2)
             let candidate = tabs[newIndex == index ? min(index + 1, tabs.count - 1) : newIndex]
             nextID = candidate.id
         } else {
-            nextID = nil // TabStore will auto-create a blank tab
+            nextID = nil
         }
 
-        store.closeTab(id: id)
+        store.closeTab(id: id, in: space)
 
         if let nextID {
             selectTab(id: nextID)
         } else {
             deselectAllTabs()
         }
+    }
+
+    // MARK: - Add Space Popover
+
+    private func showAddSpacePopover(relativeTo button: NSButton) {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 240, height: 160)
+
+        let vc = AddSpaceViewController()
+        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex in
+            popover?.close()
+            guard let self else { return }
+            let space = self.store.addSpace(name: name, emoji: emoji, colorHex: colorHex)
+            self.setActiveSpace(id: space.id)
+        }
+        popover.contentViewController = vc
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func showEditSpacePopover(spaceID: UUID, relativeTo button: NSButton) {
+        guard let space = store.space(withID: spaceID) else { return }
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 240, height: 160)
+
+        let vc = AddSpaceViewController()
+        vc.existingSpace = (name: space.name, emoji: space.emoji, colorHex: space.colorHex)
+        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex in
+            popover?.close()
+            guard let self else { return }
+            self.store.updateSpace(id: spaceID, name: name, emoji: emoji, colorHex: colorHex)
+            if self.activeSpaceID == spaceID {
+                self.tabSidebar.tintColor = self.store.space(withID: spaceID)?.color
+            }
+        }
+        popover.contentViewController = vc
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+}
+
+// MARK: - AddSpaceViewController
+
+private class AddSpaceViewController: NSViewController {
+    var onCreate: ((String, String, String) -> Void)?
+    var existingSpace: (name: String, emoji: String, colorHex: String)?
+    private var selectedColorHex = Space.presetColors[0]
+    private var colorButtons: [NSButton] = []
+    private var actionButton: NSButton!
+
+    override func loadView() {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 160))
+
+        let nameField = NSTextField()
+        nameField.placeholderString = "Space name"
+        nameField.translatesAutoresizingMaskIntoConstraints = false
+        nameField.tag = 1
+
+        let emojiField = NSTextField()
+        emojiField.placeholderString = "Emoji"
+        emojiField.translatesAutoresizingMaskIntoConstraints = false
+        emojiField.tag = 2
+
+        let colorStack = NSStackView()
+        colorStack.orientation = .horizontal
+        colorStack.spacing = 6
+        colorStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let initialColorHex = existingSpace?.colorHex ?? Space.presetColors[0]
+        selectedColorHex = initialColorHex
+        let selectedIndex = Space.presetColors.firstIndex(of: initialColorHex) ?? 0
+
+        for (i, hex) in Space.presetColors.enumerated() {
+            let btn = NSButton()
+            btn.wantsLayer = true
+            btn.isBordered = false
+            btn.title = ""
+            btn.layer?.cornerRadius = 10
+            btn.layer?.backgroundColor = (NSColor(hex: hex) ?? .controlAccentColor).cgColor
+            btn.tag = i
+            btn.target = self
+            btn.action = #selector(colorSelected(_:))
+            btn.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                btn.widthAnchor.constraint(equalToConstant: 20),
+                btn.heightAnchor.constraint(equalToConstant: 20),
+            ])
+            if i == selectedIndex {
+                btn.layer?.borderWidth = 2
+                btn.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.5).cgColor
+            }
+            colorButtons.append(btn)
+            colorStack.addArrangedSubview(btn)
+        }
+
+        let buttonTitle = existingSpace != nil ? "Save" : "Create"
+        actionButton = NSButton(title: buttonTitle, target: self, action: #selector(createClicked))
+        actionButton.bezelStyle = .rounded
+        actionButton.keyEquivalent = "\r"
+        actionButton.translatesAutoresizingMaskIntoConstraints = false
+
+        if let existing = existingSpace {
+            nameField.stringValue = existing.name
+            emojiField.stringValue = existing.emoji
+        }
+
+        container.addSubview(nameField)
+        container.addSubview(emojiField)
+        container.addSubview(colorStack)
+        container.addSubview(actionButton)
+
+        NSLayoutConstraint.activate([
+            nameField.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+            nameField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            nameField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+
+            emojiField.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 8),
+            emojiField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            emojiField.widthAnchor.constraint(equalToConstant: 60),
+
+            colorStack.topAnchor.constraint(equalTo: emojiField.bottomAnchor, constant: 12),
+            colorStack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+
+            actionButton.topAnchor.constraint(equalTo: colorStack.bottomAnchor, constant: 12),
+            actionButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+        ])
+
+        self.view = container
+    }
+
+    @objc private func colorSelected(_ sender: NSButton) {
+        selectedColorHex = Space.presetColors[sender.tag]
+        for btn in colorButtons {
+            btn.layer?.borderWidth = 0
+        }
+        sender.layer?.borderWidth = 2
+        sender.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.5).cgColor
+    }
+
+    @objc private func createClicked() {
+        let name = (view.viewWithTag(1) as? NSTextField)?.stringValue ?? ""
+        let emoji = (view.viewWithTag(2) as? NSTextField)?.stringValue ?? ""
+        let finalName = name.isEmpty ? "Space" : name
+        let finalEmoji = emoji.isEmpty ? "⭐️" : String(emoji.prefix(1))
+        onCreate?(finalName, finalEmoji, selectedColorHex)
+    }
+}
+
+private extension NSColor {
+    convenience init?(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard hex.count == 6 else { return nil }
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r = CGFloat((int >> 16) & 0xFF) / 255.0
+        let g = CGFloat((int >> 8) & 0xFF) / 255.0
+        let b = CGFloat(int & 0xFF) / 255.0
+        self.init(srgbRed: r, green: g, blue: b, alpha: 1.0)
     }
 }
 
@@ -696,17 +881,17 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didSelectTabAt index: Int) {
-        let tabs = store.tabs
+        let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
         selectTab(id: tabs[index].id)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseTabAt index: Int) {
-        let tabs = store.tabs
+        guard let space = activeSpace else { return }
+        let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
         let id = tabs[index].id
 
-        // Pre-compute next selection
         let nextID: UUID?
         if tabs.count > 1 {
             let newIndex = index >= tabs.count - 1 ? index - 1 : index + 1
@@ -716,7 +901,7 @@ extension BrowserWindowController: TabSidebarDelegate {
         }
 
         let wasSelected = (id == selectedTabID)
-        store.closeTab(id: id)
+        store.closeTab(id: id, in: space)
 
         if wasSelected {
             if let nextID {
@@ -751,31 +936,86 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTabFrom sourceIndex: Int, to destinationIndex: Int) {
+        guard let space = activeSpace else { return }
         let adjustedDestination = sourceIndex < destinationIndex ? destinationIndex - 1 : destinationIndex
-        store.moveTab(from: sourceIndex, to: adjustedDestination)
+        store.moveTab(from: sourceIndex, to: adjustedDestination, in: space)
+    }
+
+    func tabSidebarDidRequestSwitchToSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
+        setActiveSpace(id: spaceID)
+    }
+
+    func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {
+        showAddSpacePopover(relativeTo: sourceButton)
+    }
+
+    func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton) {
+        showEditSpacePopover(spaceID: spaceID, relativeTo: sourceButton)
+    }
+
+    func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
+        guard let space = store.space(withID: spaceID) else { return }
+
+        if !space.tabs.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Cannot Delete Space"
+            alert.informativeText = "Close or move all tabs first before deleting this space."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete \"\(space.name)\"?"
+        alert.informativeText = "This action cannot be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let wasActive = (activeSpaceID == spaceID)
+        store.deleteSpace(id: spaceID)
+
+        if wasActive, let firstSpace = store.spaces.first {
+            setActiveSpace(id: firstSpace.id)
+        }
     }
 }
 
 // MARK: - TabStoreObserver
 
 extension BrowserWindowController: TabStoreObserver {
-    func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int) {
-        tabSidebar.tabs = store.tabs
+    func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space) {
+        guard space.id == activeSpaceID else { return }
+        tabSidebar.tabs = currentTabs
     }
 
-    func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int) {
-        tabSidebar.tabs = store.tabs
+    func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {
+        guard space.id == activeSpaceID else { return }
+        tabSidebar.tabs = currentTabs
     }
 
-    func tabStoreDidReorderTabs() {
-        tabSidebar.tabs = store.tabs
-        if let selectedTabID, let index = store.index(of: selectedTabID) {
+    func tabStoreDidReorderTabs(in space: Space) {
+        guard space.id == activeSpaceID else { return }
+        tabSidebar.tabs = currentTabs
+        if let selectedTabID, let index = currentTabs.firstIndex(where: { $0.id == selectedTabID }) {
             tabSidebar.selectedTabIndex = index
         }
     }
 
-    func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int) {
+    func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space) {
+        guard space.id == activeSpaceID else { return }
         tabSidebar.reloadTab(at: index)
+    }
+
+    func tabStoreDidUpdateSpaces() {
+        tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: activeSpaceID)
+
+        // If our active space was deleted, switch to the first available space
+        if activeSpaceID == nil || store.space(withID: activeSpaceID!) == nil, let firstSpace = store.spaces.first {
+            setActiveSpace(id: firstSpace.id)
+        }
     }
 }
 
@@ -784,7 +1024,8 @@ extension BrowserWindowController: TabStoreObserver {
 extension BrowserWindowController: CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String) {
         dismissCommandPalette()
-        let tab = store.addTab(afterTabID: selectedTabID)
+        guard let space = activeSpace else { return }
+        let tab = store.addTab(in: space, afterTabID: selectedTabID)
         selectTab(id: tab.id)
         if let url = urlFromInput(input) {
             tab.load(url)
@@ -813,8 +1054,8 @@ extension BrowserWindowController: FindBarDelegate {
 extension BrowserWindowController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         if navigationAction.navigationType == .linkActivated && navigationAction.modifierFlags.contains(.command) {
-            if let url = navigationAction.request.url {
-                let tab = store.addTab(url: url, afterTabID: selectedTabID)
+            if let url = navigationAction.request.url, let space = activeSpace {
+                let tab = store.addTab(in: space, url: url, afterTabID: selectedTabID)
                 selectTab(id: tab.id)
             }
             return .cancel
@@ -827,8 +1068,8 @@ extension BrowserWindowController: WKNavigationDelegate {
 
 extension BrowserWindowController: WKUIDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = navigationAction.request.url {
-            let tab = store.addTab(url: url, afterTabID: selectedTabID)
+        if let url = navigationAction.request.url, let space = activeSpace {
+            let tab = store.addTab(in: space, url: url, afterTabID: selectedTabID)
             selectTab(id: tab.id)
         }
         return nil

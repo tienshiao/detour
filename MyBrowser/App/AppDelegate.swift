@@ -10,11 +10,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowControllers.append(wc)
         wc.showWindow(nil)
 
-        let selectedID = TabStore.shared.restoreSession()
-        if let selectedID, TabStore.shared.tab(withID: selectedID) != nil {
-            wc.selectTab(id: selectedID)
-        } else if let firstTab = TabStore.shared.tabs.first {
-            wc.selectTab(id: firstTab.id)
+        let restored = TabStore.shared.restoreSession()
+
+        // Ensure at least one space exists
+        TabStore.shared.ensureDefaultSpace()
+
+        // Set the window's active space from the restored session
+        if let restored, TabStore.shared.space(withID: restored.spaceID) != nil {
+            wc.setActiveSpace(id: restored.spaceID)
+            if let tabID = restored.tabID {
+                wc.selectTab(id: tabID)
+            }
+        } else if let firstSpace = TabStore.shared.spaces.first {
+            wc.setActiveSpace(id: firstSpace.id)
+            if let firstTab = firstSpace.tabs.first {
+                wc.selectTab(id: firstTab.id)
+            }
         }
 
         observeWindowClose(wc)

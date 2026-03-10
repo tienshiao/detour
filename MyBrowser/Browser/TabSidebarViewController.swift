@@ -10,6 +10,10 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didSubmitAddressInput input: String)
     func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController)
     func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTabFrom sourceIndex: Int, to destinationIndex: Int)
+    func tabSidebarDidRequestSwitchToSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
+    func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
+    func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton)
+    func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
 }
 
 class DraggableTableView: NSTableView {
@@ -40,9 +44,20 @@ class DraggableTableView: NSTableView {
 
 class DraggableScrollView: NSScrollView {
     override var mouseDownCanMoveWindow: Bool { true }
+
+    var onScrollWheel: ((NSEvent) -> Void)?
+
+    override func scrollWheel(with event: NSEvent) {
+        onScrollWheel?(event)
+        super.scrollWheel(with: event)
+    }
 }
 
 class DraggableClipView: NSClipView {
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
+private class DraggableBarView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 }
 
@@ -60,10 +75,27 @@ class TabSidebarViewController: NSViewController {
     private(set) var sidebarToggleButton = NSButton()
 
     private var suppressReload = false
+    private var bottomBar = DraggableBarView()
+    private var spaceButtonsContainer = NSStackView()
+    private var addSpaceButton = NSButton()
+    private var isAnimatingSwipe = false
+
+    var activeSpaceID: UUID?
 
     var tabs: [BrowserTab] = [] {
         didSet {
             if !suppressReload { tableView.reloadData() }
+        }
+    }
+
+    var tintColor: NSColor? {
+        didSet {
+            view.wantsLayer = true
+            if let color = tintColor {
+                view.layer?.backgroundColor = color.withAlphaComponent(0.05).cgColor
+            } else {
+                view.layer?.backgroundColor = nil
+            }
         }
     }
 
@@ -117,6 +149,7 @@ class TabSidebarViewController: NSViewController {
         scrollView.contentView = DraggableClipView()
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
+        scrollView.horizontalScrollElasticity = .none
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -149,14 +182,44 @@ class TabSidebarViewController: NSViewController {
             newTabLabel.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.trailingAnchor, constant: -4),
         ])
 
+        // Bottom bar for spaces
+        bottomBar.wantsLayer = true
+        bottomBar.translatesAutoresizingMaskIntoConstraints = false
+
+        // Space buttons container (centered)
+        spaceButtonsContainer.orientation = .horizontal
+        spaceButtonsContainer.spacing = 4
+        spaceButtonsContainer.translatesAutoresizingMaskIntoConstraints = false
+        bottomBar.addSubview(spaceButtonsContainer)
+
+        // Add space button
+        addSpaceButton = NSButton()
+        addSpaceButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Space")
+        addSpaceButton.bezelStyle = .inline
+        addSpaceButton.isBordered = false
+        addSpaceButton.imagePosition = .imageOnly
+        addSpaceButton.target = self
+        addSpaceButton.action = #selector(addSpaceClicked)
+        addSpaceButton.translatesAutoresizingMaskIntoConstraints = false
+        bottomBar.addSubview(addSpaceButton)
+
+        NSLayoutConstraint.activate([
+            spaceButtonsContainer.centerXAnchor.constraint(equalTo: bottomBar.centerXAnchor),
+            spaceButtonsContainer.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
+
+            addSpaceButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -8),
+            addSpaceButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
+            addSpaceButton.widthAnchor.constraint(equalToConstant: 24),
+            addSpaceButton.heightAnchor.constraint(equalToConstant: 24),
+        ])
+
         container.addSubview(sidebarToggleButton)
         container.addSubview(navStack)
         container.addSubview(addressField)
         container.addSubview(newTabButton)
         container.addSubview(scrollView)
+        container.addSubview(bottomBar)
 
-        // The title bar is ~38px tall. Nav buttons sit in that area, right-aligned.
-        // Traffic lights occupy roughly the left 70px, so right-aligning the nav buttons avoids overlap.
         NSLayoutConstraint.activate([
             // Sidebar toggle button: in title bar area, right of traffic lights
             sidebarToggleButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 7),
@@ -178,14 +241,68 @@ class TabSidebarViewController: NSViewController {
             newTabButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             newTabButton.heightAnchor.constraint(equalToConstant: 36),
 
-            // Tab list: below new tab button, fills remaining space
+            // Tab list: below new tab button, above bottom bar
             scrollView.topAnchor.constraint(equalTo: newTabButton.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+
+            // Bottom bar: pinned to bottom
+            bottomBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            bottomBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            bottomBar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            bottomBar.heightAnchor.constraint(equalToConstant: 32),
         ])
 
+        scrollView.onScrollWheel = { [weak self] in self?.handleSpaceSwipe($0) }
+
+        container.allowedTouchTypes = .indirect
         self.view = container
+    }
+
+    func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
+        // Remove old buttons
+        for view in spaceButtonsContainer.arrangedSubviews {
+            spaceButtonsContainer.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        for space in spaces {
+            let button = NSButton()
+            button.title = space.emoji
+            button.font = .systemFont(ofSize: 14)
+            button.bezelStyle = .inline
+            button.isBordered = false
+            button.target = self
+            button.action = #selector(spaceButtonClicked(_:))
+            button.tag = spaces.firstIndex(where: { $0.id == space.id }) ?? 0
+            button.toolTip = space.name
+            button.wantsLayer = true
+
+            if space.id == activeSpaceID {
+                button.layer?.backgroundColor = space.color.withAlphaComponent(0.15).cgColor
+                button.layer?.cornerRadius = 6
+            }
+
+            let menu = NSMenu()
+            let editItem = NSMenuItem(title: "Edit Space…", action: #selector(editSpaceClicked(_:)), keyEquivalent: "")
+            editItem.target = self
+            editItem.tag = button.tag
+            let deleteItem = NSMenuItem(title: "Delete Space", action: #selector(deleteSpaceClicked(_:)), keyEquivalent: "")
+            deleteItem.target = self
+            deleteItem.tag = button.tag
+            menu.addItem(editItem)
+            menu.addItem(deleteItem)
+            button.menu = menu
+
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 28),
+                button.heightAnchor.constraint(equalToConstant: 24),
+            ])
+
+            spaceButtonsContainer.addArrangedSubview(button)
+        }
     }
 
     private func makeNavButton(symbolName: String, accessibilityLabel: String, action: Selector) -> NSButton {
@@ -226,6 +343,113 @@ class TabSidebarViewController: NSViewController {
 
     @objc private func toggleSidebarClicked() {
         delegate?.tabSidebarDidRequestToggleSidebar(self)
+    }
+
+    @objc private func spaceButtonClicked(_ sender: NSButton) {
+        let spaces = TabStore.shared.spaces
+        guard sender.tag >= 0, sender.tag < spaces.count else { return }
+        let spaceID = spaces[sender.tag].id
+        delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: spaceID)
+    }
+
+    @objc private func addSpaceClicked() {
+        delegate?.tabSidebarDidRequestAddSpace(self, sourceButton: addSpaceButton)
+    }
+
+    @objc private func editSpaceClicked(_ sender: NSMenuItem) {
+        let spaces = TabStore.shared.spaces
+        guard sender.tag >= 0, sender.tag < spaces.count else { return }
+        let spaceID = spaces[sender.tag].id
+        // Find the corresponding button in the container
+        let button = spaceButtonsContainer.arrangedSubviews
+            .compactMap { $0 as? NSButton }
+            .first { $0.tag == sender.tag } ?? addSpaceButton
+        delegate?.tabSidebarDidRequestEditSpace(self, spaceID: spaceID, sourceButton: button)
+    }
+
+    @objc private func deleteSpaceClicked(_ sender: NSMenuItem) {
+        let spaces = TabStore.shared.spaces
+        guard sender.tag >= 0, sender.tag < spaces.count else { return }
+        let spaceID = spaces[sender.tag].id
+        delegate?.tabSidebarDidRequestDeleteSpace(self, spaceID: spaceID)
+    }
+
+    private var swipeAccumulatedX: CGFloat = 0
+    private var isTrackingHorizontalSwipe = false
+
+    private func handleSpaceSwipe(_ event: NSEvent) {
+        // Only handle trackpad scroll events
+        guard !isAnimatingSwipe, event.phase != [] || event.momentumPhase != [] else {
+            return
+        }
+
+        if event.phase == .began {
+            swipeAccumulatedX = 0
+            isTrackingHorizontalSwipe = false
+        }
+
+        // Once we've committed to a horizontal swipe, keep tracking through .ended
+        // Otherwise, only start tracking if horizontal-dominant
+        if !isTrackingHorizontalSwipe {
+            guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
+                  event.scrollingDeltaX != 0 else {
+                return
+            }
+            isTrackingHorizontalSwipe = true
+        }
+
+        if event.phase == .ended || event.phase == .cancelled {
+            isTrackingHorizontalSwipe = false
+        }
+
+        swipeAccumulatedX += event.scrollingDeltaX
+
+        if event.phase == .ended || event.phase == .cancelled {
+            let threshold: CGFloat = 50
+            guard abs(swipeAccumulatedX) > threshold else {
+                swipeAccumulatedX = 0
+                return
+            }
+
+            let spaces = TabStore.shared.spaces
+            guard let activeID = activeSpaceID,
+                  let currentIndex = spaces.firstIndex(where: { $0.id == activeID }) else {
+                swipeAccumulatedX = 0
+                return
+            }
+
+            // Positive scrollingDeltaX = swipe right (fingers move right) = go to previous space
+            let nextIndex = swipeAccumulatedX > 0 ? currentIndex - 1 : currentIndex + 1
+            swipeAccumulatedX = 0
+
+            guard nextIndex >= 0, nextIndex < spaces.count else { return }
+
+            let targetSpaceID = spaces[nextIndex].id
+            let slideDirection: CGFloat = nextIndex > currentIndex ? -1 : 1
+
+            isAnimatingSwipe = true
+            let width = scrollView.frame.width
+
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                scrollView.animator().alphaValue = 0
+                scrollView.animator().frame = scrollView.frame.offsetBy(dx: slideDirection * width * 0.3, dy: 0)
+            }, completionHandler: { [weak self] in
+                guard let self else { return }
+                self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: targetSpaceID)
+
+                self.scrollView.frame = self.scrollView.frame.offsetBy(dx: -slideDirection * width * 0.6, dy: 0)
+                NSAnimationContext.runAnimationGroup({ context in
+                    context.duration = 0.2
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    self.scrollView.animator().alphaValue = 1
+                    self.view.layoutSubtreeIfNeeded()
+                }, completionHandler: {
+                    self.isAnimatingSwipe = false
+                })
+            })
+        }
     }
 
     func reloadTab(at index: Int) {
@@ -306,4 +530,3 @@ extension TabSidebarViewController: NSTableViewDelegate {
         delegate?.tabSidebar(self, didSelectTabAt: row)
     }
 }
-
