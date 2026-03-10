@@ -428,7 +428,7 @@ class BrowserWindowController: NSWindowController {
         activeSpace?.selectedTabID = id
         activeTabSubscriptions.removeAll()
 
-        let tab = currentTabs.first { $0.id == id }!
+        guard let tab = currentTabs.first(where: { $0.id == id }) else { return }
 
         tab.$url
             .receive(on: RunLoop.main)
@@ -565,14 +565,18 @@ class BrowserWindowController: NSWindowController {
 
     // MARK: - Navigation
 
+    private func ensureOwnsWebView() {
+        if !ownsWebView, let tab = selectedTab {
+            claimWebView(for: tab)
+        }
+    }
+
     private func navigateToAddress(_ input: String) {
         guard selectedTab != nil else { return }
         let trimmed = input.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
 
-        if !ownsWebView, let tab = selectedTab {
-            claimWebView(for: tab)
-        }
+        ensureOwnsWebView()
 
         if let url = urlFromInput(trimmed) {
             selectedTab?.load(url)
@@ -598,13 +602,18 @@ class BrowserWindowController: NSWindowController {
         inspector.perform(Selector(("show")))
     }
 
+    @objc func reloadPage(_ sender: Any?) {
+        ensureOwnsWebView()
+        selectedTab?.webView.reload()
+    }
+
     @objc func goBack(_ sender: Any?) {
-        if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }
+        ensureOwnsWebView()
         selectedTab?.webView.goBack()
     }
 
     @objc func goForward(_ sender: Any?) {
-        if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }
+        ensureOwnsWebView()
         selectedTab?.webView.goForward()
     }
 
@@ -675,25 +684,26 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func closeCurrentTab(_ sender: Any?) {
-        guard let id = selectedTabID, let space = activeSpace else { return }
+        guard let id = selectedTabID else { return }
         let tabs = currentTabs
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        closeTab(at: index, wasSelected: true)
+    }
 
-        let nextID: UUID?
-        if tabs.count > 1 {
-            let newIndex = min(index, tabs.count - 2)
-            let candidate = tabs[newIndex == index ? min(index + 1, tabs.count - 1) : newIndex]
-            nextID = candidate.id
-        } else {
-            nextID = nil
-        }
+    private func closeTab(at index: Int, wasSelected: Bool) {
+        guard let space = activeSpace else { return }
+        let tabs = currentTabs
+        guard index >= 0, index < tabs.count else { return }
 
-        store.closeTab(id: id, in: space)
+        let nextID: UUID? = tabs.count > 1
+            ? tabs[index == tabs.count - 1 ? index - 1 : index + 1].id
+            : nil
 
-        if let nextID {
-            selectTab(id: nextID)
-        } else {
-            deselectAllTabs()
+        store.closeTab(id: tabs[index].id, in: space)
+
+        if wasSelected {
+            if let nextID { selectTab(id: nextID) }
+            else { deselectAllTabs() }
         }
     }
 
@@ -734,126 +744,6 @@ class BrowserWindowController: NSWindowController {
         }
         popover.contentViewController = vc
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    }
-}
-
-// MARK: - AddSpaceViewController
-
-private class AddSpaceViewController: NSViewController {
-    var onCreate: ((String, String, String) -> Void)?
-    var existingSpace: (name: String, emoji: String, colorHex: String)?
-    private var selectedColorHex = Space.presetColors[0]
-    private var colorButtons: [NSButton] = []
-    private var actionButton: NSButton!
-
-    override func loadView() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 160))
-
-        let nameField = NSTextField()
-        nameField.placeholderString = "Space name"
-        nameField.translatesAutoresizingMaskIntoConstraints = false
-        nameField.tag = 1
-
-        let emojiField = NSTextField()
-        emojiField.placeholderString = "Emoji"
-        emojiField.translatesAutoresizingMaskIntoConstraints = false
-        emojiField.tag = 2
-
-        let colorStack = NSStackView()
-        colorStack.orientation = .horizontal
-        colorStack.spacing = 6
-        colorStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let initialColorHex = existingSpace?.colorHex ?? Space.presetColors[0]
-        selectedColorHex = initialColorHex
-        let selectedIndex = Space.presetColors.firstIndex(of: initialColorHex) ?? 0
-
-        for (i, hex) in Space.presetColors.enumerated() {
-            let btn = NSButton()
-            btn.wantsLayer = true
-            btn.isBordered = false
-            btn.title = ""
-            btn.layer?.cornerRadius = 10
-            btn.layer?.backgroundColor = (NSColor(hex: hex) ?? .controlAccentColor).cgColor
-            btn.tag = i
-            btn.target = self
-            btn.action = #selector(colorSelected(_:))
-            btn.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                btn.widthAnchor.constraint(equalToConstant: 20),
-                btn.heightAnchor.constraint(equalToConstant: 20),
-            ])
-            if i == selectedIndex {
-                btn.layer?.borderWidth = 2
-                btn.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.5).cgColor
-            }
-            colorButtons.append(btn)
-            colorStack.addArrangedSubview(btn)
-        }
-
-        let buttonTitle = existingSpace != nil ? "Save" : "Create"
-        actionButton = NSButton(title: buttonTitle, target: self, action: #selector(createClicked))
-        actionButton.bezelStyle = .rounded
-        actionButton.keyEquivalent = "\r"
-        actionButton.translatesAutoresizingMaskIntoConstraints = false
-
-        if let existing = existingSpace {
-            nameField.stringValue = existing.name
-            emojiField.stringValue = existing.emoji
-        }
-
-        container.addSubview(nameField)
-        container.addSubview(emojiField)
-        container.addSubview(colorStack)
-        container.addSubview(actionButton)
-
-        NSLayoutConstraint.activate([
-            nameField.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
-            nameField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            nameField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-
-            emojiField.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 8),
-            emojiField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            emojiField.widthAnchor.constraint(equalToConstant: 60),
-
-            colorStack.topAnchor.constraint(equalTo: emojiField.bottomAnchor, constant: 12),
-            colorStack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-
-            actionButton.topAnchor.constraint(equalTo: colorStack.bottomAnchor, constant: 12),
-            actionButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-        ])
-
-        self.view = container
-    }
-
-    @objc private func colorSelected(_ sender: NSButton) {
-        selectedColorHex = Space.presetColors[sender.tag]
-        for btn in colorButtons {
-            btn.layer?.borderWidth = 0
-        }
-        sender.layer?.borderWidth = 2
-        sender.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.5).cgColor
-    }
-
-    @objc private func createClicked() {
-        let name = (view.viewWithTag(1) as? NSTextField)?.stringValue ?? ""
-        let emoji = (view.viewWithTag(2) as? NSTextField)?.stringValue ?? ""
-        let finalName = name.isEmpty ? "Space" : name
-        let finalEmoji = emoji.isEmpty ? "⭐️" : String(emoji.prefix(1))
-        onCreate?(finalName, finalEmoji, selectedColorHex)
-    }
-}
-
-private extension NSColor {
-    convenience init?(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard hex.count == 6 else { return nil }
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let r = CGFloat((int >> 16) & 0xFF) / 255.0
-        let g = CGFloat((int >> 8) & 0xFF) / 255.0
-        let b = CGFloat(int & 0xFF) / 255.0
-        self.init(srgbRed: r, green: g, blue: b, alpha: 1.0)
     }
 }
 
@@ -906,43 +796,23 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseTabAt index: Int) {
-        guard let space = activeSpace else { return }
         let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
-        let id = tabs[index].id
-
-        let nextID: UUID?
-        if tabs.count > 1 {
-            let newIndex = index >= tabs.count - 1 ? index - 1 : index + 1
-            nextID = tabs[newIndex].id
-        } else {
-            nextID = nil
-        }
-
-        let wasSelected = (id == selectedTabID)
-        store.closeTab(id: id, in: space)
-
-        if wasSelected {
-            if let nextID {
-                selectTab(id: nextID)
-            } else {
-                deselectAllTabs()
-            }
-        }
+        closeTab(at: index, wasSelected: tabs[index].id == selectedTabID)
     }
 
     func tabSidebarDidRequestGoBack(_ sidebar: TabSidebarViewController) {
-        if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }
+        ensureOwnsWebView()
         selectedTab?.webView.goBack()
     }
 
     func tabSidebarDidRequestGoForward(_ sidebar: TabSidebarViewController) {
-        if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }
+        ensureOwnsWebView()
         selectedTab?.webView.goForward()
     }
 
     func tabSidebarDidRequestReload(_ sidebar: TabSidebarViewController) {
-        if !ownsWebView, let tab = selectedTab { claimWebView(for: tab) }
+        ensureOwnsWebView()
         selectedTab?.webView.reload()
     }
 

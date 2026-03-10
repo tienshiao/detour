@@ -109,6 +109,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         let toggleSidebarItem = viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(BrowserWindowController.toggleSidebarMode(_:)), keyEquivalent: "s")
         toggleSidebarItem.keyEquivalentModifierMask = [.command]
+        viewMenu.addItem(withTitle: "Reload Page", action: #selector(BrowserWindowController.reloadPage(_:)), keyEquivalent: "r")
         viewMenuItem.submenu = viewMenu
 
         // Navigate menu

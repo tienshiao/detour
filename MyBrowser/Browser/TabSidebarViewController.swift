@@ -476,13 +476,11 @@ class TabSidebarViewController: NSViewController {
             frame.origin.x = targetX
             pageStripView.animator().frame = frame
             view.animator().layer?.backgroundColor = targetColor.withAlphaComponent(0.1).cgColor
-        })
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.02) { [weak self] in
+        }, completionHandler: { [weak self] in
             guard let self else { return }
             self.isAnimatingSwipe = false
             self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
-        }
+        })
     }
 
     @objc private func addSpaceClicked() {
@@ -607,10 +605,7 @@ class TabSidebarViewController: NSViewController {
             var frame = pageStripView.frame
             frame.origin.x = targetX
             pageStripView.animator().frame = frame
-        })
-
-        // Cleanup scheduled independently of animation completion
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.02) { [weak self] in
+        }, completionHandler: { [weak self] in
             guard let self else { return }
             self.isAnimatingSwipe = false
 
@@ -622,7 +617,7 @@ class TabSidebarViewController: NSViewController {
                 // Cancelled — restore original tint
                 self.view.layer?.backgroundColor = startColor.withAlphaComponent(0.05).cgColor
             }
-        }
+        })
 
         swipeAccumulatedX = 0
     }
