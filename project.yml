@@ -2,12 +2,18 @@ name: MyBrowser
 options:
   deploymentTarget:
     macOS: "14.0"
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "7.0.0"
 targets:
   MyBrowser:
     type: application
     platform: macOS
     sources:
       - MyBrowser
+    dependencies:
+      - package: GRDB
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mybrowser.app

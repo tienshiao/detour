@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import Combine
 import WebKit
+import GRDB
 
 protocol TabStoreObserver: AnyObject {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space)
@@ -74,6 +75,11 @@ class TabStore {
     /// Each window tracks its own active space independently.
     var lastActiveSpaceID: UUID?
 
+    /// In-memory dedup cache for history: "url|spaceID" -> timestamp
+    private var recentHistoryWrites: [String: TimeInterval] = [:]
+
+    private var db: DatabaseQueue { AppDatabase.shared.dbQueue }
+
     private init() {}
 
     func space(withID id: UUID) -> Space? {
@@ -81,35 +87,6 @@ class TabStore {
     }
 
     // MARK: - Session Persistence
-
-    private struct TabSession: Codable {
-        let id: UUID
-        let url: URL?
-        let title: String
-        let interactionState: Data?
-        let faviconURL: URL?
-    }
-
-    private struct SpaceSession: Codable {
-        let id: UUID
-        let name: String
-        let emoji: String
-        let colorHex: String
-        let tabs: [TabSession]
-        let selectedTabID: UUID?
-    }
-
-    private struct BrowserSession: Codable {
-        let spaces: [SpaceSession]
-        let activeSpaceID: UUID?
-    }
-
-    private static var sessionURL: URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("MyBrowser", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("session.json")
-    }
 
     func scheduleSave() {
         saveWorkItem?.cancel()
@@ -123,52 +100,141 @@ class TabStore {
     func saveNow() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
-        let spaceSessions = spaces.map { space -> SpaceSession in
-            let tabSessions = space.tabs.map { tab -> TabSession in
-                var stateData: Data?
-                if let state = tab.webView.interactionState {
-                    stateData = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
+
+        do {
+            try db.write { db in
+                // Clear existing session data
+                try SpaceRecord.deleteAll(db)
+                // Tabs cascade-deleted via foreign key
+
+                // Insert spaces and tabs
+                for (spaceIndex, space) in spaces.enumerated() {
+                    let spaceRecord = SpaceRecord(
+                        id: space.id.uuidString,
+                        name: space.name,
+                        emoji: space.emoji,
+                        colorHex: space.colorHex,
+                        sortOrder: spaceIndex,
+                        selectedTabID: space.selectedTabID?.uuidString
+                    )
+                    try spaceRecord.insert(db)
+
+                    for (tabIndex, tab) in space.tabs.enumerated() {
+                        var stateData: Data?
+                        if let state = tab.webView.interactionState {
+                            stateData = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
+                        }
+                        let tabRecord = TabRecord(
+                            id: tab.id.uuidString,
+                            spaceID: space.id.uuidString,
+                            url: tab.url?.absoluteString,
+                            title: tab.title,
+                            faviconURL: tab.faviconURL?.absoluteString,
+                            interactionState: stateData,
+                            sortOrder: tabIndex
+                        )
+                        try tabRecord.insert(db)
+                    }
                 }
-                return TabSession(id: tab.id, url: tab.url, title: tab.title, interactionState: stateData, faviconURL: tab.faviconURL)
+
+                // Upsert lastActiveSpaceID
+                if let activeID = lastActiveSpaceID {
+                    try db.execute(
+                        sql: "INSERT INTO appState (key, value) VALUES ('lastActiveSpaceID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        arguments: [activeID.uuidString]
+                    )
+                }
             }
-            return SpaceSession(id: space.id, name: space.name, emoji: space.emoji, colorHex: space.colorHex, tabs: tabSessions, selectedTabID: space.selectedTabID)
-        }
-        let session = BrowserSession(spaces: spaceSessions, activeSpaceID: lastActiveSpaceID)
-        if let data = try? JSONEncoder().encode(session) {
-            try? data.write(to: Self.sessionURL, options: .atomic)
+        } catch {
+            print("Failed to save session: \(error)")
         }
     }
 
     /// Restores session. Returns (activeSpaceID, selectedTabID) for the window to use.
     func restoreSession() -> (spaceID: UUID, tabID: UUID?)? {
-        guard let data = try? Data(contentsOf: Self.sessionURL),
-              let session = try? JSONDecoder().decode(BrowserSession.self, from: data),
-              !session.spaces.isEmpty else { return nil }
+        do {
+            return try db.read { db in
+                let spaceRecords = try SpaceRecord.order(Column("sortOrder")).fetchAll(db)
+                guard !spaceRecords.isEmpty else { return nil }
 
-        for spaceSession in session.spaces {
-            let space = Space(id: spaceSession.id, name: spaceSession.name, emoji: spaceSession.emoji, colorHex: spaceSession.colorHex)
-            space.selectedTabID = spaceSession.selectedTabID
-            for tabSession in spaceSession.tabs {
-                let tab = BrowserTab(
-                    id: tabSession.id,
-                    title: tabSession.title,
-                    archivedInteractionState: tabSession.interactionState,
-                    fallbackURL: tabSession.url,
-                    faviconURL: tabSession.faviconURL,
-                    configuration: space.makeWebViewConfiguration()
-                )
-                space.tabs.append(tab)
-                subscribeToTab(tab)
+                for spaceRecord in spaceRecords {
+                    guard let spaceID = UUID(uuidString: spaceRecord.id) else { continue }
+                    let space = Space(
+                        id: spaceID,
+                        name: spaceRecord.name,
+                        emoji: spaceRecord.emoji,
+                        colorHex: spaceRecord.colorHex
+                    )
+                    if let selID = spaceRecord.selectedTabID {
+                        space.selectedTabID = UUID(uuidString: selID)
+                    }
+
+                    let tabRecords = try TabRecord
+                        .filter(Column("spaceID") == spaceRecord.id)
+                        .order(Column("sortOrder"))
+                        .fetchAll(db)
+
+                    for tabRecord in tabRecords {
+                        guard let tabID = UUID(uuidString: tabRecord.id) else { continue }
+                        let tab = BrowserTab(
+                            id: tabID,
+                            title: tabRecord.title,
+                            archivedInteractionState: tabRecord.interactionState,
+                            fallbackURL: tabRecord.url.flatMap { URL(string: $0) },
+                            faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
+                            configuration: space.makeWebViewConfiguration()
+                        )
+                        space.tabs.append(tab)
+                        self.subscribeToTab(tab, spaceID: spaceID)
+                    }
+                    self.spaces.append(space)
+                }
+
+                let activeIDString = try String.fetchOne(db, sql: "SELECT value FROM appState WHERE key = 'lastActiveSpaceID'")
+                let activeID = activeIDString.flatMap { UUID(uuidString: $0) } ?? self.spaces.first!.id
+                self.lastActiveSpaceID = activeID
+                self.notifyObservers { $0.tabStoreDidUpdateSpaces() }
+
+                let activeSpace = self.space(withID: activeID)
+                return (activeID, activeSpace?.selectedTabID)
             }
-            spaces.append(space)
+        } catch {
+            print("Failed to restore session: \(error)")
+            return nil
         }
+    }
 
-        let activeID = session.activeSpaceID ?? spaces.first!.id
-        lastActiveSpaceID = activeID
-        notifyObservers { $0.tabStoreDidUpdateSpaces() }
+    // MARK: - History Recording
 
-        let activeSpace = space(withID: activeID)
-        return (activeID, activeSpace?.selectedTabID)
+    private func recordHistoryVisit(tab: BrowserTab, spaceID: UUID) {
+        guard let url = tab.url else { return }
+        let urlString = url.absoluteString
+
+        // Skip internal URLs
+        guard url.scheme == "http" || url.scheme == "https" else { return }
+
+        // Deduplicate: skip if same (url, spaceID) recorded within 30 seconds
+        let dedupKey = "\(urlString)|\(spaceID.uuidString)"
+        let now = Date().timeIntervalSince1970
+        if let lastWrite = recentHistoryWrites[dedupKey], now - lastWrite < 30 {
+            return
+        }
+        recentHistoryWrites[dedupKey] = now
+
+        let record = HistoryRecord(
+            url: urlString,
+            title: tab.title,
+            faviconURL: tab.faviconURL?.absoluteString,
+            spaceID: spaceID.uuidString,
+            visitedAt: now
+        )
+        do {
+            try db.write { db in
+                try record.insert(db)
+            }
+        } catch {
+            print("Failed to record history: \(error)")
+        }
     }
 
     // MARK: - Observer Management
@@ -246,7 +312,7 @@ class TabStore {
             insertionIndex = space.tabs.count - 1
         }
 
-        subscribeToTab(tab)
+        subscribeToTab(tab, spaceID: space.id)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
 
         if let url {
@@ -278,7 +344,7 @@ class TabStore {
 
     // MARK: - Per-Tab Subscriptions
 
-    private func subscribeToTab(_ tab: BrowserTab) {
+    private func subscribeToTab(_ tab: BrowserTab, spaceID: UUID) {
         var cancellables = Set<AnyCancellable>()
 
         let notify: (BrowserTab) -> Void = { [weak self] tab in
@@ -322,9 +388,13 @@ class TabStore {
         tab.$isLoading
             .dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak tab] _ in
-                guard let tab else { return }
+            .sink { [weak self, weak tab] isLoading in
+                guard let self, let tab else { return }
                 notify(tab)
+                // Record history when page finishes loading
+                if !isLoading {
+                    self.recordHistoryVisit(tab: tab, spaceID: spaceID)
+                }
             }
             .store(in: &cancellables)
 

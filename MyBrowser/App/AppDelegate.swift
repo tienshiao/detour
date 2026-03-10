@@ -6,6 +6,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
 
+        // Initialize database before restoring session
+        _ = AppDatabase.shared
+
         let wc = BrowserWindowController()
         windowControllers.append(wc)
         wc.showWindow(nil)
