@@ -332,6 +332,15 @@ class TabStore {
             }
             .store(in: &cancellables)
 
+        tab.$isLoading
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak tab] _ in
+                guard let tab else { return }
+                notify(tab)
+            }
+            .store(in: &cancellables)
+
         tabSubscriptions[tab.id] = cancellables
     }
 }

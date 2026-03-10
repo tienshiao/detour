@@ -16,6 +16,7 @@ class TabRowView: NSTableRowView {
 class TabCellView: NSTableCellView {
     let titleLabel = NSTextField(labelWithString: "")
     let faviconImageView = NSImageView()
+    private let spinner = NSProgressIndicator()
     private let closeButton: NSButton
     private var trackingArea: NSTrackingArea?
     private var titleTrailingDefault: NSLayoutConstraint!
@@ -41,6 +42,11 @@ class TabCellView: NSTableCellView {
         faviconImageView.translatesAutoresizingMaskIntoConstraints = false
         faviconImageView.image = NSImage(systemSymbolName: "globe", accessibilityDescription: "Website")
 
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.isHidden = true
+
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -52,6 +58,7 @@ class TabCellView: NSTableCellView {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(faviconImageView)
+        addSubview(spinner)
         addSubview(titleLabel)
         addSubview(closeButton)
 
@@ -64,6 +71,9 @@ class TabCellView: NSTableCellView {
             faviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             faviconImageView.widthAnchor.constraint(equalToConstant: 16),
             faviconImageView.heightAnchor.constraint(equalToConstant: 16),
+
+            spinner.centerXAnchor.constraint(equalTo: faviconImageView.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: faviconImageView.centerYAnchor),
 
             titleLeadingToFavicon,
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -116,6 +126,18 @@ class TabCellView: NSTableCellView {
 
     func updateFavicon(_ image: NSImage?) {
         faviconImageView.image = image ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website")
+    }
+
+    func updateLoading(_ isLoading: Bool) {
+        if isLoading {
+            spinner.startAnimation(nil)
+            spinner.isHidden = false
+            faviconImageView.isHidden = true
+        } else {
+            spinner.stopAnimation(nil)
+            spinner.isHidden = true
+            faviconImageView.isHidden = false
+        }
     }
 
     @objc private func closeTapped() {
