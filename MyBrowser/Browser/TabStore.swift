@@ -409,9 +409,10 @@ class TabStore {
         tab.$favicon
             .dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak tab] _ in
-                guard let tab else { return }
+            .sink { [weak self, weak tab] _ in
+                guard let self, let tab else { return }
                 notify(tab)
+                self.scheduleSave()
             }
             .store(in: &cancellables)
 
