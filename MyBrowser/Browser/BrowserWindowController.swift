@@ -633,7 +633,7 @@ class BrowserWindowController: NSWindowController {
 
     @objc func reloadPage(_ sender: Any?) {
         ensureOwnsWebView()
-        selectedTab?.webView.reload()
+        selectedTab?.reload()
     }
 
     @objc func goBack(_ sender: Any?) {
@@ -859,7 +859,7 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebarDidRequestReload(_ sidebar: TabSidebarViewController) {
         ensureOwnsWebView()
-        selectedTab?.webView.reload()
+        selectedTab?.reload()
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didSubmitAddressInput input: String) {
@@ -1009,7 +1009,27 @@ extension BrowserWindowController: WKNavigationDelegate {
             }
             return .cancel
         }
+
+        // When navigating forward into an error page, re-attempt the original URL instead
+        if navigationAction.navigationType == .backForward,
+           let url = navigationAction.request.url,
+           let originalURL = ErrorPage.originalURL(from: url) {
+            DispatchQueue.main.async { [weak self] in
+                self?.selectedTab?.load(originalURL)
+            }
+            return .cancel
+        }
+
         return .allow
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if webView.url?.scheme == ErrorPage.scheme { return }
+        selectedTab?.didCommitNavigation()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        selectedTab?.didFailProvisionalNavigation(error: error)
     }
 }
 

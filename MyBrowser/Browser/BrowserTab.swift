@@ -17,12 +17,17 @@ class BrowserTab {
     private(set) var faviconURL: URL?
 
     private var faviconCancellables = Set<AnyCancellable>()
+    private var lastAttemptedURL: URL?
+    private var navigationPending = false
     private var previousHost: String?
     private var faviconGeneration: Int = 0
 
     init(id: UUID = UUID(), configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
         self.id = id
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        if configuration.urlSchemeHandler(forURLScheme: ErrorPage.scheme) == nil {
+            configuration.setURLSchemeHandler(ErrorSchemeHandler(), forURLScheme: ErrorPage.scheme)
+        }
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         self.webView.isInspectable = true
         setupObservers()
@@ -36,6 +41,7 @@ class BrowserTab {
             self.previousHost = fallbackURL?.host
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
         }
+        self.url = fallbackURL
         if let archivedInteractionState,
            let state = try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(archivedInteractionState) {
             webView.interactionState = state
@@ -52,12 +58,22 @@ class BrowserTab {
     }
 
     private func setupObservers() {
+        webView.publisher(for: \.url)
+            .sink { [weak self] url in
+                guard let self else { return }
+                if let url, !self.navigationPending { self.lastAttemptedURL = url }
+                if url?.scheme == ErrorPage.scheme { return }
+                self.url = url
+            }
+            .store(in: &faviconCancellables)
+
         webView.publisher(for: \.title)
-            .map { $0 ?? "New Tab" }
-            .assign(to: &$title)
+            .sink { [weak self] _ in self?.updateTitle() }
+            .store(in: &faviconCancellables)
 
         webView.publisher(for: \.url)
-            .assign(to: &$url)
+            .sink { [weak self] _ in self?.updateTitle() }
+            .store(in: &faviconCancellables)
 
         webView.publisher(for: \.isLoading)
             .assign(to: &$isLoading)
@@ -78,7 +94,8 @@ class BrowserTab {
             }
             .removeDuplicates { $0.0 == $1.0 }
             .sink { [weak self] host, scheme in
-                guard let self else { return }
+                guard let self, !self.navigationPending else { return }
+                guard scheme != ErrorPage.scheme else { return }
                 guard self.previousHost != host else { return }
                 if self.previousHost != nil {
                     self.favicon = nil
@@ -101,6 +118,7 @@ class BrowserTab {
     }
 
     private func fetchFavicon() {
+        guard webView.url?.scheme != ErrorPage.scheme else { return }
         let generation = self.faviconGeneration
         let js = "document.querySelector(\"link[rel~='icon'], link[rel='shortcut icon']\")?.href"
         webView.evaluateJavaScript(js) { [weak self] result, _ in
@@ -128,6 +146,63 @@ class BrowserTab {
     }
 
     func load(_ url: URL) {
+        lastAttemptedURL = url
+        self.url = url
+        navigationPending = true
+        latestSnapshot = nil
+        if url.host != previousHost {
+            favicon = nil
+            faviconURL = nil
+        }
+        updateTitle()
         webView.load(URLRequest(url: url))
+    }
+
+    func reload() {
+        if webView.url?.scheme == ErrorPage.scheme, let lastAttemptedURL {
+            load(lastAttemptedURL)
+        } else {
+            webView.reload()
+        }
+    }
+
+    func didCommitNavigation() {
+        navigationPending = false
+        updateTitle()
+    }
+
+    func didFailProvisionalNavigation(error: Error) {
+        guard let lastAttemptedURL else { return }
+
+        url = lastAttemptedURL
+        favicon = nil
+        faviconURL = nil
+        faviconGeneration += 1
+        previousHost = nil
+
+        webView.load(URLRequest(url: ErrorPage.url(for: lastAttemptedURL, error: error)))
+    }
+
+    private func updateTitle() {
+        if navigationPending, let lastAttemptedURL {
+            title = strippedScheme(lastAttemptedURL)
+        } else if let webTitle = webView.title, !webTitle.isEmpty {
+            title = webTitle
+        } else if let displayURL = webView.url ?? lastAttemptedURL {
+            title = strippedScheme(displayURL)
+        } else {
+            title = "New Tab"
+        }
+    }
+
+    private func strippedScheme(_ url: URL) -> String {
+        var str = url.absoluteString
+        for prefix in ["https://", "http://"] {
+            if str.hasPrefix(prefix) {
+                str = String(str.dropFirst(prefix.count))
+                break
+            }
+        }
+        return str
     }
 }
