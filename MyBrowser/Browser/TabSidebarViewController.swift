@@ -480,30 +480,59 @@ class TabSidebarViewController: NSViewController {
     private var swipeAccumulatedX: CGFloat = 0
     private var isTrackingHorizontalSwipe = false
     private var swipeStartTintColor: NSColor?
+    private var swipeEventMonitor: Any?
+    private var lastProcessedSwipeEvent: NSEvent?
 
     /// Returns `true` when the event is consumed by horizontal swipe handling.
     @discardableResult
     private func handleSpaceSwipe(_ event: NSEvent) -> Bool {
         if isIncognito { return false }
-        guard event.phase != [] else { return false }
 
-        if event.phase == .began {
-            if isAnimatingSwipe { isAnimatingSwipe = false }
+        // Already tracking — delegate to the shared processor (deduplicates with monitor)
+        if isTrackingHorizontalSwipe {
+            return processSwipeEvent(event)
+        }
+
+        // Momentum events with no active tracking — ignore
+        if event.phase == [] { return false }
+
+        if event.phase.contains(.began) {
+            // If the previous gesture left the strip displaced, snap it back
+            if isAnimatingSwipe {
+                isAnimatingSwipe = false
+                let pageW = pageClipView.bounds.width
+                if pageW > 0 {
+                    pageStripView.frame.origin.x = -CGFloat(activePageIndex) * pageW
+                }
+                if let startColor = swipeStartTintColor {
+                    view.layer?.backgroundColor = startColor.withAlphaComponent(0.1).cgColor
+                }
+            }
             swipeAccumulatedX = 0
-            isTrackingHorizontalSwipe = false
         }
 
         guard !isAnimatingSwipe else { return true }
 
-        if !isTrackingHorizontalSwipe {
-            guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
-                  event.scrollingDeltaX != 0 else { return false }
-            isTrackingHorizontalSwipe = true
-            swipeStartTintColor = tintColor
-        }
+        // Detect horizontal swipe start
+        guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
+              event.scrollingDeltaX != 0 else { return false }
+        isTrackingHorizontalSwipe = true
+        swipeStartTintColor = tintColor
+        installSwipeMonitor()
+        return processSwipeEvent(event)
+    }
 
-        if event.phase == .ended || event.phase == .cancelled {
+    /// Processes a single scroll event for the horizontal swipe. Returns true if consumed.
+    /// Called from both the scroll view handler and the app-level monitor;
+    /// deduplicates via identity check so each event is processed exactly once.
+    @discardableResult
+    private func processSwipeEvent(_ event: NSEvent) -> Bool {
+        if event === lastProcessedSwipeEvent { return true }
+        lastProcessedSwipeEvent = event
+
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) || event.phase == [] {
             isTrackingHorizontalSwipe = false
+            removeSwipeMonitor()
             handleSwipeEnd()
             return true
         }
@@ -511,6 +540,24 @@ class TabSidebarViewController: NSViewController {
         swipeAccumulatedX += event.scrollingDeltaX
         updateStripPosition()
         return true
+    }
+
+    /// App-level monitor that captures ALL scroll events during a horizontal swipe,
+    /// so the swipe continues even when the view moves out from under the cursor.
+    private func installSwipeMonitor() {
+        removeSwipeMonitor()
+        swipeEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, self.isTrackingHorizontalSwipe else { return event }
+            self.processSwipeEvent(event)
+            return event
+        }
+    }
+
+    private func removeSwipeMonitor() {
+        if let monitor = swipeEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            swipeEventMonitor = nil
+        }
     }
 
     private func updateStripPosition() {
@@ -522,11 +569,13 @@ class TabSidebarViewController: NSViewController {
         let minX = -CGFloat(max(0, pageScrollViews.count - 1)) * pageW
 
         var targetX = baseX + swipeAccumulatedX
-        // Rubber-band at edges
+        // Rubber-band at edges — logarithmic curve for gradually increasing resistance
         if targetX > maxX {
-            targetX = maxX + (targetX - maxX) / 3
+            let overflow = targetX - maxX
+            targetX = maxX + pageW * (1 - 1 / (overflow / pageW + 1))
         } else if targetX < minX {
-            targetX = minX + (targetX - minX) / 3
+            let overflow = minX - targetX
+            targetX = minX - pageW * (1 - 1 / (overflow / pageW + 1))
         }
 
         pageStripView.frame.origin.x = targetX
@@ -541,8 +590,12 @@ class TabSidebarViewController: NSViewController {
             let leftColor = spaces[leftIndex].color
             let rightColor = spaces[rightIndex].color
             if let blended = leftColor.blended(withFraction: fraction, of: rightColor) {
-                view.layer?.backgroundColor = blended.withAlphaComponent(0.05).cgColor
+                view.layer?.backgroundColor = blended.withAlphaComponent(0.1).cgColor
             }
+        } else if !spaces.isEmpty {
+            // Edge rubber-band: use the edge space's color
+            let edgeIndex = fractionalPage < 0 ? 0 : spaces.count - 1
+            view.layer?.backgroundColor = spaces[edgeIndex].color.withAlphaComponent(0.1).cgColor
         }
     }
 
@@ -587,7 +640,7 @@ class TabSidebarViewController: NSViewController {
                 self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: spaces[targetPage].id)
             } else if let startColor = self.swipeStartTintColor {
                 // Cancelled — restore original tint
-                self.view.layer?.backgroundColor = startColor.withAlphaComponent(0.05).cgColor
+                self.view.layer?.backgroundColor = startColor.withAlphaComponent(0.1).cgColor
             }
         })
 
