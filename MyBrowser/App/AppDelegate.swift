@@ -46,7 +46,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let wc = BrowserWindowController(incognito: false)
         windowControllers.append(wc)
         wc.showWindow(nil)
-        wc.newTab(nil)
+
+        // Set active space: prefer current window's space, fall back to last active or first space
+        if let currentWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
+           !currentWC.isIncognito,
+           let spaceID = currentWC.activeSpaceID,
+           TabStore.shared.space(withID: spaceID) != nil {
+            wc.setActiveSpace(id: spaceID)
+        } else if let lastID = TabStore.shared.lastActiveSpaceID,
+                  TabStore.shared.space(withID: lastID) != nil {
+            wc.setActiveSpace(id: lastID)
+        } else if let firstSpace = TabStore.shared.spaces.first(where: { !$0.isIncognito }) {
+            wc.setActiveSpace(id: firstSpace.id)
+        }
+
+        if wc.activeSpaceID == nil || TabStore.shared.space(withID: wc.activeSpaceID!)?.tabs.isEmpty == true {
+            wc.newTab(nil)
+        }
         observeWindowClose(wc)
     }
 
@@ -54,6 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let wc = BrowserWindowController(incognito: true)
         windowControllers.append(wc)
         wc.showWindow(nil)
+        wc.newTab(nil)
         observeWindowClose(wc)
     }
 
