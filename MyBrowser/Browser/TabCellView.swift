@@ -151,3 +151,32 @@ class TabCellView: NSTableCellView {
         onClose?()
     }
 }
+
+class NewTabCellView: NSTableCellView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        let plusIcon = NSImageView(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")!)
+        plusIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(labelWithString: "New Tab")
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(plusIcon)
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            plusIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            plusIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            plusIcon.widthAnchor.constraint(equalToConstant: 16),
+            plusIcon.heightAnchor.constraint(equalToConstant: 16),
+
+            label.leadingAnchor.constraint(equalTo: plusIcon.trailingAnchor, constant: 8),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}

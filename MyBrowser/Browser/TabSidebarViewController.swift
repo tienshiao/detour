@@ -117,10 +117,10 @@ class TabSidebarViewController: NSViewController {
     }
 
     var selectedTabIndex: Int {
-        get { tableView.selectedRow }
+        get { tableView.selectedRow - 1 }
         set {
             guard newValue >= 0, newValue < tabs.count else { return }
-            tableView.selectRowIndexes(IndexSet(integer: newValue), byExtendingSelection: false)
+            tableView.selectRowIndexes(IndexSet(integer: newValue + 1), byExtendingSelection: false)
         }
     }
 
@@ -151,35 +151,6 @@ class TabSidebarViewController: NSViewController {
         addressField.cell?.isScrollable = true
         addressField.bezelStyle = .roundedBezel
         addressField.translatesAutoresizingMaskIntoConstraints = false
-
-        // New Tab button (styled like a tab cell)
-        let newTabButton = HoverButton(frame: .zero)
-        newTabButton.isBordered = false
-        newTabButton.title = ""
-        newTabButton.target = self
-        newTabButton.action = #selector(addTabClicked)
-        newTabButton.translatesAutoresizingMaskIntoConstraints = false
-
-        let plusIcon = NSImageView(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")!)
-        plusIcon.translatesAutoresizingMaskIntoConstraints = false
-
-        let newTabLabel = NSTextField(labelWithString: "New Tab")
-        newTabLabel.lineBreakMode = .byTruncatingTail
-        newTabLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        newTabButton.addSubview(plusIcon)
-        newTabButton.addSubview(newTabLabel)
-
-        NSLayoutConstraint.activate([
-            plusIcon.leadingAnchor.constraint(equalTo: newTabButton.leadingAnchor, constant: 20),
-            plusIcon.centerYAnchor.constraint(equalTo: newTabButton.centerYAnchor),
-            plusIcon.widthAnchor.constraint(equalToConstant: 16),
-            plusIcon.heightAnchor.constraint(equalToConstant: 16),
-
-            newTabLabel.leadingAnchor.constraint(equalTo: plusIcon.trailingAnchor, constant: 8),
-            newTabLabel.centerYAnchor.constraint(equalTo: newTabButton.centerYAnchor),
-            newTabLabel.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.trailingAnchor, constant: -4),
-        ])
 
         // Bottom bar for spaces
         bottomBar.wantsLayer = true
@@ -221,7 +192,6 @@ class TabSidebarViewController: NSViewController {
         container.addSubview(sidebarToggleButton)
         container.addSubview(navStack)
         container.addSubview(addressField)
-        container.addSubview(newTabButton)
         container.addSubview(pageClipView)
         container.addSubview(bottomBar)
 
@@ -240,14 +210,8 @@ class TabSidebarViewController: NSViewController {
             addressField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
             addressField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
 
-            // New Tab button: below address field
-            newTabButton.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 8),
-            newTabButton.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            newTabButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            newTabButton.heightAnchor.constraint(equalToConstant: 36),
-
-            // Page clip: below new tab button, above bottom bar
-            pageClipView.topAnchor.constraint(equalTo: newTabButton.bottomAnchor),
+            // Page clip: below address field, above bottom bar
+            pageClipView.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 8),
             pageClipView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             pageClipView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -651,7 +615,7 @@ class TabSidebarViewController: NSViewController {
 
     func reloadTab(at index: Int) {
         guard index >= 0, index < tabs.count else { return }
-        tableView.reloadData(forRowIndexes: IndexSet(integer: index), columnIndexes: IndexSet(integer: 0))
+        tableView.reloadData(forRowIndexes: IndexSet(integer: index + 1), columnIndexes: IndexSet(integer: 0))
     }
 }
 
@@ -659,25 +623,27 @@ class TabSidebarViewController: NSViewController {
 
 extension TabSidebarViewController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tabsForTableView(tableView).count
+        tabsForTableView(tableView).count + 1
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-        guard tableView === self.tableView else { return nil }
+        guard tableView === self.tableView, row >= 1 else { return nil }
         let item = NSPasteboardItem()
         item.setString(String(row), forType: tabReorderPasteboardType)
         return item
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-        guard dropOperation == .above else { return [] }
+        guard dropOperation == .above, row >= 1 else { return [] }
         return .move
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard let item = info.draggingPasteboard.pasteboardItems?.first,
+        guard row >= 1,
+              let item = info.draggingPasteboard.pasteboardItems?.first,
               let rowString = item.string(forType: tabReorderPasteboardType),
-              let sourceRow = Int(rowString) else { return false }
+              let sourceRow = Int(rowString),
+              sourceRow >= 1 else { return false }
 
         let destinationRow = sourceRow < row ? row - 1 : row
         guard sourceRow != destinationRow else { return false }
@@ -687,7 +653,7 @@ extension TabSidebarViewController: NSTableViewDataSource {
         tableView.endUpdates()
 
         suppressReload = true
-        delegate?.tabSidebar(self, didMoveTabFrom: sourceRow, to: row)
+        delegate?.tabSidebar(self, didMoveTabFrom: sourceRow - 1, to: row - 1)
         suppressReload = false
         return true
     }
@@ -697,7 +663,18 @@ extension TabSidebarViewController: NSTableViewDataSource {
 
 extension TabSidebarViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if row == 0 {
+            let newTabID = NSUserInterfaceItemIdentifier("NewTabCell")
+            if let existing = tableView.makeView(withIdentifier: newTabID, owner: nil) as? NewTabCellView {
+                return existing
+            }
+            let cell = NewTabCellView()
+            cell.identifier = newTabID
+            return cell
+        }
+
         let tabsForTable = tabsForTableView(tableView)
+        let tabIndex = row - 1
         let isActive = tableView === self.tableView
 
         let cellID = NSUserInterfaceItemIdentifier("TabCell")
@@ -709,8 +686,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
             cell.identifier = cellID
         }
 
-        guard row < tabsForTable.count else { return cell }
-        let tab = tabsForTable[row]
+        guard tabIndex < tabsForTable.count else { return cell }
+        let tab = tabsForTable[tabIndex]
         cell.titleLabel.stringValue = tab.title
         cell.toolTip = tab.title
         cell.updateFavicon(tab.favicon)
@@ -718,7 +695,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
         if isActive {
             cell.onClose = { [weak self] in
                 guard let self else { return }
-                self.delegate?.tabSidebar(self, didRequestCloseTabAt: row)
+                self.delegate?.tabSidebar(self, didRequestCloseTabAt: tabIndex)
             }
         } else {
             cell.onClose = nil
@@ -727,6 +704,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        if row == 0 { return NSTableRowView() }
         let rowView = TabRowView()
         rowView.selectionColor = tintColor
         return rowView
@@ -737,7 +715,12 @@ extension TabSidebarViewController: NSTableViewDelegate {
               notifyingTable === tableView else { return }
         let row = tableView.selectedRow
         guard row >= 0 else { return }
-        delegate?.tabSidebar(self, didSelectTabAt: row)
+        if row == 0 {
+            tableView.deselectRow(0)
+            delegate?.tabSidebarDidRequestNewTab(self)
+            return
+        }
+        delegate?.tabSidebar(self, didSelectTabAt: row - 1)
     }
 }
 
