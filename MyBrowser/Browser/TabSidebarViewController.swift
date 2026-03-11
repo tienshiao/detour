@@ -66,6 +66,7 @@ private let tabReorderPasteboardType = NSPasteboard.PasteboardType("com.mybrowse
 
 class TabSidebarViewController: NSViewController {
     weak var delegate: TabSidebarDelegate?
+    var isIncognito = false
 
     // Active page views — updated by updateActivePage()
     private(set) var tableView = DraggableTableView()
@@ -270,7 +271,7 @@ class TabSidebarViewController: NSViewController {
     // MARK: - Page Management
 
     func rebuildPages() {
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         let newIDs = spaces.map { $0.id }
         guard newIDs != pageSpaceIDs else {
             // Space list unchanged, just update active page
@@ -335,7 +336,7 @@ class TabSidebarViewController: NSViewController {
     }
 
     private func updateActivePage() {
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         let newIndex: Int
         if let id = activeSpaceID, let idx = spaces.firstIndex(where: { $0.id == id }) {
             newIndex = idx
@@ -362,6 +363,9 @@ class TabSidebarViewController: NSViewController {
             view.removeFromSuperview()
         }
 
+        // Hide "Add Space" button in incognito mode
+        addSpaceButton.isHidden = isIncognito
+
         for space in spaces {
             let button = NSButton()
             button.title = space.emoji
@@ -371,7 +375,7 @@ class TabSidebarViewController: NSViewController {
             button.target = self
             button.action = #selector(spaceButtonClicked(_:))
             button.tag = spaces.firstIndex(where: { $0.id == space.id }) ?? 0
-            button.toolTip = space.name
+            button.toolTip = isIncognito ? "Private Browsing" : space.name
             button.wantsLayer = true
 
             if space.id == activeSpaceID {
@@ -379,16 +383,19 @@ class TabSidebarViewController: NSViewController {
                 button.layer?.cornerRadius = 6
             }
 
-            let menu = NSMenu()
-            let editItem = NSMenuItem(title: "Edit Space…", action: #selector(editSpaceClicked(_:)), keyEquivalent: "")
-            editItem.target = self
-            editItem.tag = button.tag
-            let deleteItem = NSMenuItem(title: "Delete Space", action: #selector(deleteSpaceClicked(_:)), keyEquivalent: "")
-            deleteItem.target = self
-            deleteItem.tag = button.tag
-            menu.addItem(editItem)
-            menu.addItem(deleteItem)
-            button.menu = menu
+            // No context menu in incognito mode
+            if !isIncognito {
+                let menu = NSMenu()
+                let editItem = NSMenuItem(title: "Edit Space…", action: #selector(editSpaceClicked(_:)), keyEquivalent: "")
+                editItem.target = self
+                editItem.tag = button.tag
+                let deleteItem = NSMenuItem(title: "Delete Space", action: #selector(deleteSpaceClicked(_:)), keyEquivalent: "")
+                deleteItem.target = self
+                deleteItem.tag = button.tag
+                menu.addItem(editItem)
+                menu.addItem(deleteItem)
+                button.menu = menu
+            }
 
             button.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
@@ -443,13 +450,13 @@ class TabSidebarViewController: NSViewController {
     }
 
     @objc private func spaceButtonClicked(_ sender: NSButton) {
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         guard sender.tag >= 0, sender.tag < spaces.count else { return }
         animateToSpace(id: spaces[sender.tag].id)
     }
 
     private func animateToSpace(id: UUID) {
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         guard let targetIndex = spaces.firstIndex(where: { $0.id == id }),
               targetIndex != activePageIndex,
               !isAnimatingSwipe else {
@@ -488,7 +495,7 @@ class TabSidebarViewController: NSViewController {
     }
 
     @objc private func editSpaceClicked(_ sender: NSMenuItem) {
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         guard sender.tag >= 0, sender.tag < spaces.count else { return }
         let spaceID = spaces[sender.tag].id
         let button = spaceButtonsContainer.arrangedSubviews
@@ -498,7 +505,7 @@ class TabSidebarViewController: NSViewController {
     }
 
     @objc private func deleteSpaceClicked(_ sender: NSMenuItem) {
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         guard sender.tag >= 0, sender.tag < spaces.count else { return }
         let spaceID = spaces[sender.tag].id
         delegate?.tabSidebarDidRequestDeleteSpace(self, spaceID: spaceID)
@@ -513,6 +520,7 @@ class TabSidebarViewController: NSViewController {
     /// Returns `true` when the event is consumed by horizontal swipe handling.
     @discardableResult
     private func handleSpaceSwipe(_ event: NSEvent) -> Bool {
+        if isIncognito { return false }
         guard event.phase != [] else { return false }
 
         if event.phase == .began {
@@ -564,7 +572,7 @@ class TabSidebarViewController: NSViewController {
         let leftIndex = Int(floor(fractionalPage))
         let rightIndex = leftIndex + 1
         let fraction = fractionalPage - CGFloat(leftIndex)
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         if leftIndex >= 0, rightIndex < spaces.count {
             let leftColor = spaces[leftIndex].color
             let rightColor = spaces[rightIndex].color
@@ -610,7 +618,7 @@ class TabSidebarViewController: NSViewController {
             self.isAnimatingSwipe = false
 
             if targetPage != self.activePageIndex {
-                let spaces = TabStore.shared.spaces
+                let spaces = self.relevantSpaces
                 guard targetPage < spaces.count else { return }
                 self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: spaces[targetPage].id)
             } else if let startColor = self.swipeStartTintColor {
@@ -624,10 +632,19 @@ class TabSidebarViewController: NSViewController {
 
     // MARK: - Helpers
 
+    /// Returns the spaces relevant to this sidebar — only the incognito space in incognito mode,
+    /// or only non-incognito spaces in regular mode.
+    private var relevantSpaces: [Space] {
+        if isIncognito {
+            return TabStore.shared.spaces.filter { $0.isIncognito && $0.id == activeSpaceID }
+        }
+        return TabStore.shared.spaces.filter { !$0.isIncognito }
+    }
+
     private func tabsForTableView(_ tv: NSTableView) -> [BrowserTab] {
         guard let index = pageTableViews.firstIndex(where: { $0 === tv }) else { return tabs }
         if index == activePageIndex { return tabs }
-        let spaces = TabStore.shared.spaces
+        let spaces = relevantSpaces
         guard index < spaces.count else { return [] }
         return spaces[index].tabs
     }

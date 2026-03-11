@@ -35,6 +35,9 @@ class BrowserWindowController: NSWindowController {
     private var splitScrimView: NSView?
     private var contentScrimView: NSView?
 
+    private(set) var isIncognito = false
+    private var incognitoSpaceID: UUID?
+
     private var store: TabStore { TabStore.shared }
 
     // MARK: - Per-window space state
@@ -55,7 +58,7 @@ class BrowserWindowController: NSWindowController {
         return currentTabs.first { $0.id == selectedTabID }
     }
 
-    convenience init() {
+    convenience init(incognito: Bool) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -63,13 +66,21 @@ class BrowserWindowController: NSWindowController {
             defer: false
         )
         window.center()
-        window.setFrameAutosaveName("BrowserWindow")
+        if !incognito {
+            window.setFrameAutosaveName("BrowserWindow")
+        }
         window.minSize = NSSize(width: 600, height: 400)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
 
+        if incognito {
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.backgroundColor = NSColor(white: 0.12, alpha: 1)
+        }
+
         self.init(window: window)
+        self.isIncognito = incognito
 
         setupToolbar()
         setupSplitView()
@@ -79,14 +90,28 @@ class BrowserWindowController: NSWindowController {
         window.delegate = self
 
         store.addObserver(self)
-        tabSidebar.activeSpaceID = activeSpaceID
-        tabSidebar.tabs = currentTabs
 
-        // Apply initial space UI
-        if let space = activeSpace {
+        if incognito {
+            let space = store.addIncognitoSpace()
+            incognitoSpaceID = space.id
+            activeSpaceID = space.id
+            tabSidebar.isIncognito = true
+            tabSidebar.activeSpaceID = activeSpaceID
+            tabSidebar.tabs = currentTabs
             tabSidebar.tintColor = space.color
+            tabSidebar.updateSpaceButtons(spaces: [space], activeSpaceID: space.id)
+            deselectAllTabs()
+            window.title = "Private Browsing"
+        } else {
+            tabSidebar.activeSpaceID = activeSpaceID
+            tabSidebar.tabs = currentTabs
+
+            // Apply initial space UI
+            if let space = activeSpace {
+                tabSidebar.tintColor = space.color
+            }
+            tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: activeSpaceID)
         }
-        tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: activeSpaceID)
 
         NotificationCenter.default.addObserver(
             self,
@@ -111,7 +136,9 @@ class BrowserWindowController: NSWindowController {
 
         activeSpaceID = id
         tabSidebar.activeSpaceID = id
-        store.lastActiveSpaceID = id
+        if !isIncognito {
+            store.lastActiveSpaceID = id
+        }
 
         tabSidebar.tabs = space.tabs
         tabSidebar.tintColor = space.color
@@ -767,6 +794,10 @@ extension BrowserWindowController: NSWindowDelegate {
             tab.takeSnapshot()
         }
         store.removeObserver(self)
+
+        if isIncognito, let spaceID = incognitoSpaceID {
+            store.removeIncognitoSpace(id: spaceID)
+        }
     }
 }
 
@@ -899,10 +930,18 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidUpdateSpaces() {
-        tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: activeSpaceID)
+        if isIncognito {
+            // Incognito windows only show their own space
+            if let space = activeSpace {
+                tabSidebar.updateSpaceButtons(spaces: [space], activeSpaceID: activeSpaceID)
+            }
+        } else {
+            let nonIncognitoSpaces = store.spaces.filter { !$0.isIncognito }
+            tabSidebar.updateSpaceButtons(spaces: nonIncognitoSpaces, activeSpaceID: activeSpaceID)
+        }
 
         // If our active space was deleted, switch to the first available space
-        if activeSpaceID == nil || store.space(withID: activeSpaceID!) == nil, let firstSpace = store.spaces.first {
+        if activeSpaceID == nil || store.space(withID: activeSpaceID!) == nil, let firstSpace = store.spaces.first(where: { !$0.isIncognito }) {
             setActiveSpace(id: firstSpace.id)
         }
     }

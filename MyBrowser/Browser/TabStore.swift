@@ -29,19 +29,27 @@ class Space {
     var colorHex: String
     var tabs: [BrowserTab] = []
     var selectedTabID: UUID?
+    let isIncognito: Bool
 
     var color: NSColor {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
 
     /// Dedicated data store for this space — isolates cookies, localStorage, cache.
-    lazy var dataStore: WKWebsiteDataStore = WKWebsiteDataStore(forIdentifier: id)
+    /// Incognito spaces use a non-persistent store (in-memory only).
+    lazy var dataStore: WKWebsiteDataStore = {
+        if isIncognito {
+            return .nonPersistent()
+        }
+        return WKWebsiteDataStore(forIdentifier: id)
+    }()
 
-    init(id: UUID = UUID(), name: String, emoji: String, colorHex: String) {
+    init(id: UUID = UUID(), name: String, emoji: String, colorHex: String, isIncognito: Bool = false) {
         self.id = id
         self.name = name
         self.emoji = emoji
         self.colorHex = colorHex
+        self.isIncognito = isIncognito
     }
 
     /// Returns a fresh WKWebViewConfiguration wired to this space's isolated storage.
@@ -101,14 +109,16 @@ class TabStore {
         saveWorkItem?.cancel()
         saveWorkItem = nil
 
+        let persistentSpaces = spaces.filter { !$0.isIncognito }
+
         do {
             try db.write { db in
                 // Clear existing session data
                 try SpaceRecord.deleteAll(db)
                 // Tabs cascade-deleted via foreign key
 
-                // Insert spaces and tabs
-                for (spaceIndex, space) in spaces.enumerated() {
+                // Insert spaces and tabs (skip incognito)
+                for (spaceIndex, space) in persistentSpaces.enumerated() {
                     let spaceRecord = SpaceRecord(
                         id: space.id.uuidString,
                         name: space.name,
@@ -207,6 +217,9 @@ class TabStore {
     // MARK: - History Recording
 
     private func recordHistoryVisit(tab: BrowserTab, spaceID: UUID) {
+        // Never record history for incognito spaces
+        if let space = space(withID: spaceID), space.isIncognito { return }
+
         guard let url = tab.url else { return }
         let urlString = url.absoluteString
 
@@ -294,6 +307,23 @@ class TabStore {
         let space = Space(name: "Home", emoji: "🏠", colorHex: "007AFF")
         spaces.append(space)
         lastActiveSpaceID = space.id
+        notifyObservers { $0.tabStoreDidUpdateSpaces() }
+    }
+
+    @discardableResult
+    func addIncognitoSpace() -> Space {
+        let space = Space(name: "Private", emoji: "🔒", colorHex: "2C2C2E", isIncognito: true)
+        spaces.append(space)
+        notifyObservers { $0.tabStoreDidUpdateSpaces() }
+        return space
+    }
+
+    func removeIncognitoSpace(id: UUID) {
+        guard let index = spaces.firstIndex(where: { $0.id == id && $0.isIncognito }) else { return }
+        let space = spaces.remove(at: index)
+        for tab in space.tabs {
+            tabSubscriptions.removeValue(forKey: tab.id)
+        }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
     }
 

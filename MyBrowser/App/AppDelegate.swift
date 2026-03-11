@@ -9,7 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Initialize database before restoring session
         _ = AppDatabase.shared
 
-        let wc = BrowserWindowController()
+        let wc = BrowserWindowController(incognito: false)
         windowControllers.append(wc)
         wc.showWindow(nil)
 
@@ -43,10 +43,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func createNewWindow() {
-        let wc = BrowserWindowController()
+        let wc = BrowserWindowController(incognito: false)
         windowControllers.append(wc)
         wc.showWindow(nil)
         wc.newTab(nil)
+        observeWindowClose(wc)
+    }
+
+    @objc func createNewIncognitoWindow() {
+        let wc = BrowserWindowController(incognito: true)
+        windowControllers.append(wc)
+        wc.showWindow(nil)
         observeWindowClose(wc)
     }
 
@@ -86,6 +93,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(BrowserWindowController.closeCurrentTab(_:)), keyEquivalent: "w")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "New Window", action: #selector(createNewWindow), keyEquivalent: "n")
+        let privateWindowItem = fileMenu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "n")
+        privateWindowItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenuItem.submenu = fileMenu
 
         // Edit menu
