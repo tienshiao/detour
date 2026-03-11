@@ -85,7 +85,10 @@ class CommandPaletteView: NSView {
         }
     }
 
-    func show(in parentView: NSView) {
+    func show(in parentView: NSView, initialText: String? = nil) {
+        if let initialText, !initialText.isEmpty {
+            textField.stringValue = initialText
+        }
         translatesAutoresizingMaskIntoConstraints = false
         parentView.addSubview(self)
         NSLayoutConstraint.activate([
@@ -95,6 +98,9 @@ class CommandPaletteView: NSView {
             trailingAnchor.constraint(equalTo: parentView.trailingAnchor),
         ])
         window?.makeFirstResponder(textField)
+        if initialText != nil {
+            textField.currentEditor()?.selectAll(nil)
+        }
     }
 
     func dismiss() {

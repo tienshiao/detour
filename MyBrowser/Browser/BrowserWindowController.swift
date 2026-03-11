@@ -32,6 +32,7 @@ class BrowserWindowController: NSWindowController {
     private var lastFindQuery = ""
 
     private var commandPaletteView: CommandPaletteView?
+    private var commandPaletteNavigatesInPlace = false
     private var splitScrimView: NSView?
     private var contentScrimView: NSView?
 
@@ -650,10 +651,16 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func newTab(_ sender: Any?) {
+        commandPaletteNavigatesInPlace = false
         showCommandPalette()
     }
 
-    private func showCommandPalette() {
+    @objc func focusAddressBar(_ sender: Any?) {
+        commandPaletteNavigatesInPlace = true
+        showCommandPalette(initialText: selectedTab?.url?.absoluteString)
+    }
+
+    private func showCommandPalette(initialText: String? = nil) {
         guard commandPaletteView == nil else { return }
         let palette = CommandPaletteView()
         palette.delegate = self
@@ -690,12 +697,13 @@ class BrowserWindowController: NSWindowController {
             contentScrimView = contentScrim
         }
 
-        palette.show(in: window!.contentView!)
+        palette.show(in: window!.contentView!, initialText: initialText)
     }
 
     private func dismissCommandPalette() {
         commandPaletteView?.removeFromSuperview()
         commandPaletteView = nil
+        commandPaletteNavigatesInPlace = false
         splitScrimView?.removeFromSuperview()
         splitScrimView = nil
         contentScrimView?.removeFromSuperview()
@@ -958,12 +966,18 @@ extension BrowserWindowController: TabStoreObserver {
 
 extension BrowserWindowController: CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String) {
+        let navigateInPlace = commandPaletteNavigatesInPlace
         dismissCommandPalette()
-        guard let space = activeSpace else { return }
-        let tab = store.addTab(in: space, afterTabID: selectedTabID)
-        selectTab(id: tab.id)
-        if let url = urlFromInput(input) {
-            tab.load(url)
+
+        if navigateInPlace, selectedTab != nil {
+            navigateToAddress(input)
+        } else {
+            guard let space = activeSpace else { return }
+            let tab = store.addTab(in: space, afterTabID: selectedTabID)
+            selectTab(id: tab.id)
+            if let url = urlFromInput(input) {
+                tab.load(url)
+            }
         }
     }
 
