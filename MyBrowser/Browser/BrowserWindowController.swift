@@ -715,7 +715,10 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func closeCurrentTab(_ sender: Any?) {
-        guard let id = selectedTabID else { return }
+        guard let id = selectedTabID else {
+            window?.performClose(sender)
+            return
+        }
         let tabs = currentTabs
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         closeTab(at: index, wasSelected: true)
