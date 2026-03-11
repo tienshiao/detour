@@ -675,18 +675,20 @@ class BrowserWindowController: NSWindowController {
         ])
         splitScrimView = splitScrim
 
-        let contentScrim = NSView()
-        contentScrim.wantsLayer = true
-        contentScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
-        contentScrim.translatesAutoresizingMaskIntoConstraints = false
-        contentContainerView.addSubview(contentScrim)
-        NSLayoutConstraint.activate([
-            contentScrim.topAnchor.constraint(equalTo: contentContainerView.topAnchor),
-            contentScrim.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor),
-            contentScrim.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
-            contentScrim.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
-        ])
-        contentScrimView = contentScrim
+        if selectedTabID != nil {
+            let contentScrim = NSView()
+            contentScrim.wantsLayer = true
+            contentScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+            contentScrim.translatesAutoresizingMaskIntoConstraints = false
+            contentContainerView.addSubview(contentScrim)
+            NSLayoutConstraint.activate([
+                contentScrim.topAnchor.constraint(equalTo: contentContainerView.topAnchor),
+                contentScrim.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor),
+                contentScrim.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
+                contentScrim.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
+            ])
+            contentScrimView = contentScrim
+        }
 
         palette.show(in: window!.contentView!)
     }
