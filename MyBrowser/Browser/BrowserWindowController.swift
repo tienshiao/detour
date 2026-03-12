@@ -1060,5 +1060,51 @@ extension BrowserWindowController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         selectedTab?.didFailProvisionalNavigation(error: error)
     }
+
+    func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
+                 completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let method = challenge.protectionSpace.authenticationMethod
+        guard method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        guard let window = self.window else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Log in to \(challenge.protectionSpace.host)"
+        if let realm = challenge.protectionSpace.realm, !realm.isEmpty {
+            alert.informativeText = realm
+        }
+        alert.addButton(withTitle: "Log In")
+        alert.addButton(withTitle: "Cancel")
+
+        let usernameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        usernameField.placeholderString = "Username"
+
+        let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        passwordField.placeholderString = "Password"
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 56))
+        usernameField.frame = NSRect(x: 0, y: 32, width: 200, height: 24)
+        passwordField.frame = NSRect(x: 0, y: 0, width: 200, height: 24)
+        container.addSubview(usernameField)
+        container.addSubview(passwordField)
+        alert.accessoryView = container
+
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn {
+                let credential = URLCredential(user: usernameField.stringValue,
+                                               password: passwordField.stringValue,
+                                               persistence: .forSession)
+                completionHandler(.useCredential, credential)
+            } else {
+                completionHandler(.rejectProtectionSpace, nil)
+            }
+        }
+    }
 }
 
