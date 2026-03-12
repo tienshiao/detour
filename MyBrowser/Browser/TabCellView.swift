@@ -32,12 +32,17 @@ class TabCellView: NSTableCellView {
     let titleLabel = NSTextField(labelWithString: "")
     let faviconImageView = NSImageView()
     private let closeButton: NSButton
+    private let speakerButton: NSButton
     private var trackingArea: NSTrackingArea?
     private var titleTrailingDefault: NSLayoutConstraint!
     private var titleTrailingHover: NSLayoutConstraint!
     private var titleLeadingToFavicon: NSLayoutConstraint!
+    private var titleLeadingToSpeaker: NSLayoutConstraint!
     private let hoverBackground = NSView()
     var onClose: (() -> Void)?
+    var onToggleMute: (() -> Void)?
+    private var audioPlaying = false
+    private var isHovered = false
 
     // Option A: Ring spinner layer
     private var ringLayer: CAShapeLayer?
@@ -49,6 +54,11 @@ class TabCellView: NSTableCellView {
     override init(frame frameRect: NSRect) {
         closeButton = NSButton(
             image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!,
+            target: nil,
+            action: nil
+        )
+        speakerButton = NSButton(
+            image: NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: "Audio")!,
             target: nil,
             action: nil
         )
@@ -81,19 +91,33 @@ class TabCellView: NSTableCellView {
         closeButton.action = #selector(closeTapped)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
+        speakerButton.bezelStyle = .inline
+        speakerButton.isBordered = false
+        speakerButton.isHidden = true
+        speakerButton.target = self
+        speakerButton.action = #selector(speakerTapped)
+        speakerButton.translatesAutoresizingMaskIntoConstraints = false
+
         addSubview(faviconImageView)
+        addSubview(speakerButton)
         addSubview(titleLabel)
         addSubview(closeButton)
 
         titleTrailingDefault = titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
         titleTrailingHover = titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4)
         titleLeadingToFavicon = titleLabel.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
+        titleLeadingToSpeaker = titleLabel.leadingAnchor.constraint(equalTo: speakerButton.trailingAnchor, constant: 4)
 
         NSLayoutConstraint.activate([
             faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
             faviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             faviconImageView.widthAnchor.constraint(equalToConstant: 16),
             faviconImageView.heightAnchor.constraint(equalToConstant: 16),
+
+            speakerButton.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 4),
+            speakerButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            speakerButton.widthAnchor.constraint(equalToConstant: 16),
+            speakerButton.heightAnchor.constraint(equalToConstant: 16),
 
             titleLeadingToFavicon,
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -137,18 +161,58 @@ class TabCellView: NSTableCellView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        isHovered = true
         closeButton.isHidden = false
-        titleTrailingDefault.isActive = false
-        titleTrailingHover.isActive = true
         hoverBackground.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
         hoverBackground.isHidden = false
+        updateLayoutState()
     }
 
     override func mouseExited(with event: NSEvent) {
+        isHovered = false
         closeButton.isHidden = true
-        titleTrailingHover.isActive = false
-        titleTrailingDefault.isActive = true
         hoverBackground.isHidden = true
+        updateLayoutState()
+    }
+
+    func updateAudio(isPlaying: Bool, isMuted: Bool) {
+        audioPlaying = isPlaying || isMuted
+        if !isPlaying && !isMuted {
+            speakerButton.isHidden = true
+        } else if isMuted {
+            speakerButton.isHidden = false
+            speakerButton.image = NSImage(systemSymbolName: "speaker.slash.fill", accessibilityDescription: "Muted")
+        } else {
+            speakerButton.isHidden = false
+            speakerButton.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: "Playing Audio")
+        }
+        updateLayoutState()
+    }
+
+    private func updateLayoutState() {
+        // Deactivate all optional constraints first to avoid conflicts
+        titleLeadingToFavicon.isActive = false
+        titleLeadingToSpeaker.isActive = false
+        titleTrailingDefault.isActive = false
+        titleTrailingHover.isActive = false
+
+        // Leading: title starts after speaker when audio, after favicon otherwise
+        if audioPlaying {
+            titleLeadingToSpeaker.isActive = true
+        } else {
+            titleLeadingToFavicon.isActive = true
+        }
+
+        // Trailing: title ends before close button on hover, at edge otherwise
+        if isHovered {
+            titleTrailingHover.isActive = true
+        } else {
+            titleTrailingDefault.isActive = true
+        }
+    }
+
+    @objc private func speakerTapped() {
+        onToggleMute?()
     }
 
     func updateFavicon(_ image: NSImage?) {

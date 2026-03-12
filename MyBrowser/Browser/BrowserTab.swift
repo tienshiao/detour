@@ -2,13 +2,15 @@ import AppKit
 import WebKit
 import Combine
 
-class BrowserTab {
+class BrowserTab: NSObject {
     let id: UUID
     let webView: WKWebView
 
     @Published var title: String = "New Tab"
     @Published var url: URL?
     @Published var isLoading: Bool = false
+    @Published var isPlayingAudio: Bool = false
+    @Published var isMuted: Bool = false
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var estimatedProgress: Double = 0
@@ -29,6 +31,7 @@ class BrowserTab {
             configuration.setURLSchemeHandler(ErrorSchemeHandler(), forURLScheme: ErrorPage.scheme)
         }
         self.webView = WKWebView(frame: .zero, configuration: configuration)
+        super.init()
         self.webView.isInspectable = true
         setupObservers()
     }
@@ -54,6 +57,26 @@ class BrowserTab {
         webView.takeSnapshot(with: nil) { [weak self] image, _ in
             self?.latestSnapshot = image
             completion?(image)
+        }
+    }
+
+    deinit {
+        webView.removeObserver(self, forKeyPath: "_isPlayingAudio")
+    }
+
+    func toggleMute() {
+        isMuted.toggle()
+        let js = "document.querySelectorAll('video, audio').forEach(el => el.muted = \(isMuted))"
+        webView.evaluateJavaScript(js)
+    }
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == "_isPlayingAudio" {
+            DispatchQueue.main.async { [weak self] in
+                self?.isPlayingAudio = change?[.newKey] as? Bool ?? false
+            }
+        } else {
+            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
         }
     }
 
@@ -86,6 +109,8 @@ class BrowserTab {
 
         webView.publisher(for: \.estimatedProgress)
             .assign(to: &$estimatedProgress)
+
+        webView.addObserver(self, forKeyPath: "_isPlayingAudio", options: [.new], context: nil)
 
         webView.publisher(for: \.url)
             .compactMap { url -> (String, String)? in

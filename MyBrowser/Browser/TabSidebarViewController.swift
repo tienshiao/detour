@@ -741,13 +741,16 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.updateFavicon(tab.favicon)
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.estimatedProgress)
+        cell.updateAudio(isPlaying: tab.isPlayingAudio, isMuted: tab.isMuted)
         if isActive {
             cell.onClose = { [weak self] in
                 guard let self else { return }
                 self.delegate?.tabSidebar(self, didRequestCloseTabAt: tabIndex)
             }
+            cell.onToggleMute = { tab.toggleMute() }
         } else {
             cell.onClose = nil
+            cell.onToggleMute = nil
         }
         return cell
     }
