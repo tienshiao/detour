@@ -17,7 +17,7 @@ class BrowserWindowController: NSWindowController {
     private var sidebarOpenedByHover = false
     private var autoHideWorkItem: DispatchWorkItem?
 
-    private var selectedTabID: UUID?
+    var selectedTabID: UUID?
     private var activeTabSubscriptions = Set<AnyCancellable>()
     private var snapshotImageView: NSImageView?
     private var ownsWebView = false
@@ -45,7 +45,7 @@ class BrowserWindowController: NSWindowController {
 
     private(set) var activeSpaceID: UUID?
 
-    private var activeSpace: Space? {
+    var activeSpace: Space? {
         guard let activeSpaceID else { return nil }
         return store.space(withID: activeSpaceID)
     }
@@ -1062,14 +1062,3 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 }
 
-// MARK: - WKUIDelegate
-
-extension BrowserWindowController: WKUIDelegate {
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = navigationAction.request.url, let space = activeSpace {
-            let tab = store.addTab(in: space, url: url, afterTabID: selectedTabID)
-            selectTab(id: tab.id)
-        }
-        return nil
-    }
-}
