@@ -462,7 +462,7 @@ class BrowserWindowController: NSWindowController {
         tab.$url
             .receive(on: RunLoop.main)
             .sink { [weak self] url in
-                self?.tabSidebar.addressField.stringValue = url?.absoluteString ?? ""
+                self?.tabSidebar.fauxAddressBar.displayText = url?.host ?? ""
             }
             .store(in: &activeTabSubscriptions)
 
@@ -666,7 +666,7 @@ class BrowserWindowController: NSWindowController {
         showCommandPalette(initialText: selectedTab?.url?.absoluteString)
     }
 
-    private func showCommandPalette(initialText: String? = nil) {
+    private func showCommandPalette(initialText: String? = nil, anchorFrame: NSRect? = nil) {
         guard commandPaletteView == nil else { return }
         let palette = CommandPaletteView()
         palette.delegate = self
@@ -705,7 +705,7 @@ class BrowserWindowController: NSWindowController {
             contentScrimView = contentScrim
         }
 
-        palette.show(in: window!.contentView!, initialText: initialText)
+        palette.show(in: window!.contentView!, initialText: initialText, anchorFrame: anchorFrame)
     }
 
     private func dismissCommandPalette() {
@@ -724,7 +724,7 @@ class BrowserWindowController: NSWindowController {
         activeTabSubscriptions.removeAll()
         dragHandle.isHidden = true
         removeContentViews()
-        tabSidebar.addressField.stringValue = ""
+        tabSidebar.fauxAddressBar.displayText = ""
         tabSidebar.backButton.isEnabled = false
         tabSidebar.forwardButton.isEnabled = false
         window?.title = "MyBrowser"
@@ -882,8 +882,9 @@ extension BrowserWindowController: TabSidebarDelegate {
         selectedTab?.reload()
     }
 
-    func tabSidebar(_ sidebar: TabSidebarViewController, didSubmitAddressInput input: String) {
-        navigateToAddress(input)
+    func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect) {
+        commandPaletteNavigatesInPlace = true
+        showCommandPalette(initialText: selectedTab?.url?.absoluteString, anchorFrame: anchorFrame)
     }
 
     func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController) {

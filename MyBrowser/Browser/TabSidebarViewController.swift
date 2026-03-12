@@ -7,7 +7,7 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestGoBack(_ sidebar: TabSidebarViewController)
     func tabSidebarDidRequestGoForward(_ sidebar: TabSidebarViewController)
     func tabSidebarDidRequestReload(_ sidebar: TabSidebarViewController)
-    func tabSidebar(_ sidebar: TabSidebarViewController, didSubmitAddressInput input: String)
+    func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect)
     func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController)
     func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTabFrom sourceIndex: Int, to destinationIndex: Int)
     func tabSidebarDidRequestSwitchToSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
@@ -72,7 +72,7 @@ class TabSidebarViewController: NSViewController {
     private(set) var tableView = DraggableTableView()
     private var scrollView = DraggableScrollView()
 
-    private(set) var addressField = NSTextField()
+    private(set) var fauxAddressBar = FauxAddressBar()
     private(set) var backButton = NSButton()
     private(set) var forwardButton = NSButton()
     private(set) var reloadButton = NSButton()
@@ -141,16 +141,13 @@ class TabSidebarViewController: NSViewController {
         navStack.spacing = 2
         navStack.translatesAutoresizingMaskIntoConstraints = false
 
-        // Address field
-        addressField.placeholderString = "Enter URL or search"
-        addressField.font = .systemFont(ofSize: NSFont.systemFontSize)
-        addressField.target = self
-        addressField.action = #selector(addressFieldSubmitted(_:))
-        addressField.lineBreakMode = .byTruncatingTail
-        addressField.usesSingleLineMode = true
-        addressField.cell?.isScrollable = true
-        addressField.bezelStyle = .roundedBezel
-        addressField.translatesAutoresizingMaskIntoConstraints = false
+        // Faux address bar
+        fauxAddressBar.translatesAutoresizingMaskIntoConstraints = false
+        fauxAddressBar.onClick = { [weak self] in
+            guard let self else { return }
+            let frameInWindow = self.fauxAddressBar.convert(self.fauxAddressBar.bounds, to: nil)
+            self.delegate?.tabSidebarDidRequestOpenCommandPalette(self, anchorFrame: frameInWindow)
+        }
 
         // Bottom bar for spaces
         bottomBar.wantsLayer = true
@@ -191,7 +188,7 @@ class TabSidebarViewController: NSViewController {
 
         container.addSubview(sidebarToggleButton)
         container.addSubview(navStack)
-        container.addSubview(addressField)
+        container.addSubview(fauxAddressBar)
         container.addSubview(pageClipView)
         container.addSubview(bottomBar)
 
@@ -206,12 +203,14 @@ class TabSidebarViewController: NSViewController {
             navStack.heightAnchor.constraint(equalToConstant: 24),
 
             // Address field: below title bar area
-            addressField.topAnchor.constraint(equalTo: container.topAnchor, constant: 38),
-            addressField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
-            addressField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            fauxAddressBar.topAnchor.constraint(equalTo: container.topAnchor, constant: 38),
+            fauxAddressBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            fauxAddressBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
 
             // Page clip: below address field, above bottom bar
-            pageClipView.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 8),
+            fauxAddressBar.heightAnchor.constraint(equalToConstant: 22),
+
+            pageClipView.topAnchor.constraint(equalTo: fauxAddressBar.bottomAnchor, constant: 8),
             pageClipView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             pageClipView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -399,10 +398,6 @@ class TabSidebarViewController: NSViewController {
 
     @objc private func reloadClicked() {
         delegate?.tabSidebarDidRequestReload(self)
-    }
-
-    @objc private func addressFieldSubmitted(_ sender: NSTextField) {
-        delegate?.tabSidebar(self, didSubmitAddressInput: sender.stringValue)
     }
 
     @objc private func addTabClicked() {

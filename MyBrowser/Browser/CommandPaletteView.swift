@@ -41,6 +41,13 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var boxBottomToTextField: NSLayoutConstraint!
     private var boxBottomToScroll: NSLayoutConstraint!
 
+    // Default centered positioning constraints
+    private var centerXConstraint: NSLayoutConstraint!
+    private var centerYConstraint: NSLayoutConstraint!
+    // Anchor-based positioning constraints (optional)
+    private var anchorLeadingConstraint: NSLayoutConstraint?
+    private var anchorTopConstraint: NSLayoutConstraint?
+
     private let rowHeight: CGFloat = 36
 
     override init(frame frameRect: NSRect) {
@@ -127,10 +134,13 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         boxBottomToTextField = textField.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -12)
         boxBottomToScroll = scrollView.bottomAnchor.constraint(equalTo: box.bottomAnchor)
 
+        centerXConstraint = shadowContainer.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor)
+        centerYConstraint = NSLayoutConstraint(item: shadowContainer, attribute: .centerY, relatedBy: .equal,
+                               toItem: self, attribute: .bottom, multiplier: 0.4, constant: 0)
+
         NSLayoutConstraint.activate([
-            shadowContainer.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor),
-            NSLayoutConstraint(item: shadowContainer, attribute: .centerY, relatedBy: .equal,
-                               toItem: self, attribute: .bottom, multiplier: 0.4, constant: 0),
+            centerXConstraint,
+            centerYConstraint,
             shadowContainer.widthAnchor.constraint(equalToConstant: 500),
 
             box.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
@@ -167,7 +177,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
-    func show(in parentView: NSView, initialText: String? = nil) {
+    func show(in parentView: NSView, initialText: String? = nil, anchorFrame: NSRect? = nil) {
         if let initialText, !initialText.isEmpty {
             textField.stringValue = initialText
         }
@@ -179,6 +189,20 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             leadingAnchor.constraint(equalTo: parentView.leadingAnchor),
             trailingAnchor.constraint(equalTo: parentView.trailingAnchor),
         ])
+
+        if let anchorFrame {
+            let localFrame = parentView.convert(anchorFrame, from: nil)
+            centerXConstraint.isActive = false
+            centerYConstraint.isActive = false
+            // parentView uses non-flipped coords (origin bottom-left).
+            // localFrame.maxY = top edge of anchor. Distance from parent top = parentView.bounds.height - localFrame.maxY.
+            // The palette overlay is pinned to match parentView, so use the same offsets.
+            anchorLeadingConstraint = shadowContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: localFrame.minX)
+            anchorTopConstraint = shadowContainer.topAnchor.constraint(equalTo: topAnchor, constant: parentView.bounds.height - localFrame.maxY)
+            anchorLeadingConstraint?.isActive = true
+            anchorTopConstraint?.isActive = true
+        }
+
         window?.makeFirstResponder(textField)
         if initialText != nil {
             textField.currentEditor()?.selectAll(nil)
@@ -189,6 +213,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     func dismiss() {
         currentTask?.cancel()
         debounceWorkItem?.cancel()
+
+        // Restore default centered positioning for potential reuse
+        anchorLeadingConstraint?.isActive = false
+        anchorTopConstraint?.isActive = false
+        anchorLeadingConstraint = nil
+        anchorTopConstraint = nil
+        centerXConstraint.isActive = true
+        centerYConstraint.isActive = true
+
         removeFromSuperview()
         delegate?.commandPaletteDidDismiss(self)
     }
