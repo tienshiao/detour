@@ -124,10 +124,6 @@ class PeekOverlayView: NSView {
         panelView.translatesAutoresizingMaskIntoConstraints = false
         shadowContainer.addSubview(panelView)
 
-        // WebView inside panel
-        peekWebView.translatesAutoresizingMaskIntoConstraints = false
-        panelView.addSubview(peekWebView)
-
         // Buttons
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         expandButton.translatesAutoresizingMaskIntoConstraints = false
@@ -146,12 +142,6 @@ class PeekOverlayView: NSView {
             panelView.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor),
             panelView.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
             panelView.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
-
-            // WebView fills panel
-            peekWebView.topAnchor.constraint(equalTo: panelView.topAnchor),
-            peekWebView.bottomAnchor.constraint(equalTo: panelView.bottomAnchor),
-            peekWebView.leadingAnchor.constraint(equalTo: panelView.leadingAnchor),
-            peekWebView.trailingAnchor.constraint(equalTo: panelView.trailingAnchor),
 
             // Buttons: vertical stack to the right of the panel, aligned to top
             closeButton.leadingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: 4),
@@ -227,7 +217,6 @@ class PeekOverlayView: NSView {
 
     func animateClose(completion: @escaping () -> Void) {
         isClosing = true
-        peekWebView.removeFromSuperview()
 
         guard let toTransform = scaledDownTransform(), let layer = shadowContainer.layer else {
             completion()

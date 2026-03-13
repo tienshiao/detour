@@ -68,6 +68,21 @@ class BrowserTab: NSObject {
         setupObservers()
     }
 
+    /// Creates a tab that adopts an existing, already-loaded WKWebView.
+    init(id: UUID = UUID(), webView: WKWebView) {
+        self.id = id
+        self.webView = webView
+        super.init()
+        self.webView.isInspectable = true
+        // Seed published properties from the existing webView state
+        self.url = webView.url
+        if let t = webView.title, !t.isEmpty { self.title = t }
+        self.isLoading = webView.isLoading
+        self.canGoBack = webView.canGoBack
+        self.canGoForward = webView.canGoForward
+        setupObservers()
+    }
+
     convenience init(id: UUID, title: String, archivedInteractionState: Data?, fallbackURL: URL?, faviconURL: URL? = nil, configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
         self.init(id: id, configuration: configuration)
         self.title = title

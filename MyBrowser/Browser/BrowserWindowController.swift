@@ -40,6 +40,10 @@ class BrowserWindowController: NSWindowController {
     private var incognitoSpaceID: UUID?
 
     private var peekOverlayView: PeekOverlayView?
+    private var peekWebViewTopConstraint: NSLayoutConstraint?
+    private var peekWebViewBottomConstraint: NSLayoutConstraint?
+    private var peekWebViewLeadingConstraint: NSLayoutConstraint?
+    private var peekWebViewTrailingConstraint: NSLayoutConstraint?
 
     private var store: TabStore { TabStore.shared }
 
@@ -585,7 +589,8 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func removeContentViews() {
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView {
+        let peekWebView = peekOverlayView?.peekWebView
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekWebView {
             subview.removeFromSuperview()
         }
         snapshotImageView = nil
@@ -857,10 +862,36 @@ class BrowserWindowController: NSWindowController {
             overlay.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
         ])
 
+        // Place webview in contentContainerView above the overlay, matching the panel insets
+        peekWebView.translatesAutoresizingMaskIntoConstraints = false
+        peekWebView.wantsLayer = true
+        peekWebView.layer?.cornerRadius = 12
+        peekWebView.layer?.masksToBounds = true
+        contentContainerView.addSubview(peekWebView, positioned: .above, relativeTo: overlay)
+
+        let topC = peekWebView.topAnchor.constraint(equalTo: contentContainerView.topAnchor, constant: 12)
+        let bottomC = peekWebView.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor, constant: -12)
+        let leadingC = peekWebView.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor, constant: 48)
+        let trailingC = peekWebView.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor, constant: -48)
+        NSLayoutConstraint.activate([topC, bottomC, leadingC, trailingC])
+        peekWebViewTopConstraint = topC
+        peekWebViewBottomConstraint = bottomC
+        peekWebViewLeadingConstraint = leadingC
+        peekWebViewTrailingConstraint = trailingC
+
         // Force layout so the overlay and shadowContainer have valid frames,
         // then start the animation. This must happen after constraints are activated.
         contentContainerView.layoutSubtreeIfNeeded()
         overlay.animateOpen()
+
+        // Match the open animation on the webview
+        peekWebView.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            peekWebView.alphaValue = 1
+        }
 
         peekWebView.load(URLRequest(url: url))
         peekOverlayView = overlay
@@ -869,12 +900,23 @@ class BrowserWindowController: NSWindowController {
     private func dismissPeekOverlay() {
         guard let overlay = peekOverlayView else { return }
         peekOverlayView = nil
+        let peekWebView = overlay.peekWebView
         overlay.animateClose {
             overlay.removeFromSuperview()
         }
+        // Fade out and remove the webview
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.allowsImplicitAnimation = true
+            peekWebView.alphaValue = 0
+        }, completionHandler: {
+            peekWebView.removeFromSuperview()
+        })
         // Safety net: remove even if animation completion doesn't fire
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak overlay] in
             overlay?.removeFromSuperview()
+            peekWebView.removeFromSuperview()
         }
         // Restore first responder to the web view
         if let webView = selectedTab?.webView {
@@ -883,14 +925,53 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func expandPeekToNewTab() {
-        guard let peekURL = peekOverlayView?.peekWebView.url,
+        guard let overlay = peekOverlayView,
               let space = activeSpace else {
             dismissPeekOverlay()
             return
         }
-        dismissPeekOverlay()
-        let tab = store.addTab(in: space, url: peekURL, afterTabID: selectedTabID)
-        selectTab(id: tab.id)
+        let webView = overlay.peekWebView
+
+        // Create tab with the existing webview
+        let tab = store.addTab(in: space, webView: webView, afterTabID: selectedTabID)
+
+        // Clear peek reference so selectTab won't double-dismiss
+        peekOverlayView = nil
+
+        // Fade out peek chrome (shadow, buttons)
+        overlay.animateClose {
+            overlay.removeFromSuperview()
+        }
+
+        // Animate webview constraints from peek insets to full content area
+        let topOffset: CGFloat = findBar.isHidden ? 0 : findBar.frame.height
+        peekWebViewTopConstraint?.constant = topOffset
+        peekWebViewBottomConstraint?.constant = 0
+        peekWebViewLeadingConstraint?.constant = 0
+        peekWebViewTrailingConstraint?.constant = 0
+
+        // Animate corner radius via Core Animation
+        if let layer = webView.layer {
+            let radiusAnim = CABasicAnimation(keyPath: "cornerRadius")
+            radiusAnim.fromValue = 12
+            radiusAnim.toValue = 0
+            radiusAnim.duration = 0.25
+            radiusAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(radiusAnim, forKey: "cornerRadius")
+            layer.cornerRadius = 0
+        }
+
+        NSAnimationContext.runAnimationGroup({ [weak self] context in
+            context.duration = 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+            self?.contentContainerView.layoutSubtreeIfNeeded()
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            webView.layer?.masksToBounds = false
+            // Finalize: select the tab (sets up delegates, ownership, subscriptions)
+            self.selectTab(id: tab.id)
+        })
     }
 
     // MARK: - Add Space Popover

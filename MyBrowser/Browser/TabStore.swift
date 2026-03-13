@@ -383,6 +383,25 @@ class TabStore {
         return tab
     }
 
+    @discardableResult
+    func addTab(in space: Space, webView: WKWebView, afterTabID: UUID? = nil) -> BrowserTab {
+        let tab = BrowserTab(webView: webView)
+
+        let insertionIndex: Int
+        if let afterTabID, let afterIndex = space.tabs.firstIndex(where: { $0.id == afterTabID }) {
+            insertionIndex = afterIndex + 1
+            space.tabs.insert(tab, at: insertionIndex)
+        } else {
+            space.tabs.append(tab)
+            insertionIndex = space.tabs.count - 1
+        }
+
+        subscribeToTab(tab, spaceID: space.id)
+        notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
+        scheduleSave()
+        return tab
+    }
+
     func closeTab(id: UUID, in space: Space) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs[index]
