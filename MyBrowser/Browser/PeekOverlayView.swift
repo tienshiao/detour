@@ -1,6 +1,47 @@
 import AppKit
 import WebKit
 
+@available(macOS 26.0, *)
+private class GlassCircleButton: NSView {
+    var onTap: (() -> Void)?
+    private let glassView = NSGlassEffectView()
+
+    init(symbolName: String, accessibilityDescription: String) {
+        super.init(frame: .zero)
+
+        glassView.cornerRadius = 16
+        glassView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(glassView)
+
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        let imageView = NSImageView()
+        imageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)!
+            .withSymbolConfiguration(config)!
+        imageView.contentTintColor = .labelColor
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.imageScaling = .scaleNone
+        glassView.contentView = imageView
+
+        NSLayoutConstraint.activate([
+            glassView.topAnchor.constraint(equalTo: topAnchor),
+            glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            glassView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            imageView.centerXAnchor.constraint(equalTo: glassView.centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: glassView.centerYAnchor),
+        ])
+
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(accessibilityDescription)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseDown(with event: NSEvent) {
+        onTap?()
+    }
+}
+
 class PeekOverlayView: NSView {
     let peekWebView: WKWebView
     var onClose: (() -> Void)?
@@ -8,8 +49,8 @@ class PeekOverlayView: NSView {
 
     private let shadowContainer = NSView()
     private let panelView = NSView()
-    private let closeButton: NSButton
-    private let expandButton: NSButton
+    private let closeButton: NSView
+    private let expandButton: NSView
     /// Click point in overlay (superview) coordinates.
     private var clickPoint: CGPoint?
     private var isClosing = false
@@ -17,22 +58,50 @@ class PeekOverlayView: NSView {
     init(peekWebView: WKWebView, clickPoint: CGPoint? = nil) {
         self.clickPoint = clickPoint
         self.peekWebView = peekWebView
-        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-        closeButton = NSButton(
-            image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Close")!.withSymbolConfiguration(symbolConfig)!,
-            target: nil,
-            action: nil
-        )
-        expandButton = NSButton(
-            image: NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right.circle.fill", accessibilityDescription: "Open in New Tab")!.withSymbolConfiguration(symbolConfig)!,
-            target: nil,
-            action: nil
-        )
-        super.init(frame: .zero)
+        if #available(macOS 26.0, *) {
+            let close = GlassCircleButton(symbolName: "xmark", accessibilityDescription: "Close")
+            let expand = GlassCircleButton(symbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Open in New Tab")
+            closeButton = close
+            expandButton = expand
+            super.init(frame: .zero)
+            close.onTap = { [weak self] in self?.onClose?() }
+            expand.onTap = { [weak self] in self?.onExpand?() }
+        } else {
+            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+            let close = NSButton(
+                image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Close")!.withSymbolConfiguration(symbolConfig)!,
+                target: nil, action: nil
+            )
+            let expand = NSButton(
+                image: NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right.circle.fill", accessibilityDescription: "Open in New Tab")!.withSymbolConfiguration(symbolConfig)!,
+                target: nil, action: nil
+            )
+            for button in [close, expand] {
+                button.bezelStyle = .inline
+                button.isBordered = false
+                button.imagePosition = .imageOnly
+                button.contentTintColor = .labelColor
+            }
+            closeButton = close
+            expandButton = expand
+            super.init(frame: .zero)
+            close.target = self
+            close.action = #selector(closeTapped)
+            expand.target = self
+            expand.action = #selector(expandTapped)
+        }
         setupViews()
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func closeTapped() {
+        onClose?()
+    }
+
+    @objc private func expandTapped() {
+        onExpand?()
+    }
 
     private func setupViews() {
         wantsLayer = true
@@ -60,26 +129,15 @@ class PeekOverlayView: NSView {
         panelView.addSubview(peekWebView)
 
         // Buttons
-        closeButton.bezelStyle = .inline
-        closeButton.isBordered = false
-        closeButton.target = self
-        closeButton.action = #selector(closeTapped)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.contentTintColor = .labelColor
-        addSubview(closeButton)
-
-        expandButton.bezelStyle = .inline
-        expandButton.isBordered = false
-        expandButton.target = self
-        expandButton.action = #selector(expandTapped)
         expandButton.translatesAutoresizingMaskIntoConstraints = false
-        expandButton.contentTintColor = .labelColor
+        addSubview(closeButton)
         addSubview(expandButton)
 
         NSLayoutConstraint.activate([
-            // Shadow container: fixed margins from overlay edges
-            shadowContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
-            shadowContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -40),
+            // Shadow container: centered with equal insets, reserving space for buttons
+            shadowContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 48),
+            shadowContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -48),
             shadowContainer.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             shadowContainer.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
 
@@ -106,14 +164,6 @@ class PeekOverlayView: NSView {
             expandButton.widthAnchor.constraint(equalToConstant: 32),
             expandButton.heightAnchor.constraint(equalToConstant: 32),
         ])
-    }
-
-    @objc private func closeTapped() {
-        onClose?()
-    }
-
-    @objc private func expandTapped() {
-        onExpand?()
     }
 
     override func keyDown(with event: NSEvent) {
