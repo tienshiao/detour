@@ -1,5 +1,4 @@
 import AppKit
-import WebKit
 
 @available(macOS 26.0, *)
 private class GlassCircleButton: NSView {
@@ -43,7 +42,6 @@ private class GlassCircleButton: NSView {
 }
 
 class PeekOverlayView: NSView {
-    let peekWebView: WKWebView
     var onClose: (() -> Void)?
     var onExpand: (() -> Void)?
 
@@ -55,9 +53,8 @@ class PeekOverlayView: NSView {
     private var clickPoint: CGPoint?
     private var isClosing = false
 
-    init(peekWebView: WKWebView, clickPoint: CGPoint? = nil) {
+    init(clickPoint: CGPoint? = nil) {
         self.clickPoint = clickPoint
-        self.peekWebView = peekWebView
         if #available(macOS 26.0, *) {
             let close = GlassCircleButton(symbolName: "xmark", accessibilityDescription: "Close")
             let expand = GlassCircleButton(symbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Open in New Tab")
@@ -132,8 +129,8 @@ class PeekOverlayView: NSView {
 
         NSLayoutConstraint.activate([
             // Shadow container: centered with equal insets, reserving space for buttons
-            shadowContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 48),
-            shadowContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -48),
+            shadowContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 64),
+            shadowContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -64),
             shadowContainer.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             shadowContainer.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
 
@@ -144,12 +141,12 @@ class PeekOverlayView: NSView {
             panelView.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
 
             // Buttons: vertical stack to the right of the panel, aligned to top
-            closeButton.leadingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: 4),
+            closeButton.leadingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: 8),
             closeButton.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 32),
             closeButton.heightAnchor.constraint(equalToConstant: 32),
 
-            expandButton.leadingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: 4),
+            expandButton.leadingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: 8),
             expandButton.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 4),
             expandButton.widthAnchor.constraint(equalToConstant: 32),
             expandButton.heightAnchor.constraint(equalToConstant: 32),
@@ -188,6 +185,21 @@ class PeekOverlayView: NSView {
         )
     }
 
+    /// Returns a spring animation matching the open animation, suitable for applying to the peek
+    /// webview's layer so it scales up in sync with the chrome.
+    func webViewOpenAnimation() -> CASpringAnimation? {
+        guard let fromTransform = scaledDownTransform() else { return nil }
+        let anim = CASpringAnimation(keyPath: "transform")
+        anim.fromValue = NSValue(caTransform3D: fromTransform)
+        anim.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        anim.damping = 20
+        anim.stiffness = 250
+        anim.mass = 0.8
+        anim.initialVelocity = 0
+        anim.duration = anim.settlingDuration
+        return anim
+    }
+
     /// Animate the overlay open. Call after the view is in the hierarchy and layout has been forced.
     func animateOpen() {
         guard clickPoint != nil else { return }
@@ -197,16 +209,19 @@ class PeekOverlayView: NSView {
 
         if let fromTransform = scaledDownTransform(), let layer = shadowContainer.layer {
             layer.transform = CATransform3DIdentity
-            let anim = CABasicAnimation(keyPath: "transform")
+            let anim = CASpringAnimation(keyPath: "transform")
             anim.fromValue = NSValue(caTransform3D: fromTransform)
             anim.toValue = NSValue(caTransform3D: CATransform3DIdentity)
-            anim.duration = 0.2
-            anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            anim.damping = 20
+            anim.stiffness = 250
+            anim.mass = 0.8
+            anim.initialVelocity = 0
+            anim.duration = anim.settlingDuration
             layer.add(anim, forKey: "openScale")
         }
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
+            context.duration = 0.25
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
             shadowContainer.alphaValue = 1
@@ -225,16 +240,22 @@ class PeekOverlayView: NSView {
 
         layer.transform = toTransform
 
-        let scaleAnim = CABasicAnimation(keyPath: "transform")
+        let scaleAnim = CASpringAnimation(keyPath: "transform")
         scaleAnim.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
         scaleAnim.toValue = NSValue(caTransform3D: toTransform)
-        scaleAnim.duration = 0.15
-        scaleAnim.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        scaleAnim.damping = 20
+        scaleAnim.stiffness = 250
+        scaleAnim.mass = 0.8
+        scaleAnim.initialVelocity = 0
+        scaleAnim.duration = scaleAnim.settlingDuration
+        scaleAnim.speed = -1
+        scaleAnim.timeOffset = scaleAnim.settlingDuration
         layer.add(scaleAnim, forKey: "closeScale")
 
+        let closeDuration = scaleAnim.settlingDuration * 0.4
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.15
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.duration = closeDuration
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
             context.allowsImplicitAnimation = true
             shadowContainer.alphaValue = 0
             closeButton.alphaValue = 0
@@ -247,13 +268,11 @@ class PeekOverlayView: NSView {
         return super.hitTest(point) ?? self
     }
 
-    override func scrollWheel(with event: NSEvent) {
-        // Forward scrolls inside the panel to the peek web view, swallow the rest
-        let point = convert(event.locationInWindow, from: nil)
-        if shadowContainer.frame.contains(point) {
-            peekWebView.scrollWheel(with: event)
-        }
-    }
+    // The peek webview lives above this overlay in contentContainerView, so it
+    // receives scroll events directly. But scroll events landing on the dimmed
+    // area around the panel would otherwise fall through to the tab's webview
+    // behind the overlay. Swallow them here to prevent background scrolling.
+    override func scrollWheel(with event: NSEvent) {}
 
     override func mouseDown(with event: NSEvent) {
         // Clicking outside the panel closes the peek
