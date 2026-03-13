@@ -10,8 +10,12 @@ class PeekOverlayView: NSView {
     private let panelView = NSView()
     private let closeButton: NSButton
     private let expandButton: NSButton
+    /// Click point in overlay (superview) coordinates.
+    private var clickPoint: CGPoint?
+    private var isClosing = false
 
-    init(peekWebView: WKWebView) {
+    init(peekWebView: WKWebView, clickPoint: CGPoint? = nil) {
+        self.clickPoint = clickPoint
         self.peekWebView = peekWebView
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 20, weight: .medium)
         closeButton = NSButton(
@@ -127,8 +131,80 @@ class PeekOverlayView: NSView {
         window?.makeFirstResponder(self)
     }
 
+    /// Build a transform that scales the shadowContainer to a point around the click origin.
+    private func scaledDownTransform() -> CATransform3D? {
+        guard let pt = clickPoint, let layer = shadowContainer.layer else { return nil }
+        let s: CGFloat = 0.05
+        let anchorInBounds = CGPoint(
+            x: layer.bounds.width * layer.anchorPoint.x,
+            y: layer.bounds.height * layer.anchorPoint.y
+        )
+        let clickInLocal = shadowContainer.convert(pt, from: self)
+        let dx = clickInLocal.x - anchorInBounds.x
+        let dy = clickInLocal.y - anchorInBounds.y
+        return CATransform3DConcat(
+            CATransform3DMakeScale(s, s, 1),
+            CATransform3DMakeTranslation((1 - s) * dx, (1 - s) * dy, 0)
+        )
+    }
+
+    /// Animate the overlay open. Call after the view is in the hierarchy and layout has been forced.
+    func animateOpen() {
+        guard clickPoint != nil else { return }
+        shadowContainer.alphaValue = 0
+        closeButton.alphaValue = 0
+        expandButton.alphaValue = 0
+
+        if let fromTransform = scaledDownTransform(), let layer = shadowContainer.layer {
+            layer.transform = CATransform3DIdentity
+            let anim = CABasicAnimation(keyPath: "transform")
+            anim.fromValue = NSValue(caTransform3D: fromTransform)
+            anim.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            anim.duration = 0.2
+            anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(anim, forKey: "openScale")
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            shadowContainer.alphaValue = 1
+            closeButton.alphaValue = 1
+            expandButton.alphaValue = 1
+        }
+    }
+
+    func animateClose(completion: @escaping () -> Void) {
+        isClosing = true
+        peekWebView.removeFromSuperview()
+
+        guard let toTransform = scaledDownTransform(), let layer = shadowContainer.layer else {
+            completion()
+            return
+        }
+
+        layer.transform = toTransform
+
+        let scaleAnim = CABasicAnimation(keyPath: "transform")
+        scaleAnim.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
+        scaleAnim.toValue = NSValue(caTransform3D: toTransform)
+        scaleAnim.duration = 0.15
+        scaleAnim.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        layer.add(scaleAnim, forKey: "closeScale")
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.allowsImplicitAnimation = true
+            shadowContainer.alphaValue = 0
+            closeButton.alphaValue = 0
+            expandButton.alphaValue = 0
+        }, completionHandler: completion)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Always claim the hit so clicks never pass through to the underlying web view
+        if isClosing { return nil }
         return super.hitTest(point) ?? self
     }
 

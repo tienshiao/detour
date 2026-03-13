@@ -831,7 +831,7 @@ class BrowserWindowController: NSWindowController {
 
     // MARK: - Peek Overlay
 
-    private func showPeekOverlay(url: URL) {
+    private func showPeekOverlay(url: URL, clickPoint: CGPoint? = nil) {
         guard let space = activeSpace else { return }
         dismissPeekOverlay()
 
@@ -840,7 +840,7 @@ class BrowserWindowController: NSWindowController {
         peekWebView.navigationDelegate = self
         peekWebView.isInspectable = true
 
-        let overlay = PeekOverlayView(peekWebView: peekWebView)
+        let overlay = PeekOverlayView(peekWebView: peekWebView, clickPoint: clickPoint)
         overlay.translatesAutoresizingMaskIntoConstraints = false
         overlay.onClose = { [weak self] in
             self?.dismissPeekOverlay()
@@ -857,13 +857,29 @@ class BrowserWindowController: NSWindowController {
             overlay.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
         ])
 
+        // Force layout so the overlay and shadowContainer have valid frames,
+        // then start the animation. This must happen after constraints are activated.
+        contentContainerView.layoutSubtreeIfNeeded()
+        overlay.animateOpen()
+
         peekWebView.load(URLRequest(url: url))
         peekOverlayView = overlay
     }
 
     private func dismissPeekOverlay() {
-        peekOverlayView?.removeFromSuperview()
+        guard let overlay = peekOverlayView else { return }
         peekOverlayView = nil
+        overlay.animateClose {
+            overlay.removeFromSuperview()
+        }
+        // Safety net: remove even if animation completion doesn't fire
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak overlay] in
+            overlay?.removeFromSuperview()
+        }
+        // Restore first responder to the web view
+        if let webView = selectedTab?.webView {
+            window?.makeFirstResponder(webView)
+        }
     }
 
     private func expandPeekToNewTab() {
@@ -1263,7 +1279,11 @@ extension BrowserWindowController: WKNavigationDelegate {
            targetHost != pinnedHost,
            navigationAction.navigationType == .linkActivated {
             DispatchQueue.main.async { [weak self] in
-                self?.showPeekOverlay(url: url)
+                guard let self else { return }
+                let clickPoint = self.window.map {
+                    self.contentContainerView.convert($0.mouseLocationOutsideOfEventStream, from: nil)
+                }
+                self.showPeekOverlay(url: url, clickPoint: clickPoint)
             }
             return .cancel
         }
