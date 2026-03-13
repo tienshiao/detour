@@ -83,6 +83,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         observeWindowClose(wc)
     }
 
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "New Window", action: #selector(createNewWindow), keyEquivalent: "")
+        menu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "")
+        return menu
+    }
+
     private func observeWindowClose(_ wc: BrowserWindowController) {
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
