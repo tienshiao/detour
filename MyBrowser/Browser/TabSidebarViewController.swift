@@ -14,6 +14,11 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
     func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton)
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
+    func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
+}
+
+extension TabSidebarDelegate {
+    func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {}
 }
 
 class DraggableTableView: NSTableView {
@@ -77,6 +82,17 @@ class TabSidebarViewController: NSViewController {
     private(set) var forwardButton = NSButton()
     private(set) var reloadButton = NSButton()
     private(set) var sidebarToggleButton = NSButton()
+
+    private(set) var downloadButton = NSButton()
+    private lazy var downloadBadge: NSView = {
+        let badge = NSView()
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.systemBlue.cgColor
+        badge.layer?.cornerRadius = 3
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badge.isHidden = true
+        return badge
+    }()
 
     private var suppressReload = false
     private var bottomBar = DraggableBarView()
@@ -168,16 +184,41 @@ class TabSidebarViewController: NSViewController {
         addSpaceButton.target = self
         addSpaceButton.action = #selector(addSpaceClicked)
         addSpaceButton.translatesAutoresizingMaskIntoConstraints = false
+        addSpaceButton.toolTip = "Add Space"
         bottomBar.addSubview(addSpaceButton)
+
+        // Download button
+        downloadButton = NSButton()
+        downloadButton.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "Downloads")
+        downloadButton.bezelStyle = .inline
+        downloadButton.isBordered = false
+        downloadButton.imagePosition = .imageOnly
+        downloadButton.target = self
+        downloadButton.action = #selector(downloadButtonClicked)
+        downloadButton.translatesAutoresizingMaskIntoConstraints = false
+        downloadButton.wantsLayer = true
+        downloadButton.toolTip = "Downloads"
+        bottomBar.addSubview(downloadButton)
+        bottomBar.addSubview(downloadBadge)
 
         NSLayoutConstraint.activate([
             spaceButtonsContainer.centerXAnchor.constraint(equalTo: bottomBar.centerXAnchor),
             spaceButtonsContainer.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
 
+            downloadButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 8),
+            downloadButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
+            downloadButton.widthAnchor.constraint(equalToConstant: 24),
+            downloadButton.heightAnchor.constraint(equalToConstant: 24),
+
             addSpaceButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -8),
             addSpaceButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
             addSpaceButton.widthAnchor.constraint(equalToConstant: 24),
             addSpaceButton.heightAnchor.constraint(equalToConstant: 24),
+
+            downloadBadge.widthAnchor.constraint(equalToConstant: 6),
+            downloadBadge.heightAnchor.constraint(equalToConstant: 6),
+            downloadBadge.leadingAnchor.constraint(equalTo: downloadButton.trailingAnchor, constant: -9),
+            downloadBadge.topAnchor.constraint(equalTo: downloadButton.topAnchor, constant: 1),
         ])
 
         // Page clip view (clips the horizontal page strip)
@@ -447,6 +488,14 @@ class TabSidebarViewController: NSViewController {
             self.isAnimatingSwipe = false
             self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
         })
+    }
+
+    @objc private func downloadButtonClicked() {
+        delegate?.tabSidebarDidRequestShowDownloads(self, sourceButton: downloadButton)
+    }
+
+    func updateDownloadBadge(hasActive: Bool) {
+        downloadBadge.isHidden = !hasActive
     }
 
     @objc private func addSpaceClicked() {

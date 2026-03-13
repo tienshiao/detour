@@ -91,6 +91,7 @@ class BrowserWindowController: NSWindowController {
         window.delegate = self
 
         store.addObserver(self)
+        DownloadManager.shared.addObserver(self)
 
         if incognito {
             let space = store.addIncognitoSpace()
@@ -124,6 +125,7 @@ class BrowserWindowController: NSWindowController {
 
     deinit {
         store.removeObserver(self)
+        DownloadManager.shared.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -909,6 +911,14 @@ extension BrowserWindowController: TabSidebarDelegate {
         showEditSpacePopover(spaceID: spaceID, relativeTo: sourceButton)
     }
 
+    func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 320, height: 300)
+        popover.contentViewController = DownloadPopoverViewController()
+        popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .minY)
+    }
+
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
         guard let space = store.space(withID: spaceID) else { return }
 
@@ -1049,7 +1059,39 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
+        if navigationAction.shouldPerformDownload {
+            return .download
+        }
+
         return .allow
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        if !navigationResponse.canShowMIMEType {
+            return .download
+        }
+        if let response = navigationResponse.response as? HTTPURLResponse,
+           let disposition = response.value(forHTTPHeaderField: "Content-Disposition"),
+           disposition.lowercased().hasPrefix("attachment") {
+            return .download
+        }
+        return .allow
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        let sourceURL = navigationResponse.response.url
+        download.delegate = DownloadManager.shared
+        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL)
+        _ = item // suppress unused warning
+        triggerDownloadAnimation()
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        let sourceURL = navigationAction.request.url
+        download.delegate = DownloadManager.shared
+        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL)
+        _ = item
+        triggerDownloadAnimation()
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -1058,7 +1100,33 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        // WebKitErrorFrameLoadInterruptedByPolicyChange (102) fires when a navigation
+        // becomes a download — not a real failure, so don't show an error page.
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return }
         selectedTab?.didFailProvisionalNavigation(error: error)
+    }
+
+    private func triggerDownloadAnimation() {
+        guard let window = self.window else { return }
+        let contentBounds = contentContainerView.bounds
+        guard contentBounds.width > 0, contentBounds.height > 0 else { return }
+
+        let sourcePoint = contentContainerView.convert(
+            NSPoint(x: contentBounds.midX, y: contentBounds.midY), to: nil
+        )
+        guard sourcePoint.x.isFinite, sourcePoint.y.isFinite else { return }
+
+        let destPoint: NSPoint
+        if !sidebarItem.isCollapsed {
+            let buttonFrame = tabSidebar.downloadButton.convert(tabSidebar.downloadButton.bounds, to: nil)
+            guard buttonFrame.width > 0 else { return }
+            destPoint = NSPoint(x: buttonFrame.midX, y: buttonFrame.midY)
+        } else {
+            destPoint = NSPoint(x: 20, y: 20)
+        }
+
+        DownloadAnimation.animate(in: window, from: sourcePoint, to: destPoint)
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
@@ -1105,6 +1173,26 @@ extension BrowserWindowController: WKNavigationDelegate {
                 completionHandler(.rejectProtectionSpace, nil)
             }
         }
+    }
+}
+
+// MARK: - DownloadManagerObserver
+
+extension BrowserWindowController: DownloadManagerObserver {
+    func downloadManagerDidAddItem(_ item: DownloadItem) {
+        updateDownloadBadge()
+    }
+
+    func downloadManagerDidUpdateItem(_ item: DownloadItem) {
+        updateDownloadBadge()
+    }
+
+    func downloadManagerDidRemoveItem(_ item: DownloadItem) {
+        updateDownloadBadge()
+    }
+
+    private func updateDownloadBadge() {
+        tabSidebar.updateDownloadBadge(hasActive: DownloadManager.shared.hasActiveDownloads)
     }
 }
 

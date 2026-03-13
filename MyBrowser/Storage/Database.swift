@@ -110,6 +110,49 @@ struct AppDatabase {
         }
     }
 
+    // MARK: - Downloads
+
+    func saveDownload(_ record: DownloadRecord) {
+        do {
+            try dbQueue.write { db in
+                try record.save(db)
+            }
+        } catch {
+            print("Failed to save download: \(error)")
+        }
+    }
+
+    func loadDownloads() -> [DownloadRecord] {
+        do {
+            return try dbQueue.read { db in
+                try DownloadRecord.order(Column("createdAt").desc).fetchAll(db)
+            }
+        } catch {
+            print("Failed to load downloads: \(error)")
+            return []
+        }
+    }
+
+    func deleteDownload(id: String) {
+        do {
+            try dbQueue.write { db in
+                try DownloadRecord.filter(Column("id") == id).deleteAll(db)
+            }
+        } catch {
+            print("Failed to delete download: \(error)")
+        }
+    }
+
+    func deleteCompletedDownloads() {
+        do {
+            try dbQueue.write { db in
+                try DownloadRecord.filter(Column("state") == "completed").deleteAll(db)
+            }
+        } catch {
+            print("Failed to delete completed downloads: \(error)")
+        }
+    }
+
     func loadSession() -> (spaces: [(SpaceRecord, [TabRecord])], lastActiveSpaceID: String?)? {
         do {
             return try dbQueue.read { db in
@@ -175,6 +218,20 @@ struct AppDatabase {
                 t.column("faviconURL", .text)
                 t.column("interactionState", .blob)
                 t.column("sortOrder", .integer).notNull()
+            }
+        }
+
+        migrator.registerMigration("v3") { db in
+            try db.create(table: "download") { t in
+                t.primaryKey("id", .text)
+                t.column("filename", .text).notNull()
+                t.column("sourceURL", .text)
+                t.column("destinationURL", .text).notNull()
+                t.column("totalBytes", .integer).notNull().defaults(to: -1)
+                t.column("bytesWritten", .integer).notNull().defaults(to: 0)
+                t.column("state", .text).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("completedAt", .datetime)
             }
         }
 
