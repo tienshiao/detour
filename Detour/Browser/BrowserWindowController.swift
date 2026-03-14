@@ -533,7 +533,7 @@ class BrowserWindowController: NSWindowController {
             tabSidebar.selectedTabIndex = index
         }
 
-        if window?.isKeyWindow == true {
+        if window?.isKeyWindow == true || tab.webView.superview == nil {
             claimWebView(for: tab)
         } else {
             showSnapshot(for: tab)
