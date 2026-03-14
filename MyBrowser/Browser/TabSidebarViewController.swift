@@ -212,6 +212,7 @@ class TabSidebarViewController: NSViewController {
     // MARK: - Row Layout
 
     enum SidebarRow {
+        case topSpacer
         case pinnedTab(index: Int)
         case separator
         case newTab
@@ -219,14 +220,16 @@ class TabSidebarViewController: NSViewController {
     }
 
     func sidebarRow(for row: Int, pinnedCount: Int? = nil) -> SidebarRow {
+        if row == 0 { return .topSpacer }
+        let adjusted = row - 1
         let pc = pinnedCount ?? pinnedTabs.count
-        if row < pc {
-            return .pinnedTab(index: row)
+        if adjusted < pc {
+            return .pinnedTab(index: adjusted)
         }
-        if row == pc {
+        if adjusted == pc {
             return .separator
         }
-        let afterSeparator = row - pc - 1
+        let afterSeparator = adjusted - pc - 1
         if afterSeparator == 0 {
             return .newTab
         }
@@ -236,15 +239,15 @@ class TabSidebarViewController: NSViewController {
     private func totalRowCount(forTableView tv: NSTableView) -> Int {
         let (p, t) = tabsAndPinnedForTableView(tv)
         let pinnedCount = p.count
-        return pinnedCount + 1 + 1 + t.count
+        return 1 + pinnedCount + 1 + 1 + t.count
     }
 
     func rowForNormalTab(at tabIndex: Int) -> Int {
-        return pinnedTabs.count + 1 + 1 + tabIndex
+        return 1 + pinnedTabs.count + 1 + 1 + tabIndex
     }
 
     func rowForPinnedTab(at index: Int) -> Int {
-        return index
+        return 1 + index
     }
 
     var tintColor: NSColor? {
@@ -905,9 +908,12 @@ extension TabSidebarViewController: NSTableViewDataSource {
         let destRow = sidebarRow(for: row)
 
         switch destRow {
+        case .topSpacer:
+            // Retarget: dropping on spacer = first pinned tab position
+            tableView.setDropRow(rowForPinnedTab(at: 0), dropOperation: .above)
         case .separator:
             // Retarget: dropping above separator = appending to pinned section
-            tableView.setDropRow(pinnedTabs.count, dropOperation: .above)
+            tableView.setDropRow(1 + pinnedTabs.count, dropOperation: .above)
         case .newTab:
             // Retarget: dropping above newTab = prepending to normal section
             tableView.setDropRow(rowForNormalTab(at: 0), dropOperation: .above)
@@ -928,6 +934,8 @@ extension TabSidebarViewController: NSTableViewDataSource {
 
         // Remap non-droppable rows to the nearest section edge
         switch destSection {
+        case .topSpacer:
+            destSection = .pinnedTab(index: 0)
         case .separator:
             destSection = .pinnedTab(index: pinnedTabs.count)
         case .newTab:
@@ -995,6 +1003,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let isActive = tableView === self.tableView
 
         switch sRow {
+        case .topSpacer:
+            return NSView()
         case .newTab:
             let newTabID = NSUserInterfaceItemIdentifier("NewTabCell")
             if let existing = tableView.makeView(withIdentifier: newTabID, owner: nil) as? NewTabCellView {
@@ -1083,6 +1093,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         let (pinned, _) = tabsAndPinnedForTableView(tableView)
         switch sidebarRow(for: row, pinnedCount: pinned.count) {
+        case .topSpacer: return 2
         case .separator: return 12
         default: return 36
         }
@@ -1091,7 +1102,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let (pinned, _) = tabsAndPinnedForTableView(tableView)
         switch sidebarRow(for: row, pinnedCount: pinned.count) {
-        case .newTab, .separator:
+        case .topSpacer, .newTab, .separator:
             return NSTableRowView()
         default:
             let rowView = TabRowView()
@@ -1103,7 +1114,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         let (pinned, _) = tabsAndPinnedForTableView(tableView)
         switch sidebarRow(for: row, pinnedCount: pinned.count) {
-        case .separator: return false
+        case .topSpacer, .separator: return false
         default: return true
         }
     }
@@ -1122,7 +1133,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             delegate?.tabSidebar(self, didSelectPinnedTabAt: index)
         case .normalTab(let index):
             delegate?.tabSidebar(self, didSelectTabAt: index)
-        case .separator:
+        case .topSpacer, .separator:
             break
         }
     }
