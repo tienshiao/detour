@@ -678,8 +678,8 @@ class BrowserWindowController: NSWindowController {
         if input.contains(".") && !input.contains(" ") {
             return URL(string: "https://\(input)")
         }
-        let encoded = input.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? input
-        return URL(string: "https://www.google.com/search?q=\(encoded)")
+        let engine = activeSpace?.profile?.searchEngine ?? .google
+        return engine.searchURL(for: input)
     }
 
     // MARK: - Actions
@@ -755,6 +755,7 @@ class BrowserWindowController: NSWindowController {
         palette.delegate = self
         palette.tabStore = store
         palette.activeSpaceID = activeSpaceID
+        palette.profile = activeSpace?.profile
         commandPaletteView = palette
 
         // Two scrims: the liquid glass sidebar is partially transparent, so we need

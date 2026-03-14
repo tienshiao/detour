@@ -334,6 +334,13 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v8") { db in
+            try db.alter(table: "profile") { t in
+                t.add(column: "searchEngine", .integer).notNull().defaults(to: 0)
+                t.add(column: "searchSuggestionsEnabled", .boolean).notNull().defaults(to: true)
+            }
+        }
+
         return migrator
     }
 }

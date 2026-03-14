@@ -22,6 +22,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     weak var delegate: CommandPaletteDelegate?
     var tabStore: TabStore?
     var activeSpaceID: UUID?
+    var profile: Profile?
 
     private let textField = CommandPaletteTextField()
     private let shadowContainer = NSView()
@@ -277,7 +278,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         currentTask = Task { [weak self] in
             guard let self else { return }
             let items = await self.suggestionProvider.suggestions(
-                for: query, spaceID: spaceID.uuidString, tabs: tabInfos)
+                for: query, spaceID: spaceID.uuidString, tabs: tabInfos,
+                searchEngine: self.profile?.searchEngine ?? .google,
+                searchSuggestionsEnabled: self.profile?.searchSuggestionsEnabled ?? true)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.updateSuggestions(items)

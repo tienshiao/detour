@@ -104,15 +104,19 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         // Search engine row
         let searchRow = makeRow(label: "Search engine")
         searchEnginePopUp = NSPopUpButton()
-        searchEnginePopUp.addItem(withTitle: "Google")
-        searchEnginePopUp.isEnabled = false
+        for engine in SearchEngine.allCases {
+            searchEnginePopUp.addItem(withTitle: engine.name)
+        }
+        searchEnginePopUp.target = self
+        searchEnginePopUp.action = #selector(searchEngineChanged)
         searchRow.addArrangedSubview(searchEnginePopUp)
         rightStack.addArrangedSubview(searchRow)
 
         // Search suggestions row
         let suggestRow = makeRow(label: "Include search engine suggestions")
         suggestionsSwitch = NSSwitch()
-        suggestionsSwitch.isEnabled = false
+        suggestionsSwitch.target = self
+        suggestionsSwitch.action = #selector(suggestionsToggled)
         suggestRow.addArrangedSubview(suggestionsSwitch)
         rightStack.addArrangedSubview(suggestRow)
 
@@ -199,6 +203,8 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         if let index = ArchiveThreshold.allCases.firstIndex(of: profile.archiveThreshold) {
             archivePopUp.selectItem(at: index)
         }
+        searchEnginePopUp.selectItem(at: profile.searchEngine.rawValue)
+        suggestionsSwitch.state = profile.searchSuggestionsEnabled ? .on : .off
     }
 
     private func updateButtonStates() {
@@ -212,6 +218,19 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         guard let profile = selectedProfile,
               let threshold = archivePopUp.selectedItem?.representedObject as? ArchiveThreshold else { return }
         profile.archiveThreshold = threshold
+        TabStore.shared.updateProfile(profile)
+    }
+
+    @objc private func searchEngineChanged() {
+        guard let profile = selectedProfile,
+              let engine = SearchEngine(rawValue: searchEnginePopUp.indexOfSelectedItem) else { return }
+        profile.searchEngine = engine
+        TabStore.shared.updateProfile(profile)
+    }
+
+    @objc private func suggestionsToggled() {
+        guard let profile = selectedProfile else { return }
+        profile.searchSuggestionsEnabled = (suggestionsSwitch.state == .on)
         TabStore.shared.updateProfile(profile)
     }
 

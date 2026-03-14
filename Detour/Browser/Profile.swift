@@ -40,6 +40,52 @@ enum ArchiveThreshold: TimeInterval, CaseIterable {
     case never = 0
 }
 
+// MARK: - SearchEngine
+
+enum SearchEngine: Int, CaseIterable {
+    case google = 0
+    case duckDuckGo = 1
+    case bing = 2
+    case yahoo = 3
+    case ecosia = 4
+    case kagi = 5
+
+    var name: String {
+        switch self {
+        case .google: return "Google"
+        case .duckDuckGo: return "DuckDuckGo"
+        case .bing: return "Bing"
+        case .yahoo: return "Yahoo"
+        case .ecosia: return "Ecosia"
+        case .kagi: return "Kagi"
+        }
+    }
+
+    func searchURL(for query: String) -> URL? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+        switch self {
+        case .google: return URL(string: "https://www.google.com/search?q=\(q)")
+        case .duckDuckGo: return URL(string: "https://duckduckgo.com/?q=\(q)")
+        case .bing: return URL(string: "https://www.bing.com/search?q=\(q)")
+        case .yahoo: return URL(string: "https://search.yahoo.com/search?p=\(q)")
+        case .ecosia: return URL(string: "https://www.ecosia.org/search?q=\(q)")
+        case .kagi: return URL(string: "https://kagi.com/search?q=\(q)")
+        }
+    }
+
+    func suggestionsURL(for query: String) -> URL? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+        switch self {
+        case .google: return URL(string: "https://suggestqueries.google.com/complete/search?client=firefox&q=\(q)")
+        case .duckDuckGo: return URL(string: "https://duckduckgo.com/ac/?q=\(q)&type=list")
+        case .bing: return URL(string: "https://api.bing.com/osjson.aspx?query=\(q)")
+        case .yahoo: return URL(string: "https://search.yahoo.com/sugg/gossip/gossip-us-ura/?command=\(q)&output=sd1")
+        case .ecosia: return URL(string: "https://ac.ecosia.org/?q=\(q)&type=list")
+        case .kagi: return URL(string: "https://kagi.com/api/autosuggest?q=\(q)")
+        }
+    }
+}
+
 // MARK: - Profile
 
 class Profile {
@@ -48,6 +94,8 @@ class Profile {
     var userAgentMode: UserAgentMode
     var customUserAgent: String?
     var archiveThreshold: ArchiveThreshold
+    var searchEngine: SearchEngine
+    var searchSuggestionsEnabled: Bool
     let isIncognito: Bool
 
     lazy var dataStore: WKWebsiteDataStore = {
@@ -59,12 +107,15 @@ class Profile {
 
     init(id: UUID = UUID(), name: String, userAgentMode: UserAgentMode = .detour,
          customUserAgent: String? = nil, archiveThreshold: ArchiveThreshold = .twelveHours,
+         searchEngine: SearchEngine = .google, searchSuggestionsEnabled: Bool = true,
          isIncognito: Bool = false) {
         self.id = id
         self.name = name
         self.userAgentMode = userAgentMode
         self.customUserAgent = customUserAgent
         self.archiveThreshold = archiveThreshold
+        self.searchEngine = searchEngine
+        self.searchSuggestionsEnabled = searchSuggestionsEnabled
         self.isIncognito = isIncognito
     }
 
@@ -85,7 +136,9 @@ class Profile {
             name: name,
             userAgentMode: userAgentMode.rawValue,
             customUserAgent: customUserAgent,
-            archiveThreshold: archiveThreshold.rawValue
+            archiveThreshold: archiveThreshold.rawValue,
+            searchEngine: searchEngine.rawValue,
+            searchSuggestionsEnabled: searchSuggestionsEnabled
         )
     }
 
@@ -93,12 +146,15 @@ class Profile {
         guard let id = UUID(uuidString: record.id) else { return nil }
         let mode = UserAgentMode(rawValue: record.userAgentMode) ?? .detour
         let threshold = ArchiveThreshold(rawValue: record.archiveThreshold) ?? .twelveHours
+        let engine = SearchEngine(rawValue: record.searchEngine) ?? .google
         return Profile(
             id: id,
             name: record.name,
             userAgentMode: mode,
             customUserAgent: record.customUserAgent,
-            archiveThreshold: threshold
+            archiveThreshold: threshold,
+            searchEngine: engine,
+            searchSuggestionsEnabled: record.searchSuggestionsEnabled
         )
     }
 }

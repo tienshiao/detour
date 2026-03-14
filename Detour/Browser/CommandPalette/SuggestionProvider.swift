@@ -16,10 +16,13 @@ final class SuggestionProvider {
         }
     }
 
-    func suggestions(for query: String, spaceID: String, tabs: [SuggestionProvider.TabInfo]) async -> [SuggestionItem] {
+    func suggestions(for query: String, spaceID: String, tabs: [SuggestionProvider.TabInfo],
+                     searchEngine: SearchEngine = .google, searchSuggestionsEnabled: Bool = true) async -> [SuggestionItem] {
         let q = query.lowercased()
 
-        async let searchSuggestions = searchService.fetchSuggestions(for: query)
+        async let searchSuggestions = searchSuggestionsEnabled
+            ? searchService.fetchSuggestions(for: query, engine: searchEngine)
+            : [String]()
 
         // Open tabs matching query
         let matchingTabs = tabs.filter {

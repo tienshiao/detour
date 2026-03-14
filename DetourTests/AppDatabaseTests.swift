@@ -10,7 +10,7 @@ final class AppDatabaseTests: XCTestCase {
         let dbQueue = try DatabaseQueue()
         let db = try AppDatabase(dbQueue: dbQueue)
         // Insert a test profile for foreign key references
-        db.saveProfile(ProfileRecord(id: testProfileID, name: "Test", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200))
+        db.saveProfile(ProfileRecord(id: testProfileID, name: "Test", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, searchEngine: 0, searchSuggestionsEnabled: true))
         return db
     }
 
