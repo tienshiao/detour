@@ -153,6 +153,20 @@ class TabStore {
         return profile
     }
 
+    func updateProfile(_ profile: Profile) {
+        AppDatabase.shared.saveProfile(profile.toRecord())
+        scheduleSave()
+    }
+
+    func deleteProfile(id: UUID) {
+        guard profiles.filter({ !$0.isIncognito }).count > 1 else { return }
+        let hasSpaces = spaces.contains { $0.profileID == id && !$0.isIncognito }
+        guard !hasSpaces else { return }
+        profiles.removeAll { $0.id == id }
+        AppDatabase.shared.deleteProfile(id: id.uuidString)
+        scheduleSave()
+    }
+
     // MARK: - Session Persistence
 
     func scheduleSave() {

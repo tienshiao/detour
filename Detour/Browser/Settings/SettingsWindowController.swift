@@ -7,13 +7,14 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     static let shared = SettingsWindowController()
 
     private static let generalID = NSToolbarItem.Identifier("general")
+    private static let profilesID = NSToolbarItem.Identifier("profiles")
 
     private var panes: [NSToolbarItem.Identifier: NSViewController] = [:]
-    private let paneOrder: [NSToolbarItem.Identifier] = [generalID]
+    private let paneOrder: [NSToolbarItem.Identifier] = [generalID, profilesID]
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 450, height: 200),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 200),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: true
@@ -26,6 +27,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
         let generalVC = GeneralSettingsViewController()
         panes[Self.generalID] = generalVC
+
+        let profilesVC = ProfilesSettingsViewController()
+        panes[Self.profilesID] = profilesVC
 
         let toolbar = NSToolbar(identifier: "SettingsToolbar")
         toolbar.delegate = self
@@ -53,6 +57,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         case Self.generalID:
             item.label = "General"
             item.image = NSImage(systemSymbolName: "gear", accessibilityDescription: "General")
+        case Self.profilesID:
+            item.label = "Profiles"
+            item.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: "Profiles")
         default:
             return nil
         }
