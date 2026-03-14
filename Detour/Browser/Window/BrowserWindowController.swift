@@ -510,7 +510,8 @@ class BrowserWindowController: NSWindowController {
         tab.$canGoBack
             .receive(on: RunLoop.main)
             .sink { [weak self] canGoBack in
-                self?.tabSidebar.backButton.isEnabled = canGoBack
+                let canCloseToParent = !canGoBack && self?.parentTab(for: tab) != nil
+                self?.tabSidebar.backButton.isEnabled = canGoBack || canCloseToParent
             }
             .store(in: &activeTabSubscriptions)
 
@@ -698,8 +699,25 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func goBack(_ sender: Any?) {
-        ensureOwnsWebView()
-        selectedTab?.webView?.goBack()
+        navigateBackOrCloseChildTab()
+    }
+
+    private func parentTab(for tab: BrowserTab) -> BrowserTab? {
+        guard let parentID = tab.parentID else { return nil }
+        return currentTabs.first { $0.id == parentID }
+            ?? activeSpace?.pinnedTabs.first { $0.id == parentID }
+    }
+
+    private func navigateBackOrCloseChildTab() {
+        guard let tab = selectedTab else { return }
+        if tab.canGoBack {
+            ensureOwnsWebView()
+            tab.webView?.goBack()
+        } else if let parent = parentTab(for: tab) {
+            guard let space = activeSpace else { return }
+            store.closeTab(id: tab.id, in: space)
+            selectTab(id: parent.id)
+        }
     }
 
     @objc func goForward(_ sender: Any?) {
@@ -1141,8 +1159,7 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestGoBack(_ sidebar: TabSidebarViewController) {
-        ensureOwnsWebView()
-        selectedTab?.webView?.goBack()
+        navigateBackOrCloseChildTab()
     }
 
     func tabSidebarDidRequestGoForward(_ sidebar: TabSidebarViewController) {
@@ -1350,7 +1367,7 @@ extension BrowserWindowController: CommandPaletteDelegate {
             navigateToAddress(input)
         } else {
             guard let space = activeSpace else { return }
-            let tab = store.addTab(in: space, parentID: selectedTabID)
+            let tab = store.addTab(in: space)
             selectTab(id: tab.id)
             if let url = urlFromInput(input) {
                 tab.load(url)

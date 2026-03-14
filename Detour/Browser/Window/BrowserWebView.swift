@@ -1,6 +1,15 @@
 import WebKit
 
 class BrowserWebView: WKWebView {
+    override func otherMouseDown(with event: NSEvent) {
+        // Mouse button 3 = back button
+        if event.buttonNumber == 3 {
+            (window?.windowController as? BrowserWindowController)?.goBack(nil)
+            return
+        }
+        super.otherMouseDown(with: event)
+    }
+
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
 
