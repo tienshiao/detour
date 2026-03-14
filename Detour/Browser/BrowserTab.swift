@@ -408,9 +408,14 @@ class BrowserTab: NSObject {
         }
     }
 
+    var displayHost: String {
+        guard let host = url?.host else { return "" }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
     private func strippedScheme(_ url: URL) -> String {
         var str = url.absoluteString
-        for prefix in ["https://", "http://"] {
+        for prefix in ["https://www.", "http://www.", "https://", "http://"] {
             if str.hasPrefix(prefix) {
                 str = String(str.dropFirst(prefix.count))
                 break

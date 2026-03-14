@@ -502,7 +502,7 @@ class BrowserWindowController: NSWindowController {
         tab.$url
             .receive(on: RunLoop.main)
             .sink { [weak self] url in
-                self?.tabSidebar.fauxAddressBar.displayText = url?.host ?? ""
+                self?.tabSidebar.fauxAddressBar.displayText = tab.displayHost
                 self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
             }
             .store(in: &activeTabSubscriptions)
