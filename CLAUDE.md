@@ -34,22 +34,43 @@ macOS native browser (Swift 5.10, macOS 14+) using WebKit. Organized around **Sp
 
 **Incognito**: Creates an isolated `Space` with a non-persistent `WKWebsiteDataStore`. No history recording. Space removed on window close.
 
+### Directory Layout
+
+```
+Detour/
+├── App/                          AppDelegate, main
+├── Browser/
+│   ├── BrowserTab.swift          core tab model
+│   ├── TabStore.swift            core state singleton
+│   ├── Window/                   BrowserWindowController, BrowserWebView, FindBarView, ErrorSchemeHandler
+│   ├── Sidebar/                  TabSidebarViewController, TabCellView, FauxAddressBar, AddSpaceViewController
+│   ├── CommandPalette/           CommandPaletteView, SuggestionProvider, SuggestionItem, SearchSuggestionsService
+│   ├── Downloads/                DownloadManager, DownloadPopoverViewController, DownloadCellView, DownloadAnimation
+│   ├── Settings/                 SettingsWindowController
+│   └── Shared/                   HoverButton, WindowDragView, ToastView, LinkStatusBar, PeekOverlayView, NSColor+Hex
+├── Storage/
+│   ├── Database.swift            session DB singleton
+│   ├── HistoryDatabase.swift     history DB singleton
+│   └── Models/                   GRDB record types (SpaceRecord, TabRecord, etc.)
+└── Resources/                    assets, entitlements
+```
+
 ### Component Relationships
 
 ```
-BrowserWindowController (per window)
-  ├── TabSidebarViewController (sidebar: spaces, tabs, nav, faux address bar)
+BrowserWindowController (per window)                    [Browser/Window/]
+  ├── TabSidebarViewController (sidebar: spaces, tabs)  [Browser/Sidebar/]
   │     └── FauxAddressBar (read-only hostname display, opens CommandPalette on click)
-  ├── CommandPaletteView (URL input + suggestions overlay)
+  ├── CommandPaletteView (URL input + suggestions)      [Browser/CommandPalette/]
   │     └── SuggestionProvider (merges: open tabs + history FTS + web search)
-  ├── FindBarView (Cmd+F find-in-page)
+  ├── FindBarView (Cmd+F find-in-page)                  [Browser/Window/]
   └── WKWebView (owned tab) or NSImageView (snapshot)
 
-TabStore.shared (singleton)
+TabStore.shared (singleton)                             [Browser/TabStore.swift]
   ├── Space[] (each with tabs[], WKWebsiteDataStore)
   ├── TabStoreObserver[] (weak references)
-  ├── Database.shared (session persistence, 1s debounced saves)
-  └── HistoryDatabase.shared (visit recording, 30s dedup window)
+  ├── Database.shared (session persistence)             [Storage/Database.swift]
+  └── HistoryDatabase.shared (visit recording)          [Storage/HistoryDatabase.swift]
 ```
 
 ### Delegate Flow
