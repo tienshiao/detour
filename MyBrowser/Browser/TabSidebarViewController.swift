@@ -902,6 +902,39 @@ extension TabSidebarViewController: NSTableViewDataSource {
         }
     }
 
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        guard let row = rowIndexes.first,
+              let rowView = tableView.rowView(atRow: row, makeIfNecessary: false),
+              let cellView = rowView.view(atColumn: 0) as? NSView else { return }
+
+        // The visual rounded-corner area extends 6pt beyond the cell on each side
+        let visualRect = cellView.bounds.insetBy(dx: -6, dy: 1)
+        let imageSize = visualRect.size
+
+        let image = NSImage(size: imageSize)
+        image.lockFocus()
+
+        // Draw the rounded-corner background (matches hover style)
+        let bgRect = NSRect(origin: .zero, size: imageSize)
+        NSColor.labelColor.withAlphaComponent(0.06).setFill()
+        NSBezierPath(roundedRect: bgRect, xRadius: 6, yRadius: 6).fill()
+
+        // Draw cell content offset so it aligns within the background
+        if let bitmapRep = cellView.bitmapImageRepForCachingDisplay(in: cellView.bounds) {
+            cellView.cacheDisplay(in: cellView.bounds, to: bitmapRep)
+            let cellOrigin = NSPoint(x: -visualRect.origin.x, y: -visualRect.origin.y)
+            bitmapRep.draw(in: NSRect(origin: cellOrigin, size: cellView.bounds.size))
+        }
+
+        image.unlockFocus()
+
+        // Replace the dragging item's image with our rounded-corner version
+        session.enumerateDraggingItems(options: [], for: tableView, classes: [NSPasteboardItem.self], searchOptions: [:]) { draggingItem, _, _ in
+            let origin = NSPoint(x: draggingItem.draggingFrame.origin.x - 6, y: draggingItem.draggingFrame.origin.y)
+            draggingItem.setDraggingFrame(NSRect(origin: origin, size: imageSize), contents: image)
+        }
+    }
+
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         guard dropOperation == .above else { return [] }
 
