@@ -187,6 +187,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        let copyURLItem = editMenu.addItem(withTitle: "Copy URL", action: #selector(BrowserWindowController.copyCurrentURL(_:)), keyEquivalent: "c")
+        copyURLItem.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(.separator())

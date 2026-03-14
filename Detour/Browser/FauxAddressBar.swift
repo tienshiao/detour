@@ -14,9 +14,11 @@ class FauxAddressBar: NSView {
     }
 
     var onClick: (() -> Void)?
+    var onCopyURL: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
     private let lockIcon = NSImageView()
+    private let copyButton = NSButton()
     private var labelLeadingDefault: NSLayoutConstraint!
     private var labelLeadingAfterIcon: NSLayoutConstraint!
 
@@ -51,6 +53,18 @@ class FauxAddressBar: NSView {
         lockIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
         addSubview(lockIcon)
 
+        copyButton.bezelStyle = .inline
+        copyButton.isBordered = false
+        copyButton.image = NSImage(systemSymbolName: "link", accessibilityDescription: "Copy URL")
+        copyButton.contentTintColor = .secondaryLabelColor
+        copyButton.target = self
+        copyButton.action = #selector(copyClicked)
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
+        copyButton.setContentHuggingPriority(.required, for: .horizontal)
+        copyButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        copyButton.alphaValue = 0
+        addSubview(copyButton)
+
         labelLeadingDefault = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
         labelLeadingAfterIcon = label.leadingAnchor.constraint(equalTo: lockIcon.trailingAnchor, constant: 4)
 
@@ -58,16 +72,59 @@ class FauxAddressBar: NSView {
             lockIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             lockIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
             labelLeadingDefault,
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            label.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -4),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            copyButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            copyButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
+    @objc private func copyClicked() {
+        onCopyURL?()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            copyButton.animator().alphaValue = 1
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            copyButton.animator().alphaValue = 0
+        }
+    }
+
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .iBeam)
+        addCursorRect(label.frame, cursor: .iBeam)
+        addCursorRect(copyButton.frame, cursor: .arrow)
+        if !lockIcon.isHidden {
+            addCursorRect(lockIcon.frame, cursor: .arrow)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
+            copyButton.contentTintColor = .labelColor
+            return
+        }
         onClick?()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
+            copyButton.contentTintColor = .secondaryLabelColor
+            onCopyURL?()
+        }
     }
 }

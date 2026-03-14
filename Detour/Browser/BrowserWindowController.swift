@@ -26,6 +26,7 @@ class BrowserWindowController: NSWindowController {
     private let findBar = FindBarView()
     private let dragHandle = WindowDragView()
     private let linkStatusBar = LinkStatusBar()
+    let toastManager = ToastManager()
     private var findBarTopConstraint: NSLayoutConstraint?
     private var webViewTopConstraint: NSLayoutConstraint?
     private var findMatchCount = 0
@@ -192,6 +193,9 @@ class BrowserWindowController: NSWindowController {
 
     private func setupSplitView() {
         tabSidebar.delegate = self
+        tabSidebar.fauxAddressBar.onCopyURL = { [weak self] in
+            self?.copyCurrentURL(nil)
+        }
 
         sidebarItem = NSSplitViewItem(sidebarWithViewController: tabSidebar)
         sidebarItem.minimumThickness = 200
@@ -202,6 +206,7 @@ class BrowserWindowController: NSWindowController {
         let contentVC = NSViewController()
         contentVC.view = contentContainerView
         contentContainerView.wantsLayer = true
+        toastManager.parentView = contentContainerView
         contentItem = NSSplitViewItem(viewController: contentVC)
         splitViewController.addSplitViewItem(contentItem)
 
@@ -679,6 +684,13 @@ class BrowserWindowController: NSWindowController {
         guard let webView = selectedTab?.webView else { return }
         guard let inspector = webView.value(forKey: "_inspector") as? NSObject else { return }
         inspector.perform(Selector(("show")))
+    }
+
+    @objc func copyCurrentURL(_ sender: Any?) {
+        guard let urlString = selectedTab?.url?.absoluteString else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(urlString, forType: .string)
+        toastManager.show(message: "URL copied")
     }
 
     @objc func reloadPage(_ sender: Any?) {

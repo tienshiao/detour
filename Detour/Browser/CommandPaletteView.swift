@@ -70,7 +70,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
         // Palette box
         box.material = .hudWindow
-        box.blendingMode = .behindWindow
+        box.blendingMode = .withinWindow
         box.state = .active
         box.wantsLayer = true
         box.layer?.cornerRadius = 12
