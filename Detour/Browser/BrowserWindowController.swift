@@ -1393,6 +1393,23 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
+        // Shift+click: open link in peek view
+        if navigationAction.navigationType == .linkActivated,
+           navigationAction.modifierFlags.contains(.shift),
+           let url = navigationAction.request.url,
+           let tab = selectedTab,
+           webView === tab.webView,
+           peekOverlayView == nil {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let clickPoint = self.window.map {
+                    self.contentContainerView.convert($0.mouseLocationOutsideOfEventStream, from: nil)
+                }
+                self.showPeekOverlay(url: url, clickPoint: clickPoint)
+            }
+            return .cancel
+        }
+
         // When navigating forward into an error page, re-attempt the original URL instead
         if navigationAction.navigationType == .backForward,
            let url = navigationAction.request.url,
