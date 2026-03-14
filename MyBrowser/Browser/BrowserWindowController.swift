@@ -486,6 +486,7 @@ class BrowserWindowController: NSWindowController {
             .receive(on: RunLoop.main)
             .sink { [weak self] url in
                 self?.tabSidebar.fauxAddressBar.displayText = url?.host ?? ""
+                self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
             }
             .store(in: &activeTabSubscriptions)
 
@@ -750,6 +751,7 @@ class BrowserWindowController: NSWindowController {
         dragHandle.isHidden = true
         removeContentViews()
         tabSidebar.fauxAddressBar.displayText = ""
+        tabSidebar.fauxAddressBar.isSecure = true
         tabSidebar.backButton.isEnabled = false
         tabSidebar.forwardButton.isEnabled = false
         window?.title = "MyBrowser"

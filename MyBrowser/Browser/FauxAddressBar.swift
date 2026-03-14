@@ -5,9 +5,20 @@ class FauxAddressBar: NSView {
         didSet { label.stringValue = displayText }
     }
 
+    var isSecure: Bool = true {
+        didSet {
+            lockIcon.isHidden = isSecure
+            labelLeadingDefault.isActive = isSecure
+            labelLeadingAfterIcon.isActive = !isSecure
+        }
+    }
+
     var onClick: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
+    private let lockIcon = NSImageView()
+    private var labelLeadingDefault: NSLayoutConstraint!
+    private var labelLeadingAfterIcon: NSLayoutConstraint!
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -31,8 +42,22 @@ class FauxAddressBar: NSView {
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
 
+        lockIcon.image = NSImage(systemSymbolName: "lock.trianglebadge.exclamationmark", accessibilityDescription: "Insecure connection")
+        lockIcon.contentTintColor = .systemRed
+        lockIcon.toolTip = "This connection is not secure"
+        lockIcon.translatesAutoresizingMaskIntoConstraints = false
+        lockIcon.isHidden = true
+        lockIcon.setContentHuggingPriority(.required, for: .horizontal)
+        lockIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
+        addSubview(lockIcon)
+
+        labelLeadingDefault = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
+        labelLeadingAfterIcon = label.leadingAnchor.constraint(equalTo: lockIcon.trailingAnchor, constant: 4)
+
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            lockIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            lockIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            labelLeadingDefault,
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
