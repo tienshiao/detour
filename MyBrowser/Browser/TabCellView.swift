@@ -353,19 +353,44 @@ class TabCellView: NSTableCellView {
 }
 
 class SeparatorCellView: NSTableCellView {
+    private let shadowLine = NSView()
+    private let highlightLine = NSView()
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        let line = NSView()
-        line.wantsLayer = true
-        line.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
-        line.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(line)
+
+        shadowLine.wantsLayer = true
+        shadowLine.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(shadowLine)
+
+        highlightLine.wantsLayer = true
+        highlightLine.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(highlightLine)
+
         NSLayoutConstraint.activate([
-            line.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            line.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            line.centerYAnchor.constraint(equalTo: centerYAnchor),
-            line.heightAnchor.constraint(equalToConstant: 1),
+            shadowLine.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            shadowLine.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            shadowLine.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -0.5),
+            shadowLine.heightAnchor.constraint(equalToConstant: 1.5),
+
+            highlightLine.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            highlightLine.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            highlightLine.topAnchor.constraint(equalTo: shadowLine.bottomAnchor),
+            highlightLine.heightAnchor.constraint(equalToConstant: 1.5),
         ])
+
+        updateColors()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    private func updateColors() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        shadowLine.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        highlightLine.layer?.backgroundColor = NSColor.white.withAlphaComponent(isDark ? 0.18 : 0.45).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
