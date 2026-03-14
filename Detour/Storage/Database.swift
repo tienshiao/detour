@@ -281,6 +281,15 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v5") { db in
+            try db.alter(table: "tab") { t in
+                t.add(column: "lastDeselectedAt", .double)
+            }
+            try db.alter(table: "closedTab") { t in
+                t.add(column: "archivedAt", .double)
+            }
+        }
+
         return migrator
     }
 }

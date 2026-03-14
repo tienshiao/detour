@@ -12,4 +12,5 @@ struct ClosedTabRecord: Codable, FetchableRecord, PersistableRecord {
     var faviconURL: String?
     var interactionState: Data?
     var sortOrder: Int
+    var archivedAt: Double?
 }

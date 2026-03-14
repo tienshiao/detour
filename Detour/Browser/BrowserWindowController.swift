@@ -483,6 +483,7 @@ class BrowserWindowController: NSWindowController {
         dismissPeekOverlay()
 
         if let previousTab = selectedTab {
+            previousTab.lastDeselectedAt = Date()
             if ownsWebView {
                 previousTab.takeSnapshot()
             }
@@ -495,6 +496,7 @@ class BrowserWindowController: NSWindowController {
         dragHandle.isHidden = false
 
         guard let tab = selectedTab else { return }
+        tab.lastDeselectedAt = nil
 
         tab.$url
             .receive(on: RunLoop.main)

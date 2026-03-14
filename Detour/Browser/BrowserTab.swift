@@ -18,6 +18,10 @@ class BrowserTab: NSObject {
     @Published var favicon: NSImage?
     private(set) var faviconURL: URL?
 
+    // MARK: - Archiving
+
+    var lastDeselectedAt: Date?
+
     // MARK: - Pinned Tab Properties
 
     var isPinned: Bool = false

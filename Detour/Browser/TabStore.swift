@@ -181,7 +181,8 @@ class TabStore {
                     title: tab.title,
                     faviconURL: tab.faviconURL?.absoluteString,
                     interactionState: stateData,
-                    sortOrder: tabIndex
+                    sortOrder: tabIndex,
+                    lastDeselectedAt: tab.lastDeselectedAt?.timeIntervalSince1970
                 ))
             }
             sessionData.append((spaceRecord, tabRecords))
@@ -242,6 +243,11 @@ class TabStore {
                     faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
                     configuration: space.makeWebViewConfiguration()
                 )
+                if space.selectedTabID == tabID {
+                    tab.lastDeselectedAt = nil
+                } else {
+                    tab.lastDeselectedAt = tabRecord.lastDeselectedAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+                }
                 space.tabs.append(tab)
                 self.subscribeToTab(tab, spaceID: spaceID)
             }
@@ -437,7 +443,7 @@ class TabStore {
         return tab
     }
 
-    func closeTab(id: UUID, in space: Space) {
+    func closeTab(id: UUID, in space: Space, archivedAt: Date? = nil) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs[index]
 
@@ -455,7 +461,8 @@ class TabStore {
                 title: tab.title,
                 faviconURL: tab.faviconURL?.absoluteString,
                 interactionState: stateData,
-                sortOrder: index
+                sortOrder: index,
+                archivedAt: archivedAt?.timeIntervalSince1970
             )
             AppDatabase.shared.pushClosedTab(record)
             closedTabStack.insert(record, at: 0)
@@ -564,6 +571,48 @@ class TabStore {
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
         scheduleSave()
         return tab
+    }
+
+    // MARK: - Tab Archiving
+
+    enum ArchiveThreshold: TimeInterval, CaseIterable {
+//        case twelveHours = 43200
+        case twelveHours = 3600
+        case twentyFourHours = 86400
+        case sevenDays = 604800
+        case thirtyDays = 2592000
+        case never = 0
+    }
+
+    private var archiveTimer: Timer?
+    private let archiveThreshold: ArchiveThreshold = .twelveHours
+
+    func startArchiveTimer() {
+        archiveTimer?.invalidate()
+        archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            self?.archiveStaleTabs()
+        }
+    }
+
+    private func archiveStaleTabs() {
+        guard archiveThreshold != .never else { return }
+        let cutoff = Date().addingTimeInterval(-archiveThreshold.rawValue)
+        let now = Date()
+
+        for space in spaces where !space.isIncognito {
+            let staleTabIDs = space.tabs.compactMap { tab -> UUID? in
+                guard let lastDeselected = tab.lastDeselectedAt, lastDeselected < cutoff else { return nil }
+                return tab.id
+            }
+
+            // Never archive the last remaining tab
+            let remaining = space.tabs.count - staleTabIDs.count
+            let idsToArchive = remaining >= 1 ? staleTabIDs : Array(staleTabIDs.dropLast())
+
+            for tabID in idsToArchive {
+                closeTab(id: tabID, in: space, archivedAt: now)
+            }
+        }
     }
 
     // MARK: - Per-Tab Subscriptions

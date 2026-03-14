@@ -20,6 +20,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Ensure at least one space exists
         TabStore.shared.ensureDefaultSpace()
 
+        // Start periodic tab archival
+        TabStore.shared.startArchiveTimer()
+
         // Set the window's active space from the restored session
         if let restored, TabStore.shared.space(withID: restored.spaceID) != nil {
             wc.setActiveSpace(id: restored.spaceID)
