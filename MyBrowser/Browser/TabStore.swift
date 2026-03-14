@@ -68,8 +68,33 @@ class Space {
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = dataStore
+
+        let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+        config.userContentController.addUserScript(script)
+
         return config
     }
+
+    private static let linkHoverScript = """
+    (function() {
+        var currentLink = null;
+        document.addEventListener('mouseover', function(e) {
+            var el = e.target.closest('a[href]');
+            if (el !== currentLink) {
+                currentLink = el;
+                window.webkit.messageHandlers.linkHover.postMessage(el ? el.href : '');
+            }
+        });
+        document.addEventListener('mouseout', function(e) {
+            if (!currentLink) return;
+            var related = e.relatedTarget;
+            if (!related || !currentLink.contains(related)) {
+                currentLink = null;
+                window.webkit.messageHandlers.linkHover.postMessage('');
+            }
+        });
+    })();
+    """
 
     static let presetColors: [String] = [
         "007AFF", // Blue

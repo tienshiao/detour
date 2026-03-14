@@ -25,6 +25,7 @@ class BrowserWindowController: NSWindowController {
 
     private let findBar = FindBarView()
     private let dragHandle = WindowDragView()
+    private let linkStatusBar = LinkStatusBar()
     private var findBarTopConstraint: NSLayoutConstraint?
     private var webViewTopConstraint: NSLayoutConstraint?
     private var findMatchCount = 0
@@ -100,6 +101,7 @@ class BrowserWindowController: NSWindowController {
         setupSplitView()
         setupDragHandle()
         setupFindBar()
+        setupLinkStatusBar()
 
         window.delegate = self
 
@@ -340,6 +342,18 @@ class BrowserWindowController: NSWindowController {
         ])
     }
 
+    private func setupLinkStatusBar() {
+        linkStatusBar.isHidden = true
+        linkStatusBar.translatesAutoresizingMaskIntoConstraints = false
+        contentContainerView.addSubview(linkStatusBar)
+        NSLayoutConstraint.activate([
+            linkStatusBar.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor, constant: -4),
+            linkStatusBar.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor, constant: 4),
+            linkStatusBar.widthAnchor.constraint(lessThanOrEqualTo: contentContainerView.widthAnchor, multiplier: 0.5),
+            linkStatusBar.heightAnchor.constraint(equalToConstant: 22),
+        ])
+    }
+
     // MARK: - Find Bar Actions
 
     @objc func showFindBar(_ sender: Any?) {
@@ -546,6 +560,8 @@ class BrowserWindowController: NSWindowController {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
+        webView.configuration.userContentController.add(self, name: "linkHover")
 
         webView.translatesAutoresizingMaskIntoConstraints = true
         webView.autoresizingMask = [.width, .height]
@@ -556,6 +572,7 @@ class BrowserWindowController: NSWindowController {
         webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - topOffset)
 
         ownsWebView = true
+        contentContainerView.addSubview(linkStatusBar, positioned: .above, relativeTo: webView)
 
         NotificationCenter.default.post(
             name: .webViewOwnershipChanged,
@@ -596,12 +613,16 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func removeContentViews() {
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekWebView {
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekWebView && subview !== linkStatusBar {
+            if let webView = subview as? WKWebView {
+                webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
+            }
             subview.removeFromSuperview()
         }
         snapshotImageView = nil
         webViewTopConstraint = nil
         ownsWebView = false
+        linkStatusBar.hide()
     }
 
     // MARK: - Window Events
@@ -1334,6 +1355,19 @@ extension BrowserWindowController: FindBarDelegate {
 
     func findBarDidDismiss(_ bar: FindBarView) {
         dismissFindBar(nil)
+    }
+}
+
+// MARK: - WKScriptMessageHandler
+
+extension BrowserWindowController: WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "linkHover", let urlString = message.body as? String else { return }
+        if urlString.isEmpty {
+            linkStatusBar.hide()
+        } else {
+            linkStatusBar.show(url: urlString)
+        }
     }
 }
 
