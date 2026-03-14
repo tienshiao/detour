@@ -459,8 +459,15 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func updateWebViewTopConstraint() {
+        // We use frame-based layout instead of constraints for WKWebView because
+        // Auto Layout constraints break Web Inspector (inspector window fails to attach).
+        let topOffset: CGFloat = findBar.isHidden ? 0 : findBar.frame.height
+        let bounds = contentContainerView.bounds
+
         for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && !(subview is PeekOverlayView) {
-            if subview is WKWebView || subview is NSImageView {
+            if subview is WKWebView {
+                subview.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - topOffset)
+            } else if subview is NSImageView {
                 webViewTopConstraint?.isActive = false
                 if findBar.isHidden {
                     webViewTopConstraint = subview.topAnchor.constraint(equalTo: contentContainerView.topAnchor)
@@ -567,17 +574,14 @@ class BrowserWindowController: NSWindowController {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
         webView.configuration.userContentController.add(self, name: "linkHover")
 
-        webView.translatesAutoresizingMaskIntoConstraints = false
+        // Use frame-based layout (not constraints) for WKWebView — Auto Layout breaks Web Inspector.
+        webView.translatesAutoresizingMaskIntoConstraints = true
+        webView.autoresizingMask = [.width, .height]
         contentContainerView.addSubview(webView, positioned: .below, relativeTo: dragHandle)
 
-        let topAnchor = findBar.isHidden ? contentContainerView.topAnchor : findBar.bottomAnchor
-        webViewTopConstraint = webView.topAnchor.constraint(equalTo: topAnchor)
-        NSLayoutConstraint.activate([
-            webViewTopConstraint!,
-            webView.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor),
-            webView.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
-        ])
+        let topOffset: CGFloat = findBar.isHidden ? 0 : findBar.frame.height
+        let bounds = contentContainerView.bounds
+        webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - topOffset)
 
         ownsWebView = true
         contentContainerView.addSubview(linkStatusBar, positioned: .above, relativeTo: webView)
