@@ -5,7 +5,8 @@ final class TabStoreTests: XCTestCase {
 
     private func makeStore() -> (TabStore, Space) {
         let store = TabStore()
-        let space = store.addSpace(name: "Test", emoji: "🧪", colorHex: "007AFF")
+        let profile = store.addProfile(name: "Test")
+        let space = store.addSpace(name: "Test", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         return (store, space)
     }
 

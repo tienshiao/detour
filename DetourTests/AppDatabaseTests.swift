@@ -4,9 +4,18 @@ import GRDB
 
 final class AppDatabaseTests: XCTestCase {
 
+    private let testProfileID = "test-profile-id"
+
     private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue()
-        return try AppDatabase(dbQueue: dbQueue)
+        let db = try AppDatabase(dbQueue: dbQueue)
+        // Insert a test profile for foreign key references
+        db.saveProfile(ProfileRecord(id: testProfileID, name: "Test", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200))
+        return db
+    }
+
+    private func spaceRecord(id: String, name: String, emoji: String, colorHex: String, sortOrder: Int, selectedTabID: String? = nil) -> SpaceRecord {
+        SpaceRecord(id: id, name: name, emoji: emoji, colorHex: colorHex, sortOrder: sortOrder, selectedTabID: selectedTabID, profileID: testProfileID)
     }
 
     // MARK: - saveSession / loadSession round-trip
@@ -21,7 +30,7 @@ final class AppDatabaseTests: XCTestCase {
 
     func testSaveAndLoadSingleSpaceWithTabs() throws {
         let db = try makeDatabase()
-        let space = SpaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: "t2")
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: "t2")
         let tabs = [
             TabRecord(id: "t1", spaceID: "s1", url: "https://a.com", title: "A", faviconURL: nil, interactionState: nil, sortOrder: 0),
             TabRecord(id: "t2", spaceID: "s1", url: "https://b.com", title: "B", faviconURL: "https://b.com/icon.png", interactionState: nil, sortOrder: 1),
@@ -44,9 +53,9 @@ final class AppDatabaseTests: XCTestCase {
     func testSaveAndLoadMultipleSpacesPreservesOrder() throws {
         let db = try makeDatabase()
         let spaces: [(SpaceRecord, [TabRecord])] = [
-            (SpaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: nil), []),
-            (SpaceRecord(id: "s2", name: "Work", emoji: "💼", colorHex: "FF3B30", sortOrder: 1, selectedTabID: nil), []),
-            (SpaceRecord(id: "s3", name: "Fun", emoji: "🎮", colorHex: "34C759", sortOrder: 2, selectedTabID: nil), []),
+            (spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0), []),
+            (spaceRecord(id: "s2", name: "Work", emoji: "💼", colorHex: "FF3B30", sortOrder: 1), []),
+            (spaceRecord(id: "s3", name: "Fun", emoji: "🎮", colorHex: "34C759", sortOrder: 2), []),
         ]
 
         db.saveSession(spaces: spaces, lastActiveSpaceID: "s2")
@@ -58,7 +67,7 @@ final class AppDatabaseTests: XCTestCase {
 
     func testTabsReturnedInSortOrder() throws {
         let db = try makeDatabase()
-        let space = SpaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: nil)
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
         let tabs = [
             TabRecord(id: "t3", spaceID: "s1", url: nil, title: "Third", faviconURL: nil, interactionState: nil, sortOrder: 2),
             TabRecord(id: "t1", spaceID: "s1", url: nil, title: "First", faviconURL: nil, interactionState: nil, sortOrder: 0),
@@ -74,10 +83,10 @@ final class AppDatabaseTests: XCTestCase {
     func testTabsAreGroupedBySpace() throws {
         let db = try makeDatabase()
         let spaces: [(SpaceRecord, [TabRecord])] = [
-            (SpaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: nil), [
+            (spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0), [
                 TabRecord(id: "t1", spaceID: "s1", url: nil, title: "Tab 1", faviconURL: nil, interactionState: nil, sortOrder: 0),
             ]),
-            (SpaceRecord(id: "s2", name: "Work", emoji: "💼", colorHex: "FF3B30", sortOrder: 1, selectedTabID: nil), [
+            (spaceRecord(id: "s2", name: "Work", emoji: "💼", colorHex: "FF3B30", sortOrder: 1), [
                 TabRecord(id: "t2", spaceID: "s2", url: nil, title: "Tab 2", faviconURL: nil, interactionState: nil, sortOrder: 0),
                 TabRecord(id: "t3", spaceID: "s2", url: nil, title: "Tab 3", faviconURL: nil, interactionState: nil, sortOrder: 1),
             ]),
@@ -97,14 +106,14 @@ final class AppDatabaseTests: XCTestCase {
 
         // Save initial session
         db.saveSession(spaces: [
-            (SpaceRecord(id: "s1", name: "Old", emoji: "👴", colorHex: "000000", sortOrder: 0, selectedTabID: nil), [
+            (spaceRecord(id: "s1", name: "Old", emoji: "👴", colorHex: "000000", sortOrder: 0), [
                 TabRecord(id: "t1", spaceID: "s1", url: nil, title: "Old Tab", faviconURL: nil, interactionState: nil, sortOrder: 0),
             ]),
         ], lastActiveSpaceID: "s1")
 
         // Save new session
         db.saveSession(spaces: [
-            (SpaceRecord(id: "s2", name: "New", emoji: "✨", colorHex: "FFFFFF", sortOrder: 0, selectedTabID: nil), []),
+            (spaceRecord(id: "s2", name: "New", emoji: "✨", colorHex: "FFFFFF", sortOrder: 0), []),
         ], lastActiveSpaceID: "s2")
 
         let result = db.loadSession()!
@@ -125,7 +134,7 @@ final class AppDatabaseTests: XCTestCase {
     func testLoadSessionWithNoActiveSpaceID() throws {
         let db = try makeDatabase()
         db.saveSession(spaces: [
-            (SpaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: nil), []),
+            (spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0), []),
         ], lastActiveSpaceID: nil)
 
         let result = db.loadSession()!
@@ -137,7 +146,7 @@ final class AppDatabaseTests: XCTestCase {
     func testTabPreservesAllFields() throws {
         let db = try makeDatabase()
         let stateData = "fake-state".data(using: .utf8)
-        let space = SpaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: nil)
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
         let tab = TabRecord(id: "t1", spaceID: "s1", url: "https://example.com", title: "Example", faviconURL: "https://example.com/icon.png", interactionState: stateData, sortOrder: 0)
 
         db.saveSession(spaces: [(space, [tab])], lastActiveSpaceID: nil)

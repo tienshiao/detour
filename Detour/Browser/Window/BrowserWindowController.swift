@@ -1046,13 +1046,13 @@ class BrowserWindowController: NSWindowController {
     private func showAddSpacePopover(relativeTo button: NSButton) {
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 240, height: 160)
+        popover.contentSize = NSSize(width: 240, height: 210)
 
         let vc = AddSpaceViewController()
-        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex in
+        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex, profileID in
             popover?.close()
             guard let self else { return }
-            let space = self.store.addSpace(name: name, emoji: emoji, colorHex: colorHex)
+            let space = self.store.addSpace(name: name, emoji: emoji, colorHex: colorHex, profileID: profileID)
             self.setActiveSpace(id: space.id)
         }
         popover.contentViewController = vc
@@ -1064,14 +1064,14 @@ class BrowserWindowController: NSWindowController {
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 240, height: 160)
+        popover.contentSize = NSSize(width: 240, height: 210)
 
         let vc = AddSpaceViewController()
-        vc.existingSpace = (name: space.name, emoji: space.emoji, colorHex: space.colorHex)
-        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex in
+        vc.existingSpace = (name: space.name, emoji: space.emoji, colorHex: space.colorHex, profileID: space.profileID)
+        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex, profileID in
             popover?.close()
             guard let self else { return }
-            self.store.updateSpace(id: spaceID, name: name, emoji: emoji, colorHex: colorHex)
+            self.store.updateSpace(id: spaceID, name: name, emoji: emoji, colorHex: colorHex, profileID: profileID)
             if self.activeSpaceID == spaceID {
                 self.tabSidebar.tintColor = self.store.space(withID: spaceID)?.color
             }
@@ -1340,17 +1340,18 @@ extension BrowserWindowController: TabStoreObserver {
 
     func tabStoreDidUpdateSpaces() {
         if isIncognito {
-            // Incognito windows only show their own space
+            // Incognito windows only show their own space; never switch away
             if let space = activeSpace {
                 tabSidebar.updateSpaceButtons(spaces: [space], activeSpaceID: activeSpaceID)
             }
-        } else {
-            let nonIncognitoSpaces = store.spaces.filter { !$0.isIncognito }
-            tabSidebar.updateSpaceButtons(spaces: nonIncognitoSpaces, activeSpaceID: activeSpaceID)
+            return
         }
 
+        let nonIncognitoSpaces = store.spaces.filter { !$0.isIncognito }
+        tabSidebar.updateSpaceButtons(spaces: nonIncognitoSpaces, activeSpaceID: activeSpaceID)
+
         // If our active space was deleted, switch to the first available space
-        if activeSpaceID == nil || store.space(withID: activeSpaceID!) == nil, let firstSpace = store.spaces.first(where: { !$0.isIncognito }) {
+        if activeSpaceID == nil || store.space(withID: activeSpaceID!) == nil, let firstSpace = nonIncognitoSpaces.first {
             setActiveSpace(id: firstSpace.id)
         }
     }

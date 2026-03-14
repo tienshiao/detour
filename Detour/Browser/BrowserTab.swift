@@ -75,7 +75,7 @@ class BrowserTab: NSObject {
         self.webView?.isInspectable = true
         applyUserAgent()
         setupObservers()
-        NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange), name: .init("UserAgentDidChange"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange(_:)), name: .init("UserAgentDidChange"), object: nil)
     }
 
     /// Creates a tab that adopts an existing, already-loaded WKWebView.
@@ -112,7 +112,7 @@ class BrowserTab: NSObject {
             self.previousHost = url?.host
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
         }
-        NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange), name: .init("UserAgentDidChange"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange(_:)), name: .init("UserAgentDidChange"), object: nil)
     }
 
     convenience init(id: UUID, title: String, archivedInteractionState: Data?, fallbackURL: URL?, faviconURL: URL? = nil, configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
@@ -146,17 +146,19 @@ class BrowserTab: NSObject {
     }
 
     private func applyUserAgent() {
-        switch UserAgentMode.current {
-        case .detour:
+        if let spaceID, let profile = TabStore.shared.space(withID: spaceID)?.profile {
+            webView?.customUserAgent = profile.resolvedUserAgent()
+        } else {
+            // Fallback for tabs not yet assigned to a space
             webView?.customUserAgent = "\(UserAgentMode.safariUserAgent) \(UserAgentMode.detourAppName)"
-        case .safari:
-            webView?.customUserAgent = UserAgentMode.safariUserAgent
-        case .custom:
-            webView?.customUserAgent = UserDefaults.standard.string(forKey: "customUserAgent") ?? ""
         }
     }
 
-    @objc private func userAgentDidChange() {
+    @objc private func userAgentDidChange(_ notification: Notification) {
+        if let profileID = notification.userInfo?["profileID"] as? UUID {
+            guard let spaceID, let space = TabStore.shared.space(withID: spaceID),
+                  space.profileID == profileID else { return }
+        }
         applyUserAgent()
     }
 

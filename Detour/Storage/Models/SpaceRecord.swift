@@ -10,4 +10,5 @@ struct SpaceRecord: Codable, FetchableRecord, PersistableRecord {
     var colorHex: String
     var sortOrder: Int
     var selectedTabID: String?
+    var profileID: String
 }

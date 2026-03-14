@@ -49,6 +49,45 @@ struct AppDatabase {
         }
     }
 
+    // MARK: - Profiles
+
+    func saveProfile(_ record: ProfileRecord) {
+        performWrite("save profile") { db in
+            try record.save(db)
+        }
+    }
+
+    func loadProfiles() -> [ProfileRecord] {
+        performRead("load profiles", default: []) { db in
+            try ProfileRecord.fetchAll(db)
+        }
+    }
+
+    func deleteProfile(id: String) {
+        performWrite("delete profile") { db in
+            // Guard: don't delete if any spaces reference it
+            let count = try SpaceRecord.filter(Column("profileID") == id).fetchCount(db)
+            guard count == 0 else {
+                print("Cannot delete profile \(id): \(count) space(s) still reference it")
+                return
+            }
+            try ProfileRecord.filter(Column("id") == id).deleteAll(db)
+        }
+    }
+
+    // MARK: - Session
+
+    func saveProfiles(_ records: [ProfileRecord]) {
+        performWrite("save profiles") { db in
+            // Delete profiles not in the new set
+            let ids = records.map { $0.id }
+            try ProfileRecord.filter(!ids.contains(Column("id"))).deleteAll(db)
+            for record in records {
+                try record.save(db)
+            }
+        }
+    }
+
     func saveSession(spaces: [(SpaceRecord, [TabRecord])], lastActiveSpaceID: String?) {
         performWrite("save session") { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -266,6 +305,32 @@ struct AppDatabase {
         migrator.registerMigration("v6") { db in
             try db.alter(table: "tab") { t in
                 t.add(column: "parentID", .text)
+            }
+        }
+
+        migrator.registerMigration("v7") { db in
+            // Create profile table
+            try db.create(table: "profile") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("userAgentMode", .integer).notNull().defaults(to: 0)
+                t.column("customUserAgent", .text)
+                t.column("archiveThreshold", .double).notNull().defaults(to: 43200)
+            }
+
+            // Insert default profile
+            let defaultProfileID = UUID().uuidString
+            try db.execute(
+                sql: "INSERT INTO profile (id, name, userAgentMode, archiveThreshold) VALUES (?, 'Default', 0, 43200)",
+                arguments: [defaultProfileID]
+            )
+
+            // Add profileID column to space table referencing the default profile
+            try db.alter(table: "space") { t in
+                t.add(column: "profileID", .text)
+                    .notNull()
+                    .defaults(to: defaultProfileID)
+                    .references("profile")
             }
         }
 

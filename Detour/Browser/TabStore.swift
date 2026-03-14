@@ -47,30 +47,29 @@ class Space {
     var tabs: [BrowserTab] = []
     var pinnedTabs: [BrowserTab] = []
     var selectedTabID: UUID?
-    let isIncognito: Bool
+    var profileID: UUID
+    var profile: Profile?
+
+    var isIncognito: Bool { profile?.isIncognito ?? false }
 
     var color: NSColor {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
 
-    /// Dedicated data store for this space — isolates cookies, localStorage, cache.
-    /// Incognito spaces use a non-persistent store (in-memory only).
-    lazy var dataStore: WKWebsiteDataStore = {
-        if isIncognito {
-            return .nonPersistent()
-        }
-        return WKWebsiteDataStore(forIdentifier: id)
-    }()
+    /// Data store is delegated to the profile.
+    var dataStore: WKWebsiteDataStore {
+        profile!.dataStore
+    }
 
-    init(id: UUID = UUID(), name: String, emoji: String, colorHex: String, isIncognito: Bool = false) {
+    init(id: UUID = UUID(), name: String, emoji: String, colorHex: String, profileID: UUID) {
         self.id = id
         self.name = name
         self.emoji = emoji
         self.colorHex = colorHex
-        self.isIncognito = isIncognito
+        self.profileID = profileID
     }
 
-    /// Returns a fresh WKWebViewConfiguration wired to this space's isolated storage.
+    /// Returns a fresh WKWebViewConfiguration wired to this space's profile data store.
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = dataStore
@@ -121,6 +120,7 @@ class Space {
 class TabStore {
     static let shared = TabStore()
 
+    private(set) var profiles: [Profile] = []
     private(set) var spaces: [Space] = []
     private(set) var closedTabStack: [ClosedTabRecord] = []
     private var observers: [WeakObserver] = []
@@ -140,6 +140,19 @@ class TabStore {
         spaces.first { $0.id == id }
     }
 
+    func profile(withID id: UUID) -> Profile? {
+        profiles.first { $0.id == id }
+    }
+
+    @discardableResult
+    func addProfile(name: String) -> Profile {
+        let profile = Profile(name: name)
+        profiles.append(profile)
+        AppDatabase.shared.saveProfile(profile.toRecord())
+        scheduleSave()
+        return profile
+    }
+
     // MARK: - Session Persistence
 
     func scheduleSave() {
@@ -155,6 +168,10 @@ class TabStore {
         saveWorkItem?.cancel()
         saveWorkItem = nil
 
+        // Save profiles
+        let profileRecords = profiles.filter { !$0.isIncognito }.map { $0.toRecord() }
+        AppDatabase.shared.saveProfiles(profileRecords)
+
         let persistentSpaces = spaces.filter { !$0.isIncognito }
 
         var sessionData: [(SpaceRecord, [TabRecord])] = []
@@ -165,7 +182,8 @@ class TabStore {
                 emoji: space.emoji,
                 colorHex: space.colorHex,
                 sortOrder: spaceIndex,
-                selectedTabID: space.selectedTabID?.uuidString
+                selectedTabID: space.selectedTabID?.uuidString,
+                profileID: space.profileID.uuidString
             )
 
             var tabRecords: [TabRecord] = []
@@ -216,14 +234,25 @@ class TabStore {
     func restoreSession() -> (spaceID: UUID, tabID: UUID?)? {
         guard let session = AppDatabase.shared.loadSession() else { return nil }
 
+        // Load profiles first
+        let profileRecords = AppDatabase.shared.loadProfiles()
+        for record in profileRecords {
+            if let profile = Profile.from(record: record) {
+                profiles.append(profile)
+            }
+        }
+
         for (spaceRecord, tabRecords) in session.spaces {
             guard let spaceID = UUID(uuidString: spaceRecord.id) else { continue }
+            let profileID = UUID(uuidString: spaceRecord.profileID) ?? profiles.first!.id
             let space = Space(
                 id: spaceID,
                 name: spaceRecord.name,
                 emoji: spaceRecord.emoji,
-                colorHex: spaceRecord.colorHex
+                colorHex: spaceRecord.colorHex,
+                profileID: profileID
             )
+            space.profile = profile(withID: profileID)
             if let selID = spaceRecord.selectedTabID {
                 space.selectedTabID = UUID(uuidString: selID)
             }
@@ -357,8 +386,9 @@ class TabStore {
     // MARK: - Space Management
 
     @discardableResult
-    func addSpace(name: String, emoji: String, colorHex: String) -> Space {
-        let space = Space(name: name, emoji: emoji, colorHex: colorHex)
+    func addSpace(name: String, emoji: String, colorHex: String, profileID: UUID) -> Space {
+        let space = Space(name: name, emoji: emoji, colorHex: colorHex, profileID: profileID)
+        space.profile = profile(withID: profileID)
         spaces.append(space)
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
@@ -380,31 +410,49 @@ class TabStore {
         AppDatabase.shared.deleteClosedTabs(spaceID: spaceIDString)
         closedTabStack.removeAll { $0.spaceID == spaceIDString }
 
-        WKWebsiteDataStore.remove(forIdentifier: space.id) { _ in }
+        // Data store belongs to profile now — don't remove it here
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
     }
 
-    func updateSpace(id: UUID, name: String, emoji: String, colorHex: String) {
+    func updateSpace(id: UUID, name: String, emoji: String, colorHex: String, profileID: UUID) {
         guard let space = space(withID: id) else { return }
         space.name = name
         space.emoji = emoji
         space.colorHex = colorHex
+        if space.profileID != profileID {
+            space.profileID = profileID
+            space.profile = profile(withID: profileID)
+        }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
     }
 
     func ensureDefaultSpace() {
         guard spaces.isEmpty else { return }
-        let space = Space(name: "Home", emoji: "🏠", colorHex: "007AFF")
+        let profile = ensureDefaultProfile()
+        let space = Space(name: "Home", emoji: "🏠", colorHex: "007AFF", profileID: profile.id)
+        space.profile = profile
         spaces.append(space)
         lastActiveSpaceID = space.id
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
     }
 
     @discardableResult
+    private func ensureDefaultProfile() -> Profile {
+        if let existing = profiles.first { return existing }
+        let profile = Profile(name: "Default")
+        profiles.append(profile)
+        AppDatabase.shared.saveProfile(profile.toRecord())
+        return profile
+    }
+
+    @discardableResult
     func addIncognitoSpace() -> Space {
-        let space = Space(name: "Private", emoji: "🔒", colorHex: "2C2C2E", isIncognito: true)
+        let profile = Profile(name: "Private", isIncognito: true)
+        profiles.append(profile)
+        let space = Space(name: "Private", emoji: "🔒", colorHex: "2C2C2E", profileID: profile.id)
+        space.profile = profile
         spaces.append(space)
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         return space
@@ -415,6 +463,10 @@ class TabStore {
         let space = spaces.remove(at: index)
         for tab in space.tabs {
             tabSubscriptions.removeValue(forKey: tab.id)
+        }
+        // Remove the transient incognito profile
+        if let profileIndex = profiles.firstIndex(where: { $0.id == space.profileID }) {
+            profiles.remove(at: profileIndex)
         }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
     }
@@ -585,16 +637,7 @@ class TabStore {
 
     // MARK: - Tab Archiving
 
-    enum ArchiveThreshold: TimeInterval, CaseIterable {
-        case twelveHours = 43200
-        case twentyFourHours = 86400
-        case sevenDays = 604800
-        case thirtyDays = 2592000
-        case never = 0
-    }
-
     private var archiveTimer: Timer?
-    private let archiveThreshold: ArchiveThreshold = .twelveHours
 
     func startArchiveTimer() {
         archiveTimer?.invalidate()
@@ -618,11 +661,13 @@ class TabStore {
     }
 
     private func archiveStaleTabs() {
-        guard archiveThreshold != .never else { return }
-        let cutoff = Date().addingTimeInterval(-archiveThreshold.rawValue)
         let now = Date()
 
         for space in spaces where !space.isIncognito {
+            let threshold = space.profile?.archiveThreshold ?? .twelveHours
+            guard threshold != .never else { continue }
+            let cutoff = Date().addingTimeInterval(-threshold.rawValue)
+
             let staleTabIDs = space.tabs.compactMap { tab -> UUID? in
                 guard let lastDeselected = tab.lastDeselectedAt, lastDeselected < cutoff else { return nil }
                 return tab.id
