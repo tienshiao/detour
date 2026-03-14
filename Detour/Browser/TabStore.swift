@@ -78,6 +78,10 @@ class Space {
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         config.userContentController.addUserScript(script)
 
+        // Set Detour app name as default; Safari/Custom modes override via
+        // webView.customUserAgent in BrowserTab.applyUserAgent()
+        config.applicationNameForUserAgent = UserAgentMode.detourAppName
+
         return config
     }
 

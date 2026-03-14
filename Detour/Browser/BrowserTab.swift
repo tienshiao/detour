@@ -65,7 +65,9 @@ class BrowserTab: NSObject {
         self.webView = BrowserWebView(frame: .zero, configuration: configuration)
         super.init()
         self.webView.isInspectable = true
+        applyUserAgent()
         setupObservers()
+        NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange), name: .init("UserAgentDidChange"), object: nil)
     }
 
     /// Creates a tab that adopts an existing, already-loaded WKWebView.
@@ -112,6 +114,22 @@ class BrowserTab: NSObject {
 
     deinit {
         webView.removeObserver(self, forKeyPath: "_isPlayingAudio")
+        NotificationCenter.default.removeObserver(self, name: .init("UserAgentDidChange"), object: nil)
+    }
+
+    private func applyUserAgent() {
+        switch UserAgentMode.current {
+        case .detour:
+            webView.customUserAgent = "\(UserAgentMode.safariUserAgent) \(UserAgentMode.detourAppName)"
+        case .safari:
+            webView.customUserAgent = UserAgentMode.safariUserAgent
+        case .custom:
+            webView.customUserAgent = UserDefaults.standard.string(forKey: "customUserAgent") ?? ""
+        }
+    }
+
+    @objc private func userAgentDidChange() {
+        applyUserAgent()
     }
 
     func toggleMute() {

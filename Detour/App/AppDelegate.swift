@@ -51,6 +51,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    @objc func openSettings() {
+        SettingsWindowController.shared.showWindow(nil)
+    }
+
     @objc func createNewWindow() {
         let wc = BrowserWindowController(incognito: false)
         windowControllers.append(wc)
@@ -131,6 +135,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Detour", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Detour", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthersItem = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
