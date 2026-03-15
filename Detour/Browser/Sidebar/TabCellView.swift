@@ -309,6 +309,7 @@ class TabCellView: NSTableCellView {
             progressView.alphaValue = 1
         }
 
+        guard bounds.width > 0, bounds.height > 0 else { return }
         let rowRect = bounds.insetBy(dx: -6, dy: 1)
         let targetFrame = NSRect(
             x: rowRect.origin.x,
