@@ -15,7 +15,6 @@ class BrowserTab: NSObject {
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var estimatedProgress: Double = 0
-    @Published var latestSnapshot: NSImage?
     @Published var favicon: NSImage?
     private(set) var faviconURL: URL?
     var spaceID: UUID?
@@ -134,8 +133,7 @@ class BrowserTab: NSObject {
 
     func takeSnapshot(completion: ((NSImage?) -> Void)? = nil) {
         guard let webView else { completion?(nil); return }
-        webView.takeSnapshot(with: nil) { [weak self] image, _ in
-            self?.latestSnapshot = image
+        webView.takeSnapshot(with: nil) { image, _ in
             completion?(image)
         }
     }
@@ -289,13 +287,6 @@ class BrowserTab: NSObject {
             cachedInteractionState = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
         }
 
-        // Take a snapshot if we don't have one
-        if latestSnapshot == nil {
-            webView.takeSnapshot(with: nil) { [weak self] image, _ in
-                self?.latestSnapshot = image
-            }
-        }
-
         // Tear down observers and webView
         webView.removeObserver(self, forKeyPath: "_isPlayingAudio")
         faviconCancellables.removeAll()
@@ -352,7 +343,6 @@ class BrowserTab: NSObject {
         lastAttemptedURL = url
         self.url = url
         navigationPending = true
-        latestSnapshot = nil
         if url.host != previousHost {
             favicon = nil
             faviconURL = nil

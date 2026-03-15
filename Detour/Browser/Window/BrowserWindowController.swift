@@ -21,7 +21,7 @@ class BrowserWindowController: NSWindowController {
     private var activeTabSubscriptions = Set<AnyCancellable>()
     private var snapshotImageView: NSImageView?
     private var ownsWebView = false
-    private var snapshotSubscription: AnyCancellable?
+    private var localSnapshot: NSImage?
 
     private let findBar = FindBarView()
     private let dragHandle = WindowDragView()
@@ -492,10 +492,13 @@ class BrowserWindowController: NSWindowController {
         if let previousTab = selectedTab {
             previousTab.lastDeselectedAt = Date()
             if ownsWebView {
-                previousTab.takeSnapshot()
+                previousTab.takeSnapshot { [weak self] image in
+                    self?.localSnapshot = image
+                }
             }
         }
         removeContentViews()
+        localSnapshot = nil
 
         selectedTabID = id
         activeSpace?.selectedTabID = id
@@ -556,16 +559,29 @@ class BrowserWindowController: NSWindowController {
             return
         }
 
-        snapshotSubscription = nil
         removeContentViews()
 
         if let inspector = webView.value(forKey: "_inspector") as? NSObject {
             inspector.perform(Selector(("close")))
         }
 
-        if webView.superview != nil {
-            tab.takeSnapshot()
+        // Snapshot the webView at its current size (the old window's size) before stealing it.
+        // WKWebView.takeSnapshot is async, so we capture the window backing store synchronously.
+        var priorSnapshot: NSImage?
+        if let oldWindow = webView.window {
+            let rectInWindow = webView.convert(webView.bounds, to: nil)
+            let backingRect = oldWindow.convertToScreen(rectInWindow)
+            let screenRect = CGRect(
+                x: backingRect.origin.x,
+                y: NSScreen.screens.first.map { $0.frame.maxY - backingRect.maxY } ?? backingRect.origin.y,
+                width: backingRect.width,
+                height: backingRect.height
+            )
+            if let cgImage = CGWindowListCreateImage(screenRect, .optionIncludingWindow, CGWindowID(oldWindow.windowNumber), [.boundsIgnoreFraming]) {
+                priorSnapshot = NSImage(cgImage: cgImage, size: webView.bounds.size)
+            }
         }
+        let tabID = tab.id
 
         webView.removeFromSuperview()
         webView.navigationDelegate = self
@@ -586,15 +602,18 @@ class BrowserWindowController: NSWindowController {
         ownsWebView = true
         contentContainerView.addSubview(linkStatusBar, positioned: .above, relativeTo: webView)
 
+        var userInfo: [String: Any] = ["tabID": tabID]
+        if let priorSnapshot {
+            userInfo["snapshot"] = priorSnapshot
+        }
         NotificationCenter.default.post(
             name: .webViewOwnershipChanged,
             object: self,
-            userInfo: ["tabID": tab.id]
+            userInfo: userInfo
         )
     }
 
     private func showSnapshot(for tab: BrowserTab) {
-        snapshotSubscription = nil
         removeContentViews()
         ownsWebView = false
 
@@ -614,14 +633,7 @@ class BrowserWindowController: NSWindowController {
         ])
         snapshotImageView = imageView
 
-        imageView.image = tab.latestSnapshot
-
-        snapshotSubscription = tab.$latestSnapshot
-            .compactMap { $0 }
-            .receive(on: RunLoop.main)
-            .sink { [weak imageView] image in
-                imageView?.image = image
-            }
+        imageView.image = localSnapshot
     }
 
     private func removeContentViews() {
@@ -647,6 +659,9 @@ class BrowserWindowController: NSWindowController {
 
         if ownsWebView {
             ownsWebView = false
+            if let image = notification.userInfo?["snapshot"] as? NSImage {
+                localSnapshot = image
+            }
             showSnapshot(for: tab)
         }
     }
@@ -1113,17 +1128,8 @@ extension BrowserWindowController: NSWindowDelegate {
         }
     }
 
-    func windowDidResignKey(_ notification: Notification) {
-        if ownsWebView, let tab = selectedTab {
-            tab.takeSnapshot()
-        }
-    }
-
     func windowWillClose(_ notification: Notification) {
         dismissPeekOverlay()
-        if ownsWebView, let tab = selectedTab {
-            tab.takeSnapshot()
-        }
         store.removeObserver(self)
 
         if isIncognito, let spaceID = incognitoSpaceID {
