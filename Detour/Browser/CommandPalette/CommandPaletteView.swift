@@ -367,6 +367,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         return cell
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        CommandPaletteRowView()
+    }
+
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         rowHeight
     }
@@ -374,6 +378,17 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = tableView.selectedRow
         selectedSuggestionIndex = row >= 0 ? row : nil
+    }
+}
+
+// MARK: - CommandPaletteRowView
+
+private class CommandPaletteRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        let alpha: CGFloat = isEmphasized ? 0.15 : 0.08
+        NSColor.labelColor.withAlphaComponent(alpha).setFill()
+        let rect = bounds.insetBy(dx: 4, dy: 1)
+        NSBezierPath(roundedRect: rect, xRadius: UIConstants.defaultCornerRadius, yRadius: UIConstants.defaultCornerRadius).fill()
     }
 }
 
