@@ -26,7 +26,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     private let textField = CommandPaletteTextField()
     private let shadowContainer = NSView()
-    private let box = NSVisualEffectView()
+    private let box = NSView()
     private let searchIcon = NSImageView()
     private let separator = NSBox()
     private let scrollView = NSScrollView()
@@ -61,23 +61,47 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private func setup() {
         // Shadow container
         shadowContainer.wantsLayer = true
-        shadowContainer.shadow = NSShadow()
-        shadowContainer.layer?.shadowColor = NSColor.black.cgColor
-        shadowContainer.layer?.shadowOpacity = 0.5
-        shadowContainer.layer?.shadowOffset = CGSize(width: 0, height: -2)
-        shadowContainer.layer?.shadowRadius = 20
         shadowContainer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(shadowContainer)
 
-        // Palette box
-        box.material = .hudWindow
-        box.blendingMode = .withinWindow
-        box.state = .active
-        box.wantsLayer = true
-        box.layer?.cornerRadius = 12
-        box.layer?.masksToBounds = true
+        // Palette box (plain container for all content subviews)
         box.translatesAutoresizingMaskIntoConstraints = false
-        shadowContainer.addSubview(box)
+
+        // Effect view backing
+        let effectView: NSView
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = 12
+            glass.translatesAutoresizingMaskIntoConstraints = false
+            glass.contentView = box
+            shadowContainer.addSubview(glass)
+            effectView = glass
+        } else {
+            shadowContainer.shadow = NSShadow()
+            shadowContainer.layer?.shadowColor = NSColor.black.cgColor
+            shadowContainer.layer?.shadowOpacity = 0.5
+            shadowContainer.layer?.shadowOffset = CGSize(width: 0, height: -2)
+            shadowContainer.layer?.shadowRadius = 20
+
+            let vev = NSVisualEffectView()
+            vev.material = .hudWindow
+            vev.blendingMode = .withinWindow
+            vev.state = .active
+            vev.wantsLayer = true
+            vev.layer?.cornerRadius = 12
+            vev.layer?.masksToBounds = true
+            vev.translatesAutoresizingMaskIntoConstraints = false
+            vev.addSubview(box)
+            shadowContainer.addSubview(vev)
+            effectView = vev
+
+            NSLayoutConstraint.activate([
+                box.topAnchor.constraint(equalTo: vev.topAnchor),
+                box.bottomAnchor.constraint(equalTo: vev.bottomAnchor),
+                box.leadingAnchor.constraint(equalTo: vev.leadingAnchor),
+                box.trailingAnchor.constraint(equalTo: vev.trailingAnchor),
+            ])
+        }
 
         // Search icon
         searchIcon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
@@ -144,10 +168,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             centerYConstraint,
             shadowContainer.widthAnchor.constraint(equalToConstant: 500),
 
-            box.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
-            box.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor),
-            box.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
-            box.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
+            effectView.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
+            effectView.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor),
+            effectView.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
+            effectView.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
 
             searchIcon.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
             searchIcon.centerYAnchor.constraint(equalTo: textField.centerYAnchor),
