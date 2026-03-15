@@ -5,6 +5,10 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
     private var archivePopUp: NSPopUpButton!
     private var searchEnginePopUp: NSPopUpButton!
     private var suggestionsSwitch: NSSwitch!
+    private var userAgentPopUp: NSPopUpButton!
+    private var customUserAgentField: NSTextField!
+    private var uaPreviewLabel: NSTextField!
+    private var gridView: NSGridView!
     private var addButton: NSButton!
     private var deleteButton: NSButton!
 
@@ -18,7 +22,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
     }
 
     override func loadView() {
-        preferredContentSize = NSSize(width: 680, height: 380)
+        preferredContentSize = NSSize(width: 680, height: 440)
         let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
         self.view = container
 
@@ -93,35 +97,18 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
         listContainer.addSubview(buttonStack)
 
-        // Right side: settings
-        let rightStack = NSStackView()
-        rightStack.orientation = .vertical
-        rightStack.alignment = .leading
-        rightStack.spacing = spacing
-        rightStack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(rightStack)
-
-        // Search engine row
-        let searchRow = makeRow(label: "Search engine")
+        // Right side: settings (NSGridView for right-aligned labels)
         searchEnginePopUp = NSPopUpButton()
         for engine in SearchEngine.allCases {
             searchEnginePopUp.addItem(withTitle: engine.name)
         }
         searchEnginePopUp.target = self
         searchEnginePopUp.action = #selector(searchEngineChanged)
-        searchRow.addArrangedSubview(searchEnginePopUp)
-        rightStack.addArrangedSubview(searchRow)
 
-        // Search suggestions row
-        let suggestRow = makeRow(label: "Include search engine suggestions")
         suggestionsSwitch = NSSwitch()
         suggestionsSwitch.target = self
         suggestionsSwitch.action = #selector(suggestionsToggled)
-        suggestRow.addArrangedSubview(suggestionsSwitch)
-        rightStack.addArrangedSubview(suggestRow)
 
-        // Archive threshold row
-        let archiveRow = makeRow(label: "Archive tabs after")
         archivePopUp = NSPopUpButton()
         for threshold in ArchiveThreshold.allCases {
             archivePopUp.addItem(withTitle: thresholdTitle(threshold))
@@ -129,8 +116,42 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         }
         archivePopUp.target = self
         archivePopUp.action = #selector(archiveThresholdChanged)
-        archiveRow.addArrangedSubview(archivePopUp)
-        rightStack.addArrangedSubview(archiveRow)
+
+        userAgentPopUp = NSPopUpButton()
+        userAgentPopUp.addItems(withTitles: ["Detour", "Safari", "Custom"])
+        userAgentPopUp.target = self
+        userAgentPopUp.action = #selector(userAgentModeChanged)
+
+        customUserAgentField = NSTextField()
+        customUserAgentField.placeholderString = "Enter custom user agent"
+        customUserAgentField.font = .systemFont(ofSize: 13)
+        customUserAgentField.translatesAutoresizingMaskIntoConstraints = false
+        customUserAgentField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        customUserAgentField.target = self
+        customUserAgentField.action = #selector(customUserAgentChanged)
+
+        uaPreviewLabel = NSTextField(wrappingLabelWithString: "")
+        uaPreviewLabel.font = .systemFont(ofSize: 11)
+        uaPreviewLabel.textColor = .secondaryLabelColor
+        uaPreviewLabel.isSelectable = true
+        uaPreviewLabel.translatesAutoresizingMaskIntoConstraints = false
+        uaPreviewLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+
+        gridView = NSGridView(views: [
+            [makeLabel("Search engine"), searchEnginePopUp],
+            [makeLabel("Search suggestions"), suggestionsSwitch],
+            [makeLabel("Archive tabs after"), archivePopUp],
+            [makeLabel("User agent"), userAgentPopUp],
+            [makeLabel("Custom string"), customUserAgentField],
+            [NSGridCell.emptyContentView, uaPreviewLabel],
+        ])
+        gridView.translatesAutoresizingMaskIntoConstraints = false
+        gridView.rowSpacing = spacing
+        gridView.columnSpacing = 8
+        gridView.column(at: 0).xPlacement = .trailing
+        gridView.column(at: 1).xPlacement = .leading
+        gridView.row(at: 4).isHidden = true  // custom string row
+        container.addSubview(gridView)
 
         // Layout
         NSLayoutConstraint.activate([
@@ -155,9 +176,9 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            rightStack.topAnchor.constraint(equalTo: listContainer.topAnchor, constant: 8),
-            rightStack.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: margin),
-            rightStack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -margin),
+            gridView.topAnchor.constraint(equalTo: listContainer.topAnchor, constant: 8),
+            gridView.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: margin),
+            gridView.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -margin),
         ])
     }
 
@@ -174,14 +195,11 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
 
     // MARK: - Helpers
 
-    private func makeRow(label: String) -> NSStackView {
-        let labelField = NSTextField(labelWithString: label)
-        labelField.font = .systemFont(ofSize: 13)
-        labelField.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        let row = NSStackView(views: [labelField])
-        row.orientation = .horizontal
-        row.spacing = 8
-        return row
+    private func makeLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 13)
+        label.alignment = .right
+        return label
     }
 
     private func thresholdTitle(_ t: ArchiveThreshold) -> String {
@@ -205,6 +223,14 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         }
         searchEnginePopUp.selectItem(at: profile.searchEngine.rawValue)
         suggestionsSwitch.state = profile.searchSuggestionsEnabled ? .on : .off
+        userAgentPopUp.selectItem(at: profile.userAgentMode.rawValue)
+        customUserAgentField.stringValue = profile.customUserAgent ?? ""
+        gridView.row(at: 4).isHidden = profile.userAgentMode != .custom
+        updateUAPreview()
+    }
+
+    private func updateUAPreview() {
+        uaPreviewLabel.stringValue = selectedProfile?.resolvedUserAgent() ?? ""
     }
 
     private func updateButtonStates() {
@@ -232,6 +258,22 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         guard let profile = selectedProfile else { return }
         profile.searchSuggestionsEnabled = (suggestionsSwitch.state == .on)
         TabStore.shared.updateProfile(profile)
+    }
+
+    @objc private func userAgentModeChanged() {
+        guard let profile = selectedProfile,
+              let mode = UserAgentMode(rawValue: userAgentPopUp.indexOfSelectedItem) else { return }
+        profile.userAgentMode = mode
+        gridView.row(at: 4).isHidden = mode != .custom
+        TabStore.shared.updateProfile(profile)
+        updateUAPreview()
+    }
+
+    @objc private func customUserAgentChanged() {
+        guard let profile = selectedProfile else { return }
+        profile.customUserAgent = customUserAgentField.stringValue
+        TabStore.shared.updateProfile(profile)
+        updateUAPreview()
     }
 
     @objc private func addProfileClicked() {
