@@ -74,17 +74,18 @@ class BrowserWindowController: NSWindowController {
             ?? currentTabs.first { $0.id == selectedTabID }
     }
 
+    private static let frameAutosaveName = "BrowserWindow"
+
     convenience init(incognito: Bool) {
+        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let defaultWidth = min(screenFrame.width * 0.8, 1600)
+        let defaultHeight = min(screenFrame.height * 0.85, 1100)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            contentRect: NSRect(x: 0, y: 0, width: defaultWidth, height: defaultHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.center()
-        if !incognito {
-            window.setFrameAutosaveName("BrowserWindow")
-        }
         window.minSize = NSSize(width: 600, height: 400)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -97,6 +98,17 @@ class BrowserWindowController: NSWindowController {
 
         self.init(window: window)
         self.isIncognito = incognito
+
+        if let parentWindow = NSApp.keyWindow,
+           parentWindow.windowController is BrowserWindowController {
+            var frame = parentWindow.frame
+            let cascadeOffset: CGFloat = 22
+            frame.origin.x += cascadeOffset
+            frame.origin.y -= cascadeOffset
+            window.setFrame(frame, display: false)
+        } else if !incognito {
+            window.setFrameAutosaveName(BrowserWindowController.frameAutosaveName)
+        }
 
         setupToolbar()
         setupSplitView()
@@ -220,7 +232,9 @@ class BrowserWindowController: NSWindowController {
             }
         }
 
-        window?.contentViewController = splitViewController
+        splitViewController.view.frame = window?.contentView?.bounds ?? .zero
+        splitViewController.view.autoresizingMask = [.width, .height]
+        window?.contentView?.addSubview(splitViewController.view)
 
         setupEdgeHoverTracking()
     }
