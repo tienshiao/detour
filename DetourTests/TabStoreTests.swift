@@ -1,10 +1,17 @@
 import XCTest
+import GRDB
 @testable import Detour
 
 final class TabStoreTests: XCTestCase {
 
-    private func makeStore() -> (TabStore, Space) {
-        let store = TabStore()
+    private func makeDatabase() throws -> AppDatabase {
+        let dbQueue = try DatabaseQueue()
+        return try AppDatabase(dbQueue: dbQueue)
+    }
+
+    private func makeStore() throws -> (TabStore, Space) {
+        let db = try makeDatabase()
+        let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Test")
         let space = store.addSpace(name: "Test", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         return (store, space)
@@ -23,8 +30,8 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Pin / Unpin
 
-    func testPinTabMovesToPinnedTabs() {
-        let (store, space) = makeStore()
+    func testPinTabMovesToPinnedTabs() throws {
+        let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
 
@@ -37,8 +44,8 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(space.pinnedTabs[0].pinnedTitle, tab.title)
     }
 
-    func testUnpinTabMovesBackToTabs() {
-        let (store, space) = makeStore()
+    func testUnpinTabMovesBackToTabs() throws {
+        let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
         store.pinTab(id: tab.id, in: space)
@@ -52,8 +59,8 @@ final class TabStoreTests: XCTestCase {
         XCTAssertNil(space.tabs[0].pinnedTitle)
     }
 
-    func testPinTabAtSpecificIndex() {
-        let (store, space) = makeStore()
+    func testPinTabAtSpecificIndex() throws {
+        let (store, space) = try makeStore()
         let tab1 = makeSleepingTab(spaceID: space.id)
         let tab2 = makeSleepingTab(spaceID: space.id)
         let tab3 = makeSleepingTab(spaceID: space.id)
@@ -69,8 +76,8 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Move Tab
 
-    func testMoveTabReorders() {
-        let (store, space) = makeStore()
+    func testMoveTabReorders() throws {
+        let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
 
@@ -79,8 +86,8 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), [tabs[1].id, tabs[2].id, tabs[0].id])
     }
 
-    func testMoveTabSameIndexIsNoOp() {
-        let (store, space) = makeStore()
+    func testMoveTabSameIndexIsNoOp() throws {
+        let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
         let originalOrder = space.tabs.map(\.id)
@@ -90,8 +97,8 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), originalOrder)
     }
 
-    func testMoveTabOutOfBoundsIsNoOp() {
-        let (store, space) = makeStore()
+    func testMoveTabOutOfBoundsIsNoOp() throws {
+        let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
 
@@ -103,8 +110,8 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Move Pinned Tab
 
-    func testMovePinnedTabReorders() {
-        let (store, space) = makeStore()
+    func testMovePinnedTabReorders() throws {
+        let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
         for tab in tabs { store.pinTab(id: tab.id, in: space) }
@@ -116,8 +123,8 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Observer Tests
 
-    func testPinTabNotifiesObserver() {
-        let (store, space) = makeStore()
+    func testPinTabNotifiesObserver() throws {
+        let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
         let observer = MockTabStoreObserver()
@@ -130,8 +137,8 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(observer.pinCalls[0].toIndex, 0)
     }
 
-    func testUnpinTabNotifiesObserver() {
-        let (store, space) = makeStore()
+    func testUnpinTabNotifiesObserver() throws {
+        let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
         store.pinTab(id: tab.id, in: space)
@@ -145,8 +152,8 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(observer.unpinCalls[0].toIndex, 0)
     }
 
-    func testMoveTabNotifiesObserver() {
-        let (store, space) = makeStore()
+    func testMoveTabNotifiesObserver() throws {
+        let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
         let observer = MockTabStoreObserver()

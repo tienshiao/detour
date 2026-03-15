@@ -120,6 +120,9 @@ class Space {
 class TabStore {
     static let shared = TabStore()
 
+    private let appDB: AppDatabase
+    private let historyDB: HistoryDatabase
+
     private(set) var profiles: [Profile] = []
     private(set) var spaces: [Space] = []
     private(set) var closedTabStack: [ClosedTabRecord] = []
@@ -134,7 +137,10 @@ class TabStore {
     /// In-memory dedup cache for history: "url|spaceID" -> timestamp
     private var recentHistoryWrites: [String: TimeInterval] = [:]
 
-    init() {}
+    init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared) {
+        self.appDB = appDB
+        self.historyDB = historyDB
+    }
 
     func space(withID id: UUID) -> Space? {
         spaces.first { $0.id == id }
@@ -148,14 +154,15 @@ class TabStore {
     func addProfile(name: String) -> Profile {
         let profile = Profile(name: name)
         profiles.append(profile)
-        AppDatabase.shared.saveProfile(profile.toRecord())
+        appDB.saveProfile(profile.toRecord())
         scheduleSave()
         return profile
     }
 
     func updateProfile(_ profile: Profile) {
-        AppDatabase.shared.saveProfile(profile.toRecord())
+        appDB.saveProfile(profile.toRecord())
         scheduleSave()
+        NotificationCenter.default.post(name: .init("UserAgentDidChange"), object: nil, userInfo: ["profileID": profile.id])
     }
 
     func deleteProfile(id: UUID) {
@@ -163,7 +170,7 @@ class TabStore {
         let hasSpaces = spaces.contains { $0.profileID == id && !$0.isIncognito }
         guard !hasSpaces else { return }
         profiles.removeAll { $0.id == id }
-        AppDatabase.shared.deleteProfile(id: id.uuidString)
+        appDB.deleteProfile(id: id.uuidString)
         scheduleSave()
     }
 
@@ -184,7 +191,7 @@ class TabStore {
 
         // Save profiles
         let profileRecords = profiles.filter { !$0.isIncognito }.map { $0.toRecord() }
-        AppDatabase.shared.saveProfiles(profileRecords)
+        appDB.saveProfiles(profileRecords)
 
         let persistentSpaces = spaces.filter { !$0.isIncognito }
 
@@ -218,7 +225,7 @@ class TabStore {
             sessionData.append((spaceRecord, tabRecords))
         }
 
-        AppDatabase.shared.saveSession(
+        appDB.saveSession(
             spaces: sessionData,
             lastActiveSpaceID: lastActiveSpaceID?.uuidString
         )
@@ -240,16 +247,16 @@ class TabStore {
                     sortOrder: i
                 ))
             }
-            AppDatabase.shared.savePinnedTabs(pinnedRecords, spaceID: space.id.uuidString)
+            appDB.savePinnedTabs(pinnedRecords, spaceID: space.id.uuidString)
         }
     }
 
     /// Restores session. Returns (activeSpaceID, selectedTabID) for the window to use.
     func restoreSession() -> (spaceID: UUID, tabID: UUID?)? {
-        guard let session = AppDatabase.shared.loadSession() else { return nil }
+        guard let session = appDB.loadSession() else { return nil }
 
         // Load profiles first
-        let profileRecords = AppDatabase.shared.loadProfiles()
+        let profileRecords = appDB.loadProfiles()
         for record in profileRecords {
             if let profile = Profile.from(record: record) {
                 profiles.append(profile)
@@ -303,7 +310,7 @@ class TabStore {
             }
 
             // Load pinned tabs
-            let pinnedRecords = AppDatabase.shared.loadPinnedTabs(spaceID: spaceRecord.id)
+            let pinnedRecords = appDB.loadPinnedTabs(spaceID: spaceRecord.id)
             for pinnedRecord in pinnedRecords {
                 guard let tabID = UUID(uuidString: pinnedRecord.id) else { continue }
                 let isSelected = space.selectedTabID == tabID
@@ -339,7 +346,7 @@ class TabStore {
         }
 
         // Load closed tab stack from DB
-        self.closedTabStack = AppDatabase.shared.loadClosedTabs()
+        self.closedTabStack = appDB.loadClosedTabs()
 
         let activeID = session.lastActiveSpaceID.flatMap { UUID(uuidString: $0) } ?? self.spaces.first!.id
         self.lastActiveSpaceID = activeID
@@ -369,7 +376,7 @@ class TabStore {
         }
         recentHistoryWrites[dedupKey] = now
 
-        HistoryDatabase.shared.recordVisit(
+        historyDB.recordVisit(
             url: urlString,
             title: tab.title,
             faviconURL: tab.faviconURL?.absoluteString,
@@ -421,7 +428,7 @@ class TabStore {
         }
         // Clean up closed tab records for this space
         let spaceIDString = id.uuidString
-        AppDatabase.shared.deleteClosedTabs(spaceID: spaceIDString)
+        appDB.deleteClosedTabs(spaceID: spaceIDString)
         closedTabStack.removeAll { $0.spaceID == spaceIDString }
 
         // Data store belongs to profile now — don't remove it here
@@ -457,7 +464,7 @@ class TabStore {
         if let existing = profiles.first { return existing }
         let profile = Profile(name: "Default")
         profiles.append(profile)
-        AppDatabase.shared.saveProfile(profile.toRecord())
+        appDB.saveProfile(profile.toRecord())
         return profile
     }
 
@@ -539,7 +546,7 @@ class TabStore {
                 sortOrder: index,
                 archivedAt: archivedAt?.timeIntervalSince1970
             )
-            AppDatabase.shared.pushClosedTab(record)
+            appDB.pushClosedTab(record)
             closedTabStack.insert(record, at: 0)
             // Trim in-memory stack to match cap
             if closedTabStack.count > 100 {
@@ -629,7 +636,7 @@ class TabStore {
             return nil
         }
         let record = closedTabStack.remove(at: stackIndex)
-        _ = AppDatabase.shared.popClosedTab(spaceID: spaceIDString)
+        _ = appDB.popClosedTab(spaceID: spaceIDString)
 
         let tab = BrowserTab(
             id: UUID(),
