@@ -76,9 +76,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             wc.setActiveSpace(id: firstSpace.id)
         }
 
-        if wc.activeSpaceID == nil || TabStore.shared.space(withID: wc.activeSpaceID!)?.tabs.isEmpty == true {
-            wc.newTab(nil)
-        }
+        wc.deselectAllTabs()
         observeWindowClose(wc)
     }
 

@@ -828,7 +828,7 @@ class BrowserWindowController: NSWindowController {
         contentScrimView = nil
     }
 
-    private func deselectAllTabs() {
+    func deselectAllTabs() {
         selectedTabID = nil
         activeSpace?.selectedTabID = nil
         activeTabSubscriptions.removeAll()
@@ -841,6 +841,7 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.fauxAddressBar.isSecure = true
         tabSidebar.backButton.isEnabled = false
         tabSidebar.forwardButton.isEnabled = false
+        tabSidebar.tableView.deselectAll(nil)
         window?.title = "Detour"
     }
 
