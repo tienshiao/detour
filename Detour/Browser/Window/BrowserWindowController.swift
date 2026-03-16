@@ -533,6 +533,7 @@ class BrowserWindowController: NSWindowController {
             .sink { [weak self] url in
                 self?.tabSidebar.fauxAddressBar.displayText = tab.displayHost
                 self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
+                self?.tabSidebar.reloadButton.isEnabled = url != nil
             }
             .store(in: &activeTabSubscriptions)
 
@@ -854,6 +855,7 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.fauxAddressBar.isSecure = true
         tabSidebar.backButton.isEnabled = false
         tabSidebar.forwardButton.isEnabled = false
+        tabSidebar.reloadButton.isEnabled = false
         tabSidebar.tableView.deselectAll(nil)
         window?.title = "Detour"
     }
