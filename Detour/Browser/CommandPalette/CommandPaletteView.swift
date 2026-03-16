@@ -194,6 +194,23 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         loadDefaultSuggestions()
     }
 
+    var isAnchored: Bool {
+        anchorLeadingConstraint != nil
+    }
+
+    func switchToCentered() {
+        anchorLeadingConstraint?.isActive = false
+        anchorTopConstraint?.isActive = false
+        anchorLeadingConstraint = nil
+        anchorTopConstraint = nil
+        centerXConstraint.isActive = true
+        centerYConstraint.isActive = true
+
+        textField.stringValue = ""
+        window?.makeFirstResponder(textField)
+        loadDefaultSuggestions()
+    }
+
     func dismiss() {
         currentTask?.cancel()
         debounceWorkItem?.cancel()

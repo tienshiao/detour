@@ -770,6 +770,15 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func newTab(_ sender: Any?) {
+        if let palette = commandPaletteView {
+            if palette.isAnchored {
+                commandPaletteNavigatesInPlace = false
+                palette.switchToCentered()
+            } else {
+                dismissCommandPalette()
+            }
+            return
+        }
         commandPaletteNavigatesInPlace = false
         showCommandPalette()
     }
