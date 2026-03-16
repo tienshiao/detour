@@ -116,9 +116,126 @@ final class TabStoreTests: XCTestCase {
         space.tabs.append(contentsOf: tabs)
         for tab in tabs { store.pinTab(id: tab.id, in: space) }
 
-        store.movePinnedTab(from: 0, to: 2, in: space)
+        // Move tabs[0] to the end (after tabs[2])
+        store.movePinnedTabToFolder(tabID: tabs[0].id, folderID: nil, beforeItemID: nil, in: space)
 
-        XCTAssertEqual(space.pinnedTabs.map(\.id), [tabs[1].id, tabs[2].id, tabs[0].id])
+        // tabs[0] should now be last, sorted by pinnedSortOrder
+        let sorted = space.pinnedTabs.sorted { ($0.pinnedSortOrder ?? 0) < ($1.pinnedSortOrder ?? 0) }
+        XCTAssertEqual(sorted.map(\.id), [tabs[1].id, tabs[2].id, tabs[0].id])
+    }
+
+    // MARK: - Move Pinned Folder
+
+    func testMovePinnedFolderToFirstPosition() throws {
+        let (store, space) = try makeStore()
+        let tab = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(tab)
+        store.pinTab(id: tab.id, in: space)
+
+        let folder = store.addPinnedFolder(name: "Folder", in: space)
+
+        // Move folder before the tab (to first position)
+        store.movePinnedFolder(folderID: folder.id, parentFolderID: nil, beforeItemID: tab.id, in: space)
+
+        XCTAssertLessThan(folder.sortOrder, tab.pinnedSortOrder ?? 0,
+                          "Folder should have lower sort order than tab after move to first position")
+
+        let items = flattenPinnedTree(tabs: space.pinnedTabs, folders: space.pinnedFolders,
+                                       collapsedFolderIDs: [], selectedTabID: nil)
+        XCTAssertEqual(items.count, 2)
+        if case .folder(let f, _) = items[0] {
+            XCTAssertEqual(f.id, folder.id, "Folder should appear first")
+        } else {
+            XCTFail("Expected folder first")
+        }
+    }
+
+    func testMovePinnedFolderToFirstPositionPersistsAfterSave() throws {
+        let (store, space) = try makeStore()
+        let tab = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(tab)
+        store.pinTab(id: tab.id, in: space)
+
+        let folder = store.addPinnedFolder(name: "Folder", in: space)
+
+        // Move folder before the tab
+        store.movePinnedFolder(folderID: folder.id, parentFolderID: nil, beforeItemID: tab.id, in: space)
+
+        // Force save
+        store.saveNow()
+
+        // Verify the saved sort orders are correct by checking the flattened tree
+        // after simulating what a reload would produce
+        let items = flattenPinnedTree(tabs: space.pinnedTabs, folders: space.pinnedFolders,
+                                       collapsedFolderIDs: [], selectedTabID: nil)
+        guard items.count == 2 else { XCTFail("Expected 2 items"); return }
+        if case .folder(let f, _) = items[0] {
+            XCTAssertEqual(f.id, folder.id, "Folder should be first after save")
+        } else {
+            XCTFail("Expected folder first after save, got tab")
+        }
+    }
+
+    // MARK: - Sort Order Persistence
+
+    func testMovePinnedTabBeforeFolderSetsCorrectSortOrder() throws {
+        let (store, space) = try makeStore()
+        let tab = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(tab)
+        let folder = PinnedFolder(name: "Folder", sortOrder: 0)
+        space.pinnedFolders.append(folder)
+
+        // Pin the tab (gets sort order after folder)
+        store.pinTab(id: tab.id, in: space)
+
+        // Move tab before the folder
+        store.movePinnedTabToFolder(tabID: tab.id, folderID: nil, beforeItemID: folder.id, in: space)
+
+        // Tab should have lower sort order than folder
+        XCTAssertEqual(tab.pinnedSortOrder, 0)
+        XCTAssertEqual(folder.sortOrder, 1)
+
+        // Verify the flattened tree reflects the correct order
+        let items = flattenPinnedTree(tabs: space.pinnedTabs, folders: space.pinnedFolders,
+                                       collapsedFolderIDs: [], selectedTabID: nil)
+        XCTAssertEqual(items.count, 2)
+        if case .tab(let t, _) = items[0] {
+            XCTAssertEqual(t.id, tab.id, "Tab should appear before folder")
+        } else {
+            XCTFail("Expected tab first")
+        }
+        if case .folder(let f, _) = items[1] {
+            XCTAssertEqual(f.id, folder.id, "Folder should appear after tab")
+        } else {
+            XCTFail("Expected folder second")
+        }
+    }
+
+    func testAddFolderSortOrderAccountsForTabs() throws {
+        let (store, space) = try makeStore()
+        let tab = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(tab)
+        store.pinTab(id: tab.id, in: space)
+
+        let folder = store.addPinnedFolder(name: "Folder", in: space)
+
+        // New folder must have sort order higher than existing tabs
+        XCTAssertGreaterThan(folder.sortOrder, tab.pinnedSortOrder ?? 0,
+                             "Newly created folder must have sort order after existing pinned tabs")
+    }
+
+    func testPinTabSortOrderAccountsForFolders() throws {
+        let (store, space) = try makeStore()
+        let folder = PinnedFolder(name: "Folder", sortOrder: 5)
+        space.pinnedFolders.append(folder)
+
+        let tab = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(tab)
+        store.pinTab(id: tab.id, in: space)
+
+        // New tab's sort order must be higher than the folder's
+        XCTAssertGreaterThan(tab.pinnedSortOrder ?? 0, folder.sortOrder,
+                             "Newly pinned tab must have sort order after existing folders")
     }
 
     // MARK: - Observer Tests

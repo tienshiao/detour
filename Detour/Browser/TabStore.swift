@@ -20,6 +20,9 @@ protocol TabStoreObserver: AnyObject {
     // Pin/unpin atomic notifications
     func tabStoreDidPinTab(_ tab: BrowserTab, fromIndex: Int, toIndex: Int, in space: Space)
     func tabStoreDidUnpinTab(_ tab: BrowserTab, fromIndex: Int, toIndex: Int, in space: Space)
+
+    // Pinned folder notifications
+    func tabStoreDidUpdatePinnedFolders(in space: Space)
 }
 
 extension TabStoreObserver {
@@ -35,6 +38,7 @@ extension TabStoreObserver {
     func tabStoreDidResetPinnedTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
     func tabStoreDidPinTab(_ tab: BrowserTab, fromIndex: Int, toIndex: Int, in space: Space) {}
     func tabStoreDidUnpinTab(_ tab: BrowserTab, fromIndex: Int, toIndex: Int, in space: Space) {}
+    func tabStoreDidUpdatePinnedFolders(in space: Space) {}
 }
 
 // MARK: - Space
@@ -46,6 +50,7 @@ class Space {
     var colorHex: String
     var tabs: [BrowserTab] = []
     var pinnedTabs: [BrowserTab] = []
+    var pinnedFolders: [PinnedFolder] = []
     var selectedTabID: UUID?
     var profileID: UUID
     var profile: Profile?
@@ -230,10 +235,22 @@ class TabStore {
             lastActiveSpaceID: lastActiveSpaceID?.uuidString
         )
 
-        // Save pinned tabs separately
+        // Save pinned folders and tabs together in one transaction (tabs FK → folders)
         for space in persistentSpaces {
+            var folderRecords: [PinnedFolderRecord] = []
+            for folder in space.pinnedFolders {
+                folderRecords.append(PinnedFolderRecord(
+                    id: folder.id.uuidString,
+                    spaceID: space.id.uuidString,
+                    parentFolderID: folder.parentFolderID?.uuidString,
+                    name: folder.name,
+                    isCollapsed: folder.isCollapsed,
+                    sortOrder: folder.sortOrder
+                ))
+            }
+
             var pinnedRecords: [PinnedTabRecord] = []
-            for (i, tab) in space.pinnedTabs.enumerated() {
+            for tab in space.pinnedTabs {
                 let stateData = tab.currentInteractionStateData()
                 pinnedRecords.append(PinnedTabRecord(
                     id: tab.id.uuidString,
@@ -244,10 +261,12 @@ class TabStore {
                     title: tab.title,
                     faviconURL: tab.faviconURL?.absoluteString,
                     interactionState: stateData,
-                    sortOrder: i
+                    sortOrder: tab.pinnedSortOrder ?? 0,
+                    folderID: tab.folderID?.uuidString
                 ))
             }
-            appDB.savePinnedTabs(pinnedRecords, spaceID: space.id.uuidString)
+
+            appDB.savePinnedFoldersAndTabs(folders: folderRecords, tabs: pinnedRecords, spaceID: space.id.uuidString)
         }
     }
 
@@ -309,6 +328,19 @@ class TabStore {
                 self.subscribeToTab(tab, spaceID: spaceID)
             }
 
+            // Load pinned folders first
+            let folderRecords = appDB.loadPinnedFolders(spaceID: spaceRecord.id)
+            for folderRecord in folderRecords {
+                let folder = PinnedFolder(
+                    id: UUID(uuidString: folderRecord.id) ?? UUID(),
+                    name: folderRecord.name,
+                    parentFolderID: folderRecord.parentFolderID.flatMap { UUID(uuidString: $0) },
+                    isCollapsed: folderRecord.isCollapsed,
+                    sortOrder: folderRecord.sortOrder
+                )
+                space.pinnedFolders.append(folder)
+            }
+
             // Load pinned tabs
             let pinnedRecords = appDB.loadPinnedTabs(spaceID: spaceRecord.id)
             for pinnedRecord in pinnedRecords {
@@ -337,6 +369,8 @@ class TabStore {
                 tab.isPinned = true
                 tab.pinnedURL = URL(string: pinnedRecord.pinnedURL)
                 tab.pinnedTitle = pinnedRecord.pinnedTitle
+                tab.folderID = pinnedRecord.folderID.flatMap { UUID(uuidString: $0) }
+                tab.pinnedSortOrder = pinnedRecord.sortOrder
                 tab.spaceID = spaceID
                 space.pinnedTabs.append(tab)
                 self.subscribeToTab(tab, spaceID: spaceID)
@@ -579,6 +613,9 @@ class TabStore {
         tab.isPinned = true
         tab.pinnedURL = tab.url
         tab.pinnedTitle = tab.title
+        let maxTabOrder = space.pinnedTabs.compactMap(\.pinnedSortOrder).max() ?? -1
+        let maxFolderOrder = space.pinnedFolders.map(\.sortOrder).max() ?? -1
+        tab.pinnedSortOrder = max(maxTabOrder, maxFolderOrder) + 1
         let insertAt = min(destinationIndex ?? space.pinnedTabs.count, space.pinnedTabs.count)
         space.pinnedTabs.insert(tab, at: insertAt)
         notifyObservers { $0.tabStoreDidPinTab(tab, fromIndex: index, toIndex: insertAt, in: space) }
@@ -591,6 +628,8 @@ class TabStore {
         tab.isPinned = false
         tab.pinnedURL = nil
         tab.pinnedTitle = nil
+        tab.folderID = nil
+        tab.pinnedSortOrder = nil
         let insertAt = min(destinationIndex ?? 0, space.tabs.count)
         space.tabs.insert(tab, at: insertAt)
         notifyObservers { $0.tabStoreDidUnpinTab(tab, fromIndex: index, toIndex: insertAt, in: space) }
@@ -613,13 +652,127 @@ class TabStore {
         scheduleSave()
     }
 
-    func movePinnedTab(from sourceIndex: Int, to destinationIndex: Int, in space: Space) {
-        guard sourceIndex != destinationIndex,
-              sourceIndex >= 0, sourceIndex < space.pinnedTabs.count,
-              destinationIndex >= 0, destinationIndex < space.pinnedTabs.count else { return }
-        let tab = space.pinnedTabs.remove(at: sourceIndex)
-        space.pinnedTabs.insert(tab, at: destinationIndex)
-        notifyObservers { $0.tabStoreDidReorderPinnedTabs(in: space) }
+    // MARK: - Pinned Folder Mutations
+
+    @discardableResult
+    func addPinnedFolder(name: String, parentFolderID: UUID? = nil, in space: Space) -> PinnedFolder {
+        let maxFolderOrder = space.pinnedFolders.map(\.sortOrder).max() ?? -1
+        let maxTabOrder = space.pinnedTabs.compactMap(\.pinnedSortOrder).max() ?? -1
+        let folder = PinnedFolder(name: name, parentFolderID: parentFolderID, sortOrder: max(maxFolderOrder, maxTabOrder) + 1)
+        space.pinnedFolders.append(folder)
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+        return folder
+    }
+
+    func deletePinnedFolder(id: UUID, in space: Space) {
+        guard let folder = space.pinnedFolders.first(where: { $0.id == id }) else { return }
+        let parentID = folder.parentFolderID
+
+        // Reparent direct children (tabs and folders) to the deleted folder's parent
+        for tab in space.pinnedTabs where tab.folderID == id {
+            tab.folderID = parentID
+        }
+        for child in space.pinnedFolders where child.parentFolderID == id {
+            child.parentFolderID = parentID
+        }
+
+        space.pinnedFolders.removeAll { $0.id == id }
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    func renamePinnedFolder(id: UUID, name: String, in space: Space) {
+        guard let folder = space.pinnedFolders.first(where: { $0.id == id }) else { return }
+        folder.name = name
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    func togglePinnedFolderCollapsed(id: UUID, in space: Space) {
+        guard let folder = space.pinnedFolders.first(where: { $0.id == id }) else { return }
+        folder.isCollapsed.toggle()
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    func movePinnedTabToFolder(tabID: UUID, folderID: UUID?, beforeItemID: UUID? = nil, in space: Space) {
+        guard let tab = space.pinnedTabs.first(where: { $0.id == tabID }) else { return }
+        tab.folderID = folderID
+
+        // Collect all sibling items (tabs + folders) at the target level, excluding the moved tab
+        struct SiblingItem {
+            let id: UUID
+            let sortOrder: Int
+            enum Kind { case tab(BrowserTab), folder(PinnedFolder) }
+            let kind: Kind
+        }
+
+        var siblings: [SiblingItem] = []
+        for t in space.pinnedTabs where t.folderID == folderID && t.id != tabID {
+            siblings.append(SiblingItem(id: t.id, sortOrder: t.pinnedSortOrder ?? 0, kind: .tab(t)))
+        }
+        for f in space.pinnedFolders where f.parentFolderID == folderID {
+            siblings.append(SiblingItem(id: f.id, sortOrder: f.sortOrder, kind: .folder(f)))
+        }
+        siblings.sort { $0.sortOrder < $1.sortOrder }
+
+        // Insert the moved tab at the right position
+        let movedItem = SiblingItem(id: tab.id, sortOrder: 0, kind: .tab(tab))
+        if let beforeItemID, let insertionPoint = siblings.firstIndex(where: { $0.id == beforeItemID }) {
+            siblings.insert(movedItem, at: insertionPoint)
+        } else {
+            siblings.append(movedItem)
+        }
+
+        // Renumber all siblings
+        for (i, sibling) in siblings.enumerated() {
+            switch sibling.kind {
+            case .tab(let t): t.pinnedSortOrder = i
+            case .folder(let f): f.sortOrder = i
+            }
+        }
+
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    func movePinnedFolder(folderID: UUID, parentFolderID: UUID?, beforeItemID: UUID? = nil, in space: Space) {
+        guard let folder = space.pinnedFolders.first(where: { $0.id == folderID }) else { return }
+        folder.parentFolderID = parentFolderID
+
+        // Collect all sibling items at the target level, excluding the moved folder
+        struct SiblingItem {
+            let id: UUID
+            let sortOrder: Int
+            enum Kind { case tab(BrowserTab), folder(PinnedFolder) }
+            let kind: Kind
+        }
+
+        var siblings: [SiblingItem] = []
+        for t in space.pinnedTabs where t.folderID == parentFolderID {
+            siblings.append(SiblingItem(id: t.id, sortOrder: t.pinnedSortOrder ?? 0, kind: .tab(t)))
+        }
+        for f in space.pinnedFolders where f.parentFolderID == parentFolderID && f.id != folderID {
+            siblings.append(SiblingItem(id: f.id, sortOrder: f.sortOrder, kind: .folder(f)))
+        }
+        siblings.sort { $0.sortOrder < $1.sortOrder }
+
+        let movedItem = SiblingItem(id: folder.id, sortOrder: 0, kind: .folder(folder))
+        if let beforeItemID, let insertionPoint = siblings.firstIndex(where: { $0.id == beforeItemID }) {
+            siblings.insert(movedItem, at: insertionPoint)
+        } else {
+            siblings.append(movedItem)
+        }
+
+        for (i, sibling) in siblings.enumerated() {
+            switch sibling.kind {
+            case .tab(let t): t.pinnedSortOrder = i
+            case .folder(let f): f.sortOrder = i
+            }
+        }
+
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
         scheduleSave()
     }
 

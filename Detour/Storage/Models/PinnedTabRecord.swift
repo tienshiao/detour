@@ -13,4 +13,5 @@ struct PinnedTabRecord: Codable, FetchableRecord, PersistableRecord {
     var faviconURL: String?
     var interactionState: Data?
     var sortOrder: Int
+    var folderID: String?
 }

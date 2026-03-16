@@ -36,6 +36,8 @@ class BrowserTab: NSObject {
     var isPinned: Bool = false
     var pinnedURL: URL?
     var pinnedTitle: String?
+    var folderID: UUID?
+    var pinnedSortOrder: Int?
 
     var pinnedDisplayTitle: String {
         guard isPinned, let pinnedTitle else { return title }

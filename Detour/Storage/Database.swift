@@ -200,6 +200,48 @@ struct AppDatabase {
         }
     }
 
+    // MARK: - Pinned Folders
+
+    func savePinnedFolders(_ records: [PinnedFolderRecord], spaceID: String) {
+        performWrite("save pinned folders") { db in
+            try PinnedFolderRecord
+                .filter(Column("spaceID") == spaceID)
+                .deleteAll(db)
+            for record in records {
+                try record.insert(db)
+            }
+        }
+    }
+
+    /// Saves both folders and tabs in a single transaction to avoid FK violations.
+    func savePinnedFoldersAndTabs(folders: [PinnedFolderRecord], tabs: [PinnedTabRecord], spaceID: String) {
+        performWrite("save pinned folders and tabs") { db in
+            // Delete tabs first (they reference folders), then folders
+            try PinnedTabRecord
+                .filter(Column("spaceID") == spaceID)
+                .deleteAll(db)
+            try PinnedFolderRecord
+                .filter(Column("spaceID") == spaceID)
+                .deleteAll(db)
+            // Insert folders first (tabs reference them)
+            for record in folders {
+                try record.insert(db)
+            }
+            for record in tabs {
+                try record.insert(db)
+            }
+        }
+    }
+
+    func loadPinnedFolders(spaceID: String) -> [PinnedFolderRecord] {
+        performRead("load pinned folders", default: []) { db in
+            try PinnedFolderRecord
+                .filter(Column("spaceID") == spaceID)
+                .order(Column("sortOrder"))
+                .fetchAll(db)
+        }
+    }
+
     func loadSession() -> (spaces: [(SpaceRecord, [TabRecord])], lastActiveSpaceID: String?)? {
         performRead("load session", default: nil) { db in
             let spaceRecords = try SpaceRecord.order(Column("sortOrder")).fetchAll(db)
@@ -337,6 +379,24 @@ struct AppDatabase {
             try db.alter(table: "profile") { t in
                 t.add(column: "searchEngine", .integer).notNull().defaults(to: 0)
                 t.add(column: "searchSuggestionsEnabled", .boolean).notNull().defaults(to: true)
+            }
+        }
+
+        migrator.registerMigration("v9") { db in
+            try db.create(table: "pinnedFolder") { t in
+                t.primaryKey("id", .text)
+                t.column("spaceID", .text).notNull()
+                    .references("space", onDelete: .cascade)
+                t.column("parentFolderID", .text)
+                    .references("pinnedFolder", onDelete: .setNull)
+                t.column("name", .text).notNull()
+                t.column("isCollapsed", .boolean).notNull().defaults(to: false)
+                t.column("sortOrder", .integer).notNull()
+            }
+
+            try db.alter(table: "pinnedTab") { t in
+                t.add(column: "folderID", .text)
+                    .references("pinnedFolder", onDelete: .setNull)
             }
         }
 

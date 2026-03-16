@@ -133,6 +133,7 @@ class BrowserWindowController: NSWindowController {
             window.title = "Private Browsing"
         } else {
             tabSidebar.activeSpaceID = activeSpaceID
+            tabSidebar.pinnedFolders = activeSpace?.pinnedFolders ?? []
             tabSidebar.pinnedTabs = activeSpace?.pinnedTabs ?? []
             tabSidebar.tabs = currentTabs
 
@@ -174,7 +175,7 @@ class BrowserWindowController: NSWindowController {
             store.lastActiveSpaceID = id
         }
 
-        tabSidebar.setTabs(pinned: space.pinnedTabs, normal: space.tabs)
+        tabSidebar.applyState(pinnedTabs: space.pinnedTabs, pinnedFolders: space.pinnedFolders, tabs: space.tabs)
         tabSidebar.tintColor = space.color
         tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: id)
 
@@ -538,6 +539,11 @@ class BrowserWindowController: NSWindowController {
                 self?.window?.title = title
             }
             .store(in: &activeTabSubscriptions)
+
+        if let space = activeSpace {
+            tabSidebar.applyState(pinnedTabs: space.pinnedTabs, pinnedFolders: space.pinnedFolders,
+                                  tabs: currentTabs, selectedTabID: id)
+        }
 
         if let index = activeSpace?.pinnedTabs.firstIndex(where: { $0.id == id }) {
             tabSidebar.selectedPinnedTabIndex = index

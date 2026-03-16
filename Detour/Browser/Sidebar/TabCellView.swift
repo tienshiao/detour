@@ -38,9 +38,15 @@ class TabCellView: NSTableCellView {
     private var titleTrailingDefault: NSLayoutConstraint!
     private var titleTrailingHover: NSLayoutConstraint!
     private var titleLeadingConstraint: NSLayoutConstraint!
+    private var faviconLeadingConstraint: NSLayoutConstraint!
     private let hoverBackground = NSView()
     var onClose: (() -> Void)?
     var onToggleMute: (() -> Void)?
+    var indentLevel: Int = 0 {
+        didSet {
+            faviconLeadingConstraint.constant = 4 + CGFloat(indentLevel) * 16
+        }
+    }
     private var audioPlaying = false
     private var isHovered = false
 
@@ -115,9 +121,10 @@ class TabCellView: NSTableCellView {
         titleTrailingDefault = titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
         titleTrailingHover = titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4)
         titleLeadingConstraint = titleLabel.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
+        faviconLeadingConstraint = faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
 
         NSLayoutConstraint.activate([
-            faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            faviconLeadingConstraint,
             faviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             faviconImageView.widthAnchor.constraint(equalToConstant: 16),
             faviconImageView.heightAnchor.constraint(equalToConstant: 16),
@@ -150,18 +157,21 @@ class TabCellView: NSTableCellView {
         isHovered = false
         closeButton.isHidden = true
         hoverBackground.isHidden = true
+        indentLevel = 0
         updateLayoutState()
     }
 
     override func layout() {
         super.layout()
+        guard bounds.width > 12, bounds.height > 2 else { return }
         hoverBackground.frame = bounds.insetBy(dx: -6, dy: 1)
         // Progress bar spans the full row area (same rect as hover background)
         let rowRect = bounds.insetBy(dx: -6, dy: 1)
+        let progressWidth = rowRect.width * max(currentProgress, 0)
         progressView.frame = NSRect(
             x: rowRect.origin.x,
             y: rowRect.origin.y,
-            width: rowRect.width * currentProgress,
+            width: progressWidth.isFinite ? progressWidth : 0,
             height: rowRect.height
         )
     }

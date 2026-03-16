@@ -64,11 +64,6 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.moveTab(from: sourceIndex, to: adjustedDestination, in: space)
     }
 
-    func tabSidebar(_ sidebar: TabSidebarViewController, didMovePinnedTabFrom sourceIndex: Int, to destinationIndex: Int) {
-        guard let space = activeSpace else { return }
-        store.movePinnedTab(from: sourceIndex, to: destinationIndex, in: space)
-    }
-
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPinAt index: Int, destinationIndex: Int) {
         guard let space = activeSpace, index >= 0, index < space.tabs.count else { return }
         let tab = space.tabs[index]
@@ -167,6 +162,36 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.spaces.filter { !$0.isIncognito }.map {
             (id: $0.id, name: $0.name, emoji: $0.emoji, isCurrent: $0.id == activeSpaceID)
         }
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID) {
+        guard let space = activeSpace else { return }
+        store.togglePinnedFolderCollapsed(id: folderID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNewFolderIn parentFolderID: UUID?) {
+        guard let space = activeSpace else { return }
+        store.addPinnedFolder(name: "New Folder", parentFolderID: parentFolderID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedFolder folderID: UUID, newName: String) {
+        guard let space = activeSpace else { return }
+        store.renamePinnedFolder(id: folderID, name: newName, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeletePinnedFolder folderID: UUID) {
+        guard let space = activeSpace else { return }
+        store.deletePinnedFolder(id: folderID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMovePinnedTabToFolder tabID: UUID, folderID: UUID?, beforeItemID: UUID?) {
+        guard let space = activeSpace else { return }
+        store.movePinnedTabToFolder(tabID: tabID, folderID: folderID, beforeItemID: beforeItemID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMovePinnedFolder folderID: UUID, parentFolderID: UUID?, beforeItemID: UUID?) {
+        guard let space = activeSpace else { return }
+        store.movePinnedFolder(folderID: folderID, parentFolderID: parentFolderID, beforeItemID: beforeItemID, in: space)
     }
 
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
