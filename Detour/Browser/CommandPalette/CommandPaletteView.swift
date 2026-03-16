@@ -310,12 +310,17 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     private func moveSelection(by delta: Int) {
         guard !suggestions.isEmpty else { return }
-        let current = selectedSuggestionIndex ?? -1
+        let oldIndex = selectedSuggestionIndex
+        let current = oldIndex ?? -1
         var next = current + delta
         if next < 0 { next = suggestions.count - 1 }
         if next >= suggestions.count { next = 0 }
         selectedSuggestionIndex = next
-        tableView.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+
+        if let old = oldIndex {
+            (tableView.rowView(atRow: old, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = false
+        }
+        (tableView.rowView(atRow: next, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = true
         tableView.scrollRowToVisible(next)
     }
 
@@ -374,22 +379,24 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        CommandPaletteRowView()
+        let rowView = CommandPaletteRowView()
+        rowView.isKeyboardSelected = (row == selectedSuggestionIndex)
+        return rowView
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         rowHeight
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        let row = tableView.selectedRow
-        selectedSuggestionIndex = row >= 0 ? row : nil
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        false
     }
 }
 
 // MARK: - CommandPaletteRowView
 
 private class CommandPaletteRowView: NSTableRowView {
+    var isKeyboardSelected = false { didSet { needsDisplay = true } }
     private var isHovered = false
 
     override func updateTrackingAreas() {
@@ -417,18 +424,15 @@ private class CommandPaletteRowView: NSTableRowView {
     }
 
     override func drawBackground(in dirtyRect: NSRect) {
-        if isHovered && !isSelected {
+        if isKeyboardSelected {
+            NSColor.labelColor.withAlphaComponent(0.12).setFill()
+            let rect = bounds.insetBy(dx: 4, dy: 1)
+            NSBezierPath(roundedRect: rect, xRadius: UIConstants.defaultCornerRadius, yRadius: UIConstants.defaultCornerRadius).fill()
+        } else if isHovered {
             NSColor.labelColor.withAlphaComponent(0.06).setFill()
             let rect = bounds.insetBy(dx: 4, dy: 1)
             NSBezierPath(roundedRect: rect, xRadius: UIConstants.defaultCornerRadius, yRadius: UIConstants.defaultCornerRadius).fill()
         }
-    }
-
-    override func drawSelection(in dirtyRect: NSRect) {
-        let alpha: CGFloat = isEmphasized ? 0.15 : 0.08
-        NSColor.labelColor.withAlphaComponent(alpha).setFill()
-        let rect = bounds.insetBy(dx: 4, dy: 1)
-        NSBezierPath(roundedRect: rect, xRadius: UIConstants.defaultCornerRadius, yRadius: UIConstants.defaultCornerRadius).fill()
     }
 }
 
