@@ -15,6 +15,9 @@ extension BrowserWindowController: TabStoreObserver {
 
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {
         guard space.id == activeSpaceID else { return }
+        if tab.id == selectedTabID, window?.isKeyWindow == false {
+            deselectAllTabs()
+        }
         tabSidebar.applyState(pinnedTabs: space.pinnedTabs, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
     }
@@ -43,6 +46,9 @@ extension BrowserWindowController: TabStoreObserver {
 
     func tabStoreDidRemovePinnedTab(_ tab: BrowserTab, at index: Int, in space: Space) {
         guard space.id == activeSpaceID else { return }
+        if tab.id == selectedTabID, window?.isKeyWindow == false {
+            deselectAllTabs()
+        }
         tabSidebar.applyState(pinnedTabs: space.pinnedTabs, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
     }
