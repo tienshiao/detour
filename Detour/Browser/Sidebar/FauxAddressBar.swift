@@ -2,22 +2,21 @@ import AppKit
 
 class FauxAddressBar: NSView {
     var displayText: String = "" {
-        didSet { label.stringValue = displayText }
+        didSet {
+            label.stringValue = displayText
+            updateLeadingIcon()
+        }
     }
 
     var isSecure: Bool = true {
-        didSet {
-            lockIcon.isHidden = isSecure
-            labelLeadingDefault.isActive = isSecure
-            labelLeadingAfterIcon.isActive = !isSecure
-        }
+        didSet { updateLeadingIcon() }
     }
 
     var onClick: (() -> Void)?
     var onCopyURL: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
-    private let lockIcon = NSImageView()
+    private let leadingIcon = NSImageView()
     private let copyButton = NSButton()
     private var labelLeadingDefault: NSLayoutConstraint!
     private var labelLeadingAfterIcon: NSLayoutConstraint!
@@ -38,20 +37,23 @@ class FauxAddressBar: NSView {
 
         label.font = .systemFont(ofSize: NSFont.systemFontSize)
         label.textColor = .secondaryLabelColor
+        label.placeholderAttributedString = NSAttributedString(
+            string: "Where do you want to go?",
+            attributes: [
+                .foregroundColor: NSColor.tertiaryLabelColor,
+                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            ]
+        )
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
 
-        lockIcon.image = NSImage(systemSymbolName: "lock.trianglebadge.exclamationmark", accessibilityDescription: "Insecure connection")
-        lockIcon.contentTintColor = .systemRed
-        lockIcon.toolTip = "This connection is not secure"
-        lockIcon.translatesAutoresizingMaskIntoConstraints = false
-        lockIcon.isHidden = true
-        lockIcon.setContentHuggingPriority(.required, for: .horizontal)
-        lockIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
-        addSubview(lockIcon)
+        leadingIcon.translatesAutoresizingMaskIntoConstraints = false
+        leadingIcon.setContentHuggingPriority(.required, for: .horizontal)
+        leadingIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
+        addSubview(leadingIcon)
 
         copyButton.bezelStyle = .inline
         copyButton.isBordered = false
@@ -66,17 +68,43 @@ class FauxAddressBar: NSView {
         addSubview(copyButton)
 
         labelLeadingDefault = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
-        labelLeadingAfterIcon = label.leadingAnchor.constraint(equalTo: lockIcon.trailingAnchor, constant: 4)
+        labelLeadingAfterIcon = label.leadingAnchor.constraint(equalTo: leadingIcon.trailingAnchor, constant: 6)
 
         NSLayoutConstraint.activate([
-            lockIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            lockIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            labelLeadingDefault,
+            leadingIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            leadingIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            leadingIcon.widthAnchor.constraint(equalToConstant: 14),
+            leadingIcon.heightAnchor.constraint(equalToConstant: 14),
             label.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -4),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             copyButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             copyButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+
+        updateLeadingIcon()
+    }
+
+    private func updateLeadingIcon() {
+        if displayText.isEmpty {
+            leadingIcon.isHidden = false
+            leadingIcon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+            leadingIcon.contentTintColor = .tertiaryLabelColor
+            leadingIcon.toolTip = nil
+            labelLeadingDefault.isActive = false
+            labelLeadingAfterIcon.isActive = true
+        } else if !isSecure {
+            leadingIcon.isHidden = false
+            leadingIcon.image = NSImage(systemSymbolName: "lock.trianglebadge.exclamationmark", accessibilityDescription: "Insecure connection")
+            leadingIcon.contentTintColor = .systemRed
+            leadingIcon.toolTip = "This connection is not secure"
+            labelLeadingDefault.isActive = false
+            labelLeadingAfterIcon.isActive = true
+        } else {
+            leadingIcon.isHidden = true
+            leadingIcon.toolTip = nil
+            labelLeadingAfterIcon.isActive = false
+            labelLeadingDefault.isActive = true
+        }
     }
 
     @objc private func copyClicked() {
@@ -90,6 +118,7 @@ class FauxAddressBar: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        guard !displayText.isEmpty else { return }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             copyButton.animator().alphaValue = 1
@@ -106,8 +135,8 @@ class FauxAddressBar: NSView {
     override func resetCursorRects() {
         addCursorRect(label.frame, cursor: .iBeam)
         addCursorRect(copyButton.frame, cursor: .arrow)
-        if !lockIcon.isHidden {
-            addCursorRect(lockIcon.frame, cursor: .arrow)
+        if !leadingIcon.isHidden {
+            addCursorRect(leadingIcon.frame, cursor: .arrow)
         }
     }
 
