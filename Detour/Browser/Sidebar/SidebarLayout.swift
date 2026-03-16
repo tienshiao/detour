@@ -140,15 +140,21 @@ private func computeMoves(
     let oldIndices = pairs.map(\.oldIdx)
     let stableSet = longestIncreasingSubsequenceIndices(oldIndices)
 
-    // Items NOT in the LIS need to be moved
+    // Items NOT in the LIS need to be moved.
+    // Sort by destination ascending — NSTableView processes moves sequentially,
+    // so upward moves (lower destination) must be applied first.
     var moves: [(from: Int, to: Int)] = []
     for (i, pair) in pairs.enumerated() where !stableSet.contains(i) {
         moves.append((from: oldRow(pair.oldIdx), to: newRow(pair.newIdx)))
     }
+    moves.sort { $0.to < $1.to }
     return moves
 }
 
 /// Returns the set of indices in `arr` that form the Longest Increasing Subsequence.
+/// When multiple LIS of equal length exist, prefers keeping items with lower values
+/// (lower old indices) stable — this makes the "moved" items be the ones the user
+/// dragged, and produces upward moves which work correctly with sequential processing.
 /// O(n²) — fine for sidebar-sized lists.
 private func longestIncreasingSubsequenceIndices(_ arr: [Int]) -> Set<Int> {
     let n = arr.count
@@ -166,9 +172,10 @@ private func longestIncreasingSubsequenceIndices(_ arr: [Int]) -> Set<Int> {
         }
     }
 
-    // Trace back from the best endpoint
+    // Trace back from the best endpoint — prefer the latest index (>=)
+    // so that items with lower old indices are kept stable
     var bestEnd = 0
-    for i in 1..<n where dp[i] > dp[bestEnd] {
+    for i in 1..<n where dp[i] >= dp[bestEnd] {
         bestEnd = i
     }
 

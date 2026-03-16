@@ -1077,7 +1077,17 @@ extension TabSidebarViewController: NSTableViewDataSource {
         if dropOperation == .on {
             let destRow = sidebarRow(for: row)
             if case .pinnedItem(let idx) = destRow, idx < flattenedPinnedItems.count,
-               case .folder = flattenedPinnedItems[idx] {
+               case .folder(let destFolder, _) = flattenedPinnedItems[idx] {
+                // Don't allow dropping a folder onto itself
+                if let item = info.draggingPasteboard.pasteboardItems?.first,
+                   let rowString = item.string(forType: tabReorderPasteboardType),
+                   let srcRow = Int(rowString),
+                   case .pinnedItem(let srcIdx) = sidebarRow(for: srcRow),
+                   srcIdx < flattenedPinnedItems.count,
+                   case .folder(let srcFolder, _) = flattenedPinnedItems[srcIdx],
+                   srcFolder.id == destFolder.id {
+                    return []
+                }
                 return .move
             }
             return []
@@ -1139,9 +1149,14 @@ extension TabSidebarViewController: NSTableViewDataSource {
             let sourceSection = sidebarRow(for: sourceRow)
             switch sourceSection {
             case .pinnedItem(let srcIdx):
-                guard srcIdx < flattenedPinnedItems.count,
-                      case .tab(let tab, _) = flattenedPinnedItems[srcIdx] else { return false }
-                delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: tab.id, folderID: folder.id, beforeItemID: nil)
+                guard srcIdx < flattenedPinnedItems.count else { return false }
+                switch flattenedPinnedItems[srcIdx] {
+                case .tab(let tab, _):
+                    delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: tab.id, folderID: folder.id, beforeItemID: nil)
+                case .folder(let srcFolder, _):
+                    guard srcFolder.id != folder.id else { return false }  // can't drop folder onto itself
+                    delegate?.tabSidebar(self, didRequestMovePinnedFolder: srcFolder.id, parentFolderID: folder.id, beforeItemID: nil)
+                }
                 return true
             case .normalTab(let srcIdx):
                 let draggedTabID = self.tabs[srcIdx].id

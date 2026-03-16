@@ -246,6 +246,116 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.movedRows.count, 1, "Swapping 2 pinned items requires 1 move")
     }
 
+    func testDiffSwapPrefersMoveUpward() {
+        // When swapping two items, the LIS should keep the lower-old-index item stable
+        // and move the higher-old-index item upward. This matches the user's mental model
+        // (they dragged the item UP) and works correctly with sequential moveRow processing.
+        let t1 = makeTab(title: "A", sortOrder: 0)
+        let t2 = makeTab(title: "B", sortOrder: 1)
+
+        let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
+                                     oldTabs: [t1, t2], newTabs: [t2, t1])
+        XCTAssertEqual(diff.movedRows.count, 1)
+        // t2 (old index 1) moves to new index 0 — upward move
+        let move = diff.movedRows[0]
+        XCTAssertEqual(move.from, rowForNormalTab(at: 1, pinnedItemCount: 0))
+        XCTAssertEqual(move.to, rowForNormalTab(at: 0, pinnedItemCount: 0))
+    }
+
+    func testDiffBlockMoveMinimal() {
+        // Dragging a folder (with child) above another item:
+        // Old: [TabA, FolderB, Child1]  New: [FolderB, Child1, TabA]
+        // LIS keeps FolderB+Child1 stable (old indices [1,2] are increasing).
+        // Only TabA needs to move (1 move, not 2).
+        let folderID = UUID()
+        let tabA = makeTab(title: "A", sortOrder: 0)
+        let folderB = makeFolder(id: folderID, name: "Folder", sortOrder: 1)
+        let child1 = makeTab(title: "Child", folderID: folderID, sortOrder: 2)
+
+        let oldItems = flatItems([tabA, child1], folders: [folderB])
+        let newTabA = makeTab(id: tabA.id, title: "A", sortOrder: 2)
+        let newFolderB = makeFolder(id: folderID, name: "Folder", sortOrder: 0)
+        let newChild1 = makeTab(id: child1.id, title: "Child", folderID: folderID, sortOrder: 1)
+        let newItems = flatItems([newTabA, newChild1], folders: [newFolderB])
+
+        let diff = diffSidebarState(oldPinnedItems: oldItems, newPinnedItems: newItems,
+                                     oldTabs: [], newTabs: [])
+        XCTAssertTrue(diff.removedRows.isEmpty)
+        XCTAssertTrue(diff.insertedRows.isEmpty)
+        XCTAssertEqual(diff.movedRows.count, 1, "Only TabA moves; FolderB+Child1 stay (LIS)")
+        // TabA moves from old row 1 to new row 3
+        XCTAssertEqual(diff.movedRows[0].from, rowForPinnedItem(at: 0))
+        XCTAssertEqual(diff.movedRows[0].to, rowForPinnedItem(at: 2))
+    }
+
+    func testDiffEqualBlockSwapMovesUpward() {
+        // Two equal-size blocks swap: Old: [A, B, C, D]  New: [C, D, A, B]
+        // LIS keeps A,B stable (lower old indices), moves C,D upward.
+        let t1 = makeTab(title: "A", sortOrder: 0)
+        let t2 = makeTab(title: "B", sortOrder: 1)
+        let t3 = makeTab(title: "C", sortOrder: 2)
+        let t4 = makeTab(title: "D", sortOrder: 3)
+
+        let oldItems: [PinnedItem] = [.tab(t1, depth: 0), .tab(t2, depth: 0),
+                                       .tab(t3, depth: 0), .tab(t4, depth: 0)]
+        let newItems: [PinnedItem] = [.tab(t3, depth: 0), .tab(t4, depth: 0),
+                                       .tab(t1, depth: 0), .tab(t2, depth: 0)]
+
+        let diff = diffSidebarState(oldPinnedItems: oldItems, newPinnedItems: newItems,
+                                     oldTabs: [], newTabs: [])
+        XCTAssertEqual(diff.movedRows.count, 2, "C and D move upward")
+        // Moves should be to lower rows (upward)
+        for move in diff.movedRows {
+            XCTAssertLessThan(move.to, move.from, "Moves should be upward")
+        }
+        // Sorted by destination ascending
+        XCTAssertLessThanOrEqual(diff.movedRows[0].to, diff.movedRows[1].to)
+    }
+
+    func testDiffMovesAreSortedByDestination() {
+        // Verify that moves are always sorted by destination ascending,
+        // ensuring correct sequential processing by NSTableView.
+        let t1 = makeTab(title: "A", sortOrder: 0)
+        let t2 = makeTab(title: "B", sortOrder: 1)
+        let t3 = makeTab(title: "C", sortOrder: 2)
+        let t4 = makeTab(title: "D", sortOrder: 3)
+
+        // Reverse the order: [D, C, B, A]
+        let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
+                                     oldTabs: [t1, t2, t3, t4], newTabs: [t4, t3, t2, t1])
+        // Whatever moves are generated, they must be sorted by destination
+        for i in 1..<diff.movedRows.count {
+            XCTAssertLessThanOrEqual(diff.movedRows[i - 1].to, diff.movedRows[i].to,
+                                      "Moves must be sorted by destination for sequential processing")
+        }
+    }
+
+    func testDiffSequentialMoveCorrectness() {
+        // Simulate NSTableView's sequential processing and verify the final order is correct.
+        // Old: [A, B, C, D] → New: [C, D, A, B]
+        let t1 = makeTab(title: "A", sortOrder: 0)
+        let t2 = makeTab(title: "B", sortOrder: 1)
+        let t3 = makeTab(title: "C", sortOrder: 2)
+        let t4 = makeTab(title: "D", sortOrder: 3)
+
+        let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
+                                     oldTabs: [t1, t2, t3, t4], newTabs: [t3, t4, t1, t2])
+
+        // Simulate sequential move processing
+        var rows = [t1.id, t2.id, t3.id, t4.id]
+        for move in diff.movedRows {
+            // Convert table rows to array indices (subtract normal tab row offset)
+            let pinnedCount = 0
+            let fromIdx = move.from - rowForNormalTab(at: 0, pinnedItemCount: pinnedCount)
+            let toIdx = move.to - rowForNormalTab(at: 0, pinnedItemCount: pinnedCount)
+            let item = rows.remove(at: fromIdx)
+            rows.insert(item, at: toIdx)
+        }
+
+        XCTAssertEqual(rows, [t3.id, t4.id, t1.id, t2.id],
+                       "Sequential processing of moves should produce the correct final order")
+    }
+
     func testDiffNoChangesNoMoves() {
         let t1 = makeTab(title: "A", sortOrder: 0)
         let t2 = makeTab(title: "B", sortOrder: 1)
