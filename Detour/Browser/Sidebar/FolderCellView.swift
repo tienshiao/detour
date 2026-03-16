@@ -1,6 +1,6 @@
 import AppKit
 
-class FolderCellView: NSTableCellView {
+class FolderCellView: NSTableCellView, NSTextFieldDelegate {
     private let disclosureButton = NSButton()
     private let nameLabel = NSTextField(labelWithString: "")
     private let hoverBackground = NSView()
@@ -8,6 +8,8 @@ class FolderCellView: NSTableCellView {
     private var isHovered = false
     private var leadingConstraint: NSLayoutConstraint!
     var onToggleCollapse: (() -> Void)?
+    var onRename: ((String) -> Void)?
+    private var isEditing = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -96,5 +98,41 @@ class FolderCellView: NSTableCellView {
 
     @objc private func disclosureTapped() {
         onToggleCollapse?()
+    }
+
+    func beginEditing() {
+        isEditing = true
+        nameLabel.isEditable = true
+        nameLabel.isBezeled = false
+        nameLabel.drawsBackground = false
+        nameLabel.focusRingType = .none
+        nameLabel.delegate = self
+        nameLabel.selectText(nil)
+    }
+
+    private func endEditing(commit: Bool) {
+        guard isEditing else { return }
+        isEditing = false
+        nameLabel.isEditable = false
+        if commit {
+            let newName = nameLabel.stringValue.trimmingCharacters(in: .whitespaces)
+            if !newName.isEmpty {
+                onRename?(newName)
+            }
+        }
+    }
+
+    func control(_ control: NSControl, textShouldEndEditing fieldEditor: NSText) -> Bool {
+        endEditing(commit: true)
+        return true
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(cancelOperation(_:)) {
+            endEditing(commit: false)
+            window?.makeFirstResponder(superview)
+            return true
+        }
+        return false
     }
 }

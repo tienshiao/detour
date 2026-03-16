@@ -1599,19 +1599,16 @@ extension TabSidebarViewController: NSMenuDelegate {
 
     @objc private func contextMenuRenameFolder(_ sender: NSMenuItem) {
         guard let folderID = contextMenuFolderID else { return }
-        let folder = pinnedFolders.first { $0.id == folderID }
-        let alert = NSAlert()
-        alert.messageText = "Rename Folder"
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
-        field.stringValue = folder?.name ?? ""
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let newName = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !newName.isEmpty else { return }
-        delegate?.tabSidebar(self, didRequestRenamePinnedFolder: folderID, newName: newName)
+        guard let flatIdx = flattenedPinnedItems.firstIndex(where: {
+            if case .folder(let f, _) = $0, f.id == folderID { return true }
+            return false
+        }) else { return }
+        let row = rowForPinnedItem(at: flatIdx)
+        guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FolderCellView else { return }
+        cell.onRename = { [weak self] newName in
+            self?.delegate?.tabSidebar(self!, didRequestRenamePinnedFolder: folderID, newName: newName)
+        }
+        cell.beginEditing()
     }
 
     @objc private func contextMenuDeleteFolder(_ sender: NSMenuItem) {
