@@ -789,7 +789,7 @@ class BrowserWindowController: NSWindowController {
         // content (on contentContainerView).
         let splitScrim = NSView()
         splitScrim.wantsLayer = true
-        splitScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+        splitScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.15).cgColor
         splitScrim.translatesAutoresizingMaskIntoConstraints = false
         splitViewController.view.addSubview(splitScrim, positioned: .below, relativeTo: splitViewController.view.subviews.first)
         NSLayoutConstraint.activate([
@@ -803,7 +803,7 @@ class BrowserWindowController: NSWindowController {
         if selectedTabID != nil {
             let contentScrim = NSView()
             contentScrim.wantsLayer = true
-            contentScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+            contentScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.15).cgColor
             contentScrim.translatesAutoresizingMaskIntoConstraints = false
             contentContainerView.addSubview(contentScrim)
             NSLayoutConstraint.activate([
