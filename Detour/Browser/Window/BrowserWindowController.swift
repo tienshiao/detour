@@ -26,6 +26,15 @@ class BrowserWindowController: NSWindowController {
     private let findBar = FindBarView()
     private let dragHandle = WindowDragView()
     private let linkStatusBar = LinkStatusBar()
+    private let emptyStateLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "A rare moment of tab peace.")
+        label.font = .systemFont(ofSize: 16, weight: .medium)
+        label.textColor = .tertiaryLabelColor
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.isHidden = true
+        return label
+    }()
     let toastManager = ToastManager()
     private var webViewTopConstraint: NSLayoutConstraint?
     private var findMatchCount = 0
@@ -218,6 +227,11 @@ class BrowserWindowController: NSWindowController {
         let contentVC = NSViewController()
         contentVC.view = contentContainerView
         contentContainerView.wantsLayer = true
+        contentContainerView.addSubview(emptyStateLabel)
+        NSLayoutConstraint.activate([
+            emptyStateLabel.centerXAnchor.constraint(equalTo: contentContainerView.centerXAnchor),
+            emptyStateLabel.centerYAnchor.constraint(equalTo: contentContainerView.centerYAnchor),
+        ])
         toastManager.parentView = contentContainerView
         contentItem = NSSplitViewItem(viewController: contentVC)
         splitViewController.addSplitViewItem(contentItem)
@@ -633,7 +647,8 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func removeContentViews() {
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekWebView && subview !== linkStatusBar {
+        emptyStateLabel.isHidden = true
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekWebView && subview !== linkStatusBar && subview !== emptyStateLabel {
             if let webView = subview as? WKWebView {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
             }
@@ -819,6 +834,9 @@ class BrowserWindowController: NSWindowController {
         activeTabSubscriptions.removeAll()
         dragHandle.isHidden = true
         removeContentViews()
+        let hasTabs = !(activeSpace?.tabs.isEmpty ?? true) || !(activeSpace?.pinnedTabs.isEmpty ?? true)
+        emptyStateLabel.stringValue = hasTabs ? "Where to next?" : "A rare moment of tab peace."
+        emptyStateLabel.isHidden = false
         tabSidebar.fauxAddressBar.displayText = ""
         tabSidebar.fauxAddressBar.isSecure = true
         tabSidebar.backButton.isEnabled = false

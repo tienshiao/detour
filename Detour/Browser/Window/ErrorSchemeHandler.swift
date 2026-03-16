@@ -62,7 +62,7 @@ class ErrorSchemeHandler: NSObject, WKURLSchemeHandler {
         </head>
         <body>
         <div class="container">
-            <h1>Page Not Available</h1>
+            <h1>Looks like you took a Detour.</h1>
             <div class="url">\(displayURL)</div>
             <div class="error">\(safeMessage)</div>
         </div>

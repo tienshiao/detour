@@ -68,7 +68,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         box.addSubview(searchIcon)
 
         // Text field
-        textField.placeholderString = "Enter URL or search\u{2026}"
+        textField.placeholderString = "Where do you want to go?"
         textField.font = .systemFont(ofSize: 18)
         textField.isBezeled = false
         textField.drawsBackground = false
