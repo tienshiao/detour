@@ -93,45 +93,25 @@ class ContentRuleStore {
 
     // MARK: - Fallback Compilation
 
-    /// When full compilation fails, compile in batches, keep good batches, discard bad ones.
+    /// When full compilation fails, use binary search to find and strip only the bad rules.
     private func compileWithFallback(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
-        let batchSize = 5000
-        let batches = stride(from: 0, to: rules.count, by: batchSize).map {
-            Array(rules[$0..<min($0 + batchSize, rules.count)])
-        }
-        print("[ContentBlocker] Fallback: testing \(batches.count) batches of ~\(batchSize) for \(identifier)")
+        print("[ContentBlocker] Fallback: binary search for bad rules in \(rules.count) rules for \(identifier)")
 
-        var goodRules: [[String: Any]] = []
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var strippedCount = 0
+        findBadRules(rules: rules, offset: 0, depth: 0, identifier: identifier) { [weak self] badIndices in
+            let badSet = Set(badIndices)
 
-        for (index, batch) in batches.enumerated() {
-            group.enter()
-            let probeID = "\(identifier)-probe-\(index)"
-            testCompile(rules: batch, identifier: probeID) { success in
-                lock.lock()
-                if success {
-                    goodRules.append(contentsOf: batch)
-                } else {
-                    strippedCount += batch.count
-                    print("[ContentBlocker] Fallback: discarded batch \(index) (\(batch.count) rules) for \(identifier)")
-                }
-                lock.unlock()
-                group.leave()
-            }
-        }
-
-        group.notify(queue: .main) { [weak self] in
-            guard !goodRules.isEmpty else {
-                print("[ContentBlocker] Fallback: no good batches for \(identifier)")
+            guard !badSet.isEmpty else {
+                // No individual bad rules found — the failure may be due to combined NFA state limits.
+                // The full set fails but each half passes, so nothing to strip.
+                print("[ContentBlocker] Fallback: no individual bad rules found for \(identifier), compilation not possible")
                 completion(nil)
                 return
             }
 
-            print("[ContentBlocker] Fallback: recompiling \(goodRules.count) rules for \(identifier) (stripped \(strippedCount))")
+            let cleaned = rules.enumerated().compactMap { badSet.contains($0.offset) ? nil : $0.element }
+            print("[ContentBlocker] Stripped \(badSet.count) bad rule(s), recompiling \(cleaned.count) for \(identifier)")
 
-            guard let jsonData = try? JSONSerialization.data(withJSONObject: goodRules),
+            guard let jsonData = try? JSONSerialization.data(withJSONObject: cleaned),
                   let jsonString = String(data: jsonData, encoding: .utf8) else {
                 completion(nil)
                 return
@@ -146,10 +126,48 @@ class ContentRuleStore {
                 if let list {
                     print("[ContentBlocker] Fallback compile succeeded for \(identifier)")
                     self?.compiledLists[identifier] = list
-                    self?.compiledRuleCounts[identifier] = goodRules.count
-                    UserDefaults.standard.set(goodRules.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
+                    self?.compiledRuleCounts[identifier] = cleaned.count
+                    UserDefaults.standard.set(cleaned.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
                 }
                 completion(list)
+            }
+        }
+    }
+
+    /// Recursively bisects rules to find indices of individually bad rules.
+    private func findBadRules(rules: [[String: Any]], offset: Int, depth: Int, identifier: String, completion: @escaping ([Int]) -> Void) {
+        // Bail out if recursion is too deep
+        guard depth <= 20 else {
+            print("[ContentBlocker] Binary search: max depth reached, marking \(rules.count) rules as bad at offset \(offset)")
+            completion(Array(offset..<offset + rules.count))
+            return
+        }
+
+        // Test if this chunk compiles
+        let probeID = "\(identifier)-probe-\(offset)-\(rules.count)"
+        testCompile(rules: rules, identifier: probeID) { [weak self] success in
+            if success {
+                // All rules in this chunk are fine
+                completion([])
+                return
+            }
+
+            if rules.count == 1 {
+                // Found a single bad rule
+                print("[ContentBlocker] Binary search: found bad rule at index \(offset)")
+                completion([offset])
+                return
+            }
+
+            // Split in half and recurse serially (left then right)
+            let mid = rules.count / 2
+            let leftRules = Array(rules[..<mid])
+            let rightRules = Array(rules[mid...])
+
+            self?.findBadRules(rules: leftRules, offset: offset, depth: depth + 1, identifier: identifier) { leftBad in
+                self?.findBadRules(rules: rightRules, offset: offset + mid, depth: depth + 1, identifier: identifier) { rightBad in
+                    completion(leftBad + rightBad)
+                }
             }
         }
     }

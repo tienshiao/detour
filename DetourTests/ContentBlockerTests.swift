@@ -121,32 +121,4 @@ final class ContentBlockerTests: XCTestCase {
         wait(for: [exp], timeout: 60)
         return compileError
     }
-
-    /// Binary search to find a single rule that causes compilation to fail.
-    private func bisectBadRule(rules: [[String: Any]], identifier: String) -> String? {
-        if rules.count <= 1 {
-            if let data = try? JSONSerialization.data(withJSONObject: rules, options: .prettyPrinted),
-               let str = String(data: data, encoding: .utf8) {
-                print("[BISECT] Found bad rule: \(str)")
-                let urlFilter = (rules.first?["trigger"] as? [String: Any])?["url-filter"] as? String ?? "?"
-                print("[BISECT] url-filter: \(urlFilter)")
-                return urlFilter
-            }
-            return nil
-        }
-
-        let mid = rules.count / 2
-        let left = Array(rules[..<mid])
-        let right = Array(rules[mid...])
-
-        if tryCompile(rules: left, identifier: "\(identifier)-L") != nil {
-            return bisectBadRule(rules: left, identifier: "\(identifier)-L")
-        }
-        if tryCompile(rules: right, identifier: "\(identifier)-R") != nil {
-            return bisectBadRule(rules: right, identifier: "\(identifier)-R")
-        }
-
-        // Neither half fails alone — interaction between rules
-        return "Interaction between rules near index \(mid)"
-    }
 }
