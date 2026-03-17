@@ -189,8 +189,9 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://a.com", title: "Swift Programming Guide", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://b.com", title: "Swift Reference", faviconURL: nil, spaceID: "space1")
 
+        // OR matching: both entries match "swift", but the one with both tokens ranks first
         let results = db.searchHistory(query: "swift guide", spaceID: "space1")
-        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.count, 2)
         XCTAssertEqual(results.first?.url, "https://a.com")
     }
 
@@ -237,6 +238,61 @@ final class HistoryDatabaseTests: XCTestCase {
         // Should not crash with FTS5 special characters
         let results = db.searchHistory(query: "test\"*'()", spaceID: "space1")
         XCTAssertEqual(results.count, 1)
+    }
+
+    func testSearchHistoryDotsInQuery() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://github.com", title: "GitHub", faviconURL: nil, spaceID: "space1")
+
+        // Dots caused the original FTS5 syntax error bug — splits into ["github", "com"]
+        let results = db.searchHistory(query: "github.com", spaceID: "space1")
+        XCTAssertFalse(results.isEmpty)
+        XCTAssertEqual(results.first?.url, "https://github.com")
+    }
+
+    func testSearchHistoryColonsAndSlashes() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://example.com/page", title: "Example Page", faviconURL: nil, spaceID: "space1")
+
+        // Splits into ["https", "example"] — both are valid tokens
+        let results = db.searchHistory(query: "https://example", spaceID: "space1")
+        XCTAssertFalse(results.isEmpty)
+    }
+
+    func testSearchHistoryHyphens() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://stackoverflow.com", title: "Stack Overflow", faviconURL: nil, spaceID: "space1")
+
+        let results = db.searchHistory(query: "stack-overflow", spaceID: "space1")
+        XCTAssertFalse(results.isEmpty, "Should match on 'stack' and 'overflow' tokens")
+    }
+
+    func testSearchHistoryFTSOperators() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://cplusplus.com", title: "C++ Reference test", faviconURL: nil, spaceID: "space1")
+
+        // +, ~, ^, {, } are FTS5 operators that must be stripped
+        let results = db.searchHistory(query: "C++ {test}", spaceID: "space1")
+        XCTAssertFalse(results.isEmpty, "Should match on 'C' and 'test' tokens")
+    }
+
+    func testSearchHistoryAllSpecialInput() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
+
+        // No alphanumeric tokens remain — should return empty, not crash
+        let results = db.searchHistory(query: "...", spaceID: "space1")
+        XCTAssertTrue(results.isEmpty)
+    }
+
+    func testSearchHistoryMixedSpecialAndAlpha() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://github.com/repo", title: "GitHub Repo", faviconURL: nil, spaceID: "space1")
+
+        // Splits into ["site", "github", "com", "repo"] — OR matching means
+        // "site" doesn't block results; "github", "com", "repo" all match
+        let results = db.searchHistory(query: "site:github.com/repo", spaceID: "space1")
+        XCTAssertFalse(results.isEmpty, "Should match on 'github', 'com', 'repo' tokens")
     }
 
     func testSearchHistoryIncludesFaviconURL() throws {

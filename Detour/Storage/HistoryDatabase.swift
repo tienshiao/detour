@@ -102,13 +102,11 @@ struct HistoryDatabase {
     }
 
     func searchHistory(query: String, spaceID: String, limit: Int = 10) -> [HistoryURL] {
-        let allowed = CharacterSet.alphanumerics
-        let tokens = query.components(separatedBy: .whitespaces)
-            .map { $0.unicodeScalars.filter { allowed.contains($0) }.map(String.init).joined() }
+        let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
         guard !tokens.isEmpty else { return [] }
 
-        let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " ")
+        let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
 
         do {
             return try dbQueue.read { db in
