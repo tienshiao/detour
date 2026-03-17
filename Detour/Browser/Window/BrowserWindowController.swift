@@ -15,6 +15,7 @@ class BrowserWindowController: NSWindowController {
     private var sidebarCollapseObservation: NSKeyValueObservation?
     private var sidebarAutoHides = false
     private var sidebarOpenedByHover = false
+    private var sidebarHoverGraceActive = false
     private var autoHideWorkItem: DispatchWorkItem?
 
     var selectedTabID: UUID?
@@ -295,7 +296,7 @@ class BrowserWindowController: NSWindowController {
             edgeView.leadingAnchor.constraint(equalTo: splitViewController.view.leadingAnchor),
             edgeView.topAnchor.constraint(equalTo: splitViewController.view.topAnchor),
             edgeView.bottomAnchor.constraint(equalTo: splitViewController.view.bottomAnchor),
-            edgeView.widthAnchor.constraint(equalToConstant: 5),
+            edgeView.widthAnchor.constraint(equalToConstant: 20),
         ])
         let edgeArea = NSTrackingArea(
             rect: .zero,
@@ -340,7 +341,11 @@ class BrowserWindowController: NSWindowController {
               let zone = userInfo["zone"] as? String else { return }
         if zone == "edge" && sidebarAutoHides && sidebarItem.isCollapsed {
             sidebarOpenedByHover = true
+            sidebarHoverGraceActive = true
             splitViewController.toggleSidebar(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.sidebarHoverGraceActive = false
+            }
         } else if zone == "sidebar" && sidebarOpenedByHover {
             autoHideWorkItem?.cancel()
             autoHideWorkItem = nil
@@ -350,14 +355,14 @@ class BrowserWindowController: NSWindowController {
     override func mouseExited(with event: NSEvent) {
         guard let userInfo = event.trackingArea?.userInfo,
               let zone = userInfo["zone"] as? String else { return }
-        if zone == "sidebar" && sidebarOpenedByHover {
+        if zone == "sidebar" && sidebarOpenedByHover && !sidebarHoverGraceActive {
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self, self.sidebarOpenedByHover else { return }
                 self.sidebarOpenedByHover = false
                 self.splitViewController.toggleSidebar(nil)
             }
             autoHideWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
         }
     }
 
