@@ -20,6 +20,7 @@ class BrowserTab: NSObject {
     @Published var isMuted: Bool = false
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
+    @Published var blockedCount: Int = 0
     @Published var estimatedProgress: Double = 0
     @Published var favicon: NSImage?
     private(set) var faviconURL: URL?
@@ -350,6 +351,7 @@ class BrowserTab: NSObject {
         if isSleeping { wake() }
         lastAttemptedURL = url
         self.url = url
+        blockedCount = 0
         navigationPending = true
         if url.host != previousHost {
             favicon = nil
@@ -382,6 +384,7 @@ class BrowserTab: NSObject {
 
     func didCommitNavigation() {
         navigationPending = false
+        blockedCount = 0
         updateTitle()
     }
 

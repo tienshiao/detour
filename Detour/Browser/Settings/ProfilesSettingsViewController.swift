@@ -13,6 +13,11 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
     private var profileNameField: NSTextField!
     private var privateNoteLabel: NSTextField!
     private var uaPreviewLabel: NSTextField!
+    private var adBlockSwitch: NSSwitch!
+    private var easyListSwitch: NSSwitch!
+    private var easyPrivacySwitch: NSSwitch!
+    private var easyListCookieSwitch: NSSwitch!
+    private var malwareFilterSwitch: NSSwitch!
     private var gridView: NSGridView!
     private var addButton: NSButton!
     private var deleteButton: NSButton!
@@ -30,7 +35,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
     }
 
     override func loadView() {
-        preferredContentSize = NSSize(width: 680, height: 440)
+        preferredContentSize = NSSize(width: 740, height: 580)
         let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
         self.view = container
 
@@ -158,6 +163,61 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         perTabIsolationSwitch.target = self
         perTabIsolationSwitch.action = #selector(perTabIsolationToggled)
 
+        adBlockSwitch = NSSwitch()
+        adBlockSwitch.target = self
+        adBlockSwitch.action = #selector(adBlockToggled)
+
+        easyListSwitch = NSSwitch()
+        easyListSwitch.target = self
+        easyListSwitch.action = #selector(easyListToggled)
+        easyListSwitch.controlSize = .small
+
+        easyPrivacySwitch = NSSwitch()
+        easyPrivacySwitch.target = self
+        easyPrivacySwitch.action = #selector(easyPrivacyToggled)
+        easyPrivacySwitch.controlSize = .small
+
+        easyListCookieSwitch = NSSwitch()
+        easyListCookieSwitch.target = self
+        easyListCookieSwitch.action = #selector(easyListCookieToggled)
+        easyListCookieSwitch.controlSize = .small
+
+        malwareFilterSwitch = NSSwitch()
+        malwareFilterSwitch.target = self
+        malwareFilterSwitch.action = #selector(malwareFilterToggled)
+        malwareFilterSwitch.controlSize = .small
+
+        // Group filter list switches inside a bordered box
+        let filterListBox = NSBox()
+        filterListBox.boxType = .custom
+        filterListBox.borderColor = .separatorColor
+        filterListBox.borderWidth = 1
+        filterListBox.cornerRadius = 6
+        filterListBox.fillColor = .clear
+        filterListBox.contentViewMargins = NSSize(width: 10, height: 8)
+        filterListBox.translatesAutoresizingMaskIntoConstraints = false
+
+        let filterStack = NSStackView(views: [
+            makeFilterRow(filterSwitch: easyListSwitch, title: "EasyList (ads)"),
+            makeFilterRow(filterSwitch: easyPrivacySwitch, title: "EasyPrivacy (trackers)"),
+            makeFilterRow(filterSwitch: easyListCookieSwitch, title: "Cookie notices"),
+            makeFilterRow(filterSwitch: malwareFilterSwitch, title: "Malicious URLs"),
+        ])
+        filterStack.orientation = .vertical
+        filterStack.alignment = .leading
+        filterStack.spacing = 6
+        filterStack.translatesAutoresizingMaskIntoConstraints = false
+
+        if let contentView = filterListBox.contentView {
+            contentView.addSubview(filterStack)
+            NSLayoutConstraint.activate([
+                filterStack.topAnchor.constraint(equalTo: contentView.topAnchor),
+                filterStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                filterStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                filterStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            ])
+        }
+
         userAgentPopUp = NSPopUpButton()
         userAgentPopUp.addItems(withTitles: ["Detour", "Safari", "Custom"])
         userAgentPopUp.target = self
@@ -187,18 +247,20 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             [makeLabel("Sleep tabs after"), sleepPopUp],             // row 5
             [NSGridCell.emptyContentView, isolationWarningLabel],    // row 6
             [makeLabel("Per-tab isolation"), perTabIsolationSwitch], // row 7
-            [makeLabel("User agent"), userAgentPopUp],               // row 8
-            [makeLabel("Custom string"), customUserAgentField],      // row 9
-            [NSGridCell.emptyContentView, uaPreviewLabel],           // row 10
+            [makeLabel("Content blocking"), adBlockSwitch],          // row 8
+            [NSGridCell.emptyContentView, filterListBox],            // row 9
+            [makeLabel("User agent"), userAgentPopUp],               // row 10
+            [makeLabel("Custom string"), customUserAgentField],      // row 11
+            [NSGridCell.emptyContentView, uaPreviewLabel],           // row 12
         ])
         gridView.translatesAutoresizingMaskIntoConstraints = false
         gridView.rowSpacing = spacing
         gridView.columnSpacing = 8
         gridView.column(at: 0).xPlacement = .trailing
         gridView.column(at: 1).xPlacement = .leading
-        gridView.row(at: 1).isHidden = true  // private note row
-        gridView.row(at: 6).isHidden = true  // isolation warning row
-        gridView.row(at: 9).isHidden = true  // custom string row
+        gridView.row(at: 1).isHidden = true   // private note row
+        gridView.row(at: 6).isHidden = true   // isolation warning row
+        gridView.row(at: 11).isHidden = true  // custom string row
         container.addSubview(gridView)
 
         // Layout
@@ -250,6 +312,16 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         return label
     }
 
+    private func makeFilterRow(filterSwitch: NSSwitch, title: String) -> NSStackView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12)
+        let row = NSStackView(views: [filterSwitch, label])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.alignment = .centerY
+        return row
+    }
+
     private func thresholdTitle(_ t: ArchiveThreshold) -> String {
         switch t {
         case .twelveHours: return "12 hours"
@@ -294,8 +366,18 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         gridView.row(at: 4).isHidden = profile.isIncognito
         // Row 6 = isolation warning (shown when both per-tab isolation and sleep are active)
         gridView.row(at: 6).isHidden = !(profile.isPerTabIsolation && profile.sleepThreshold != .never)
-        // Row 9 = custom UA string
-        gridView.row(at: 9).isHidden = profile.userAgentMode != .custom
+        // Ad blocking
+        adBlockSwitch.state = profile.isAdBlockingEnabled ? .on : .off
+        easyListSwitch.state = profile.isEasyListEnabled ? .on : .off
+        easyPrivacySwitch.state = profile.isEasyPrivacyEnabled ? .on : .off
+        easyListCookieSwitch.state = profile.isEasyListCookieEnabled ? .on : .off
+        easyListSwitch.isEnabled = profile.isAdBlockingEnabled
+        easyPrivacySwitch.isEnabled = profile.isAdBlockingEnabled
+        easyListCookieSwitch.isEnabled = profile.isAdBlockingEnabled
+        malwareFilterSwitch.state = profile.isMalwareFilterEnabled ? .on : .off
+        malwareFilterSwitch.isEnabled = profile.isAdBlockingEnabled
+        // Row 11 = custom UA string
+        gridView.row(at: 11).isHidden = profile.userAgentMode != .custom
         updateUAPreview()
     }
 
@@ -361,11 +443,50 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         TabStore.shared.updateProfile(profile)
     }
 
+    @objc private func adBlockToggled() {
+        guard let profile = selectedProfile else { return }
+        profile.isAdBlockingEnabled = (adBlockSwitch.state == .on)
+        easyListSwitch.isEnabled = profile.isAdBlockingEnabled
+        easyPrivacySwitch.isEnabled = profile.isAdBlockingEnabled
+        easyListCookieSwitch.isEnabled = profile.isAdBlockingEnabled
+        malwareFilterSwitch.isEnabled = profile.isAdBlockingEnabled
+        TabStore.shared.updateProfile(profile)
+        ContentBlockerManager.shared.reapplyRuleLists()
+    }
+
+    @objc private func easyListToggled() {
+        guard let profile = selectedProfile else { return }
+        profile.isEasyListEnabled = (easyListSwitch.state == .on)
+        TabStore.shared.updateProfile(profile)
+        ContentBlockerManager.shared.reapplyRuleLists()
+    }
+
+    @objc private func easyPrivacyToggled() {
+        guard let profile = selectedProfile else { return }
+        profile.isEasyPrivacyEnabled = (easyPrivacySwitch.state == .on)
+        TabStore.shared.updateProfile(profile)
+        ContentBlockerManager.shared.reapplyRuleLists()
+    }
+
+    @objc private func easyListCookieToggled() {
+        guard let profile = selectedProfile else { return }
+        profile.isEasyListCookieEnabled = (easyListCookieSwitch.state == .on)
+        TabStore.shared.updateProfile(profile)
+        ContentBlockerManager.shared.reapplyRuleLists()
+    }
+
+    @objc private func malwareFilterToggled() {
+        guard let profile = selectedProfile else { return }
+        profile.isMalwareFilterEnabled = (malwareFilterSwitch.state == .on)
+        TabStore.shared.updateProfile(profile)
+        ContentBlockerManager.shared.reapplyRuleLists()
+    }
+
     @objc private func userAgentModeChanged() {
         guard let profile = selectedProfile,
               let mode = UserAgentMode(rawValue: userAgentPopUp.indexOfSelectedItem) else { return }
         profile.userAgentMode = mode
-        gridView.row(at: 9).isHidden = mode != .custom
+        gridView.row(at: 11).isHidden = mode != .custom
         TabStore.shared.updateProfile(profile)
         updateUAPreview()
     }

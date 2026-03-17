@@ -159,6 +159,12 @@ class BrowserWindowController: NSWindowController {
             name: .webViewOwnershipChanged,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleContentBlockerRulesChanged),
+            name: .contentBlockerRulesDidChange,
+            object: nil
+        )
     }
 
     deinit {
@@ -534,6 +540,14 @@ class BrowserWindowController: NSWindowController {
                 self?.tabSidebar.fauxAddressBar.displayText = tab.displayHost
                 self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
                 self?.tabSidebar.reloadButton.isEnabled = url != nil
+                self?.updateContentBlockerStatus()
+            }
+            .store(in: &activeTabSubscriptions)
+
+        tab.$blockedCount
+            .receive(on: RunLoop.main)
+            .sink { [weak self] count in
+                self?.tabSidebar.fauxAddressBar.blockedCount = count
             }
             .store(in: &activeTabSubscriptions)
 
@@ -606,6 +620,8 @@ class BrowserWindowController: NSWindowController {
         webView.allowsBackForwardNavigationGestures = true
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
         webView.configuration.userContentController.add(self, name: "linkHover")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+        webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
 
         // Use frame-based layout (not constraints) for WKWebView — Auto Layout breaks Web Inspector.
         webView.translatesAutoresizingMaskIntoConstraints = true
@@ -656,6 +672,7 @@ class BrowserWindowController: NSWindowController {
         for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekWebView && subview !== linkStatusBar && subview !== emptyStateLabel {
             if let webView = subview as? WKWebView {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
+                webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
             }
             subview.removeFromSuperview()
         }
@@ -666,6 +683,16 @@ class BrowserWindowController: NSWindowController {
     }
 
     // MARK: - Window Events
+
+    @objc private func handleContentBlockerRulesChanged() {
+        guard let tab = selectedTab, let webView = tab.webView, ownsWebView,
+              let profile = activeSpace?.profile else { return }
+
+        // Remove old rule lists and re-add current ones
+        let ucc = webView.configuration.userContentController
+        ucc.removeAllContentRuleLists()
+        ContentBlockerManager.shared.applyRuleLists(to: ucc, profile: profile)
+    }
 
     @objc private func handleWebViewOwnershipChanged(_ notification: Notification) {
         guard let sender = notification.object as? BrowserWindowController, sender !== self,
@@ -688,6 +715,16 @@ class BrowserWindowController: NSWindowController {
         if !ownsWebView, let tab = selectedTab {
             claimWebView(for: tab)
         }
+    }
+
+    func updateContentBlockerStatus() {
+        guard let host = selectedTab?.url?.host,
+              let profileID = activeSpace?.profile?.id else {
+            tabSidebar.fauxAddressBar.isBlockingEnabledForHost = true
+            return
+        }
+        let isWhitelisted = ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
+        tabSidebar.fauxAddressBar.isBlockingEnabledForHost = !isWhitelisted
     }
 
     func navigateToAddress(_ input: String) {
@@ -1229,11 +1266,14 @@ extension BrowserWindowController: FindBarDelegate {
 
 extension BrowserWindowController: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "linkHover", let urlString = message.body as? String else { return }
-        if urlString.isEmpty {
-            linkStatusBar.hide()
-        } else {
-            linkStatusBar.show(url: urlString)
+        if message.name == "linkHover", let urlString = message.body as? String {
+            if urlString.isEmpty {
+                linkStatusBar.hide()
+            } else {
+                linkStatusBar.show(url: urlString)
+            }
+        } else if message.name == BlockedResourceTracker.messageName, let count = message.body as? Int {
+            selectedTab?.blockedCount = count
         }
     }
 }

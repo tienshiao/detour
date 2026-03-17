@@ -15,6 +15,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowControllers.append(wc)
         wc.showWindow(nil)
 
+        // Initialize content blocker (fetch/compile rule lists)
+        ContentBlockerManager.shared.initialize()
+
         let restored = TabStore.shared.restoreSession()
 
         // Ensure at least one space exists

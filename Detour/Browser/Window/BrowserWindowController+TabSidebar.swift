@@ -96,6 +96,32 @@ extension BrowserWindowController: TabSidebarDelegate {
         popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .minY)
     }
 
+    func tabSidebarDidRequestShowContentBlocker(_ sidebar: TabSidebarViewController, sourceButton: NSView) {
+        guard let host = selectedTab?.url?.host else { return }
+        let profileID = activeSpace?.profile?.id ?? UUID()
+        let isWhitelisted = ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
+
+        let vc = ContentBlockerPopoverViewController()
+        vc.host = host
+        vc.isBlockingEnabled = !isWhitelisted
+        vc.blockedCount = selectedTab?.blockedCount ?? 0
+        vc.onToggle = { [weak self] in
+            guard let self, let profile = self.activeSpace?.profile else { return }
+            ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id) {
+                DispatchQueue.main.async {
+                    self.updateContentBlockerStatus()
+                    ContentBlockerManager.shared.reapplyRuleLists()
+                }
+            }
+        }
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 260, height: 120)
+        popover.contentViewController = vc
+        popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
+    }
+
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDuplicateTabAt index: Int, isPinned: Bool) {
         guard let space = activeSpace else { return }
         let tabs = isPinned ? space.pinnedTabs : space.tabs

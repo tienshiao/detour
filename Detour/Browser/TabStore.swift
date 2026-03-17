@@ -87,6 +87,11 @@ class Space {
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         config.userContentController.addUserScript(script)
 
+        // Apply content blocking rules
+        if let profile {
+            ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
+        }
+
         // Set Detour app name as default; Safari/Custom modes override via
         // webView.customUserAgent in BrowserTab.applyUserAgent()
         config.applicationNameForUserAgent = UserAgentMode.detourAppName

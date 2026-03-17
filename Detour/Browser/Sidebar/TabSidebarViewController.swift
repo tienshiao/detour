@@ -19,6 +19,7 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton)
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
+    func tabSidebarDidRequestShowContentBlocker(_ sidebar: TabSidebarViewController, sourceButton: NSView)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDuplicateTabAt index: Int, isPinned: Bool)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMoveTabAt index: Int, isPinned: Bool, toSpaceID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestArchiveTabAt index: Int)
@@ -38,6 +39,7 @@ protocol TabSidebarDelegate: AnyObject {
 
 extension TabSidebarDelegate {
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {}
+    func tabSidebarDidRequestShowContentBlocker(_ sidebar: TabSidebarViewController, sourceButton: NSView) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didSelectPinnedTabAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClosePinnedTabAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPinAt index: Int, destinationIndex: Int) {}
@@ -328,6 +330,10 @@ class TabSidebarViewController: NSViewController {
             guard let self else { return }
             let frameInWindow = self.fauxAddressBar.convert(self.fauxAddressBar.bounds, to: nil)
             self.delegate?.tabSidebarDidRequestOpenCommandPalette(self, anchorFrame: frameInWindow)
+        }
+        fauxAddressBar.onShieldClick = { [weak self] in
+            guard let self else { return }
+            self.delegate?.tabSidebarDidRequestShowContentBlocker(self, sourceButton: self.fauxAddressBar.shieldButton)
         }
 
         // Bottom bar for spaces

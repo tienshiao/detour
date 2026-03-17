@@ -178,6 +178,28 @@ struct AppDatabase {
         }
     }
 
+    // MARK: - Content Blocker Whitelist
+
+    func saveContentBlockerWhitelistEntry(_ record: ContentBlockerWhitelistRecord) {
+        performWrite("save whitelist entry") { db in
+            try record.save(db)
+        }
+    }
+
+    func deleteContentBlockerWhitelistEntry(profileID: String, host: String) {
+        performWrite("delete whitelist entry") { db in
+            try ContentBlockerWhitelistRecord
+                .filter(Column("profileID") == profileID && Column("host") == host)
+                .deleteAll(db)
+        }
+    }
+
+    func loadContentBlockerWhitelist() -> [ContentBlockerWhitelistRecord] {
+        performRead("load whitelist", default: []) { db in
+            try ContentBlockerWhitelistRecord.fetchAll(db)
+        }
+    }
+
     // MARK: - Pinned Tabs
 
     func savePinnedTabs(_ records: [PinnedTabRecord], spaceID: String) {
@@ -409,6 +431,28 @@ struct AppDatabase {
         migrator.registerMigration("v11") { db in
             try db.alter(table: "profile") { t in
                 t.add(column: "sleepThreshold", .double).notNull().defaults(to: 3600)
+            }
+        }
+
+        migrator.registerMigration("v12") { db in
+            try db.alter(table: "profile") { t in
+                t.add(column: "isAdBlockingEnabled", .boolean).notNull().defaults(to: true)
+                t.add(column: "isEasyListEnabled", .boolean).notNull().defaults(to: true)
+                t.add(column: "isEasyPrivacyEnabled", .boolean).notNull().defaults(to: true)
+                t.add(column: "isEasyListCookieEnabled", .boolean).notNull().defaults(to: true)
+            }
+
+            try db.create(table: "contentBlockerWhitelist") { t in
+                t.column("profileID", .text).notNull()
+                    .references("profile", onDelete: .cascade)
+                t.column("host", .text).notNull()
+                t.uniqueKey(["profileID", "host"])
+            }
+        }
+
+        migrator.registerMigration("v13") { db in
+            try db.alter(table: "profile") { t in
+                t.add(column: "isMalwareFilterEnabled", .boolean).notNull().defaults(to: true)
             }
         }
 

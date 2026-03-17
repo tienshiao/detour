@@ -109,6 +109,11 @@ class Profile {
     var searchSuggestionsEnabled: Bool
     var isPerTabIsolation: Bool
     var isIncognito: Bool
+    var isAdBlockingEnabled: Bool
+    var isEasyListEnabled: Bool
+    var isEasyPrivacyEnabled: Bool
+    var isEasyListCookieEnabled: Bool
+    var isMalwareFilterEnabled: Bool
 
     lazy var dataStore: WKWebsiteDataStore = {
         if isIncognito {
@@ -121,7 +126,10 @@ class Profile {
          customUserAgent: String? = nil, archiveThreshold: ArchiveThreshold = .twelveHours,
          sleepThreshold: SleepThreshold = .oneHour, searchEngine: SearchEngine = .google,
          searchSuggestionsEnabled: Bool = true,
-         isPerTabIsolation: Bool = false, isIncognito: Bool = false) {
+         isPerTabIsolation: Bool = false, isIncognito: Bool = false,
+         isAdBlockingEnabled: Bool = true, isEasyListEnabled: Bool = true,
+         isEasyPrivacyEnabled: Bool = true, isEasyListCookieEnabled: Bool = true,
+         isMalwareFilterEnabled: Bool = true) {
         self.id = id
         self.name = name
         self.userAgentMode = userAgentMode
@@ -132,6 +140,11 @@ class Profile {
         self.searchSuggestionsEnabled = searchSuggestionsEnabled
         self.isPerTabIsolation = isPerTabIsolation
         self.isIncognito = isIncognito
+        self.isAdBlockingEnabled = isAdBlockingEnabled
+        self.isEasyListEnabled = isEasyListEnabled
+        self.isEasyPrivacyEnabled = isEasyPrivacyEnabled
+        self.isEasyListCookieEnabled = isEasyListCookieEnabled
+        self.isMalwareFilterEnabled = isMalwareFilterEnabled
     }
 
     func resolvedUserAgent() -> String? {
@@ -155,7 +168,12 @@ class Profile {
             sleepThreshold: sleepThreshold.rawValue,
             searchEngine: searchEngine.rawValue,
             searchSuggestionsEnabled: searchSuggestionsEnabled,
-            isPerTabIsolation: isPerTabIsolation
+            isPerTabIsolation: isPerTabIsolation,
+            isAdBlockingEnabled: isAdBlockingEnabled,
+            isEasyListEnabled: isEasyListEnabled,
+            isEasyPrivacyEnabled: isEasyPrivacyEnabled,
+            isEasyListCookieEnabled: isEasyListCookieEnabled,
+            isMalwareFilterEnabled: isMalwareFilterEnabled
         )
     }
 
@@ -174,7 +192,12 @@ class Profile {
             sleepThreshold: sleepThreshold,
             searchEngine: engine,
             searchSuggestionsEnabled: record.searchSuggestionsEnabled,
-            isPerTabIsolation: record.isPerTabIsolation
+            isPerTabIsolation: record.isPerTabIsolation,
+            isAdBlockingEnabled: record.isAdBlockingEnabled,
+            isEasyListEnabled: record.isEasyListEnabled,
+            isEasyPrivacyEnabled: record.isEasyPrivacyEnabled,
+            isEasyListCookieEnabled: record.isEasyListCookieEnabled,
+            isMalwareFilterEnabled: record.isMalwareFilterEnabled
         )
     }
 }

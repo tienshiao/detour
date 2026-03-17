@@ -5,6 +5,7 @@ class FauxAddressBar: NSView {
         didSet {
             label.stringValue = displayText
             updateLeadingIcon()
+            updateShieldVisibility()
         }
     }
 
@@ -12,12 +13,23 @@ class FauxAddressBar: NSView {
         didSet { updateLeadingIcon() }
     }
 
+    var blockedCount: Int = 0 {
+        didSet { updateBadge() }
+    }
+
+    var isBlockingEnabledForHost: Bool = true {
+        didSet { updateShieldIcon() }
+    }
+
     var onClick: (() -> Void)?
     var onCopyURL: (() -> Void)?
+    var onShieldClick: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
     private let leadingIcon = NSImageView()
+    let shieldButton = NSButton()
     private let copyButton = NSButton()
+    private let badgeLabel = NSTextField(labelWithString: "")
     private var labelLeadingDefault: NSLayoutConstraint!
     private var labelLeadingAfterIcon: NSLayoutConstraint!
 
@@ -55,6 +67,34 @@ class FauxAddressBar: NSView {
         leadingIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
         addSubview(leadingIcon)
 
+        // Shield button (content blocker indicator)
+        shieldButton.bezelStyle = .inline
+        shieldButton.isBordered = false
+        shieldButton.image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Content blocker")
+        shieldButton.contentTintColor = .controlAccentColor
+        shieldButton.target = self
+        shieldButton.action = #selector(shieldClicked)
+        shieldButton.translatesAutoresizingMaskIntoConstraints = false
+        shieldButton.setContentHuggingPriority(.required, for: .horizontal)
+        shieldButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        shieldButton.isHidden = true
+        addSubview(shieldButton)
+
+        // Badge for blocked count
+        badgeLabel.font = .systemFont(ofSize: 7, weight: .bold)
+        badgeLabel.textColor = .white
+        badgeLabel.backgroundColor = .controlAccentColor
+        badgeLabel.drawsBackground = true
+        badgeLabel.isBezeled = false
+        badgeLabel.isEditable = false
+        badgeLabel.alignment = .center
+        badgeLabel.wantsLayer = true
+        badgeLabel.layer?.cornerRadius = 4.5
+        badgeLabel.layer?.masksToBounds = true
+        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeLabel.isHidden = true
+        addSubview(badgeLabel)
+
         copyButton.bezelStyle = .inline
         copyButton.isBordered = false
         copyButton.image = NSImage(systemSymbolName: "link", accessibilityDescription: "Copy URL")
@@ -77,8 +117,14 @@ class FauxAddressBar: NSView {
             leadingIcon.heightAnchor.constraint(equalToConstant: 14),
             label.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -4),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            copyButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            copyButton.trailingAnchor.constraint(equalTo: shieldButton.leadingAnchor, constant: -2),
             copyButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            shieldButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            shieldButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            badgeLabel.bottomAnchor.constraint(equalTo: shieldButton.bottomAnchor, constant: 4),
+            badgeLabel.centerXAnchor.constraint(equalTo: shieldButton.centerXAnchor),
+            badgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 12),
+            badgeLabel.heightAnchor.constraint(equalToConstant: 10),
         ])
 
         updateLeadingIcon()
@@ -107,8 +153,40 @@ class FauxAddressBar: NSView {
         }
     }
 
+    private func updateShieldVisibility() {
+        shieldButton.isHidden = displayText.isEmpty
+        if displayText.isEmpty {
+            badgeLabel.isHidden = true
+        }
+    }
+
+    private func updateShieldIcon() {
+        if isBlockingEnabledForHost {
+            shieldButton.image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Content blocking active")
+            shieldButton.contentTintColor = .controlAccentColor
+            shieldButton.toolTip = "Content blocking is enabled for this site"
+        } else {
+            shieldButton.image = NSImage(systemSymbolName: "shield.slash", accessibilityDescription: "Content blocking disabled")
+            shieldButton.contentTintColor = .secondaryLabelColor
+            shieldButton.toolTip = "Content blocking is disabled for this site"
+        }
+    }
+
+    private func updateBadge() {
+        if blockedCount > 0 {
+            badgeLabel.stringValue = blockedCount > 99 ? "99+" : "\(blockedCount)"
+            badgeLabel.isHidden = false
+        } else {
+            badgeLabel.isHidden = true
+        }
+    }
+
     @objc private func copyClicked() {
         onCopyURL?()
+    }
+
+    @objc private func shieldClicked() {
+        onShieldClick?()
     }
 
     override func updateTrackingAreas() {
@@ -135,6 +213,7 @@ class FauxAddressBar: NSView {
     override func resetCursorRects() {
         addCursorRect(label.frame, cursor: .iBeam)
         addCursorRect(copyButton.frame, cursor: .arrow)
+        addCursorRect(shieldButton.frame, cursor: .arrow)
         if !leadingIcon.isHidden {
             addCursorRect(leadingIcon.frame, cursor: .arrow)
         }
@@ -146,6 +225,9 @@ class FauxAddressBar: NSView {
             copyButton.contentTintColor = .labelColor
             return
         }
+        if !shieldButton.isHidden && shieldButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
+            return
+        }
         onClick?()
     }
 
@@ -154,6 +236,10 @@ class FauxAddressBar: NSView {
         if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
             copyButton.contentTintColor = .secondaryLabelColor
             onCopyURL?()
+            return
+        }
+        if !shieldButton.isHidden && shieldButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
+            onShieldClick?()
         }
     }
 }

@@ -13,4 +13,9 @@ struct ProfileRecord: Codable, FetchableRecord, PersistableRecord {
     var searchEngine: Int        // 0 = google, 1 = duckduckgo, 2 = bing, 3 = yahoo, 4 = ecosia, 5 = kagi
     var searchSuggestionsEnabled: Bool
     var isPerTabIsolation: Bool
+    var isAdBlockingEnabled: Bool
+    var isEasyListEnabled: Bool
+    var isEasyPrivacyEnabled: Bool
+    var isEasyListCookieEnabled: Bool
+    var isMalwareFilterEnabled: Bool
 }
