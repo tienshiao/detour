@@ -32,8 +32,8 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect) {
-        commandPaletteNavigatesInPlace = true
-        showCommandPalette(initialText: selectedTab?.url?.absoluteString, anchorFrame: anchorFrame)
+        commandPaletteNavigatesInPlace = displayTab === selectedTab
+        showCommandPalette(initialText: displayTab?.url?.absoluteString, anchorFrame: anchorFrame)
     }
 
     func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController) {

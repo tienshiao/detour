@@ -874,8 +874,9 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func focusAddressBar(_ sender: Any?) {
-        commandPaletteNavigatesInPlace = true
-        showCommandPalette(initialText: selectedTab?.url?.absoluteString)
+        // When peek is open, show peek URL but open a new tab (like Cmd+T)
+        commandPaletteNavigatesInPlace = peekTab == nil
+        showCommandPalette(initialText: displayTab?.url?.absoluteString)
     }
 
     func showCommandPalette(initialText: String? = nil, anchorFrame: NSRect? = nil) {
