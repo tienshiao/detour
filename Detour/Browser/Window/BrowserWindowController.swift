@@ -1001,21 +1001,8 @@ class BrowserWindowController: NSWindowController {
         let tab = space.pinnedTabs[index]
 
         if tab.isAtPinnedHome {
-            // Fully remove — select next tab
-            let allTabs = space.pinnedTabs + space.tabs
-            let nextID: UUID?
-            if let currentIndex = allTabs.firstIndex(where: { $0.id == tab.id }) {
-                if allTabs.count > 1 {
-                    nextID = allTabs[currentIndex == allTabs.count - 1 ? currentIndex - 1 : currentIndex + 1].id
-                } else {
-                    nextID = nil
-                }
-            } else {
-                nextID = nil
-            }
-            store.closePinnedTab(id: tab.id, in: space)
-            if let nextID { selectTab(id: nextID) }
-            else { deselectAllTabs() }
+            // At home — just deselect, pinned tab persists
+            deselectAllTabs()
         } else {
             // Reset to home — tab stays, select next
             store.closePinnedTab(id: tab.id, in: space)
