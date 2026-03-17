@@ -24,13 +24,11 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestGoForward(_ sidebar: TabSidebarViewController) {
-        ensureOwnsWebView()
-        selectedTab?.webView?.goForward()
+        goForward(nil)
     }
 
     func tabSidebarDidRequestReload(_ sidebar: TabSidebarViewController) {
-        ensureOwnsWebView()
-        selectedTab?.reload()
+        reloadPage(nil)
     }
 
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect) {
@@ -97,14 +95,14 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestShowContentBlocker(_ sidebar: TabSidebarViewController, sourceButton: NSView) {
-        guard let host = selectedTab?.url?.host else { return }
+        guard let host = displayTab?.url?.host else { return }
         let profileID = activeSpace?.profile?.id ?? UUID()
         let isWhitelisted = ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
 
         let vc = ContentBlockerPopoverViewController()
         vc.host = host
         vc.isBlockingEnabled = !isWhitelisted
-        vc.blockedCount = selectedTab?.blockedCount ?? 0
+        vc.blockedCount = displayTab?.blockedCount ?? 0
         vc.onToggle = { [weak self] in
             guard let self, let profile = self.activeSpace?.profile else { return }
             ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id) {

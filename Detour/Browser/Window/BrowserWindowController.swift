@@ -56,7 +56,8 @@ class BrowserWindowController: NSWindowController {
     var contextMenuLinkAction: ContextMenuLinkAction = .none
 
     var peekOverlayView: PeekOverlayView?
-    private var peekWebView: WKWebView?
+    private var peekTab: BrowserTab?
+    private var displayTabSubscriptions = Set<AnyCancellable>()
     private var peekWebViewTopConstraint: NSLayoutConstraint?
     private var peekWebViewBottomConstraint: NSLayoutConstraint?
     private var peekWebViewLeadingConstraint: NSLayoutConstraint?
@@ -81,6 +82,10 @@ class BrowserWindowController: NSWindowController {
         guard let selectedTabID else { return nil }
         return activeSpace?.pinnedTabs.first { $0.id == selectedTabID }
             ?? currentTabs.first { $0.id == selectedTabID }
+    }
+
+    var displayTab: BrowserTab? {
+        peekTab ?? selectedTab
     }
 
     private static let frameAutosaveName = "BrowserWindow"
@@ -547,37 +552,7 @@ class BrowserWindowController: NSWindowController {
         tab.lastDeselectedAt = nil
         if tab.isSleeping { tab.wake() }
 
-        tab.$url
-            .receive(on: RunLoop.main)
-            .sink { [weak self] url in
-                self?.tabSidebar.fauxAddressBar.displayText = tab.displayHost
-                self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
-                self?.tabSidebar.reloadButton.isEnabled = url != nil
-                self?.updateContentBlockerStatus()
-            }
-            .store(in: &activeTabSubscriptions)
-
-        tab.$blockedCount
-            .receive(on: RunLoop.main)
-            .sink { [weak self] count in
-                self?.tabSidebar.fauxAddressBar.blockedCount = count
-            }
-            .store(in: &activeTabSubscriptions)
-
-        tab.$canGoBack
-            .receive(on: RunLoop.main)
-            .sink { [weak self] canGoBack in
-                let canCloseToParent = !canGoBack && self?.parentTab(for: tab) != nil
-                self?.tabSidebar.backButton.isEnabled = canGoBack || canCloseToParent
-            }
-            .store(in: &activeTabSubscriptions)
-
-        tab.$canGoForward
-            .receive(on: RunLoop.main)
-            .sink { [weak self] canGoForward in
-                self?.tabSidebar.forwardButton.isEnabled = canGoForward
-            }
-            .store(in: &activeTabSubscriptions)
+        bindDisplayTab()
 
         tab.$title
             .receive(on: RunLoop.main)
@@ -687,7 +662,7 @@ class BrowserWindowController: NSWindowController {
 
     private func removeContentViews() {
         emptyStateLabel.isHidden = true
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekWebView && subview !== linkStatusBar && subview !== emptyStateLabel {
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekTab?.webView && subview !== linkStatusBar && subview !== emptyStateLabel {
             if let webView = subview as? WKWebView {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
@@ -698,6 +673,47 @@ class BrowserWindowController: NSWindowController {
         webViewTopConstraint = nil
         ownsWebView = false
         linkStatusBar.hide()
+    }
+
+    private func bindDisplayTab() {
+        displayTabSubscriptions.removeAll()
+        guard let tab = displayTab else { return }
+
+        tab.$url
+            .receive(on: RunLoop.main)
+            .sink { [weak self] url in
+                self?.tabSidebar.fauxAddressBar.displayText = tab.displayHost
+                self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
+                self?.tabSidebar.reloadButton.isEnabled = url != nil
+                self?.updateContentBlockerStatus()
+            }
+            .store(in: &displayTabSubscriptions)
+
+        tab.$blockedCount
+            .receive(on: RunLoop.main)
+            .sink { [weak self] count in
+                self?.tabSidebar.fauxAddressBar.blockedCount = count
+            }
+            .store(in: &displayTabSubscriptions)
+
+        tab.$canGoBack
+            .receive(on: RunLoop.main)
+            .sink { [weak self] canGoBack in
+                if self?.peekTab != nil {
+                    self?.tabSidebar.backButton.isEnabled = canGoBack
+                } else {
+                    let canCloseToParent = !canGoBack && self?.parentTab(for: tab) != nil
+                    self?.tabSidebar.backButton.isEnabled = canGoBack || canCloseToParent
+                }
+            }
+            .store(in: &displayTabSubscriptions)
+
+        tab.$canGoForward
+            .receive(on: RunLoop.main)
+            .sink { [weak self] canGoForward in
+                self?.tabSidebar.forwardButton.isEnabled = canGoForward
+            }
+            .store(in: &displayTabSubscriptions)
     }
 
     // MARK: - Window Events
@@ -742,7 +758,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     func updateContentBlockerStatus() {
-        guard let host = selectedTab?.url?.host,
+        guard let host = displayTab?.url?.host,
               let profileID = activeSpace?.profile?.id else {
             tabSidebar.fauxAddressBar.isBlockingEnabledForHost = true
             return
@@ -783,13 +799,17 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func copyCurrentURL(_ sender: Any?) {
-        guard let urlString = selectedTab?.url?.absoluteString else { return }
+        guard let urlString = displayTab?.url?.absoluteString else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(urlString, forType: .string)
         toastManager.show(message: "URL copied")
     }
 
     @objc func reloadPage(_ sender: Any?) {
+        if let peek = peekTab {
+            peek.webView?.reload()
+            return
+        }
         ensureOwnsWebView()
         selectedTab?.reload()
     }
@@ -805,6 +825,10 @@ class BrowserWindowController: NSWindowController {
     }
 
     func navigateBackOrCloseChildTab() {
+        if let peek = peekTab {
+            peek.webView?.goBack()
+            return
+        }
         guard let tab = selectedTab else { return }
         if tab.canGoBack {
             ensureOwnsWebView()
@@ -817,6 +841,10 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func goForward(_ sender: Any?) {
+        if let peek = peekTab {
+            peek.webView?.goForward()
+            return
+        }
         ensureOwnsWebView()
         selectedTab?.webView?.goForward()
     }
@@ -1013,17 +1041,19 @@ class BrowserWindowController: NSWindowController {
     // MARK: - Peek Overlay
 
     private func savePeekState(to tab: BrowserTab) {
-        tab.peekURL = peekWebView?.url ?? tab.peekURL
-        if let state = peekWebView?.interactionState {
+        tab.peekURL = peekTab?.webView?.url ?? tab.peekURL
+        if let state = peekTab?.webView?.interactionState {
             tab.peekInteractionState = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
         }
     }
 
     private func tearDownPeekUI() {
+        peekTab?.webView?.removeFromSuperview()
+        peekTab = nil
         peekOverlayView?.removeFromSuperview()
         peekOverlayView = nil
-        peekWebView?.removeFromSuperview()
-        peekWebView = nil
+        displayTabSubscriptions.removeAll()
+        bindDisplayTab()
     }
 
     func showPeekOverlay(url: URL, clickPoint: CGPoint? = nil, interactionState: Data? = nil) {
@@ -1031,12 +1061,13 @@ class BrowserWindowController: NSWindowController {
         dismissPeekOverlay()
 
         let config = space.makeWebViewConfiguration()
-        let peekWebView = WKWebView(frame: .zero, configuration: config)
+        let peekTab = BrowserTab(configuration: config)
+        guard let peekWebView = peekTab.webView else { return }
         peekWebView.navigationDelegate = self
-        peekWebView.isInspectable = true
         peekWebView.allowsBackForwardNavigationGestures = true
-
-        self.peekWebView = peekWebView
+        peekWebView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+        peekWebView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
+        self.peekTab = peekTab
 
         let overlay = PeekOverlayView(clickPoint: clickPoint)
         overlay.translatesAutoresizingMaskIntoConstraints = false
@@ -1106,6 +1137,7 @@ class BrowserWindowController: NSWindowController {
         peekOverlayView = overlay
         selectedTab?.peekURL = url
         store.scheduleSave()
+        bindDisplayTab()
     }
 
     private func dismissPeekOverlay() {
@@ -1114,8 +1146,9 @@ class BrowserWindowController: NSWindowController {
         selectedTab?.peekInteractionState = nil
         store.scheduleSave()
         peekOverlayView = nil
-        let peekWebView = self.peekWebView
-        self.peekWebView = nil
+        let peekWebView = peekTab?.webView
+        peekTab = nil
+        bindDisplayTab()
         overlay.animateClose {
             overlay.removeFromSuperview()
         }
@@ -1141,7 +1174,7 @@ class BrowserWindowController: NSWindowController {
 
     private func expandPeekToNewTab() {
         guard let overlay = peekOverlayView,
-              let webView = peekWebView,
+              let webView = peekTab?.webView,
               let space = activeSpace else {
             dismissPeekOverlay()
             return
@@ -1152,12 +1185,15 @@ class BrowserWindowController: NSWindowController {
         selectedTab?.peekInteractionState = nil
         store.scheduleSave()
 
+        // Nil ghost tab BEFORE creating real tab to avoid double KVO
+        peekTab = nil
+        displayTabSubscriptions.removeAll()
+
         // Create tab with the existing webview
         let tab = store.addTab(in: space, webView: webView, parentID: selectedTabID)
 
         // Clear peek references so selectTab won't double-dismiss
         peekOverlayView = nil
-        self.peekWebView = nil
 
         // Animate webview constraints from peek insets to full content area
 
@@ -1346,7 +1382,11 @@ extension BrowserWindowController: WKScriptMessageHandler {
                 linkStatusBar.show(url: urlString)
             }
         } else if message.name == BlockedResourceTracker.messageName, let count = message.body as? Int {
-            selectedTab?.blockedCount = count
+            if peekTab != nil, message.webView == peekTab?.webView {
+                peekTab?.blockedCount = count
+            } else {
+                selectedTab?.blockedCount = count
+            }
         }
     }
 }
