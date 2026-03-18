@@ -90,6 +90,9 @@ class Space {
             ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
         }
 
+        // Inject extension content scripts
+        ExtensionManager.shared.injector.addContentScripts(to: config.userContentController)
+
         // Set Detour app name as default; Safari/Custom modes override via
         // webView.customUserAgent in BrowserTab.applyUserAgent()
         config.applicationNameForUserAgent = UserAgentMode.detourAppName

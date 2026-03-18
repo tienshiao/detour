@@ -1327,11 +1327,30 @@ extension BrowserWindowController: NSWindowDelegate {
 
 extension BrowserWindowController: NSToolbarDelegate {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        []
+        ExtensionToolbarManager.toolbarItemIdentifiers()
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        []
+        ExtensionToolbarManager.toolbarItemIdentifiers()
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        ExtensionToolbarManager.makeToolbarItem(identifier: itemIdentifier, target: self)
+    }
+}
+
+extension BrowserWindowController: ExtensionToolbarActions {
+    @objc func extensionToolbarItemClicked(_ sender: Any) {
+        // Sender is the NSButton used as the toolbar item's view
+        guard let button = sender as? NSButton,
+              let extID = button.identifier?.rawValue,
+              let ext = ExtensionManager.shared.extension(withID: extID),
+              ext.popupURL != nil else { return }
+
+        let popover = ExtensionPopoverController(extension: ext)
+        popover.show(relativeTo: button.bounds, of: button)
+        // Retain the popover controller until it closes
+        objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
     }
 }
 

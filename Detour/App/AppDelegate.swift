@@ -11,12 +11,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         _ = HistoryDatabase.shared
         HistoryDatabase.shared.expireOldVisits()
 
+        // Initialize content blocker (fetch/compile rule lists)
+        ContentBlockerManager.shared.initialize()
+
+        // Initialize extension manager before window creation so toolbar
+        // items are available when the toolbar delegate is first queried
+        ExtensionManager.shared.initialize()
+
         let wc = BrowserWindowController(incognito: false)
         windowControllers.append(wc)
         wc.showWindow(nil)
-
-        // Initialize content blocker (fetch/compile rule lists)
-        ContentBlockerManager.shared.initialize()
 
         let restored = TabStore.shared.restoreSession()
 
@@ -55,6 +59,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             createNewWindow()
         }
         return true
+    }
+
+    @objc func loadUnpackedExtension() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select an unpacked extension directory containing manifest.json"
+        panel.prompt = "Load Extension"
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let ext = try ExtensionManager.shared.install(from: url)
+                // Refresh toolbars on all windows
+                for wc in self.windowControllers {
+                    wc.window?.toolbar?.insertItem(withItemIdentifier: NSToolbarItem.Identifier(ExtensionToolbarManager.itemIdentifierPrefix + ext.id), at: wc.window?.toolbar?.items.count ?? 0)
+                }
+                let alert = NSAlert()
+                alert.messageText = "Extension Installed"
+                alert.informativeText = "\"\(ext.manifest.name)\" has been installed and enabled."
+                alert.alertStyle = .informational
+                alert.runModal()
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Failed to Load Extension"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .critical
+                alert.runModal()
+            }
+        }
     }
 
     @objc func openSettings() {
@@ -222,6 +257,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let developMenu = NSMenu(title: "Develop")
         let inspectorItem = developMenu.addItem(withTitle: "Web Inspector", action: #selector(BrowserWindowController.showWebInspector(_:)), keyEquivalent: "i")
         inspectorItem.keyEquivalentModifierMask = [.command, .option]
+        developMenu.addItem(.separator())
+        developMenu.addItem(withTitle: "Load Unpacked Extension…", action: #selector(loadUnpackedExtension), keyEquivalent: "")
         developMenuItem.submenu = developMenu
 
         // Window menu
