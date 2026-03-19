@@ -59,7 +59,7 @@ class TabCellView: NSTableCellView {
 
     override init(frame frameRect: NSRect) {
         closeButton = NSButton(
-            image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!,
+            image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!.withSymbolConfiguration(.init(pointSize: 12, weight: .bold))!,
             target: nil,
             action: nil
         )
@@ -395,15 +395,18 @@ class TabCellView: NSTableCellView {
     func updatePinnedMode(entry: PinnedEntry?) {
         guard let entry else {
             // Normal tab: use xmark
-            closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
+            let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
+            closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?.withSymbolConfiguration(boldConfig)
             return
         }
         if entry.isLive {
             // Live pinned tab: minus to make dormant
-            closeButton.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "Close Tab")
+            let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
+            closeButton.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "Close Tab")?.withSymbolConfiguration(boldConfig)
         } else {
             // Dormant pinned entry: xmark to remove entirely
-            closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Remove Pin")
+            let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
+            closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Remove Pin")?.withSymbolConfiguration(boldConfig)
         }
     }
 
@@ -469,7 +472,7 @@ class NewTabCellView: NSTableCellView {
         hoverBackground.isHidden = true
         addSubview(hoverBackground, positioned: .below, relativeTo: nil)
 
-        let plusIcon = NSImageView(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")!)
+        let plusIcon = NSImageView(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")!.withSymbolConfiguration(.init(pointSize: 12, weight: .bold))!)
         plusIcon.translatesAutoresizingMaskIntoConstraints = false
 
         let label = NSTextField(labelWithString: "New Tab")
