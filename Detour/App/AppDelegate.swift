@@ -319,10 +319,6 @@ extension AppDelegate: NSMenuDelegate {
             .forEach { menu.removeItem($0) }
 
         let extensions = ExtensionManager.shared.enabledExtensions
-        print("[Inspector] menuNeedsUpdate: \(extensions.count) enabled extensions")
-        for ext in extensions {
-            print("[Inspector]   - \(ext.manifest.name) (id: \(ext.id))")
-        }
         guard !extensions.isEmpty else { return }
 
         let separator = NSMenuItem.separator()

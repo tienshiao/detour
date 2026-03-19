@@ -339,9 +339,6 @@ class BrowserTab: NSObject {
 
         isSleeping = false
         cachedInteractionState = nil
-
-        // Re-inject extension content scripts into the freshly woken tab
-        ExtensionManager.shared.injector.reinjectContentScripts(into: self)
     }
 
     func currentInteractionStateData() -> Data? {
