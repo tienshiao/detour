@@ -73,6 +73,18 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
+        // Fire chrome.webNavigation.onBeforeNavigate for extensions
+        if let tab = selectedTab, let url = navigationAction.request.url {
+            let mgr = ExtensionManager.shared
+            let tabID = mgr.tabIDMap.intID(for: tab.id)
+            mgr.fireWebNavigationEvent("onBeforeNavigate", details: [
+                "tabId": tabID,
+                "url": url.absoluteString,
+                "frameId": 0,
+                "timeStamp": Date().timeIntervalSince1970 * 1000
+            ])
+        }
+
         return .allow
     }
 
@@ -113,6 +125,20 @@ extension BrowserWindowController: WKNavigationDelegate {
             let mgr = ExtensionManager.shared
             let tabID = mgr.tabIDMap.intID(for: tab.id)
             mgr.fireWebNavigationEvent("onCommitted", details: [
+                "tabId": tabID,
+                "url": url.absoluteString,
+                "frameId": 0,
+                "timeStamp": Date().timeIntervalSince1970 * 1000
+            ])
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Fire chrome.webNavigation.onCompleted for extensions
+        if let tab = selectedTab, let url = webView.url {
+            let mgr = ExtensionManager.shared
+            let tabID = mgr.tabIDMap.intID(for: tab.id)
+            mgr.fireWebNavigationEvent("onCompleted", details: [
                 "tabId": tabID,
                 "url": url.absoluteString,
                 "frameId": 0,

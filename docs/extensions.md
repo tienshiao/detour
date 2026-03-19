@@ -174,7 +174,7 @@ All APIs use `webkit.messageHandlers.extensionMessage.postMessage()` to communic
 | `chrome.scripting.executeScript()` | Full | func + args or files |
 | `chrome.scripting.insertCSS()` | Full | Inline css or files |
 | `chrome.scripting.removeCSS()` | Stub | No-op (WebKit limitation) |
-| `chrome.webNavigation.*` | Partial | Event emitters exist, not fully wired to fire |
+| `chrome.webNavigation.*` | Full | All four events fire from WKNavigationDelegate |
 | `chrome.webRequest.*` | Stub | No-op emitters; WebKit has no request interception |
 
 ## Popup / Toolbar UI
@@ -237,7 +237,7 @@ Two test extensions live under `TestExtensions/`:
 ## Limitations
 
 - **`chrome.webRequest`** — Stub-only event emitters. WebKit provides no pre-request interception API; a warning is logged on first listener registration.
-- **`chrome.webNavigation`** — Event emitters exist but events are not fully fired during page loads.
+- **`chrome.webNavigation`** — All four events (`onBeforeNavigate`, `onCommitted`, `onCompleted`, `onErrorOccurred`) fire from `WKNavigationDelegate` methods, but only for main-frame navigations (`frameId: 0`). Sub-frame navigation events are not tracked.
 - **`chrome.scripting.removeCSS`** — No-op. WebKit does not support targeted CSS removal.
 - **No runtime permission grant/revoke UI** — Permissions are shown at install time via an `NSAlert` confirmation prompt (using `ExtensionPermissionChecker.permissionSummary`), and the bridge enforces them at the API level, but there is no UI for users to selectively grant or revoke individual permissions after installation.
 - **No extension settings UI** — Extensions can only be installed/uninstalled via the debug menu. There is no dedicated settings panel for managing extensions.
