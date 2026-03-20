@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head><title>API Explorer Offscreen</title></head>
+<body>
+  <div id="content">Offscreen document active</div>
+  <script>
+    // Listen for messages from the background
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'parseHTML') {
+        var parser = new DOMParser();
+        var doc = parser.parseFromString(message.html || '<p>empty</p>', 'text/html');
+        var text = doc.body ? doc.body.textContent : '';
+        sendResponse({ parsed: text.trim() });
+      }
+      return true;
+    });
+  </script>
+</body>
+</html>

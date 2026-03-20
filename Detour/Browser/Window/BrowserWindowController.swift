@@ -179,6 +179,53 @@ class BrowserWindowController: NSWindowController {
             name: ExtensionManager.tabShouldSelectNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleExtensionsDidChange),
+            name: ExtensionManager.extensionsDidChangeNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleExtensionPopupOpenURL(_:)),
+            name: ExtensionManager.popupOpenURLNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleExtensionOpenOptionsPage(_:)),
+            name: ExtensionManager.openOptionsPageNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleExtensionPopupOpenURL(_ notification: Notification) {
+        guard let url = notification.userInfo?["url"] as? URL else { return }
+        guard let space = activeSpace else { return }
+        let tab = store.addTab(in: space, url: url)
+        selectTab(id: tab.id)
+    }
+
+    @objc private func handleExtensionOpenOptionsPage(_ notification: Notification) {
+        guard let extensionID = notification.userInfo?["extensionID"] as? String,
+              let ext = ExtensionManager.shared.extension(withID: extensionID),
+              let optionsURL = ext.optionsURL,
+              let space = activeSpace else { return }
+
+        let config = ext.makePageConfiguration()
+
+        let wv = WKWebView(frame: .zero, configuration: config)
+        wv.isInspectable = true
+        wv.load(URLRequest(url: optionsURL))
+        let tab = store.addTab(in: space, webView: wv)
+        selectTab(id: tab.id)
+    }
+
+    @objc private func handleExtensionsDidChange() {
+        rebuildExtensionToolbar()
     }
 
     deinit {
@@ -227,7 +274,26 @@ class BrowserWindowController: NSWindowController {
             deselectAllTabs()
         }
 
+        // Rebuild toolbar to reflect per-profile extension state
+        rebuildExtensionToolbar()
+
         store.scheduleSave()
+    }
+
+    /// Rebuild the window toolbar to match the current space's profile extension state.
+    func rebuildExtensionToolbar() {
+        guard let toolbar = window?.toolbar, window?.isVisible == true else { return }
+        // Remove existing extension items (iterate indices in reverse to avoid shifting)
+        for i in stride(from: toolbar.items.count - 1, through: 0, by: -1) {
+            if toolbar.items[i].itemIdentifier.rawValue.hasPrefix(ExtensionToolbarManager.itemIdentifierPrefix) {
+                toolbar.removeItem(at: i)
+            }
+        }
+        // Add items for extensions enabled in the current profile
+        let profileID = activeSpace?.profileID
+        for id in ExtensionToolbarManager.toolbarItemIdentifiers(profileID: profileID) {
+            toolbar.insertItem(withItemIdentifier: id, at: toolbar.items.count)
+        }
     }
 
     // MARK: - Setup
@@ -640,6 +706,8 @@ class BrowserWindowController: NSWindowController {
         webView.allowsBackForwardNavigationGestures = true
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
         webView.configuration.userContentController.add(self, name: "linkHover")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "contextMenuInfo")
+        webView.configuration.userContentController.add(self, name: "contextMenuInfo")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
 
@@ -692,6 +760,7 @@ class BrowserWindowController: NSWindowController {
         for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekTab?.webView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipWebView {
             if let webView = subview as? WKWebView {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
+                webView.configuration.userContentController.removeScriptMessageHandler(forName: "contextMenuInfo")
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
             }
             subview.removeFromSuperview()
@@ -1357,11 +1426,13 @@ extension BrowserWindowController: NSWindowDelegate {
 
 extension BrowserWindowController: NSToolbarDelegate {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        ExtensionToolbarManager.toolbarItemIdentifiers()
+        let profileID = activeSpace?.profileID
+        return ExtensionToolbarManager.toolbarItemIdentifiers(profileID: profileID)
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        ExtensionToolbarManager.toolbarItemIdentifiers()
+        let profileID = activeSpace?.profileID
+        return ExtensionToolbarManager.toolbarItemIdentifiers(profileID: profileID)
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
@@ -1437,6 +1508,10 @@ extension BrowserWindowController: WKScriptMessageHandler {
                 linkStatusBar.hide()
             } else {
                 linkStatusBar.show(url: urlString)
+            }
+        } else if message.name == "contextMenuInfo", let info = message.body as? [String: String] {
+            if let browserWebView = message.webView as? BrowserWebView {
+                browserWebView.lastContextInfo = info
             }
         } else if message.name == BlockedResourceTracker.messageName, let count = message.body as? Int {
             if peekTab != nil, message.webView == peekTab?.webView {

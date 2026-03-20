@@ -5,9 +5,15 @@ import AppKit
 class ExtensionToolbarManager {
     static let itemIdentifierPrefix = "com.detour.extension."
 
-    /// Returns toolbar item identifiers for all enabled extensions that have an action.
-    static func toolbarItemIdentifiers() -> [NSToolbarItem.Identifier] {
-        ExtensionManager.shared.enabledExtensions
+    /// Returns toolbar item identifiers for extensions enabled for the given profile that have an action.
+    static func toolbarItemIdentifiers(profileID: UUID? = nil) -> [NSToolbarItem.Identifier] {
+        let exts: [WebExtension]
+        if let profileID {
+            exts = ExtensionManager.shared.enabledExtensions(for: profileID)
+        } else {
+            exts = ExtensionManager.shared.enabledExtensions
+        }
+        return exts
             .filter { $0.manifest.action != nil }
             .map { NSToolbarItem.Identifier(itemIdentifierPrefix + $0.id) }
     }
@@ -18,8 +24,11 @@ class ExtensionToolbarManager {
         guard let ext = ExtensionManager.shared.extension(withID: extID) else { return nil }
 
         let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = ext.manifest.name
-        item.toolTip = ext.manifest.action?.defaultTitle ?? ext.manifest.name
+        let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+        let resolvedTitle = ext.manifest.action?.defaultTitle.map { ExtensionI18n.resolve($0, messages: ext.messages) }
+
+        item.label = resolvedName
+        item.toolTip = resolvedTitle ?? resolvedName
 
         let image: NSImage
         if let icon = ext.icon {
@@ -29,7 +38,7 @@ class ExtensionToolbarManager {
                 return true
             }
         } else {
-            image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: ext.manifest.name)
+            image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: resolvedName)
                 ?? NSImage(named: NSImage.actionTemplateName)!
         }
 

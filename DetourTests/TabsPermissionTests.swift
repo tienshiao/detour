@@ -80,7 +80,7 @@ final class TabsPermissionTests: XCTestCase {
             id: allowedID, name: allowedManifest.name, version: allowedManifest.version,
             manifestJSON: try! allowedManifest.toJSONData(), basePath: allowedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
-        ExtensionDatabase.shared.saveExtension(allowedRecord)
+        AppDatabase.shared.saveExtension(allowedRecord)
 
         let allowedConfig = WKWebViewConfiguration()
         let allowedBundle = ChromeAPIBundle.generateBundle(for: allowedExt, isContentScript: false)
@@ -118,7 +118,7 @@ final class TabsPermissionTests: XCTestCase {
             id: deniedID, name: deniedManifest.name, version: deniedManifest.version,
             manifestJSON: try! deniedManifest.toJSONData(), basePath: deniedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
-        ExtensionDatabase.shared.saveExtension(deniedRecord)
+        AppDatabase.shared.saveExtension(deniedRecord)
 
         let deniedConfig = WKWebViewConfiguration()
         let deniedBundle = ChromeAPIBundle.generateBundle(for: deniedExt, isContentScript: false)
@@ -160,7 +160,7 @@ final class TabsPermissionTests: XCTestCase {
             id: narrowID, name: narrowManifest.name, version: narrowManifest.version,
             manifestJSON: try! narrowManifest.toJSONData(), basePath: narrowDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
-        ExtensionDatabase.shared.saveExtension(narrowRecord)
+        AppDatabase.shared.saveExtension(narrowRecord)
 
         let narrowConfig = WKWebViewConfiguration()
         let narrowBundle = ChromeAPIBundle.generateBundle(for: narrowExt, isContentScript: false)
@@ -265,8 +265,8 @@ final class TabsPermissionTests: XCTestCase {
         for ext in [allowedExt, deniedExt, narrowExt].compactMap({ $0 }) {
             ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
             ExtensionManager.shared.backgroundHosts.removeValue(forKey: ext.id)
-            ExtensionDatabase.shared.storageClear(extensionID: ext.id)
-            ExtensionDatabase.shared.deleteExtension(id: ext.id)
+            AppDatabase.shared.storageClear(extensionID: ext.id)
+            AppDatabase.shared.deleteExtension(id: ext.id)
         }
 
         // Clean up tabs
@@ -361,60 +361,95 @@ final class TabsPermissionTests: XCTestCase {
         XCTAssertEqual(json["got"] as? String, "hello")
     }
 
-    // MARK: - Denied
+    // MARK: - Without tabs permission (should still work per Chrome behavior)
+    // Chrome does not require the "tabs" permission for tabs.create/query/update/remove/get.
+    // The permission only controls whether url/title/favIconUrl are populated in Tab objects.
 
-    func testTabsQueryDenied() {
+    func testTabsQueryWorksWithoutTabsPermission() {
         let result = callAsync(deniedWebView, """
-            try { await chrome.tabs.query({}); return 'resolved'; }
-            catch (e) { return e.message; }
+            try { var tabs = await chrome.tabs.query({}); return 'resolved:' + tabs.length; }
+            catch (e) { return 'error:' + e.message; }
         """)
         let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("tabs"), "Error should mention 'tabs': \(msg)")
+        XCTAssertTrue(msg.hasPrefix("resolved"), "tabs.query should work without tabs permission: \(msg)")
     }
 
-    func testTabsGetDenied() {
+    func testTabsCreateWorksWithoutTabsPermission() {
         let result = callAsync(deniedWebView, """
-            try { await chrome.tabs.get(\(testTabIntID!)); return 'resolved'; }
-            catch (e) { return e.message; }
+            try { var tab = await chrome.tabs.create({ url: 'https://x.test' }); return 'resolved'; }
+            catch (e) { return 'error:' + e.message; }
         """)
         let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("tabs"), "Error should mention 'tabs': \(msg)")
+        XCTAssertEqual(msg, "resolved")
     }
 
-    func testTabsCreateDenied() {
-        let result = callAsync(deniedWebView, """
-            try { await chrome.tabs.create({ url: 'https://x.test' }); return 'resolved'; }
-            catch (e) { return e.message; }
-        """)
-        let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("tabs"), "Error should mention 'tabs': \(msg)")
-    }
-
-    func testTabsUpdateDenied() {
-        let result = callAsync(deniedWebView, """
-            try { await chrome.tabs.update(\(testTabIntID!), { url: 'https://x.test' }); return 'resolved'; }
-            catch (e) { return e.message; }
-        """)
-        let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("tabs"), "Error should mention 'tabs': \(msg)")
-    }
-
-    func testTabsRemoveDenied() {
-        let result = callAsync(deniedWebView, """
-            try { await chrome.tabs.remove(\(testTabIntID!)); return 'resolved'; }
-            catch (e) { return e.message; }
-        """)
-        let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("tabs"), "Error should mention 'tabs': \(msg)")
-    }
-
-    func testTabsSendMessageDenied() {
+    func testTabsSendMessageWorksWithoutTabsPermission() {
+        // tabs.sendMessage doesn't require "tabs" permission in Chrome
         let result = callAsync(deniedWebView, """
             try { await chrome.tabs.sendMessage(\(testTabIntID!), { data: 'x' }); return 'resolved'; }
-            catch (e) { return e.message; }
+            catch (e) { return 'error:' + e.message; }
         """)
         let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("tabs"), "Error should mention 'tabs': \(msg)")
+        // Should resolve (not error about missing permission)
+        XCTAssertFalse(msg.contains("tabs"), "Should not require tabs permission: \(msg)")
+    }
+
+    // MARK: - Tab info field visibility
+
+    /// When an extension HAS the "tabs" permission, chrome.tabs.query should return
+    /// Tab objects with `url`, `title`, and `favIconUrl` populated.
+    func testTabsQueryReturnsURLAndTitleWithTabsPermission() {
+        let result = callAsync(allowedWebView, """
+            var tabs = await chrome.tabs.query({});
+            var tab = tabs.find(t => t.id === \(testTabIntID!));
+            if (!tab) return JSON.stringify({ error: 'tab not found' });
+            return JSON.stringify({ url: tab.url, title: tab.title, favIconUrl: tab.favIconUrl });
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse tabs.query response"); return
+        }
+
+        XCTAssertNil(json["error"], "Test tab should be found in query results")
+
+        // With "tabs" permission, url and title MUST be present
+        XCTAssertNotNil(json["url"] as? String, "url should be populated when extension has tabs permission")
+        XCTAssertFalse((json["url"] as? String ?? "").isEmpty, "url should not be empty")
+        XCTAssertNotNil(json["title"] as? String, "title should be populated when extension has tabs permission")
+        // favIconUrl may be nil for test pages that have no favicon, so we only check it is not actively stripped
+        // (i.e. it should be present if the tab has a favicon, but absence is okay for test HTML)
+    }
+
+    /// When an extension does NOT have the "tabs" permission, chrome.tabs.query should return
+    /// Tab objects where `url`, `title`, and `favIconUrl` are stripped/absent (Chrome-compatible behavior).
+    func testTabsQueryStripsURLAndTitleWithoutTabsPermission() {
+        let result = callAsync(deniedWebView, """
+            var tabs = await chrome.tabs.query({});
+            var tab = tabs.find(t => t.id === \(testTabIntID!));
+            if (!tab) return JSON.stringify({ error: 'tab not found', count: tabs.length });
+            return JSON.stringify({
+                hasUrl: (typeof tab.url !== 'undefined' && tab.url !== undefined),
+                hasTitle: (typeof tab.title !== 'undefined' && tab.title !== undefined),
+                hasFavIconUrl: (typeof tab.favIconUrl !== 'undefined' && tab.favIconUrl !== undefined),
+                id: tab.id
+            });
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse tabs.query response"); return
+        }
+
+        XCTAssertNil(json["error"], "Test tab should be found in query results: \(json)")
+
+        // Chrome-compatible behavior: without "tabs" permission, url/title/favIconUrl should be absent
+        XCTAssertEqual(json["hasUrl"] as? Bool, false,
+                       "url should be stripped when extension lacks tabs permission")
+        XCTAssertEqual(json["hasTitle"] as? Bool, false,
+                       "title should be stripped when extension lacks tabs permission")
+        XCTAssertEqual(json["hasFavIconUrl"] as? Bool, false,
+                       "favIconUrl should be stripped when extension lacks tabs permission")
     }
 
     // MARK: - Host Permission (tabs.sendMessage)

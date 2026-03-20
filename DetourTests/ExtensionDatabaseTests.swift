@@ -4,11 +4,9 @@ import GRDB
 
 final class ExtensionDatabaseTests: XCTestCase {
 
-    private func makeDatabase() throws -> ExtensionDatabase {
-        var config = Configuration()
-        config.foreignKeysEnabled = true
-        let dbQueue = try DatabaseQueue(configuration: config) // in-memory
-        return try ExtensionDatabase(dbQueue: dbQueue)
+    private func makeDatabase() throws -> AppDatabase {
+        let dbQueue = try DatabaseQueue(configuration: Configuration()) // in-memory
+        return try AppDatabase(dbQueue: dbQueue)
     }
 
     private func sampleRecord(id: String = "ext-1", name: String = "Test Extension") -> ExtensionRecord {
@@ -161,5 +159,60 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertEqual(result["array"] as? [Int], [1, 2, 3])
         let nested = result["nested"] as? [String: String]
         XCTAssertEqual(nested?["key"], "value")
+    }
+
+    // MARK: - Per-Profile Extension State
+
+    func testProfileExtensionEnabledByDefault() throws {
+        let db = try makeDatabase()
+        db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
+        db.saveExtension(sampleRecord())
+
+        // No per-profile row means enabled
+        XCTAssertTrue(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
+    }
+
+    func testProfileExtensionDisabled() throws {
+        let db = try makeDatabase()
+        db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
+        db.saveExtension(sampleRecord())
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: "profile-1", enabled: false)
+
+        XCTAssertFalse(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
+    }
+
+    func testGlobalDisableOverridesProfileEnabled() throws {
+        let db = try makeDatabase()
+        db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
+        db.saveExtension(sampleRecord())
+        // Globally disable
+        db.setEnabled(id: "ext-1", enabled: false)
+
+        // Even without per-profile row, should be disabled
+        XCTAssertFalse(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
+    }
+
+    func testEnabledExtensionIDsForProfile() throws {
+        let db = try makeDatabase()
+        db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
+        db.saveExtension(sampleRecord(id: "ext-1"))
+        db.saveExtension(sampleRecord(id: "ext-2"))
+        db.setProfileExtensionEnabled(extensionID: "ext-2", profileID: "profile-1", enabled: false)
+
+        let ids = db.enabledExtensionIDs(for: "profile-1")
+        XCTAssertTrue(ids.contains("ext-1"))
+        XCTAssertFalse(ids.contains("ext-2"))
+    }
+
+    func testDeleteExtensionCascadesProfileState() throws {
+        let db = try makeDatabase()
+        db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
+        db.saveExtension(sampleRecord())
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: "profile-1", enabled: false)
+        db.deleteExtension(id: "ext-1")
+
+        // Should not crash and should report no enabled extensions
+        let ids = db.enabledExtensionIDs(for: "profile-1")
+        XCTAssertTrue(ids.isEmpty)
     }
 }

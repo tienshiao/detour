@@ -1,5 +1,8 @@
 // API Explorer — Background Service Worker
-// Exercises: chrome.tabs, chrome.webNavigation, chrome.webRequest, chrome.storage, chrome.scripting
+// Exercises: chrome.tabs, chrome.webNavigation, chrome.webRequest, chrome.storage,
+//            chrome.scripting, chrome.i18n, chrome.contextMenus, chrome.offscreen,
+//            chrome.runtime.onInstalled, chrome.runtime.connect/onConnect,
+//            chrome.storage.onChanged, chrome.extension.getBackgroundPage
 
 const MAX_LOG_ENTRIES = 50;
 
@@ -11,6 +14,38 @@ async function appendLog(entry) {
   }
   await chrome.storage.local.set({ eventLog });
 }
+
+// --- runtime.onInstalled ---
+
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log('[API Explorer] runtime.onInstalled', details.reason);
+  appendLog({ event: 'runtime.onInstalled', reason: details.reason });
+
+  // Create context menu items on install
+  chrome.contextMenus.create({
+    id: 'api-explorer-detect-lang',
+    title: chrome.i18n.getMessage('detectLang') || 'Detect Language',
+    contexts: ['page']
+  });
+
+  chrome.contextMenus.create({
+    id: 'api-explorer-translate',
+    title: chrome.i18n.getMessage('translatePage') || 'Translate with API Explorer',
+    contexts: ['selection']
+  });
+
+  chrome.contextMenus.create({
+    id: 'api-explorer-separator',
+    type: 'separator',
+    contexts: ['page', 'selection']
+  });
+
+  chrome.contextMenus.create({
+    id: 'api-explorer-info',
+    title: 'API Explorer: ' + chrome.i18n.getMessage('appName'),
+    contexts: ['page', 'selection']
+  });
+});
 
 // --- Tab events ---
 
@@ -46,19 +81,79 @@ chrome.webNavigation.onCompleted.addListener((details) => {
   appendLog({ event: 'webNavigation.onCompleted', tabId: details.tabId, url: details.url });
 });
 
-// --- WebRequest (stub verification — should log a warning but not crash) ---
+// --- WebRequest (stub verification) ---
 
 try {
   chrome.webRequest.onBeforeRequest.addListener(
-    (details) => {
-      // Intentionally empty — just verifying the stub doesn't throw
-    },
+    (details) => {},
     { urls: ['<all_urls>'] }
   );
   console.log('[API Explorer] webRequest.onBeforeRequest listener registered (stub)');
 } catch (e) {
   console.warn('[API Explorer] webRequest.onBeforeRequest registration failed:', e);
 }
+
+// --- Context Menus ---
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  console.log('[API Explorer] contextMenus.onClicked', info.menuItemId, info);
+  appendLog({ event: 'contextMenus.onClicked', menuItemId: info.menuItemId, tabId: tab ? tab.id : null });
+
+  if (info.menuItemId === 'api-explorer-detect-lang' && tab) {
+    chrome.tabs.detectLanguage(tab.id, (lang) => {
+      console.log('[API Explorer] Detected language:', lang);
+      appendLog({ event: 'tabs.detectLanguage', tabId: tab.id, language: lang });
+    });
+  }
+
+  if (info.menuItemId === 'api-explorer-translate' && info.selectionText) {
+    console.log('[API Explorer] Selected text for translation:', info.selectionText);
+    appendLog({ event: 'contextMenus.translate', tabId: tab ? tab.id : null, text: info.selectionText });
+  }
+});
+
+// --- storage.onChanged ---
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  // Don't log changes to eventLog itself to avoid infinite loop
+  if (changes.eventLog) return;
+  console.log('[API Explorer] storage.onChanged', areaName, Object.keys(changes));
+  var keys = Object.keys(changes);
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    var change = changes[key];
+    appendLog({
+      event: 'storage.onChanged',
+      area: areaName,
+      key: key,
+      oldValue: change.oldValue !== undefined ? JSON.stringify(change.oldValue) : '(none)',
+      newValue: change.newValue !== undefined ? JSON.stringify(change.newValue) : '(removed)'
+    });
+  }
+});
+
+// --- runtime.connect / onConnect (port messaging) ---
+
+chrome.runtime.onConnect.addListener((port) => {
+  console.log('[API Explorer] runtime.onConnect, port:', port.name);
+  appendLog({ event: 'runtime.onConnect', portName: port.name });
+
+  port.onMessage.addListener((msg) => {
+    console.log('[API Explorer] port.onMessage', port.name, msg);
+    // Echo back with extra info
+    port.postMessage({
+      echo: msg,
+      from: 'background',
+      portName: port.name,
+      timestamp: Date.now()
+    });
+  });
+
+  port.onDisconnect.addListener(() => {
+    console.log('[API Explorer] port.onDisconnect', port.name);
+    appendLog({ event: 'port.onDisconnect', portName: port.name });
+  });
+});
 
 // --- Message handling from popup ---
 
@@ -116,6 +211,70 @@ async function handleMessage(message) {
     case 'sendToTab': {
       const response = await chrome.tabs.sendMessage(message.tabId, message.message || { type: 'highlight' });
       return { response };
+    }
+
+    case 'detectLanguage': {
+      const lang = await chrome.tabs.detectLanguage(message.tabId);
+      return { language: lang };
+    }
+
+    case 'getI18nInfo': {
+      return {
+        appName: chrome.i18n.getMessage('appName'),
+        appDesc: chrome.i18n.getMessage('appDesc'),
+        greeting: chrome.i18n.getMessage('greeting', ['World', 'API Explorer']),
+        uiLanguage: chrome.i18n.getUILanguage(),
+        unknownKey: chrome.i18n.getMessage('nonExistentKey'),
+      };
+    }
+
+    case 'getPlatformInfo': {
+      const info = await chrome.runtime.getPlatformInfo();
+      return { platformInfo: info };
+    }
+
+    case 'getBackgroundPage': {
+      const page = chrome.extension.getBackgroundPage();
+      return { backgroundPage: page === null ? 'null (expected for MV3)' : String(page) };
+    }
+
+    case 'createContextMenu': {
+      const id = await chrome.contextMenus.create({
+        id: message.menuId || 'dynamic-' + Date.now(),
+        title: message.title || 'Dynamic Menu Item',
+        contexts: message.contexts || ['page']
+      });
+      return { menuItemId: id };
+    }
+
+    case 'removeAllContextMenus': {
+      await chrome.contextMenus.removeAll();
+      return { success: true };
+    }
+
+    case 'createOffscreen': {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['DOM_PARSER'],
+        justification: 'Parse HTML fragments'
+      });
+      return { created: true };
+    }
+
+    case 'hasOffscreen': {
+      const has = await chrome.offscreen.hasDocument();
+      return { hasDocument: has };
+    }
+
+    case 'closeOffscreen': {
+      await chrome.offscreen.closeDocument();
+      return { closed: true };
+    }
+
+    case 'storageOnChangedTest': {
+      // Write a test value — the onChanged listener above will log it
+      await chrome.storage.local.set({ _testOnChanged: message.value || 'test-' + Date.now() });
+      return { written: true };
     }
 
     default:

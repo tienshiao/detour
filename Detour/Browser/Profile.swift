@@ -28,6 +28,26 @@ enum UserAgentMode: Int {
         let major = version.split(separator: ".").first.map(String.init) ?? "1"
         return "Detour/\(major)"
     }
+
+    /// Chrome-compatible UA for sites that block non-Chrome browsers (e.g. Chrome Web Store).
+    static var chromeUserAgent: String {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let osString = "\(os.majorVersion)_\(os.minorVersion)_\(os.patchVersion)"
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X \(osString)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    }
+
+    /// Domains that require a Chrome UA to function properly.
+    static let chromeUASpoofDomains: Set<String> = [
+        "chromewebstore.google.com",
+        "clients2.google.com",
+    ]
+
+    /// Returns a Chrome UA if the given host requires spoofing, otherwise nil.
+    static func spoofedUserAgent(for host: String?) -> String? {
+        guard let host else { return nil }
+        if chromeUASpoofDomains.contains(host) { return chromeUserAgent }
+        return nil
+    }
 }
 
 // MARK: - ArchiveThreshold

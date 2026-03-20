@@ -71,7 +71,7 @@ final class ScriptingPermissionTests: XCTestCase {
             id: allowedID, name: allowedManifest.name, version: allowedManifest.version,
             manifestJSON: try! allowedManifest.toJSONData(), basePath: allowedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
-        ExtensionDatabase.shared.saveExtension(allowedRecord)
+        AppDatabase.shared.saveExtension(allowedRecord)
 
         let allowedConfig = WKWebViewConfiguration()
         let allowedBundle = ChromeAPIBundle.generateBundle(for: allowedExt, isContentScript: false)
@@ -105,7 +105,7 @@ final class ScriptingPermissionTests: XCTestCase {
             id: deniedID, name: deniedManifest.name, version: deniedManifest.version,
             manifestJSON: try! deniedManifest.toJSONData(), basePath: deniedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
-        ExtensionDatabase.shared.saveExtension(deniedRecord)
+        AppDatabase.shared.saveExtension(deniedRecord)
 
         let deniedConfig = WKWebViewConfiguration()
         let deniedBundle = ChromeAPIBundle.generateBundle(for: deniedExt, isContentScript: false)
@@ -140,7 +140,7 @@ final class ScriptingPermissionTests: XCTestCase {
             id: narrowID, name: narrowManifest.name, version: narrowManifest.version,
             manifestJSON: try! narrowManifest.toJSONData(), basePath: narrowDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
-        ExtensionDatabase.shared.saveExtension(narrowRecord)
+        AppDatabase.shared.saveExtension(narrowRecord)
 
         let narrowConfig = WKWebViewConfiguration()
         let narrowBundle = ChromeAPIBundle.generateBundle(for: narrowExt, isContentScript: false)
@@ -237,8 +237,8 @@ final class ScriptingPermissionTests: XCTestCase {
         for ext in [allowedExt, deniedExt, narrowExt].compactMap({ $0 }) {
             ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
             ExtensionManager.shared.backgroundHosts.removeValue(forKey: ext.id)
-            ExtensionDatabase.shared.storageClear(extensionID: ext.id)
-            ExtensionDatabase.shared.deleteExtension(id: ext.id)
+            AppDatabase.shared.storageClear(extensionID: ext.id)
+            AppDatabase.shared.deleteExtension(id: ext.id)
         }
 
         for tab in [testBrowserTab, allowedHostTab, deniedHostTab].compactMap({ $0 }) {

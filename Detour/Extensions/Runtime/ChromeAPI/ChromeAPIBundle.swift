@@ -14,6 +14,10 @@ struct ChromeAPIBundle {
         parts.append(ChromeScriptingAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeWebNavigationAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeWebRequestAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeI18nAPI.generateJS(extensionID: ext.id, messages: ext.messages, isContentScript: isContentScript))
+        parts.append(ChromeContextMenusAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeOffscreenAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeResourceInterceptor.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         return parts.joined(separator: "\n\n")
     }
 }

@@ -7,12 +7,13 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     static let shared = SettingsWindowController()
 
     private static let profilesID = NSToolbarItem.Identifier("profiles")
+    private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
 
     private static let fixedWidth: CGFloat = 740
 
     private var panes: [NSToolbarItem.Identifier: NSViewController] = [:]
-    private let paneOrder: [NSToolbarItem.Identifier] = [profilesID, contentBlockerID]
+    private let paneOrder: [NSToolbarItem.Identifier] = [profilesID, extensionsID, contentBlockerID]
 
     private init() {
         let window = NSWindow(
@@ -29,6 +30,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
         let profilesVC = ProfilesSettingsViewController()
         panes[Self.profilesID] = profilesVC
+
+        let extensionsVC = ExtensionsSettingsViewController()
+        panes[Self.extensionsID] = extensionsVC
 
         let contentBlockerVC = ContentBlockerSettingsViewController()
         panes[Self.contentBlockerID] = contentBlockerVC
@@ -59,6 +63,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         case Self.profilesID:
             item.label = "Profiles"
             item.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: "Profiles")
+        case Self.extensionsID:
+            item.label = "Extensions"
+            item.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: "Extensions")
         case Self.contentBlockerID:
             item.label = "Content Blocking"
             item.image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Content Blocking")
@@ -85,6 +92,13 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     @objc private func selectPane(_ sender: NSToolbarItem) {
         guard let vc = panes[sender.itemIdentifier] else { return }
         switchToPane(vc, identifier: sender.itemIdentifier)
+    }
+
+    /// Programmatically show the Extensions pane.
+    func showExtensionsPane() {
+        showWindow(nil)
+        guard let vc = panes[Self.extensionsID] else { return }
+        switchToPane(vc, identifier: Self.extensionsID)
     }
 
     private func switchToPane(_ vc: NSViewController, identifier: NSToolbarItem.Identifier) {

@@ -43,7 +43,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         if let url = navigationAction.request.url,
            let scheme = url.scheme,
            scheme != "http", scheme != "https",
-           scheme != "about", scheme != ErrorPage.scheme {
+           scheme != "about", scheme != ExtensionPageSchemeHandler.scheme, scheme != ErrorPage.scheme {
             NSWorkspace.shared.open(url)
             return .cancel
         }
@@ -73,6 +73,11 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
+        // Apply Chrome UA spoofing for domains that require it
+        if let url = navigationAction.request.url, let tab = selectedTab {
+            tab.applySpoofedUserAgent(for: url)
+        }
+
         // Fire chrome.webNavigation.onBeforeNavigate for extensions
         if let tab = selectedTab, let url = navigationAction.request.url {
             let mgr = ExtensionManager.shared
@@ -89,6 +94,14 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        // Intercept CRX extension downloads
+        if isCRXResponse(navigationResponse) {
+            DispatchQueue.main.async { [weak self] in
+                self?.handleCRXDownload(from: navigationResponse.response.url)
+            }
+            return .cancel
+        }
+
         if !navigationResponse.canShowMIMEType {
             return .download
         }
@@ -98,6 +111,80 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .download
         }
         return .allow
+    }
+
+    private func isCRXResponse(_ navigationResponse: WKNavigationResponse) -> Bool {
+        let mime = navigationResponse.response.mimeType?.lowercased() ?? ""
+        if mime == "application/x-chrome-extension" { return true }
+        if let url = navigationResponse.response.url?.lastPathComponent.lowercased(),
+           url.hasSuffix(".crx") { return true }
+        return false
+    }
+
+    func handleCRXDownload(from url: URL?) {
+        guard let url else { return }
+
+        // Download CRX data via URLSession with Chrome UA
+        var request = URLRequest(url: url)
+        request.setValue(UserAgentMode.chromeUserAgent, forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.finishCRXInstall(data: data, error: error)
+            }
+        }.resume()
+    }
+
+    private func finishCRXInstall(data: Data?, error: Error?) {
+        guard let data, error == nil else {
+            let alert = NSAlert()
+            alert.messageText = "Failed to Download Extension"
+            alert.informativeText = error?.localizedDescription ?? "Unknown error"
+            alert.alertStyle = .critical
+            alert.runModal()
+            return
+        }
+
+        do {
+            let unpackedDir = try CRXUnpacker.unpack(data: data)
+            defer { try? FileManager.default.removeItem(at: unpackedDir) }
+
+            // Parse manifest for permission prompt
+            let manifestURL = unpackedDir.appendingPathComponent("manifest.json")
+            let manifest = try ExtensionManifest.parse(at: manifestURL)
+            let summary = ExtensionPermissionChecker.permissionSummary(for: manifest)
+
+            // Resolve i18n placeholders for display
+            let i18nMessages = ExtensionI18n.loadDefaultMessages(basePath: unpackedDir, defaultLocale: manifest.defaultLocale)
+            let displayName = ExtensionI18n.resolve(manifest.name, messages: i18nMessages)
+
+            let confirmAlert = NSAlert()
+            confirmAlert.messageText = "Install \"\(displayName)\"?"
+            if summary.isEmpty {
+                confirmAlert.informativeText = "This extension does not request any special permissions."
+            } else {
+                let bullets = summary.map { "\u{2022} \($0)" }.joined(separator: "\n")
+                confirmAlert.informativeText = "This extension requests:\n\(bullets)"
+            }
+            confirmAlert.alertStyle = .warning
+            confirmAlert.addButton(withTitle: "Install")
+            confirmAlert.addButton(withTitle: "Cancel")
+
+            guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
+
+            try ExtensionManager.shared.install(from: unpackedDir)
+
+            let successAlert = NSAlert()
+            successAlert.messageText = "Extension Installed"
+            successAlert.informativeText = "\"\(displayName)\" has been installed and enabled."
+            successAlert.alertStyle = .informational
+            successAlert.runModal()
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Failed to Install Extension"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .critical
+            alert.runModal()
+        }
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {

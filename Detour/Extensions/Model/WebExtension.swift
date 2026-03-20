@@ -9,6 +9,11 @@ class WebExtension {
     let basePath: URL
     var isEnabled: Bool
 
+    /// Loaded i18n messages for the extension's default locale.
+    private(set) lazy var messages: [String: String] = {
+        ExtensionI18n.loadDefaultMessages(basePath: basePath, defaultLocale: manifest.defaultLocale)
+    }()
+
     /// The content world used for this extension's content scripts.
     lazy var contentWorld: WKContentWorld = {
         WKContentWorld.world(name: "extension-\(id)")
@@ -42,10 +47,32 @@ class WebExtension {
         return nil
     }
 
-    /// The popup HTML URL, if the extension has an action popup.
+    /// The popup page URL using the custom `extension://` scheme.
     var popupURL: URL? {
         guard let popup = manifest.action?.defaultPopup else { return nil }
-        return basePath.appendingPathComponent(popup)
+        return ExtensionPageSchemeHandler.url(for: id, path: popup)
+    }
+
+    /// The options page URL using the custom `extension://` scheme.
+    var optionsURL: URL? {
+        if let page = manifest.optionsUI?.page ?? manifest.optionsPage {
+            return ExtensionPageSchemeHandler.url(for: id, path: page)
+        }
+        return nil
+    }
+
+    func makePageConfiguration() -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        ExtensionPageSchemeHandler.register(on: config)
+
+        let apiBundle = ChromeAPIBundle.generateBundle(for: self, isContentScript: false)
+        let apiScript = WKUserScript(source: apiBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        config.userContentController.addUserScript(apiScript)
+        ExtensionMessageBridge.shared.register(on: config.userContentController)
+
+        return config
     }
 
     /// Content script matchers built from the manifest.

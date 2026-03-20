@@ -82,16 +82,39 @@ class Space {
             config.websiteDataStore = dataStore
         }
 
+        // Register the extension:// scheme so content scripts can load
+        // web-accessible resources via chrome.runtime.getURL()
+        ExtensionPageSchemeHandler.register(on: config)
+
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         config.userContentController.addUserScript(script)
+
+        // Capture context menu info (link URL, image src, selection) for extension context menus
+        let ctxScript = WKUserScript(source: Space.contextMenuInfoScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        config.userContentController.addUserScript(ctxScript)
 
         // Apply content blocking rules
         if let profile {
             ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
         }
 
-        // Inject extension content scripts
-        ExtensionManager.shared.injector.addContentScripts(to: config.userContentController)
+        // Inject extension content scripts for this space's profile
+        ExtensionManager.shared.injector.addContentScripts(to: config.userContentController, profileID: profileID)
+
+        // Inject Chrome Web Store install interceptor (at document start for API polyfill)
+        let cwsEarlyScript = WKUserScript(
+            source: Space.chromeWebStoreEarlyScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(cwsEarlyScript)
+        // DOM-based fallback at document end
+        let cwsScript = WKUserScript(
+            source: Space.chromeWebStoreScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(cwsScript)
 
         // Set Detour app name as default; Safari/Custom modes override via
         // webView.customUserAgent in BrowserTab.applyUserAgent()
@@ -118,6 +141,120 @@ class Space {
                 window.webkit.messageHandlers.linkHover.postMessage('');
             }
         });
+    })();
+    """
+
+    /// Captures context info (link URL, image src, selected text) on right-click
+    /// and posts it to the native `contextMenuInfo` handler for extension context menus.
+    private static let contextMenuInfoScript = """
+    (function() {
+        document.addEventListener('contextmenu', function(e) {
+            var info = {};
+            var sel = window.getSelection().toString();
+            if (sel) info.selectionText = sel;
+
+            var el = e.target;
+            // Walk up to find link
+            var link = el.closest('a[href]');
+            if (link) info.linkUrl = link.href;
+
+            // Check for image
+            if (el.tagName === 'IMG' && el.src) info.srcUrl = el.src;
+
+            window.webkit.messageHandlers.contextMenuInfo.postMessage(info);
+        });
+    })();
+    """
+
+    /// Polyfills `chrome.webstore.install()` before the page's JS runs.
+    static let chromeWebStoreEarlyScript = """
+    (function() {
+        if (location.hostname !== 'chromewebstore.google.com') return;
+
+        function extractID(url) {
+            try {
+                var path = url ? new URL(url, location.href).pathname : location.pathname;
+                var parts = path.split('/').filter(Boolean);
+                if (parts[0] === 'detail') {
+                    var last = parts[parts.length - 1];
+                    if (/^[a-z]{32}$/.test(last)) return last;
+                }
+            } catch(e) {}
+            return null;
+        }
+
+        function crxURL(extID) {
+            return 'https://clients2.google.com/service/update2/crx'
+                + '?response=redirect&prodversion=131.0&acceptformat=crx3'
+                + '&x=id%3D' + extID + '%26installsource%3Dondemand%26uc';
+        }
+
+        // Polyfill chrome.webstore.install(url, onSuccess, onFailure)
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.webstore) window.chrome.webstore = {};
+        window.chrome.webstore.install = function(url, onSuccess, onFailure) {
+            var extID = extractID(url) || extractID(null);
+            if (!extID) {
+                if (onFailure) onFailure('Could not determine extension ID');
+                return;
+            }
+            location.href = crxURL(extID);
+            if (onSuccess) setTimeout(onSuccess, 100);
+        };
+
+        // Feature-detection: pretend we're Chrome so the store enables the button
+        if (!window.chrome.app) {
+            window.chrome.app = { isInstalled: false, installState: 'not_installed', getIsInstalled: function() { return false; } };
+        }
+    })();
+    """
+
+    /// DOM fallback: hijacks "Add to Chrome" buttons on the Chrome Web Store
+    /// for the modern store UI that doesn't use chrome.webstore.install().
+    static let chromeWebStoreScript = """
+    (function() {
+        if (location.hostname !== 'chromewebstore.google.com') return;
+
+        function extractID() {
+            var parts = location.pathname.split('/').filter(Boolean);
+            if (parts[0] === 'detail') {
+                var last = parts[parts.length - 1];
+                if (/^[a-z]{32}$/.test(last)) return last;
+            }
+            return null;
+        }
+
+        function crxURL(extID) {
+            return 'https://clients2.google.com/service/update2/crx'
+                + '?response=redirect&prodversion=131.0&acceptformat=crx3'
+                + '&x=id%3D' + extID + '%26installsource%3Dondemand%26uc';
+        }
+
+        function hijackButtons() {
+            var extID = extractID();
+            if (!extID) return;
+
+            var buttons = document.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {
+                var btn = buttons[i];
+                var text = btn.textContent.trim();
+                if ((text.indexOf('Add to') === 0 || text === 'Install') && !btn.dataset.detourHijacked) {
+                    btn.dataset.detourHijacked = '1';
+                    btn.disabled = false;
+                    btn.style.pointerEvents = 'auto';
+                    btn.style.opacity = '1';
+                    btn.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        location.href = crxURL(extID);
+                    }, true);
+                }
+            }
+        }
+
+        hijackButtons();
+        new MutationObserver(hijackButtons).observe(document.body || document.documentElement, { childList: true, subtree: true });
     })();
     """
 

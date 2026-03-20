@@ -141,6 +141,16 @@ class BrowserTab: NSObject {
         }
     }
 
+    /// Override the UA for domains that require Chrome (e.g. Chrome Web Store).
+    /// Restores the normal UA when navigating away.
+    func applySpoofedUserAgent(for url: URL) {
+        if let spoofed = UserAgentMode.spoofedUserAgent(for: url.host) {
+            webView?.customUserAgent = spoofed
+        } else {
+            applyUserAgent()
+        }
+    }
+
     @objc private func userAgentDidChange(_ notification: Notification) {
         if let profileID = notification.userInfo?["profileID"] as? UUID {
             guard let spaceID, let space = TabStore.shared.space(withID: spaceID),
@@ -354,6 +364,7 @@ class BrowserTab: NSObject {
         self.url = url
         blockedCount = 0
         navigationPending = true
+        applySpoofedUserAgent(for: url)
         if url.host != previousHost {
             favicon = nil
             faviconURL = nil

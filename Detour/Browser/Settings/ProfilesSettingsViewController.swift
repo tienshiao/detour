@@ -21,6 +21,8 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
     private var gridView: NSGridView!
     private var addButton: NSButton!
     private var deleteButton: NSButton!
+    private var extensionTogglesBox: NSBox!
+    private var extensionTogglesStack: NSStackView!
 
     /// All profiles including the built-in incognito profile.
     private var profiles: [Profile] {
@@ -238,6 +240,32 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         uaPreviewLabel.translatesAutoresizingMaskIntoConstraints = false
         uaPreviewLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
 
+        // Extension per-profile toggles
+        extensionTogglesBox = NSBox()
+        extensionTogglesBox.boxType = .custom
+        extensionTogglesBox.borderColor = .separatorColor
+        extensionTogglesBox.borderWidth = 1
+        extensionTogglesBox.cornerRadius = 6
+        extensionTogglesBox.fillColor = .clear
+        extensionTogglesBox.contentViewMargins = NSSize(width: 10, height: 8)
+        extensionTogglesBox.translatesAutoresizingMaskIntoConstraints = false
+
+        extensionTogglesStack = NSStackView()
+        extensionTogglesStack.orientation = .vertical
+        extensionTogglesStack.alignment = .leading
+        extensionTogglesStack.spacing = 6
+        extensionTogglesStack.translatesAutoresizingMaskIntoConstraints = false
+
+        if let contentView = extensionTogglesBox.contentView {
+            contentView.addSubview(extensionTogglesStack)
+            NSLayoutConstraint.activate([
+                extensionTogglesStack.topAnchor.constraint(equalTo: contentView.topAnchor),
+                extensionTogglesStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                extensionTogglesStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                extensionTogglesStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            ])
+        }
+
         gridView = NSGridView(views: [
             [makeLabel("Name"), profileNameField],                   // row 0
             [NSGridCell.emptyContentView, privateNoteLabel],         // row 1
@@ -252,6 +280,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             [makeLabel("User agent"), userAgentPopUp],               // row 10
             [makeLabel("Custom string"), customUserAgentField],      // row 11
             [NSGridCell.emptyContentView, uaPreviewLabel],           // row 12
+            [makeLabel("Extensions"), extensionTogglesBox],          // row 13
         ])
         gridView.translatesAutoresizingMaskIntoConstraints = false
         gridView.rowSpacing = spacing
@@ -261,7 +290,20 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         gridView.row(at: 1).isHidden = true   // private note row
         gridView.row(at: 6).isHidden = true   // isolation warning row
         gridView.row(at: 11).isHidden = true  // custom string row
-        container.addSubview(gridView)
+
+        // Wrap the grid in a flipped clip view + scroll view so the right pane scrolls
+        let rightScrollView = NSScrollView()
+        rightScrollView.hasVerticalScroller = true
+        rightScrollView.borderType = .noBorder
+        rightScrollView.drawsBackground = false
+        rightScrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        let clipView = FlippedClipView()
+        clipView.drawsBackground = false
+        rightScrollView.contentView = clipView
+        rightScrollView.documentView = gridView
+
+        container.addSubview(rightScrollView)
 
         // Layout
         NSLayoutConstraint.activate([
@@ -286,9 +328,14 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            gridView.topAnchor.constraint(equalTo: listContainer.topAnchor, constant: 8),
-            gridView.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: margin),
-            gridView.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -margin),
+            rightScrollView.topAnchor.constraint(equalTo: listContainer.topAnchor),
+            rightScrollView.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: margin),
+            rightScrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
+            rightScrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
+
+            gridView.topAnchor.constraint(equalTo: clipView.topAnchor, constant: 8),
+            gridView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
+            gridView.trailingAnchor.constraint(lessThanOrEqualTo: clipView.trailingAnchor),
         ])
     }
 
@@ -301,6 +348,18 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         }
         updateRightPane()
         updateButtonStates()
+
+        NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
+                                                name: ExtensionManager.extensionsDidChangeNotification, object: nil)
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        NotificationCenter.default.removeObserver(self, name: ExtensionManager.extensionsDidChangeNotification, object: nil)
+    }
+
+    @objc private func extensionsDidChange() {
+        updateExtensionToggles()
     }
 
     // MARK: - Helpers
@@ -379,6 +438,46 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         // Row 11 = custom UA string
         gridView.row(at: 11).isHidden = profile.userAgentMode != .custom
         updateUAPreview()
+        updateExtensionToggles()
+    }
+
+    private func updateExtensionToggles() {
+        guard let profile = selectedProfile else { return }
+        let enabledExts = ExtensionManager.shared.enabledExtensions
+
+        // Hide if no extensions installed
+        gridView.row(at: 13).isHidden = enabledExts.isEmpty
+
+        // Rebuild toggle rows
+        extensionTogglesStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        for ext in enabledExts {
+            let toggle = NSSwitch()
+            toggle.controlSize = .small
+            let isEnabled = AppDatabase.shared.isExtensionEnabled(
+                extensionID: ext.id, profileID: profile.id.uuidString)
+            toggle.state = isEnabled ? .on : .off
+            toggle.identifier = NSUserInterfaceItemIdentifier(ext.id)
+            toggle.target = self
+            toggle.action = #selector(extensionToggled(_:))
+
+            let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+            let label = NSTextField(labelWithString: resolvedName)
+            label.font = .systemFont(ofSize: 12)
+
+            let row = NSStackView(views: [toggle, label])
+            row.orientation = .horizontal
+            row.spacing = 6
+            row.alignment = .centerY
+            extensionTogglesStack.addArrangedSubview(row)
+        }
+    }
+
+    @objc private func extensionToggled(_ sender: NSSwitch) {
+        guard let profile = selectedProfile,
+              let extID = sender.identifier?.rawValue else { return }
+        let enabled = sender.state == .on
+        ExtensionManager.shared.setEnabled(id: extID, profileID: profile.id, enabled: enabled)
     }
 
     private func updateUAPreview() {
@@ -599,4 +698,9 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         updateRightPane()
         updateButtonStates()
     }
+}
+
+/// A clip view that draws content from the top down (flipped coordinate system).
+private class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
 }

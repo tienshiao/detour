@@ -1,15 +1,24 @@
 import Foundation
 import GRDB
 
+/// Returns the app's data directory inside Application Support.
+/// When the `DETOUR_DATA_DIR` environment variable is set (e.g. in the test scheme),
+/// that subdirectory name is used instead of "Detour", keeping test data isolated.
+func detourDataDirectory() -> URL {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    let subdir = ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] ?? "Detour"
+    let dir = appSupport.appendingPathComponent(subdir, isDirectory: true)
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}
+
 struct AppDatabase {
     static let shared = AppDatabase()
 
     let dbQueue: DatabaseQueue
 
     private init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("Detour", isDirectory: true)
-        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = detourDataDirectory()
         let dbPath = dir.appendingPathComponent("browser.db").path
 
         dbQueue = try! DatabaseQueue(path: dbPath)
@@ -405,6 +414,174 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v2") { db in
+            // Move extension tables from extensions.db into browser.db
+            try db.create(table: "extension") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("version", .text).notNull()
+                t.column("manifestJSON", .blob).notNull()
+                t.column("basePath", .text).notNull()
+                t.column("isEnabled", .boolean).notNull().defaults(to: true)
+                t.column("installedAt", .double).notNull()
+            }
+
+            try db.create(table: "extensionStorage") { t in
+                t.column("extensionID", .text).notNull()
+                    .references("extension", onDelete: .cascade)
+                t.column("key", .text).notNull()
+                t.column("value", .blob).notNull()
+                t.primaryKey(["extensionID", "key"])
+            }
+
+            // Per-profile extension state (opt-out: missing row = enabled)
+            try db.create(table: "profileExtension") { t in
+                t.column("profileID", .text).notNull()
+                    .references("profile", onDelete: .cascade)
+                t.column("extensionID", .text).notNull()
+                    .references("extension", onDelete: .cascade)
+                t.column("isEnabled", .boolean).notNull().defaults(to: true)
+                t.primaryKey(["profileID", "extensionID"])
+            }
+        }
+
         return migrator
+    }
+
+    // MARK: - Extension CRUD
+
+    func saveExtension(_ record: ExtensionRecord) {
+        performWrite("save extension") { db in
+            try record.save(db)
+        }
+    }
+
+    func loadExtensions() -> [ExtensionRecord] {
+        performRead("load extensions", default: []) { db in
+            try ExtensionRecord.fetchAll(db)
+        }
+    }
+
+    func deleteExtension(id: String) {
+        performWrite("delete extension") { db in
+            try ExtensionRecord.filter(Column("id") == id).deleteAll(db)
+        }
+    }
+
+    func setEnabled(id: String, enabled: Bool) {
+        performWrite("update extension enabled state") { db in
+            try db.execute(
+                sql: "UPDATE \"extension\" SET isEnabled = ? WHERE id = ?",
+                arguments: [enabled, id]
+            )
+        }
+    }
+
+    // MARK: - chrome.storage.local
+
+    func storageGet(extensionID: String, keys: [String]) -> [String: Any] {
+        performRead("get extension storage", default: [:]) { db in
+            var result: [String: Any] = [:]
+            for key in keys {
+                if let record = try ExtensionStorageRecord
+                    .filter(Column("extensionID") == extensionID && Column("key") == key)
+                    .fetchOne(db) {
+                    if let value = try? JSONSerialization.jsonObject(with: record.value, options: .fragmentsAllowed) {
+                        result[key] = value
+                    }
+                }
+            }
+            return result
+        }
+    }
+
+    func storageGetAll(extensionID: String) -> [String: Any] {
+        performRead("get all extension storage", default: [:]) { db in
+            var result: [String: Any] = [:]
+            let records = try ExtensionStorageRecord
+                .filter(Column("extensionID") == extensionID)
+                .fetchAll(db)
+            for record in records {
+                if let value = try? JSONSerialization.jsonObject(with: record.value, options: .fragmentsAllowed) {
+                    result[record.key] = value
+                }
+            }
+            return result
+        }
+    }
+
+    func storageSet(extensionID: String, items: [String: Any]) {
+        performWrite("set extension storage") { db in
+            for (key, value) in items {
+                let jsonData = try JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed)
+                let record = ExtensionStorageRecord(
+                    extensionID: extensionID,
+                    key: key,
+                    value: jsonData
+                )
+                try record.save(db)
+            }
+        }
+    }
+
+    func storageRemove(extensionID: String, keys: [String]) {
+        performWrite("remove extension storage") { db in
+            for key in keys {
+                try ExtensionStorageRecord
+                    .filter(Column("extensionID") == extensionID && Column("key") == key)
+                    .deleteAll(db)
+            }
+        }
+    }
+
+    func storageClear(extensionID: String) {
+        performWrite("clear extension storage") { db in
+            try ExtensionStorageRecord
+                .filter(Column("extensionID") == extensionID)
+                .deleteAll(db)
+        }
+    }
+
+    // MARK: - Per-Profile Extension State
+
+    /// Check if an extension is enabled for a specific profile.
+    /// True if globally enabled AND (no per-profile row OR row.isEnabled).
+    func isExtensionEnabled(extensionID: String, profileID: String) -> Bool {
+        performRead("check extension enabled for profile", default: false) { db in
+            // Check global enabled first
+            guard let ext = try ExtensionRecord.filter(Column("id") == extensionID).fetchOne(db),
+                  ext.isEnabled else {
+                return false
+            }
+            // Check per-profile override
+            if let row = try ProfileExtensionRecord
+                .filter(Column("profileID") == profileID && Column("extensionID") == extensionID)
+                .fetchOne(db) {
+                return row.isEnabled
+            }
+            return true // missing row = enabled
+        }
+    }
+
+    /// Upsert per-profile extension enabled state.
+    func setProfileExtensionEnabled(extensionID: String, profileID: String, enabled: Bool) {
+        performWrite("set profile extension enabled") { db in
+            let record = ProfileExtensionRecord(profileID: profileID, extensionID: extensionID, isEnabled: enabled)
+            try record.save(db)
+        }
+    }
+
+    /// Returns the set of extension IDs that are globally enabled and not disabled for this profile.
+    func enabledExtensionIDs(for profileID: String) -> Set<String> {
+        performRead("load enabled extension IDs for profile", default: []) { db in
+            let globallyEnabled = try ExtensionRecord
+                .filter(Column("isEnabled") == true)
+                .fetchAll(db)
+            let disabledForProfile = try ProfileExtensionRecord
+                .filter(Column("profileID") == profileID && Column("isEnabled") == false)
+                .fetchAll(db)
+            let disabledIDs = Set(disabledForProfile.map(\.extensionID))
+            return Set(globallyEnabled.map(\.id).filter { !disabledIDs.contains($0) })
+        }
     }
 }

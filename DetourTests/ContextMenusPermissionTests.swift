@@ -2,45 +2,45 @@ import XCTest
 import WebKit
 @testable import Detour
 
-/// Integration tests verifying that the storage permission gate in ExtensionMessageBridge
-/// correctly allows/denies chrome.storage.local.* calls based on manifest permissions.
+/// Integration tests verifying that the contextMenus permission gate in ExtensionMessageBridge
+/// correctly allows/denies chrome.contextMenus.* calls based on manifest permissions.
 @MainActor
-final class StoragePermissionTests: XCTestCase {
+final class ContextMenusPermissionTests: XCTestCase {
 
-    // Extension WITH storage permission
+    // Extension WITH contextMenus permission
     private var allowedDir: URL!
     private var allowedExt: WebExtension!
     private var allowedWebView: WKWebView!
-    private var allowedNavDelegate: TestStorageNavDelegate!
+    private var allowedNavDelegate: TestCtxMenuNavDelegate!
 
-    // Extension WITHOUT storage permission
+    // Extension WITHOUT contextMenus permission
     private var deniedDir: URL!
     private var deniedExt: WebExtension!
     private var deniedWebView: WKWebView!
-    private var deniedNavDelegate: TestStorageNavDelegate!
+    private var deniedNavDelegate: TestCtxMenuNavDelegate!
 
     @MainActor
     override func setUp() {
         super.setUp()
 
-        // --- Extension with storage permission ---
+        // --- Extension with contextMenus permission ---
         allowedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-storage-allowed-\(UUID().uuidString)")
+            .appendingPathComponent("detour-ctxmenu-allowed-\(UUID().uuidString)")
         try! FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
 
         let allowedManifestJSON = """
         {
             "manifest_version": 3,
-            "name": "Storage Allowed",
+            "name": "ContextMenus Allowed",
             "version": "1.0",
-            "permissions": ["storage"]
+            "permissions": ["contextMenus"]
         }
         """
         try! allowedManifestJSON.write(to: allowedDir.appendingPathComponent("manifest.json"),
                                        atomically: true, encoding: .utf8)
 
         let allowedManifest = try! ExtensionManifest.parse(at: allowedDir.appendingPathComponent("manifest.json"))
-        let allowedID = "storage-allowed-\(UUID().uuidString)"
+        let allowedID = "ctxmenu-allowed-\(UUID().uuidString)"
         allowedExt = WebExtension(id: allowedID, manifest: allowedManifest, basePath: allowedDir)
         ExtensionManager.shared.extensions.append(allowedExt)
 
@@ -57,24 +57,24 @@ final class StoragePermissionTests: XCTestCase {
         ExtensionMessageBridge.shared.register(on: allowedConfig.userContentController)
         allowedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: allowedConfig)
 
-        // --- Extension without storage permission ---
+        // --- Extension without contextMenus permission ---
         deniedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-storage-denied-\(UUID().uuidString)")
+            .appendingPathComponent("detour-ctxmenu-denied-\(UUID().uuidString)")
         try! FileManager.default.createDirectory(at: deniedDir, withIntermediateDirectories: true)
 
         let deniedManifestJSON = """
         {
             "manifest_version": 3,
-            "name": "Storage Denied",
+            "name": "ContextMenus Denied",
             "version": "1.0",
-            "permissions": []
+            "permissions": ["storage"]
         }
         """
         try! deniedManifestJSON.write(to: deniedDir.appendingPathComponent("manifest.json"),
                                       atomically: true, encoding: .utf8)
 
         let deniedManifest = try! ExtensionManifest.parse(at: deniedDir.appendingPathComponent("manifest.json"))
-        let deniedID = "storage-denied-\(UUID().uuidString)"
+        let deniedID = "ctxmenu-denied-\(UUID().uuidString)"
         deniedExt = WebExtension(id: deniedID, manifest: deniedManifest, basePath: deniedDir)
         ExtensionManager.shared.extensions.append(deniedExt)
 
@@ -94,14 +94,14 @@ final class StoragePermissionTests: XCTestCase {
         // Load pages
         let html = "<html><body>test</body></html>"
         let allowedNavExp = expectation(description: "Allowed page loaded")
-        allowedNavDelegate = TestStorageNavDelegate { allowedNavExp.fulfill() }
+        allowedNavDelegate = TestCtxMenuNavDelegate { allowedNavExp.fulfill() }
         allowedWebView.navigationDelegate = allowedNavDelegate
-        allowedWebView.loadHTMLString(html, baseURL: URL(string: "https://storage-test.example.com")!)
+        allowedWebView.loadHTMLString(html, baseURL: URL(string: "https://ctxmenu-test.example.com")!)
 
         let deniedNavExp = expectation(description: "Denied page loaded")
-        deniedNavDelegate = TestStorageNavDelegate { deniedNavExp.fulfill() }
+        deniedNavDelegate = TestCtxMenuNavDelegate { deniedNavExp.fulfill() }
         deniedWebView.navigationDelegate = deniedNavDelegate
-        deniedWebView.loadHTMLString(html, baseURL: URL(string: "https://storage-test.example.com")!)
+        deniedWebView.loadHTMLString(html, baseURL: URL(string: "https://ctxmenu-test.example.com")!)
 
         wait(for: [allowedNavExp, deniedNavExp], timeout: 10.0)
     }
@@ -110,6 +110,7 @@ final class StoragePermissionTests: XCTestCase {
     override func tearDown() {
         for ext in [allowedExt, deniedExt].compactMap({ $0 }) {
             ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
+            ExtensionManager.shared.contextMenuItems.removeValue(forKey: ext.id)
             AppDatabase.shared.storageClear(extensionID: ext.id)
             AppDatabase.shared.deleteExtension(id: ext.id)
         }
@@ -126,62 +127,74 @@ final class StoragePermissionTests: XCTestCase {
 
     // MARK: - Allowed
 
-    func testStorageSetGetAllowed() {
-        callVoid(allowedWebView, "await chrome.storage.local.set({ key1: 'value1' })")
-        let result = callAsync(allowedWebView, "var r = await chrome.storage.local.get('key1'); return r.key1;")
-        XCTAssertEqual(result as? String, "value1")
+    func testContextMenuCreateAllowed() {
+        let result = callAsync(allowedWebView, """
+            var id = await chrome.contextMenus.create({ id: 'test-item', title: 'Translate', contexts: ['selection'] });
+            return typeof id === 'string' ? 'ok' : 'fail';
+        """)
+        XCTAssertEqual(result as? String, "ok")
     }
 
-    func testStorageRemoveAllowed() {
-        callVoid(allowedWebView, "await chrome.storage.local.set({ rmKey: 'x' })")
-        callVoid(allowedWebView, "await chrome.storage.local.remove('rmKey')")
-        let result = callAsync(allowedWebView, "var r = await chrome.storage.local.get('rmKey'); return r.rmKey === undefined;")
-        XCTAssertEqual(result as? Bool, true)
+    func testContextMenuCreateRegistersItem() {
+        callVoid(allowedWebView, """
+            chrome.contextMenus.create({ id: 'registered-item', title: 'Test Item', contexts: ['page'] });
+        """)
+
+        // Wait briefly for the async message to be processed
+        let exp = expectation(description: "Wait for menu registration")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        let items = ExtensionManager.shared.contextMenuItems[allowedExt.id] ?? []
+        XCTAssertTrue(items.contains(where: { $0.id == "registered-item" }))
     }
 
-    func testStorageClearAllowed() {
-        callVoid(allowedWebView, "await chrome.storage.local.set({ a: 1, b: 2 })")
-        callVoid(allowedWebView, "await chrome.storage.local.clear()")
-        let result = callAsync(allowedWebView, "var r = await chrome.storage.local.get(null); return Object.keys(r).length;")
-        XCTAssertEqual(result as? Int, 0)
+    func testContextMenuRemoveAllAllowed() {
+        callVoid(allowedWebView, """
+            chrome.contextMenus.create({ id: 'item1', title: 'Item 1' });
+            chrome.contextMenus.create({ id: 'item2', title: 'Item 2' });
+        """)
+
+        let exp1 = expectation(description: "Wait for creation")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exp1.fulfill() }
+        wait(for: [exp1], timeout: 2.0)
+
+        let result = callAsync(allowedWebView, """
+            await chrome.contextMenus.removeAll();
+            return 'done';
+        """)
+        XCTAssertEqual(result as? String, "done")
+
+        let exp2 = expectation(description: "Wait for removal")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exp2.fulfill() }
+        wait(for: [exp2], timeout: 2.0)
+
+        let items = ExtensionManager.shared.contextMenuItems[allowedExt.id] ?? []
+        XCTAssertTrue(items.isEmpty)
     }
 
     // MARK: - Denied
 
-    func testStorageGetDenied() {
+    func testContextMenuCreateDenied() {
         let result = callAsync(deniedWebView, """
-            try { await chrome.storage.local.get('x'); return 'resolved'; }
-            catch (e) { return e.message; }
+            try {
+                await chrome.contextMenus.create({ id: 'test', title: 'Test' });
+                return 'resolved';
+            } catch (e) { return e.message; }
         """)
         let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("storage"), "Error should mention 'storage': \(msg)")
+        XCTAssertTrue(msg.contains("contextMenus"), "Error should mention 'contextMenus': \(msg)")
     }
 
-    func testStorageSetDenied() {
+    func testContextMenuRemoveAllDenied() {
         let result = callAsync(deniedWebView, """
-            try { await chrome.storage.local.set({ x: 1 }); return 'resolved'; }
-            catch (e) { return e.message; }
+            try {
+                await chrome.contextMenus.removeAll();
+                return 'resolved';
+            } catch (e) { return e.message; }
         """)
         let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("storage"), "Error should mention 'storage': \(msg)")
-    }
-
-    func testStorageRemoveDenied() {
-        let result = callAsync(deniedWebView, """
-            try { await chrome.storage.local.remove('x'); return 'resolved'; }
-            catch (e) { return e.message; }
-        """)
-        let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("storage"), "Error should mention 'storage': \(msg)")
-    }
-
-    func testStorageClearDenied() {
-        let result = callAsync(deniedWebView, """
-            try { await chrome.storage.local.clear(); return 'resolved'; }
-            catch (e) { return e.message; }
-        """)
-        let msg = result as? String ?? ""
-        XCTAssertTrue(msg.contains("storage"), "Error should mention 'storage': \(msg)")
+        XCTAssertTrue(msg.contains("contextMenus"), "Error should mention 'contextMenus': \(msg)")
     }
 
     // MARK: - Helpers
@@ -207,7 +220,7 @@ final class StoragePermissionTests: XCTestCase {
     }
 }
 
-private class TestStorageNavDelegate: NSObject, WKNavigationDelegate {
+private class TestCtxMenuNavDelegate: NSObject, WKNavigationDelegate {
     let onFinish: () -> Void
     init(onFinish: @escaping () -> Void) { self.onFinish = onFinish }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { onFinish() }

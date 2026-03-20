@@ -4,10 +4,10 @@ import WebKit
 /// Injects content scripts from enabled extensions into WKWebView configurations.
 class ContentScriptInjector {
 
-    /// Add all enabled extensions' content scripts to a WKUserContentController.
+    /// Add enabled extensions' content scripts to a WKUserContentController.
     /// Called during `Space.makeWebViewConfiguration()`.
-    func addContentScripts(to controller: WKUserContentController) {
-        for ext in ExtensionManager.shared.enabledExtensions {
+    func addContentScripts(to controller: WKUserContentController, profileID: UUID) {
+        for ext in ExtensionManager.shared.enabledExtensions(for: profileID) {
             registerContentScripts(for: ext, on: controller)
         }
     }

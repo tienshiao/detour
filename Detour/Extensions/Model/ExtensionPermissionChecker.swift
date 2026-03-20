@@ -17,17 +17,24 @@ struct ExtensionPermissionChecker {
     }
 
     /// Maps a message type (e.g. "tabs.query") to the permission it requires.
-    /// Returns `nil` for APIs that are always allowed (e.g. `runtime.*`).
+    /// Returns `nil` for APIs that are always allowed.
+    ///
+    /// Note: `tabs.*` APIs don't require the "tabs" permission in Chrome.
+    /// The "tabs" permission only controls whether `url`, `title`, and
+    /// `favIconUrl` are included in Tab objects. All extensions can call
+    /// `tabs.create`, `tabs.query`, `tabs.update`, `tabs.remove`, etc.
     static func requiredPermission(for messageType: String) -> String? {
         let prefix = messageType.split(separator: ".").first.map(String.init) ?? messageType
         switch prefix {
-        case "tabs":       return "tabs"
+        case "tabs":       return nil
         case "storage":    return "storage"
         case "scripting":  return "scripting"
         case "webNavigation": return "webNavigation"
-        case "webRequest": return "webRequest"
-        case "runtime":    return nil
-        default:           return nil
+        case "webRequest":    return "webRequest"
+        case "contextMenus": return "contextMenus"
+        case "offscreen":    return "offscreen"
+        case "runtime":      return nil
+        default:             return nil
         }
     }
 
@@ -52,6 +59,9 @@ struct ExtensionPermissionChecker {
             case "scripting":     descriptions.append("Inject scripts into web pages")
             case "webNavigation": descriptions.append("Monitor your browsing navigation")
             case "webRequest":    descriptions.append("Monitor your web requests")
+            case "contextMenus":  descriptions.append("Add items to context menus")
+            case "offscreen":     descriptions.append("Create offscreen documents")
+            case "activeTab":     descriptions.append("Access the active tab on click")
             case "bookmarks":     descriptions.append("Access your bookmarks")
             default:              descriptions.append("Use the \"\(perm)\" API")
             }

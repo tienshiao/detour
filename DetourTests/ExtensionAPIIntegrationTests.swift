@@ -84,7 +84,7 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
             isEnabled: true,
             installedAt: Date().timeIntervalSince1970
         )
-        ExtensionDatabase.shared.saveExtension(record)
+        AppDatabase.shared.saveExtension(record)
 
         // Set up WKWebView with chrome API polyfills in the extension's content world
         let config = WKWebViewConfiguration()
@@ -187,8 +187,8 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         ExtensionManager.shared.extensions.removeAll { $0.id == ext?.id }
         if let extID = ext?.id {
             ExtensionManager.shared.backgroundHosts.removeValue(forKey: extID)
-            ExtensionDatabase.shared.storageClear(extensionID: extID)
-            ExtensionDatabase.shared.deleteExtension(id: extID)
+            AppDatabase.shared.storageClear(extensionID: extID)
+            AppDatabase.shared.deleteExtension(id: extID)
         }
 
         // Clean up E2E test infrastructure

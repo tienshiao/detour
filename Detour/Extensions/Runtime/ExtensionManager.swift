@@ -8,6 +8,8 @@ class ExtensionManager {
 
     var extensions: [WebExtension] = []
     var backgroundHosts: [String: BackgroundHost] = [:]
+    var offscreenHosts: [String: OffscreenDocumentHost] = [:]
+    var contextMenuItems: [String: [ContextMenuItem]] = [:]
 
     let injector = ContentScriptInjector()
     let tabIDMap = ExtensionTabIDMap()
@@ -26,17 +28,31 @@ class ExtensionManager {
     /// Notification for tab activation events from the browser.
     static let tabActivatedNotification = Notification.Name("extensionTabActivated")
 
+    /// Notification posted when an extension popup wants to open a URL in the browser.
+    static let popupOpenURLNotification = Notification.Name("extensionPopupOpenURL")
+
+    /// Notification posted when an extension requests its options page be opened.
+    static let openOptionsPageNotification = Notification.Name("extensionOpenOptionsPage")
+
     init() {}
 
     /// Initialize: load installed extensions from the database and start enabled ones.
     func initialize() {
-        let records = ExtensionDatabase.shared.loadExtensions()
+        let records = AppDatabase.shared.loadExtensions()
         for record in records {
-            guard let manifest = try? JSONDecoder().decode(ExtensionManifest.self, from: record.manifestJSON) else {
+            let basePath = URL(fileURLWithPath: record.basePath)
+            // Prefer the on-disk manifest.json (source of truth) over the stored blob,
+            // which can go stale when ExtensionManifest gains new fields.
+            let diskManifestURL = basePath.appendingPathComponent("manifest.json")
+            let manifest: ExtensionManifest
+            if let diskManifest = try? ExtensionManifest.parse(at: diskManifestURL) {
+                manifest = diskManifest
+            } else if let dbManifest = try? JSONDecoder().decode(ExtensionManifest.self, from: record.manifestJSON) {
+                manifest = dbManifest
+            } else {
                 print("[ExtensionManager] Failed to decode manifest for extension \(record.id)")
                 continue
             }
-            let basePath = URL(fileURLWithPath: record.basePath)
             let ext = WebExtension(id: record.id, manifest: manifest, basePath: basePath, isEnabled: record.isEnabled)
             extensions.append(ext)
 
@@ -55,9 +71,15 @@ class ExtensionManager {
         )
     }
 
-    /// All currently enabled extensions.
+    /// All currently enabled extensions (global).
     var enabledExtensions: [WebExtension] {
         extensions.filter { $0.isEnabled }
+    }
+
+    /// Extensions enabled for a specific profile (global AND per-profile).
+    func enabledExtensions(for profileID: UUID) -> [WebExtension] {
+        let ids = AppDatabase.shared.enabledExtensionIDs(for: profileID.uuidString)
+        return extensions.filter { ids.contains($0.id) }
     }
 
     /// Look up an extension by ID.
@@ -90,8 +112,12 @@ class ExtensionManager {
     }
 
     /// Inject content scripts into all existing tabs for a newly installed/enabled extension.
+    /// Skips spaces where the extension is not enabled for that space's profile.
     func injectIntoExistingTabs(extension ext: WebExtension) {
         for space in TabStore.shared.spaces {
+            let enabledIDs = AppDatabase.shared.enabledExtensionIDs(for: space.profileID.uuidString)
+            guard enabledIDs.contains(ext.id) else { continue }
+
             for tab in space.tabs {
                 injector.injectIntoExistingTab(tab, for: ext)
             }
@@ -114,25 +140,75 @@ class ExtensionManager {
         return ext
     }
 
+    // MARK: - Context Menu Items
+
+    func addContextMenuItem(_ item: ContextMenuItem, for extensionID: String) {
+        if contextMenuItems[extensionID] == nil {
+            contextMenuItems[extensionID] = []
+        }
+        // Replace if item with same ID already exists
+        contextMenuItems[extensionID]?.removeAll { $0.id == item.id }
+        contextMenuItems[extensionID]?.append(item)
+    }
+
+    func updateContextMenuItem(id: String, properties: [String: Any], for extensionID: String) {
+        guard let index = contextMenuItems[extensionID]?.firstIndex(where: { $0.id == id }) else { return }
+        var item = contextMenuItems[extensionID]![index]
+        if let title = properties["title"] as? String { item.title = title }
+        if let contexts = properties["contexts"] as? [String] { item.contexts = contexts }
+        contextMenuItems[extensionID]![index] = item
+    }
+
+    func removeContextMenuItem(id: String, for extensionID: String) {
+        contextMenuItems[extensionID]?.removeAll { $0.id == id }
+    }
+
+    func removeAllContextMenuItems(for extensionID: String) {
+        contextMenuItems.removeValue(forKey: extensionID)
+    }
+
+    /// All context menu items across all extensions.
+    var allContextMenuItems: [(item: ContextMenuItem, extensionID: String)] {
+        contextMenuItems.flatMap { (extID, items) in
+            items.map { ($0, extID) }
+        }
+    }
+
+    /// Dispatch a context menu click to the extension's background host.
+    func dispatchContextMenuClicked(menuItemId: String, info: [String: Any], tab: [String: Any], extensionID: String) {
+        guard let infoData = try? JSONSerialization.data(withJSONObject: info),
+              let infoJSON = String(data: infoData, encoding: .utf8),
+              let tabData = try? JSONSerialization.data(withJSONObject: tab),
+              let tabJSON = String(data: tabData, encoding: .utf8) else {
+            print("[ExtensionManager] dispatchContextMenuClicked: JSON serialization failed")
+            return
+        }
+
+        let js = "if (window.__extensionDispatchContextMenuClicked) { window.__extensionDispatchContextMenuClicked(\(infoJSON), \(tabJSON)); }"
+        backgroundHost(for: extensionID)?.evaluateJavaScript(js)
+    }
+
     /// Uninstall an extension.
     func uninstall(id: String) {
         stopBackground(for: id)
+        offscreenHosts[id]?.stop()
+        offscreenHosts.removeValue(forKey: id)
+        contextMenuItems.removeValue(forKey: id)
         extensions.removeAll { $0.id == id }
-        ExtensionDatabase.shared.deleteExtension(id: id)
+        AppDatabase.shared.deleteExtension(id: id)
 
         // Remove extension files
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let extDir = appSupport.appendingPathComponent("Detour/Extensions/\(id)")
+        let extDir = detourDataDirectory().appendingPathComponent("Extensions/\(id)")
         try? FileManager.default.removeItem(at: extDir)
 
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
-    /// Enable or disable an extension.
+    /// Enable or disable an extension globally.
     func setEnabled(id: String, enabled: Bool) {
         guard let ext = self.extension(withID: id) else { return }
         ext.isEnabled = enabled
-        ExtensionDatabase.shared.setEnabled(id: id, enabled: enabled)
+        AppDatabase.shared.setEnabled(id: id, enabled: enabled)
 
         if enabled {
             startBackground(for: ext)
@@ -140,6 +216,12 @@ class ExtensionManager {
             stopBackground(for: id)
         }
 
+        NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
+    }
+
+    /// Enable or disable an extension for a specific profile.
+    func setEnabled(id: String, profileID: UUID, enabled: Bool) {
+        AppDatabase.shared.setProfileExtensionEnabled(extensionID: id, profileID: profileID.uuidString, enabled: enabled)
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 

@@ -78,8 +78,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 let summary = ExtensionPermissionChecker.permissionSummary(for: manifest)
 
+                // Resolve i18n placeholders for display
+                let i18nMessages = ExtensionI18n.loadDefaultMessages(basePath: url, defaultLocale: manifest.defaultLocale)
+                let displayName = ExtensionI18n.resolve(manifest.name, messages: i18nMessages)
+
                 let confirmAlert = NSAlert()
-                confirmAlert.messageText = "Install \"\(manifest.name)\"?"
+                confirmAlert.messageText = "Install \"\(displayName)\"?"
                 if summary.isEmpty {
                     confirmAlert.informativeText = "This extension does not request any special permissions."
                 } else {
@@ -92,14 +96,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
 
-                let ext = try ExtensionManager.shared.install(from: url)
-                // Refresh toolbars on all windows
-                for wc in self.windowControllers {
-                    wc.window?.toolbar?.insertItem(withItemIdentifier: NSToolbarItem.Identifier(ExtensionToolbarManager.itemIdentifierPrefix + ext.id), at: wc.window?.toolbar?.items.count ?? 0)
-                }
+                try ExtensionManager.shared.install(from: url)
+                // Toolbar rebuild is handled by extensionsDidChangeNotification
                 let alert = NSAlert()
                 alert.messageText = "Extension Installed"
-                alert.informativeText = "\"\(ext.manifest.name)\" has been installed and enabled."
+                alert.informativeText = "\"\(displayName)\" has been installed and enabled."
                 alert.alertStyle = .informational
                 alert.runModal()
             } catch {
@@ -114,6 +115,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openSettings() {
         SettingsWindowController.shared.showWindow(nil)
+    }
+
+    @objc func showExtensionsSettings() {
+        SettingsWindowController.shared.showExtensionsPane()
     }
 
     @objc func createNewWindow() {
@@ -271,6 +276,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         navigateMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
         navigateMenuItem.submenu = navigateMenu
 
+        // Extensions menu
+        let extensionsMenuItem = NSMenuItem()
+        mainMenu.addItem(extensionsMenuItem)
+        let extensionsMenu = NSMenu(title: "Extensions")
+        extensionsMenu.delegate = self
+        extensionsMenu.addItem(withTitle: "Add Extensions…", action: #selector(openChromeWebStore), keyEquivalent: "")
+        extensionsMenu.addItem(withTitle: "Manage Extensions…", action: #selector(showExtensionsSettings), keyEquivalent: "")
+        extensionsMenuItem.submenu = extensionsMenu
+
         // Develop menu
         let developMenuItem = NSMenuItem()
         mainMenu.addItem(developMenuItem)
@@ -294,7 +308,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
+    @objc func openChromeWebStore() {
+        let url = URL(string: "https://chromewebstore.google.com")!
+        if let wc = NSApp.keyWindow?.windowController as? BrowserWindowController,
+           let space = wc.activeSpace {
+            let tab = TabStore.shared.addTab(in: space, url: url)
+            wc.selectTab(id: tab.id)
+        } else {
+            createNewWindowWithURL(url)
+        }
+    }
+
+    @objc func extensionMenuClicked(_ sender: NSMenuItem) {
+        guard let extID = sender.representedObject as? String,
+              let ext = ExtensionManager.shared.extension(withID: extID),
+              ext.popupURL != nil else { return }
+
+        guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController else { return }
+        let addressBar = wc.tabSidebar.fauxAddressBar
+        let popover = ExtensionPopoverController(extension: ext)
+        popover.show(relativeTo: addressBar.bounds, of: addressBar, preferredEdge: .minY)
+        // Retain until closed
+        objc_setAssociatedObject(wc, "extensionMenuPopover", popover, .OBJC_ASSOCIATION_RETAIN)
+    }
+
     // MARK: - Extension Inspector
+
+    /// Tag used to identify dynamically-added extension menu items.
+    private static let extensionMenuTag = 8000
 
     /// Tag used to identify dynamically-added extension inspector menu items.
     private static let extensionInspectorTag = 9000
@@ -331,8 +372,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu.title == "Develop" else { return }
+        switch menu.title {
+        case "Extensions":
+            updateExtensionsMenu(menu)
+        case "Develop":
+            updateDevelopMenu(menu)
+        default:
+            break
+        }
+    }
 
+    private func updateExtensionsMenu(_ menu: NSMenu) {
+        // Remove previous dynamic extension items
+        menu.items
+            .filter { $0.tag == AppDelegate.extensionMenuTag }
+            .forEach { menu.removeItem($0) }
+
+        // Get extensions enabled for the current profile
+        let profileExtensions: [WebExtension]
+        if let wc = NSApp.keyWindow?.windowController as? BrowserWindowController,
+           let profileID = wc.activeSpace?.profileID {
+            profileExtensions = ExtensionManager.shared.enabledExtensions(for: profileID)
+        } else {
+            profileExtensions = ExtensionManager.shared.enabledExtensions
+        }
+
+        guard !profileExtensions.isEmpty else { return }
+
+        // Insert extension items before the separator + "Add Extensions…"
+        // The static items are at the end: "Add Extensions…", "Manage Extensions…"
+        let insertIndex = max(menu.items.count - 2, 0)
+
+        for (i, ext) in profileExtensions.enumerated() {
+            let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+            let item = NSMenuItem(
+                title: resolvedName,
+                action: ext.popupURL != nil ? #selector(extensionMenuClicked(_:)) : nil,
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = ext.id
+            item.tag = AppDelegate.extensionMenuTag
+
+            if let icon = ext.icon {
+                let size = NSSize(width: 16, height: 16)
+                item.image = NSImage(size: size, flipped: false) { rect in
+                    icon.draw(in: rect)
+                    return true
+                }
+            } else {
+                item.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: resolvedName)
+            }
+
+            menu.insertItem(item, at: insertIndex + i)
+        }
+
+        let separator = NSMenuItem.separator()
+        separator.tag = AppDelegate.extensionMenuTag
+        menu.insertItem(separator, at: insertIndex + profileExtensions.count)
+    }
+
+    private func updateDevelopMenu(_ menu: NSMenu) {
         // Remove previous extension inspector items
         menu.items
             .filter { $0.tag == AppDelegate.extensionInspectorTag }
@@ -346,8 +446,9 @@ extension AppDelegate: NSMenuDelegate {
         menu.addItem(separator)
 
         for ext in extensions {
+            let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
             let item = NSMenuItem(
-                title: "Inspect \"\(ext.manifest.name)\" Background",
+                title: "Inspect \"\(resolvedName)\" Background",
                 action: #selector(inspectExtensionBackground(_:)),
                 keyEquivalent: ""
             )

@@ -80,3 +80,7 @@ Sidebar actions flow through `TabSidebarDelegate` → `BrowserWindowController` 
 ### Tab List Offset
 
 The table view's row 0 is always the "New Tab" cell. Actual tabs start at row 1. All index conversions between table rows and tab array indices account for this +1 offset.
+
+### Reminders
+* When adding/updating Web Extension APIS, make sure to add/update corresponding tests and update the API Explorer extension to cover the new APIs.
+* When adding/updating extension permissions, make sure to add/update the corresponding tests with both positive and negative cases.

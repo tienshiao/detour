@@ -80,6 +80,16 @@ struct ChromeTabsAPI {
                 return promise;
             };
 
+            chrome.tabs.detectLanguage = function(tabId, callback) {
+                if (typeof tabId === 'function') {
+                    callback = tabId;
+                    tabId = null;
+                }
+                var promise = tabsRequest('detectLanguage', { tabId: tabId });
+                if (callback) { promise.then(callback); return; }
+                return promise;
+            };
+
             // Event emitters
             var onCreatedListeners = [];
             var onRemovedListeners = [];

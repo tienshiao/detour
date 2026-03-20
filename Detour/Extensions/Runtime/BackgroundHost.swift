@@ -18,21 +18,8 @@ class BackgroundHost {
     func start() {
         guard let serviceWorker = ext.manifest.background?.serviceWorker else { return }
 
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
-
-        // Add chrome API polyfills in the .page world (background runs in .page)
-        let apiBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: false)
-        let apiScript = WKUserScript(
-            source: apiBundle,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: true
-        )
-        config.userContentController.addUserScript(apiScript)
-
-        // Register message bridge in .page world for background
-        ExtensionMessageBridge.shared.register(on: config.userContentController)
+        let config = ext.makePageConfiguration()
+        config.mediaTypesRequiringUserActionForPlayback = []
 
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.isInspectable = true
@@ -43,17 +30,29 @@ class BackgroundHost {
         let scriptURL = ext.basePath.appendingPathComponent(serviceWorker)
         let scriptContent = (try? String(contentsOf: scriptURL, encoding: .utf8)) ?? ""
 
+        // Fire runtime.onInstalled immediately after the background script runs,
+        // using setTimeout(0) so all synchronous listener registrations complete first.
+        let onInstalledJS = """
+        setTimeout(function() {
+            if (window.__extensionDispatchOnInstalled) {
+                window.__extensionDispatchOnInstalled({ reason: 'install' });
+            }
+        }, 0);
+        """
+
         let html = """
         <!DOCTYPE html>
         <html>
         <head><title>Background - \(ext.manifest.name)</title></head>
         <body>
         <script>\(scriptContent)</script>
+        <script>\(onInstalledJS)</script>
         </body>
         </html>
         """
 
-        wv.loadHTMLString(html, baseURL: ext.basePath)
+        let baseURL = ExtensionPageSchemeHandler.url(for: ext.id, path: "/")
+        wv.loadHTMLString(html, baseURL: baseURL)
     }
 
     /// Stop the background host and release the WKWebView.

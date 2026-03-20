@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "API Explorer",
-  "version": "1.0.0",
-  "description": "Test extension exercising chrome.tabs, chrome.scripting, chrome.webNavigation, and chrome.webRequest APIs",
-  "permissions": ["storage", "tabs", "scripting", "webNavigation"],
+  "name": "__MSG_appName__",
+  "version": "2.0.0",
+  "description": "__MSG_appDesc__",
+  "default_locale": "en",
+  "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "optional_permissions": ["bookmarks"],
   "action": {
@@ -21,6 +22,7 @@
       "run_at": "document_end"
     }
   ],
+  "options_page": "options.html",
   "icons": {
     "48": "icon.png"
   }

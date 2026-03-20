@@ -42,8 +42,7 @@ struct ExtensionInstaller {
         let extensionID = UUID().uuidString
 
         // Copy extension files to Application Support
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let destDir = appSupport.appendingPathComponent("Detour/Extensions/\(extensionID)")
+        let destDir = detourDataDirectory().appendingPathComponent("Extensions/\(extensionID)")
 
         do {
             try FileManager.default.createDirectory(at: destDir.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -52,18 +51,22 @@ struct ExtensionInstaller {
             throw InstallerError.copyFailed(error.localizedDescription)
         }
 
+        // Resolve i18n placeholders in name and description
+        let i18nMessages = ExtensionI18n.loadDefaultMessages(basePath: destDir, defaultLocale: manifest.defaultLocale)
+        let resolvedName = ExtensionI18n.resolve(manifest.name, messages: i18nMessages)
+
         // Save to database
         let manifestData = try manifest.toJSONData()
         let record = ExtensionRecord(
             id: extensionID,
-            name: manifest.name,
+            name: resolvedName,
             version: manifest.version,
             manifestJSON: manifestData,
             basePath: destDir.path,
             isEnabled: true,
             installedAt: Date().timeIntervalSince1970
         )
-        ExtensionDatabase.shared.saveExtension(record)
+        AppDatabase.shared.saveExtension(record)
 
         return WebExtension(id: extensionID, manifest: manifest, basePath: destDir, isEnabled: true)
     }

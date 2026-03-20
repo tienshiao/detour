@@ -32,6 +32,27 @@ targets:
       base:
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
-        GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Detour.app/Contents/MacOS/Detour"
         BUNDLE_LOADER: "$(TEST_HOST)"
+    info:
+      path: DetourTests/Info.plist
+      properties:
+        NSPrincipalClass: TestEnvironmentSetup
+schemes:
+  Detour:
+    build:
+      targets:
+        Detour: all
+    run:
+      config: Debug
+  DetourTests:
+    build:
+      targets:
+        Detour: all
+        DetourTests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        DETOUR_DATA_DIR: DetourTests
+      targets:
+        - DetourTests

@@ -34,6 +34,26 @@ struct ChromeStorageAPI {
                 });
             }
 
+            var onChangedListeners = [];
+
+            chrome.storage.onChanged = {
+                addListener: function(cb) { onChangedListeners.push(cb); },
+                removeListener: function(cb) {
+                    var idx = onChangedListeners.indexOf(cb);
+                    if (idx !== -1) onChangedListeners.splice(idx, 1);
+                },
+                hasListener: function(cb) { return onChangedListeners.includes(cb); }
+            };
+
+            // Internal: called by native bridge to dispatch storage change events
+            window.__extensionDispatchStorageChanged = function(changes, areaName) {
+                for (var i = 0; i < onChangedListeners.length; i++) {
+                    try { onChangedListeners[i](changes, areaName); } catch(e) {
+                        console.error('[chrome.storage.onChanged] listener error:', e);
+                    }
+                }
+            };
+
             chrome.storage.local = {
                 get: function(keys, callback) {
                     const keysArray = keys == null ? [] :

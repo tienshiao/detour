@@ -107,13 +107,14 @@ final class ExtensionPermissionCheckerTests: XCTestCase {
 
     // MARK: - requiredPermission
 
-    func testRequiredPermissionForTabs() {
-        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "tabs.query"), "tabs")
-        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "tabs.create"), "tabs")
-        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "tabs.update"), "tabs")
-        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "tabs.remove"), "tabs")
-        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "tabs.get"), "tabs")
-        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "tabs.sendMessage"), "tabs")
+    func testTabsDoesNotRequirePermission() {
+        // Chrome does not require the "tabs" permission for tabs APIs.
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "tabs.query"))
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "tabs.create"))
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "tabs.update"))
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "tabs.remove"))
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "tabs.get"))
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "tabs.sendMessage"))
     }
 
     func testRequiredPermissionForStorage() {

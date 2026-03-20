@@ -7,9 +7,7 @@ struct HistoryDatabase {
     let dbQueue: DatabaseQueue
 
     private init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("Detour", isDirectory: true)
-        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = detourDataDirectory()
         let dbPath = dir.appendingPathComponent("history.db").path
 
         var config = Configuration()

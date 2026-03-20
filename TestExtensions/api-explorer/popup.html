@@ -6,7 +6,7 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 420px;
+      width: 440px;
       font-family: -apple-system, BlinkMacSystemFont, sans-serif;
       font-size: 13px;
       padding: 12px;
@@ -26,6 +26,8 @@
       font-size: 12px;
     }
     button:hover { background: #1d4ed8; }
+    button.secondary { background: #6b7280; }
+    button.secondary:hover { background: #4b5563; }
     input[type="text"], input[type="number"] {
       border: 1px solid #ccc;
       border-radius: 4px;
@@ -33,7 +35,7 @@
       font-size: 12px;
       width: 120px;
     }
-    .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; flex-wrap: wrap; }
     .result {
       margin-top: 4px;
       padding: 6px 8px;
@@ -50,10 +52,29 @@
     .result.visible { display: block; }
     .result.error { color: #dc2626; background: #fef2f2; }
     #event-log .result { max-height: 240px; }
+    .badge {
+      display: inline-block;
+      background: #dbeafe;
+      color: #1d4ed8;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-left: 4px;
+    }
   </style>
 </head>
 <body>
-  <h1>API Explorer</h1>
+  <h1>API Explorer <span class="badge">v2</span></h1>
+
+  <!-- i18n -->
+  <section>
+    <h2>i18n</h2>
+    <div class="row">
+      <button id="btn-i18n-info">Get i18n Info</button>
+      <button id="btn-i18n-local" class="secondary">Local getMessage</button>
+    </div>
+    <div class="result" id="res-i18n"></div>
+  </section>
 
   <!-- Query All Tabs -->
   <section>
@@ -93,6 +114,16 @@
     <div class="result" id="res-close-tab"></div>
   </section>
 
+  <!-- Detect Language -->
+  <section>
+    <h2>Detect Language</h2>
+    <div class="row">
+      <input type="number" id="input-detect-id" placeholder="Tab ID">
+      <button id="btn-detect-lang">Detect</button>
+    </div>
+    <div class="result" id="res-detect-lang"></div>
+  </section>
+
   <!-- Execute Script -->
   <section>
     <h2>Execute Script</h2>
@@ -121,6 +152,67 @@
       <button id="btn-send-tab">Send highlight</button>
     </div>
     <div class="result" id="res-send-tab"></div>
+  </section>
+
+  <!-- Context Menus -->
+  <section>
+    <h2>Context Menus</h2>
+    <div class="row">
+      <input type="text" id="input-menu-title" placeholder="Menu item title" style="width:180px">
+      <button id="btn-create-menu">Create</button>
+      <button id="btn-remove-menus" class="secondary">Remove All</button>
+    </div>
+    <div class="result" id="res-context-menus"></div>
+  </section>
+
+  <!-- Offscreen Document -->
+  <section>
+    <h2>Offscreen Document</h2>
+    <div class="row">
+      <button id="btn-offscreen-create">Create</button>
+      <button id="btn-offscreen-has" class="secondary">Has?</button>
+      <button id="btn-offscreen-close" class="secondary">Close</button>
+    </div>
+    <div class="result" id="res-offscreen"></div>
+  </section>
+
+  <!-- Port Messaging -->
+  <section>
+    <h2>Port Messaging</h2>
+    <div class="row">
+      <input type="text" id="input-port-msg" placeholder="Message to send" style="width:180px">
+      <button id="btn-port-send">Connect & Send</button>
+    </div>
+    <div class="result" id="res-port"></div>
+  </section>
+
+  <!-- Runtime Info -->
+  <section>
+    <h2>Runtime Info</h2>
+    <div class="row">
+      <button id="btn-platform-info">Platform Info</button>
+      <button id="btn-bg-page" class="secondary">getBackgroundPage</button>
+    </div>
+    <div class="result" id="res-runtime-info"></div>
+  </section>
+
+  <!-- Open Options Page -->
+  <section>
+    <h2>Options Page</h2>
+    <div class="row">
+      <button id="btn-open-options">Open Options Page</button>
+    </div>
+    <div class="result" id="res-options-page"></div>
+  </section>
+
+  <!-- Storage onChanged -->
+  <section>
+    <h2>Storage onChanged</h2>
+    <div class="row">
+      <input type="text" id="input-storage-val" placeholder="Value to write" style="width:180px">
+      <button id="btn-storage-write">Write & Watch</button>
+    </div>
+    <div class="result" id="res-storage-changed"></div>
   </section>
 
   <!-- Event Log -->

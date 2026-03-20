@@ -12,7 +12,19 @@ struct ExtensionManifest: Codable {
     let action: Action?
     let background: Background?
     let contentScripts: [ContentScript]?
+    let defaultLocale: String?
+    let optionsPage: String?
+    let optionsUI: OptionsUI?
     let icons: [String: String]?
+
+    struct OptionsUI: Codable {
+        let page: String
+        let openInTab: Bool?
+        enum CodingKeys: String, CodingKey {
+            case page
+            case openInTab = "open_in_tab"
+        }
+    }
 
     struct Action: Codable {
         let defaultPopup: String?
@@ -101,7 +113,10 @@ struct ExtensionManifest: Codable {
         case name, version, description, permissions, action, background
         case hostPermissions = "host_permissions"
         case optionalPermissions = "optional_permissions"
+        case defaultLocale = "default_locale"
         case contentScripts = "content_scripts"
+        case optionsPage = "options_page"
+        case optionsUI = "options_ui"
         case icons
     }
 

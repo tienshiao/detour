@@ -61,7 +61,7 @@ final class WebNavigationEventTests: XCTestCase {
             id: extID, name: manifest.name, version: manifest.version,
             manifestJSON: try! manifest.toJSONData(), basePath: tempDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
-        ExtensionDatabase.shared.saveExtension(record)
+        AppDatabase.shared.saveExtension(record)
 
         backgroundHost = BackgroundHost(extension: ext)
         ExtensionManager.shared.backgroundHosts[extID] = backgroundHost
@@ -79,7 +79,7 @@ final class WebNavigationEventTests: XCTestCase {
         if let extID = ext?.id {
             ExtensionManager.shared.extensions.removeAll { $0.id == extID }
             ExtensionManager.shared.backgroundHosts.removeValue(forKey: extID)
-            ExtensionDatabase.shared.deleteExtension(id: extID)
+            AppDatabase.shared.deleteExtension(id: extID)
         }
         ext = nil
         backgroundHost = nil
