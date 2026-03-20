@@ -131,6 +131,124 @@ final class PermissionCheckerTests: XCTestCase {
         XCTAssertTrue(error.contains("offscreen"))
     }
 
+    // MARK: - enabledExtensions cache
+
+    private func installTestExtension() -> (WebExtension, Profile) {
+        let ext = makeExtension(permissions: ["storage"])
+        ExtensionManager.shared.extensions.append(ext)
+        let record = ExtensionRecord(
+            id: ext.id, name: "CacheTest", version: "1.0",
+            manifestJSON: try! ext.manifest.toJSONData(), basePath: tempDir.path,
+            isEnabled: true, installedAt: Date().timeIntervalSince1970)
+        AppDatabase.shared.saveExtension(record)
+        let profile = TabStore.shared.addProfile(name: "CacheTestProfile-\(UUID().uuidString)")
+        return (ext, profile)
+    }
+
+    private func cleanupTestExtension(_ ext: WebExtension, _ profile: Profile) {
+        ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
+        AppDatabase.shared.deleteExtension(id: ext.id)
+        TabStore.shared.forceRemoveProfile(id: profile.id)
+        ExtensionManager.shared.invalidateEnabledExtensionsCache()
+    }
+
+    func testEnabledExtensionsCacheReturnsConsistentResults() {
+        let (ext, profile) = installTestExtension()
+        defer { cleanupTestExtension(ext, profile) }
+
+        let first = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        let second = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertEqual(first.map(\.id), second.map(\.id))
+        XCTAssertTrue(first.contains(where: { $0.id == ext.id }))
+    }
+
+    func testSetEnabledGlobalInvalidatesCache() {
+        let (ext, profile) = installTestExtension()
+        defer { cleanupTestExtension(ext, profile) }
+
+        // Populate cache
+        let before = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertTrue(before.contains(where: { $0.id == ext.id }))
+
+        // Global disable goes through setEnabled(id:enabled:)
+        ExtensionManager.shared.setEnabled(id: ext.id, enabled: false)
+
+        // Cache should be invalidated; disabled extension excluded from global list
+        let after = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertFalse(after.contains(where: { $0.id == ext.id }))
+
+        // Re-enable for cleanup
+        ExtensionManager.shared.setEnabled(id: ext.id, enabled: true)
+    }
+
+    func testSetEnabledPerProfileInvalidatesCache() {
+        let (ext, profile) = installTestExtension()
+        defer { cleanupTestExtension(ext, profile) }
+
+        // Populate cache
+        let before = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertTrue(before.contains(where: { $0.id == ext.id }))
+
+        // Per-profile disable goes through setEnabled(id:profileID:enabled:)
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
+
+        // Cache should be invalidated; extension excluded for this profile
+        let after = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertFalse(after.contains(where: { $0.id == ext.id }))
+    }
+
+    func testUninstallInvalidatesCache() {
+        let (ext, profile) = installTestExtension()
+        defer {
+            // uninstall already removed from extensions array, just clean up profile/db
+            AppDatabase.shared.deleteExtension(id: ext.id)
+            TabStore.shared.forceRemoveProfile(id: profile.id)
+            ExtensionManager.shared.invalidateEnabledExtensionsCache()
+        }
+
+        // Populate cache
+        let before = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertTrue(before.contains(where: { $0.id == ext.id }))
+
+        // Uninstall goes through uninstall(id:)
+        ExtensionManager.shared.uninstall(id: ext.id)
+
+        // Cache should be invalidated; uninstalled extension gone
+        let after = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertFalse(after.contains(where: { $0.id == ext.id }))
+    }
+
+    func testInstallInvalidatesCache() {
+        let profile = TabStore.shared.addProfile(name: "CacheInstallProfile-\(UUID().uuidString)")
+        defer { TabStore.shared.forceRemoveProfile(id: profile.id) }
+
+        // Populate cache with no extensions
+        let before = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        let countBefore = before.count
+
+        // Write a valid extension to a temp directory and install it
+        let extDir = tempDir.appendingPathComponent("installable")
+        try! FileManager.default.createDirectory(at: extDir, withIntermediateDirectories: true)
+        let manifestJSON = """
+        {
+            "manifest_version": 3,
+            "name": "InstallCacheTest",
+            "version": "1.0",
+            "permissions": ["storage"]
+        }
+        """
+        try! manifestJSON.write(to: extDir.appendingPathComponent("manifest.json"),
+                                atomically: true, encoding: .utf8)
+
+        let ext = try! ExtensionManager.shared.install(from: extDir)
+        defer { ExtensionManager.shared.uninstall(id: ext.id) }
+
+        // Cache should be invalidated; new extension appears
+        let after = ExtensionManager.shared.enabledExtensions(for: profile.id)
+        XCTAssertEqual(after.count, countBefore + 1)
+        XCTAssertTrue(after.contains(where: { $0.id == ext.id }))
+    }
+
     // MARK: - Helpers
 
     private func writeManifest(permissions: [String]) -> URL {

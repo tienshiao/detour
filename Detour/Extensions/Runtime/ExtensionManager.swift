@@ -76,10 +76,23 @@ class ExtensionManager {
         extensions.filter { $0.isEnabled }
     }
 
+    /// Cache of enabled extension IDs per profile. Invalidated when extensions change.
+    private var enabledIDsCache: [UUID: Set<String>] = [:]
+
     /// Extensions enabled for a specific profile (global AND per-profile).
     func enabledExtensions(for profileID: UUID) -> [WebExtension] {
-        let ids = AppDatabase.shared.enabledExtensionIDs(for: profileID.uuidString)
+        let ids: Set<String>
+        if let cached = enabledIDsCache[profileID] {
+            ids = cached
+        } else {
+            ids = Set(AppDatabase.shared.enabledExtensionIDs(for: profileID.uuidString))
+            enabledIDsCache[profileID] = ids
+        }
         return extensions.filter { ids.contains($0.id) }
+    }
+
+    func invalidateEnabledExtensionsCache() {
+        enabledIDsCache.removeAll()
     }
 
     /// Look up an extension by ID.
@@ -136,6 +149,7 @@ class ExtensionManager {
         extensions.append(ext)
         startBackground(for: ext)
         injectIntoExistingTabs(extension: ext)
+        invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
         return ext
     }
@@ -201,6 +215,7 @@ class ExtensionManager {
         let extDir = detourDataDirectory().appendingPathComponent("Extensions/\(id)")
         try? FileManager.default.removeItem(at: extDir)
 
+        invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
@@ -216,12 +231,14 @@ class ExtensionManager {
             stopBackground(for: id)
         }
 
+        invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
     /// Enable or disable an extension for a specific profile.
     func setEnabled(id: String, profileID: UUID, enabled: Bool) {
         AppDatabase.shared.setProfileExtensionEnabled(extensionID: id, profileID: profileID.uuidString, enabled: enabled)
+        invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 

@@ -274,11 +274,11 @@ final class TabsPermissionTests: XCTestCase {
             ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
         }
         if let spaceID = testSpace?.id {
-            TabStore.shared.deleteSpace(id: spaceID)
+            TabStore.shared.forceRemoveSpace(id: spaceID)
             ExtensionManager.shared.spaceIDMap.remove(uuid: spaceID)
         }
         if let profileID = testProfile?.id {
-            TabStore.shared.deleteProfile(id: profileID)
+            TabStore.shared.forceRemoveProfile(id: profileID)
         }
         ExtensionManager.shared.lastActiveSpaceID = nil
 

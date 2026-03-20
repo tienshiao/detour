@@ -306,20 +306,10 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func deliverCallbackResponse(callbackID: String, result: [String: Any], extensionID: String, webView: WKWebView?, isContentScript: Bool) {
-        guard let webView else { return }
-
         guard let resultData = try? JSONSerialization.data(withJSONObject: result),
               let resultJSON = String(data: resultData, encoding: .utf8) else { return }
-
-        let js = "window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));"
-
-        // Deliver to the same world the request came from.
-        // Content scripts run in an isolated content world; popups/background run in .page.
-        if isContentScript, let ext = ExtensionManager.shared.extension(withID: extensionID) {
-            webView.evaluateJavaScript(js, in: nil, in: ext.contentWorld) { _ in }
-        } else {
-            webView.evaluateJavaScript(js) { _, _ in }
-        }
+        deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));",
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
     }
 
     // MARK: - Pending Response Tracking
@@ -896,7 +886,15 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
     private var openPorts: [String: PortConnection] = [:]
 
+    private func cleanupOrphanedPorts() {
+        let orphaned = openPorts.filter { $0.value.sourceWebView == nil && $0.value.targetWebView == nil }
+        for portID in orphaned.keys {
+            openPorts.removeValue(forKey: portID)
+        }
+    }
+
     private func handleRuntimeConnect(body: [String: Any], extensionID: String, sourceWebView: WKWebView?) {
+        cleanupOrphanedPorts()
         guard let portID = body["portID"] as? String else { return }
         let name = body["name"] as? String ?? ""
         let isContentScript = body["isContentScript"] as? Bool ?? true
@@ -996,33 +994,17 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    // MARK: - Callback Response (string variant)
-
     private func deliverCallbackResponse(callbackID: String, result: String, extensionID: String, webView: WKWebView?, isContentScript: Bool) {
-        guard let webView else { return }
-
-        let escapedResult = result.replacingOccurrences(of: "'", with: "\\'")
-        let js = "window.__extensionDeliverResponse('\(callbackID)', '\(escapedResult)');"
-
-        if isContentScript, let ext = ExtensionManager.shared.extension(withID: extensionID) {
-            webView.evaluateJavaScript(js, in: nil, in: ext.contentWorld) { _ in }
-        } else {
-            webView.evaluateJavaScript(js) { _, _ in }
-        }
+        let escaped = result.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        deliverJS("window.__extensionDeliverResponse('\(callbackID)', '\(escaped)');",
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
     }
 
-    // MARK: - Callback Response (bool variant)
-
     private func deliverCallbackResponse(callbackID: String, result: Bool, extensionID: String, webView: WKWebView?, isContentScript: Bool) {
-        guard let webView else { return }
-
-        let js = "window.__extensionDeliverResponse('\(callbackID)', \(result ? "true" : "false"));"
-
-        if isContentScript, let ext = ExtensionManager.shared.extension(withID: extensionID) {
-            webView.evaluateJavaScript(js, in: nil, in: ext.contentWorld) { _ in }
-        } else {
-            webView.evaluateJavaScript(js) { _, _ in }
-        }
+        deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(result ? "true" : "false"));",
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
     }
 
     // MARK: - Tab Lookup Helper
@@ -1103,16 +1085,17 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    // MARK: - Callback Response (array variant)
-
     private func deliverCallbackResponse(callbackID: String, result: [[String: Any]], extensionID: String, webView: WKWebView?, isContentScript: Bool) {
-        guard let webView else { return }
-
         guard let resultData = try? JSONSerialization.data(withJSONObject: result),
               let resultJSON = String(data: resultData, encoding: .utf8) else { return }
+        deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));",
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
+    }
 
-        let js = "window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));"
+    // MARK: - JS Delivery
 
+    private func deliverJS(_ js: String, extensionID: String, webView: WKWebView?, isContentScript: Bool) {
+        guard let webView else { return }
         if isContentScript, let ext = ExtensionManager.shared.extension(withID: extensionID) {
             webView.evaluateJavaScript(js, in: nil, in: ext.contentWorld) { _ in }
         } else {

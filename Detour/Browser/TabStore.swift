@@ -90,8 +90,10 @@ class Space {
         config.userContentController.addUserScript(script)
 
         // Capture context menu info (link URL, image src, selection) for extension context menus
-        let ctxScript = WKUserScript(source: Space.contextMenuInfoScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
-        config.userContentController.addUserScript(ctxScript)
+        if !ExtensionManager.shared.enabledExtensions.isEmpty {
+            let ctxScript = WKUserScript(source: Space.contextMenuInfoScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+            config.userContentController.addUserScript(ctxScript)
+        }
 
         // Apply content blocking rules
         if let profile {
@@ -296,6 +298,24 @@ class TabStore {
         self.historyDB = historyDB
     }
 
+    /// Removes a space by ID without the "keep at least one" guard.
+    /// Use only in test tearDown to ensure clean state between tests.
+    func forceRemoveSpace(id: UUID) {
+        guard let index = spaces.firstIndex(where: { $0.id == id }) else { return }
+        let space = spaces.remove(at: index)
+        for tab in space.tabs {
+            tabSubscriptions.removeValue(forKey: tab.id)
+        }
+        for entry in space.pinnedEntries {
+            if let tab = entry.tab {
+                tabSubscriptions.removeValue(forKey: tab.id)
+            }
+        }
+        let spaceIDString = id.uuidString
+        appDB.deleteClosedTabs(spaceID: spaceIDString)
+        closedTabStack.removeAll { $0.spaceID == spaceIDString }
+    }
+
     func space(withID id: UUID) -> Space? {
         spaces.first { $0.id == id }
     }
@@ -329,6 +349,12 @@ class TabStore {
         scheduleSave()
     }
 
+    /// Removes a profile by ID without guards.
+    /// Use only in test tearDown to ensure clean state between tests.
+    func forceRemoveProfile(id: UUID) {
+        profiles.removeAll { $0.id == id }
+    }
+
     // MARK: - Session Persistence
 
     func scheduleSave() {
@@ -343,10 +369,6 @@ class TabStore {
     func saveNow() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
-
-        // Save profiles (persist regular profiles + built-in incognito profile)
-        let profileRecords = profiles.filter { !$0.isIncognito || $0.id == Self.incognitoProfileID }.map { $0.toRecord() }
-        appDB.saveProfiles(profileRecords)
 
         let persistentSpaces = spaces.filter { !$0.isIncognito }
 
@@ -406,6 +428,11 @@ class TabStore {
             spaces: sessionData,
             lastActiveSpaceID: lastActiveSpaceID?.uuidString
         )
+
+        // Save profiles AFTER session so that stale profiles (no longer referenced
+        // by any space) can be deleted without hitting FK constraint violations.
+        let profileRecords = profiles.filter { !$0.isIncognito || $0.id == Self.incognitoProfileID }.map { $0.toRecord() }
+        appDB.saveProfiles(profileRecords)
 
         // Save pinned folders and entries together in one transaction (entries FK → folders)
         for space in persistentSpaces {

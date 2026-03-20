@@ -34,7 +34,8 @@ private final class TestObserver: NSObject, XCTestObservation {
         }
 
         cleanTestExtensions()
-        cleanTestProfiles()
+        resetTabStore()
+        assertCleanState()
     }
 
     private func cleanTestExtensions() {
@@ -53,14 +54,57 @@ private final class TestObserver: NSObject, XCTestObservation {
         try? FileManager.default.removeItem(at: extDir)
     }
 
-    private func cleanTestProfiles() {
-        let profiles = TabStore.shared.profiles
-        for profile in profiles {
-            if profile.isIncognito { continue }
-            let spaceCount = TabStore.shared.spaces.filter { $0.profileID == profile.id && !$0.isIncognito }.count
-            if spaceCount == 0 && profile.name.contains("Test") {
-                TabStore.shared.deleteProfile(id: profile.id)
-            }
+    /// Removes all stale spaces and test profiles left over from previous runs,
+    /// leaving only the default space and profile that ensureDefaultSpace creates.
+    private func resetTabStore() {
+        // Remove all spaces except the first non-incognito one
+        let store = TabStore.shared
+        let nonIncognitoSpaces = store.spaces.filter { !$0.isIncognito }
+        for space in nonIncognitoSpaces.dropFirst() {
+            store.forceRemoveSpace(id: space.id)
         }
+
+        // Remove all incognito spaces
+        for space in store.spaces.filter({ $0.isIncognito }) {
+            store.forceRemoveSpace(id: space.id)
+        }
+
+        // Remove all tabs from the remaining space (if any)
+        if let space = store.spaces.first {
+            space.tabs.removeAll()
+        }
+
+        // Remove test profiles (keep the default and incognito)
+        let defaultProfileID = store.spaces.first?.profileID
+        for profile in store.profiles {
+            if profile.isIncognito { continue }
+            if profile.id == defaultProfileID { continue }
+            store.forceRemoveProfile(id: profile.id)
+        }
+
+        // Persist the clean state to DB so it doesn't grow across runs
+        store.saveNow()
+    }
+
+    private func assertCleanState() {
+        let store = TabStore.shared
+        let nonIncognitoSpaces = store.spaces.filter { !$0.isIncognito }
+        let nonIncognitoProfiles = store.profiles.filter { !$0.isIncognito }
+
+        if nonIncognitoSpaces.count != 1 {
+            print("⚠️  Expected 1 non-incognito space at test start, found \(nonIncognitoSpaces.count)")
+        }
+        if nonIncognitoProfiles.count != 1 {
+            print("⚠️  Expected 1 non-incognito profile at test start, found \(nonIncognitoProfiles.count)")
+        }
+
+        let totalTabs = nonIncognitoSpaces.reduce(0) { $0 + $1.tabs.count }
+        if totalTabs != 0 {
+            print("⚠️  Expected 0 tabs at test start, found \(totalTabs)")
+        }
+
+        assert(nonIncognitoSpaces.count == 1, "Test environment should start with exactly 1 space")
+        assert(nonIncognitoProfiles.count == 1, "Test environment should start with exactly 1 profile")
+        assert(totalTabs == 0, "Test environment should start with 0 tabs")
     }
 }

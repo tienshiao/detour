@@ -245,4 +245,75 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(all.first?.tabID, "t2")
         XCTAssertEqual(all.first?.spaceID, "s2")
     }
+
+    // MARK: - Profile deletion with FK constraints
+
+    private func makeProfile(id: String, name: String) -> ProfileRecord {
+        ProfileRecord(id: id, name: name, userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true)
+    }
+
+    func testSaveProfilesBeforeSessionLeavesOrphanProfiles() throws {
+        let db = try makeDatabase()
+
+        // Create a second profile
+        let p2 = makeProfile(id: "profile-2", name: "Second")
+        db.saveProfile(p2)
+
+        // Create a space referencing the default test profile
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
+        db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
+
+        // Now try to save only p2 (which should delete testProfileID, but FK prevents it)
+        db.saveProfiles([p2])
+
+        // The profile should still be in the DB because the FK constraint blocked deletion
+        let profiles = db.loadProfiles()
+        XCTAssertEqual(profiles.count, 2, "Profile referenced by a space should not be deleted by saveProfiles")
+    }
+
+    func testSaveSessionBeforeProfilesDeletesOrphans() throws {
+        let db = try makeDatabase()
+
+        // Create a second profile
+        let p2 = makeProfile(id: "profile-2", name: "Second")
+        db.saveProfile(p2)
+
+        // Create a space referencing the default test profile
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
+        db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
+
+        // Save session first with a space referencing p2 instead (removes FK to testProfileID)
+        let newSpace = SpaceRecord(id: "s2", name: "New", emoji: "✨", colorHex: "FFFFFF", sortOrder: 0, selectedTabID: nil, profileID: "profile-2")
+        db.saveSession(spaces: [(newSpace, [])], lastActiveSpaceID: nil)
+
+        // Now saveProfiles excluding testProfileID should succeed cleanly
+        db.saveProfiles([p2])
+
+        let profiles = db.loadProfiles()
+        XCTAssertEqual(profiles.count, 1, "Orphan profile should be deleted after session is saved first")
+        XCTAssertEqual(profiles[0].id, "profile-2")
+    }
+
+    func testSaveProfilesAfterSessionDoesNotLeaveOrphans() throws {
+        let db = try makeDatabase()
+
+        // Create a second profile and save it
+        let p2 = makeProfile(id: "profile-2", name: "Second")
+        db.saveProfile(p2)
+
+        // Create a space referencing the default test profile
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
+        db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
+
+        // Now simulate what a correct saveNow() does: save session first
+        // (replacing the space with one referencing p2), THEN save profiles.
+        let newSpace = SpaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: nil, profileID: "profile-2")
+        db.saveSession(spaces: [(newSpace, [])], lastActiveSpaceID: nil)
+        db.saveProfiles([p2])
+
+        // testProfileID should be gone — no FK blocking it
+        let profiles = db.loadProfiles()
+        XCTAssertEqual(profiles.count, 1, "Stale profile should be cleaned up when session is saved first")
+        XCTAssertEqual(profiles[0].id, "profile-2")
+    }
 }

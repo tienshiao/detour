@@ -175,11 +175,11 @@ final class NewAPIIntegrationTests: XCTestCase {
             ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
         }
         if let spaceID = testSpace?.id {
-            TabStore.shared.deleteSpace(id: spaceID)
+            TabStore.shared.forceRemoveSpace(id: spaceID)
             ExtensionManager.shared.spaceIDMap.remove(uuid: spaceID)
         }
         if let profileID = testProfile?.id {
-            TabStore.shared.deleteProfile(id: profileID)
+            TabStore.shared.forceRemoveProfile(id: profileID)
         }
         ExtensionManager.shared.lastActiveSpaceID = nil
 
@@ -511,6 +511,25 @@ final class NewAPIIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(dict["status"] as? Int, 200)
         XCTAssertEqual(dict["text"] as? String, jsContent)
+    }
+
+    func testContentScriptXHRWithSpecialCharacters() {
+        // Test that files with backslashes, quotes, and newlines in content are delivered correctly
+        let content = "body { content: 'it\\'s a \\\"test\\\"'; }\n/* line 2 */"
+        try! content.write(to: tempDir.appendingPathComponent("special.css"),
+                           atomically: true, encoding: .utf8)
+
+        let result = callAsyncInContentWorld(testBrowserTab.webView!, """
+            return new Promise(function(resolve, reject) {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', chrome.runtime.getURL('special.css'));
+                xhr.onload = function() { resolve(xhr.responseText); };
+                xhr.onerror = function() { reject(new Error('failed')); };
+                xhr.send();
+            });
+        """)
+
+        XCTAssertEqual(result as? String, content)
     }
 
     func testContentScriptXHRToMissingResourceReturns404() {

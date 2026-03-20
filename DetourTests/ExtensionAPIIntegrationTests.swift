@@ -197,11 +197,11 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
             for tab in testSpace.tabs {
                 ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
             }
-            TabStore.shared.deleteSpace(id: spaceID)
+            TabStore.shared.forceRemoveSpace(id: spaceID)
             ExtensionManager.shared.spaceIDMap.remove(uuid: spaceID)
         }
         if let profileID = testProfile?.id {
-            TabStore.shared.deleteProfile(id: profileID)
+            TabStore.shared.forceRemoveProfile(id: profileID)
         }
         ExtensionManager.shared.lastActiveSpaceID = nil
         testBrowserTab = nil
