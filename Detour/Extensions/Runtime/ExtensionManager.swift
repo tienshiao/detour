@@ -11,6 +11,36 @@ class ExtensionManager {
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
     var contextMenuItems: [String: [ContextMenuItem]] = [:]
 
+    /// Open popup/options page webViews per extension, used for message broadcast.
+    /// Uses a weak reference so popover dismissal automatically cleans up.
+    private struct WeakWebView {
+        weak var webView: WKWebView?
+    }
+    private var popupWebViews: [String: WeakWebView] = [:]
+
+    func registerPopupWebView(_ webView: WKWebView, for extensionID: String) {
+        popupWebViews[extensionID] = WeakWebView(webView: webView)
+    }
+
+    func unregisterPopupWebView(for extensionID: String) {
+        popupWebViews.removeValue(forKey: extensionID)
+    }
+
+    func popupWebView(for extensionID: String) -> WKWebView? {
+        popupWebViews[extensionID]?.webView
+    }
+
+    /// Badge text per extension, set via chrome.action.setBadgeText.
+    var badgeText: [String: String] = [:]
+    /// Badge background color per extension, set via chrome.action.setBadgeBackgroundColor.
+    var badgeBackgroundColor: [String: NSColor] = [:]
+    /// Custom toolbar icons per extension, set via chrome.action.setIcon.
+    var customIcons: [String: NSImage] = [:]
+    /// Custom action title per extension, set via chrome.action.setTitle.
+    var actionTitle: [String: String] = [:]
+    /// Uninstall URLs per extension, set via chrome.runtime.setUninstallURL.
+    var uninstallURLs: [String: URL] = [:]
+
     let injector = ContentScriptInjector()
     let tabIDMap = ExtensionTabIDMap()
     let spaceIDMap = ExtensionTabIDMap()
@@ -33,6 +63,9 @@ class ExtensionManager {
 
     /// Notification posted when an extension requests its options page be opened.
     static let openOptionsPageNotification = Notification.Name("extensionOpenOptionsPage")
+
+    /// Notification posted when an extension's action (badge/icon/title) changes.
+    static let extensionActionDidChangeNotification = Notification.Name("extensionActionDidChange")
 
     init() {}
 
@@ -57,7 +90,8 @@ class ExtensionManager {
             extensions.append(ext)
 
             if ext.isEnabled {
-                startBackground(for: ext)
+                // Extensions loaded from DB were already installed — don't fire onInstalled again
+                startBackground(for: ext, isFirstRun: false)
             }
         }
 
@@ -69,6 +103,9 @@ class ExtensionManager {
             self, selector: #selector(handleTabActivated(_:)),
             name: Self.tabActivatedNotification, object: nil
         )
+
+        // Register keyboard shortcuts for extension commands
+        registerCommandShortcuts()
     }
 
     /// All currently enabled extensions (global).
@@ -204,10 +241,20 @@ class ExtensionManager {
 
     /// Uninstall an extension.
     func uninstall(id: String) {
+        // Open uninstall URL if set
+        if let uninstallURL = uninstallURLs[id] {
+            NSWorkspace.shared.open(uninstallURL)
+        }
+
         stopBackground(for: id)
         offscreenHosts[id]?.stop()
         offscreenHosts.removeValue(forKey: id)
         contextMenuItems.removeValue(forKey: id)
+        badgeText.removeValue(forKey: id)
+        badgeBackgroundColor.removeValue(forKey: id)
+        customIcons.removeValue(forKey: id)
+        actionTitle.removeValue(forKey: id)
+        uninstallURLs.removeValue(forKey: id)
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
 
@@ -242,13 +289,79 @@ class ExtensionManager {
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
+    // MARK: - Command Shortcuts
+
+    private var commandMonitor: Any?
+
+    /// Register keyboard shortcuts declared in extension manifests.
+    func registerCommandShortcuts() {
+        // Remove any existing monitor
+        if let monitor = commandMonitor {
+            NSEvent.removeMonitor(monitor)
+            commandMonitor = nil
+        }
+
+        // Collect all commands from enabled extensions
+        var shortcuts: [(extensionID: String, commandName: String, modifiers: NSEvent.ModifierFlags, keyCode: String)] = []
+
+        for ext in enabledExtensions {
+            guard let commands = ext.manifest.commands else { continue }
+            for (name, cmd) in commands {
+                let shortcutStr = cmd.suggestedKey?.mac ?? cmd.suggestedKey?.default ?? ""
+                guard !shortcutStr.isEmpty else { continue }
+                if let parsed = parseShortcut(shortcutStr) {
+                    shortcuts.append((ext.id, name, parsed.modifiers, parsed.key))
+                }
+            }
+        }
+
+        guard !shortcuts.isEmpty else { return }
+
+        commandMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            for shortcut in shortcuts {
+                if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == shortcut.modifiers,
+                   event.charactersIgnoringModifiers?.lowercased() == shortcut.keyCode.lowercased() {
+                    self?.dispatchCommand(shortcut.commandName, extensionID: shortcut.extensionID)
+                    return nil // consume the event
+                }
+            }
+            return event
+        }
+    }
+
+    private func parseShortcut(_ shortcut: String) -> (modifiers: NSEvent.ModifierFlags, key: String)? {
+        let parts = shortcut.split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !parts.isEmpty else { return nil }
+
+        var modifiers: NSEvent.ModifierFlags = []
+        let key = parts.last ?? ""
+
+        for part in parts.dropLast() {
+            switch part.lowercased() {
+            case "ctrl", "control", "macctrl": modifiers.insert(.control)
+            case "alt", "option": modifiers.insert(.option)
+            case "shift": modifiers.insert(.shift)
+            case "command", "cmd": modifiers.insert(.command)
+            default: break
+            }
+        }
+
+        return (modifiers, key)
+    }
+
+    private func dispatchCommand(_ commandName: String, extensionID: String) {
+        let escapedName = commandName.replacingOccurrences(of: "'", with: "\\'")
+        let js = "if (window.__extensionDispatchCommand) { window.__extensionDispatchCommand('\(escapedName)'); }"
+        backgroundHost(for: extensionID)?.evaluateJavaScript(js)
+    }
+
     // MARK: - Background Host Management
 
-    private func startBackground(for ext: WebExtension) {
+    func startBackground(for ext: WebExtension, isFirstRun: Bool = true) {
         guard ext.manifest.background?.serviceWorker != nil else { return }
         let host = BackgroundHost(extension: ext)
         backgroundHosts[ext.id] = host
-        host.start()
+        host.start(isFirstRun: isFirstRun)
     }
 
     private func stopBackground(for extensionID: String) {

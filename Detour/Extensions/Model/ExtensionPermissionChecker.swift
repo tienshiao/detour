@@ -33,7 +33,13 @@ struct ExtensionPermissionChecker {
         case "webRequest":    return "webRequest"
         case "contextMenus": return "contextMenus"
         case "offscreen":    return "offscreen"
+        case "alarms":       return "alarms"
+        case "fontSettings": return "fontSettings"
         case "runtime":      return nil
+        case "action":       return nil
+        case "commands":     return nil
+        case "windows":      return nil
+        case "permissions":  return nil
         default:             return nil
         }
     }
@@ -63,6 +69,8 @@ struct ExtensionPermissionChecker {
             case "offscreen":     descriptions.append("Create offscreen documents")
             case "activeTab":     descriptions.append("Access the active tab on click")
             case "bookmarks":     descriptions.append("Access your bookmarks")
+            case "alarms":        descriptions.append("Schedule periodic tasks")
+            case "fontSettings":  descriptions.append("Access font settings")
             default:              descriptions.append("Use the \"\(perm)\" API")
             }
         }

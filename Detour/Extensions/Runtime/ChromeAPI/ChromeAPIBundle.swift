@@ -18,6 +18,12 @@ struct ChromeAPIBundle {
         parts.append(ChromeContextMenusAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeOffscreenAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeResourceInterceptor.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeAlarmsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeActionAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeCommandsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeWindowsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeFontSettingsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromePermissionsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         return parts.joined(separator: "\n\n")
     }
 }

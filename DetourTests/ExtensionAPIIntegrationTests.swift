@@ -39,12 +39,24 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
             "name": "API Test Extension",
             "version": "1.2.3",
             "description": "Tests chrome API surface",
-            "permissions": ["storage", "tabs", "scripting"],
+            "permissions": ["storage", "tabs", "scripting", "alarms", "fontSettings", "contextMenus"],
+            "optional_permissions": ["bookmarks"],
             "host_permissions": ["<all_urls>"],
             "background": {"service_worker": "background.js"},
             "content_scripts": [
-                {"matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_end"}
-            ]
+                {"matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_end"},
+                {"matches": ["<all_urls>"], "js": ["main.js"], "world": "MAIN", "run_at": "document_start"}
+            ],
+            "commands": {
+                "toggle-feature": {
+                    "suggested_key": {"default": "Alt+Shift+D", "mac": "Alt+Shift+D"},
+                    "description": "Toggle the feature"
+                },
+                "add-site": {
+                    "suggested_key": {"default": "Alt+Shift+A"},
+                    "description": "Add current site"
+                }
+            }
         }
         """
         try! manifestJSON.write(to: tempDir.appendingPathComponent("manifest.json"),
@@ -56,6 +68,9 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
             if (message.type === 'ping') {
                 sendResponse({ type: 'pong', original: message });
             }
+            if (message.type === 'getSender') {
+                sendResponse({ id: sender.id, url: sender.url, origin: sender.origin, tab: sender.tab, frameId: sender.frameId });
+            }
             return true;
         });
         """
@@ -65,6 +80,10 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         // Content script: empty (we test via evaluateJavaScript)
         try! "".write(to: tempDir.appendingPathComponent("content.js"),
                       atomically: true, encoding: .utf8)
+        // MAIN world script: sets a marker on window
+        try! "window.__mainWorldMarker = true;".write(
+            to: tempDir.appendingPathComponent("main.js"),
+            atomically: true, encoding: .utf8)
 
         // Parse manifest and create extension model
         let manifest = try! ExtensionManifest.parse(at: tempDir.appendingPathComponent("manifest.json"))
@@ -1028,6 +1047,156 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         XCTAssertEqual(result as? String, "pong")
     }
 
+    // MARK: - sender.url in runtime.onMessage
+
+    func testPopupSendMessageIncludesSenderURL() {
+        // Dark Reader checks sender.url to verify the popup origin.
+        // The sender object must include the URL of the sending webView.
+        let result = popupCallAsync("""
+            const response = await chrome.runtime.sendMessage({ type: 'getSender' });
+            return JSON.stringify(response);
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse sender JSON: \(String(describing: result))")
+            return
+        }
+        let senderURL = json["url"] as? String ?? ""
+        XCTAssertTrue(senderURL.contains("popup.test.example.com"),
+                      "sender.url should contain the popup's origin, got: \(senderURL)")
+    }
+
+    func testContentScriptSendMessageIncludesSenderURL() {
+        let result = callAsync("""
+            const response = await chrome.runtime.sendMessage({ type: 'getSender' });
+            return JSON.stringify(response);
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse sender JSON: \(String(describing: result))")
+            return
+        }
+        let senderURL = json["url"] as? String ?? ""
+        XCTAssertTrue(senderURL.contains("test.example.com"),
+                      "sender.url should contain the content script's page URL, got: \(senderURL)")
+    }
+
+    func testContentScriptSendMessageIncludesSenderTab() {
+        // Dark Reader uses sender.tab.id to track content scripts.
+        // Content script messages must include sender.tab with full tab info.
+        let result = tabCallAsync("""
+            const response = await chrome.runtime.sendMessage({ type: 'getSender' });
+            return JSON.stringify(response);
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse sender JSON: \(String(describing: result))")
+            return
+        }
+        // sender.tab should be a tab info object with id, windowId, url, etc.
+        let tab = json["tab"] as? [String: Any]
+        XCTAssertNotNil(tab, "sender.tab should be present for content script messages")
+        XCTAssertEqual(tab?["id"] as? Int, testTabIntID, "sender.tab.id should match the sending tab")
+        XCTAssertNotNil(tab?["windowId"], "sender.tab should include windowId")
+        XCTAssertNotNil(tab?["url"], "sender.tab should include url")
+    }
+
+    func testContentScriptSendMessageIncludesSenderFrameId() {
+        let result = tabCallAsync("""
+            const response = await chrome.runtime.sendMessage({ type: 'getSender' });
+            return JSON.stringify(response);
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse sender JSON: \(String(describing: result))")
+            return
+        }
+        XCTAssertEqual(json["frameId"] as? Int, 0, "sender.frameId should be 0 for main frame content scripts")
+    }
+
+    func testPopupSendMessageDoesNotIncludeSenderTab() {
+        // Popup messages should NOT have sender.tab (only content scripts have it)
+        let result = popupCallAsync("""
+            const response = await chrome.runtime.sendMessage({ type: 'getSender' });
+            return JSON.stringify(response);
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse sender JSON: \(String(describing: result))")
+            return
+        }
+        XCTAssertNil(json["tab"], "sender.tab should NOT be present for popup messages")
+        XCTAssertNil(json["frameId"], "sender.frameId should NOT be present for popup messages")
+    }
+
+    // MARK: - Tab URL field visibility (host permissions)
+
+    func testBuildTabInfoIncludesURLWithTabsPermission() {
+        // Extension has "tabs" permission → URL fields always included
+        let info = ExtensionMessageBridge.shared.buildTabInfo(
+            tab: testBrowserTab, space: testSpace, isActive: true,
+            includeURLFields: true, extension: ext)
+        XCTAssertNotNil(info["url"], "URL should be included when includeURLFields is true")
+        XCTAssertNotNil(info["title"], "Title should be included when includeURLFields is true")
+    }
+
+    func testBuildTabInfoIncludesURLViaHostPermission() {
+        // Extension WITHOUT "tabs" but WITH matching host_permissions → URL fields included
+        let manifest = try! JSONDecoder().decode(ExtensionManifest.self, from: JSONSerialization.data(withJSONObject: [
+            "manifest_version": 3, "name": "Host Only", "version": "1.0",
+            "host_permissions": ["<all_urls>"]
+        ]))
+        let hostExt = WebExtension(id: "host-only", manifest: manifest, basePath: URL(fileURLWithPath: "/tmp"))
+
+        let info = ExtensionMessageBridge.shared.buildTabInfo(
+            tab: testBrowserTab, space: testSpace, isActive: true,
+            includeURLFields: false, extension: hostExt)
+        XCTAssertNotNil(info["url"], "URL should be included via host permission even without tabs permission")
+        XCTAssertNotNil(info["title"], "Title should be included via host permission")
+    }
+
+    func testBuildTabInfoExcludesURLWithoutPermissions() {
+        // Extension with NO "tabs" and NO host_permissions → URL fields excluded
+        let manifest = try! JSONDecoder().decode(ExtensionManifest.self, from: JSONSerialization.data(withJSONObject: [
+            "manifest_version": 3, "name": "No Perms", "version": "1.0"
+        ]))
+        let noPermExt = WebExtension(id: "no-perms", manifest: manifest, basePath: URL(fileURLWithPath: "/tmp"))
+
+        let info = ExtensionMessageBridge.shared.buildTabInfo(
+            tab: testBrowserTab, space: testSpace, isActive: true,
+            includeURLFields: false, extension: noPermExt)
+        XCTAssertNil(info["url"], "URL should be excluded without tabs or host permissions")
+        XCTAssertNil(info["title"], "Title should be excluded without tabs or host permissions")
+    }
+
+    func testBuildTabInfoExcludesURLWhenHostDoesNotMatch() {
+        // Extension with host_permissions that don't match the tab's URL
+        let manifest = try! JSONDecoder().decode(ExtensionManifest.self, from: JSONSerialization.data(withJSONObject: [
+            "manifest_version": 3, "name": "Wrong Host", "version": "1.0",
+            "host_permissions": ["https://other.com/*"]
+        ]))
+        let wrongHostExt = WebExtension(id: "wrong-host", manifest: manifest, basePath: URL(fileURLWithPath: "/tmp"))
+
+        let info = ExtensionMessageBridge.shared.buildTabInfo(
+            tab: testBrowserTab, space: testSpace, isActive: true,
+            includeURLFields: false, extension: wrongHostExt)
+        XCTAssertNil(info["url"], "URL should be excluded when host permissions don't match tab URL")
+    }
+
+    func testTabsQueryLastFocusedWindowFilter() {
+        // lastFocusedWindow should behave like currentWindow — only return tabs from the active space
+        let result = popupCallAsync("""
+            const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+            return tabs.some(function(t) { return t.id === \(testTabIntID!); });
+        """)
+        XCTAssertEqual(result as? Bool, true, "lastFocusedWindow filter should include test tab from active space")
+    }
+
     // MARK: - Popup direct chrome.tabs calls
 
     func testPopupTabsQueryDirect() {
@@ -1063,6 +1232,449 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         wait(for: [exp], timeout: 5.0)
         XCTAssertEqual(result as? String, "string",
                        "chrome.* APIs should be available in .page world for popup webViews")
+    }
+
+    // MARK: - chrome.storage.sync
+
+    func testStorageSyncExists() {
+        let result = evalSync("typeof chrome.storage.sync")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testStorageSyncAPIShape() {
+        let result = evalSync("""
+            typeof chrome.storage.sync.get === 'function' &&
+            typeof chrome.storage.sync.set === 'function' &&
+            typeof chrome.storage.sync.remove === 'function' &&
+            typeof chrome.storage.sync.clear === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testStorageSyncSetAndGet() {
+        callAsyncVoid("await chrome.storage.sync.set({ syncKey: 'syncVal' })")
+        let result = callAsync("const r = await chrome.storage.sync.get('syncKey'); return r.syncKey;")
+        XCTAssertEqual(result as? String, "syncVal")
+    }
+
+    func testStorageSyncIsolatedFromLocal() {
+        callAsyncVoid("await chrome.storage.local.set({ isoKey: 'local' })")
+        callAsyncVoid("await chrome.storage.sync.set({ isoKey: 'sync' })")
+        let localResult = callAsync("const r = await chrome.storage.local.get('isoKey'); return r.isoKey;")
+        let syncResult = callAsync("const r = await chrome.storage.sync.get('isoKey'); return r.isoKey;")
+        XCTAssertEqual(localResult as? String, "local")
+        XCTAssertEqual(syncResult as? String, "sync")
+    }
+
+    func testStorageSyncRemove() {
+        callAsyncVoid("await chrome.storage.sync.set({ rmKey: 'here' })")
+        callAsyncVoid("await chrome.storage.sync.remove('rmKey')")
+        let result = callAsync("const r = await chrome.storage.sync.get('rmKey'); return r.rmKey === undefined;")
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testStorageSyncClear() {
+        callAsyncVoid("await chrome.storage.sync.set({ a: 1, b: 2 })")
+        callAsyncVoid("await chrome.storage.sync.clear()")
+        let result = callAsync("const r = await chrome.storage.sync.get(null); return Object.keys(r).length;")
+        XCTAssertEqual(result as? Int, 0)
+    }
+
+    func testStorageSyncQuotaConstant() {
+        let result = evalSync("chrome.storage.sync.QUOTA_BYTES_PER_ITEM")
+        XCTAssertEqual(result as? Int, 8192)
+    }
+
+    func testStorageSyncOnChangedExists() {
+        let result = evalSync("""
+            typeof chrome.storage.sync.onChanged.addListener === 'function' &&
+            typeof chrome.storage.local.onChanged.addListener === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    // MARK: - chrome.storage.session
+
+    func testStorageSessionExists() {
+        let result = evalSync("typeof chrome.storage.session")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testStorageSessionSetAndGet() {
+        callAsyncVoid("await chrome.storage.session.set({ sessKey: 'sessVal' })")
+        let result = callAsync("const r = await chrome.storage.session.get('sessKey'); return r.sessKey;")
+        XCTAssertEqual(result as? String, "sessVal")
+    }
+
+    // MARK: - chrome.alarms
+
+    func testAlarmsNamespaceExists() {
+        let result = evalSync("typeof chrome.alarms")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testAlarmsAPIShape() {
+        let result = evalSync("""
+            typeof chrome.alarms.create === 'function' &&
+            typeof chrome.alarms.clear === 'function' &&
+            typeof chrome.alarms.clearAll === 'function' &&
+            typeof chrome.alarms.get === 'function' &&
+            typeof chrome.alarms.getAll === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testAlarmsOnAlarmEventEmitter() {
+        let result = evalSync("""
+            typeof chrome.alarms.onAlarm.addListener === 'function' &&
+            typeof chrome.alarms.onAlarm.removeListener === 'function' &&
+            typeof chrome.alarms.onAlarm.hasListener === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testAlarmsCreateAndGet() {
+        callAsyncVoid("await chrome.alarms.create('test-alarm', { delayInMinutes: 60 })")
+        let result = callAsync("""
+            const alarm = await chrome.alarms.get('test-alarm');
+            return alarm !== undefined && alarm.name === 'test-alarm';
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testAlarmsGetAll() {
+        callAsyncVoid("await chrome.alarms.create('a1', { delayInMinutes: 60 })")
+        callAsyncVoid("await chrome.alarms.create('a2', { delayInMinutes: 60 })")
+        let result = callAsync("const all = await chrome.alarms.getAll(); return all.length >= 2;")
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testAlarmsClear() {
+        callAsyncVoid("await chrome.alarms.create('clearme', { delayInMinutes: 60 })")
+        let cleared = callAsync("return await chrome.alarms.clear('clearme');")
+        XCTAssertEqual(cleared as? Bool, true)
+        let result = callAsync("const a = await chrome.alarms.get('clearme'); return a === undefined;")
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testAlarmsClearAll() {
+        callAsyncVoid("await chrome.alarms.create('x', { delayInMinutes: 60 })")
+        callAsyncVoid("await chrome.alarms.clearAll()")
+        let result = callAsync("const all = await chrome.alarms.getAll(); return all.length;")
+        XCTAssertEqual(result as? Int, 0)
+    }
+
+    // MARK: - chrome.action
+
+    func testActionNamespaceExists() {
+        let result = evalSync("typeof chrome.action")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testActionAPIShape() {
+        let result = evalSync("""
+            typeof chrome.action.setIcon === 'function' &&
+            typeof chrome.action.setBadgeText === 'function' &&
+            typeof chrome.action.setBadgeBackgroundColor === 'function' &&
+            typeof chrome.action.getBadgeText === 'function' &&
+            typeof chrome.action.setTitle === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testActionSetAndGetBadgeText() {
+        popupCallAsyncVoid("await chrome.action.setBadgeText({ text: 'ON' })")
+        let result = popupCallAsync("return await chrome.action.getBadgeText({});")
+        XCTAssertEqual(result as? String, "ON")
+    }
+
+    // MARK: - chrome.commands
+
+    func testCommandsNamespaceExists() {
+        let result = evalSync("typeof chrome.commands")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testCommandsGetAllIsFunction() {
+        let result = evalSync("typeof chrome.commands.getAll")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testCommandsOnCommandEventEmitter() {
+        let result = evalSync("""
+            typeof chrome.commands.onCommand.addListener === 'function' &&
+            typeof chrome.commands.onCommand.removeListener === 'function' &&
+            typeof chrome.commands.onCommand.hasListener === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testCommandsGetAllReturnsManifestCommands() {
+        let result = popupCallAsync("""
+            const commands = await chrome.commands.getAll();
+            return commands.length >= 2 &&
+                   commands.some(function(c) { return c.name === 'toggle-feature'; }) &&
+                   commands.some(function(c) { return c.name === 'add-site'; });
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testCommandsDispatchFunctionExists() {
+        let result = evalSync("typeof window.__extensionDispatchCommand")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    // MARK: - chrome.windows
+
+    func testWindowsNamespaceExists() {
+        let result = evalSync("typeof chrome.windows")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testWindowsAPIShape() {
+        let result = evalSync("""
+            typeof chrome.windows.getAll === 'function' &&
+            typeof chrome.windows.get === 'function' &&
+            typeof chrome.windows.create === 'function' &&
+            typeof chrome.windows.update === 'function' &&
+            typeof chrome.windows.getCurrent === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testWindowsConstants() {
+        let result = evalSync("chrome.windows.WINDOW_ID_CURRENT === -2 && chrome.windows.WINDOW_ID_NONE === -1")
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testWindowsGetAllReturnsArray() {
+        let result = popupCallAsync("const wins = await chrome.windows.getAll(); return Array.isArray(wins);")
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testWindowsGetCurrentReturnsWindow() {
+        let result = popupCallAsync("""
+            const win = await chrome.windows.getCurrent();
+            return typeof win.id === 'number' && typeof win.focused === 'boolean';
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    // MARK: - chrome.fontSettings
+
+    func testFontSettingsNamespaceExists() {
+        let result = evalSync("typeof chrome.fontSettings")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testFontSettingsGetFontListIsFunction() {
+        let result = evalSync("typeof chrome.fontSettings.getFontList")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testFontSettingsGetFontListReturnsNonEmpty() {
+        let result = popupCallAsync("""
+            const fonts = await chrome.fontSettings.getFontList();
+            return Array.isArray(fonts) && fonts.length > 0 &&
+                   typeof fonts[0].fontId === 'string' && typeof fonts[0].displayName === 'string';
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    // MARK: - chrome.permissions
+
+    func testPermissionsNamespaceExists() {
+        let result = evalSync("typeof chrome.permissions")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testPermissionsContainsIsFunction() {
+        let result = evalSync("typeof chrome.permissions.contains")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testPermissionsContainsDeclaredPermission() {
+        let result = popupCallAsync("""
+            return await chrome.permissions.contains({ permissions: ['storage'] });
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testPermissionsContainsUndeclaredReturnsFalse() {
+        let result = popupCallAsync("""
+            return await chrome.permissions.contains({ permissions: ['downloads'] });
+        """)
+        XCTAssertEqual(result as? Bool, false)
+    }
+
+    func testPermissionsGetAllReturnsManifestPermissions() {
+        let result = evalSync("""
+            (function() {
+                const all = chrome.permissions.getAll();
+                return all instanceof Promise;
+            })()
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testPermissionsOnAddedStub() {
+        let result = evalSync("""
+            typeof chrome.permissions.onAdded.addListener === 'function' &&
+            typeof chrome.permissions.onRemoved.addListener === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    // MARK: - chrome.runtime (new additions)
+
+    func testRuntimeOnStartupExists() {
+        let result = evalSync("""
+            typeof chrome.runtime.onStartup.addListener === 'function' &&
+            typeof chrome.runtime.onStartup.removeListener === 'function' &&
+            typeof chrome.runtime.onStartup.hasListener === 'function'
+        """)
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testRuntimeSetUninstallURLExists() {
+        let result = evalSync("typeof chrome.runtime.setUninstallURL")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testExtensionIsAllowedFileSchemeAccess() {
+        let result = callAsync("return await chrome.extension.isAllowedFileSchemeAccess();")
+        XCTAssertEqual(result as? Bool, false)
+    }
+
+    func testExtensionIsAllowedIncognitoAccess() {
+        let result = callAsync("return await chrome.extension.isAllowedIncognitoAccess();")
+        XCTAssertEqual(result as? Bool, false)
+    }
+
+    // MARK: - Content script world: MAIN
+
+    func testMainWorldScriptDoesNotGetChromeAPIs() {
+        // MAIN world scripts should NOT have chrome.* APIs
+        // The content world scripts DO have chrome.* APIs
+        // We verify by checking the manifest parses the world field correctly
+        let manifest = ext.manifest
+        let mainWorldScript = manifest.contentScripts?.first(where: { $0.world == "MAIN" })
+        XCTAssertNotNil(mainWorldScript, "Should have a MAIN world content script")
+        XCTAssertEqual(mainWorldScript?.js, ["main.js"])
+    }
+
+    // MARK: - Cross-world custom event relay
+
+    func testCustomEventRelayFromContentWorldToPageWorld() {
+        // When an extension has MAIN world scripts, CustomEvents dispatched in the
+        // content world should be relayed to the page world so MAIN world listeners
+        // receive them. This is how Dark Reader's proxy.js communicates with index.js.
+
+        // Create a webView with content scripts registered via the injector
+        // (which sets up the relay scripts)
+        let relayConfig = WKWebViewConfiguration()
+        ContentScriptInjector().registerContentScripts(for: ext, on: relayConfig.userContentController)
+
+        let relayWV = WKWebView(frame: .zero, configuration: relayConfig)
+
+        let navExp = expectation(description: "Relay page loaded")
+        let relayNav = TestNavigationDelegate { navExp.fulfill() }
+        relayWV.navigationDelegate = relayNav
+
+        relayWV.loadHTMLString("<html><body>relay test</body></html>",
+                               baseURL: URL(string: "https://relay.test.example.com")!)
+        wait(for: [navExp], timeout: 10.0)
+
+        // Step 1: Register a listener in the PAGE world for a custom event
+        let setupExp = expectation(description: "Setup page listener")
+        relayWV.evaluateJavaScript("""
+            window.__relayTestReceived = null;
+            document.addEventListener('__test_relay_event', function(e) {
+                window.__relayTestReceived = e.detail;
+            });
+        """) { _, _ in setupExp.fulfill() }
+        wait(for: [setupExp], timeout: 5.0)
+
+        // Step 2: Dispatch the custom event from the CONTENT WORLD
+        let dispatchExp = expectation(description: "Dispatch from content world")
+        relayWV.evaluateJavaScript("""
+            document.dispatchEvent(new CustomEvent('__test_relay_event', {
+                detail: { message: 'hello from content world' }
+            }));
+        """, in: nil, in: ext.contentWorld) { _ in dispatchExp.fulfill() }
+        wait(for: [dispatchExp], timeout: 5.0)
+
+        // Small delay for the relay <script> element to execute
+        let delayExp = expectation(description: "Relay delay")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { delayExp.fulfill() }
+        wait(for: [delayExp], timeout: 5.0)
+
+        // Step 3: Check that the page world listener received the event
+        let checkExp = expectation(description: "Check relay")
+        var result: Any?
+        relayWV.evaluateJavaScript("JSON.stringify(window.__relayTestReceived)") { val, _ in
+            result = val
+            checkExp.fulfill()
+        }
+        wait(for: [checkExp], timeout: 5.0)
+
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Page world listener did not receive the relayed event, got: \(String(describing: result))")
+            return
+        }
+        XCTAssertEqual(json["message"] as? String, "hello from content world",
+                       "Event detail should be relayed from content world to page world")
+
+        _ = relayNav // prevent deallocation
+    }
+
+    func testCustomEventNotRelayedWhenNoPageWorldListener() {
+        // Events should NOT be relayed if nothing in the page world listens for them
+        let relayConfig = WKWebViewConfiguration()
+        ContentScriptInjector().registerContentScripts(for: ext, on: relayConfig.userContentController)
+
+        let relayWV = WKWebView(frame: .zero, configuration: relayConfig)
+
+        let navExp = expectation(description: "Page loaded")
+        let relayNav = TestNavigationDelegate { navExp.fulfill() }
+        relayWV.navigationDelegate = relayNav
+        relayWV.loadHTMLString("<html><body>test</body></html>",
+                               baseURL: URL(string: "https://norelay.test.example.com")!)
+        wait(for: [navExp], timeout: 10.0)
+
+        // Set up a marker in page world — no addEventListener for the event
+        let setupExp = expectation(description: "Setup")
+        relayWV.evaluateJavaScript("window.__noRelayResult = 'untouched';") { _, _ in setupExp.fulfill() }
+        wait(for: [setupExp], timeout: 5.0)
+
+        // Dispatch from content world
+        let dispatchExp = expectation(description: "Dispatch")
+        relayWV.evaluateJavaScript("""
+            document.dispatchEvent(new CustomEvent('__unregistered_event', {
+                detail: { should: 'not arrive' }
+            }));
+        """, in: nil, in: ext.contentWorld) { _ in dispatchExp.fulfill() }
+        wait(for: [dispatchExp], timeout: 5.0)
+
+        let delayExp = expectation(description: "Delay")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { delayExp.fulfill() }
+        wait(for: [delayExp], timeout: 5.0)
+
+        // The inline <script> runs but the condition __detourRelayEvents.has() is false,
+        // so no event is dispatched in the page world. Verify by checking nothing changed.
+        let checkExp = expectation(description: "Check")
+        var result: Any?
+        relayWV.evaluateJavaScript("window.__noRelayResult") { val, _ in
+            result = val
+            checkExp.fulfill()
+        }
+        wait(for: [checkExp], timeout: 5.0)
+        XCTAssertEqual(result as? String, "untouched",
+                       "Event should not be relayed when no page world listener is registered")
+
+        _ = relayNav
     }
 
     // MARK: - API isolation

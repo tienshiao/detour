@@ -200,6 +200,18 @@ class BrowserWindowController: NSWindowController {
             name: ExtensionManager.openOptionsPageNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleExtensionActionDidChange(_:)),
+            name: ExtensionManager.extensionActionDidChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleExtensionActionDidChange(_ notification: Notification) {
+        guard let extensionID = notification.userInfo?["extensionID"] as? String else { return }
+        ExtensionToolbarManager.updateToolbarButton(for: extensionID)
     }
 
     @objc private func handleExtensionPopupOpenURL(_ notification: Notification) {

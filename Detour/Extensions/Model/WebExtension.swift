@@ -76,11 +76,11 @@ class WebExtension {
     }
 
     /// Content script matchers built from the manifest.
-    lazy var contentScriptMatchers: [(matcher: ContentScriptMatcher, scripts: [String], cssFiles: [String], injectionTime: ExtensionManifest.ContentScript.InjectionTime)] = {
+    lazy var contentScriptMatchers: [(matcher: ContentScriptMatcher, scripts: [String], cssFiles: [String], injectionTime: ExtensionManifest.ContentScript.InjectionTime, world: String?)] = {
         guard let contentScripts = manifest.contentScripts else { return [] }
         return contentScripts.map { cs in
             let matcher = ContentScriptMatcher(patterns: cs.matches)
-            return (matcher, cs.js ?? [], cs.css ?? [], cs.injectionTime)
+            return (matcher, cs.js ?? [], cs.css ?? [], cs.injectionTime, cs.world)
         }
     }()
 

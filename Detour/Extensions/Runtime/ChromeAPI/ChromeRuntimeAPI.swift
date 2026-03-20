@@ -251,6 +251,14 @@ struct ChromeRuntimeAPI {
             chrome.extension.getBackgroundPage = function() {
                 return null;
             };
+            chrome.extension.isAllowedFileSchemeAccess = function(cb) {
+                if (cb) cb(false);
+                return Promise.resolve(false);
+            };
+            chrome.extension.isAllowedIncognitoAccess = function(cb) {
+                if (cb) cb(false);
+                return Promise.resolve(false);
+            };
 
             // chrome.runtime.openOptionsPage
             chrome.runtime.openOptionsPage = function(callback) {
@@ -273,6 +281,50 @@ struct ChromeRuntimeAPI {
 
             // chrome.runtime.lastError (always null for now)
             chrome.runtime.lastError = null;
+
+            // runtime.onStartup
+            var onStartupListeners = [];
+            chrome.runtime.onStartup = {
+                addListener: function(callback) {
+                    onStartupListeners.push(callback);
+                },
+                removeListener: function(callback) {
+                    var idx = onStartupListeners.indexOf(callback);
+                    if (idx !== -1) onStartupListeners.splice(idx, 1);
+                },
+                hasListener: function(callback) {
+                    return onStartupListeners.includes(callback);
+                }
+            };
+
+            // Internal: called by native bridge to fire onStartup
+            window.__extensionDispatchOnStartup = function() {
+                for (var i = 0; i < onStartupListeners.length; i++) {
+                    try { onStartupListeners[i](); } catch(e) {
+                        console.error('[chrome.runtime.onStartup] listener error:', e);
+                    }
+                }
+            };
+
+            // chrome.runtime.setUninstallURL
+            chrome.runtime.setUninstallURL = function(url, callback) {
+                return new Promise(function(resolve) {
+                    var callbackID = 'cb_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                    if (!window.__extensionCallbacks) window.__extensionCallbacks = {};
+                    window.__extensionCallbacks[callbackID] = function(response) {
+                        delete window.__extensionCallbacks[callbackID];
+                        if (callback) callback();
+                        resolve();
+                    };
+                    window.webkit.messageHandlers.extensionMessage.postMessage({
+                        extensionID: extensionID,
+                        type: 'runtime.setUninstallURL',
+                        params: { url: url },
+                        callbackID: callbackID,
+                        isContentScript: \(isContentScript ? "true" : "false")
+                    });
+                });
+            };
 
             // Stub self.clients (Service Worker API) for background scripts.
             // Extensions compiled for MV3 service workers use self.clients.matchAll()

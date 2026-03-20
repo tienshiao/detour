@@ -234,4 +234,100 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(decoded.hostPermissions, ["<all_urls>"])
         XCTAssertEqual(decoded.optionalPermissions, ["bookmarks"])
     }
+
+    // MARK: - Content script world field
+
+    func testContentScriptWorldField() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "T", "version": "1",
+            "content_scripts": [
+                {"matches": ["<all_urls>"], "js": ["proxy.js"], "world": "MAIN", "run_at": "document_start"},
+                {"matches": ["<all_urls>"], "js": ["content.js"]}
+            ]
+        }
+        """)
+        XCTAssertEqual(manifest.contentScripts?.count, 2)
+        XCTAssertEqual(manifest.contentScripts?[0].world, "MAIN")
+        XCTAssertNil(manifest.contentScripts?[1].world)
+    }
+
+    func testContentScriptAllFramesField() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "T", "version": "1",
+            "content_scripts": [
+                {"matches": ["<all_urls>"], "js": ["a.js"], "all_frames": true}
+            ]
+        }
+        """)
+        XCTAssertEqual(manifest.contentScripts?.first?.allFrames, true)
+    }
+
+    func testContentScriptMatchAboutBlankField() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "T", "version": "1",
+            "content_scripts": [
+                {"matches": ["<all_urls>"], "js": ["a.js"], "match_about_blank": true}
+            ]
+        }
+        """)
+        XCTAssertEqual(manifest.contentScripts?.first?.matchAboutBlank, true)
+    }
+
+    // MARK: - Commands field
+
+    func testParseCommands() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "T", "version": "1",
+            "commands": {
+                "toggle-feature": {
+                    "suggested_key": {"default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y"},
+                    "description": "Toggle feature"
+                },
+                "_execute_action": {
+                    "suggested_key": {"default": "Alt+Shift+D"}
+                }
+            }
+        }
+        """)
+        XCTAssertNotNil(manifest.commands)
+        XCTAssertEqual(manifest.commands?.count, 2)
+
+        let toggle = manifest.commands?["toggle-feature"]
+        XCTAssertEqual(toggle?.description, "Toggle feature")
+        XCTAssertEqual(toggle?.suggestedKey?.default, "Ctrl+Shift+Y")
+        XCTAssertEqual(toggle?.suggestedKey?.mac, "Command+Shift+Y")
+
+        let action = manifest.commands?["_execute_action"]
+        XCTAssertEqual(action?.suggestedKey?.default, "Alt+Shift+D")
+        XCTAssertNil(action?.suggestedKey?.mac)
+    }
+
+    func testCommandsNilWhenAbsent() throws {
+        let manifest = try parse("""
+        {"manifest_version": 3, "name": "T", "version": "1"}
+        """)
+        XCTAssertNil(manifest.commands)
+    }
+
+    func testRoundTripWithCommands() throws {
+        let original = try parse("""
+        {
+            "manifest_version": 3, "name": "RT", "version": "1",
+            "commands": {
+                "do-thing": {
+                    "suggested_key": {"default": "Alt+T"},
+                    "description": "Do the thing"
+                }
+            }
+        }
+        """)
+        let data = try original.toJSONData()
+        let decoded = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+        XCTAssertEqual(decoded.commands?.count, 1)
+        XCTAssertEqual(decoded.commands?["do-thing"]?.description, "Do the thing")
+    }
 }

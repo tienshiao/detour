@@ -15,7 +15,7 @@ class BackgroundHost {
     }
 
     /// Start the background host by creating a hidden WKWebView and loading the background script.
-    func start() {
+    func start(isFirstRun: Bool = true) {
         guard let serviceWorker = ext.manifest.background?.serviceWorker else { return }
 
         let config = ext.makePageConfiguration()
@@ -30,15 +30,17 @@ class BackgroundHost {
         let scriptURL = ext.basePath.appendingPathComponent(serviceWorker)
         let scriptContent = (try? String(contentsOf: scriptURL, encoding: .utf8)) ?? ""
 
-        // Fire runtime.onInstalled immediately after the background script runs,
+        // Fire runtime.onInstalled and runtime.onStartup after the background script runs,
         // using setTimeout(0) so all synchronous listener registrations complete first.
-        let onInstalledJS = """
-        setTimeout(function() {
-            if (window.__extensionDispatchOnInstalled) {
-                window.__extensionDispatchOnInstalled({ reason: 'install' });
-            }
-        }, 0);
-        """
+        // Only fire onInstalled with reason 'install' on first install; subsequent starts
+        // fire onStartup only (Chrome doesn't fire onInstalled on every browser restart).
+        var parts: [String] = []
+        if isFirstRun {
+            parts.append("if (window.__extensionDispatchOnInstalled) { window.__extensionDispatchOnInstalled({ reason: 'install' }); }")
+        }
+        parts.append("if (window.__extensionDispatchOnStartup) { window.__extensionDispatchOnStartup(); }")
+        let dispatchJS = parts.joined(separator: "\n")
+        let onInstalledJS = "setTimeout(function() { \(dispatchJS) }, 0);"
 
         let html = """
         <!DOCTYPE html>

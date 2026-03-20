@@ -1,12 +1,18 @@
 {
   "manifest_version": 3,
   "name": "__MSG_appName__",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
-  "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen"],
+  "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen", "alarms", "fontSettings"],
   "host_permissions": ["<all_urls>"],
   "optional_permissions": ["bookmarks"],
+  "commands": {
+    "test-command": {
+      "suggested_key": {"default": "Alt+Shift+E", "mac": "Alt+Shift+E"},
+      "description": "Test API Explorer command"
+    }
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": "icon.png",

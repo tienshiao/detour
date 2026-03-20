@@ -1,8 +1,10 @@
 // API Explorer — Background Service Worker
 // Exercises: chrome.tabs, chrome.webNavigation, chrome.webRequest, chrome.storage,
 //            chrome.scripting, chrome.i18n, chrome.contextMenus, chrome.offscreen,
-//            chrome.runtime.onInstalled, chrome.runtime.connect/onConnect,
-//            chrome.storage.onChanged, chrome.extension.getBackgroundPage
+//            chrome.runtime.onInstalled, chrome.runtime.onStartup, chrome.runtime.connect/onConnect,
+//            chrome.storage.onChanged, chrome.extension.getBackgroundPage,
+//            chrome.alarms, chrome.action, chrome.commands, chrome.windows,
+//            chrome.fontSettings, chrome.permissions
 
 const MAX_LOG_ENTRIES = 50;
 
@@ -45,6 +47,31 @@ chrome.runtime.onInstalled.addListener((details) => {
     title: 'API Explorer: ' + chrome.i18n.getMessage('appName'),
     contexts: ['page', 'selection']
   });
+});
+
+// --- runtime.onStartup ---
+
+chrome.runtime.onStartup.addListener(() => {
+  console.log('[API Explorer] runtime.onStartup');
+  appendLog({ event: 'runtime.onStartup' });
+});
+
+// --- Set uninstall URL ---
+
+chrome.runtime.setUninstallURL('https://example.com/uninstalled');
+
+// --- Alarms ---
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  console.log('[API Explorer] alarms.onAlarm', alarm.name);
+  appendLog({ event: 'alarms.onAlarm', alarmName: alarm.name });
+});
+
+// --- Commands ---
+
+chrome.commands.onCommand.addListener((command) => {
+  console.log('[API Explorer] commands.onCommand', command);
+  appendLog({ event: 'commands.onCommand', command });
 });
 
 // --- Tab events ---
@@ -118,10 +145,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   // Don't log changes to eventLog itself to avoid infinite loop
   if (changes.eventLog) return;
   console.log('[API Explorer] storage.onChanged', areaName, Object.keys(changes));
-  var keys = Object.keys(changes);
-  for (var i = 0; i < keys.length; i++) {
-    var key = keys[i];
-    var change = changes[key];
+  const keys = Object.keys(changes);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const change = changes[key];
     appendLog({
       event: 'storage.onChanged',
       area: areaName,

@@ -16,6 +16,26 @@ struct ExtensionManifest: Codable {
     let optionsPage: String?
     let optionsUI: OptionsUI?
     let icons: [String: String]?
+    let commands: [String: Command]?
+
+    struct Command: Codable {
+        let suggestedKey: SuggestedKey?
+        let description: String?
+
+        struct SuggestedKey: Codable {
+            let `default`: String?
+            let mac: String?
+
+            enum CodingKeys: String, CodingKey {
+                case `default`, mac
+            }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case suggestedKey = "suggested_key"
+            case description
+        }
+    }
 
     struct OptionsUI: Codable {
         let page: String
@@ -87,10 +107,15 @@ struct ExtensionManifest: Codable {
         let js: [String]?
         let css: [String]?
         let runAt: String?
+        let world: String?
+        let allFrames: Bool?
+        let matchAboutBlank: Bool?
 
         enum CodingKeys: String, CodingKey {
-            case matches, js, css
+            case matches, js, css, world
             case runAt = "run_at"
+            case allFrames = "all_frames"
+            case matchAboutBlank = "match_about_blank"
         }
 
         var injectionTime: InjectionTime {
@@ -110,7 +135,7 @@ struct ExtensionManifest: Codable {
 
     enum CodingKeys: String, CodingKey {
         case manifestVersion = "manifest_version"
-        case name, version, description, permissions, action, background
+        case name, version, description, permissions, action, background, commands
         case hostPermissions = "host_permissions"
         case optionalPermissions = "optional_permissions"
         case defaultLocale = "default_locale"

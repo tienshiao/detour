@@ -261,7 +261,7 @@ document.getElementById('btn-storage-write').addEventListener('click', async () 
     const val = document.getElementById('input-storage-val').value || 'test-' + Date.now();
 
     // Register a local onChanged listener to show the event in the popup
-    var handled = false;
+    let handled = false;
     chrome.storage.onChanged.addListener(function listener(changes, areaName) {
       if (handled) return;
       if (changes._testOnChanged) {
@@ -281,6 +281,186 @@ document.getElementById('btn-storage-write').addEventListener('click', async () 
     showResult('res-storage-changed', 'Wrote value, waiting for onChanged event...');
   } catch (e) {
     showResult('res-storage-changed', e.message, true);
+  }
+});
+
+// --- Storage Sync ---
+
+document.getElementById('btn-sync-set').addEventListener('click', async () => {
+  try {
+    const key = document.getElementById('input-sync-key').value || 'testKey';
+    const val = document.getElementById('input-sync-val').value || 'testValue';
+    await chrome.storage.sync.set({ [key]: val });
+    showResult('res-storage-sync', `Set sync["${key}"] = "${val}"`);
+  } catch (e) {
+    showResult('res-storage-sync', e.message, true);
+  }
+});
+
+document.getElementById('btn-sync-get').addEventListener('click', async () => {
+  try {
+    const key = document.getElementById('input-sync-key').value || 'testKey';
+    const result = await chrome.storage.sync.get(key);
+    showResult('res-storage-sync', result);
+  } catch (e) {
+    showResult('res-storage-sync', e.message, true);
+  }
+});
+
+document.getElementById('btn-sync-getall').addEventListener('click', async () => {
+  try {
+    const result = await chrome.storage.sync.get(null);
+    showResult('res-storage-sync', result);
+  } catch (e) {
+    showResult('res-storage-sync', e.message, true);
+  }
+});
+
+// --- Alarms ---
+
+document.getElementById('btn-alarm-create').addEventListener('click', async () => {
+  try {
+    const name = document.getElementById('input-alarm-name').value || 'test-alarm';
+    await chrome.alarms.create(name, { delayInMinutes: 1 });
+    showResult('res-alarms', `Created alarm "${name}" (fires in 1 min)`);
+  } catch (e) {
+    showResult('res-alarms', e.message, true);
+  }
+});
+
+document.getElementById('btn-alarm-getall').addEventListener('click', async () => {
+  try {
+    const alarms = await chrome.alarms.getAll();
+    if (alarms.length === 0) {
+      showResult('res-alarms', '(no alarms)');
+    } else {
+      showResult('res-alarms', alarms);
+    }
+  } catch (e) {
+    showResult('res-alarms', e.message, true);
+  }
+});
+
+document.getElementById('btn-alarm-clearall').addEventListener('click', async () => {
+  try {
+    await chrome.alarms.clearAll();
+    showResult('res-alarms', 'All alarms cleared');
+  } catch (e) {
+    showResult('res-alarms', e.message, true);
+  }
+});
+
+// --- Action (Badge) ---
+
+document.getElementById('btn-badge-set').addEventListener('click', async () => {
+  try {
+    const text = document.getElementById('input-badge-text').value || 'ON';
+    await chrome.action.setBadgeText({ text });
+    await chrome.action.setBadgeBackgroundColor({ color: [66, 133, 244, 255] });
+    showResult('res-action', `Badge set to "${text}"`);
+  } catch (e) {
+    showResult('res-action', e.message, true);
+  }
+});
+
+document.getElementById('btn-badge-get').addEventListener('click', async () => {
+  try {
+    const text = await chrome.action.getBadgeText({});
+    showResult('res-action', `Current badge: "${text}"`);
+  } catch (e) {
+    showResult('res-action', e.message, true);
+  }
+});
+
+document.getElementById('btn-badge-clear').addEventListener('click', async () => {
+  try {
+    await chrome.action.setBadgeText({ text: '' });
+    showResult('res-action', 'Badge cleared');
+  } catch (e) {
+    showResult('res-action', e.message, true);
+  }
+});
+
+// --- Commands ---
+
+document.getElementById('btn-commands-getall').addEventListener('click', async () => {
+  try {
+    const commands = await chrome.commands.getAll();
+    showResult('res-commands', commands);
+  } catch (e) {
+    showResult('res-commands', e.message, true);
+  }
+});
+
+// --- Windows ---
+
+document.getElementById('btn-windows-getall').addEventListener('click', async () => {
+  try {
+    const windows = await chrome.windows.getAll();
+    showResult('res-windows', windows);
+  } catch (e) {
+    showResult('res-windows', e.message, true);
+  }
+});
+
+document.getElementById('btn-windows-current').addEventListener('click', async () => {
+  try {
+    const win = await chrome.windows.getCurrent();
+    showResult('res-windows', win);
+  } catch (e) {
+    showResult('res-windows', e.message, true);
+  }
+});
+
+// --- Font Settings ---
+
+document.getElementById('btn-fonts-list').addEventListener('click', async () => {
+  try {
+    const fonts = await chrome.fontSettings.getFontList();
+    showResult('res-fonts', `${fonts.length} fonts: ${fonts.slice(0, 10).map(f => f.displayName).join(', ')}...`);
+  } catch (e) {
+    showResult('res-fonts', e.message, true);
+  }
+});
+
+// --- Permissions ---
+
+document.getElementById('btn-perm-contains').addEventListener('click', async () => {
+  try {
+    const perm = document.getElementById('input-perm-check').value || 'storage';
+    const has = await chrome.permissions.contains({ permissions: [perm] });
+    showResult('res-permissions', `permissions.contains("${perm}"): ${has}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
+document.getElementById('btn-perm-getall').addEventListener('click', async () => {
+  try {
+    const all = await chrome.permissions.getAll();
+    showResult('res-permissions', all);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
+// --- Runtime Extras ---
+
+document.getElementById('btn-file-access').addEventListener('click', async () => {
+  try {
+    const allowed = await chrome.extension.isAllowedFileSchemeAccess();
+    showResult('res-runtime-extras', `File scheme access: ${allowed}`);
+  } catch (e) {
+    showResult('res-runtime-extras', e.message, true);
+  }
+});
+
+document.getElementById('btn-incognito-access').addEventListener('click', async () => {
+  try {
+    const allowed = await chrome.extension.isAllowedIncognitoAccess();
+    showResult('res-runtime-extras', `Incognito access: ${allowed}`);
+  } catch (e) {
+    showResult('res-runtime-extras', e.message, true);
   }
 });
 

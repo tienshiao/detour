@@ -229,4 +229,45 @@ final class ExtensionPermissionCheckerTests: XCTestCase {
         XCTAssertTrue(summary.contains("Monitor your web requests"))
         XCTAssertTrue(summary.contains("Access your bookmarks"))
     }
+
+    // MARK: - New permission types (alarms, fontSettings)
+
+    func testRequiredPermissionForAlarms() {
+        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "alarms.create"), "alarms")
+        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "alarms.clear"), "alarms")
+    }
+
+    func testRequiredPermissionForFontSettings() {
+        XCTAssertEqual(ExtensionPermissionChecker.requiredPermission(for: "fontSettings.getFontList"), "fontSettings")
+    }
+
+    func testActionDoesNotRequirePermission() {
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "action.setBadgeText"))
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "action.setIcon"))
+    }
+
+    func testCommandsDoesNotRequirePermission() {
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "commands.getAll"))
+    }
+
+    func testWindowsDoesNotRequirePermission() {
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "windows.getAll"))
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "windows.getCurrent"))
+    }
+
+    func testPermissionsDoesNotRequirePermission() {
+        XCTAssertNil(ExtensionPermissionChecker.requiredPermission(for: "permissions.contains"))
+    }
+
+    func testPermissionSummaryAlarms() {
+        let manifest = makeManifest(permissions: ["alarms"])
+        let summary = ExtensionPermissionChecker.permissionSummary(for: manifest)
+        XCTAssertTrue(summary.contains("Schedule periodic tasks"))
+    }
+
+    func testPermissionSummaryFontSettings() {
+        let manifest = makeManifest(permissions: ["fontSettings"])
+        let summary = ExtensionPermissionChecker.permissionSummary(for: manifest)
+        XCTAssertTrue(summary.contains("Access font settings"))
+    }
 }

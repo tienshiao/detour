@@ -64,7 +64,7 @@
   </style>
 </head>
 <body>
-  <h1>API Explorer <span class="badge">v2</span></h1>
+  <h1>API Explorer <span class="badge">v3</span></h1>
 
   <!-- i18n -->
   <section>
@@ -213,6 +213,92 @@
       <button id="btn-storage-write">Write & Watch</button>
     </div>
     <div class="result" id="res-storage-changed"></div>
+  </section>
+
+  <!-- Storage Sync -->
+  <section>
+    <h2>Storage Sync</h2>
+    <div class="row">
+      <input type="text" id="input-sync-key" placeholder="Key" style="width:80px">
+      <input type="text" id="input-sync-val" placeholder="Value" style="width:80px">
+      <button id="btn-sync-set">Set</button>
+      <button id="btn-sync-get" class="secondary">Get</button>
+      <button id="btn-sync-getall" class="secondary">Get All</button>
+    </div>
+    <div class="result" id="res-storage-sync"></div>
+  </section>
+
+  <!-- Alarms -->
+  <section>
+    <h2>Alarms</h2>
+    <div class="row">
+      <input type="text" id="input-alarm-name" placeholder="Alarm name" style="width:120px">
+      <button id="btn-alarm-create">Create (1min)</button>
+      <button id="btn-alarm-getall" class="secondary">Get All</button>
+      <button id="btn-alarm-clearall" class="secondary">Clear All</button>
+    </div>
+    <div class="result" id="res-alarms"></div>
+  </section>
+
+  <!-- Action (Badge) -->
+  <section>
+    <h2>Action (Badge)</h2>
+    <div class="row">
+      <input type="text" id="input-badge-text" placeholder="Badge text" style="width:80px">
+      <button id="btn-badge-set">Set Badge</button>
+      <button id="btn-badge-get" class="secondary">Get Badge</button>
+      <button id="btn-badge-clear" class="secondary">Clear</button>
+    </div>
+    <div class="result" id="res-action"></div>
+  </section>
+
+  <!-- Commands -->
+  <section>
+    <h2>Commands</h2>
+    <div class="row">
+      <button id="btn-commands-getall">Get All Commands</button>
+    </div>
+    <div class="result" id="res-commands"></div>
+  </section>
+
+  <!-- Windows -->
+  <section>
+    <h2>Windows</h2>
+    <div class="row">
+      <button id="btn-windows-getall">Get All</button>
+      <button id="btn-windows-current" class="secondary">Current</button>
+    </div>
+    <div class="result" id="res-windows"></div>
+  </section>
+
+  <!-- Font Settings -->
+  <section>
+    <h2>Font Settings</h2>
+    <div class="row">
+      <button id="btn-fonts-list">Get Font List</button>
+    </div>
+    <div class="result" id="res-fonts"></div>
+  </section>
+
+  <!-- Permissions -->
+  <section>
+    <h2>Permissions</h2>
+    <div class="row">
+      <input type="text" id="input-perm-check" placeholder="Permission name" style="width:120px">
+      <button id="btn-perm-contains">Contains?</button>
+      <button id="btn-perm-getall" class="secondary">Get All</button>
+    </div>
+    <div class="result" id="res-permissions"></div>
+  </section>
+
+  <!-- Runtime extras -->
+  <section>
+    <h2>Runtime Extras</h2>
+    <div class="row">
+      <button id="btn-file-access">File Scheme Access?</button>
+      <button id="btn-incognito-access" class="secondary">Incognito Access?</button>
+    </div>
+    <div class="result" id="res-runtime-extras"></div>
   </section>
 
   <!-- Event Log -->
