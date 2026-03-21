@@ -1,5 +1,8 @@
 import Foundation
 import UserNotifications
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-notifications")
 
 /// Manages notifications for extensions, wrapping UNUserNotificationCenter.
 class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
@@ -24,6 +27,7 @@ class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// Create or update a notification.
     func create(extensionID: String, notificationID: String?, options: [String: Any], completion: @escaping (String) -> Void) {
         let id = notificationID ?? UUID().uuidString
+        log.info("Creating notification \(id, privacy: .public) for extension \(extensionID, privacy: .public)")
         let identifier = "\(extensionID):\(id)"
 
         let content = UNMutableNotificationContent()
@@ -36,6 +40,9 @@ class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
 
         UNUserNotificationCenter.current().add(request) { [weak self] error in
+            if let error {
+                log.error("Failed to create notification for extension \(extensionID, privacy: .public): \(error.localizedDescription)")
+            }
             if error == nil {
                 self?.notificationMap[identifier] = (extensionID, id)
                 if self?.activeNotifications[extensionID] == nil {
@@ -88,10 +95,12 @@ class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         if let mapping = notificationMap[identifier] {
             let js: String
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                log.info("Notification clicked: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
                 // Click
                 let escapedID = mapping.notificationID.jsEscapedForSingleQuotes
                 js = "if (window.__extensionDispatchNotificationClicked) { window.__extensionDispatchNotificationClicked('\(escapedID)'); }"
             } else if response.actionIdentifier == UNNotificationDismissActionIdentifier {
+                log.info("Notification closed: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
                 // Closed
                 let escapedID = mapping.notificationID.jsEscapedForSingleQuotes
                 js = "if (window.__extensionDispatchNotificationClosed) { window.__extensionDispatchNotificationClosed('\(escapedID)', true); }"

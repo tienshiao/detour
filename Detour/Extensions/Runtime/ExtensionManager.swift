@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-manager")
 
 /// Singleton lifecycle manager for web extensions.
 /// Owns the list of loaded extensions, their background hosts, and the content script injector.
@@ -73,6 +76,7 @@ class ExtensionManager {
 
     /// Initialize: load installed extensions from the database and start enabled ones.
     func initialize() {
+        log.info("Initializing extension manager")
         let records = AppDatabase.shared.loadExtensions()
         for record in records {
             let basePath = URL(fileURLWithPath: record.basePath)
@@ -85,11 +89,12 @@ class ExtensionManager {
             } else if let dbManifest = try? JSONDecoder().decode(ExtensionManifest.self, from: record.manifestJSON) {
                 manifest = dbManifest
             } else {
-                print("[ExtensionManager] Failed to decode manifest for extension \(record.id)")
+                log.error("Failed to decode manifest for extension \(record.id, privacy: .public)")
                 continue
             }
             let ext = WebExtension(id: record.id, manifest: manifest, basePath: basePath, isEnabled: record.isEnabled)
             extensions.append(ext)
+            log.info("Loaded extension \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public)), enabled: \(ext.isEnabled)")
 
             if ext.isEnabled {
                 // Extensions loaded from DB were already installed — don't fire onInstalled again
@@ -199,6 +204,7 @@ class ExtensionManager {
         }
 
         extensions.append(ext)
+        log.info("Installed extension \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public))")
         // Wait for the background host to finish loading before injecting content scripts.
         // Content scripts may send runtime.sendMessage immediately, which requires the
         // background's __extensionDispatchMessage handler to be ready.
@@ -250,7 +256,7 @@ class ExtensionManager {
               let infoJSON = String(data: infoData, encoding: .utf8),
               let tabData = try? JSONSerialization.data(withJSONObject: tab),
               let tabJSON = String(data: tabData, encoding: .utf8) else {
-            print("[ExtensionManager] dispatchContextMenuClicked: JSON serialization failed")
+            log.error("dispatchContextMenuClicked: JSON serialization failed for extension \(extensionID, privacy: .public)")
             return
         }
 
@@ -260,6 +266,7 @@ class ExtensionManager {
 
     /// Uninstall an extension.
     func uninstall(id: String) {
+        log.info("Uninstalling extension \(id, privacy: .public)")
         // Open uninstall URL in a new Detour tab if set
         if let uninstallURL = uninstallURLs[id] {
             if let activeSpaceID = lastActiveSpaceID,
@@ -302,6 +309,7 @@ class ExtensionManager {
     /// Enable or disable an extension globally.
     func setEnabled(id: String, enabled: Bool) {
         guard let ext = self.extension(withID: id) else { return }
+        log.info("Extension \(id, privacy: .public) \(enabled ? "enabled" : "disabled")")
         ext.isEnabled = enabled
         AppDatabase.shared.setEnabled(id: id, enabled: enabled)
 

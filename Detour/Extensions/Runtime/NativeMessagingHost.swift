@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "native-messaging")
 
 /// Represents a native messaging host manifest (e.g. `com.1password.1password.json`).
 struct NativeHostManifest: Codable {
@@ -66,6 +69,7 @@ class NativeMessagingHost {
         let expectedOrigin = "chrome-extension://\(extensionID)/"
         if let allowedOrigins = manifest.allowedOrigins {
             guard allowedOrigins.contains(expectedOrigin) else {
+                log.error("Origin validation failed: extension \(self.extensionID, privacy: .public) not in allowed_origins for \(self.hostName, privacy: .public)")
                 throw NativeMessagingError.originNotAllowed(extensionID)
             }
         }
@@ -73,6 +77,7 @@ class NativeMessagingHost {
         // Validate the host binary exists
         let hostPath = manifest.path
         guard FileManager.default.isExecutableFile(atPath: hostPath) else {
+            log.error("Native host binary not found at \(hostPath) for \(self.hostName, privacy: .public)")
             throw NativeMessagingError.hostNotFound(hostPath)
         }
 
@@ -104,6 +109,7 @@ class NativeMessagingHost {
 
         try proc.run()
         isConnected = true
+        log.info("Connected to native host \(self.hostName, privacy: .public) at \(hostPath) for extension \(self.extensionID, privacy: .public)")
 
         // Start reading stdout on a background queue
         startReadLoop()
@@ -120,6 +126,7 @@ class NativeMessagingHost {
         }
 
         guard data.count <= Self.maxMessageSize else {
+            log.warning("Message size \(data.count) exceeds 1MB limit for native host \(self.hostName, privacy: .public)")
             throw NativeMessagingError.messageTooLarge(data.count)
         }
 
@@ -134,6 +141,7 @@ class NativeMessagingHost {
     /// Disconnect the native host (terminates the process).
     func disconnect() {
         guard isConnected else { return }
+        log.info("Disconnecting native host \(self.hostName, privacy: .public) for extension \(self.extensionID, privacy: .public)")
         isConnected = false
 
         stdinPipe?.fileHandleForWriting.closeFile()

@@ -1,5 +1,8 @@
 import Foundation
 import GRDB
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
 
 struct HistoryDatabase {
     static let shared = HistoryDatabase()
@@ -76,7 +79,7 @@ struct HistoryDatabase {
                 try visit.insert(db)
             }
         } catch {
-            print("Failed to record history visit: \(error)")
+            log.error("Failed to record history visit: \(error.localizedDescription)")
         }
     }
 
@@ -94,7 +97,7 @@ struct HistoryDatabase {
                     """, arguments: [spaceID, limit])
             }
         } catch {
-            print("Failed to fetch recent history: \(error)")
+            log.error("Failed to fetch recent history: \(error.localizedDescription)")
             return []
         }
     }
@@ -120,7 +123,7 @@ struct HistoryDatabase {
                     """, arguments: [ftsQuery, spaceID, limit])
             }
         } catch {
-            print("Failed to search history: \(error)")
+            log.error("Failed to search history: \(error.localizedDescription)")
             return []
         }
     }
@@ -137,7 +140,7 @@ struct HistoryDatabase {
                     """)
             }
         } catch {
-            print("Failed to expire old history: \(error)")
+            log.error("Failed to expire old history: \(error.localizedDescription)")
         }
     }
 }

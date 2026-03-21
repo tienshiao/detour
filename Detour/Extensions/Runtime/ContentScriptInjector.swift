@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-scripts")
 
 /// Injects content scripts from enabled extensions into WKWebView configurations.
 class ContentScriptInjector {
@@ -16,6 +19,7 @@ class ContentScriptInjector {
     /// on a WKUserContentController. Scripts registered this way fire automatically
     /// on every future page load.
     func registerContentScripts(for ext: WebExtension, on controller: WKUserContentController) {
+        log.info("Registering content scripts for \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public))")
         // Inject the chrome API polyfill in this extension's content world
         let apiBundle = ChromeAPIBundle.generateBundle(for: ext)
         let apiScript = WKUserScript(
@@ -292,7 +296,11 @@ class ContentScriptInjector {
         // Also run scripts immediately on the current page if it matches
         guard let url = tab.url else { return }
         let matchingGroups = ext.contentScriptMatchers.filter { $0.matcher.matches(url) }
-        guard !matchingGroups.isEmpty else { return }
+        guard !matchingGroups.isEmpty else {
+            log.debug("No content script match for \(url) in extension \(ext.id, privacy: .public)")
+            return
+        }
+        log.debug("Injecting \(matchingGroups.count) content script group(s) for \(ext.id, privacy: .public) into \(url)")
 
         let apiBundle = ChromeAPIBundle.generateBundle(for: ext)
         webView.evaluateJavaScript(apiBundle, in: nil, in: ext.contentWorld) { _ in }

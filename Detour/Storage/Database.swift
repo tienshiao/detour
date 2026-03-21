@@ -1,5 +1,8 @@
 import Foundation
 import GRDB
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
 
 /// Returns the app's data directory inside Application Support.
 /// When the `DETOUR_DATA_DIR` environment variable is set (e.g. in the test scheme),
@@ -36,7 +39,7 @@ struct AppDatabase {
         do {
             try dbQueue.write(work)
         } catch {
-            print("Failed to \(label): \(error)")
+            log.error("Failed to \(label): \(error.localizedDescription)")
         }
     }
 
@@ -44,7 +47,7 @@ struct AppDatabase {
         do {
             return try dbQueue.write(work)
         } catch {
-            print("Failed to \(label): \(error)")
+            log.error("Failed to \(label): \(error.localizedDescription)")
             return defaultValue
         }
     }
@@ -53,7 +56,7 @@ struct AppDatabase {
         do {
             return try dbQueue.read(work)
         } catch {
-            print("Failed to \(label): \(error)")
+            log.error("Failed to \(label): \(error.localizedDescription)")
             return defaultValue
         }
     }
@@ -77,7 +80,7 @@ struct AppDatabase {
             // Guard: don't delete if any spaces reference it
             let count = try SpaceRecord.filter(Column("profileID") == id).fetchCount(db)
             guard count == 0 else {
-                print("Cannot delete profile \(id): \(count) space(s) still reference it")
+                log.error("Cannot delete profile \(id): \(count) space(s) still reference it")
                 return
             }
             try ProfileRecord.filter(Column("id") == id).deleteAll(db)

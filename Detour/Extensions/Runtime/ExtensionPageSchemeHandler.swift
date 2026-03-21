@@ -1,6 +1,9 @@
 import Foundation
 import WebKit
 import UniformTypeIdentifiers
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "scheme-handler")
 
 /// Serves extension files for the `chrome-extension://` custom URL scheme.
 ///
@@ -103,11 +106,13 @@ class ExtensionPageSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         guard let data = try? Data(contentsOf: fileURL) else {
+            log.error("File not found: \(relativePath, privacy: .public) for extension \(extensionID, privacy: .public)")
             urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
 
         let mimeType = Self.mimeType(for: fileURL)
+        log.debug("Serving \(relativePath, privacy: .public) (\(mimeType, privacy: .public)) for extension \(extensionID, privacy: .public)")
 
         // Use HTTPURLResponse with CORS headers so WebKit allows cross-origin
         // access from content scripts on web pages (XHR, fetch, <link>).

@@ -1,5 +1,8 @@
 import Foundation
 import CryptoKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-installer")
 
 /// Handles loading unpacked extension directories: copies files, parses manifest, creates DB records.
 struct ExtensionInstaller {
@@ -26,6 +29,7 @@ struct ExtensionInstaller {
     ///   - sourceURL: The directory containing the unpacked extension files.
     ///   - publicKey: Optional DER-encoded public key from a CRX3 header.
     static func install(from sourceURL: URL, publicKey: Data? = nil) throws -> WebExtension {
+        log.info("Installing extension from \(sourceURL.path)")
         let manifestURL = sourceURL.appendingPathComponent("manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
             throw InstallerError.manifestNotFound
@@ -64,6 +68,7 @@ struct ExtensionInstaller {
             }
             try FileManager.default.copyItem(at: sourceURL, to: destDir)
         } catch {
+            log.error("Failed to copy extension files: \(error.localizedDescription)")
             throw InstallerError.copyFailed(error.localizedDescription)
         }
 
@@ -84,6 +89,7 @@ struct ExtensionInstaller {
         )
         AppDatabase.shared.saveExtension(record)
 
+        log.info("Install complete: \(manifest.name, privacy: .public) (\(extensionID, privacy: .public))")
         return WebExtension(id: extensionID, manifest: manifest, basePath: destDir, isEnabled: true)
     }
 

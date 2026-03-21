@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-bridge")
 
 /// Message type constants for the extension bridge dispatch.
 private enum MsgType {
@@ -152,6 +155,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
               let extensionID = body["extensionID"] as? String,
               let type = body["type"] as? String else { return }
 
+        log.debug("Dispatch \(type, privacy: .public) from extension \(extensionID, privacy: .public)")
 
         // Periodic cleanup of stale entries
         messageCount += 1
@@ -435,7 +439,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             handleIdleSetDetectionInterval(body: body, extensionID: extensionID)
 
         default:
-            print("[ExtensionBridge] Unknown message type: \(type)")
+            log.warning("Unknown message type: \(type, privacy: .public) from extension \(extensionID, privacy: .public)")
         }
     }
 
@@ -524,7 +528,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         for webView in targetWebViews {
             webView.evaluateJavaScript(js) { _, error in
                 if let error {
-                    print("[ExtensionBridge] Error dispatching message: \(error)")
+                    log.error("Error dispatching message to extension \(ctx.extensionID, privacy: .public): \(error.localizedDescription)")
                 }
             }
         }
@@ -660,6 +664,9 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func deliverCallbackResponse(callbackID: String, result: [String: Any], extensionID: String, webView: WKWebView?, isContentScript: Bool) {
+        if let errorMsg = result["__error"] as? String {
+            log.error("API error for extension \(extensionID, privacy: .public): \(errorMsg, privacy: .public)")
+        }
         guard let resultData = try? JSONSerialization.data(withJSONObject: result),
               let resultJSON = String(data: resultData, encoding: .utf8) else { return }
         deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));",
@@ -1310,7 +1317,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             do {
                 try host.sendMessage(msgDict)
             } catch {
-                print("[ExtensionBridge] Native port postMessage failed: \(error.localizedDescription)")
+                log.error("Native port postMessage failed: \(error.localizedDescription)")
             }
             return
         }
@@ -1848,7 +1855,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             try host.connect()
             nativeHosts[portID] = host
         } catch {
-            print("[ExtensionBridge] Native messaging connect failed: \(error.localizedDescription)")
+            log.error("Native messaging connect failed for extension \(extensionID, privacy: .public): \(error.localizedDescription)")
             let js = "if (window.__extensionDispatchPortDisconnect) { window.__extensionDispatchPortDisconnect('\(portID)'); }"
             deliverJS(js, extensionID: extensionID, webView: sourceWebView, isContentScript: isContentScript)
         }

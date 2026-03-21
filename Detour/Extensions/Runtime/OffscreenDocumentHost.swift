@@ -1,6 +1,9 @@
 import Foundation
 import WebKit
 import AVFoundation
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "background-host")
 
 /// Hosts a hidden WKWebView for an extension's offscreen document.
 /// Similar to `BackgroundHost` but created on demand via `chrome.offscreen.createDocument()`.
@@ -49,7 +52,7 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate {
             audioPlayer = try AVAudioPlayer(data: data)
             audioPlayer?.play()
         } catch {
-            print("[OffscreenAudio] AVAudioPlayer error: \(error)")
+            log.error("AVAudioPlayer error for \(self.extensionID, privacy: .public): \(error.localizedDescription)")
         }
     }
 

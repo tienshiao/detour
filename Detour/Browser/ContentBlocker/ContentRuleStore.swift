@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-blocker")
 
 class ContentRuleStore {
     private let ruleListStore = WKContentRuleListStore.default()!
@@ -45,14 +48,14 @@ class ContentRuleStore {
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: rules),
               let jsonString = String(data: jsonData, encoding: .utf8) else {
-            print("[ContentBlocker] Failed to serialize rules for \(identifier)")
+            log.error("Failed to serialize rules for \(identifier, privacy: .public)")
             completion(nil)
             return
         }
 
         ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: jsonString) { [weak self] list, error in
             if let error {
-                print("[ContentBlocker] Compile error for \(identifier): \(error.localizedDescription)")
+                log.error("Compile error for \(identifier, privacy: .public): \(error.localizedDescription)")
                 // Try to recover by stripping bad rules via binary search
                 self?.compileWithFallback(identifier: identifier, rules: rules, completion: completion)
                 return
@@ -71,7 +74,7 @@ class ContentRuleStore {
             Array(rules[$0..<min($0 + maxRulesPerList, rules.count)])
         }
 
-        print("[ContentBlocker] Splitting \(identifier) into \(chunks.count) chunks (\(rules.count) rules)")
+        log.info("Splitting \(identifier, privacy: .public) into \(chunks.count) chunks (\(rules.count) rules)")
 
         // Compile first chunk with base identifier, rest with suffixed identifiers
         let group = DispatchGroup()
@@ -95,7 +98,7 @@ class ContentRuleStore {
 
     /// When full compilation fails, use binary search to find and strip only the bad rules.
     private func compileWithFallback(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
-        print("[ContentBlocker] Fallback: binary search for bad rules in \(rules.count) rules for \(identifier)")
+        log.info("Fallback: binary search for bad rules in \(rules.count) rules for \(identifier, privacy: .public)")
 
         findBadRules(rules: rules, offset: 0, depth: 0, identifier: identifier) { [weak self] badIndices in
             let badSet = Set(badIndices)
@@ -103,13 +106,13 @@ class ContentRuleStore {
             guard !badSet.isEmpty else {
                 // No individual bad rules found — the failure may be due to combined NFA state limits.
                 // The full set fails but each half passes, so nothing to strip.
-                print("[ContentBlocker] Fallback: no individual bad rules found for \(identifier), compilation not possible")
+                log.error("Fallback: no individual bad rules found for \(identifier, privacy: .public), compilation not possible")
                 completion(nil)
                 return
             }
 
             let cleaned = rules.enumerated().compactMap { badSet.contains($0.offset) ? nil : $0.element }
-            print("[ContentBlocker] Stripped \(badSet.count) bad rule(s), recompiling \(cleaned.count) for \(identifier)")
+            log.info("Stripped \(badSet.count) bad rule(s), recompiling \(cleaned.count) for \(identifier, privacy: .public)")
 
             guard let jsonData = try? JSONSerialization.data(withJSONObject: cleaned),
                   let jsonString = String(data: jsonData, encoding: .utf8) else {
@@ -119,12 +122,12 @@ class ContentRuleStore {
 
             self?.ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: jsonString) { [weak self] list, error in
                 if let error {
-                    print("[ContentBlocker] Fallback compile still failed for \(identifier): \(error.localizedDescription)")
+                    log.error("Fallback compile still failed for \(identifier, privacy: .public): \(error.localizedDescription)")
                     completion(nil)
                     return
                 }
                 if let list {
-                    print("[ContentBlocker] Fallback compile succeeded for \(identifier)")
+                    log.info("Fallback compile succeeded for \(identifier, privacy: .public)")
                     self?.compiledLists[identifier] = list
                     self?.compiledRuleCounts[identifier] = cleaned.count
                     UserDefaults.standard.set(cleaned.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
@@ -138,7 +141,7 @@ class ContentRuleStore {
     private func findBadRules(rules: [[String: Any]], offset: Int, depth: Int, identifier: String, completion: @escaping ([Int]) -> Void) {
         // Bail out if recursion is too deep
         guard depth <= 20 else {
-            print("[ContentBlocker] Binary search: max depth reached, marking \(rules.count) rules as bad at offset \(offset)")
+            log.warning("Binary search: max depth reached, marking \(rules.count) rules as bad at offset \(offset)")
             completion(Array(offset..<offset + rules.count))
             return
         }
@@ -154,7 +157,7 @@ class ContentRuleStore {
 
             if rules.count == 1 {
                 // Found a single bad rule
-                print("[ContentBlocker] Binary search: found bad rule at index \(offset)")
+                log.info("Binary search: found bad rule at index \(offset)")
                 completion([offset])
                 return
             }
@@ -199,7 +202,7 @@ class ContentRuleStore {
         compiledLists.removeValue(forKey: identifier)
         ruleListStore.removeContentRuleList(forIdentifier: identifier) { error in
             if let error {
-                print("[ContentBlocker] Remove error for \(identifier): \(error.localizedDescription)")
+                log.error("Remove error for \(identifier, privacy: .public): \(error.localizedDescription)")
             }
         }
     }

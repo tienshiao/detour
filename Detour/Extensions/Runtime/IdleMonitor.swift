@@ -1,5 +1,8 @@
 import Foundation
 import CoreGraphics
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-idle")
 
 /// Monitors system idle state and dispatches `chrome.idle.onStateChanged` events to extensions.
 ///
@@ -78,6 +81,7 @@ class IdleMonitor {
     }
 
     private func dispatchStateChanged(_ state: String, to extensionID: String) {
+        log.info("Idle state changed to \(state, privacy: .public) for extension \(extensionID, privacy: .public)")
         let js = "if (window.__extensionDispatchIdleStateChanged) { window.__extensionDispatchIdleStateChanged('\(state)'); }"
         ExtensionManager.shared.backgroundHost(for: extensionID)?.evaluateJavaScript(js)
     }

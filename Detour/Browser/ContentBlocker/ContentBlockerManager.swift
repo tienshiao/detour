@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-blocker")
 
 extension Notification.Name {
     static let contentBlockerRulesDidChange = Notification.Name("contentBlockerRulesDidChange")
@@ -179,7 +182,7 @@ class ContentBlockerManager {
         }
 
         let result = parser.parse(text: text)
-        print("[ContentBlocker] Compiling \(list.identifier) from cache: \(result.rules.count) rules (\(result.skippedCount) skipped)")
+        log.info("Compiling \(list.identifier, privacy: .public) from cache: \(result.rules.count) rules (\(result.skippedCount) skipped)")
         UserDefaults.standard.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
 
         ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
@@ -210,13 +213,13 @@ class ContentBlockerManager {
             request.setValue(formatter.string(from: lastFetch), forHTTPHeaderField: "If-Modified-Since")
         }
 
-        print("[ContentBlocker] Fetching \(list.identifier) from \(list.url)")
+        log.info("Fetching \(list.identifier, privacy: .public) from \(list.url, privacy: .public)")
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
 
             if let error {
-                print("[ContentBlocker] Fetch error for \(list.identifier): \(error.localizedDescription)")
+                log.error("Fetch error for \(list.identifier, privacy: .public): \(error.localizedDescription)")
                 self.refreshingIdentifiers.remove(list.identifier)
                 self.postStatusChange()
                 return
@@ -229,7 +232,7 @@ class ContentBlockerManager {
             }
 
             if httpResponse.statusCode == 304 {
-                print("[ContentBlocker] \(list.identifier) not modified")
+                log.info("\(list.identifier, privacy: .public) not modified")
                 UserDefaults.standard.set(Date(), forKey: lastFetchKey)
                 self.refreshingIdentifiers.remove(list.identifier)
                 self.postStatusChange()
@@ -237,7 +240,7 @@ class ContentBlockerManager {
             }
 
             guard httpResponse.statusCode == 200, let data, let text = String(data: data, encoding: .utf8) else {
-                print("[ContentBlocker] Bad response for \(list.identifier): \(httpResponse.statusCode)")
+                log.error("Bad response for \(list.identifier, privacy: .public): \(httpResponse.statusCode)")
                 self.refreshingIdentifiers.remove(list.identifier)
                 self.postStatusChange()
                 return
@@ -255,7 +258,7 @@ class ContentBlockerManager {
 
             // Parse and compile
             let result = self.parser.parse(text: text)
-            print("[ContentBlocker] Parsed \(list.identifier): \(result.rules.count) rules (\(result.skippedCount) skipped)")
+            log.info("Parsed \(list.identifier, privacy: .public): \(result.rules.count) rules (\(result.skippedCount) skipped)")
             UserDefaults.standard.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
 
             DispatchQueue.main.async {
@@ -263,7 +266,7 @@ class ContentBlockerManager {
                     self?.refreshingIdentifiers.remove(list.identifier)
                     self?.postStatusChange()
                     if compiled != nil {
-                        print("[ContentBlocker] Compiled \(list.identifier) successfully")
+                        log.info("Compiled \(list.identifier, privacy: .public) successfully")
                         self?.reapplyRuleLists()
                     }
                 }

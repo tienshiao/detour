@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "background-host")
 
 /// Hosts a hidden WKWebView for an extension's background service worker.
 /// The webView loads a synthetic HTML page that includes the chrome API polyfills
@@ -23,6 +26,7 @@ class BackgroundHost: NSObject, WKNavigationDelegate {
     /// chrome API polyfills and background script are ready to receive messages.
     func start(isFirstRun: Bool = true, completion: (() -> Void)? = nil) {
         guard let serviceWorker = ext.manifest.background?.serviceWorker else { return }
+        log.info("Starting background host for \(self.extensionID, privacy: .public)")
 
         let config = ext.makePageConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
@@ -97,6 +101,7 @@ class BackgroundHost: NSObject, WKNavigationDelegate {
 
     /// Stop the background host and release the WKWebView.
     func stop() {
+        log.info("Stopping background host for \(self.extensionID, privacy: .public)")
         ExtensionPageSchemeHandler.shared.removeSyntheticPage(
             extensionID: ext.id,
             path: Self.syntheticBackgroundPath
@@ -117,11 +122,11 @@ class BackgroundHost: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        print("[BackgroundHost] didFail for \(extensionID): \(error.localizedDescription)")
+        log.error("didFail for \(self.extensionID, privacy: .public): \(error.localizedDescription)")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        print("[BackgroundHost] didFailProvisionalNavigation for \(extensionID): \(error.localizedDescription)")
+        log.error("didFailProvisionalNavigation for \(self.extensionID, privacy: .public): \(error.localizedDescription)")
     }
 
     /// Evaluate JavaScript in the background webView.

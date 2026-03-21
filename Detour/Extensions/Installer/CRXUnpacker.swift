@@ -1,5 +1,8 @@
 import Foundation
 import CryptoKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-installer")
 
 /// Extracts the ZIP payload from a CRX3 file and decompresses it to a temporary directory.
 struct CRXUnpacker {
@@ -79,6 +82,7 @@ struct CRXUnpacker {
 
         guard process.terminationStatus == 0 else {
             let errorOutput = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            log.error("CRX ZIP extraction failed: \(errorOutput)")
             throw CRXError.zipExtractionFailed(errorOutput)
         }
 
