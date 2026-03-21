@@ -54,6 +54,32 @@ class ExtensionPopoverController: NSObject {
         popover?.close()
     }
 
+    /// JavaScript to measure popup content size.
+    private static let measureJS = """
+    (function() {
+        const body = document.body;
+        if (!body) return JSON.stringify({width: 0, height: 0});
+        const style = window.getComputedStyle(body);
+        const marginH = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
+        const marginV = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+        const width = Math.ceil(body.offsetWidth + marginH);
+        const height = Math.ceil(body.offsetHeight + marginV);
+        return JSON.stringify({width: width, height: height});
+    })();
+    """
+
+    /// Parse a measurement JSON string into a clamped NSSize, or nil if invalid.
+    private static func parseSize(from jsonString: String) -> NSSize? {
+        guard let data = jsonString.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: CGFloat],
+              let w = parsed["width"], let h = parsed["height"],
+              w > 0, h > 0 else { return nil }
+        return NSSize(
+            width: min(max(w, 100), maxWidth),
+            height: min(max(h, 100), maxHeight)
+        )
+    }
+
     /// Measure the content and present the popover at the correct size.
     private func measureAndPresent() {
         guard let wv = webView, positioningView != nil else {
@@ -61,36 +87,43 @@ class ExtensionPopoverController: NSObject {
             return
         }
 
+        wv.evaluateJavaScript(Self.measureJS) { [weak self] result, _ in
+            guard let self else { return }
+            let size = (result as? String).flatMap(Self.parseSize) ?? Self.defaultSize
+            self.presentPopover(size: size)
+            self.installResizeObserver()
+        }
+    }
+
+    /// Install a ResizeObserver on the document body so the popover resizes
+    /// dynamically when the extension's content changes (e.g. after a translation).
+    private func installResizeObserver() {
+        guard let wv = webView else { return }
+
         let js = """
         (function() {
-            const body = document.body;
-            if (!body) return JSON.stringify({width: 0, height: 0});
-            const style = window.getComputedStyle(body);
-            const marginH = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
-            const marginV = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
-            const width = Math.ceil(body.offsetWidth + marginH);
-            const height = Math.ceil(body.offsetHeight + marginV);
-            return JSON.stringify({width: width, height: height});
+            if (window.__detourResizeObserver) return;
+            const handler = window.webkit.messageHandlers.extensionPopupResize;
+            if (!handler) return;
+            window.__detourResizeObserver = new ResizeObserver(() => {
+                const body = document.body;
+                if (!body) return;
+                const style = window.getComputedStyle(body);
+                const marginH = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
+                const marginV = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+                const width = Math.ceil(body.offsetWidth + marginH);
+                const height = Math.ceil(body.offsetHeight + marginV);
+                handler.postMessage({width: width, height: height});
+            });
+            window.__detourResizeObserver.observe(document.body);
         })();
         """
 
-        wv.evaluateJavaScript(js) { [weak self] result, _ in
-            guard let self else { return }
+        // Register the message handler for resize notifications
+        let contentController = wv.configuration.userContentController
+        contentController.add(self, name: "extensionPopupResize")
 
-            var size = Self.defaultSize
-            if let jsonString = result as? String,
-               let data = jsonString.data(using: .utf8),
-               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: CGFloat],
-               let w = parsed["width"], let h = parsed["height"],
-               w > 0, h > 0 {
-                size = NSSize(
-                    width: min(max(w, 100), Self.maxWidth),
-                    height: min(max(h, 100), Self.maxHeight)
-                )
-            }
-
-            self.presentPopover(size: size)
-        }
+        wv.evaluateJavaScript(js, completionHandler: nil)
     }
 
     /// Create and show the NSPopover at the given size.
@@ -115,6 +148,7 @@ class ExtensionPopoverController: NSObject {
 
 extension ExtensionPopoverController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "extensionPopupResize")
         ExtensionManager.shared.unregisterPopupWebView(for: ext.id)
         webView = nil
         popover = nil
@@ -149,6 +183,24 @@ extension ExtensionPopoverController: WKNavigationDelegate {
         }
 
         decisionHandler(.allow)
+    }
+}
+
+extension ExtensionPopoverController: WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "extensionPopupResize",
+              let body = message.body as? [String: Any],
+              let w = (body["width"] as? NSNumber)?.doubleValue,
+              let h = (body["height"] as? NSNumber)?.doubleValue,
+              w > 0, h > 0,
+              let pop = popover else { return }
+
+        let size = NSSize(
+            width: min(max(CGFloat(w), 100), Self.maxWidth),
+            height: min(max(CGFloat(h), 100), Self.maxHeight)
+        )
+        pop.contentSize = size
+        webView?.frame.size = size
     }
 }
 
