@@ -266,6 +266,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toggleSidebarItem = viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(BrowserWindowController.toggleSidebarMode(_:)), keyEquivalent: "s")
         toggleSidebarItem.keyEquivalentModifierMask = [.command]
         viewMenu.addItem(withTitle: "Reload Page", action: #selector(BrowserWindowController.reloadPage(_:)), keyEquivalent: "r")
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: "Actual Size", action: #selector(BrowserWindowController.zoomActualSize(_:)), keyEquivalent: "0")
+        viewMenu.addItem(withTitle: "Zoom In", action: #selector(BrowserWindowController.zoomIn(_:)), keyEquivalent: "+")
+        viewMenu.addItem(withTitle: "Zoom Out", action: #selector(BrowserWindowController.zoomOut(_:)), keyEquivalent: "-")
         viewMenuItem.submenu = viewMenu
 
         // Navigate menu

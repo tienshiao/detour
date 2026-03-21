@@ -944,6 +944,21 @@ class BrowserWindowController: NSWindowController {
         selectedTab?.reload()
     }
 
+    @objc func zoomIn(_ sender: Any?) {
+        guard let webView = selectedTab?.webView else { return }
+        webView.pageZoom = min(webView.pageZoom + 0.1, 3.0)
+    }
+
+    @objc func zoomOut(_ sender: Any?) {
+        guard let webView = selectedTab?.webView else { return }
+        webView.pageZoom = max(webView.pageZoom - 0.1, 0.3)
+    }
+
+    @objc func zoomActualSize(_ sender: Any?) {
+        guard let webView = selectedTab?.webView else { return }
+        webView.pageZoom = 1.0
+    }
+
     @objc func goBack(_ sender: Any?) {
         navigateBackOrCloseChildTab()
     }
