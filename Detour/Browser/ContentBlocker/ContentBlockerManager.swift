@@ -36,21 +36,27 @@ class ContentBlockerManager {
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
     }
 
+    private var pendingLookups = 0
+
     func initialize() {
         whitelist.loadFromDatabase()
 
         // For each list, try to look up compiled rules first, then fetch if needed
+        pendingLookups = Self.filterLists.count
         for list in Self.filterLists {
             ruleStore.lookupOrCompile(identifier: list.identifier, rules: []) { [weak self] existingList in
                 if existingList != nil {
                     // Already compiled, check if refresh needed
                     self?.refreshIfNeeded(list: list)
+                    self?.lookupCompleted()
                 } else {
                     // Try loading from cached text
                     self?.loadAndCompileFromCache(list: list) {
                         // If no cache, fetch
                         self?.fetchAndCompile(list: list)
                     }
+                    // loadAndCompileFromCache/fetchAndCompile call reapplyRuleLists on success
+                    self?.lookupCompleted()
                 }
             }
         }
@@ -58,6 +64,15 @@ class ContentBlockerManager {
         // Recompile whitelist for all profiles
         for profile in TabStore.shared.profiles {
             whitelist.recompileWhitelistRules(profileID: profile.id) {}
+        }
+    }
+
+    /// Called when an async WebKit store lookup finishes. Once all lookups are done,
+    /// re-apply rules to any tabs that were created before the lookups completed.
+    private func lookupCompleted() {
+        pendingLookups -= 1
+        if pendingLookups <= 0 {
+            reapplyRuleLists()
         }
     }
 
