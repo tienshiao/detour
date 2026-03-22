@@ -546,9 +546,8 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         XCTAssertEqual(result as? Bool, true)
     }
 
-    func testScriptingRemoveCSSReturnsResolvedPromise() {
-        // removeCSS is a no-op stub that resolves immediately
-        let result = callAsync("await chrome.scripting.removeCSS({ target: { tabId: 1 } }); return true;")
+    func testScriptingRemoveCSSReturnsPromise() {
+        let result = evalSync("chrome.scripting.removeCSS({ target: { tabId: 1 } }) instanceof Promise")
         XCTAssertEqual(result as? Bool, true)
     }
 

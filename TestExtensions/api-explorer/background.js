@@ -257,6 +257,14 @@ async function handleMessage(message) {
       return { success: true };
     }
 
+    case 'removeCSS': {
+      await chrome.scripting.removeCSS({
+        target: { tabId: message.tabId },
+        files: ['inject.css'],
+      });
+      return { success: true };
+    }
+
     case 'sendToTab': {
       const options = message.options || {};
       const response = await chrome.tabs.sendMessage(message.tabId, message.message || { type: 'highlight' }, options);

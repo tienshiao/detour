@@ -35,7 +35,12 @@ struct ChromeScriptingAPI {
             }
 
             chrome.scripting.executeScript = function(injection, callback) {
-                const promise = scriptingRequest('executeScript', { injection: injection });
+                // Serialize function references — postMessage's structured clone drops functions
+                var adjusted = Object.assign({}, injection);
+                if (typeof adjusted.func === 'function') {
+                    adjusted.func = adjusted.func.toString();
+                }
+                const promise = scriptingRequest('executeScript', { injection: adjusted });
                 if (callback) { promise.then(callback); return; }
                 return promise;
             };
@@ -47,8 +52,7 @@ struct ChromeScriptingAPI {
             };
 
             chrome.scripting.removeCSS = function(injection, callback) {
-                // No-op stub — WebKit doesn't support targeted CSS removal
-                const promise = Promise.resolve();
+                const promise = scriptingRequest('removeCSS', { injection: injection });
                 if (callback) { promise.then(callback); return; }
                 return promise;
             };

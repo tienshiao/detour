@@ -36,6 +36,7 @@ private enum MsgType {
 
     static let scriptingExecuteScript = "scripting.executeScript"
     static let scriptingInsertCSS = "scripting.insertCSS"
+    static let scriptingRemoveCSS = "scripting.removeCSS"
 
     static let contextMenusCreate = "contextMenus.create"
     static let contextMenusUpdate = "contextMenus.update"
@@ -262,6 +263,10 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         case MsgType.scriptingInsertCSS:
             guard let ctx else { return }
             handleScriptingInsertCSS(ctx: ctx, body: body)
+
+        case MsgType.scriptingRemoveCSS:
+            guard let ctx else { return }
+            handleScriptingRemoveCSS(ctx: ctx, body: body)
 
         case MsgType.tabsDetectLanguage:
             guard let ctx else { return }
@@ -1401,37 +1406,26 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             )
         }
 
-        // Verify documentId for top-frame messages. For iframe messages (non-zero frameId),
-        // deliver unconditionally — the content script's own scriptId check filters correctly.
-        // We can't verify iframe documentIds because evaluateJavaScript only runs in the top frame.
+        // Verify documentId for top-frame messages when provided. If verification fails,
+        // deliver anyway — the documentId is for targeting specific documents, not a security
+        // boundary. Rejecting on mismatch breaks extensions like Dark Reader that pass stale
+        // documentIds after navigation or before the content script has fully initialized.
         let targetFrameId = options["frameId"] as? Int
         if let targetDocumentId, (targetFrameId == nil || targetFrameId == 0) {
-            // Fast path: check cached documentId (populated by runtime.sendMessage from content scripts)
             if let cachedDocId = cachedDocumentIds[ObjectIdentifier(webView)] {
                 if cachedDocId != targetDocumentId {
-                    deliverResponse(ctx, result: ["__error": "Could not establish connection. Receiving end does not exist."])
-                    return
+                    log.warning("tabs.sendMessage documentId mismatch (cached=\(cachedDocId, privacy: .public), target=\(targetDocumentId, privacy: .public)) — delivering anyway")
                 }
             } else {
-                // Slow path: cache miss (e.g. no runtime.sendMessage yet), verify via evaluateJavaScript
+                // Cache miss — populate cache for future calls but deliver immediately
                 webView.evaluateJavaScript("window.__detourDocumentId", in: nil, in: ext.contentWorld) { [weak self] result in
-                    if case .success(let value) = result,
-                       let currentDocId = value as? String {
+                    if case .success(let value) = result, let currentDocId = value as? String {
                         self?.cachedDocumentIds[ObjectIdentifier(webView)] = currentDocId
-                        if currentDocId == targetDocumentId {
-                            deliverMessage()
-                        } else {
-                            self?.deliverResponse(ctx, result: ["__error": "Could not establish connection. Receiving end does not exist."])
-                        }
-                    } else {
-                        self?.deliverResponse(ctx, result: ["__error": "Could not establish connection. Receiving end does not exist."])
                     }
                 }
-                return
             }
         }
 
-        // No documentId filter — deliver to all
         deliverMessage()
     }
 
@@ -1545,8 +1539,67 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         let js = """
         (function() {
             var style = document.createElement('style');
+            style.setAttribute('data-detour-ext-css', '\(ctx.extensionID)');
             style.textContent = '\(escapedCSS)';
             (document.head || document.documentElement).appendChild(style);
+        })();
+        """
+
+        webView.evaluateJavaScript(js, in: nil, in: ext.contentWorld) { [weak self] _ in
+            self?.deliverResponse(ctx, result: [:] as [String: Any])
+        }
+    }
+
+    private func handleScriptingRemoveCSS(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let injection = params["injection"] as? [String: Any] else { return }
+
+        let mgr = ExtensionManager.shared
+        guard let ext = mgr.extension(withID: ctx.extensionID) else { return }
+
+        let target = injection["target"] as? [String: Any]
+        let tabIDInt = target?["tabId"] as? Int
+
+        guard let tabIDInt, let uuid = mgr.tabIDMap.uuid(for: tabIDInt) else {
+            deliverResponse(ctx, result: ["__error": "Target tab required"])
+            return
+        }
+
+        let (tab, _) = findTab(uuid: uuid)
+        guard let tab, let webView = tab.webView else {
+            deliverResponse(ctx, result: ["__error": "Tab has no webView"])
+            return
+        }
+
+        if let tabURL = tab.url, !ExtensionPermissionChecker.hasHostPermission(for: tabURL, extension: ext) {
+            deliverResponse(ctx, result: ["__error": ExtensionPermissionChecker.hostPermissionError(url: tabURL)])
+            return
+        }
+
+        var cssContent = ""
+        if let css = injection["css"] as? String {
+            cssContent = css
+        } else if let files = injection["files"] as? [String] {
+            for file in files {
+                let fileURL = ext.basePath.appendingPathComponent(file)
+                if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
+                    cssContent += content + "\n"
+                }
+            }
+        }
+
+        let escapedCSS = cssContent.jsEscapedForSingleQuotes
+
+        let js = """
+        (function() {
+            var styles = document.querySelectorAll('style[data-detour-ext-css=\"\(ctx.extensionID)\"]');
+            var target = '\(escapedCSS)';
+            for (var i = 0; i < styles.length; i++) {
+                if (styles[i].textContent === target) {
+                    styles[i].remove();
+                    break;
+                }
+            }
         })();
         """
 

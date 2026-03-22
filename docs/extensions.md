@@ -254,7 +254,7 @@ All bridge-backed APIs use `webkit.messageHandlers.extensionMessage.postMessage(
 | `chrome.tabs.onCreated/Removed/Updated/Activated` | Full | Fired via ExtensionTabObserver |
 | `chrome.scripting.executeScript()` | Full | func + args or files |
 | `chrome.scripting.insertCSS()` | Full | Inline css or files |
-| `chrome.scripting.removeCSS()` | Stub | No-op (WebKit limitation) |
+| `chrome.scripting.removeCSS()` | Full | Removes matching `<style>` elements by content |
 | `chrome.webNavigation.*` | Full | All four events fire from WKNavigationDelegate |
 | `chrome.webRequest.*` | Stub | No-op emitters; WebKit has no request interception |
 | `chrome.i18n.getMessage()` | Full | With substitution support |
@@ -350,7 +350,7 @@ Two test extensions live under `TestExtensions/`:
 
 - **`chrome.webRequest`** — Stub-only event emitters. WebKit provides no pre-request interception API.
 - **`chrome.webNavigation`** — All four events fire from `WKNavigationDelegate` methods, but only for main-frame navigations (`frameId: 0`). Sub-frame navigation events are not tracked.
-- **`chrome.scripting.removeCSS`** — No-op. WebKit does not support targeted CSS removal.
+- **`chrome.scripting.removeCSS`** — Removes `<style>` elements previously inserted by `insertCSS`, matched by content and extension ID attribute.
 - **`chrome.permissions.request()`** — Stubbed to always deny. Install-time permissions are confirmed via an NSAlert prompt, but there is no UI for granting optional permissions at runtime.
 - **`allFrames` and `matchAboutBlank`** — Parsed from manifest but not yet enforced by the content script injector. All scripts currently inject into all frames (`forMainFrameOnly: false`).
 - **`tabs.sendMessage` options** — The `documentId` and `frameId` options in the third argument are accepted but not used for targeting.

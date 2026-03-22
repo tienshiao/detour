@@ -137,6 +137,19 @@ document.getElementById('btn-insert-css').addEventListener('click', async () => 
   }
 });
 
+// --- Remove CSS ---
+
+document.getElementById('btn-remove-css').addEventListener('click', async () => {
+  try {
+    const tabId = parseInt(document.getElementById('input-css-id').value, 10);
+    if (isNaN(tabId)) throw new Error('Enter a valid tab ID');
+    await sendBg({ type: 'removeCSS', tabId });
+    showResult('res-insert-css', `Removed inject.css from tab ${tabId}`);
+  } catch (e) {
+    showResult('res-insert-css', e.message, true);
+  }
+});
+
 // --- Send to Tab ---
 
 document.getElementById('btn-send-tab').addEventListener('click', async () => {
