@@ -107,6 +107,8 @@ private enum MsgType {
     static let webNavigationHistoryStateUpdated = "webNavigation.historyStateUpdated"
     static let webNavigationReferenceFragmentUpdated = "webNavigation.referenceFragmentUpdated"
 
+    static let evalIframeScripts = "evalIframeScripts"
+
     static let historySearch = "history.search"
     static let bookmarksGetTree = "bookmarks.getTree"
     static let sessionsRestore = "sessions.restore"
@@ -485,6 +487,10 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         case MsgType.idleSetDetectionInterval:
             handleIdleSetDetectionInterval(body: body, extensionID: extensionID)
 
+        // Iframe script injection (bypasses CSP)
+        case MsgType.evalIframeScripts:
+            handleEvalIframeScripts(body: body, webView: message.webView, frameInfo: message.frameInfo)
+
         // WebNavigation: pushState/replaceState and hashchange detection
         case MsgType.webNavigationHistoryStateUpdated,
              MsgType.webNavigationReferenceFragmentUpdated:
@@ -802,6 +808,63 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
         if !changes.isEmpty {
             broadcastStorageChanged(changes: changes, areaName: "session", extensionID: ctx.extensionID, sourceWebView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+        }
+    }
+
+    // MARK: - Iframe script injection (CSP bypass)
+
+    /// Called from the srcdoc iframe's WKUserScript. Retrieves scripts stored
+    /// in the content world's global variable, then evaluates them in the srcdoc
+    /// frame via evaluateJavaScript (bypasses CSP).
+    private func handleEvalIframeScripts(body: [String: Any], webView: WKWebView?, frameInfo: WKFrameInfo?) {
+        guard let webView,
+              let requestId = body["requestId"] as? String,
+              let extensionID = body["extensionID"] as? String,
+              let frameInfo else { return }
+
+        guard let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
+
+        // Read scripts from the content world's __detourPendingScripts global
+        let readJS = "JSON.stringify(window.__detourPendingScripts && window.__detourPendingScripts['\(requestId)'] || [])"
+        webView.evaluateJavaScript(readJS, in: nil, in: ext.contentWorld) { result in
+            let jsonString: String
+            switch result {
+            case .success(let value):
+                guard let str = value as? String else {
+                    log.error("evalIframeScripts: result not a string")
+                    return
+                }
+                jsonString = str
+            case .failure(let error):
+                log.error("evalIframeScripts: read failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+
+            let signalReady = "document.documentElement.dataset.detourModulesReady='1';"
+
+            guard let jsonData = jsonString.data(using: .utf8),
+                  let scripts = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: String]] else {
+                log.error("evalIframeScripts: JSON parse failed, length=\(jsonString.count)")
+                webView.evaluateJavaScript(signalReady, in: frameInfo, in: .page) { _ in }
+                return
+            }
+
+            // Clean up stored scripts
+            let cleanupJS = "if (window.__detourPendingScripts) delete window.__detourPendingScripts['\(requestId)'];"
+            webView.evaluateJavaScript(cleanupJS, in: nil, in: ext.contentWorld) { _ in }
+
+            // Concatenate and evaluate in the srcdoc frame (bypasses CSP)
+            var allCode = scripts.compactMap { $0["code"] }.joined(separator: ";\n")
+            if !allCode.isEmpty {
+                allCode += ";\n" + signalReady
+            } else {
+                allCode = signalReady
+            }
+            webView.evaluateJavaScript(allCode, in: frameInfo, in: .page) { result in
+                if case .failure(let error) = result {
+                    log.error("evalIframeScripts: eval failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 

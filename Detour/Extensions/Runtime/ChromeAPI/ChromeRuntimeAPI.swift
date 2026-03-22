@@ -223,8 +223,6 @@ struct ChromeRuntimeAPI {
 
             // Internal: called by native bridge to dispatch incoming messages
             window.__extensionDispatchMessage = function(message, sender, callbackID) {
-                if (messageListeners.length === 0) return;
-
                 var responseSent = false;
                 var sendResponse = function(response) {
                     if (responseSent) return; // Chrome only allows one response
@@ -236,6 +234,12 @@ struct ChromeRuntimeAPI {
                         callbackID: callbackID
                     });
                 };
+
+                if (messageListeners.length === 0) {
+                    // No listeners — resolve the caller's promise with undefined (Chrome behavior)
+                    sendResponse(undefined);
+                    return;
+                }
 
                 for (var i = 0; i < messageListeners.length; i++) {
                     try {
@@ -255,6 +259,9 @@ struct ChromeRuntimeAPI {
                         console.error('[chrome.runtime.onMessage] listener error:', e);
                     }
                 }
+
+                // No listener returned true or a Promise — auto-resolve with undefined (Chrome behavior)
+                if (!responseSent) sendResponse(undefined);
             };
 
             // Internal: called by native bridge to deliver response to sendMessage caller

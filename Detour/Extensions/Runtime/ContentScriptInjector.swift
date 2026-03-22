@@ -35,16 +35,48 @@ class ContentScriptInjector {
 
         // WebKit cancels subframe navigations to custom URL schemes (chrome-extension://).
         // We intercept iframe.src assignments in the content world, fetch HTML + resources,
-        // and set iframe.srcdoc instead. This requires two scripts:
-        // 1. Content-world: intercepts iframe.src, fetches resources, builds srcdoc
-        // 2. Page-world: patches postMessage targetOrigin for extension iframes
+        // and set iframe.srcdoc instead.
 
-        // Generate the API bundle for iframe pages (includes resource interceptor for fetch/XHR)
+        // Inject Chrome API polyfills into srcdoc iframes via WKUserScript (bypasses CSP).
+        // Also handle script injection: the content world stores script code on the iframe
+        // element as a JSON data attribute. This WKUserScript reads it at documentEnd and
+        // asks the native bridge to evaluate each script in this frame (bypassing CSP).
         let iframeAPIBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: false, includeResourceInterceptor: true)
-        let escapedBundle = iframeAPIBundle.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "`", with: "\\`")
-            .replacingOccurrences(of: "$", with: "\\$")
-            .replacingOccurrences(of: "</script", with: "<\\/script")
+        let srcdocPolyfillJS = """
+        if (window.location.href === 'about:srcdoc') {
+            \(iframeAPIBundle)
+
+            function requestScriptInjection() {
+                try {
+                    console.log('[Detour srcdoc] requesting script injection, frameElement:', !!window.frameElement);
+                    var requestId = window.frameElement && window.frameElement.getAttribute('data-detour-request-id');
+                    console.log('[Detour srcdoc] requestId:', requestId);
+                    if (!requestId) return;
+                    window.webkit.messageHandlers.extensionMessage.postMessage({
+                        extensionID: '\(ext.id)',
+                        type: 'evalIframeScripts',
+                        requestId: requestId,
+                        callbackID: '',
+                        isContentScript: false
+                    });
+                } catch(e) {
+                    console.error('[Detour] srcdoc script injection error:', e);
+                }
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', requestScriptInjection);
+            } else {
+                requestScriptInjection();
+            }
+        }
+        """
+        let srcdocPolyfillScript = WKUserScript(
+            source: srcdocPolyfillJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: .page
+        )
+        controller.addUserScript(srcdocPolyfillScript)
 
         // --- Content-world script: iframe.src interception + srcdoc builder ---
         let iframeInterceptJS = """
@@ -52,7 +84,6 @@ class ContentScriptInjector {
             if (window.__detourIframeInterceptInstalled) return;
             window.__detourIframeInterceptInstalled = true;
 
-            const POLYFILL_SCRIPT = `<script>\(escapedBundle)</script>`;
             const EXT_SCHEME = 'chrome-extension:';
 
             const srcdocCache = new Map();
@@ -67,46 +98,136 @@ class ContentScriptInjector {
                 return resp.text();
             }
 
-            // Recursively fetch a JS module and all its imports, returning blob URLs.
-            const moduleBlobCache = new Map();
-            async function fetchModuleTree(absUrl) {
-                if (moduleBlobCache.has(absUrl)) return;
-                moduleBlobCache.set(absUrl, null);
+            // Recursively fetch a JS module tree and return all code concatenated
+            // in dependency order with import/export stripped. This produces a single
+            // classic script that can be evaluated via native evaluateJavaScript
+            // (fully bypasses CSP — no import() or data: URIs needed).
+            // AMD-style module bundler: fetches module tree, rewrites imports/exports,
+            // wraps each module in an IIFE with a __require/__exports registry.
+            // Produces a single classic script for CSP-exempt evaluateJavaScript.
+            const moduleVisited = new Set();
+
+            async function fetchModuleTree(absUrl, orderedModules) {
+                if (moduleVisited.has(absUrl)) return;
+                moduleVisited.add(absUrl);
                 let code;
                 try { code = await fetchExt(absUrl); } catch(e) {
                     console.warn('[Detour] Failed to fetch module:', absUrl);
-                    moduleBlobCache.delete(absUrl);
                     return;
                 }
-                const deps = [];
-                const seen = new Set();
-                const patterns = [
+                // Find all dependency specifiers
+                const depSpecs = new Set();
+                const depPatterns = [
                     /\\bfrom\\s+['\"]([^'\"]+)['\"]/g,
-                    /\\bimport\\s+['\"]([^'\"]+)['\"]/g,
-                    /\\bimport\\s*\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)/g
+                    /\\bimport\\s+['\"]([^'\"]+)['\"]/g
                 ];
-                for (const re of patterns) {
+                for (const re of depPatterns) {
                     let m;
                     while ((m = re.exec(code)) !== null) {
-                        const spec = m[1];
-                        if ((spec.startsWith('.') || spec.startsWith('/')) && !seen.has(spec)) {
-                            seen.add(spec);
-                            deps.push({ spec, abs: resolveURL(spec, absUrl) });
+                        if (m[1].startsWith('.') || m[1].startsWith('/')) depSpecs.add(m[1]);
+                    }
+                }
+                // Fetch deps first (depth-first)
+                for (const spec of depSpecs) {
+                    await fetchModuleTree(resolveURL(spec, absUrl), orderedModules);
+                }
+                orderedModules.push({ url: absUrl, code: code });
+            }
+
+            function buildModuleBundle(orderedModules) {
+                var parts = ['(function(){\\n', 'var __modules = {};\\n', 'function __require(u) { return __modules[u] || {}; }\\n\\n'];
+
+                for (var i = 0; i < orderedModules.length; i++) {
+                    var mod = orderedModules[i];
+                    var url = mod.url;
+                    var code = mod.code;
+
+                    // --- Rewrite imports to __require calls ---
+
+                    // import * as X from "Y"
+                    code = code.replace(/^(\\s*)import\\s+\\*\\s+as\\s+(\\w+)\\s+from\\s+['\"]([^'\"]+)['\"]\\s*;?/gm,
+                        function(_, indent, name, spec) {
+                            return indent + 'var ' + name + ' = __require("' + resolveURL(spec, url) + '");';
+                        });
+
+                    // import { a, b as c } from "Y"
+                    code = code.replace(/^(\\s*)import\\s+\\{([^}]+)\\}\\s+from\\s+['\"]([^'\"]+)['\"]\\s*;?/gm,
+                        function(_, indent, names, spec) {
+                            var resolved = resolveURL(spec, url);
+                            var parts = names.split(',').map(function(n) {
+                                var p = n.trim().split(/\\s+as\\s+/);
+                                var orig = p[0].trim();
+                                var local = (p[1] || p[0]).trim();
+                                return indent + 'var ' + local + ' = __require("' + resolved + '").' + orig + ';';
+                            });
+                            return parts.join('\\n');
+                        });
+
+                    // import X from "Y" (default import — must come after * as and { } patterns)
+                    code = code.replace(/^(\\s*)import\\s+([A-Za-z_$][\\w$]*)\\s+from\\s+['\"]([^'\"]+)['\"]\\s*;?/gm,
+                        function(_, indent, name, spec) {
+                            return indent + 'var ' + name + ' = __require("' + resolveURL(spec, url) + '").default;';
+                        });
+
+                    // import "Y" (side-effect only)
+                    code = code.replace(/^(\\s*)import\\s+['\"]([^'\"]+)['\"]\\s*;?/gm,
+                        function(_, indent, spec) {
+                            return indent + '__require("' + resolveURL(spec, url) + '");';
+                        });
+
+                    // --- Collect exports and rewrite ---
+                    var exportAssignments = [];
+
+                    // export { a, b } or export { a as b } (NOT from "Y")
+                    code = code.replace(/^\\s*export\\s+\\{([^}]+)\\}\\s*;?\\s*$/gm,
+                        function(match, names) {
+                            names.split(',').forEach(function(n) {
+                                var p = n.trim().split(/\\s+as\\s+/);
+                                var local = p[0].trim();
+                                var exported = (p[1] || p[0]).trim();
+                                if (exported) exportAssignments.push('__exports.' + exported + ' = ' + local + ';');
+                            });
+                            return '';
+                        });
+
+                    // export { a } from "Y" (re-export)
+                    code = code.replace(/^\\s*export\\s+\\{([^}]+)\\}\\s+from\\s+['\"]([^'\"]+)['\"]\\s*;?/gm,
+                        function(match, names, spec) {
+                            var resolved = resolveURL(spec, url);
+                            names.split(',').forEach(function(n) {
+                                var p = n.trim().split(/\\s+as\\s+/);
+                                var orig = p[0].trim();
+                                var exported = (p[1] || p[0]).trim();
+                                if (exported) exportAssignments.push('__exports.' + exported + ' = __require("' + resolved + '").' + orig + ';');
+                            });
+                            return '';
+                        });
+
+                    // export default function/class X or export default expression
+                    code = code.replace(/^(\\s*)export\\s+default\\s+/gm, function(_, indent) {
+                        exportAssignments.push('/* default set inline */');
+                        return indent + '__exports.default = ';
+                    });
+
+                    // export function/const/let/var/class/async function X
+                    code = code.replace(/^(\\s*)export\\s+(async\\s+)?(function|const|let|var|class)\\s+(\\w+)/gm,
+                        function(_, indent, async_, keyword, name) {
+                            exportAssignments.push('__exports.' + name + ' = ' + name + ';');
+                            return indent + (async_ || '') + keyword + ' ' + name;
+                        });
+
+                    // Wrap in IIFE with __exports
+                    parts.push('(function(__exports){\\n' + code + '\\n');
+                    for (var ea = 0; ea < exportAssignments.length; ea++) {
+                        if (exportAssignments[ea].indexOf('default set inline') === -1) {
+                            parts.push('try{' + exportAssignments[ea] + '}catch(e){}\\n');
                         }
                     }
+                    parts.push('})(__modules["' + url + '"]={});\\n\\n');
                 }
-                await Promise.all(deps.map(d => fetchModuleTree(d.abs)));
-                for (const d of deps) {
-                    const blobUrl = moduleBlobCache.get(d.abs);
-                    if (blobUrl) {
-                        code = code.replaceAll("'" + d.spec + "'", "'" + blobUrl + "'");
-                        code = code.replaceAll('"' + d.spec + '"', '"' + blobUrl + '"');
-                    }
-                }
-                // Use data: URIs instead of blob URLs because blob URLs created
-                // in the content world aren't accessible from the page world.
-                const dataUrl = 'data:text/javascript;charset=utf-8,' + encodeURIComponent(code);
-                moduleBlobCache.set(absUrl, dataUrl);
+
+                parts.push('})();\\n');
+                return parts.join('');
             }
 
             async function buildSrcdoc(pageUrl) {
@@ -129,41 +250,52 @@ class ContentScriptInjector {
                     } catch(e) {}
                 }
 
-                // Process scripts: inline non-modules, use dynamic import() for modules
+                // Remove all script tags — scripts will be injected via native evaluateJavaScript
+                // (bypasses CSP). Store script info as data attributes for the WKUserScript to pick up.
                 const scripts = [];
                 const scriptRe = /<script\\b([^>]*?)\\bsrc=["']([^"']+)["']([^>]*?)><\\/script>/gi;
                 let sm;
                 while ((sm = scriptRe.exec(html)) !== null) {
                     scripts.push({ full: sm[0], attrs: sm[1] + sm[3], src: sm[2] });
                 }
+                // Also remove inline scripts (no src) that aren't our own
+                const inlineScriptRe = /<script\\b([^>]*)>([\\s\\S]*?)<\\/script>/gi;
+                let ism;
+                while ((ism = inlineScriptRe.exec(html)) !== null) {
+                    if (!ism[1].includes('src=')) {
+                        html = html.replace(ism[0], '');
+                    }
+                }
+
+                // Fetch all scripts and build a single concatenated bundle
+                const allScriptCode = [];
                 for (const s of scripts) {
                     const srcAbs = resolveURL(s.src, pageUrl);
                     const isModule = /type=["']module["']/i.test(s.attrs);
                     if (isModule) {
-                        await fetchModuleTree(srcAbs);
-                        const blobUrl = moduleBlobCache.get(srcAbs);
-                        if (blobUrl) {
-                            html = html.replace(s.full, '<script type="module">await import("' + blobUrl + '"); document.documentElement.dataset.detourModulesReady = "1";<\\/script>');
+                        var orderedModules = [];
+                        moduleVisited.clear(); // Reset for each iframe's module tree
+                        await fetchModuleTree(srcAbs, orderedModules);
+                        if (orderedModules.length > 0) {
+                            allScriptCode.push({ type: 'classic', code: buildModuleBundle(orderedModules) });
                         }
                     } else {
                         try {
                             const code = await fetchExt(srcAbs);
-                            html = html.replace(s.full, '<script>' + code.replace(/<\\/script/gi, '<\\\\/script') + '<\\/script>');
+                            allScriptCode.push({ type: 'classic', code: code });
                         } catch(e) {}
                     }
                 }
-
-                // Inject polyfills after <head>
-                const headIdx = html.search(/<head[^>]*>/i);
-                if (headIdx !== -1) {
-                    const at = html.indexOf('>', headIdx) + 1;
-                    html = html.slice(0, at) + POLYFILL_SCRIPT + html.slice(at);
-                } else {
-                    html = POLYFILL_SCRIPT + html;
+                // Remove src-based script tags from HTML
+                for (const s of scripts) {
+                    html = html.replace(s.full, '');
                 }
 
-                srcdocCache.set(pageUrl, html);
-                return html;
+                // Store script bundle for native injection (read by bridge via message from WKUserScript)
+                html = html.replace(/<html/i, '<html data-detour-scripts="pending"');
+
+                srcdocCache.set(pageUrl, { html, scripts: allScriptCode });
+                return { html, scripts: allScriptCode };
             }
 
             // Intercept iframe.src setter: convert chrome-extension:// to srcdoc
@@ -177,9 +309,7 @@ class ContentScriptInjector {
                     if (url.protocol === EXT_SCHEME) {
                         iframe.setAttribute('data-detour-ext-iframe', '1');
 
-                        // Suppress ALL load events until modules are ready.
-                        // The srcdoc load fires before module scripts complete,
-                        // so the extension's load handler would run too early.
+                        // Suppress ALL load events until scripts are injected.
                         iframe.__detourSuppressLoad = true;
                         iframe.addEventListener('load', function(e) {
                             if (iframe.__detourSuppressLoad) {
@@ -187,11 +317,19 @@ class ContentScriptInjector {
                             }
                         }, true);
 
-                        buildSrcdoc(url.href).then(html => {
-                            origSrcdocSet.call(iframe, html);
+                        buildSrcdoc(url.href).then(result => {
+                            // Store scripts in native bridge (too large for DOM attributes).
+                            // The srcdoc's WKUserScript retrieves and evaluates them.
+                            // Store scripts in a content-world global (not via postMessage,
+                            // which has IPC size limits that 900KB+ data URIs exceed).
+                            // The bridge will read this via evaluateJavaScript.
+                            var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2);
+                            iframe.setAttribute('data-detour-request-id', requestId);
+                            if (!window.__detourPendingScripts) window.__detourPendingScripts = {};
+                            window.__detourPendingScripts[requestId] = result.scripts;
+                            origSrcdocSet.call(iframe, result.html);
 
-                            // Poll for module completion (signaled via DOM data attribute
-                            // which is visible across content worlds)
+                            // Poll for module completion
                             var pollCount = 0;
                             function pollReady() {
                                 try {
@@ -204,7 +342,7 @@ class ContentScriptInjector {
                                         return;
                                     }
                                 } catch(e) {}
-                                if (++pollCount < 500) { // up to 5 seconds
+                                if (++pollCount < 500) {
                                     setTimeout(pollReady, 10);
                                 }
                             }

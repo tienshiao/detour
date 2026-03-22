@@ -114,20 +114,11 @@ class ExtensionPageSchemeHandler: NSObject, WKURLSchemeHandler {
         let mimeType = Self.mimeType(for: fileURL)
         log.debug("Serving \(relativePath, privacy: .public) (\(mimeType, privacy: .public)) for extension \(extensionID, privacy: .public)")
 
-        // For HTML pages, inject Chrome API polyfills inline so that extension pages
-        // loaded in iframes (e.g. Vimium's vomnibar, HUD, help dialog) have access
-        // to chrome.* APIs. WKUserScripts may not fire in subframes loaded via custom
-        // URL schemes, so inline injection is the reliable approach.
-        var responseData = data
-        if mimeType == "text/html" {
-            responseData = Self.injectAPIPolyfills(into: data, for: ext)
-        }
-
         // Use HTTPURLResponse with CORS headers so WebKit allows cross-origin
         // access from content scripts on web pages (XHR, fetch, <link>).
         var headers: [String: String] = [
             "Content-Type": mimeType + (mimeType.hasPrefix("text/") ? "; charset=utf-8" : ""),
-            "Content-Length": "\(responseData.count)",
+            "Content-Length": "\(data.count)",
             "Access-Control-Allow-Origin": "*",
         ]
         if mimeType.hasPrefix("text/") {
@@ -141,34 +132,11 @@ class ExtensionPageSchemeHandler: NSObject, WKURLSchemeHandler {
             headerFields: headers
         )!
         urlSchemeTask.didReceive(response)
-        urlSchemeTask.didReceive(responseData)
+        urlSchemeTask.didReceive(data)
         urlSchemeTask.didFinish()
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {}
-
-    /// Inject Chrome API polyfills into an HTML page's data by prepending a <script> block.
-    /// This ensures extension pages (popups, options, iframe UIs) have chrome.* APIs available
-    /// even when WKUserScripts don't fire (e.g. subframes with custom URL schemes).
-    private static func injectAPIPolyfills(into htmlData: Data, for ext: WebExtension) -> Data {
-        let apiBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: false)
-        let safeBundle = apiBundle.replacingOccurrences(of: "</script", with: "<\\/script")
-        let scriptTag = "<script>\(safeBundle)</script>"
-
-        guard var html = String(data: htmlData, encoding: .utf8) else { return htmlData }
-
-        // Insert the polyfill script as early as possible in the document.
-        // Prefer after <head> so it runs before any extension scripts.
-        if let headRange = html.range(of: "<head>", options: .caseInsensitive) {
-            html.insert(contentsOf: scriptTag, at: headRange.upperBound)
-        } else if let htmlRange = html.range(of: "<html>", options: .caseInsensitive) {
-            html.insert(contentsOf: "<head>\(scriptTag)</head>", at: htmlRange.upperBound)
-        } else {
-            html = scriptTag + html
-        }
-
-        return html.data(using: .utf8) ?? htmlData
-    }
 
     static func mimeType(for url: URL) -> String {
         if let utType = UTType(filenameExtension: url.pathExtension), let mime = utType.preferredMIMEType {

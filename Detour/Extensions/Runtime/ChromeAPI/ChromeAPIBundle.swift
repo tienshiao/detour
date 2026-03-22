@@ -54,6 +54,41 @@ struct ChromeAPIBundle {
         parts.append(ChromeSessionsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeSearchAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
 
+        // WebKit doesn't execute static <script type="module" src="..."> tags on pages
+        // loaded via custom URL schemes (chrome-extension://). The HTML parser's module
+        // loader uses a different code path that doesn't consult WKURLSchemeHandler.
+        // Workaround: after DOMContentLoaded, find any unexecuted module scripts and
+        // dynamically import them. Also shim DOMContentLoaded for late-registering listeners.
+        parts.append("""
+        (function() {
+            // Shim: replay DOMContentLoaded for listeners registered after it fires
+            var _origDocAEL = document.addEventListener;
+            document.addEventListener = function(type, handler, options) {
+                if (type === 'DOMContentLoaded' && document.readyState !== 'loading') {
+                    setTimeout(handler, 0);
+                }
+                return _origDocAEL.call(this, type, handler, options);
+            };
+
+            // Kickstart: dynamically import module scripts that the parser may not execute
+            // on pages loaded via custom URL schemes. Resolve relative URLs against the page.
+            function kickstartModules() {
+                var scripts = document.querySelectorAll('script[type="module"][src]');
+                for (var i = 0; i < scripts.length; i++) {
+                    var src = scripts[i].getAttribute('src');
+                    if (src) {
+                        try { import(new URL(src, document.baseURI).href); } catch(e) {}
+                    }
+                }
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', kickstartModules);
+            } else {
+                kickstartModules();
+            }
+        })();
+        """)
+
         // Alias: Chrome MV3 provides `browser` as an alias for `chrome`.
         // Many extensions (including 1Password) use `browser.*` APIs.
         parts.append("if (typeof browser === 'undefined') { window.browser = window.chrome; }")

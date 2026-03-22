@@ -165,13 +165,25 @@ extension ExtensionPopoverController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        // Allow initial loads and chrome-extension:// navigations
-        if navigationAction.navigationType == .other || navigationAction.request.url?.scheme == ExtensionPageSchemeHandler.scheme {
+        // Allow initial page load and subresource loads
+        if navigationAction.navigationType == .other {
             decisionHandler(.allow)
             return
         }
 
-        // Open external links (target=_blank or regular clicks to http(s) URLs) in the browser
+        // Link clicks to chrome-extension:// pages (e.g. options page) open in the browser
+        if let url = navigationAction.request.url, url.scheme == ExtensionPageSchemeHandler.scheme {
+            decisionHandler(.cancel)
+            NotificationCenter.default.post(
+                name: ExtensionManager.popupOpenURLNotification,
+                object: nil,
+                userInfo: ["url": url]
+            )
+            close()
+            return
+        }
+
+        // Open external links in the browser
         if let url = navigationAction.request.url, url.scheme == "https" || url.scheme == "http" {
             decisionHandler(.cancel)
             NotificationCenter.default.post(
@@ -179,6 +191,7 @@ extension ExtensionPopoverController: WKNavigationDelegate {
                 object: nil,
                 userInfo: ["url": url]
             )
+            close()
             return
         }
 
@@ -205,6 +218,10 @@ extension ExtensionPopoverController: WKScriptMessageHandler {
 }
 
 extension ExtensionPopoverController: WKUIDelegate {
+    func webViewDidClose(_ webView: WKWebView) {
+        close()
+    }
+
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         // Handle target=_blank links by opening them in the browser
         if let url = navigationAction.request.url, url.scheme == "https" || url.scheme == "http" {
