@@ -329,6 +329,16 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
     }
 
     @objc private func addExtensionClicked() {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Load Unpacked Extension…", action: #selector(loadUnpackedExtension), keyEquivalent: "")
+        menu.addItem(withTitle: "Install from Chrome Web Store…", action: #selector(openChromeWebStore), keyEquivalent: "")
+        for item in menu.items { item.target = self }
+
+        let button = addButton!
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
+    }
+
+    @objc private func loadUnpackedExtension() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -379,6 +389,11 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
                 alert.runModal()
             }
         }
+    }
+
+    @objc private func openChromeWebStore() {
+        (NSApp.delegate as? AppDelegate)?.openChromeWebStore()
+        view.window?.close()
     }
 
     @objc private func removeExtensionClicked() {
