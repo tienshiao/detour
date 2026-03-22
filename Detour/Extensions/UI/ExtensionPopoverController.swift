@@ -138,7 +138,7 @@ class ExtensionPopoverController: NSObject {
         let pop = NSPopover()
         pop.contentViewController = viewController
         pop.contentSize = size
-        pop.behavior = .transient
+        pop.behavior = .semitransient
         pop.delegate = self
         self.popover = pop
 

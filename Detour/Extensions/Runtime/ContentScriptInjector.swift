@@ -33,6 +33,233 @@ class ContentScriptInjector {
         // Register the message bridge in this extension's content world
         ExtensionMessageBridge.shared.register(on: controller, contentWorld: ext.contentWorld)
 
+        // WebKit cancels subframe navigations to custom URL schemes (chrome-extension://).
+        // We intercept iframe.src assignments in the content world, fetch HTML + resources,
+        // and set iframe.srcdoc instead. This requires two scripts:
+        // 1. Content-world: intercepts iframe.src, fetches resources, builds srcdoc
+        // 2. Page-world: patches postMessage targetOrigin for extension iframes
+
+        // Generate the API bundle for iframe pages (includes resource interceptor for fetch/XHR)
+        let iframeAPIBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: false, includeResourceInterceptor: true)
+        let escapedBundle = iframeAPIBundle.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "`", with: "\\`")
+            .replacingOccurrences(of: "$", with: "\\$")
+            .replacingOccurrences(of: "</script", with: "<\\/script")
+
+        // --- Content-world script: iframe.src interception + srcdoc builder ---
+        let iframeInterceptJS = """
+        (function() {
+            if (window.__detourIframeInterceptInstalled) return;
+            window.__detourIframeInterceptInstalled = true;
+
+            const POLYFILL_SCRIPT = `<script>\(escapedBundle)</script>`;
+            const EXT_SCHEME = 'chrome-extension:';
+
+            const srcdocCache = new Map();
+
+            function resolveURL(relative, base) {
+                try { return new URL(relative, base).href; } catch(e) { return relative; }
+            }
+
+            async function fetchExt(absUrl) {
+                const resp = await fetch(absUrl);
+                if (!resp.ok) throw new Error('fetch failed (' + resp.status + '): ' + absUrl);
+                return resp.text();
+            }
+
+            // Recursively fetch a JS module and all its imports, returning blob URLs.
+            const moduleBlobCache = new Map();
+            async function fetchModuleTree(absUrl) {
+                if (moduleBlobCache.has(absUrl)) return;
+                moduleBlobCache.set(absUrl, null);
+                let code;
+                try { code = await fetchExt(absUrl); } catch(e) {
+                    console.warn('[Detour] Failed to fetch module:', absUrl);
+                    moduleBlobCache.delete(absUrl);
+                    return;
+                }
+                const deps = [];
+                const seen = new Set();
+                const patterns = [
+                    /\\bfrom\\s+['\"]([^'\"]+)['\"]/g,
+                    /\\bimport\\s+['\"]([^'\"]+)['\"]/g,
+                    /\\bimport\\s*\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)/g
+                ];
+                for (const re of patterns) {
+                    let m;
+                    while ((m = re.exec(code)) !== null) {
+                        const spec = m[1];
+                        if ((spec.startsWith('.') || spec.startsWith('/')) && !seen.has(spec)) {
+                            seen.add(spec);
+                            deps.push({ spec, abs: resolveURL(spec, absUrl) });
+                        }
+                    }
+                }
+                await Promise.all(deps.map(d => fetchModuleTree(d.abs)));
+                for (const d of deps) {
+                    const blobUrl = moduleBlobCache.get(d.abs);
+                    if (blobUrl) {
+                        code = code.replaceAll("'" + d.spec + "'", "'" + blobUrl + "'");
+                        code = code.replaceAll('"' + d.spec + '"', '"' + blobUrl + '"');
+                    }
+                }
+                // Use data: URIs instead of blob URLs because blob URLs created
+                // in the content world aren't accessible from the page world.
+                const dataUrl = 'data:text/javascript;charset=utf-8,' + encodeURIComponent(code);
+                moduleBlobCache.set(absUrl, dataUrl);
+            }
+
+            async function buildSrcdoc(pageUrl) {
+                if (srcdocCache.has(pageUrl)) return srcdocCache.get(pageUrl);
+                let html = await fetchExt(pageUrl);
+
+                // Inline CSS
+                const cssLinks = [];
+                const linkRe = /<link\\b[^>]*?\\bhref=["']([^"']+)["'][^>]*?>/gi;
+                let lm;
+                while ((lm = linkRe.exec(html)) !== null) {
+                    if (/rel=["']stylesheet["']/i.test(lm[0]) || /\\.css/i.test(lm[1])) {
+                        cssLinks.push({ full: lm[0], href: lm[1] });
+                    }
+                }
+                for (const cl of cssLinks) {
+                    try {
+                        const css = await fetchExt(resolveURL(cl.href, pageUrl));
+                        html = html.replace(cl.full, '<style>' + css + '</style>');
+                    } catch(e) {}
+                }
+
+                // Process scripts: inline non-modules, use dynamic import() for modules
+                const scripts = [];
+                const scriptRe = /<script\\b([^>]*?)\\bsrc=["']([^"']+)["']([^>]*?)><\\/script>/gi;
+                let sm;
+                while ((sm = scriptRe.exec(html)) !== null) {
+                    scripts.push({ full: sm[0], attrs: sm[1] + sm[3], src: sm[2] });
+                }
+                for (const s of scripts) {
+                    const srcAbs = resolveURL(s.src, pageUrl);
+                    const isModule = /type=["']module["']/i.test(s.attrs);
+                    if (isModule) {
+                        await fetchModuleTree(srcAbs);
+                        const blobUrl = moduleBlobCache.get(srcAbs);
+                        if (blobUrl) {
+                            html = html.replace(s.full, '<script type="module">await import("' + blobUrl + '"); document.documentElement.dataset.detourModulesReady = "1";<\\/script>');
+                        }
+                    } else {
+                        try {
+                            const code = await fetchExt(srcAbs);
+                            html = html.replace(s.full, '<script>' + code.replace(/<\\/script/gi, '<\\\\/script') + '<\\/script>');
+                        } catch(e) {}
+                    }
+                }
+
+                // Inject polyfills after <head>
+                const headIdx = html.search(/<head[^>]*>/i);
+                if (headIdx !== -1) {
+                    const at = html.indexOf('>', headIdx) + 1;
+                    html = html.slice(0, at) + POLYFILL_SCRIPT + html.slice(at);
+                } else {
+                    html = POLYFILL_SCRIPT + html;
+                }
+
+                srcdocCache.set(pageUrl, html);
+                return html;
+            }
+
+            // Intercept iframe.src setter: convert chrome-extension:// to srcdoc
+            const srcDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+            const origSrcSet = srcDesc.set;
+            const origSrcdocSet = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'srcdoc').set;
+
+            function interceptSrc(iframe, value) {
+                try {
+                    const url = new URL(value, location.href);
+                    if (url.protocol === EXT_SCHEME) {
+                        iframe.setAttribute('data-detour-ext-iframe', '1');
+
+                        // Suppress ALL load events until modules are ready.
+                        // The srcdoc load fires before module scripts complete,
+                        // so the extension's load handler would run too early.
+                        iframe.__detourSuppressLoad = true;
+                        iframe.addEventListener('load', function(e) {
+                            if (iframe.__detourSuppressLoad) {
+                                e.stopImmediatePropagation();
+                            }
+                        }, true);
+
+                        buildSrcdoc(url.href).then(html => {
+                            origSrcdocSet.call(iframe, html);
+
+                            // Poll for module completion (signaled via DOM data attribute
+                            // which is visible across content worlds)
+                            var pollCount = 0;
+                            function pollReady() {
+                                try {
+                                    var ready = iframe.contentDocument &&
+                                        iframe.contentDocument.documentElement &&
+                                        iframe.contentDocument.documentElement.dataset.detourModulesReady;
+                                    if (ready) {
+                                        iframe.__detourSuppressLoad = false;
+                                        iframe.dispatchEvent(new Event('load'));
+                                        return;
+                                    }
+                                } catch(e) {}
+                                if (++pollCount < 500) { // up to 5 seconds
+                                    setTimeout(pollReady, 10);
+                                }
+                            }
+                            setTimeout(pollReady, 10);
+                        }).catch(e => {
+                            console.error('[Detour] buildSrcdoc failed:', e);
+                        });
+                        return true;
+                    }
+                } catch(e) {}
+                return false;
+            }
+
+            Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+                get: srcDesc.get,
+                set: function(value) {
+                    if (!interceptSrc(this, value)) origSrcSet.call(this, value);
+                },
+                configurable: true
+            });
+
+            const origSetAttribute = HTMLIFrameElement.prototype.setAttribute;
+            HTMLIFrameElement.prototype.setAttribute = function(name, value) {
+                if (name === 'src' && interceptSrc(this, value)) return;
+                origSetAttribute.call(this, name, value);
+            };
+
+            // Override chrome.runtime.getURL for empty/root paths to return the page origin.
+            // Extensions use getURL("") as a postMessage targetOrigin when communicating
+            // with their iframes. Since our iframes are same-origin about:blank (not
+            // chrome-extension://), the targetOrigin must match the page origin.
+            // Patching postMessage directly is impossible due to WebKit content world isolation.
+            if (chrome && chrome.runtime && chrome.runtime.getURL) {
+                const _origGetURL = chrome.runtime.getURL;
+                chrome.runtime.getURL = function(path) {
+                    if (path === '' || path === '/') {
+                        return location.origin + '/';
+                    }
+                    return _origGetURL(path);
+                };
+            }
+        })();
+        """
+        let iframeInterceptScript = WKUserScript(
+            source: iframeInterceptJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true,
+            in: ext.contentWorld
+        )
+        controller.addUserScript(iframeInterceptScript)
+
+        // Register the message bridge in the page world for extension iframe polyfills
+        // and the pushState/hashchange detection script
+        ExtensionMessageBridge.shared.register(on: controller, contentWorld: .page)
+
         // If the extension has MAIN world content scripts, inject a bidirectional
         // cross-world event relay. WKWebKit content worlds have separate JS namespaces —
         // custom events dispatched in one world's Document wrapper don't reach listeners
@@ -183,6 +410,17 @@ class ContentScriptInjector {
             // Register native handler for page → content world relay
             EventRelayHandler.shared.register(on: controller, contentWorld: ext.contentWorld)
         }
+
+        // Inject pushState/replaceState/hashchange detection in the page world
+        // so we can fire webNavigation.onHistoryStateUpdated / onReferenceFragmentUpdated
+        let navDetectJS = ChromeWebNavigationAPI.generatePageDetectionJS(extensionID: ext.id)
+        let navDetectScript = WKUserScript(
+            source: navDetectJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true,
+            in: .page
+        )
+        controller.addUserScript(navDetectScript)
 
         // Inject each content script group
         for csGroup in ext.contentScriptMatchers {

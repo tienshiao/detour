@@ -79,7 +79,7 @@ class WebExtension {
         ExtensionPageSchemeHandler.register(on: config)
 
         let apiBundle = ChromeAPIBundle.generateBundle(for: self, isContentScript: false)
-        let apiScript = WKUserScript(source: apiBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        let apiScript = WKUserScript(source: apiBundle, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         config.userContentController.addUserScript(apiScript)
         ExtensionMessageBridge.shared.register(on: config.userContentController)
 

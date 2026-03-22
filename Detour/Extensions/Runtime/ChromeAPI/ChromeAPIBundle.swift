@@ -24,7 +24,7 @@ struct ChromeAPIBundle {
     /// - Parameter isContentScript: true for content scripts (injected in content world),
     ///   false for popup/background (injected in .page world). Controls how the bridge
     ///   routes responses back to the correct world.
-    static func generateBundle(for ext: WebExtension, isContentScript: Bool = true) -> String {
+    static func generateBundle(for ext: WebExtension, isContentScript: Bool = true, includeResourceInterceptor: Bool = false) -> String {
         var parts: [String] = []
         parts.append(eventEmitterJS)
         parts.append(ChromeRuntimeAPI.generateJS(extensionID: ext.id, manifest: ext.manifest, isContentScript: isContentScript, rawManifestJSON: ext.rawManifestJSON))
@@ -36,7 +36,7 @@ struct ChromeAPIBundle {
         parts.append(ChromeI18nAPI.generateJS(extensionID: ext.id, messages: ext.messages, isContentScript: isContentScript))
         parts.append(ChromeContextMenusAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeOffscreenAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
-        parts.append(ChromeResourceInterceptor.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeResourceInterceptor.generateJS(extensionID: ext.id, isContentScript: isContentScript, forceInclude: includeResourceInterceptor))
         parts.append(ChromeAlarmsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeActionAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeCommandsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
@@ -49,6 +49,10 @@ struct ChromeAPIBundle {
         parts.append(ChromeManagementAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeDeclarativeNetRequestAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
         parts.append(ChromeDownloadsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeHistoryAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeBookmarksAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeSessionsAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
+        parts.append(ChromeSearchAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
 
         // Alias: Chrome MV3 provides `browser` as an alias for `chrome`.
         // Many extensions (including 1Password) use `browser.*` APIs.

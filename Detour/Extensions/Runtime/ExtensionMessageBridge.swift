@@ -21,6 +21,11 @@ private enum MsgType {
     static let storageSyncRemove = "storage.sync.remove"
     static let storageSyncClear = "storage.sync.clear"
 
+    static let storageSessionGet = "storage.session.get"
+    static let storageSessionSet = "storage.session.set"
+    static let storageSessionRemove = "storage.session.remove"
+    static let storageSessionClear = "storage.session.clear"
+
     static let tabsQuery = "tabs.query"
     static let tabsCreate = "tabs.create"
     static let tabsUpdate = "tabs.update"
@@ -70,6 +75,10 @@ private enum MsgType {
 
     static let tabsReload = "tabs.reload"
     static let tabsInsertCSS = "tabs.insertCSS"
+    static let tabsDuplicate = "tabs.duplicate"
+    static let tabsMove = "tabs.move"
+    static let tabsSetZoom = "tabs.setZoom"
+    static let tabsGetZoom = "tabs.getZoom"
 
     static let webNavigationGetAllFrames = "webNavigation.getAllFrames"
     static let webNavigationGetFrame = "webNavigation.getFrame"
@@ -94,6 +103,14 @@ private enum MsgType {
     static let notificationsUpdate = "notifications.update"
     static let notificationsClear = "notifications.clear"
     static let notificationsGetAll = "notifications.getAll"
+
+    static let webNavigationHistoryStateUpdated = "webNavigation.historyStateUpdated"
+    static let webNavigationReferenceFragmentUpdated = "webNavigation.referenceFragmentUpdated"
+
+    static let historySearch = "history.search"
+    static let bookmarksGetTree = "bookmarks.getTree"
+    static let sessionsRestore = "sessions.restore"
+    static let searchQuery = "search.query"
 }
 
 /// Routes messages between content scripts, background scripts, and native code.
@@ -110,12 +127,16 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         let extensionID: String
         let isContentScript: Bool
         weak var sourceWebView: WKWebView?
+        /// The frame that sent the message. Used to deliver responses back to iframes
+        /// rather than the main frame. Nil means main frame.
+        let sourceFrameInfo: WKFrameInfo?
 
-        static func from(body: [String: Any], extensionID: String, webView: WKWebView?) -> MessageContext? {
+        static func from(body: [String: Any], extensionID: String, webView: WKWebView?, frameInfo: WKFrameInfo? = nil) -> MessageContext? {
             guard let callbackID = body["callbackID"] as? String else { return nil }
             let isContentScript = body["isContentScript"] as? Bool ?? true
             return MessageContext(callbackID: callbackID, extensionID: extensionID,
-                                 isContentScript: isContentScript, sourceWebView: webView)
+                                 isContentScript: isContentScript, sourceWebView: webView,
+                                 sourceFrameInfo: frameInfo)
         }
     }
 
@@ -181,7 +202,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             }
         }
 
-        let ctx = MessageContext.from(body: body, extensionID: extensionID, webView: message.webView)
+        let ctx = MessageContext.from(body: body, extensionID: extensionID, webView: message.webView, frameInfo: message.frameInfo)
 
         switch type {
         case MsgType.runtimeSendMessage:
@@ -301,6 +322,20 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             guard let ctx else { return }
             handleStorageClear(ctx: ctx, body: body, keyPrefix: "sync:", areaName: "sync")
 
+        // Storage session handlers (in-memory, shared across all contexts)
+        case MsgType.storageSessionGet:
+            guard let ctx else { return }
+            handleStorageSessionGet(ctx: ctx, body: body)
+        case MsgType.storageSessionSet:
+            guard let ctx else { return }
+            handleStorageSessionSet(ctx: ctx, body: body)
+        case MsgType.storageSessionRemove:
+            guard let ctx else { return }
+            handleStorageSessionRemove(ctx: ctx, body: body)
+        case MsgType.storageSessionClear:
+            guard let ctx else { return }
+            handleStorageSessionClear(ctx: ctx, body: body)
+
         // Action handlers
         case MsgType.actionSetIcon:
             guard let ctx else { return }
@@ -368,13 +403,25 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             guard let ctx else { return }
             handleRuntimeSendNativeMessage(ctx: ctx, body: body)
 
-        // Tabs: reload, insertCSS
+        // Tabs: reload, insertCSS, duplicate, move, zoom
         case MsgType.tabsReload:
             guard let ctx else { return }
             handleTabsReload(ctx: ctx, body: body)
         case MsgType.tabsInsertCSS:
             guard let ctx else { return }
             handleScriptingInsertCSS(ctx: ctx, body: body)
+        case MsgType.tabsDuplicate:
+            guard let ctx else { return }
+            handleTabsDuplicate(ctx: ctx, body: body)
+        case MsgType.tabsMove:
+            guard let ctx else { return }
+            handleTabsMove(ctx: ctx, body: body)
+        case MsgType.tabsSetZoom:
+            guard let ctx else { return }
+            handleTabsSetZoom(ctx: ctx, body: body)
+        case MsgType.tabsGetZoom:
+            guard let ctx else { return }
+            handleTabsGetZoom(ctx: ctx, body: body)
 
         // WebNavigation: getAllFrames, getFrame
         case MsgType.webNavigationGetAllFrames:
@@ -437,6 +484,31 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             handleIdleQueryState(ctx: ctx, body: body)
         case MsgType.idleSetDetectionInterval:
             handleIdleSetDetectionInterval(body: body, extensionID: extensionID)
+
+        // WebNavigation: pushState/replaceState and hashchange detection
+        case MsgType.webNavigationHistoryStateUpdated,
+             MsgType.webNavigationReferenceFragmentUpdated:
+            handleWebNavigationURLChange(type: type, body: body, webView: message.webView)
+
+        // History
+        case MsgType.historySearch:
+            guard let ctx else { return }
+            handleHistorySearch(ctx: ctx, body: body)
+
+        // Bookmarks
+        case MsgType.bookmarksGetTree:
+            guard let ctx else { return }
+            handleBookmarksGetTree(ctx: ctx, body: body)
+
+        // Sessions
+        case MsgType.sessionsRestore:
+            guard let ctx else { return }
+            handleSessionsRestore(ctx: ctx, body: body)
+
+        // Search
+        case MsgType.searchQuery:
+            guard let ctx else { return }
+            handleSearchQuery(ctx: ctx, body: body)
 
         default:
             log.warning("Unknown message type: \(type, privacy: .public) from extension \(extensionID, privacy: .public)")
@@ -538,7 +610,8 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         let responseWorld: WKContentWorld = ctx.isContentScript ? ext.contentWorld : .page
         pendingResponses[ctx.callbackID] = PendingResponse(
             sourceWebView: ctx.sourceWebView,
-            contentWorld: responseWorld
+            contentWorld: responseWorld,
+            frameInfo: ctx.sourceFrameInfo
         )
     }
 
@@ -552,7 +625,11 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         let js = "window.__extensionDeliverResponse('\(ctx.callbackID)', \(responseJSON));"
 
         if let webView = pending.sourceWebView {
-            webView.evaluateJavaScript(js, in: nil, in: pending.contentWorld) { _ in }
+            if let frameInfo = pending.frameInfo, !frameInfo.isMainFrame {
+                webView.evaluateJavaScript(js, in: frameInfo, in: pending.contentWorld) { _ in }
+            } else {
+                webView.evaluateJavaScript(js, in: nil, in: pending.contentWorld) { _ in }
+            }
         }
     }
 
@@ -663,32 +740,219 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private func deliverCallbackResponse(callbackID: String, result: [String: Any], extensionID: String, webView: WKWebView?, isContentScript: Bool) {
+    // MARK: - Session Storage Handlers (in-memory, shared via ExtensionManager)
+
+    private func handleStorageSessionGet(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any] else { return }
+        let getAll = params["getAll"] as? Bool ?? false
+        let mgr = ExtensionManager.shared
+        let result: [String: Any]
+        if getAll {
+            result = mgr.sessionStorageGetAll(extensionID: ctx.extensionID)
+        } else {
+            let keys = params["keys"] as? [String] ?? []
+            result = mgr.sessionStorageGet(extensionID: ctx.extensionID, keys: keys)
+        }
+        deliverResponse(ctx, result: result)
+    }
+
+    private func handleStorageSessionSet(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let items = params["items"] as? [String: Any] else { return }
+        let mgr = ExtensionManager.shared
+        let oldValues = mgr.sessionStorageGet(extensionID: ctx.extensionID, keys: Array(items.keys))
+        mgr.sessionStorageSet(extensionID: ctx.extensionID, items: items)
+        deliverResponse(ctx, result: [:] as [String: Any])
+
+        var changes: [String: Any] = [:]
+        for (key, newValue) in items {
+            var change: [String: Any] = ["newValue": newValue]
+            if let old = oldValues[key] { change["oldValue"] = old }
+            changes[key] = change
+        }
+        broadcastStorageChanged(changes: changes, areaName: "session", extensionID: ctx.extensionID, sourceWebView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+    }
+
+    private func handleStorageSessionRemove(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let keys = params["keys"] as? [String] else { return }
+        let mgr = ExtensionManager.shared
+        let oldValues = mgr.sessionStorageGet(extensionID: ctx.extensionID, keys: keys)
+        mgr.sessionStorageRemove(extensionID: ctx.extensionID, keys: keys)
+        deliverResponse(ctx, result: [:] as [String: Any])
+
+        var changes: [String: Any] = [:]
+        for key in keys {
+            if let old = oldValues[key] { changes[key] = ["oldValue": old] }
+        }
+        if !changes.isEmpty {
+            broadcastStorageChanged(changes: changes, areaName: "session", extensionID: ctx.extensionID, sourceWebView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+        }
+    }
+
+    private func handleStorageSessionClear(ctx: MessageContext, body: [String: Any]) {
+        let mgr = ExtensionManager.shared
+        let allValues = mgr.sessionStorageGetAll(extensionID: ctx.extensionID)
+        mgr.sessionStorageClear(extensionID: ctx.extensionID)
+        deliverResponse(ctx, result: [:] as [String: Any])
+
+        var changes: [String: Any] = [:]
+        for (key, oldValue) in allValues {
+            changes[key] = ["oldValue": oldValue]
+        }
+        if !changes.isEmpty {
+            broadcastStorageChanged(changes: changes, areaName: "session", extensionID: ctx.extensionID, sourceWebView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+        }
+    }
+
+    // MARK: - WebNavigation: URL change detection (pushState/hashchange)
+
+    private func handleWebNavigationURLChange(type: String, body: [String: Any], webView: WKWebView?) {
+        guard let webView,
+              let params = body["params"] as? [String: Any],
+              let url = params["url"] as? String else { return }
+
+        // Find the tab for this webView
+        guard let (tab, space) = findTabByWebView(webView) else { return }
+
+        let mgr = ExtensionManager.shared
+        let tabID = mgr.tabIDMap.intID(for: tab.id)
+        let eventName = type == MsgType.webNavigationHistoryStateUpdated
+            ? "onHistoryStateUpdated" : "onReferenceFragmentUpdated"
+
+        mgr.fireWebNavigationEvent(eventName, details: [
+            "tabId": tabID,
+            "url": url,
+            "frameId": 0,
+            "timeStamp": Date().timeIntervalSince1970 * 1000
+        ])
+    }
+
+    // MARK: - History Search
+
+    private func handleHistorySearch(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let query = params["query"] as? [String: Any] else { return }
+
+        let text = query["text"] as? String ?? ""
+        let maxResults = query["maxResults"] as? Int ?? 100
+        // Chrome uses milliseconds since epoch; HistoryDatabase uses seconds
+        let startTime = (query["startTime"] as? Double).map { $0 / 1000.0 }
+        let endTime = (query["endTime"] as? Double).map { $0 / 1000.0 }
+
+        let results = HistoryDatabase.shared.searchHistoryGlobal(
+            query: text, maxResults: maxResults, startTime: startTime, endTime: endTime
+        )
+
+        let items: [[String: Any]] = results.map { item in
+            [
+                "id": String(item.id ?? 0),
+                "url": item.url,
+                "title": item.title,
+                "lastVisitTime": item.lastVisitTime * 1000.0,  // Convert to milliseconds
+                "visitCount": item.visitCount,
+                "typedCount": 0
+            ]
+        }
+
+        deliverResponse(ctx, result: ["results": items])
+    }
+
+    // MARK: - Bookmarks (stub)
+
+    private func handleBookmarksGetTree(ctx: MessageContext, body: [String: Any]) {
+        // Return an empty bookmark tree — Vimium gracefully handles no bookmarks
+        let emptyTree: [[String: Any]] = [
+            ["id": "0", "title": "", "children": [] as [[String: Any]]]
+        ]
+        deliverResponse(ctx, result: ["result": emptyTree])
+    }
+
+    // MARK: - Sessions
+
+    private func handleSessionsRestore(ctx: MessageContext, body: [String: Any]) {
+        let mgr = ExtensionManager.shared
+        guard let spaceID = mgr.lastActiveSpaceID,
+              let space = TabStore.shared.space(withID: spaceID) else {
+            deliverResponse(ctx, result: ["__error": "No active space"])
+            return
+        }
+
+        guard let tab = TabStore.shared.reopenClosedTab(in: space) else {
+            deliverResponse(ctx, result: ["__error": "No closed tabs to restore"])
+            return
+        }
+
+        selectTab(tab, in: space)
+
+        let ext = mgr.extension(withID: ctx.extensionID)
+        let includeURLFields = ext.map { ExtensionPermissionChecker.hasPermission("tabs", extension: $0) } ?? true
+        let tabInfo = buildTabInfo(tab: tab, space: space, isActive: true, includeURLFields: includeURLFields, extension: ext)
+        deliverResponse(ctx, result: ["tab": tabInfo])
+    }
+
+    // MARK: - Search
+
+    private func handleSearchQuery(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let query = params["query"] as? [String: Any],
+              let text = query["text"] as? String else { return }
+
+        let disposition = query["disposition"] as? String ?? "NEW_TAB"
+        let mgr = ExtensionManager.shared
+
+        // Use the active space's search engine
+        let space: Space? = mgr.lastActiveSpaceID.flatMap { TabStore.shared.space(withID: $0) }
+            ?? TabStore.shared.spaces.first
+        let engine = space?.profile?.searchEngine ?? .google
+        guard let searchURL = engine.searchURL(for: text) else {
+            deliverResponse(ctx, result: ["__error": "Failed to build search URL"])
+            return
+        }
+        guard let space else {
+            deliverResponse(ctx, result: ["__error": "No space available"])
+            return
+        }
+
+        if disposition == "CURRENT_TAB" {
+            if let selectedID = space.selectedTabID,
+               let tab = space.tabs.first(where: { $0.id == selectedID }) {
+                tab.load(searchURL)
+            }
+        } else {
+            let tab = TabStore.shared.addTab(in: space, url: searchURL)
+            selectTab(tab, in: space)
+        }
+
+        deliverResponse(ctx, result: [:] as [String: Any])
+    }
+
+    private func deliverCallbackResponse(callbackID: String, result: [String: Any], extensionID: String, webView: WKWebView?, isContentScript: Bool, frameInfo: WKFrameInfo? = nil) {
         if let errorMsg = result["__error"] as? String {
             log.error("API error for extension \(extensionID, privacy: .public): \(errorMsg, privacy: .public)")
         }
         guard let resultData = try? JSONSerialization.data(withJSONObject: result),
               let resultJSON = String(data: resultData, encoding: .utf8) else { return }
         deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));",
-                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript, frameInfo: frameInfo)
     }
 
     // MARK: - MessageContext Delivery
 
     private func deliverResponse(_ ctx: MessageContext, result: [String: Any]) {
-        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript, frameInfo: ctx.sourceFrameInfo)
     }
 
     private func deliverResponse(_ ctx: MessageContext, result: String) {
-        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript, frameInfo: ctx.sourceFrameInfo)
     }
 
     private func deliverResponse(_ ctx: MessageContext, result: Bool) {
-        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript, frameInfo: ctx.sourceFrameInfo)
     }
 
     private func deliverResponse(_ ctx: MessageContext, result: [[String: Any]]) {
-        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript)
+        deliverCallbackResponse(callbackID: ctx.callbackID, result: result, extensionID: ctx.extensionID, webView: ctx.sourceWebView, isContentScript: ctx.isContentScript, frameInfo: ctx.sourceFrameInfo)
     }
 
     // MARK: - Pending Response Tracking
@@ -696,6 +960,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
     private struct PendingResponse {
         weak var sourceWebView: WKWebView?
         let contentWorld: WKContentWorld
+        let frameInfo: WKFrameInfo?
     }
 
     private var pendingResponses: [String: PendingResponse] = [:]
@@ -834,12 +1099,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         let tab = TabStore.shared.addTab(in: space, url: url)
         let active = props["active"] as? Bool ?? true
         if active {
-            space.selectedTabID = tab.id
-            NotificationCenter.default.post(
-                name: ExtensionManager.tabShouldSelectNotification,
-                object: nil,
-                userInfo: ["tabID": tab.id, "spaceID": space.id]
-            )
+            selectTab(tab, in: space)
         }
 
         let info = buildTabInfo(tab: tab, space: space, isActive: active, includeURLFields: includeURLFields, extension: ext)
@@ -877,12 +1137,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
 
         if let active = updateProps["active"] as? Bool, active {
-            space.selectedTabID = tab.id
-            NotificationCenter.default.post(
-                name: ExtensionManager.tabShouldSelectNotification,
-                object: nil,
-                userInfo: ["tabID": tab.id, "spaceID": space.id]
-            )
+            selectTab(tab, in: space)
         }
 
         if let muted = updateProps["muted"] as? Bool, muted != tab.isMuted {
@@ -934,6 +1189,110 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         deliverResponse(ctx, result: info)
     }
 
+    private func handleTabsDuplicate(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let tabIDInt = params["tabId"] as? Int else { return }
+
+        let mgr = ExtensionManager.shared
+        let ext = mgr.extension(withID: ctx.extensionID)
+        let includeURLFields = ext.map { ExtensionPermissionChecker.hasPermission("tabs", extension: $0) } ?? true
+        guard let uuid = mgr.tabIDMap.uuid(for: tabIDInt) else {
+            deliverResponse(ctx, result: ["__error": "Tab not found"])
+            return
+        }
+        let (tab, space) = findTab(uuid: uuid)
+        guard let tab, let space, let url = tab.url else {
+            deliverResponse(ctx, result: ["__error": "Tab not found"])
+            return
+        }
+
+        let newTab = TabStore.shared.addTab(in: space, url: url)
+        space.selectedTabID = newTab.id
+        NotificationCenter.default.post(
+            name: ExtensionManager.tabShouldSelectNotification,
+            object: nil,
+            userInfo: ["tabID": newTab.id, "spaceID": space.id]
+        )
+        let info = buildTabInfo(tab: newTab, space: space, isActive: true, includeURLFields: includeURLFields, extension: ext)
+        deliverResponse(ctx, result: info)
+    }
+
+    private func handleTabsMove(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let tabIds = params["tabIds"] as? [Int],
+              let moveProps = params["moveProperties"] as? [String: Any],
+              let newIndex = moveProps["index"] as? Int else { return }
+
+        let mgr = ExtensionManager.shared
+        let ext = mgr.extension(withID: ctx.extensionID)
+        let includeURLFields = ext.map { ExtensionPermissionChecker.hasPermission("tabs", extension: $0) } ?? true
+
+        var movedTabs: [[String: Any]] = []
+        for tabIDInt in tabIds {
+            guard let uuid = mgr.tabIDMap.uuid(for: tabIDInt) else { continue }
+            let (tab, space) = findTab(uuid: uuid)
+            guard let tab, let space,
+                  let currentIndex = space.tabs.firstIndex(where: { $0.id == tab.id }) else { continue }
+
+            let clampedIndex = min(max(newIndex, 0), space.tabs.count - 1)
+            TabStore.shared.moveTab(from: currentIndex, to: clampedIndex, in: space)
+            let isActive = space.selectedTabID == tab.id
+            movedTabs.append(buildTabInfo(tab: tab, space: space, isActive: isActive, includeURLFields: includeURLFields, extension: ext))
+        }
+
+        if movedTabs.count == 1, let single = movedTabs.first {
+            deliverResponse(ctx, result: single)
+        } else {
+            deliverResponse(ctx, result: ["result": movedTabs])
+        }
+    }
+
+    private func handleTabsSetZoom(ctx: MessageContext, body: [String: Any]) {
+        guard let params = body["params"] as? [String: Any],
+              let zoomFactor = params["zoomFactor"] as? Double else { return }
+
+        let mgr = ExtensionManager.shared
+        let tabIDInt = params["tabId"] as? Int
+        var targetTab: BrowserTab?
+
+        if let tabIDInt, let uuid = mgr.tabIDMap.uuid(for: tabIDInt) {
+            targetTab = findTab(uuid: uuid).0
+        } else {
+            targetTab = findActiveTab()
+        }
+
+        guard let tab = targetTab else {
+            deliverResponse(ctx, result: ["__error": "Tab not found"])
+            return
+        }
+
+        DispatchQueue.main.async {
+            tab.webView?.pageZoom = CGFloat(zoomFactor)
+        }
+        deliverResponse(ctx, result: [:] as [String: Any])
+    }
+
+    private func handleTabsGetZoom(ctx: MessageContext, body: [String: Any]) {
+        let params = body["params"] as? [String: Any]
+        let mgr = ExtensionManager.shared
+        let tabIDInt = params?["tabId"] as? Int
+        var targetTab: BrowserTab?
+
+        if let tabIDInt, let uuid = mgr.tabIDMap.uuid(for: tabIDInt) {
+            targetTab = findTab(uuid: uuid).0
+        } else {
+            targetTab = findActiveTab()
+        }
+
+        guard let tab = targetTab else {
+            deliverResponse(ctx, result: ["__error": "Tab not found"])
+            return
+        }
+
+        let zoom = tab.webView?.pageZoom ?? 1.0
+        deliverResponse(ctx, result: ["zoomFactor": Double(zoom)])
+    }
+
     private func handleTabsSendMessage(ctx: MessageContext, body: [String: Any]) {
         guard let params = body["params"] as? [String: Any],
               let tabIDInt = params["tabId"] as? Int,
@@ -974,7 +1333,8 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             webView.evaluateJavaScript(js, in: nil, in: ext.contentWorld) { _ in }
             self?.pendingResponses[ctx.callbackID] = PendingResponse(
                 sourceWebView: ctx.sourceWebView,
-                contentWorld: .page  // Response goes back to background (page world)
+                contentWorld: .page,  // Response goes back to background (page world)
+                frameInfo: ctx.sourceFrameInfo
             )
         }
 
@@ -1391,6 +1751,12 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             }
         }
 
+        // Dispatch to popup webView if it exists and wasn't already notified
+        let popupWebView = ExtensionManager.shared.popupWebView(for: extensionID)
+        if let popupWebView, popupWebView !== bgWebView, popupWebView !== sourceWebView {
+            popupWebView.evaluateJavaScript(js) { _, _ in }
+        }
+
         // Dispatch to all tabs with the extension's content scripts
         guard let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
         for space in TabStore.shared.spaces {
@@ -1411,15 +1777,15 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private func deliverCallbackResponse(callbackID: String, result: String, extensionID: String, webView: WKWebView?, isContentScript: Bool) {
+    private func deliverCallbackResponse(callbackID: String, result: String, extensionID: String, webView: WKWebView?, isContentScript: Bool, frameInfo: WKFrameInfo? = nil) {
         let escaped = result.jsEscapedForSingleQuotes
         deliverJS("window.__extensionDeliverResponse('\(callbackID)', '\(escaped)');",
-                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript, frameInfo: frameInfo)
     }
 
-    private func deliverCallbackResponse(callbackID: String, result: Bool, extensionID: String, webView: WKWebView?, isContentScript: Bool) {
+    private func deliverCallbackResponse(callbackID: String, result: Bool, extensionID: String, webView: WKWebView?, isContentScript: Bool, frameInfo: WKFrameInfo? = nil) {
         deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(result ? "true" : "false"));",
-                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript, frameInfo: frameInfo)
     }
 
     // MARK: - Tab Lookup Helpers
@@ -1448,6 +1814,20 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             }
         }
         return nil
+    }
+
+    /// Select a tab and post the notification so the window controller updates.
+    private func selectTab(_ tab: BrowserTab, in space: Space) {
+        selectTab(tab, in: space)
+    }
+
+    /// Find the active tab in the last active space.
+    private func findActiveTab() -> BrowserTab? {
+        guard let spaceID = ExtensionManager.shared.lastActiveSpaceID,
+              let space = TabStore.shared.space(withID: spaceID),
+              let selectedID = space.selectedTabID else { return nil }
+        return space.tabs.first(where: { $0.id == selectedID })
+            ?? space.pinnedEntries.first(where: { $0.tab?.id == selectedID })?.tab
     }
 
     // MARK: - Runtime: openOptionsPage
@@ -1507,11 +1887,11 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private func deliverCallbackResponse(callbackID: String, result: [[String: Any]], extensionID: String, webView: WKWebView?, isContentScript: Bool) {
+    private func deliverCallbackResponse(callbackID: String, result: [[String: Any]], extensionID: String, webView: WKWebView?, isContentScript: Bool, frameInfo: WKFrameInfo? = nil) {
         guard let resultData = try? JSONSerialization.data(withJSONObject: result),
               let resultJSON = String(data: resultData, encoding: .utf8) else { return }
         deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));",
-                  extensionID: extensionID, webView: webView, isContentScript: isContentScript)
+                  extensionID: extensionID, webView: webView, isContentScript: isContentScript, frameInfo: frameInfo)
     }
 
     // MARK: - Action Handlers
@@ -2223,10 +2603,13 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
     // MARK: - JS Delivery
 
-    private func deliverJS(_ js: String, extensionID: String, webView: WKWebView?, isContentScript: Bool) {
+    private func deliverJS(_ js: String, extensionID: String, webView: WKWebView?, isContentScript: Bool, frameInfo: WKFrameInfo? = nil) {
         guard let webView else { return }
         if isContentScript, let ext = ExtensionManager.shared.extension(withID: extensionID) {
             webView.evaluateJavaScript(js, in: nil, in: ext.contentWorld) { _ in }
+        } else if let frameInfo, !frameInfo.isMainFrame {
+            // Deliver to the specific iframe that sent the message
+            webView.evaluateJavaScript(js, in: frameInfo, in: .page) { _ in }
         } else {
             webView.evaluateJavaScript(js) { _, _ in }
         }

@@ -489,5 +489,83 @@ document.getElementById('btn-refresh-log').addEventListener('click', async () =>
   }
 });
 
+// --- History ---
+document.getElementById('btn-history-search').addEventListener('click', async () => {
+  try {
+    const text = document.getElementById('input-history-query').value;
+    const { results } = await sendBg({ type: 'historySearch', text });
+    showResult('res-history', results.map(r => `${r.title}\n  ${r.url}`).join('\n') || '(no results)');
+  } catch (e) { showResult('res-history', e.message, true); }
+});
+
+// --- Bookmarks ---
+document.getElementById('btn-bookmarks-tree').addEventListener('click', async () => {
+  try {
+    const { tree } = await sendBg({ type: 'bookmarksGetTree' });
+    showResult('res-bookmarks', tree);
+  } catch (e) { showResult('res-bookmarks', e.message, true); }
+});
+
+// --- Sessions ---
+document.getElementById('btn-sessions-restore').addEventListener('click', async () => {
+  try {
+    const { session } = await sendBg({ type: 'sessionsRestore' });
+    showResult('res-sessions', session);
+  } catch (e) { showResult('res-sessions', e.message, true); }
+});
+
+// --- Search ---
+document.getElementById('btn-search-query').addEventListener('click', async () => {
+  try {
+    const text = document.getElementById('input-search-text').value || 'test';
+    await sendBg({ type: 'searchQuery', text });
+    showResult('res-search', 'Search opened in new tab');
+  } catch (e) { showResult('res-search', e.message, true); }
+});
+
+// --- Tab Ops ---
+document.getElementById('btn-duplicate-tab').addEventListener('click', async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const { tab: newTab } = await sendBg({ type: 'duplicateTab', tabId: tab.id });
+    showResult('res-tab-ops', `Duplicated → tab ${newTab.id}`);
+  } catch (e) { showResult('res-tab-ops', e.message, true); }
+});
+
+document.getElementById('btn-get-zoom').addEventListener('click', async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const { zoom } = await sendBg({ type: 'getZoom', tabId: tab.id });
+    showResult('res-tab-ops', `Zoom: ${zoom}`);
+  } catch (e) { showResult('res-tab-ops', e.message, true); }
+});
+
+document.getElementById('btn-zoom-in').addEventListener('click', async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const { zoom } = await sendBg({ type: 'getZoom', tabId: tab.id });
+    await sendBg({ type: 'setZoom', tabId: tab.id, zoomFactor: zoom + 0.1 });
+    showResult('res-tab-ops', `Zoom: ${(zoom + 0.1).toFixed(1)}`);
+  } catch (e) { showResult('res-tab-ops', e.message, true); }
+});
+
+document.getElementById('btn-zoom-out').addEventListener('click', async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const { zoom } = await sendBg({ type: 'getZoom', tabId: tab.id });
+    await sendBg({ type: 'setZoom', tabId: tab.id, zoomFactor: zoom - 0.1 });
+    showResult('res-tab-ops', `Zoom: ${(zoom - 0.1).toFixed(1)}`);
+  } catch (e) { showResult('res-tab-ops', e.message, true); }
+});
+
+// --- Session Storage ---
+document.getElementById('btn-session-test').addEventListener('click', async () => {
+  try {
+    const val = document.getElementById('input-session-value').value || 'hello';
+    const { stored } = await sendBg({ type: 'sessionStorageTest', value: val });
+    showResult('res-session-storage', `Stored and retrieved: "${stored}"`);
+  } catch (e) { showResult('res-session-storage', e.message, true); }
+});
+
 // Auto-load the event log on popup open
 document.getElementById('btn-refresh-log').click();

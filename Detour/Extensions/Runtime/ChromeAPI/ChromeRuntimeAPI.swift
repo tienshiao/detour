@@ -55,7 +55,15 @@ struct ChromeRuntimeAPI {
                 return Math.abs(h) || 1;
             })();
 
-            chrome.runtime.sendMessage = function(message, responseCallback) {
+            chrome.runtime.sendMessage = function(message, optionsOrCallback, responseCallback) {
+                // Handle multiple call signatures:
+                // sendMessage(message), sendMessage(message, callback),
+                // sendMessage(message, options, callback)
+                if (typeof optionsOrCallback === 'function') {
+                    responseCallback = optionsOrCallback;
+                } else if (typeof responseCallback !== 'function') {
+                    responseCallback = undefined;
+                }
                 return new Promise(function(resolve) {
                     const callbackID = 'cb_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
                     const payload = {

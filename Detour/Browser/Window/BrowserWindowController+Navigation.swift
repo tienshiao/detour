@@ -43,7 +43,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         if let url = navigationAction.request.url,
            let scheme = url.scheme,
            scheme != "http", scheme != "https",
-           scheme != "about", scheme != ExtensionPageSchemeHandler.scheme, scheme != ErrorPage.scheme {
+           scheme != "about", scheme != "blob", scheme != ExtensionPageSchemeHandler.scheme, scheme != ErrorPage.scheme {
             NSWorkspace.shared.open(url)
             return .cancel
         }

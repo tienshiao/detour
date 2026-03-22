@@ -46,6 +46,36 @@ class ExtensionManager {
     /// Custom popup paths per extension, set via chrome.action.setPopup.
     var customPopupPaths: [String: String] = [:]
 
+    /// In-memory session storage per extension. Cleared on app restart (matches Chrome behavior).
+    /// Keyed by extensionID → (key → value).
+    private var sessionStorage: [String: [String: Any]] = [:]
+
+    func sessionStorageGet(extensionID: String, keys: [String]) -> [String: Any] {
+        let store = sessionStorage[extensionID] ?? [:]
+        var result: [String: Any] = [:]
+        for key in keys {
+            if let value = store[key] { result[key] = value }
+        }
+        return result
+    }
+
+    func sessionStorageGetAll(extensionID: String) -> [String: Any] {
+        sessionStorage[extensionID] ?? [:]
+    }
+
+    func sessionStorageSet(extensionID: String, items: [String: Any]) {
+        if sessionStorage[extensionID] == nil { sessionStorage[extensionID] = [:] }
+        for (key, value) in items { sessionStorage[extensionID]![key] = value }
+    }
+
+    func sessionStorageRemove(extensionID: String, keys: [String]) {
+        for key in keys { sessionStorage[extensionID]?.removeValue(forKey: key) }
+    }
+
+    func sessionStorageClear(extensionID: String) {
+        sessionStorage.removeValue(forKey: extensionID)
+    }
+
     let injector = ContentScriptInjector()
     let tabIDMap = ExtensionTabIDMap()
     let spaceIDMap = ExtensionTabIDMap()
@@ -295,6 +325,7 @@ class ExtensionManager {
         actionTitle.removeValue(forKey: id)
         uninstallURLs.removeValue(forKey: id)
         customPopupPaths.removeValue(forKey: id)
+        sessionStorage.removeValue(forKey: id)
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
 

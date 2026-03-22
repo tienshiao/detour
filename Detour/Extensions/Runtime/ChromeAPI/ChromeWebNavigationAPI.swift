@@ -20,9 +20,13 @@ struct ChromeWebNavigationAPI {
 
             var onDOMContentLoadedListeners = [];
             var onCreatedNavigationTargetListeners = [];
+            var onHistoryStateUpdatedListeners = [];
+            var onReferenceFragmentUpdatedListeners = [];
 
             chrome.webNavigation.onDOMContentLoaded = __detourMakeEventEmitter(onDOMContentLoadedListeners);
             chrome.webNavigation.onCreatedNavigationTarget = __detourMakeEventEmitter(onCreatedNavigationTargetListeners);
+            chrome.webNavigation.onHistoryStateUpdated = __detourMakeEventEmitter(onHistoryStateUpdatedListeners);
+            chrome.webNavigation.onReferenceFragmentUpdated = __detourMakeEventEmitter(onReferenceFragmentUpdatedListeners);
 
             const extensionID = '\(extensionID)';
 
@@ -70,6 +74,8 @@ struct ChromeWebNavigationAPI {
                     case 'onErrorOccurred': listeners = onErrorOccurredListeners; break;
                     case 'onDOMContentLoaded': listeners = onDOMContentLoadedListeners; break;
                     case 'onCreatedNavigationTarget': listeners = onCreatedNavigationTargetListeners; break;
+                    case 'onHistoryStateUpdated': listeners = onHistoryStateUpdatedListeners; break;
+                    case 'onReferenceFragmentUpdated': listeners = onReferenceFragmentUpdatedListeners; break;
                     default: return;
                 }
                 for (var i = 0; i < listeners.length; i++) {
@@ -80,6 +86,60 @@ struct ChromeWebNavigationAPI {
                     }
                 }
             };
+        })();
+        """
+    }
+
+    /// JavaScript injected into the page world to detect pushState/replaceState and hashchange.
+    /// Posts to the extensionMessage handler which dispatches webNavigation events.
+    static func generatePageDetectionJS(extensionID: String) -> String {
+        return """
+        (function() {
+            if (window.__detourNavDetect) return;
+            window.__detourNavDetect = true;
+
+            var origPushState = history.pushState;
+            var origReplaceState = history.replaceState;
+
+            history.pushState = function() {
+                var result = origPushState.apply(this, arguments);
+                try {
+                    window.webkit.messageHandlers.extensionMessage.postMessage({
+                        extensionID: '\(extensionID)',
+                        type: 'webNavigation.historyStateUpdated',
+                        params: { url: location.href },
+                        callbackID: '',
+                        isContentScript: true
+                    });
+                } catch(e) {}
+                return result;
+            };
+
+            history.replaceState = function() {
+                var result = origReplaceState.apply(this, arguments);
+                try {
+                    window.webkit.messageHandlers.extensionMessage.postMessage({
+                        extensionID: '\(extensionID)',
+                        type: 'webNavigation.historyStateUpdated',
+                        params: { url: location.href },
+                        callbackID: '',
+                        isContentScript: true
+                    });
+                } catch(e) {}
+                return result;
+            };
+
+            window.addEventListener('hashchange', function() {
+                try {
+                    window.webkit.messageHandlers.extensionMessage.postMessage({
+                        extensionID: '\(extensionID)',
+                        type: 'webNavigation.referenceFragmentUpdated',
+                        params: { url: location.href },
+                        callbackID: '',
+                        isContentScript: true
+                    });
+                } catch(e) {}
+            });
         })();
         """
     }

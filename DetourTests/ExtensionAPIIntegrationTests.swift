@@ -39,7 +39,7 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
             "name": "API Test Extension",
             "version": "1.2.3",
             "description": "Tests chrome API surface",
-            "permissions": ["storage", "tabs", "scripting", "alarms", "fontSettings", "contextMenus"],
+            "permissions": ["storage", "tabs", "scripting", "alarms", "fontSettings", "contextMenus", "history", "bookmarks", "sessions", "search"],
             "optional_permissions": ["bookmarks"],
             "host_permissions": ["<all_urls>"],
             "background": {"service_worker": "background.js"},
@@ -1792,6 +1792,124 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         wait(for: [exp], timeout: 5.0)
         XCTAssertEqual(result as? String, "undefined",
                        "chrome.* APIs should not leak into the page world")
+    }
+
+    // MARK: - chrome.storage.session (new shared methods)
+
+    func testStorageSessionSetAccessLevelExists() {
+        let result = evalSync("typeof chrome.storage.session.setAccessLevel")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testStorageSessionRemove() {
+        callAsyncVoid("await chrome.storage.session.set({ rmKey: 'x' })")
+        callAsyncVoid("await chrome.storage.session.remove('rmKey')")
+        let result = callAsync("var r = await chrome.storage.session.get('rmKey'); return r.rmKey === undefined;")
+        XCTAssertEqual(result as? Bool, true)
+    }
+
+    func testStorageSessionClear() {
+        callAsyncVoid("await chrome.storage.session.set({ a: 1, b: 2 })")
+        callAsyncVoid("await chrome.storage.session.clear()")
+        let result = callAsync("var r = await chrome.storage.session.get(null); return Object.keys(r).length;")
+        XCTAssertEqual(result as? Int, 0)
+    }
+
+    // MARK: - chrome.tabs (new methods)
+
+    func testTabsDuplicateExists() {
+        let result = evalSync("typeof chrome.tabs.duplicate")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testTabsMoveExists() {
+        let result = evalSync("typeof chrome.tabs.move")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testTabsSetZoomExists() {
+        let result = evalSync("typeof chrome.tabs.setZoom")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testTabsGetZoomExists() {
+        let result = evalSync("typeof chrome.tabs.getZoom")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testTabsOnReplacedExists() {
+        let result = evalSync("typeof chrome.tabs.onReplaced.addListener")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    // MARK: - chrome.history
+
+    func testHistoryExists() {
+        let result = evalSync("typeof chrome.history")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testHistorySearchExists() {
+        let result = evalSync("typeof chrome.history.search")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testHistoryOnVisitedExists() {
+        let result = evalSync("typeof chrome.history.onVisited.addListener")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testHistoryOnVisitRemovedExists() {
+        let result = evalSync("typeof chrome.history.onVisitRemoved.addListener")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    // MARK: - chrome.bookmarks
+
+    func testBookmarksExists() {
+        let result = evalSync("typeof chrome.bookmarks")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testBookmarksGetTreeExists() {
+        let result = evalSync("typeof chrome.bookmarks.getTree")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    // MARK: - chrome.sessions
+
+    func testSessionsExists() {
+        let result = evalSync("typeof chrome.sessions")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testSessionsRestoreExists() {
+        let result = evalSync("typeof chrome.sessions.restore")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    // MARK: - chrome.search
+
+    func testSearchExists() {
+        let result = evalSync("typeof chrome.search")
+        XCTAssertEqual(result as? String, "object")
+    }
+
+    func testSearchQueryExists() {
+        let result = evalSync("typeof chrome.search.query")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    // MARK: - chrome.webNavigation (new events)
+
+    func testWebNavigationOnHistoryStateUpdatedExists() {
+        let result = evalSync("typeof chrome.webNavigation.onHistoryStateUpdated.addListener")
+        XCTAssertEqual(result as? String, "function")
+    }
+
+    func testWebNavigationOnReferenceFragmentUpdatedExists() {
+        let result = evalSync("typeof chrome.webNavigation.onReferenceFragmentUpdated.addListener")
+        XCTAssertEqual(result as? String, "function")
     }
 
     // MARK: - Helpers

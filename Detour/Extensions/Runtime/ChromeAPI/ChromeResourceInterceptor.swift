@@ -4,10 +4,10 @@ import Foundation
 /// in content script worlds. WebKit blocks these as mixed content on HTTPS pages, so we
 /// route them through the native message bridge instead.
 struct ChromeResourceInterceptor {
-    static func generateJS(extensionID: String, isContentScript: Bool) -> String {
-        // Only needed for content scripts — popup/background/options pages
-        // have the scheme handler registered on their WKWebViewConfiguration.
-        guard isContentScript else { return "" }
+    static func generateJS(extensionID: String, isContentScript: Bool, forceInclude: Bool = false) -> String {
+        // Needed for content scripts and extension iframe pages (loaded via srcdoc).
+        // Popup/background/options pages have the scheme handler on their WKWebViewConfiguration.
+        guard isContentScript || forceInclude else { return "" }
 
         return """
         (function() {

@@ -37,6 +37,7 @@ struct ChromeStorageAPI {
             const onChangedListeners = [];
             const localOnChangedListeners = [];
             const syncOnChangedListeners = [];
+            const sessionOnChangedListeners = [];
 
             chrome.storage.onChanged = __detourMakeEventEmitter(onChangedListeners);
 
@@ -48,7 +49,12 @@ struct ChromeStorageAPI {
                     }
                 }
                 // Per-area listeners
-                const areaListeners = areaName === 'sync' ? syncOnChangedListeners : localOnChangedListeners;
+                var areaListeners;
+                switch (areaName) {
+                    case 'sync': areaListeners = syncOnChangedListeners; break;
+                    case 'session': areaListeners = sessionOnChangedListeners; break;
+                    default: areaListeners = localOnChangedListeners; break;
+                }
                 for (let i = 0; i < areaListeners.length; i++) {
                     try { areaListeners[i](changes, areaName); } catch(e) {
                         console.error('[chrome.storage.' + areaName + '.onChanged] listener error:', e);
@@ -112,48 +118,14 @@ struct ChromeStorageAPI {
             chrome.storage.sync.QUOTA_BYTES_PER_ITEM = 8192;
             chrome.storage.sync.onChanged = __detourMakeEventEmitter(syncOnChangedListeners);
 
-            // chrome.storage.session: stub as in-memory storage (non-persistent, cleared on restart)
-            let sessionData = {};
-            chrome.storage.session = {
-                get: function(keys, callback) {
-                    let result = {};
-                    if (keys == null) {
-                        result = Object.assign({}, sessionData);
-                    } else {
-                        const keysArray = typeof keys === 'string' ? [keys] :
-                            (Array.isArray(keys) ? keys : Object.keys(keys));
-                        for (let i = 0; i < keysArray.length; i++) {
-                            if (sessionData.hasOwnProperty(keysArray[i])) {
-                                result[keysArray[i]] = sessionData[keysArray[i]];
-                            }
-                        }
-                    }
-                    if (callback) { callback(result); return; }
-                    return Promise.resolve(result);
-                },
-                set: function(items, callback) {
-                    Object.assign(sessionData, items);
-                    if (callback) { callback(); return; }
-                    return Promise.resolve();
-                },
-                remove: function(keys, callback) {
-                    const keysArray = typeof keys === 'string' ? [keys] : keys;
-                    for (let i = 0; i < keysArray.length; i++) {
-                        delete sessionData[keysArray[i]];
-                    }
-                    if (callback) { callback(); return; }
-                    return Promise.resolve();
-                },
-                clear: function(callback) {
-                    sessionData = {};
-                    if (callback) { callback(); return; }
-                    return Promise.resolve();
-                },
-                onChanged: {
-                    addListener: function(cb) {},
-                    removeListener: function(cb) {},
-                    hasListener: function(cb) { return false; }
-                }
+            chrome.storage.session = makeStorageArea('session.');
+            chrome.storage.session.onChanged = __detourMakeEventEmitter(sessionOnChangedListeners);
+            chrome.storage.session.QUOTA_BYTES = 10485760;
+
+            // chrome.storage.session.setAccessLevel — no-op (we always share across contexts)
+            chrome.storage.session.setAccessLevel = function(accessLevel, callback) {
+                if (callback) { callback(); return; }
+                return Promise.resolve();
             };
         })();
         """

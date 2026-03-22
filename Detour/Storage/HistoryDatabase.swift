@@ -128,6 +128,46 @@ struct HistoryDatabase {
         }
     }
 
+    /// Search history globally (all spaces) for the chrome.history.search() extension API.
+    func searchHistoryGlobal(query: String, maxResults: Int = 100, startTime: Double? = nil, endTime: Double? = nil) -> [HistoryURL] {
+        do {
+            return try dbQueue.read { db in
+                if query.isEmpty {
+                    // Empty query returns recent history sorted by last visit
+                    var sql = "SELECT * FROM historyURL"
+                    var args: [DatabaseValueConvertible] = []
+                    var conditions: [String] = []
+                    if let start = startTime { conditions.append("lastVisitTime >= ?"); args.append(start) }
+                    if let end = endTime { conditions.append("lastVisitTime <= ?"); args.append(end) }
+                    if !conditions.isEmpty { sql += " WHERE " + conditions.joined(separator: " AND ") }
+                    sql += " ORDER BY lastVisitTime DESC LIMIT ?"
+                    args.append(maxResults)
+                    return try HistoryURL.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+                }
+
+                let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+                guard !tokens.isEmpty else { return [] }
+                let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
+
+                var sql = """
+                    SELECT h.*
+                    FROM historySearch s
+                    JOIN historyURL h ON h.rowid = s.rowid
+                    WHERE historySearch MATCH ?
+                    """
+                var args: [DatabaseValueConvertible] = [ftsQuery]
+                if let start = startTime { sql += " AND h.lastVisitTime >= ?"; args.append(start) }
+                if let end = endTime { sql += " AND h.lastVisitTime <= ?"; args.append(end) }
+                sql += " ORDER BY rank, -h.visitCount LIMIT ?"
+                args.append(maxResults)
+                return try HistoryURL.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            }
+        } catch {
+            log.error("Failed to search history globally: \(error.localizedDescription)")
+            return []
+        }
+    }
+
     func expireOldVisits(olderThan maxAge: TimeInterval = 90 * 24 * 3600) {
         do {
             try dbQueue.write { db in

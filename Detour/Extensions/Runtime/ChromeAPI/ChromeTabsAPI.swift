@@ -150,16 +150,54 @@ struct ChromeTabsAPI {
                 return promise;
             };
 
+            chrome.tabs.duplicate = function(tabId, callback) {
+                const promise = tabsRequest('duplicate', { tabId: tabId });
+                if (callback) { promise.then(callback); return; }
+                return promise;
+            };
+
+            chrome.tabs.move = function(tabIds, moveProperties, callback) {
+                const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
+                const promise = tabsRequest('move', { tabIds: ids, moveProperties: moveProperties || {} });
+                if (callback) { promise.then(callback); return; }
+                return promise;
+            };
+
+            chrome.tabs.setZoom = function(tabId, zoomFactor, callback) {
+                if (typeof tabId === 'number' && typeof zoomFactor === 'number') {
+                    // tabId provided
+                } else {
+                    callback = zoomFactor;
+                    zoomFactor = tabId;
+                    tabId = null;
+                }
+                const promise = tabsRequest('setZoom', { tabId: tabId, zoomFactor: zoomFactor });
+                if (callback) { promise.then(function() { callback(); }); return; }
+                return promise;
+            };
+
+            chrome.tabs.getZoom = function(tabId, callback) {
+                if (typeof tabId === 'function') {
+                    callback = tabId;
+                    tabId = null;
+                }
+                const promise = tabsRequest('getZoom', { tabId: tabId }).then(function(r) { return r.zoomFactor; });
+                if (callback) { promise.then(callback); return; }
+                return promise;
+            };
+
             // Event emitters
             var onCreatedListeners = [];
             var onRemovedListeners = [];
             var onUpdatedListeners = [];
             var onActivatedListeners = [];
+            var onReplacedListeners = [];
 
             chrome.tabs.onCreated = __detourMakeEventEmitter(onCreatedListeners);
             chrome.tabs.onRemoved = __detourMakeEventEmitter(onRemovedListeners);
             chrome.tabs.onUpdated = __detourMakeEventEmitter(onUpdatedListeners);
             chrome.tabs.onActivated = __detourMakeEventEmitter(onActivatedListeners);
+            chrome.tabs.onReplaced = __detourMakeEventEmitter(onReplacedListeners);
 
             // Internal: called by native bridge to dispatch tab events
             window.__extensionDispatchTabEvent = function(eventName, data) {

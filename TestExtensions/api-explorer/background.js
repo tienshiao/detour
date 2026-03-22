@@ -392,6 +392,52 @@ async function handleMessage(message) {
       return { frames: frames };
     }
 
+    case 'historySearch': {
+      const results = await chrome.history.search({ text: message.text || '', maxResults: message.maxResults || 10 });
+      return { results };
+    }
+
+    case 'bookmarksGetTree': {
+      const tree = await chrome.bookmarks.getTree();
+      return { tree };
+    }
+
+    case 'sessionsRestore': {
+      const session = await chrome.sessions.restore(message.sessionId);
+      return { session };
+    }
+
+    case 'searchQuery': {
+      await chrome.search.query({ text: message.text || 'test', disposition: message.disposition || 'NEW_TAB' });
+      return { success: true };
+    }
+
+    case 'duplicateTab': {
+      const tab = await chrome.tabs.duplicate(message.tabId);
+      return { tab };
+    }
+
+    case 'moveTab': {
+      const tab = await chrome.tabs.move(message.tabId, { index: message.index || 0 });
+      return { tab };
+    }
+
+    case 'getZoom': {
+      const zoom = await chrome.tabs.getZoom(message.tabId);
+      return { zoom };
+    }
+
+    case 'setZoom': {
+      await chrome.tabs.setZoom(message.tabId, message.zoomFactor || 1.0);
+      return { success: true };
+    }
+
+    case 'sessionStorageTest': {
+      await chrome.storage.session.set({ testKey: message.value || 'hello' });
+      const result = await chrome.storage.session.get('testKey');
+      return { stored: result.testKey };
+    }
+
     default:
       return { error: 'Unknown message type: ' + message.type };
   }

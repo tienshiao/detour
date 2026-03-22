@@ -39,6 +39,10 @@ struct ExtensionPermissionChecker {
         case "nativeMessaging": return "nativeMessaging"
         case "idle":         return "idle"
         case "notifications": return "notifications"
+        case "history":      return "history"
+        case "bookmarks":    return "bookmarks"
+        case "sessions":     return "sessions"
+        case "search":       return "search"
         case "runtime":      return nil
         case "action":       return nil
         case "commands":     return nil
