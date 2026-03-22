@@ -316,7 +316,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             flippedDocView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             uninstallButton.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
             uninstallButton.bottomAnchor.constraint(equalTo: detailContainer.bottomAnchor),
-            mainStack.bottomAnchor.constraint(lessThanOrEqualTo: uninstallButton.topAnchor, constant: -12),
+            mainStack.bottomAnchor.constraint(equalTo: uninstallButton.topAnchor, constant: -12),
         ])
     }
 
