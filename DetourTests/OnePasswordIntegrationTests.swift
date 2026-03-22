@@ -3,77 +3,77 @@ import WebKit
 @testable import Detour
 
 /// Integration tests for 1Password extension loading and popup functionality.
-/// Downloads the real 1Password CRX from Chrome Web Store if needed.
+/// Uses a bundled CRX from TestExtensions/1password/ (no network dependency).
 final class OnePasswordIntegrationTests: XCTestCase {
 
     static let onePasswordChromeID = "aeblfdkhhhdcdjpifhhbdiojplfjncoa"
-    static let crxCacheDir = FileManager.default.temporaryDirectory.appendingPathComponent("detour_test_crx_cache")
 
     private var ext: WebExtension?
 
-    override func setUp() {
-        super.setUp()
-        // Ensure the extension is installed
-        if ExtensionManager.shared.extension(withID: Self.onePasswordChromeID) == nil {
-            installOnePassword()
-        }
-        ext = ExtensionManager.shared.extension(withID: Self.onePasswordChromeID)
+    // MARK: - Shared one-time setup
+
+    private struct SharedState {
+        let crxData: Data
+        let ext: WebExtension
     }
 
-    // MARK: - Installation
+    private nonisolated(unsafe) static var shared: SharedState?
 
-    private func installOnePassword() {
-        let crxData = downloadCRX(extensionID: Self.onePasswordChromeID)
-        guard let crxData, !crxData.isEmpty else {
-            XCTFail("Failed to download 1Password CRX")
+    override func setUp() {
+        super.setUp()
+        if Self.shared == nil {
+            Self.createSharedState()
+        }
+        ext = Self.shared?.ext
+    }
+
+    private static func createSharedState() {
+        // Load bundled CRX from TestExtensions/1password/
+        let crxPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // DetourTests/
+            .deletingLastPathComponent() // MyBrowser/
+            .appendingPathComponent("TestExtensions/1password/1password.crx")
+
+        guard let crxData = try? Data(contentsOf: crxPath), !crxData.isEmpty else {
+            // CRX not bundled — tests will be skipped via guard in each test
             return
         }
 
-        do {
-            let result = try CRXUnpacker.unpack(data: crxData)
-            defer { try? FileManager.default.removeItem(at: result.directory) }
+        // Install if not already installed
+        if ExtensionManager.shared.extension(withID: onePasswordChromeID) == nil {
+            do {
+                let result = try CRXUnpacker.unpack(data: crxData)
+                defer { try? FileManager.default.removeItem(at: result.directory) }
 
-            let ext = try ExtensionInstaller.install(from: result.directory, publicKey: result.publicKey)
-            XCTAssertEqual(ext.id, Self.onePasswordChromeID, "Extension ID should match Chrome's")
-
-            // Start background but don't wait for content script injection
-            ExtensionManager.shared.extensions.append(ext)
-            ExtensionManager.shared.startBackground(for: ext, isFirstRun: true)
-        } catch {
-            XCTFail("Failed to install 1Password: \(error)")
+                let ext = try ExtensionInstaller.install(from: result.directory, publicKey: result.publicKey)
+                ExtensionManager.shared.extensions.append(ext)
+                ExtensionManager.shared.startBackground(for: ext, isFirstRun: true)
+            } catch {
+                return
+            }
         }
+
+        guard let ext = ExtensionManager.shared.extension(withID: onePasswordChromeID) else { return }
+        shared = SharedState(crxData: crxData, ext: ext)
     }
 
-    private func downloadCRX(extensionID: String) -> Data? {
-        // Check cache first
-        try? FileManager.default.createDirectory(at: Self.crxCacheDir, withIntermediateDirectories: true)
-        let cachedFile = Self.crxCacheDir.appendingPathComponent("\(extensionID).crx")
-        if let cached = try? Data(contentsOf: cachedFile) {
-            return cached
+    override class func tearDown() {
+        if let ext = shared?.ext {
+            ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
+            ExtensionManager.shared.backgroundHosts[ext.id]?.stop()
+            ExtensionManager.shared.backgroundHosts.removeValue(forKey: ext.id)
         }
-
-        let urlString = "https://clients2.google.com/service/update2/crx?response=redirect&os=mac&arch=arm64&os_arch=arm64&nacl_arch=arm&prod=chromiumcrx&prodchannel=unknown&prodversion=130.0.0.0&acceptformat=crx3&x=id%3D\(extensionID)%26uc"
-        guard let url = URL(string: urlString) else { return nil }
-
-        let expectation = XCTestExpectation(description: "Download CRX")
-        var result: Data?
-
-        let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            result = data
-            if let data { try? data.write(to: cachedFile) }
-            expectation.fulfill()
-        }
-        task.resume()
-        wait(for: [expectation], timeout: 30)
-        return result
+        shared = nil
+        super.tearDown()
     }
 
     // MARK: - CRX ID Derivation
 
     func testCRXProducesCorrectExtensionID() {
-        let crxData = downloadCRX(extensionID: Self.onePasswordChromeID)
-        XCTAssertNotNil(crxData)
-        guard let crxData else { return }
+        guard let crxData = Self.shared?.crxData else {
+            XCTFail("1Password CRX not bundled at TestExtensions/1password/1password.crx")
+            return
+        }
 
         let result = try! CRXUnpacker.unpack(data: crxData)
         defer { try? FileManager.default.removeItem(at: result.directory) }

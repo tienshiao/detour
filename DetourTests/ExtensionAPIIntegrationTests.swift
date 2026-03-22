@@ -5,6 +5,9 @@ import GRDB
 
 /// Integration tests that load a test extension and verify the chrome.* API
 /// surface works end-to-end through WKWebView.
+///
+/// Uses a shared one-time setup to avoid recreating WKWebViews and loading pages
+/// for each of the 170 tests. Only mutable state (storage, created tabs) is reset per test.
 @MainActor
 final class ExtensionAPIIntegrationTests: XCTestCase {
     private var tempDir: URL!
@@ -23,16 +26,36 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
     private var testTabIntID: Int!
     private var tabNavDelegate: TestNavigationDelegate!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
+    // MARK: - Shared one-time setup
 
-        // Create temp extension directory
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-test-ext-\(UUID().uuidString)")
+    private static let extensionID = "test-integration"
+
+    private struct SharedState {
+        let tempDir: URL
+        let ext: WebExtension
+        let webView: WKWebView
+        let popupWebView: WKWebView
+        let backgroundHost: BackgroundHost
+        let navDelegate: TestNavigationDelegate
+        let popupNavDelegate: TestNavigationDelegate
+        let testProfile: Profile
+        let testSpace: Space
+        let testBrowserTab: BrowserTab
+        let testTabIntID: Int
+        let tabNavDelegate: TestNavigationDelegate
+    }
+
+    private nonisolated(unsafe) static var shared: SharedState?
+
+    /// Create the shared test infrastructure once. Called from the first test's setUp.
+    private func createSharedStateIfNeeded() {
+        guard Self.shared == nil else { return }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-test-ext-integration")
+        try? FileManager.default.removeItem(at: tempDir)
         try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-        // Write manifest.json
         let manifestJSON = """
         {
             "manifest_version": 3,
@@ -62,7 +85,6 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         try! manifestJSON.write(to: tempDir.appendingPathComponent("manifest.json"),
                                 atomically: true, encoding: .utf8)
 
-        // Background script: echoes messages back with added field
         let backgroundJS = """
         chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
             if (message.type === 'ping') {
@@ -76,24 +98,18 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         """
         try! backgroundJS.write(to: tempDir.appendingPathComponent("background.js"),
                                 atomically: true, encoding: .utf8)
-
-        // Content script: empty (we test via evaluateJavaScript)
         try! "".write(to: tempDir.appendingPathComponent("content.js"),
                       atomically: true, encoding: .utf8)
-        // MAIN world script: sets a marker on window
         try! "window.__mainWorldMarker = true;".write(
             to: tempDir.appendingPathComponent("main.js"),
             atomically: true, encoding: .utf8)
 
-        // Parse manifest and create extension model
         let manifest = try! ExtensionManifest.parse(at: tempDir.appendingPathComponent("manifest.json"))
-        let extID = "test-\(UUID().uuidString)"
-        ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
+        let extID = Self.extensionID
+        let ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
 
-        // Register with ExtensionManager so the message bridge can find it
         ExtensionManager.shared.extensions.append(ext)
 
-        // Save an extension record so chrome.storage.local has a valid FK target
         let record = ExtensionRecord(
             id: extID,
             name: manifest.name,
@@ -105,7 +121,6 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         )
         AppDatabase.shared.saveExtension(record)
 
-        // Set up WKWebView with chrome API polyfills in the extension's content world
         let config = WKWebViewConfiguration()
         let apiBundle = ChromeAPIBundle.generateBundle(for: ext)
         let apiScript = WKUserScript(
@@ -118,10 +133,9 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         ExtensionMessageBridge.shared.register(on: config.userContentController,
                                                 contentWorld: ext.contentWorld)
 
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100),
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100),
                             configuration: config)
 
-        // Set up a popup-like WKWebView with chrome APIs in .page world (isContentScript: false)
         let popupConfig = WKWebViewConfiguration()
         let popupAPIBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: false)
         let popupAPIScript = WKUserScript(
@@ -132,35 +146,30 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         popupConfig.userContentController.addUserScript(popupAPIScript)
         ExtensionMessageBridge.shared.register(on: popupConfig.userContentController)
 
-        popupWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100),
+        let popupWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100),
                                   configuration: popupConfig)
 
-        // Set up navigation delegates BEFORE loading
         let navExpectation = expectation(description: "Page loaded")
-        navDelegate = TestNavigationDelegate { navExpectation.fulfill() }
+        let navDelegate = TestNavigationDelegate { navExpectation.fulfill() }
         webView.navigationDelegate = navDelegate
 
         let popupNavExpectation = expectation(description: "Popup page loaded")
-        popupNavDelegate = TestNavigationDelegate { popupNavExpectation.fulfill() }
+        let popupNavDelegate = TestNavigationDelegate { popupNavExpectation.fulfill() }
         popupWebView.navigationDelegate = popupNavDelegate
 
-        // Start background host
-        backgroundHost = BackgroundHost(extension: ext)
+        let backgroundHost = BackgroundHost(extension: ext)
         ExtensionManager.shared.backgroundHosts[extID] = backgroundHost
         backgroundHost.start()
 
-        // Write injectable test files for scripting.executeScript / insertCSS tests
         try! "document.title;".write(
             to: tempDir.appendingPathComponent("inject.js"), atomically: true, encoding: .utf8)
         try! "body { --test-injected: 1; outline: 4px solid red !important; }".write(
             to: tempDir.appendingPathComponent("inject.css"), atomically: true, encoding: .utf8)
 
-        // Create a real Space + BrowserTab in TabStore for E2E bridge tests
-        testProfile = TabStore.shared.addProfile(name: "Test Profile")
-        testSpace = TabStore.shared.addSpace(name: "Test Space", emoji: "T", colorHex: "#000000", profileID: testProfile.id)
+        let testProfile = TabStore.shared.addProfile(name: "Test Profile")
+        let testSpace = TabStore.shared.addSpace(name: "Test Space", emoji: "T", colorHex: "#000000", profileID: testProfile.id)
         ExtensionManager.shared.lastActiveSpaceID = testSpace.id
 
-        // Create a tab WebView with content script APIs (needed for tabs.sendMessage / scripting)
         let tabConfig = WKWebViewConfiguration()
         let tabAPIBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: true)
         let tabAPIScript = WKUserScript(
@@ -174,67 +183,108 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
                                                 contentWorld: ext.contentWorld)
 
         let tabWV = WKWebView(frame: .zero, configuration: tabConfig)
-        testBrowserTab = BrowserTab(webView: tabWV)
+        let testBrowserTab = BrowserTab(webView: tabWV)
         testSpace.tabs.append(testBrowserTab)
         testSpace.selectedTabID = testBrowserTab.id
-        testTabIntID = ExtensionManager.shared.tabIDMap.intID(for: testBrowserTab.id)
+        let testTabIntID = ExtensionManager.shared.tabIDMap.intID(for: testBrowserTab.id)
 
-        // Load all pages
         let html = "<html><body>test</body></html>"
         webView.loadHTMLString(html, baseURL: URL(string: "https://test.example.com")!)
         popupWebView.loadHTMLString(html, baseURL: URL(string: "https://popup.test.example.com")!)
 
         let tabNavExpectation = expectation(description: "Tab page loaded")
-        tabNavDelegate = TestNavigationDelegate { tabNavExpectation.fulfill() }
+        let tabNavDelegate = TestNavigationDelegate { tabNavExpectation.fulfill() }
         tabWV.navigationDelegate = tabNavDelegate
         tabWV.loadHTMLString(
             "<html><head><title>Test Tab Page</title></head><body>tab content</body></html>",
             baseURL: URL(string: "https://tab.test.example.com")!)
 
-        // Wait for all navigations + background init
         wait(for: [navExpectation, popupNavExpectation, tabNavExpectation], timeout: 10.0)
 
-        // Give background host time to load its script
         let bgExpectation = expectation(description: "Background ready")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { bgExpectation.fulfill() }
         wait(for: [bgExpectation], timeout: 5.0)
+
+        Self.shared = SharedState(
+            tempDir: tempDir,
+            ext: ext,
+            webView: webView,
+            popupWebView: popupWebView,
+            backgroundHost: backgroundHost,
+            navDelegate: navDelegate,
+            popupNavDelegate: popupNavDelegate,
+            testProfile: testProfile,
+            testSpace: testSpace,
+            testBrowserTab: testBrowserTab,
+            testTabIntID: testTabIntID,
+            tabNavDelegate: tabNavDelegate
+        )
+    }
+
+    @MainActor
+    override func setUp() {
+        super.setUp()
+        createSharedStateIfNeeded()
+
+        let s = Self.shared!
+        tempDir = s.tempDir
+        ext = s.ext
+        webView = s.webView
+        popupWebView = s.popupWebView
+        backgroundHost = s.backgroundHost
+        navDelegate = s.navDelegate
+        popupNavDelegate = s.popupNavDelegate
+        testProfile = s.testProfile
+        testSpace = s.testSpace
+        testBrowserTab = s.testBrowserTab
+        testTabIntID = s.testTabIntID
+        tabNavDelegate = s.tabNavDelegate
+
+        // Reset mutable state between tests
+        AppDatabase.shared.storageClear(extensionID: ext.id)
+        ExtensionManager.shared.contextMenuItems.removeValue(forKey: ext.id)
+        ExtensionManager.shared.lastActiveSpaceID = testSpace.id
+
+        // Remove any tabs created by previous tests (keep only the original test tab)
+        testSpace.tabs.removeAll { $0.id != testBrowserTab.id }
+        testSpace.selectedTabID = testBrowserTab.id
+
+        // Clear accumulated message listeners from previous tests in the tab's content world.
+        // Without this, listeners from earlier tests interfere with later sendMessage tests.
+        if let tabWV = testBrowserTab.webView {
+            let resetExp = expectation(description: "Reset listeners")
+            let resetJS = ChromeRuntimeAPI.generateJS(extensionID: ext.id, manifest: ext.manifest, isContentScript: true)
+            tabWV.evaluateJavaScript(resetJS, in: nil, in: ext.contentWorld) { _ in resetExp.fulfill() }
+            wait(for: [resetExp], timeout: 5.0)
+        }
     }
 
     @MainActor
     override func tearDown() {
-        backgroundHost?.stop()
-        ExtensionManager.shared.extensions.removeAll { $0.id == ext?.id }
-        if let extID = ext?.id {
-            ExtensionManager.shared.backgroundHosts.removeValue(forKey: extID)
-            AppDatabase.shared.storageClear(extensionID: extID)
-            AppDatabase.shared.deleteExtension(id: extID)
-        }
+        // Don't tear down shared state — it's reused across tests
+        super.tearDown()
+    }
 
-        // Clean up E2E test infrastructure
-        if let spaceID = testSpace?.id {
-            // Remove all tabs from the space first so deleteSpace doesn't leave dangling refs
-            for tab in testSpace.tabs {
+    override class func tearDown() {
+        // Final cleanup when all tests in this class are done
+        MainActor.assumeIsolated {
+            guard let s = shared else { return }
+            s.backgroundHost.stop()
+            ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
+            ExtensionManager.shared.backgroundHosts.removeValue(forKey: extensionID)
+            AppDatabase.shared.storageClear(extensionID: extensionID)
+            AppDatabase.shared.deleteExtension(id: extensionID)
+
+            for tab in s.testSpace.tabs {
                 ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
             }
-            TabStore.shared.forceRemoveSpace(id: spaceID)
-            ExtensionManager.shared.spaceIDMap.remove(uuid: spaceID)
-        }
-        if let profileID = testProfile?.id {
-            TabStore.shared.forceRemoveProfile(id: profileID)
-        }
-        ExtensionManager.shared.lastActiveSpaceID = nil
-        testBrowserTab = nil
-        testSpace = nil
-        testProfile = nil
-        tabNavDelegate = nil
+            TabStore.shared.forceRemoveSpace(id: s.testSpace.id)
+            ExtensionManager.shared.spaceIDMap.remove(uuid: s.testSpace.id)
+            TabStore.shared.forceRemoveProfile(id: s.testProfile.id)
+            ExtensionManager.shared.lastActiveSpaceID = nil
 
-        webView = nil
-        popupWebView = nil
-        navDelegate = nil
-        popupNavDelegate = nil
-        ext = nil
-        if let tempDir {
-            try? FileManager.default.removeItem(at: tempDir)
+            try? FileManager.default.removeItem(at: s.tempDir)
+            shared = nil
         }
         super.tearDown()
     }
@@ -1219,21 +1269,32 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         XCTAssertEqual(json["ok"] as? Bool, true, "Message should be delivered with matching documentId")
     }
 
-    func testTabsSendMessageWithWrongDocumentIdFails() {
-        // Send from popup with a non-matching documentId
-        let result = popupCallAsync("""
-            try {
-                await chrome.tabs.sendMessage(\(testTabIntID!),
-                    { type: 'test' },
-                    { documentId: 'wrong-document-id-12345' });
-                return 'should-have-thrown';
-            } catch(e) {
-                return e.message;
-            }
+    func testTabsSendMessageWithWrongDocumentIdStillDelivers() {
+        // With a wrong documentId, message should still be delivered (lenient matching)
+        // to avoid breaking extensions that pass stale documentIds.
+        // First, register a listener on the content script side
+        tabCallAsyncVoid("""
+            chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+                if (message.type === 'docIdLenientTest') {
+                    sendResponse({ ok: true });
+                }
+                return true;
+            });
         """)
-        let error = result as? String ?? ""
-        XCTAssertTrue(error.contains("does not exist"),
-                      "Should fail with connection error for wrong documentId, got: \(error)")
+
+        let result = popupCallAsync("""
+            const response = await chrome.tabs.sendMessage(\(testTabIntID!),
+                { type: 'docIdLenientTest' },
+                { documentId: 'wrong-document-id-12345' });
+            return JSON.stringify(response);
+        """)
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse response: \(String(describing: result))")
+            return
+        }
+        XCTAssertEqual(json["ok"] as? Bool, true, "Message should still be delivered with wrong documentId")
     }
 
     // MARK: - Tab URL field visibility (host permissions)

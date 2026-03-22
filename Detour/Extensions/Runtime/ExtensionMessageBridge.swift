@@ -1275,12 +1275,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
 
         let newTab = TabStore.shared.addTab(in: space, url: url)
-        space.selectedTabID = newTab.id
-        NotificationCenter.default.post(
-            name: ExtensionManager.tabShouldSelectNotification,
-            object: nil,
-            userInfo: ["tabID": newTab.id, "spaceID": space.id]
-        )
+        selectTab(newTab, in: space)
         let info = buildTabInfo(tab: newTab, space: space, isActive: true, includeURLFields: includeURLFields, extension: ext)
         deliverResponse(ctx, result: info)
     }
@@ -1494,35 +1489,35 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private func handleScriptingInsertCSS(ctx: MessageContext, body: [String: Any]) {
+    /// Shared setup for insertCSS/removeCSS: resolves the target tab, checks permissions, loads CSS.
+    /// Returns `(webView, extension, escapedCSS)` on success, or nil after delivering an error response.
+    private func resolveCSSInjection(ctx: MessageContext, body: [String: Any]) -> (WKWebView, WebExtension, String)? {
         guard let params = body["params"] as? [String: Any],
-              let injection = params["injection"] as? [String: Any] else { return }
+              let injection = params["injection"] as? [String: Any] else { return nil }
 
         let mgr = ExtensionManager.shared
-        guard let ext = mgr.extension(withID: ctx.extensionID) else { return }
+        guard let ext = mgr.extension(withID: ctx.extensionID) else { return nil }
 
         let target = injection["target"] as? [String: Any]
         let tabIDInt = target?["tabId"] as? Int
 
         guard let tabIDInt, let uuid = mgr.tabIDMap.uuid(for: tabIDInt) else {
             deliverResponse(ctx, result: ["__error": "Target tab required"])
-            return
+            return nil
         }
 
         let (tab, _) = findTab(uuid: uuid)
         guard let tab, let webView = tab.webView else {
             deliverResponse(ctx, result: ["__error": "Tab has no webView"])
-            return
+            return nil
         }
 
-        // Host permission check for programmatic CSS injection
         if let tabURL = tab.url, !ExtensionPermissionChecker.hasHostPermission(for: tabURL, extension: ext) {
             deliverResponse(ctx, result: ["__error": ExtensionPermissionChecker.hostPermissionError(url: tabURL)])
-            return
+            return nil
         }
 
         var cssContent = ""
-
         if let css = injection["css"] as? String {
             cssContent = css
         } else if let files = injection["files"] as? [String] {
@@ -1534,12 +1529,17 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             }
         }
 
-        let escapedCSS = cssContent.jsEscapedForSingleQuotes
+        return (webView, ext, cssContent.jsEscapedForSingleQuotes)
+    }
+
+    private func handleScriptingInsertCSS(ctx: MessageContext, body: [String: Any]) {
+        guard let (webView, ext, escapedCSS) = resolveCSSInjection(ctx: ctx, body: body) else { return }
+        let escapedID = ctx.extensionID.jsEscapedForSingleQuotes
 
         let js = """
         (function() {
             var style = document.createElement('style');
-            style.setAttribute('data-detour-ext-css', '\(ctx.extensionID)');
+            style.setAttribute('data-detour-ext-css', '\(escapedID)');
             style.textContent = '\(escapedCSS)';
             (document.head || document.documentElement).appendChild(style);
         })();
@@ -1551,51 +1551,16 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleScriptingRemoveCSS(ctx: MessageContext, body: [String: Any]) {
-        guard let params = body["params"] as? [String: Any],
-              let injection = params["injection"] as? [String: Any] else { return }
-
-        let mgr = ExtensionManager.shared
-        guard let ext = mgr.extension(withID: ctx.extensionID) else { return }
-
-        let target = injection["target"] as? [String: Any]
-        let tabIDInt = target?["tabId"] as? Int
-
-        guard let tabIDInt, let uuid = mgr.tabIDMap.uuid(for: tabIDInt) else {
-            deliverResponse(ctx, result: ["__error": "Target tab required"])
-            return
-        }
-
-        let (tab, _) = findTab(uuid: uuid)
-        guard let tab, let webView = tab.webView else {
-            deliverResponse(ctx, result: ["__error": "Tab has no webView"])
-            return
-        }
-
-        if let tabURL = tab.url, !ExtensionPermissionChecker.hasHostPermission(for: tabURL, extension: ext) {
-            deliverResponse(ctx, result: ["__error": ExtensionPermissionChecker.hostPermissionError(url: tabURL)])
-            return
-        }
-
-        var cssContent = ""
-        if let css = injection["css"] as? String {
-            cssContent = css
-        } else if let files = injection["files"] as? [String] {
-            for file in files {
-                let fileURL = ext.basePath.appendingPathComponent(file)
-                if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
-                    cssContent += content + "\n"
-                }
-            }
-        }
-
-        let escapedCSS = cssContent.jsEscapedForSingleQuotes
+        guard let (webView, ext, escapedCSS) = resolveCSSInjection(ctx: ctx, body: body) else { return }
+        let escapedID = ctx.extensionID.jsEscapedForSingleQuotes
 
         let js = """
         (function() {
-            var styles = document.querySelectorAll('style[data-detour-ext-css=\"\(ctx.extensionID)\"]');
+            var styles = document.querySelectorAll('style[data-detour-ext-css]');
             var target = '\(escapedCSS)';
             for (var i = 0; i < styles.length; i++) {
-                if (styles[i].textContent === target) {
+                if (styles[i].getAttribute('data-detour-ext-css') === '\(escapedID)' &&
+                    styles[i].textContent === target) {
                     styles[i].remove();
                     break;
                 }
@@ -1934,7 +1899,12 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
     /// Select a tab and post the notification so the window controller updates.
     private func selectTab(_ tab: BrowserTab, in space: Space) {
-        selectTab(tab, in: space)
+        space.selectedTabID = tab.id
+        NotificationCenter.default.post(
+            name: ExtensionManager.tabShouldSelectNotification,
+            object: nil,
+            userInfo: ["tabID": tab.id, "spaceID": space.id]
+        )
     }
 
     /// Find the active tab in the last active space.

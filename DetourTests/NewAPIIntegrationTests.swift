@@ -29,12 +29,32 @@ final class NewAPIIntegrationTests: XCTestCase {
     private var testTabIntID: Int!
     private var tabNavDelegate: TestNewAPINavDelegate!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
+    // MARK: - Shared one-time setup
 
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-newapi-test-\(UUID().uuidString)")
+    private static let extensionID = "test-new-api"
+
+    private struct SharedState {
+        let tempDir: URL
+        let ext: WebExtension
+        let popupWebView: WKWebView
+        let backgroundHost: BackgroundHost
+        let popupNavDelegate: TestNewAPINavDelegate
+        let testProfile: Profile
+        let testSpace: Space
+        let testBrowserTab: BrowserTab
+        let testTabIntID: Int
+        let tabNavDelegate: TestNewAPINavDelegate
+    }
+
+    private nonisolated(unsafe) static var shared: SharedState?
+
+    /// Create the shared test infrastructure once. Called from the first test's setUp.
+    private func createSharedStateIfNeeded() {
+        guard Self.shared == nil else { return }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-newapi-test-integration")
+        try? FileManager.default.removeItem(at: tempDir)
         try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         // Write i18n messages
@@ -100,8 +120,8 @@ final class NewAPIIntegrationTests: XCTestCase {
 
         // Parse and create extension
         let manifest = try! ExtensionManifest.parse(at: tempDir.appendingPathComponent("manifest.json"))
-        let extID = "newapi-test-\(UUID().uuidString)"
-        ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
+        let extID = Self.extensionID
+        let ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
 
         ExtensionManager.shared.extensions.append(ext)
 
@@ -111,10 +131,12 @@ final class NewAPIIntegrationTests: XCTestCase {
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
         AppDatabase.shared.saveExtension(record)
 
-        // Start background host (fires onInstalled)
-        backgroundHost = BackgroundHost(extension: ext)
+        // Start background host with completion handler (fires onInstalled)
+        let backgroundHost = BackgroundHost(extension: ext)
         ExtensionManager.shared.backgroundHosts[ext.id] = backgroundHost
-        backgroundHost.start()
+
+        let bgExp = expectation(description: "Background initialized")
+        backgroundHost.start(completion: { bgExp.fulfill() })
 
         // Setup popup WebView (page world)
         let popupConfig = WKWebViewConfiguration()
@@ -122,11 +144,11 @@ final class NewAPIIntegrationTests: XCTestCase {
         popupConfig.userContentController.addUserScript(
             WKUserScript(source: popupBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         ExtensionMessageBridge.shared.register(on: popupConfig.userContentController)
-        popupWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: popupConfig)
+        let popupWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: popupConfig)
 
         // Tab infrastructure for detectLanguage
-        testProfile = TabStore.shared.addProfile(name: "NewAPI Test Profile")
-        testSpace = TabStore.shared.addSpace(name: "NewAPI Test Space", emoji: "T", colorHex: "#000000", profileID: testProfile.id)
+        let testProfile = TabStore.shared.addProfile(name: "NewAPI Test Profile")
+        let testSpace = TabStore.shared.addSpace(name: "NewAPI Test Space", emoji: "T", colorHex: "#000000", profileID: testProfile.id)
         ExtensionManager.shared.lastActiveSpaceID = testSpace.id
 
         let tabConfig = WKWebViewConfiguration()
@@ -135,63 +157,98 @@ final class NewAPIIntegrationTests: XCTestCase {
             WKUserScript(source: tabBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: ext.contentWorld))
         ExtensionMessageBridge.shared.register(on: tabConfig.userContentController, contentWorld: ext.contentWorld)
         let tabWV = WKWebView(frame: .zero, configuration: tabConfig)
-        testBrowserTab = BrowserTab(webView: tabWV)
+        let testBrowserTab = BrowserTab(webView: tabWV)
         testSpace.tabs.append(testBrowserTab)
         testSpace.selectedTabID = testBrowserTab.id
-        testTabIntID = ExtensionManager.shared.tabIDMap.intID(for: testBrowserTab.id)
+        let testTabIntID = ExtensionManager.shared.tabIDMap.intID(for: testBrowserTab.id)
 
         // Load pages
         let html = "<html><body>test</body></html>"
 
         let popupNavExp = expectation(description: "Popup page loaded")
-        popupNavDelegate = TestNewAPINavDelegate { popupNavExp.fulfill() }
+        let popupNavDelegate = TestNewAPINavDelegate { popupNavExp.fulfill() }
         popupWebView.navigationDelegate = popupNavDelegate
         popupWebView.loadHTMLString(html, baseURL: URL(string: "https://newapi-test.example.com")!)
 
         let tabNavExp = expectation(description: "Tab page loaded")
-        tabNavDelegate = TestNewAPINavDelegate { tabNavExp.fulfill() }
+        let tabNavDelegate = TestNewAPINavDelegate { tabNavExp.fulfill() }
         tabWV.navigationDelegate = tabNavDelegate
         tabWV.loadHTMLString("<html lang='fr'><body>Bonjour</body></html>",
                              baseURL: URL(string: "https://tab-test.example.com")!)
 
-        wait(for: [popupNavExp, tabNavExp], timeout: 10.0)
+        wait(for: [popupNavExp, tabNavExp, bgExp], timeout: 10.0)
 
-        // Give background host time to initialize and fire onInstalled
-        let bgExp = expectation(description: "Background initialized")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { bgExp.fulfill() }
-        wait(for: [bgExp], timeout: 5.0)
+        Self.shared = SharedState(
+            tempDir: tempDir,
+            ext: ext,
+            popupWebView: popupWebView,
+            backgroundHost: backgroundHost,
+            popupNavDelegate: popupNavDelegate,
+            testProfile: testProfile,
+            testSpace: testSpace,
+            testBrowserTab: testBrowserTab,
+            testTabIntID: testTabIntID,
+            tabNavDelegate: tabNavDelegate
+        )
+    }
+
+    @MainActor
+    override func setUp() {
+        super.setUp()
+        createSharedStateIfNeeded()
+
+        let s = Self.shared!
+        tempDir = s.tempDir
+        ext = s.ext
+        popupWebView = s.popupWebView
+        backgroundHost = s.backgroundHost
+        popupNavDelegate = s.popupNavDelegate
+        testProfile = s.testProfile
+        testSpace = s.testSpace
+        testBrowserTab = s.testBrowserTab
+        testTabIntID = s.testTabIntID
+        tabNavDelegate = s.tabNavDelegate
+
+        // Reset mutable state between tests
+        AppDatabase.shared.storageClear(extensionID: ext.id)
+        ExtensionManager.shared.offscreenHosts.removeValue(forKey: ext.id)
+        ExtensionManager.shared.contextMenuItems.removeValue(forKey: ext.id)
+        ExtensionManager.shared.lastActiveSpaceID = testSpace.id
+
+        // Remove any tabs created by previous tests (keep only the original test tab)
+        testSpace.tabs.removeAll { $0.id != testBrowserTab.id }
+        testSpace.selectedTabID = testBrowserTab.id
     }
 
     @MainActor
     override func tearDown() {
-        ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
-        ExtensionManager.shared.backgroundHosts.removeValue(forKey: ext.id)
-        ExtensionManager.shared.offscreenHosts.removeValue(forKey: ext.id)
-        ExtensionManager.shared.contextMenuItems.removeValue(forKey: ext.id)
-        AppDatabase.shared.storageClear(extensionID: ext.id)
-        AppDatabase.shared.deleteExtension(id: ext.id)
+        // Don't tear down shared state — it's reused across tests
+        super.tearDown()
+    }
 
-        if let tab = testBrowserTab {
-            ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
-        }
-        if let spaceID = testSpace?.id {
-            TabStore.shared.forceRemoveSpace(id: spaceID)
-            ExtensionManager.shared.spaceIDMap.remove(uuid: spaceID)
-        }
-        if let profileID = testProfile?.id {
-            TabStore.shared.forceRemoveProfile(id: profileID)
-        }
-        ExtensionManager.shared.lastActiveSpaceID = nil
+    override class func tearDown() {
+        // Final cleanup when all tests in this class are done
+        MainActor.assumeIsolated {
+            guard let s = shared else { return }
+            s.backgroundHost.stop()
+            ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
+            ExtensionManager.shared.backgroundHosts.removeValue(forKey: extensionID)
+            ExtensionManager.shared.offscreenHosts.removeValue(forKey: extensionID)
+            ExtensionManager.shared.contextMenuItems.removeValue(forKey: extensionID)
+            AppDatabase.shared.storageClear(extensionID: extensionID)
+            AppDatabase.shared.deleteExtension(id: extensionID)
 
-        backgroundHost?.stop()
-        popupWebView = nil
-        popupNavDelegate = nil
-        tabNavDelegate = nil
-        testBrowserTab = nil
-        testSpace = nil
-        testProfile = nil
-        ext = nil
-        if let d = tempDir { try? FileManager.default.removeItem(at: d) }
+            for tab in s.testSpace.tabs {
+                ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
+            }
+            TabStore.shared.forceRemoveSpace(id: s.testSpace.id)
+            ExtensionManager.shared.spaceIDMap.remove(uuid: s.testSpace.id)
+            TabStore.shared.forceRemoveProfile(id: s.testProfile.id)
+            ExtensionManager.shared.lastActiveSpaceID = nil
+
+            try? FileManager.default.removeItem(at: s.tempDir)
+            shared = nil
+        }
         super.tearDown()
     }
 

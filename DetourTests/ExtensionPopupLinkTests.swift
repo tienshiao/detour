@@ -18,12 +18,27 @@ final class ExtensionPopupLinkTests: XCTestCase {
     private var receivedURLs: [URL] = []
     private var observer: NSObjectProtocol?
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
+    // MARK: - Shared one-time setup
 
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-popup-link-test-\(UUID().uuidString)")
+    private static let extensionID = "popup-link-test"
+
+    private struct SharedState {
+        let tempDir: URL
+        let ext: WebExtension
+        let controller: ExtensionPopoverController
+        let webView: WKWebView
+        let navDelegate: TestPopupNavDelegate
+    }
+
+    private nonisolated(unsafe) static var shared: SharedState?
+
+    /// Create the shared test infrastructure once. Called from the first test's setUp.
+    private func createSharedStateIfNeeded() {
+        guard Self.shared == nil else { return }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-popup-link-test")
+        try? FileManager.default.removeItem(at: tempDir)
         try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         let manifestJSON = """
@@ -56,8 +71,8 @@ final class ExtensionPopupLinkTests: XCTestCase {
             atomically: true, encoding: .utf8)
 
         let manifest = try! ExtensionManifest.parse(at: tempDir.appendingPathComponent("manifest.json"))
-        let extID = "popup-link-test-\(UUID().uuidString)"
-        ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
+        let extID = Self.extensionID
+        let ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
         ExtensionManager.shared.extensions.append(ext)
 
         let record = ExtensionRecord(
@@ -67,7 +82,7 @@ final class ExtensionPopupLinkTests: XCTestCase {
         AppDatabase.shared.saveExtension(record)
 
         // Create the controller (it acts as WKNavigationDelegate + WKUIDelegate)
-        controller = ExtensionPopoverController(extension: ext)
+        let controller = ExtensionPopoverController(extension: ext)
 
         // Create a WKWebView directly and assign the controller as delegate
         // (avoids NSPopover lifecycle issues in test environments)
@@ -78,45 +93,72 @@ final class ExtensionPopupLinkTests: XCTestCase {
             WKUserScript(source: apiBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         ExtensionMessageBridge.shared.register(on: config.userContentController)
 
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 360, height: 480), configuration: config)
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 360, height: 480), configuration: config)
         webView.navigationDelegate = controller
         webView.uiDelegate = controller
 
-        // Observe the notification
+        // Load the popup HTML
+        let popupURL = tempDir.appendingPathComponent("popup.html")
+        let navExp = expectation(description: "Popup loaded")
+        let navDelegate = TestPopupNavDelegate { navExp.fulfill() }
+
+        // Temporarily set nav delegate to wait for load, then switch back
+        webView.navigationDelegate = navDelegate
+        webView.loadFileURL(popupURL, allowingReadAccessTo: tempDir)
+        wait(for: [navExp], timeout: 10.0)
+        webView.navigationDelegate = controller
+
+        Self.shared = SharedState(
+            tempDir: tempDir,
+            ext: ext,
+            controller: controller,
+            webView: webView,
+            navDelegate: navDelegate
+        )
+    }
+
+    @MainActor
+    override func setUp() {
+        super.setUp()
+        createSharedStateIfNeeded()
+
+        let s = Self.shared!
+        tempDir = s.tempDir
+        ext = s.ext
+        controller = s.controller
+        webView = s.webView
+        navDelegate = s.navDelegate
+
+        // Reset per-test mutable state
         receivedURLs = []
+
+        // Observe the notification (per-test, cleaned up in tearDown)
         observer = NotificationCenter.default.addObserver(
-            forName: Notification.Name("extensionPopupOpenURL"),
+            forName: ExtensionManager.popupOpenURLNotification,
             object: nil, queue: .main
         ) { [weak self] notification in
             if let url = notification.userInfo?["url"] as? URL {
                 self?.receivedURLs.append(url)
             }
         }
-
-        // Load the popup HTML
-        let popupURL = tempDir.appendingPathComponent("popup.html")
-        let navExp = expectation(description: "Popup loaded")
-        navDelegate = TestPopupNavDelegate { navExp.fulfill() }
-
-        // Temporarily set nav delegate to wait for load, then switch back
-        let origDelegate = webView.navigationDelegate
-        webView.navigationDelegate = navDelegate
-        webView.loadFileURL(popupURL, allowingReadAccessTo: tempDir)
-        wait(for: [navExp], timeout: 10.0)
-        webView.navigationDelegate = origDelegate
     }
 
     @MainActor
     override func tearDown() {
+        // Clean up per-test notification observer
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
-        webView = nil
-        navDelegate = nil
-        controller = nil
-        ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
-        AppDatabase.shared.deleteExtension(id: ext.id)
-        ext = nil
-        if let d = tempDir { try? FileManager.default.removeItem(at: d) }
+        super.tearDown()
+    }
+
+    override class func tearDown() {
+        MainActor.assumeIsolated {
+            guard let s = shared else { return }
+            ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
+            AppDatabase.shared.deleteExtension(id: extensionID)
+            try? FileManager.default.removeItem(at: s.tempDir)
+            shared = nil
+        }
         super.tearDown()
     }
 
@@ -173,7 +215,7 @@ final class ExtensionPopupLinkTests: XCTestCase {
         let testURL = URL(string: "https://test.example.com/verify")!
 
         NotificationCenter.default.post(
-            name: Notification.Name("extensionPopupOpenURL"),
+            name: ExtensionManager.popupOpenURLNotification,
             object: nil,
             userInfo: ["url": testURL]
         )

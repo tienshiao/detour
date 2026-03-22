@@ -8,24 +8,40 @@ import WebKit
 final class StoragePermissionTests: XCTestCase {
 
     // Extension WITH storage permission
-    private var allowedDir: URL!
     private var allowedExt: WebExtension!
     private var allowedWebView: WKWebView!
-    private var allowedNavDelegate: TestStorageNavDelegate!
 
     // Extension WITHOUT storage permission
-    private var deniedDir: URL!
     private var deniedExt: WebExtension!
     private var deniedWebView: WKWebView!
-    private var deniedNavDelegate: TestStorageNavDelegate!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
+    // MARK: - Shared one-time setup
+
+    private static let allowedID = "test-storage-perm-allowed"
+    private static let deniedID = "test-storage-perm-denied"
+
+    private struct SharedState {
+        let allowedDir: URL
+        let allowedExt: WebExtension
+        let allowedWebView: WKWebView
+        let allowedNavDelegate: TestStorageNavDelegate
+
+        let deniedDir: URL
+        let deniedExt: WebExtension
+        let deniedWebView: WKWebView
+        let deniedNavDelegate: TestStorageNavDelegate
+    }
+
+    private nonisolated(unsafe) static var shared: SharedState?
+
+    /// Create the shared test infrastructure once. Called from the first test's setUp.
+    private func createSharedStateIfNeeded() {
+        guard Self.shared == nil else { return }
 
         // --- Extension with storage permission ---
-        allowedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-storage-allowed-\(UUID().uuidString)")
+        let allowedDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-storage-allowed")
+        try? FileManager.default.removeItem(at: allowedDir)
         try! FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
 
         let allowedManifestJSON = """
@@ -40,12 +56,11 @@ final class StoragePermissionTests: XCTestCase {
                                        atomically: true, encoding: .utf8)
 
         let allowedManifest = try! ExtensionManifest.parse(at: allowedDir.appendingPathComponent("manifest.json"))
-        let allowedID = "storage-allowed-\(UUID().uuidString)"
-        allowedExt = WebExtension(id: allowedID, manifest: allowedManifest, basePath: allowedDir)
+        let allowedExt = WebExtension(id: Self.allowedID, manifest: allowedManifest, basePath: allowedDir)
         ExtensionManager.shared.extensions.append(allowedExt)
 
         let allowedRecord = ExtensionRecord(
-            id: allowedID, name: allowedManifest.name, version: allowedManifest.version,
+            id: Self.allowedID, name: allowedManifest.name, version: allowedManifest.version,
             manifestJSON: try! allowedManifest.toJSONData(), basePath: allowedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
         AppDatabase.shared.saveExtension(allowedRecord)
@@ -55,11 +70,12 @@ final class StoragePermissionTests: XCTestCase {
         let allowedScript = WKUserScript(source: allowedBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         allowedConfig.userContentController.addUserScript(allowedScript)
         ExtensionMessageBridge.shared.register(on: allowedConfig.userContentController)
-        allowedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: allowedConfig)
+        let allowedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: allowedConfig)
 
         // --- Extension without storage permission ---
-        deniedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-storage-denied-\(UUID().uuidString)")
+        let deniedDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-storage-denied")
+        try? FileManager.default.removeItem(at: deniedDir)
         try! FileManager.default.createDirectory(at: deniedDir, withIntermediateDirectories: true)
 
         let deniedManifestJSON = """
@@ -74,12 +90,11 @@ final class StoragePermissionTests: XCTestCase {
                                       atomically: true, encoding: .utf8)
 
         let deniedManifest = try! ExtensionManifest.parse(at: deniedDir.appendingPathComponent("manifest.json"))
-        let deniedID = "storage-denied-\(UUID().uuidString)"
-        deniedExt = WebExtension(id: deniedID, manifest: deniedManifest, basePath: deniedDir)
+        let deniedExt = WebExtension(id: Self.deniedID, manifest: deniedManifest, basePath: deniedDir)
         ExtensionManager.shared.extensions.append(deniedExt)
 
         let deniedRecord = ExtensionRecord(
-            id: deniedID, name: deniedManifest.name, version: deniedManifest.version,
+            id: Self.deniedID, name: deniedManifest.name, version: deniedManifest.version,
             manifestJSON: try! deniedManifest.toJSONData(), basePath: deniedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
         AppDatabase.shared.saveExtension(deniedRecord)
@@ -89,38 +104,66 @@ final class StoragePermissionTests: XCTestCase {
         let deniedScript = WKUserScript(source: deniedBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         deniedConfig.userContentController.addUserScript(deniedScript)
         ExtensionMessageBridge.shared.register(on: deniedConfig.userContentController)
-        deniedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: deniedConfig)
+        let deniedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: deniedConfig)
 
         // Load pages
         let html = "<html><body>test</body></html>"
         let allowedNavExp = expectation(description: "Allowed page loaded")
-        allowedNavDelegate = TestStorageNavDelegate { allowedNavExp.fulfill() }
+        let allowedNavDelegate = TestStorageNavDelegate { allowedNavExp.fulfill() }
         allowedWebView.navigationDelegate = allowedNavDelegate
         allowedWebView.loadHTMLString(html, baseURL: URL(string: "https://storage-test.example.com")!)
 
         let deniedNavExp = expectation(description: "Denied page loaded")
-        deniedNavDelegate = TestStorageNavDelegate { deniedNavExp.fulfill() }
+        let deniedNavDelegate = TestStorageNavDelegate { deniedNavExp.fulfill() }
         deniedWebView.navigationDelegate = deniedNavDelegate
         deniedWebView.loadHTMLString(html, baseURL: URL(string: "https://storage-test.example.com")!)
 
         wait(for: [allowedNavExp, deniedNavExp], timeout: 10.0)
+
+        Self.shared = SharedState(
+            allowedDir: allowedDir,
+            allowedExt: allowedExt,
+            allowedWebView: allowedWebView,
+            allowedNavDelegate: allowedNavDelegate,
+            deniedDir: deniedDir,
+            deniedExt: deniedExt,
+            deniedWebView: deniedWebView,
+            deniedNavDelegate: deniedNavDelegate
+        )
+    }
+
+    @MainActor
+    override func setUp() {
+        super.setUp()
+        createSharedStateIfNeeded()
+
+        let s = Self.shared!
+        allowedExt = s.allowedExt
+        allowedWebView = s.allowedWebView
+        deniedExt = s.deniedExt
+        deniedWebView = s.deniedWebView
     }
 
     @MainActor
     override func tearDown() {
-        for ext in [allowedExt, deniedExt].compactMap({ $0 }) {
-            ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
-            AppDatabase.shared.storageClear(extensionID: ext.id)
-            AppDatabase.shared.deleteExtension(id: ext.id)
+        // Don't tear down shared state — it's reused across tests
+        super.tearDown()
+    }
+
+    override class func tearDown() {
+        MainActor.assumeIsolated {
+            guard let s = shared else { return }
+
+            for extID in [allowedID, deniedID] {
+                ExtensionManager.shared.extensions.removeAll { $0.id == extID }
+                AppDatabase.shared.storageClear(extensionID: extID)
+                AppDatabase.shared.deleteExtension(id: extID)
+            }
+
+            try? FileManager.default.removeItem(at: s.allowedDir)
+            try? FileManager.default.removeItem(at: s.deniedDir)
+            shared = nil
         }
-        allowedWebView = nil
-        deniedWebView = nil
-        allowedNavDelegate = nil
-        deniedNavDelegate = nil
-        allowedExt = nil
-        deniedExt = nil
-        if let d = allowedDir { try? FileManager.default.removeItem(at: d) }
-        if let d = deniedDir { try? FileManager.default.removeItem(at: d) }
         super.tearDown()
     }
 

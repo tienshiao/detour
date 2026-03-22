@@ -12,12 +12,25 @@ final class WebNavigationEventTests: XCTestCase {
     private var ext: WebExtension!
     private var backgroundHost: BackgroundHost!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
+    // MARK: - Shared one-time setup
 
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-webnav-test-\(UUID().uuidString)")
+    private static let extensionID = "webnav-test"
+
+    private struct SharedState {
+        let tempDir: URL
+        let ext: WebExtension
+        let backgroundHost: BackgroundHost
+    }
+
+    private nonisolated(unsafe) static var shared: SharedState?
+
+    /// Create the shared test infrastructure once. Called from the first test's setUp.
+    private func createSharedStateIfNeeded() {
+        guard Self.shared == nil else { return }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-webnav-test")
+        try? FileManager.default.removeItem(at: tempDir)
         try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         let manifestJSON = """
@@ -53,8 +66,8 @@ final class WebNavigationEventTests: XCTestCase {
                                 atomically: true, encoding: .utf8)
 
         let manifest = try! ExtensionManifest.parse(at: tempDir.appendingPathComponent("manifest.json"))
-        let extID = "webnav-test-\(UUID().uuidString)"
-        ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
+        let extID = Self.extensionID
+        let ext = WebExtension(id: extID, manifest: manifest, basePath: tempDir)
         ExtensionManager.shared.extensions.append(ext)
 
         let record = ExtensionRecord(
@@ -63,27 +76,55 @@ final class WebNavigationEventTests: XCTestCase {
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
         AppDatabase.shared.saveExtension(record)
 
-        backgroundHost = BackgroundHost(extension: ext)
+        let backgroundHost = BackgroundHost(extension: ext)
         ExtensionManager.shared.backgroundHosts[extID] = backgroundHost
-        backgroundHost.start()
 
-        // Wait for background host to initialize
+        // Start background host and wait for it to be ready via completion handler
         let bgExp = expectation(description: "BG ready")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { bgExp.fulfill() }
+        backgroundHost.start { bgExp.fulfill() }
         wait(for: [bgExp], timeout: 5.0)
+
+        Self.shared = SharedState(
+            tempDir: tempDir,
+            ext: ext,
+            backgroundHost: backgroundHost
+        )
+    }
+
+    @MainActor
+    override func setUp() {
+        super.setUp()
+        createSharedStateIfNeeded()
+
+        let s = Self.shared!
+        tempDir = s.tempDir
+        ext = s.ext
+        backgroundHost = s.backgroundHost
+
+        // Reset stored event data between tests
+        let resetExp = expectation(description: "Reset events")
+        backgroundHost.evaluateJavaScript("window.__webNavEvents = {}; true") { _, _ in
+            resetExp.fulfill()
+        }
+        wait(for: [resetExp], timeout: 5.0)
     }
 
     @MainActor
     override func tearDown() {
-        backgroundHost?.stop()
-        if let extID = ext?.id {
-            ExtensionManager.shared.extensions.removeAll { $0.id == extID }
-            ExtensionManager.shared.backgroundHosts.removeValue(forKey: extID)
-            AppDatabase.shared.deleteExtension(id: extID)
+        // Don't tear down shared state — it's reused across tests
+        super.tearDown()
+    }
+
+    override class func tearDown() {
+        MainActor.assumeIsolated {
+            guard let s = shared else { return }
+            s.backgroundHost.stop()
+            ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
+            ExtensionManager.shared.backgroundHosts.removeValue(forKey: extensionID)
+            AppDatabase.shared.deleteExtension(id: extensionID)
+            try? FileManager.default.removeItem(at: s.tempDir)
+            shared = nil
         }
-        ext = nil
-        backgroundHost = nil
-        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         super.tearDown()
     }
 

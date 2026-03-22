@@ -9,47 +9,77 @@ import WebKit
 final class TabsPermissionTests: XCTestCase {
 
     // Extension WITH tabs permission + <all_urls>
-    private var allowedDir: URL!
     private var allowedExt: WebExtension!
     private var allowedWebView: WKWebView!
-    private var allowedNavDelegate: TestTabsNavDelegate!
-    private var allowedBgHost: BackgroundHost!
 
     // Extension WITHOUT tabs permission
-    private var deniedDir: URL!
     private var deniedExt: WebExtension!
     private var deniedWebView: WKWebView!
-    private var deniedNavDelegate: TestTabsNavDelegate!
 
     // Extension WITH tabs permission + narrow host_permissions
-    private var narrowDir: URL!
     private var narrowExt: WebExtension!
     private var narrowWebView: WKWebView!
-    private var narrowNavDelegate: TestTabsNavDelegate!
-    private var narrowBgHost: BackgroundHost!
 
     // Shared tab infrastructure
     private var testProfile: Profile!
     private var testSpace: Space!
     private var testBrowserTab: BrowserTab!
     private var testTabIntID: Int!
-    private var tabNavDelegate: TestTabsNavDelegate!
 
     // Host permission test tabs
     private var allowedHostTab: BrowserTab!
     private var allowedHostTabIntID: Int!
-    private var allowedHostNavDelegate: TestTabsNavDelegate!
     private var deniedHostTab: BrowserTab!
     private var deniedHostTabIntID: Int!
-    private var deniedHostNavDelegate: TestTabsNavDelegate!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
+    // MARK: - Shared one-time setup
+
+    private static let allowedID = "test-tabs-perm-allowed"
+    private static let deniedID = "test-tabs-perm-denied"
+    private static let narrowID = "test-tabs-perm-narrow"
+
+    private struct SharedState {
+        let allowedDir: URL
+        let allowedExt: WebExtension
+        let allowedWebView: WKWebView
+        let allowedNavDelegate: TestTabsNavDelegate
+        let allowedBgHost: BackgroundHost
+
+        let deniedDir: URL
+        let deniedExt: WebExtension
+        let deniedWebView: WKWebView
+        let deniedNavDelegate: TestTabsNavDelegate
+
+        let narrowDir: URL
+        let narrowExt: WebExtension
+        let narrowWebView: WKWebView
+        let narrowNavDelegate: TestTabsNavDelegate
+        let narrowBgHost: BackgroundHost
+
+        let testProfile: Profile
+        let testSpace: Space
+        let testBrowserTab: BrowserTab
+        let testTabIntID: Int
+        let tabNavDelegate: TestTabsNavDelegate
+
+        let allowedHostTab: BrowserTab
+        let allowedHostTabIntID: Int
+        let allowedHostNavDelegate: TestTabsNavDelegate
+        let deniedHostTab: BrowserTab
+        let deniedHostTabIntID: Int
+        let deniedHostNavDelegate: TestTabsNavDelegate
+    }
+
+    private nonisolated(unsafe) static var shared: SharedState?
+
+    /// Create the shared test infrastructure once. Called from the first test's setUp.
+    private func createSharedStateIfNeeded() {
+        guard Self.shared == nil else { return }
 
         // --- Extension with tabs + <all_urls> ---
-        allowedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-tabs-allowed-\(UUID().uuidString)")
+        let allowedDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-tabs-allowed")
+        try? FileManager.default.removeItem(at: allowedDir)
         try! FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
 
         let allowedManifestJSON = """
@@ -72,12 +102,11 @@ final class TabsPermissionTests: XCTestCase {
         try! "".write(to: allowedDir.appendingPathComponent("content.js"), atomically: true, encoding: .utf8)
 
         let allowedManifest = try! ExtensionManifest.parse(at: allowedDir.appendingPathComponent("manifest.json"))
-        let allowedID = "tabs-allowed-\(UUID().uuidString)"
-        allowedExt = WebExtension(id: allowedID, manifest: allowedManifest, basePath: allowedDir)
+        let allowedExt = WebExtension(id: Self.allowedID, manifest: allowedManifest, basePath: allowedDir)
         ExtensionManager.shared.extensions.append(allowedExt)
 
         let allowedRecord = ExtensionRecord(
-            id: allowedID, name: allowedManifest.name, version: allowedManifest.version,
+            id: Self.allowedID, name: allowedManifest.name, version: allowedManifest.version,
             manifestJSON: try! allowedManifest.toJSONData(), basePath: allowedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
         AppDatabase.shared.saveExtension(allowedRecord)
@@ -87,15 +116,18 @@ final class TabsPermissionTests: XCTestCase {
         allowedConfig.userContentController.addUserScript(
             WKUserScript(source: allowedBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         ExtensionMessageBridge.shared.register(on: allowedConfig.userContentController)
-        allowedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: allowedConfig)
+        let allowedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: allowedConfig)
 
-        allowedBgHost = BackgroundHost(extension: allowedExt)
-        ExtensionManager.shared.backgroundHosts[allowedID] = allowedBgHost
-        allowedBgHost.start()
+        let allowedBgHost = BackgroundHost(extension: allowedExt)
+        ExtensionManager.shared.backgroundHosts[Self.allowedID] = allowedBgHost
+
+        let allowedBgExp = expectation(description: "Allowed BG ready")
+        allowedBgHost.start { allowedBgExp.fulfill() }
 
         // --- Extension without tabs ---
-        deniedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-tabs-denied-\(UUID().uuidString)")
+        let deniedDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-tabs-denied")
+        try? FileManager.default.removeItem(at: deniedDir)
         try! FileManager.default.createDirectory(at: deniedDir, withIntermediateDirectories: true)
 
         let deniedManifestJSON = """
@@ -110,12 +142,11 @@ final class TabsPermissionTests: XCTestCase {
                                       atomically: true, encoding: .utf8)
 
         let deniedManifest = try! ExtensionManifest.parse(at: deniedDir.appendingPathComponent("manifest.json"))
-        let deniedID = "tabs-denied-\(UUID().uuidString)"
-        deniedExt = WebExtension(id: deniedID, manifest: deniedManifest, basePath: deniedDir)
+        let deniedExt = WebExtension(id: Self.deniedID, manifest: deniedManifest, basePath: deniedDir)
         ExtensionManager.shared.extensions.append(deniedExt)
 
         let deniedRecord = ExtensionRecord(
-            id: deniedID, name: deniedManifest.name, version: deniedManifest.version,
+            id: Self.deniedID, name: deniedManifest.name, version: deniedManifest.version,
             manifestJSON: try! deniedManifest.toJSONData(), basePath: deniedDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
         AppDatabase.shared.saveExtension(deniedRecord)
@@ -125,11 +156,12 @@ final class TabsPermissionTests: XCTestCase {
         deniedConfig.userContentController.addUserScript(
             WKUserScript(source: deniedBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         ExtensionMessageBridge.shared.register(on: deniedConfig.userContentController)
-        deniedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: deniedConfig)
+        let deniedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: deniedConfig)
 
         // --- Extension with tabs + narrow host ---
-        narrowDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-tabs-narrow-\(UUID().uuidString)")
+        let narrowDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-tabs-narrow")
+        try? FileManager.default.removeItem(at: narrowDir)
         try! FileManager.default.createDirectory(at: narrowDir, withIntermediateDirectories: true)
 
         let narrowManifestJSON = """
@@ -152,12 +184,11 @@ final class TabsPermissionTests: XCTestCase {
         try! "".write(to: narrowDir.appendingPathComponent("content.js"), atomically: true, encoding: .utf8)
 
         let narrowManifest = try! ExtensionManifest.parse(at: narrowDir.appendingPathComponent("manifest.json"))
-        let narrowID = "tabs-narrow-\(UUID().uuidString)"
-        narrowExt = WebExtension(id: narrowID, manifest: narrowManifest, basePath: narrowDir)
+        let narrowExt = WebExtension(id: Self.narrowID, manifest: narrowManifest, basePath: narrowDir)
         ExtensionManager.shared.extensions.append(narrowExt)
 
         let narrowRecord = ExtensionRecord(
-            id: narrowID, name: narrowManifest.name, version: narrowManifest.version,
+            id: Self.narrowID, name: narrowManifest.name, version: narrowManifest.version,
             manifestJSON: try! narrowManifest.toJSONData(), basePath: narrowDir.path,
             isEnabled: true, installedAt: Date().timeIntervalSince1970)
         AppDatabase.shared.saveExtension(narrowRecord)
@@ -167,30 +198,32 @@ final class TabsPermissionTests: XCTestCase {
         narrowConfig.userContentController.addUserScript(
             WKUserScript(source: narrowBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         ExtensionMessageBridge.shared.register(on: narrowConfig.userContentController)
-        narrowWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: narrowConfig)
+        let narrowWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: narrowConfig)
 
-        narrowBgHost = BackgroundHost(extension: narrowExt)
-        ExtensionManager.shared.backgroundHosts[narrowID] = narrowBgHost
-        narrowBgHost.start()
+        let narrowBgHost = BackgroundHost(extension: narrowExt)
+        ExtensionManager.shared.backgroundHosts[Self.narrowID] = narrowBgHost
+
+        let narrowBgExp = expectation(description: "Narrow BG ready")
+        narrowBgHost.start { narrowBgExp.fulfill() }
 
         // --- Shared Tab Infrastructure ---
-        testProfile = TabStore.shared.addProfile(name: "Tabs Test Profile")
-        testSpace = TabStore.shared.addSpace(name: "Tabs Test Space", emoji: "T", colorHex: "#000000", profileID: testProfile.id)
+        let testProfile = TabStore.shared.addProfile(name: "Tabs Test Profile")
+        let testSpace = TabStore.shared.addSpace(name: "Tabs Test Space", emoji: "T", colorHex: "#000000", profileID: testProfile.id)
         ExtensionManager.shared.lastActiveSpaceID = testSpace.id
 
         // Main test tab (used by allowed/denied tests)
         let tabConfig = WKWebViewConfiguration()
-        for ext in [allowedExt!, deniedExt!] {
+        for ext in [allowedExt, deniedExt] {
             let bundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: true)
             tabConfig.userContentController.addUserScript(
                 WKUserScript(source: bundle, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: ext.contentWorld))
             ExtensionMessageBridge.shared.register(on: tabConfig.userContentController, contentWorld: ext.contentWorld)
         }
         let tabWV = WKWebView(frame: .zero, configuration: tabConfig)
-        testBrowserTab = BrowserTab(webView: tabWV)
+        let testBrowserTab = BrowserTab(webView: tabWV)
         testSpace.tabs.append(testBrowserTab)
         testSpace.selectedTabID = testBrowserTab.id
-        testTabIntID = ExtensionManager.shared.tabIDMap.intID(for: testBrowserTab.id)
+        let testTabIntID = ExtensionManager.shared.tabIDMap.intID(for: testBrowserTab.id)
 
         // Host permission test tabs
         let allowedHostConfig = WKWebViewConfiguration()
@@ -199,9 +232,9 @@ final class TabsPermissionTests: XCTestCase {
             WKUserScript(source: ahBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: narrowExt.contentWorld))
         ExtensionMessageBridge.shared.register(on: allowedHostConfig.userContentController, contentWorld: narrowExt.contentWorld)
         let ahWV = WKWebView(frame: .zero, configuration: allowedHostConfig)
-        allowedHostTab = BrowserTab(webView: ahWV)
+        let allowedHostTab = BrowserTab(webView: ahWV)
         testSpace.tabs.append(allowedHostTab)
-        allowedHostTabIntID = ExtensionManager.shared.tabIDMap.intID(for: allowedHostTab.id)
+        let allowedHostTabIntID = ExtensionManager.shared.tabIDMap.intID(for: allowedHostTab.id)
 
         let deniedHostConfig = WKWebViewConfiguration()
         let dhBundle = ChromeAPIBundle.generateBundle(for: narrowExt, isContentScript: true)
@@ -209,88 +242,131 @@ final class TabsPermissionTests: XCTestCase {
             WKUserScript(source: dhBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: narrowExt.contentWorld))
         ExtensionMessageBridge.shared.register(on: deniedHostConfig.userContentController, contentWorld: narrowExt.contentWorld)
         let dhWV = WKWebView(frame: .zero, configuration: deniedHostConfig)
-        deniedHostTab = BrowserTab(webView: dhWV)
+        let deniedHostTab = BrowserTab(webView: dhWV)
         testSpace.tabs.append(deniedHostTab)
-        deniedHostTabIntID = ExtensionManager.shared.tabIDMap.intID(for: deniedHostTab.id)
+        let deniedHostTabIntID = ExtensionManager.shared.tabIDMap.intID(for: deniedHostTab.id)
 
         // Load all pages
         let html = "<html><body>test</body></html>"
 
         let allowedNavExp = expectation(description: "Allowed page loaded")
-        allowedNavDelegate = TestTabsNavDelegate { allowedNavExp.fulfill() }
+        let allowedNavDelegate = TestTabsNavDelegate { allowedNavExp.fulfill() }
         allowedWebView.navigationDelegate = allowedNavDelegate
         allowedWebView.loadHTMLString(html, baseURL: URL(string: "https://tabs-test.example.com")!)
 
         let deniedNavExp = expectation(description: "Denied page loaded")
-        deniedNavDelegate = TestTabsNavDelegate { deniedNavExp.fulfill() }
+        let deniedNavDelegate = TestTabsNavDelegate { deniedNavExp.fulfill() }
         deniedWebView.navigationDelegate = deniedNavDelegate
         deniedWebView.loadHTMLString(html, baseURL: URL(string: "https://tabs-test.example.com")!)
 
         let narrowNavExp = expectation(description: "Narrow page loaded")
-        narrowNavDelegate = TestTabsNavDelegate { narrowNavExp.fulfill() }
+        let narrowNavDelegate = TestTabsNavDelegate { narrowNavExp.fulfill() }
         narrowWebView.navigationDelegate = narrowNavDelegate
         narrowWebView.loadHTMLString(html, baseURL: URL(string: "https://tabs-test.example.com")!)
 
         let tabNavExp = expectation(description: "Tab page loaded")
-        tabNavDelegate = TestTabsNavDelegate { tabNavExp.fulfill() }
+        let tabNavDelegate = TestTabsNavDelegate { tabNavExp.fulfill() }
         tabWV.navigationDelegate = tabNavDelegate
         tabWV.loadHTMLString("<html><head><title>Test Tab</title></head><body>tab</body></html>",
                              baseURL: URL(string: "https://tab.test.example.com")!)
 
         let ahNavExp = expectation(description: "Allowed host tab loaded")
-        allowedHostNavDelegate = TestTabsNavDelegate { ahNavExp.fulfill() }
+        let allowedHostNavDelegate = TestTabsNavDelegate { ahNavExp.fulfill() }
         ahWV.navigationDelegate = allowedHostNavDelegate
         ahWV.loadHTMLString("<html><body>allowed host</body></html>",
                             baseURL: URL(string: "https://sub.allowed.test/page")!)
 
         let dhNavExp = expectation(description: "Denied host tab loaded")
-        deniedHostNavDelegate = TestTabsNavDelegate { dhNavExp.fulfill() }
+        let deniedHostNavDelegate = TestTabsNavDelegate { dhNavExp.fulfill() }
         dhWV.navigationDelegate = deniedHostNavDelegate
         dhWV.loadHTMLString("<html><body>denied host</body></html>",
                             baseURL: URL(string: "https://denied.test/page")!)
 
-        wait(for: [allowedNavExp, deniedNavExp, narrowNavExp, tabNavExp, ahNavExp, dhNavExp], timeout: 10.0)
+        wait(for: [allowedNavExp, deniedNavExp, narrowNavExp, tabNavExp, ahNavExp, dhNavExp,
+                   allowedBgExp, narrowBgExp], timeout: 10.0)
 
-        // Give background hosts time to initialize
-        let bgExp = expectation(description: "BG ready")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { bgExp.fulfill() }
-        wait(for: [bgExp], timeout: 5.0)
+        Self.shared = SharedState(
+            allowedDir: allowedDir,
+            allowedExt: allowedExt,
+            allowedWebView: allowedWebView,
+            allowedNavDelegate: allowedNavDelegate,
+            allowedBgHost: allowedBgHost,
+            deniedDir: deniedDir,
+            deniedExt: deniedExt,
+            deniedWebView: deniedWebView,
+            deniedNavDelegate: deniedNavDelegate,
+            narrowDir: narrowDir,
+            narrowExt: narrowExt,
+            narrowWebView: narrowWebView,
+            narrowNavDelegate: narrowNavDelegate,
+            narrowBgHost: narrowBgHost,
+            testProfile: testProfile,
+            testSpace: testSpace,
+            testBrowserTab: testBrowserTab,
+            testTabIntID: testTabIntID,
+            tabNavDelegate: tabNavDelegate,
+            allowedHostTab: allowedHostTab,
+            allowedHostTabIntID: allowedHostTabIntID,
+            allowedHostNavDelegate: allowedHostNavDelegate,
+            deniedHostTab: deniedHostTab,
+            deniedHostTabIntID: deniedHostTabIntID,
+            deniedHostNavDelegate: deniedHostNavDelegate
+        )
+    }
+
+    @MainActor
+    override func setUp() {
+        super.setUp()
+        createSharedStateIfNeeded()
+
+        let s = Self.shared!
+        allowedExt = s.allowedExt
+        allowedWebView = s.allowedWebView
+        deniedExt = s.deniedExt
+        deniedWebView = s.deniedWebView
+        narrowExt = s.narrowExt
+        narrowWebView = s.narrowWebView
+        testProfile = s.testProfile
+        testSpace = s.testSpace
+        testBrowserTab = s.testBrowserTab
+        testTabIntID = s.testTabIntID
+        allowedHostTab = s.allowedHostTab
+        allowedHostTabIntID = s.allowedHostTabIntID
+        deniedHostTab = s.deniedHostTab
+        deniedHostTabIntID = s.deniedHostTabIntID
     }
 
     @MainActor
     override func tearDown() {
-        allowedBgHost?.stop()
-        narrowBgHost?.stop()
+        // Don't tear down shared state — it's reused across tests
+        super.tearDown()
+    }
 
-        for ext in [allowedExt, deniedExt, narrowExt].compactMap({ $0 }) {
-            ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
-            ExtensionManager.shared.backgroundHosts.removeValue(forKey: ext.id)
-            AppDatabase.shared.storageClear(extensionID: ext.id)
-            AppDatabase.shared.deleteExtension(id: ext.id)
-        }
+    override class func tearDown() {
+        MainActor.assumeIsolated {
+            guard let s = shared else { return }
+            s.allowedBgHost.stop()
+            s.narrowBgHost.stop()
 
-        // Clean up tabs
-        for tab in [testBrowserTab, allowedHostTab, deniedHostTab].compactMap({ $0 }) {
-            ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
-        }
-        if let spaceID = testSpace?.id {
-            TabStore.shared.forceRemoveSpace(id: spaceID)
-            ExtensionManager.shared.spaceIDMap.remove(uuid: spaceID)
-        }
-        if let profileID = testProfile?.id {
-            TabStore.shared.forceRemoveProfile(id: profileID)
-        }
-        ExtensionManager.shared.lastActiveSpaceID = nil
+            for extID in [allowedID, deniedID, narrowID] {
+                ExtensionManager.shared.extensions.removeAll { $0.id == extID }
+                ExtensionManager.shared.backgroundHosts.removeValue(forKey: extID)
+                AppDatabase.shared.storageClear(extensionID: extID)
+                AppDatabase.shared.deleteExtension(id: extID)
+            }
 
-        allowedWebView = nil; deniedWebView = nil; narrowWebView = nil
-        allowedNavDelegate = nil; deniedNavDelegate = nil; narrowNavDelegate = nil
-        tabNavDelegate = nil; allowedHostNavDelegate = nil; deniedHostNavDelegate = nil
-        allowedExt = nil; deniedExt = nil; narrowExt = nil
-        testBrowserTab = nil; allowedHostTab = nil; deniedHostTab = nil
-        testSpace = nil; testProfile = nil
+            for tab in [s.testBrowserTab, s.allowedHostTab, s.deniedHostTab].compactMap({ $0 }) {
+                ExtensionManager.shared.tabIDMap.remove(uuid: tab.id)
+            }
+            TabStore.shared.forceRemoveSpace(id: s.testSpace.id)
+            ExtensionManager.shared.spaceIDMap.remove(uuid: s.testSpace.id)
+            TabStore.shared.forceRemoveProfile(id: s.testProfile.id)
+            ExtensionManager.shared.lastActiveSpaceID = nil
 
-        for d in [allowedDir, deniedDir, narrowDir].compactMap({ $0 }) {
-            try? FileManager.default.removeItem(at: d)
+            try? FileManager.default.removeItem(at: s.allowedDir)
+            try? FileManager.default.removeItem(at: s.deniedDir)
+            try? FileManager.default.removeItem(at: s.narrowDir)
+            shared = nil
         }
         super.tearDown()
     }

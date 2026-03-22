@@ -19,13 +19,32 @@ final class ContextMenusPermissionTests: XCTestCase {
     private var deniedWebView: WKWebView!
     private var deniedNavDelegate: TestCtxMenuNavDelegate!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
+    // MARK: - Shared one-time setup
+
+    private static let allowedExtensionID = "ctxmenu-allowed-test"
+    private static let deniedExtensionID = "ctxmenu-denied-test"
+
+    private struct SharedState {
+        let allowedDir: URL
+        let allowedExt: WebExtension
+        let allowedWebView: WKWebView
+        let allowedNavDelegate: TestCtxMenuNavDelegate
+        let deniedDir: URL
+        let deniedExt: WebExtension
+        let deniedWebView: WKWebView
+        let deniedNavDelegate: TestCtxMenuNavDelegate
+    }
+
+    private nonisolated(unsafe) static var shared: SharedState?
+
+    /// Create the shared test infrastructure once. Called from the first test's setUp.
+    private func createSharedStateIfNeeded() {
+        guard Self.shared == nil else { return }
 
         // --- Extension with contextMenus permission ---
-        allowedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-ctxmenu-allowed-\(UUID().uuidString)")
+        let allowedDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-ctxmenu-allowed-test")
+        try? FileManager.default.removeItem(at: allowedDir)
         try! FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
 
         let allowedManifestJSON = """
@@ -40,8 +59,8 @@ final class ContextMenusPermissionTests: XCTestCase {
                                        atomically: true, encoding: .utf8)
 
         let allowedManifest = try! ExtensionManifest.parse(at: allowedDir.appendingPathComponent("manifest.json"))
-        let allowedID = "ctxmenu-allowed-\(UUID().uuidString)"
-        allowedExt = WebExtension(id: allowedID, manifest: allowedManifest, basePath: allowedDir)
+        let allowedID = Self.allowedExtensionID
+        let allowedExt = WebExtension(id: allowedID, manifest: allowedManifest, basePath: allowedDir)
         ExtensionManager.shared.extensions.append(allowedExt)
 
         let allowedRecord = ExtensionRecord(
@@ -55,11 +74,12 @@ final class ContextMenusPermissionTests: XCTestCase {
         let allowedScript = WKUserScript(source: allowedBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         allowedConfig.userContentController.addUserScript(allowedScript)
         ExtensionMessageBridge.shared.register(on: allowedConfig.userContentController)
-        allowedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: allowedConfig)
+        let allowedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: allowedConfig)
 
         // --- Extension without contextMenus permission ---
-        deniedDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-ctxmenu-denied-\(UUID().uuidString)")
+        let deniedDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-ctxmenu-denied-test")
+        try? FileManager.default.removeItem(at: deniedDir)
         try! FileManager.default.createDirectory(at: deniedDir, withIntermediateDirectories: true)
 
         let deniedManifestJSON = """
@@ -74,8 +94,8 @@ final class ContextMenusPermissionTests: XCTestCase {
                                       atomically: true, encoding: .utf8)
 
         let deniedManifest = try! ExtensionManifest.parse(at: deniedDir.appendingPathComponent("manifest.json"))
-        let deniedID = "ctxmenu-denied-\(UUID().uuidString)"
-        deniedExt = WebExtension(id: deniedID, manifest: deniedManifest, basePath: deniedDir)
+        let deniedID = Self.deniedExtensionID
+        let deniedExt = WebExtension(id: deniedID, manifest: deniedManifest, basePath: deniedDir)
         ExtensionManager.shared.extensions.append(deniedExt)
 
         let deniedRecord = ExtensionRecord(
@@ -89,39 +109,73 @@ final class ContextMenusPermissionTests: XCTestCase {
         let deniedScript = WKUserScript(source: deniedBundle, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         deniedConfig.userContentController.addUserScript(deniedScript)
         ExtensionMessageBridge.shared.register(on: deniedConfig.userContentController)
-        deniedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: deniedConfig)
+        let deniedWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: deniedConfig)
 
         // Load pages
         let html = "<html><body>test</body></html>"
         let allowedNavExp = expectation(description: "Allowed page loaded")
-        allowedNavDelegate = TestCtxMenuNavDelegate { allowedNavExp.fulfill() }
+        let allowedNavDelegate = TestCtxMenuNavDelegate { allowedNavExp.fulfill() }
         allowedWebView.navigationDelegate = allowedNavDelegate
         allowedWebView.loadHTMLString(html, baseURL: URL(string: "https://ctxmenu-test.example.com")!)
 
         let deniedNavExp = expectation(description: "Denied page loaded")
-        deniedNavDelegate = TestCtxMenuNavDelegate { deniedNavExp.fulfill() }
+        let deniedNavDelegate = TestCtxMenuNavDelegate { deniedNavExp.fulfill() }
         deniedWebView.navigationDelegate = deniedNavDelegate
         deniedWebView.loadHTMLString(html, baseURL: URL(string: "https://ctxmenu-test.example.com")!)
 
         wait(for: [allowedNavExp, deniedNavExp], timeout: 10.0)
+
+        Self.shared = SharedState(
+            allowedDir: allowedDir,
+            allowedExt: allowedExt,
+            allowedWebView: allowedWebView,
+            allowedNavDelegate: allowedNavDelegate,
+            deniedDir: deniedDir,
+            deniedExt: deniedExt,
+            deniedWebView: deniedWebView,
+            deniedNavDelegate: deniedNavDelegate
+        )
+    }
+
+    @MainActor
+    override func setUp() {
+        super.setUp()
+        createSharedStateIfNeeded()
+
+        let s = Self.shared!
+        allowedDir = s.allowedDir
+        allowedExt = s.allowedExt
+        allowedWebView = s.allowedWebView
+        allowedNavDelegate = s.allowedNavDelegate
+        deniedDir = s.deniedDir
+        deniedExt = s.deniedExt
+        deniedWebView = s.deniedWebView
+        deniedNavDelegate = s.deniedNavDelegate
+
+        // Reset mutable state between tests
+        ExtensionManager.shared.contextMenuItems.removeValue(forKey: allowedExt.id)
+        ExtensionManager.shared.contextMenuItems.removeValue(forKey: deniedExt.id)
     }
 
     @MainActor
     override func tearDown() {
-        for ext in [allowedExt, deniedExt].compactMap({ $0 }) {
-            ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
-            ExtensionManager.shared.contextMenuItems.removeValue(forKey: ext.id)
-            AppDatabase.shared.storageClear(extensionID: ext.id)
-            AppDatabase.shared.deleteExtension(id: ext.id)
+        // Don't tear down shared state — it's reused across tests
+        super.tearDown()
+    }
+
+    override class func tearDown() {
+        MainActor.assumeIsolated {
+            guard let s = shared else { return }
+            for ext in [s.allowedExt, s.deniedExt] {
+                ExtensionManager.shared.extensions.removeAll { $0.id == ext.id }
+                ExtensionManager.shared.contextMenuItems.removeValue(forKey: ext.id)
+                AppDatabase.shared.storageClear(extensionID: ext.id)
+                AppDatabase.shared.deleteExtension(id: ext.id)
+            }
+            try? FileManager.default.removeItem(at: s.allowedDir)
+            try? FileManager.default.removeItem(at: s.deniedDir)
+            shared = nil
         }
-        allowedWebView = nil
-        deniedWebView = nil
-        allowedNavDelegate = nil
-        deniedNavDelegate = nil
-        allowedExt = nil
-        deniedExt = nil
-        if let d = allowedDir { try? FileManager.default.removeItem(at: d) }
-        if let d = deniedDir { try? FileManager.default.removeItem(at: d) }
         super.tearDown()
     }
 
