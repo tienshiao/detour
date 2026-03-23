@@ -363,6 +363,7 @@ class BrowserWindowController: NSWindowController {
         splitViewController.view.frame = window?.contentView?.bounds ?? .zero
         splitViewController.view.autoresizingMask = [.width, .height]
         window?.contentView?.addSubview(splitViewController.view)
+        window?.contentView?.wantsLayer = true
 
         setupEdgeHoverTracking()
     }

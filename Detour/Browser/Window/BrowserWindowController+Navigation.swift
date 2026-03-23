@@ -124,14 +124,24 @@ extension BrowserWindowController: WKNavigationDelegate {
     func handleCRXDownload(from url: URL?) {
         guard let url else { return }
 
+        let filename = url.lastPathComponent.hasSuffix(".crx") ? url.lastPathComponent : "Extension.crx"
+        let item = DownloadManager.shared.addManualItem(filename: filename, sourceURL: url)
+
+        triggerDownloadAnimation(iconName: "puzzlepiece.extension.fill")
+
         // Download CRX data via URLSession with Chrome UA
         var request = URLRequest(url: url)
         request.setValue(UserAgentMode.chromeUserAgent, forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
+                let wasCancelled = item.state == .cancelled
+                DownloadManager.shared.removeDownload(item)
+                guard !wasCancelled else { return }
                 self?.finishCRXInstall(data: data, error: error)
             }
-        }.resume()
+        }
+        item.observeURLSessionTask(task)
+        task.resume()
     }
 
     private func finishCRXInstall(data: Data?, error: Error?) {
@@ -258,7 +268,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         }
     }
 
-    internal func triggerDownloadAnimation() {
+    internal func triggerDownloadAnimation(iconName: String = "doc.fill") {
         guard let window = self.window else { return }
         let contentBounds = contentContainerView.bounds
         guard contentBounds.width > 0, contentBounds.height > 0 else { return }
@@ -277,7 +287,7 @@ extension BrowserWindowController: WKNavigationDelegate {
             destPoint = NSPoint(x: 20, y: 20)
         }
 
-        DownloadAnimation.animate(in: window, from: sourcePoint, to: destPoint)
+        DownloadAnimation.animate(in: window, from: sourcePoint, to: destPoint, iconName: iconName)
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,

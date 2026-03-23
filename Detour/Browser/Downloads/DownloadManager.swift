@@ -32,6 +32,7 @@ class DownloadItem: NSObject {
     let id: UUID
     let createdAt: Date
     var download: WKDownload?
+    var urlSessionTask: URLSessionTask?
 
     @Published var state: State = .downloading
     @Published var filename: String = ""
@@ -57,6 +58,28 @@ class DownloadItem: NSObject {
                 self.fractionCompleted = fraction
                 self.bytesWritten = download.progress.completedUnitCount
                 self.totalBytes = download.progress.totalUnitCount
+            }
+    }
+
+    init(filename: String, sourceURL: URL?) {
+        self.id = UUID()
+        self.createdAt = Date()
+        super.init()
+        self.filename = filename
+        self.sourceURL = sourceURL
+    }
+
+    func observeURLSessionTask(_ task: URLSessionTask) {
+        self.urlSessionTask = task
+        progressObservation = task.publisher(for: \.countOfBytesReceived)
+            .throttle(for: .milliseconds(100), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self, weak task] received in
+                guard let self, let task else { return }
+                self.bytesWritten = received
+                let expected = task.countOfBytesExpectedToReceive
+                let newTotal: Int64 = expected > 0 ? expected : -1
+                if self.totalBytes != newTotal { self.totalBytes = newTotal }
+                self.fractionCompleted = newTotal > 0 ? Double(received) / Double(newTotal) : 0
             }
     }
 
@@ -134,8 +157,17 @@ class DownloadManager: NSObject {
 
     // MARK: - Download Management
 
+    @discardableResult
     func handleNewDownload(_ download: WKDownload, sourceURL: URL?) -> DownloadItem {
-        let item = DownloadItem(download: download, sourceURL: sourceURL)
+        insertAndNotify(DownloadItem(download: download, sourceURL: sourceURL))
+    }
+
+    @discardableResult
+    func addManualItem(filename: String, sourceURL: URL?) -> DownloadItem {
+        insertAndNotify(DownloadItem(filename: filename, sourceURL: sourceURL))
+    }
+
+    private func insertAndNotify(_ item: DownloadItem) -> DownloadItem {
         items.insert(item, at: 0)
         notifyObservers { $0.downloadManagerDidAddItem(item) }
         return item
@@ -143,8 +175,10 @@ class DownloadManager: NSObject {
 
     func cancelDownload(_ item: DownloadItem) {
         item.download?.cancel { _ in }
+        item.urlSessionTask?.cancel()
         item.state = .cancelled
         item.download = nil
+        item.urlSessionTask = nil
         notifyObservers { $0.downloadManagerDidUpdateItem(item) }
         scheduleSave()
     }

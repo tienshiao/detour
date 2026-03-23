@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 
 enum DownloadAnimation {
-    static func animate(in window: NSWindow, from sourcePoint: NSPoint, to destPoint: NSPoint) {
+    static func animate(in window: NSWindow, from sourcePoint: NSPoint, to destPoint: NSPoint, iconName: String = "doc.fill") {
         guard let contentView = window.contentView, contentView.wantsLayer else { return }
         guard let rootLayer = contentView.layer else { return }
         guard sourcePoint.x.isFinite, sourcePoint.y.isFinite,
@@ -10,7 +10,7 @@ enum DownloadAnimation {
 
         let iconLayer = CALayer()
         let iconSize: CGFloat = 36
-        if let image = NSImage(systemSymbolName: "doc.fill", accessibilityDescription: nil) {
+        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
             let config = NSImage.SymbolConfiguration(pointSize: iconSize, weight: .medium)
             let configured = image.withSymbolConfiguration(config) ?? image
             iconLayer.contents = configured.layerContents(forContentsScale: window.backingScaleFactor)
