@@ -237,7 +237,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     }
 
     private func gatherTabInfos() -> [SuggestionProvider.TabInfo] {
-        (tabStore?.spaces ?? []).flatMap { space in
+        let isIncognito = profile?.isIncognito ?? false
+        let spaces = (tabStore?.spaces ?? []).filter { !isIncognito || $0.id == activeSpaceID }
+        return spaces.flatMap { space in
             (space.tabs + space.pinnedEntries.compactMap(\.tab)).map { tab in
                 SuggestionProvider.TabInfo(
                     tabID: tab.id,
