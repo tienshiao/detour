@@ -168,6 +168,31 @@ struct HistoryDatabase {
         }
     }
 
+    /// Look up a stored favicon URL for a page URL. Tries exact URL match first, then host match.
+    func faviconURL(for pageURL: String) -> String? {
+        do {
+            return try dbQueue.read { db in
+                // Exact URL match
+                if let url = try String.fetchOne(db, sql:
+                    "SELECT faviconURL FROM historyURL WHERE url = ? AND faviconURL IS NOT NULL",
+                    arguments: [pageURL]) {
+                    return url
+                }
+                // Host match — most recently visited entry with same host
+                guard let host = URL(string: pageURL)?.host else { return nil }
+                return try String.fetchOne(db, sql: """
+                    SELECT faviconURL FROM historyURL
+                    WHERE faviconURL IS NOT NULL AND (
+                        url LIKE ? OR url LIKE ?
+                    )
+                    ORDER BY lastVisitTime DESC LIMIT 1
+                    """, arguments: ["https://\(host)%", "http://\(host)%"])
+            }
+        } catch {
+            return nil
+        }
+    }
+
     func expireOldVisits(olderThan maxAge: TimeInterval = 90 * 24 * 3600) {
         do {
             try dbQueue.write { db in

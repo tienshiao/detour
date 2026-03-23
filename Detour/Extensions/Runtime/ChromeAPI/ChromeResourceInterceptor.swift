@@ -83,6 +83,35 @@ struct ChromeResourceInterceptor {
                 });
             };
 
+            // --- img.src override ---
+            // CSP in srcdoc iframes blocks chrome-extension:// image loads.
+            // Intercept img.src and use the bridged fetch to get a data URI instead.
+            var _origImgSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+            if (_origImgSrcDesc && _origImgSrcDesc.set) {
+                var _origImgSrcSet = _origImgSrcDesc.set;
+                Object.defineProperty(HTMLImageElement.prototype, 'src', {
+                    get: _origImgSrcDesc.get,
+                    set: function(value) {
+                        if (typeof value === 'string' && value.startsWith(extensionScheme)) {
+                            var img = this;
+                            fetch(value).then(function(resp) {
+                                if (!resp.ok) return;
+                                return resp.text();
+                            }).then(function(text) {
+                                if (text && text.startsWith('data:')) {
+                                    _origImgSrcSet.call(img, text);
+                                } else if (text) {
+                                    _origImgSrcSet.call(img, 'data:image/png;base64,' + btoa(text));
+                                }
+                            }).catch(function() {});
+                        } else {
+                            _origImgSrcSet.call(this, value);
+                        }
+                    },
+                    configurable: true
+                });
+            }
+
             // --- fetch override ---
             var _origFetch = window.fetch;
             window.fetch = function(input, init) {

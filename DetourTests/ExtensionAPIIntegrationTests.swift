@@ -1183,6 +1183,61 @@ final class ExtensionAPIIntegrationTests: XCTestCase {
         XCTAssertNil(json["frameId"], "sender.frameId should NOT be present for popup messages")
     }
 
+    func testNonContentScriptInTabIncludesSenderTab() {
+        // Extension iframes (srcdoc) run with isContentScript: false but inside a tab's
+        // WKWebView. sender.tab must still be populated — extensions like Vimium check
+        // sender.tab and ignore messages without it.
+        //
+        // Create a new WKWebView with the page-world API bundle and message bridge,
+        // add it as a tab, and verify sender.tab is present.
+        let iframeConfig = WKWebViewConfiguration()
+        let pageBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: false)
+        let pageScript = WKUserScript(source: pageBundle, injectionTime: .atDocumentStart,
+                                       forMainFrameOnly: true)
+        iframeConfig.userContentController.addUserScript(pageScript)
+        ExtensionMessageBridge.shared.register(on: iframeConfig.userContentController)
+
+        let iframeWV = WKWebView(frame: .zero, configuration: iframeConfig)
+        let iframeTab = BrowserTab(webView: iframeWV)
+        testSpace.tabs.append(iframeTab)
+        let iframeTabIntID = ExtensionManager.shared.tabIDMap.intID(for: iframeTab.id)
+        defer {
+            testSpace.tabs.removeAll { $0.id == iframeTab.id }
+            ExtensionManager.shared.tabIDMap.remove(uuid: iframeTab.id)
+        }
+
+        let navExp = expectation(description: "iframe tab loaded")
+        let navDel = TestNavigationDelegate { navExp.fulfill() }
+        iframeWV.navigationDelegate = navDel
+        iframeWV.loadHTMLString("<html><body>iframe tab</body></html>",
+                                baseURL: URL(string: "https://iframe.test.example.com")!)
+        wait(for: [navExp], timeout: 10.0)
+
+        // Send message from the page world (isContentScript: false)
+        let resultExp = expectation(description: "Page-world sendMessage")
+        var result: Any?
+        iframeWV.callAsyncJavaScript("""
+            const response = await chrome.runtime.sendMessage({ type: 'getSender' });
+            return JSON.stringify(response);
+        """, arguments: [:], in: nil, in: .page) { res in
+            if case .success(let value) = res { result = value }
+            resultExp.fulfill()
+        }
+        wait(for: [resultExp], timeout: 10.0)
+
+        guard let jsonString = result as? String,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            XCTFail("Failed to parse sender JSON: \(String(describing: result))")
+            return
+        }
+
+        let tab = json["tab"] as? [String: Any]
+        XCTAssertNotNil(tab, "sender.tab should be present for non-content-script messages from a tab's webView")
+        XCTAssertEqual(tab?["id"] as? Int, iframeTabIntID, "sender.tab.id should match the sending tab")
+        _ = navDel // prevent dealloc
+    }
+
     // MARK: - sender.documentId
 
     func testContentScriptSendMessageIncludesSenderDocumentId() {

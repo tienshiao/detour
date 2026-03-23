@@ -301,7 +301,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             handleOffscreenHasDocument(ctx: ctx, body: body)
 
         case MsgType.runtimeConnect:
-            handleRuntimeConnect(body: body, extensionID: extensionID, sourceWebView: message.webView)
+            handleRuntimeConnect(body: body, extensionID: extensionID, sourceWebView: message.webView, frameInfo: message.frameInfo)
 
         case MsgType.portPostMessage:
             handlePortPostMessage(body: body, extensionID: extensionID, sourceWebView: message.webView)
@@ -545,14 +545,12 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         if let senderURL = ctx.sourceWebView?.url?.absoluteString {
             sender["url"] = senderURL
         }
-        // For content scripts, include sender.tab, sender.frameId, and sender.documentId.
-        // Extensions like Dark Reader use sender.tab.id and sender.documentId to track
-        // which documents have content scripts.
-        if ctx.isContentScript, let sourceWebView = ctx.sourceWebView {
-            // Use the frameId from the payload (0 for top frame, non-zero for subframes).
-            // This is critical: Chrome assigns unique frameIds per frame, and extensions
-            // like Dark Reader use sender.frameId to track documents. Without unique IDs,
-            // iframe DOCUMENT_CONNECTs overwrite the main frame's entry in TabManager.
+        // Include sender.tab, sender.frameId, and sender.documentId when the source
+        // webView belongs to a tab. This applies to content scripts AND extension iframes
+        // (srcdoc) that run within a tab's webView. Extensions like Vimium check
+        // sender.tab in their background message handler and ignore messages without it.
+        if let sourceWebView = ctx.sourceWebView,
+           let (tab, space) = findTabByWebView(sourceWebView) {
             let frameId = body["frameId"] as? Int ?? 0
             sender["frameId"] = frameId
             if let documentId = body["documentId"] as? String {
@@ -562,10 +560,8 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
                     cachedDocumentIds[ObjectIdentifier(sourceWebView)] = documentId
                 }
             }
-            if let (tab, space) = findTabByWebView(sourceWebView) {
-                let isActive = space.selectedTabID == tab.id
-                sender["tab"] = buildTabInfo(tab: tab, space: space, isActive: isActive, includeURLFields: true, extension: ext)
-            }
+            let isActive = space.selectedTabID == tab.id
+            sender["tab"] = buildTabInfo(tab: tab, space: space, isActive: isActive, includeURLFields: true, extension: ext)
         }
         guard let senderData = try? JSONSerialization.data(withJSONObject: sender),
               let senderJSON = String(data: senderData, encoding: .utf8) else { return }
@@ -1690,6 +1686,9 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
     private struct PortConnection {
         weak var sourceWebView: WKWebView?
         let sourceContentWorld: WKContentWorld
+        /// The frame that opened the port. Used to route messages back to iframes
+        /// rather than the main frame. Nil means main frame.
+        let sourceFrameInfo: WKFrameInfo?
         weak var targetWebView: WKWebView?
         let targetContentWorld: WKContentWorld
         let portID: String
@@ -1731,7 +1730,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private func handleRuntimeConnect(body: [String: Any], extensionID: String, sourceWebView: WKWebView?) {
+    private func handleRuntimeConnect(body: [String: Any], extensionID: String, sourceWebView: WKWebView?, frameInfo: WKFrameInfo?) {
         cleanupOrphanedPorts()
         guard let portID = body["portID"] as? String else { return }
         let name = body["name"] as? String ?? ""
@@ -1742,10 +1741,12 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
         let sourceWorld: WKContentWorld = isContentScript ? ext.contentWorld : .page
 
-        // Store the port connection
+        // Store the port connection. Track frameInfo for subframes so port messages
+        // are routed back to the correct iframe rather than the main frame.
         openPorts[portID] = PortConnection(
             sourceWebView: sourceWebView,
             sourceContentWorld: sourceWorld,
+            sourceFrameInfo: frameInfo?.isMainFrame == true ? nil : frameInfo,
             targetWebView: backgroundHost.webView,
             targetContentWorld: .page,
             portID: portID
@@ -1780,16 +1781,21 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         // Route to the other end of the port
         let targetWebView: WKWebView?
         let targetWorld: WKContentWorld
+        let targetFrameInfo: WKFrameInfo?
         if sourceWebView === port.sourceWebView {
             targetWebView = port.targetWebView
             targetWorld = port.targetContentWorld
+            targetFrameInfo = nil
         } else {
             targetWebView = port.sourceWebView
             targetWorld = port.sourceContentWorld
+            targetFrameInfo = port.sourceFrameInfo
         }
 
         let js = "if (window.__extensionDispatchPortMessage) { window.__extensionDispatchPortMessage('\(portID)', \(messageJSON)); }"
-        if targetWorld == .page {
+        if let targetFrameInfo, !targetFrameInfo.isMainFrame {
+            targetWebView?.evaluateJavaScript(js, in: targetFrameInfo, in: targetWorld) { _ in }
+        } else if targetWorld == .page {
             targetWebView?.evaluateJavaScript(js) { _, _ in }
         } else {
             targetWebView?.evaluateJavaScript(js, in: nil, in: targetWorld) { _ in }
@@ -1810,12 +1816,21 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         // Notify the other end
         let js = "if (window.__extensionDispatchPortDisconnect) { window.__extensionDispatchPortDisconnect('\(portID)'); }"
 
-        // Notify both ends (the disconnect call came from one side)
+        // Notify the target (background) side
         let targetWorld = port.targetContentWorld
         if targetWorld == .page {
             port.targetWebView?.evaluateJavaScript(js) { _, _ in }
         } else {
             port.targetWebView?.evaluateJavaScript(js, in: nil, in: targetWorld) { _ in }
+        }
+
+        // Notify the source side (may be an iframe that needs frame-targeted delivery)
+        if let frameInfo = port.sourceFrameInfo, !frameInfo.isMainFrame {
+            port.sourceWebView?.evaluateJavaScript(js, in: frameInfo, in: port.sourceContentWorld) { _ in }
+        } else if port.sourceContentWorld == .page {
+            port.sourceWebView?.evaluateJavaScript(js) { _, _ in }
+        } else {
+            port.sourceWebView?.evaluateJavaScript(js, in: nil, in: port.sourceContentWorld) { _ in }
         }
     }
 
@@ -1963,6 +1978,12 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             return
         }
 
+        // Handle _favicon requests: look up favicon and return as base64 data URI
+        if path.hasPrefix("_favicon") {
+            handleResourceGetFavicon(ctx: ctx, path: path, ext: ext)
+            return
+        }
+
         let fileURL = ext.basePath.appendingPathComponent(path)
 
         // Security: ensure the path is within the extension's base directory
@@ -1980,6 +2001,75 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         if let ctx {
             deliverResponse(ctx, result: ["data": data, "mimeType": mimeType])
         }
+    }
+
+    private func handleResourceGetFavicon(ctx: MessageContext?, path: String, ext: WebExtension) {
+        // Parse pageUrl from the path's query string (e.g. "_favicon/?pageUrl=...&size=16")
+        let fullURL = "chrome-extension://\(ext.id)/\(path)"
+        guard let components = URLComponents(string: fullURL),
+              let pageUrl = components.queryItems?.first(where: { $0.name == "pageUrl" })?.value else {
+            if let ctx { deliverResponse(ctx, result: ["__error": "Bad request"]) }
+            return
+        }
+
+        // Check open tabs first
+        for space in TabStore.shared.spaces {
+            for tab in space.tabs {
+                if let favicon = tab.favicon,
+                   (tab.url?.absoluteString == pageUrl || tab.url?.host == URL(string: pageUrl)?.host) {
+                    returnFaviconImage(favicon, ctx: ctx)
+                    return
+                }
+            }
+        }
+
+        // Look up faviconURL from history
+        let faviconURLString: String
+        if let historyFavicon = HistoryDatabase.shared.faviconURL(for: pageUrl) {
+            faviconURLString = historyFavicon
+        } else if let parsed = URL(string: pageUrl), let host = parsed.host, let scheme = parsed.scheme {
+            faviconURLString = "\(scheme)://\(host)/favicon.ico"
+        } else {
+            if let ctx { deliverResponse(ctx, result: ["__error": "Not found"]) }
+            return
+        }
+
+        guard let faviconURL = URL(string: faviconURLString) else {
+            if let ctx { deliverResponse(ctx, result: ["__error": "Not found"]) }
+            return
+        }
+
+        // Fetch via URLSession (uses HTTP cache)
+        URLSession.shared.dataTask(with: faviconURL) { [weak self] data, response, _ in
+            DispatchQueue.main.async {
+                guard let data,
+                      let httpResponse = response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200,
+                      let image = NSImage(data: data) else {
+                    if let ctx { self?.deliverResponse(ctx, result: ["__error": "Not found"]) }
+                    return
+                }
+                self?.returnFaviconImage(image, ctx: ctx)
+            }
+        }.resume()
+    }
+
+    private func returnFaviconImage(_ image: NSImage, ctx: MessageContext?) {
+        guard let ctx else { return }
+        let size = NSSize(width: 16, height: 16)
+        let resized = NSImage(size: size)
+        resized.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: size))
+        resized.unlockFocus()
+        guard let tiff = resized.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            deliverResponse(ctx, result: ["__error": "Encoding failed"])
+            return
+        }
+        let base64 = png.base64EncodedString()
+        deliverResponse(ctx, result: ["data": "data:image/png;base64,\(base64)", "mimeType": "image/png", "isDataURI": true])
     }
 
     private func deliverCallbackResponse(callbackID: String, result: [[String: Any]], extensionID: String, webView: WKWebView?, isContentScript: Bool, frameInfo: WKFrameInfo? = nil) {

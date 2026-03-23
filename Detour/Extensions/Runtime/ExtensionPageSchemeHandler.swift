@@ -76,6 +76,12 @@ class ExtensionPageSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
+        // Handle the _favicon API (chrome-extension://{id}/_favicon/?pageUrl={url}&size={size})
+        if relativePath.hasPrefix("_favicon") {
+            handleFaviconRequest(url: url, ext: ext, task: urlSchemeTask)
+            return
+        }
+
         // Check for synthetic pages first (e.g. background host page)
         let syntheticKey = "\(extensionID)/\(relativePath)"
         if let syntheticData = syntheticPageData(for: syntheticKey) {
@@ -136,7 +142,124 @@ class ExtensionPageSchemeHandler: NSObject, WKURLSchemeHandler {
         urlSchemeTask.didFinish()
     }
 
-    func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {}
+    func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
+        stoppedTasks.add(urlSchemeTask as AnyObject)
+    }
+
+    // MARK: - _favicon API
+
+    /// Tracks stopped tasks so we don't call didReceive/didFinish on a cancelled task.
+    private var stoppedTasks = NSHashTable<AnyObject>.weakObjects()
+
+    private func handleFaviconRequest(url: URL, ext: WebExtension, task: WKURLSchemeTask) {
+        guard ext.manifest.permissions?.contains("favicon") == true else {
+            task.didFailWithError(URLError(.noPermissionsToReadFile))
+            return
+        }
+
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        guard let pageUrl = components?.queryItems?.first(where: { $0.name == "pageUrl" })?.value else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        let size = Int(components?.queryItems?.first(where: { $0.name == "size" })?.value ?? "") ?? 16
+
+        // 1. Check open tabs for an in-memory favicon
+        if let image = findTabFavicon(for: pageUrl) {
+            let pngData = resizedPNG(image: image, size: size)
+            serveFavicon(data: pngData, url: url, task: task)
+            return
+        }
+
+        // 2. Look up faviconURL from history, or fall back to /favicon.ico
+        let faviconURLString: String
+        if let historyFavicon = HistoryDatabase.shared.faviconURL(for: pageUrl) {
+            faviconURLString = historyFavicon
+        } else if let parsed = URL(string: pageUrl), let host = parsed.host, let scheme = parsed.scheme {
+            faviconURLString = "\(scheme)://\(host)/favicon.ico"
+        } else {
+            task.didFailWithError(URLError(.fileDoesNotExist))
+            return
+        }
+
+        guard let faviconURL = URL(string: faviconURLString) else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+
+        // 3. Fetch via URLSession (uses HTTP cache)
+        URLSession.shared.dataTask(with: faviconURL) { [weak self] data, response, _ in
+            DispatchQueue.main.async {
+                guard let self, !self.stoppedTasks.contains(task as AnyObject) else { return }
+                guard let data,
+                      let httpResponse = response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200,
+                      let image = NSImage(data: data) else {
+                    task.didFailWithError(URLError(.fileDoesNotExist))
+                    return
+                }
+                let pngData = self.resizedPNG(image: image, size: size)
+                self.serveFavicon(data: pngData, url: url, task: task)
+            }
+        }.resume()
+    }
+
+    private func findTabFavicon(for pageUrl: String) -> NSImage? {
+        for space in TabStore.shared.spaces {
+            for tab in space.tabs {
+                if tab.url?.absoluteString == pageUrl, let favicon = tab.favicon {
+                    return favicon
+                }
+            }
+            for entry in space.pinnedEntries {
+                if let tab = entry.tab, tab.url?.absoluteString == pageUrl, let favicon = tab.favicon {
+                    return favicon
+                }
+            }
+        }
+        // Also try host-level match
+        guard let targetHost = URL(string: pageUrl)?.host else { return nil }
+        for space in TabStore.shared.spaces {
+            for tab in space.tabs {
+                if tab.url?.host == targetHost, let favicon = tab.favicon {
+                    return favicon
+                }
+            }
+        }
+        return nil
+    }
+
+    private func resizedPNG(image: NSImage, size: Int) -> Data {
+        let targetSize = NSSize(width: size, height: size)
+        let resized = NSImage(size: targetSize)
+        resized.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: targetSize))
+        resized.unlockFocus()
+        guard let tiff = resized.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            return Data()
+        }
+        return png
+    }
+
+    private func serveFavicon(data: Data, url: URL, task: WKURLSchemeTask) {
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: [
+                "Content-Type": "image/png",
+                "Content-Length": "\(data.count)",
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "max-age=86400",
+            ]
+        )!
+        task.didReceive(response)
+        task.didReceive(data)
+        task.didFinish()
+    }
 
     static func mimeType(for url: URL) -> String {
         if let utType = UTType(filenameExtension: url.pathExtension), let mime = utType.preferredMIMEType {

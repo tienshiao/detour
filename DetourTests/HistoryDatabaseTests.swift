@@ -303,6 +303,51 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.faviconURL, "https://a.com/favicon.ico")
     }
 
+    // MARK: - faviconURL(for:)
+
+    func testFaviconURLExactMatch() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://example.com/page", title: "Page", faviconURL: "https://example.com/favicon.ico", spaceID: "space1")
+
+        let result = db.faviconURL(for: "https://example.com/page")
+        XCTAssertEqual(result, "https://example.com/favicon.ico")
+    }
+
+    func testFaviconURLHostFallback() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://example.com/other", title: "Other", faviconURL: "https://example.com/fav.png", spaceID: "space1")
+
+        // Different path, same host — should match via host fallback
+        let result = db.faviconURL(for: "https://example.com/page")
+        XCTAssertEqual(result, "https://example.com/fav.png")
+    }
+
+    func testFaviconURLReturnsNilWhenNoFavicon() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
+
+        let result = db.faviconURL(for: "https://example.com")
+        XCTAssertNil(result)
+    }
+
+    func testFaviconURLReturnsNilForUnknownHost() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://example.com", title: "Example", faviconURL: "https://example.com/fav.ico", spaceID: "space1")
+
+        let result = db.faviconURL(for: "https://unknown.com/page")
+        XCTAssertNil(result)
+    }
+
+    func testFaviconURLPrefersMostRecentForHost() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://example.com/old", title: "Old", faviconURL: "https://example.com/old.ico", spaceID: "space1")
+        db.recordVisit(url: "https://example.com/new", title: "New", faviconURL: "https://example.com/new.ico", spaceID: "space1")
+
+        // Host fallback should return the most recent entry's favicon
+        let result = db.faviconURL(for: "https://example.com/unknown")
+        XCTAssertEqual(result, "https://example.com/new.ico")
+    }
+
     // MARK: - expireOldVisits
 
     func testExpireKeepsURLWithRecentVisits() throws {
