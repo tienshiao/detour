@@ -46,11 +46,15 @@ extension BrowserWindowController: TabSidebarDelegate {
         if let tab = entry.tab {
             selectTab(id: tab.id)
         } else {
-            // Dormant — delete the pinned entry
+            // Dormant — activate the pinned entry and select the new tab
             let entryID = entry.id
             DispatchQueue.main.async { [weak self] in
                 guard let self, let space = self.activeSpace else { return }
-                self.store.deletePinnedEntry(id: entryID, in: space)
+                self.store.activatePinnedEntry(id: entryID, in: space)
+                if let entry = space.pinnedEntries.first(where: { $0.id == entryID }),
+                   let tab = entry.tab {
+                    self.selectTab(id: tab.id)
+                }
             }
         }
     }

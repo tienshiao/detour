@@ -191,9 +191,10 @@ class TabSidebarViewController: NSViewController {
         for (idx, item) in flattenedPinnedItems.enumerated() {
             let row = rowForPinnedItem(at: idx)
             switch item {
-            case .entry(_, let depth):
+            case .entry(let entry, let depth):
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
                     cell.indentLevel = depth
+                    cell.updatePinnedMode(entry: entry)
                 }
             case .folder(let folder, let depth):
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FolderCellView {
@@ -207,6 +208,7 @@ class TabSidebarViewController: NSViewController {
             let row = rowForNormalTab(at: i)
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
                 cell.indentLevel = 0
+                cell.updatePinnedMode(entry: nil)
             }
         }
 
@@ -1176,11 +1178,7 @@ extension TabSidebarViewController: NSTableViewDataSource {
                 let draggedTabID = self.tabs[srcIdx].id
                 isDragging = true
                 delegate?.tabSidebar(self, didDragTabToPinAt: srcIdx, destinationIndex: 0)
-                // Model is deferred in pendingState — look there for the newly pinned tab
-                if let pending = pendingState,
-                   pending.pinnedEntries.contains(where: { $0.id == draggedTabID || $0.tab?.id == draggedTabID }) {
-                    delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: draggedTabID, folderID: folder.id, beforeItemID: nil)
-                }
+                delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: draggedTabID, folderID: folder.id, beforeItemID: nil)
                 isDragging = false
                 applyPendingState(selectTabID: draggedTabID)
                 return true

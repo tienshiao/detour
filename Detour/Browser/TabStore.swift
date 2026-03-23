@@ -851,6 +851,7 @@ class TabStore {
         let maxEntryOrder = space.pinnedEntries.map(\.sortOrder).max() ?? -1
         let maxFolderOrder = space.pinnedFolders.map(\.sortOrder).max() ?? -1
         let entry = PinnedEntry(
+            id: tab.id,
             pinnedURL: tab.url ?? URL(string: "about:blank")!,
             pinnedTitle: tab.title,
             faviconURL: tab.faviconURL,
