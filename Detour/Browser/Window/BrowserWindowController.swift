@@ -57,7 +57,6 @@ class BrowserWindowController: NSWindowController {
     var contextMenuLinkAction: ContextMenuLinkAction = .none
 
     var peekOverlayView: PeekOverlayView?
-    private var peekTab: BrowserTab?
     private var displayTabSubscriptions = Set<AnyCancellable>()
     private var peekWebViewTopConstraint: NSLayoutConstraint?
     private var peekWebViewBottomConstraint: NSLayoutConstraint?
@@ -86,7 +85,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     var displayTab: BrowserTab? {
-        peekTab ?? selectedTab
+        selectedTab?.peekTab ?? selectedTab
     }
 
     private static let frameAutosaveName = "BrowserWindow"
@@ -254,11 +253,7 @@ class BrowserWindowController: NSWindowController {
         // Save current tab selection for the old space
         activeSpace?.selectedTabID = selectedTabID
 
-        // Save peek state to outgoing tab before switching spaces
-        if let previousTab = selectedTab, peekOverlayView != nil {
-            savePeekState(to: previousTab)
-        }
-        tearDownPeekUI()
+        hidePeekUI()
 
         activeSpaceID = id
         tabSidebar.activeSpaceID = id
@@ -620,11 +615,7 @@ class BrowserWindowController: NSWindowController {
 
         dismissCommandPalette()
 
-        // Save peek state to outgoing tab before tearing down UI
-        if let previousTab = selectedTab, peekOverlayView != nil {
-            savePeekState(to: previousTab)
-        }
-        tearDownPeekUI()
+        hidePeekUI()
 
         if let previousTab = selectedTab {
             previousTab.lastDeselectedAt = Date()
@@ -689,8 +680,12 @@ class BrowserWindowController: NSWindowController {
 
         tab.exitPictureInPicture()
 
-        // Restore peek overlay if the incoming tab had one
-        if let peekURL = tab.peekURL {
+        // Restore peek overlay if the incoming tab has one
+        if let existingPeek = tab.peekTab, let peekWebView = existingPeek.webView {
+            if existingPeek.isSleeping { existingPeek.wake() }
+            claimPeekWebView(peekWebView)
+            presentPeekWebView(peekWebView, clickPoint: nil, animate: false)
+        } else if let peekURL = tab.peekURL {
             showPeekOverlay(url: peekURL, clickPoint: nil, interactionState: tab.peekInteractionState)
         }
     }
@@ -775,7 +770,8 @@ class BrowserWindowController: NSWindowController {
 
     private func removeContentViews() {
         emptyStateLabel.isHidden = true
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== peekTab?.webView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipWebView {
+        let currentPeekWebView = selectedTab?.peekTab?.webView
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipWebView {
             if let webView = subview as? WKWebView {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "contextMenuInfo")
@@ -821,7 +817,7 @@ class BrowserWindowController: NSWindowController {
         tab.$canGoBack
             .receive(on: RunLoop.main)
             .sink { [weak self] canGoBack in
-                if self?.peekTab != nil {
+                if self?.selectedTab?.peekTab != nil {
                     self?.tabSidebar.backButton.isEnabled = canGoBack
                 } else {
                     let canCloseToParent = !canGoBack && self?.parentTab(for: tab) != nil
@@ -857,11 +853,8 @@ class BrowserWindowController: NSWindowController {
               let tab = selectedTab else { return }
 
         if ownsWebView {
-            // Save peek state before losing ownership
-            if peekOverlayView != nil {
-                savePeekState(to: tab)
-            }
-            tearDownPeekUI()
+            // Hide peek UI before losing ownership
+            hidePeekUI()
 
             ownsWebView = false
             if let image = notification.userInfo?["snapshot"] as? NSImage {
@@ -937,7 +930,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func reloadPage(_ sender: Any?) {
-        if let peek = peekTab {
+        if let peek = selectedTab?.peekTab {
             peek.webView?.reload()
             return
         }
@@ -971,7 +964,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     func navigateBackOrCloseChildTab() {
-        if let peek = peekTab {
+        if let peek = selectedTab?.peekTab {
             peek.webView?.goBack()
             return
         }
@@ -987,7 +980,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func goForward(_ sender: Any?) {
-        if let peek = peekTab {
+        if let peek = selectedTab?.peekTab {
             peek.webView?.goForward()
             return
         }
@@ -1021,7 +1014,7 @@ class BrowserWindowController: NSWindowController {
 
     @objc func focusAddressBar(_ sender: Any?) {
         // When peek is open, show peek URL but open a new tab (like Cmd+T)
-        commandPaletteNavigatesInPlace = peekTab == nil
+        commandPaletteNavigatesInPlace = selectedTab?.peekTab == nil
         showCommandPalette(initialText: displayTab?.url?.absoluteString)
     }
 
@@ -1103,7 +1096,7 @@ class BrowserWindowController: NSWindowController {
     @objc func closeCurrentTab(_ sender: Any?) {
         // If peek overlay is showing, dismiss it instead of closing the tab
         if peekOverlayView != nil {
-            dismissPeekOverlay()
+            closePeekOverlay()
             return
         }
 
@@ -1174,39 +1167,68 @@ class BrowserWindowController: NSWindowController {
 
     // MARK: - Peek Overlay
 
-    private func savePeekState(to tab: BrowserTab) {
-        tab.peekURL = peekTab?.webView?.url ?? tab.peekURL
-        if let state = peekTab?.webView?.interactionState {
-            tab.peekInteractionState = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
-        }
-    }
-
-    private func tearDownPeekUI() {
-        peekTab?.webView?.removeFromSuperview()
-        peekTab = nil
+    private func hidePeekUI() {
+        guard peekOverlayView != nil else { return }
+        selectedTab?.peekTab?.webView?.removeFromSuperview()
         peekOverlayView?.removeFromSuperview()
         peekOverlayView = nil
         displayTabSubscriptions.removeAll()
         bindDisplayTab()
     }
 
+    private func claimPeekWebView(_ webView: WKWebView) {
+        webView.navigationDelegate = self
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+        webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
+    }
+
     func showPeekOverlay(url: URL, clickPoint: CGPoint? = nil, interactionState: Data? = nil) {
-        guard let space = activeSpace else { return }
-        dismissPeekOverlay()
+        guard let tab = selectedTab, let space = activeSpace else { return }
+
+        if let existingPeek = tab.peekTab, let peekWebView = existingPeek.webView {
+            if existingPeek.url != url {
+                closePeekOverlay()
+            } else {
+                hidePeekUI()
+                presentPeekWebView(peekWebView, clickPoint: clickPoint, animate: true)
+                return
+            }
+        }
+
+        hidePeekUI()
 
         let config = space.makeWebViewConfiguration()
-        let peekTab = BrowserTab(configuration: config)
-        guard let peekWebView = peekTab.webView else { return }
-        peekWebView.navigationDelegate = self
+        let newPeekTab = BrowserTab(configuration: config)
+        guard let peekWebView = newPeekTab.webView else { return }
+        claimPeekWebView(peekWebView)
         peekWebView.allowsBackForwardNavigationGestures = true
-        peekWebView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-        peekWebView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
-        self.peekTab = peekTab
+        tab.peekTab = newPeekTab
 
+        presentPeekWebView(peekWebView, clickPoint: clickPoint, animate: true)
+
+        // Restore from interaction state if available, otherwise load URL
+        if let interactionState,
+           let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: interactionState) {
+            unarchiver.requiresSecureCoding = false
+            if let state = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) {
+                peekWebView.interactionState = state
+            } else {
+                peekWebView.load(URLRequest(url: url))
+            }
+        } else {
+            peekWebView.load(URLRequest(url: url))
+        }
+
+        tab.peekURL = url
+        store.scheduleSave()
+    }
+
+    /// Sets up peek overlay chrome and adds the peek webview to the view hierarchy.
+    private func presentPeekWebView(_ peekWebView: WKWebView, clickPoint: CGPoint?, animate: Bool) {
         let overlay = PeekOverlayView(clickPoint: clickPoint)
         overlay.translatesAutoresizingMaskIntoConstraints = false
         overlay.onClose = { [weak self] in
-            self?.dismissPeekOverlay()
+            self?.closePeekOverlay()
         }
         overlay.onExpand = { [weak self] in
             self?.expandPeekToNewTab()
@@ -1240,48 +1262,39 @@ class BrowserWindowController: NSWindowController {
         // Force layout so the overlay and shadowContainer have valid frames,
         // then start the animation. This must happen after constraints are activated.
         contentContainerView.layoutSubtreeIfNeeded()
-        overlay.animateOpen()
 
-        // Match the open animation on the webview: scale transform in sync + quick fade
-        peekWebView.alphaValue = 0
-        if let anim = overlay.webViewOpenAnimation(), let layer = peekWebView.layer {
-            layer.transform = CATransform3DIdentity
-            layer.add(anim, forKey: "openScale")
-        }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.1
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            context.allowsImplicitAnimation = true
-            peekWebView.alphaValue = 1
-        }
+        if animate {
+            overlay.animateOpen()
 
-        // Restore from interaction state if available, otherwise load URL
-        if let interactionState,
-           let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: interactionState) {
-            unarchiver.requiresSecureCoding = false
-            if let state = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) {
-                peekWebView.interactionState = state
-            } else {
-                peekWebView.load(URLRequest(url: url))
+            // Match the open animation on the webview: scale transform in sync + quick fade
+            peekWebView.alphaValue = 0
+            if let anim = overlay.webViewOpenAnimation(), let layer = peekWebView.layer {
+                layer.transform = CATransform3DIdentity
+                layer.add(anim, forKey: "openScale")
             }
-        } else {
-            peekWebView.load(URLRequest(url: url))
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.1
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                peekWebView.alphaValue = 1
+            }
         }
 
         peekOverlayView = overlay
-        selectedTab?.peekURL = url
-        store.scheduleSave()
         bindDisplayTab()
     }
 
-    private func dismissPeekOverlay() {
+    /// Closes and destroys the peek tab. Used when the user explicitly dismisses.
+    private func closePeekOverlay() {
         guard let overlay = peekOverlayView else { return }
-        selectedTab?.peekURL = nil
-        selectedTab?.peekInteractionState = nil
+        let tab = selectedTab
+        let peekWebView = tab?.peekTab?.webView
+        peekWebView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+        tab?.peekURL = nil
+        tab?.peekInteractionState = nil
+        tab?.peekTab = nil
         store.scheduleSave()
         peekOverlayView = nil
-        let peekWebView = peekTab?.webView
-        peekTab = nil
         bindDisplayTab()
         overlay.animateClose {
             overlay.removeFromSuperview()
@@ -1301,26 +1314,25 @@ class BrowserWindowController: NSWindowController {
             peekWebView?.removeFromSuperview()
         }
         // Restore first responder to the web view
-        if let webView = selectedTab?.webView {
+        if let webView = tab?.webView {
             window?.makeFirstResponder(webView)
         }
     }
 
     private func expandPeekToNewTab() {
         guard let overlay = peekOverlayView,
-              let webView = peekTab?.webView,
+              let webView = selectedTab?.peekTab?.webView,
               let space = activeSpace else {
-            dismissPeekOverlay()
+            closePeekOverlay()
             return
         }
 
         // Clear peek state on original tab
+        selectedTab?.peekTab = nil
         selectedTab?.peekURL = nil
         selectedTab?.peekInteractionState = nil
         store.scheduleSave()
 
-        // Nil ghost tab BEFORE creating real tab to avoid double KVO
-        peekTab = nil
         displayTabSubscriptions.removeAll()
 
         // Create tab with the existing webview
@@ -1442,10 +1454,8 @@ extension BrowserWindowController: NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let tab = selectedTab, peekOverlayView != nil {
-            savePeekState(to: tab)
-        }
-        tearDownPeekUI()
+        selectedTab?.savePeekStateForPersistence()
+        hidePeekUI()
         store.saveNow()
         store.removeObserver(self)
 
@@ -1547,8 +1557,8 @@ extension BrowserWindowController: WKScriptMessageHandler {
                 browserWebView.lastContextInfo = info
             }
         } else if message.name == BlockedResourceTracker.messageName, let count = message.body as? Int {
-            if peekTab != nil, message.webView == peekTab?.webView {
-                peekTab?.blockedCount = count
+            if let peek = selectedTab?.peekTab, message.webView == peek.webView {
+                peek.blockedCount = count
             } else {
                 selectedTab?.blockedCount = count
             }

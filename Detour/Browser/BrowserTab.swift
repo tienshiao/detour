@@ -33,8 +33,16 @@ class BrowserTab: NSObject {
     private var cachedInteractionState: Data?
 
     // MARK: - Peek State
+    var peekTab: BrowserTab?
     var peekURL: URL?
     var peekInteractionState: Data?
+
+    func savePeekStateForPersistence() {
+        peekURL = peekTab?.webView?.url ?? peekURL
+        if let data = peekTab?.currentInteractionStateData() {
+            peekInteractionState = data
+        }
+    }
 
     // MARK: - Archiving
 
@@ -307,6 +315,11 @@ class BrowserTab: NSObject {
 
     func sleep() {
         guard let webView, !isSleeping, !isPlayingAudio else { return }
+
+        if let peek = peekTab {
+            savePeekStateForPersistence()
+            peek.sleep()
+        }
 
         // Capture interaction state for later restoration
         if let state = webView.interactionState {
