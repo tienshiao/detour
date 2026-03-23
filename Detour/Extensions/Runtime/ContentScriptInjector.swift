@@ -44,6 +44,8 @@ class ContentScriptInjector {
         let iframeAPIBundle = ChromeAPIBundle.generateBundle(for: ext, isContentScript: false, includeResourceInterceptor: true)
         let srcdocPolyfillJS = """
         if (window.location.href === 'about:srcdoc') {
+            var ownerExtId = window.frameElement && window.frameElement.getAttribute('data-detour-extension-id');
+            if (!ownerExtId || ownerExtId === '\(ext.id)') {
             \(iframeAPIBundle)
 
             function requestScriptInjection() {
@@ -68,6 +70,7 @@ class ContentScriptInjector {
             } else {
                 requestScriptInjection();
             }
+            }
         }
         """
         let srcdocPolyfillScript = WKUserScript(
@@ -85,6 +88,7 @@ class ContentScriptInjector {
             window.__detourIframeInterceptInstalled = true;
 
             const EXT_SCHEME = 'chrome-extension:';
+            const DETOUR_EXT_ID = '\(ext.id)';
 
             const srcdocCache = new Map();
 
@@ -308,6 +312,7 @@ class ContentScriptInjector {
                     const url = new URL(value, location.href);
                     if (url.protocol === EXT_SCHEME) {
                         iframe.setAttribute('data-detour-ext-iframe', '1');
+                        iframe.setAttribute('data-detour-extension-id', DETOUR_EXT_ID);
 
                         // Suppress ALL load events until scripts are injected.
                         iframe.__detourSuppressLoad = true;

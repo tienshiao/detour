@@ -829,8 +829,10 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
         guard let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
 
-        // Read scripts from the content world's __detourPendingScripts global
-        let readJS = "JSON.stringify(window.__detourPendingScripts && window.__detourPendingScripts['\(requestId)'] || [])"
+        // Read scripts from the content world's __detourPendingScripts global.
+        // Use hasOwnProperty to distinguish "key missing" (this extension doesn't own the iframe)
+        // from "key exists with empty scripts" (the iframe legitimately has no scripts).
+        let readJS = "JSON.stringify(window.__detourPendingScripts && window.__detourPendingScripts.hasOwnProperty('\(requestId)') ? window.__detourPendingScripts['\(requestId)'] : null)"
         webView.evaluateJavaScript(readJS, in: nil, in: ext.contentWorld) { result in
             let jsonString: String
             switch result {
@@ -842,6 +844,13 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
                 jsonString = str
             case .failure(let error):
                 log.error("evalIframeScripts: read failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+
+            // null means the key didn't exist — this extension doesn't own this iframe.
+            // Don't signal ready; let the owning extension handle it.
+            if jsonString == "null" {
+                log.debug("evalIframeScripts: no pending scripts for requestId in extension \(extensionID, privacy: .public) — skipping (not owner)")
                 return
             }
 
