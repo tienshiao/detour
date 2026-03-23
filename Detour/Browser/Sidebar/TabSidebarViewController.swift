@@ -28,6 +28,9 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinTabAt index: Int)
     func tabSidebarSpacesForContextMenu(_ sidebar: TabSidebarViewController) -> [(id: UUID, name: String, emoji: String, isCurrent: Bool)]
 
+    // Pinned entry operations
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String)
+
     // Folder operations
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNewFolderIn parentFolderID: UUID?)
@@ -51,6 +54,7 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestPinTabAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinTabAt index: Int) {}
     func tabSidebarSpacesForContextMenu(_ sidebar: TabSidebarViewController) -> [(id: UUID, name: String, emoji: String, isCurrent: Bool)] { [] }
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNewFolderIn parentFolderID: UUID?) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedFolder folderID: UUID, newName: String) {}
@@ -1577,6 +1581,10 @@ extension TabSidebarViewController: NSMenuDelegate {
             menu.addItem(.separator())
 
             if isPinned {
+                let renameItem = NSMenuItem(title: "Rename…", action: #selector(contextMenuRenamePinnedTab(_:)), keyEquivalent: "")
+                renameItem.target = self
+                menu.addItem(renameItem)
+
                 let unpinItem = NSMenuItem(title: "Unpin Tab", action: #selector(contextMenuUnpinTab(_:)), keyEquivalent: "")
                 unpinItem.target = self
                 menu.addItem(unpinItem)
@@ -1629,6 +1637,22 @@ extension TabSidebarViewController: NSMenuDelegate {
 
     @objc private func contextMenuUnpinTab(_ sender: NSMenuItem) {
         delegate?.tabSidebar(self, didRequestUnpinTabAt: contextMenuTabIndex)
+    }
+
+    @objc private func contextMenuRenamePinnedTab(_ sender: NSMenuItem) {
+        let entry = pinnedEntries[contextMenuTabIndex]
+        guard let flatIdx = flattenedPinnedItems.firstIndex(where: {
+            if case .entry(let e, _) = $0, e.id == entry.id { return true }
+            return false
+        }) else { return }
+        let row = rowForPinnedItem(at: flatIdx)
+        guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView else { return }
+        cell.titleLabel.stringValue = entry.pinnedTitle
+        cell.onRename = { [weak self] newName in
+            guard let self else { return }
+            self.delegate?.tabSidebar(self, didRequestRenamePinnedTab: entry.id, newName: newName)
+        }
+        cell.beginEditing()
     }
 
     @objc private func contextMenuArchiveTab(_ sender: NSMenuItem) {

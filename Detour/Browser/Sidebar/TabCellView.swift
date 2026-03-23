@@ -21,7 +21,7 @@ class TabRowView: NSTableRowView {
     }
 }
 
-class TabCellView: NSTableCellView {
+class TabCellView: NSTableCellView, NSTextFieldDelegate {
     enum LoadingIndicatorMode {
         case ringSpinner   // Option A: spinning ring around favicon -- not currently used, still buggy/incomplete
         case progressBar   // Option B: background progress bar
@@ -42,6 +42,8 @@ class TabCellView: NSTableCellView {
     private let hoverBackground = NSView()
     var onClose: (() -> Void)?
     var onToggleMute: (() -> Void)?
+    var onRename: ((String) -> Void)?
+    private var isEditing = false
     var indentLevel: Int = 0 {
         didSet {
             faviconLeadingConstraint.constant = 4 + CGFloat(indentLevel) * 16
@@ -158,6 +160,8 @@ class TabCellView: NSTableCellView {
         closeButton.isHidden = true
         hoverBackground.isHidden = true
         indentLevel = 0
+        onRename = nil
+        if isEditing { endEditing(commit: false) }
         updateLayoutState()
     }
 
@@ -412,6 +416,44 @@ class TabCellView: NSTableCellView {
 
     @objc private func closeTapped() {
         onClose?()
+    }
+
+    // MARK: - Inline Rename
+
+    func beginEditing() {
+        isEditing = true
+        titleLabel.isEditable = true
+        titleLabel.isBezeled = false
+        titleLabel.drawsBackground = false
+        titleLabel.focusRingType = .none
+        titleLabel.delegate = self
+        titleLabel.selectText(nil)
+    }
+
+    private func endEditing(commit: Bool) {
+        guard isEditing else { return }
+        isEditing = false
+        titleLabel.isEditable = false
+        if commit {
+            let newName = titleLabel.stringValue.trimmingCharacters(in: .whitespaces)
+            if !newName.isEmpty {
+                onRename?(newName)
+            }
+        }
+    }
+
+    func control(_ control: NSControl, textShouldEndEditing fieldEditor: NSText) -> Bool {
+        endEditing(commit: true)
+        return true
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(cancelOperation(_:)) {
+            endEditing(commit: false)
+            window?.makeFirstResponder(superview)
+            return true
+        }
+        return false
     }
 }
 

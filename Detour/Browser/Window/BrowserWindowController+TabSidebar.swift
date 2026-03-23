@@ -235,6 +235,11 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.addPinnedFolder(name: "New Folder", parentFolderID: parentFolderID, in: space)
     }
 
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String) {
+        guard let space = activeSpace else { return }
+        store.renamePinnedEntry(id: entryID, name: newName, in: space)
+    }
+
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedFolder folderID: UUID, newName: String) {
         guard let space = activeSpace else { return }
         store.renamePinnedFolder(id: folderID, name: newName, in: space)

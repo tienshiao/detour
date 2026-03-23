@@ -963,6 +963,13 @@ class TabStore {
         scheduleSave()
     }
 
+    func renamePinnedEntry(id: UUID, name: String, in space: Space) {
+        guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
+        space.pinnedEntries[index].pinnedTitle = name
+        notifyObservers { $0.tabStoreDidUpdatePinnedEntry(space.pinnedEntries[index], at: index, in: space) }
+        scheduleSave()
+    }
+
     func renamePinnedFolder(id: UUID, name: String, in space: Space) {
         guard let folder = space.pinnedFolders.first(where: { $0.id == id }) else { return }
         folder.name = name
