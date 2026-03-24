@@ -684,10 +684,12 @@ class TabStore {
         let space = spaces.remove(at: index)
         for tab in space.tabs {
             tabSubscriptions.removeValue(forKey: tab.id)
+            tab.teardown()
         }
         for entry in space.pinnedEntries {
             if let tab = entry.tab {
                 tabSubscriptions.removeValue(forKey: tab.id)
+                tab.teardown()
             }
         }
         // Clean up closed tab records for this space
@@ -835,6 +837,7 @@ class TabStore {
 
         tabSubscriptions.removeValue(forKey: tab.id)
         space.tabs.remove(at: index)
+        tab.teardown()
         notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: space) }
         scheduleSave()
     }

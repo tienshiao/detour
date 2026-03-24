@@ -360,6 +360,18 @@ class BrowserTab: NSObject {
         }.resume()
     }
 
+    /// Used when closing a tab to immediately stop media and release the webview.
+    func teardown() {
+        peekTab?.teardown()
+        peekTab = nil
+        guard let webView else { return }
+        webView.removeObserver(self, forKeyPath: "_isPlayingAudio")
+        faviconCancellables.removeAll()
+        webView.pauseAllMediaPlayback(completionHandler: nil)
+        webView.removeFromSuperview()
+        self.webView = nil
+    }
+
     // MARK: - Sleep / Wake
 
     func sleep() {
