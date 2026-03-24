@@ -6,6 +6,7 @@ import WebKit
 class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     static let shared = SettingsWindowController()
 
+    private static let generalID = NSToolbarItem.Identifier("general")
     private static let profilesID = NSToolbarItem.Identifier("profiles")
     private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
@@ -13,7 +14,7 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let fixedWidth: CGFloat = 740
 
     private var panes: [NSToolbarItem.Identifier: NSViewController] = [:]
-    private let paneOrder: [NSToolbarItem.Identifier] = [profilesID, extensionsID, contentBlockerID]
+    private let paneOrder: [NSToolbarItem.Identifier] = [generalID, profilesID, extensionsID, contentBlockerID]
 
     private init() {
         let window = NSWindow(
@@ -28,6 +29,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
         super.init(window: window)
 
+        let generalVC = GeneralSettingsViewController()
+        panes[Self.generalID] = generalVC
+
         let profilesVC = ProfilesSettingsViewController()
         panes[Self.profilesID] = profilesVC
 
@@ -40,10 +44,10 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         let toolbar = NSToolbar(identifier: "SettingsToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
-        toolbar.selectedItemIdentifier = Self.profilesID
+        toolbar.selectedItemIdentifier = Self.generalID
         window.toolbar = toolbar
 
-        window.contentViewController = profilesVC
+        window.contentViewController = generalVC
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -60,6 +64,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         switch itemIdentifier {
+        case Self.generalID:
+            item.label = "General"
+            item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "General")
         case Self.profilesID:
             item.label = "Profiles"
             item.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: "Profiles")
