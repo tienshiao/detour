@@ -1140,9 +1140,11 @@ class BrowserWindowController: NSWindowController {
         let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
 
-        let nextID: UUID? = tabs.count > 1
-            ? tabs[index == tabs.count - 1 ? index - 1 : index + 1].id
-            : nil
+        let nextID: UUID? = tabCloseSelectionID(
+            closingIndex: index,
+            tabs: tabs.map { ($0.id, $0.parentID) },
+            pinnedTabIDs: Set(space.pinnedEntries.compactMap { $0.tab?.id })
+        )
 
         store.closeTab(id: tabs[index].id, in: space)
 
