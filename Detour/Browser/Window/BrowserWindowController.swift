@@ -1181,6 +1181,7 @@ class BrowserWindowController: NSWindowController {
 
     private func claimPeekWebView(_ webView: WKWebView) {
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
     }
