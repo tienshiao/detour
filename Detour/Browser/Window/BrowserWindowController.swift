@@ -1192,6 +1192,7 @@ class BrowserWindowController: NSWindowController {
             .removeDuplicates(by: ===)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
+                self?.selectedTab?.peekFaviconURL = peekTab.faviconURL
                 self?.reloadSelectedTabSidebarCell()
             }
     }
@@ -1317,9 +1318,7 @@ class BrowserWindowController: NSWindowController {
         let peekWebView = tab?.peekTab?.webView
         peekWebView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         peekFaviconSubscription = nil
-        tab?.peekURL = nil
-        tab?.peekInteractionState = nil
-        tab?.peekTab = nil
+        tab?.clearPeekState()
         reloadSelectedTabSidebarCell()
         store.scheduleSave()
         peekOverlayView = nil
@@ -1357,9 +1356,7 @@ class BrowserWindowController: NSWindowController {
 
         // Clear peek state on original tab
         peekFaviconSubscription = nil
-        selectedTab?.peekTab = nil
-        selectedTab?.peekURL = nil
-        selectedTab?.peekInteractionState = nil
+        selectedTab?.clearPeekState()
         reloadSelectedTabSidebarCell()
         store.scheduleSave()
 

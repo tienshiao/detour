@@ -398,7 +398,8 @@ class TabStore {
                     lastDeselectedAt: tab.lastDeselectedAt?.timeIntervalSince1970,
                     parentID: tab.parentID?.uuidString,
                     peekURL: tab.peekURL?.absoluteString,
-                    peekInteractionState: tab.peekInteractionState
+                    peekInteractionState: tab.peekInteractionState,
+                    peekFaviconURL: tab.peekFaviconURL?.absoluteString
                 ))
             }
 
@@ -417,7 +418,8 @@ class TabStore {
                     lastDeselectedAt: tab.lastDeselectedAt?.timeIntervalSince1970,
                     parentID: tab.parentID?.uuidString,
                     peekURL: tab.peekURL?.absoluteString,
-                    peekInteractionState: tab.peekInteractionState
+                    peekInteractionState: tab.peekInteractionState,
+                    peekFaviconURL: tab.peekFaviconURL?.absoluteString
                 ))
             }
 
@@ -531,6 +533,8 @@ class TabStore {
                 tab.parentID = tabRecord.parentID.flatMap { UUID(uuidString: $0) }
                 tab.peekURL = tabRecord.peekURL.flatMap { URL(string: $0) }
                 tab.peekInteractionState = tabRecord.peekInteractionState
+                tab.peekFaviconURL = tabRecord.peekFaviconURL.flatMap { URL(string: $0) }
+                tab.downloadPeekFavicon()
                 space.tabs.append(tab)
                 self.subscribeToTab(tab, spaceID: spaceID)
             }
@@ -581,6 +585,8 @@ class TabStore {
                     backingTab?.spaceID = spaceID
                     backingTab?.peekURL = tabRecord.peekURL.flatMap { URL(string: $0) }
                     backingTab?.peekInteractionState = tabRecord.peekInteractionState
+                    backingTab?.peekFaviconURL = tabRecord.peekFaviconURL.flatMap { URL(string: $0) }
+                    backingTab?.downloadPeekFavicon()
                     if let tab = backingTab {
                         self.subscribeToTab(tab, spaceID: spaceID)
                     }
@@ -1184,6 +1190,7 @@ class TabStore {
         observe(\.$title)
         observe(\.$url, save: true)
         observe(\.$favicon, save: true)
+        observe(\.$peekFavicon)
         observe(\.$isPlayingAudio)
         observe(\.$isMuted)
 

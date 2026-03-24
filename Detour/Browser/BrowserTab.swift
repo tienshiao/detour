@@ -36,12 +36,41 @@ class BrowserTab: NSObject {
     var peekTab: BrowserTab?
     var peekURL: URL?
     var peekInteractionState: Data?
+    var peekFaviconURL: URL?
+    @Published var peekFavicon: NSImage?
 
     func savePeekStateForPersistence() {
         peekURL = peekTab?.webView?.url ?? peekURL
+        peekFaviconURL = peekTab?.faviconURL ?? peekFaviconURL
         if let data = peekTab?.currentInteractionStateData() {
             peekInteractionState = data
         }
+    }
+
+    var displayPeekFavicon: NSImage? {
+        peekTab?.favicon ?? peekFavicon
+    }
+
+    func clearPeekState() {
+        peekTab = nil
+        peekURL = nil
+        peekInteractionState = nil
+        peekFaviconURL = nil
+        peekFavicon = nil
+    }
+
+    func downloadPeekFavicon() {
+        guard let url = peekFaviconURL else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, response, _ in
+            guard let data,
+                  let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  let image = NSImage(data: data) else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.peekFavicon = image
+            }
+        }.resume()
     }
 
     // MARK: - Archiving

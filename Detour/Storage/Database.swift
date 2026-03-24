@@ -347,6 +347,7 @@ struct AppDatabase {
                 t.column("parentID", .text)
                 t.column("peekURL", .text)
                 t.column("peekInteractionState", .blob)
+                t.column("peekFaviconURL", .text)
             }
 
             // App state

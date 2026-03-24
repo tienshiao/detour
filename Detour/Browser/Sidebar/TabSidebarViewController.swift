@@ -1310,7 +1310,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 cell.titleLabel.stringValue = title
                 cell.toolTip = entry.pinnedTitle
                 cell.updateFavicon(favicon)
-                cell.updatePeekFavicon(tab?.peekTab?.favicon)
+                cell.updatePeekFavicon(tab?.displayPeekFavicon)
                 cell.updateSleeping(isSleeping || !entry.isLive)
                 cell.updateLoading(isLoading)
                 cell.updateProgress(progress)
@@ -1367,7 +1367,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.titleLabel.stringValue = title
         cell.toolTip = tab.title
         cell.updateFavicon(tab.favicon)
-        cell.updatePeekFavicon(tab.peekTab?.favicon)
+        cell.updatePeekFavicon(tab.displayPeekFavicon)
         cell.updateSleeping(tab.isSleeping)
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.estimatedProgress)

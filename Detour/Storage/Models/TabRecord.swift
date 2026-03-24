@@ -15,4 +15,5 @@ struct TabRecord: Codable, FetchableRecord, PersistableRecord {
     var parentID: String?
     var peekURL: String?
     var peekInteractionState: Data?
+    var peekFaviconURL: String?
 }
