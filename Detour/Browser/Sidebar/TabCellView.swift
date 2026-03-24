@@ -45,6 +45,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     var onToggleMute: (() -> Void)?
     var onRename: ((String) -> Void)?
     private var isEditing = false
+    private var originalEditingValue: String?
     var indentLevel: Int = 0 {
         didSet {
             faviconLeadingConstraint.constant = 4 + CGFloat(indentLevel) * 16
@@ -440,6 +441,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
     func beginEditing() {
         isEditing = true
+        originalEditingValue = titleLabel.stringValue
         titleLabel.isEditable = true
         titleLabel.isBezeled = false
         titleLabel.drawsBackground = false
@@ -452,12 +454,34 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         guard isEditing else { return }
         isEditing = false
         titleLabel.isEditable = false
+        if !commit, let original = originalEditingValue {
+            titleLabel.stringValue = original
+        }
+        originalEditingValue = nil
         if commit {
             let newName = titleLabel.stringValue.trimmingCharacters(in: .whitespaces)
             if !newName.isEmpty {
                 onRename?(newName)
+                pulseCommit()
             }
         }
+    }
+
+    private func pulseCommit() {
+        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        hoverBackground.isHidden = false
+        hoverBackground.alphaValue = 1
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.4
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            hoverBackground.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            if !self.isHovered {
+                self.hoverBackground.isHidden = true
+            }
+            self.hoverBackground.alphaValue = 1
+        })
     }
 
     func control(_ control: NSControl, textShouldEndEditing fieldEditor: NSText) -> Bool {
@@ -468,7 +492,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(cancelOperation(_:)) {
             endEditing(commit: false)
-            window?.makeFirstResponder(superview)
+            window?.makeFirstResponder(enclosingScrollView?.documentView)
             return true
         }
         return false

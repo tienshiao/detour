@@ -10,6 +10,7 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
     var onToggleCollapse: (() -> Void)?
     var onRename: ((String) -> Void)?
     private var isEditing = false
+    private var originalEditingValue: String?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -63,6 +64,7 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
         super.prepareForReuse()
         isHovered = false
         hoverBackground.isHidden = true
+        if isEditing { endEditing(commit: false) }
     }
 
     override func layout() {
@@ -102,6 +104,7 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
 
     func beginEditing() {
         isEditing = true
+        originalEditingValue = nameLabel.stringValue
         nameLabel.isEditable = true
         nameLabel.isBezeled = false
         nameLabel.drawsBackground = false
@@ -114,12 +117,34 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
         guard isEditing else { return }
         isEditing = false
         nameLabel.isEditable = false
+        if !commit, let original = originalEditingValue {
+            nameLabel.stringValue = original
+        }
+        originalEditingValue = nil
         if commit {
             let newName = nameLabel.stringValue.trimmingCharacters(in: .whitespaces)
             if !newName.isEmpty {
                 onRename?(newName)
+                pulseCommit()
             }
         }
+    }
+
+    private func pulseCommit() {
+        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        hoverBackground.isHidden = false
+        hoverBackground.alphaValue = 1
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.4
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            hoverBackground.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            if !self.isHovered {
+                self.hoverBackground.isHidden = true
+            }
+            self.hoverBackground.alphaValue = 1
+        })
     }
 
     func control(_ control: NSControl, textShouldEndEditing fieldEditor: NSText) -> Bool {
@@ -130,7 +155,7 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(cancelOperation(_:)) {
             endEditing(commit: false)
-            window?.makeFirstResponder(superview)
+            window?.makeFirstResponder(enclosingScrollView?.documentView)
             return true
         }
         return false
