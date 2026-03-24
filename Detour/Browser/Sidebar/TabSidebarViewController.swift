@@ -1018,7 +1018,28 @@ class TabSidebarViewController: NSViewController {
 
     func reloadTab(at index: Int) {
         guard index >= 0, index < tabs.count else { return }
-        tableView.reloadData(forRowIndexes: IndexSet(integer: rowForNormalTab(at: index)), columnIndexes: IndexSet(integer: 0))
+        let row = rowForNormalTab(at: index)
+        // Update existing cell in-place if visible (preserves hover state, enables smooth animation)
+        if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
+            let tab = tabs[index]
+            cell.titleLabel.stringValue = tab.title
+            cell.toolTip = tab.title
+            cell.updateFavicon(tab.favicon)
+            cell.updatePeekFavicon(tab.displayPeekFavicon)
+            cell.updateSleeping(tab.isSleeping)
+            cell.updateLoading(tab.isLoading)
+            cell.updateProgress(tab.estimatedProgress)
+            cell.updateAudio(isPlaying: tab.isPlayingAudio, isMuted: tab.isMuted)
+            return
+        }
+        tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+        // After reload the new cell has no hover state — recheck since mouse may already be over it
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
+                cell.recheckHover()
+            }
+        }
     }
 
     func reloadPinnedEntry(at index: Int) {
@@ -1029,6 +1050,20 @@ class TabSidebarViewController: NSViewController {
             return false
         }) else { return }
         let row = rowForPinnedItem(at: flatIdx)
+        // Update existing cell in-place if visible (preserves hover state, enables smooth animation)
+        if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
+            let entry = pinnedEntries[index]
+            let tab = entry.tab
+            cell.titleLabel.stringValue = entry.displayTitle
+            cell.toolTip = entry.pinnedTitle
+            cell.updateFavicon(entry.displayFavicon)
+            cell.updatePeekFavicon(tab?.displayPeekFavicon)
+            cell.updateSleeping((tab?.isSleeping ?? false) || !entry.isLive)
+            cell.updateLoading(tab?.isLoading ?? false)
+            cell.updateProgress(tab?.estimatedProgress ?? 0)
+            cell.updateAudio(isPlaying: tab?.isPlayingAudio ?? false, isMuted: tab?.isMuted ?? false)
+            return
+        }
         tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
         // After reload the new cell has no hover state — recheck since mouse may already be over it
         DispatchQueue.main.async { [weak self] in

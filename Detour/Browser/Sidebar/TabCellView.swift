@@ -250,7 +250,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     func updateAudio(isPlaying: Bool, isMuted: Bool) {
-        audioPlaying = isPlaying || isMuted
+        let newAudioPlaying = isPlaying || isMuted
+        guard newAudioPlaying != audioPlaying else { return }
+        audioPlaying = newAudioPlaying
 
         // Update icon immediately (no animation needed for icon swap)
         if isMuted {
