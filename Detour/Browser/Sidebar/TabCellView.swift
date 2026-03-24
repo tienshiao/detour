@@ -34,11 +34,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private let sleepBadge = NSImageView()
     private let closeButton: NSButton
     private let speakerButton: NSButton
+    private let peekFaviconImageView = NSImageView()
     private var trackingArea: NSTrackingArea?
-    private var titleTrailingDefault: NSLayoutConstraint!
-    private var titleTrailingHover: NSLayoutConstraint!
     private var titleLeadingConstraint: NSLayoutConstraint!
     private var faviconLeadingConstraint: NSLayoutConstraint!
+    private var closeButtonWidthConstraint: NSLayoutConstraint!
+    private var peekFaviconWidthConstraint: NSLayoutConstraint!
     private let hoverBackground = NSView()
     var onClose: (() -> Void)?
     var onToggleMute: (() -> Void)?
@@ -51,6 +52,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
     private var audioPlaying = false
     private var isHovered = false
+    private var hasPeek = false
 
     // Option A: Ring spinner layer
     private var ringLayer: CAShapeLayer?
@@ -114,16 +116,22 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         sleepBadge.contentTintColor = .tertiaryLabelColor
         sleepBadge.isHidden = true
 
+        peekFaviconImageView.wantsLayer = true
+        peekFaviconImageView.imageScaling = .scaleProportionallyUpOrDown
+        peekFaviconImageView.translatesAutoresizingMaskIntoConstraints = false
+        peekFaviconImageView.isHidden = true
+
         addSubview(faviconImageView)
         addSubview(sleepBadge)
         addSubview(speakerButton)
         addSubview(titleLabel)
         addSubview(closeButton)
+        addSubview(peekFaviconImageView)
 
-        titleTrailingDefault = titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
-        titleTrailingHover = titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4)
         titleLeadingConstraint = titleLabel.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
         faviconLeadingConstraint = faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
+        closeButtonWidthConstraint = closeButton.widthAnchor.constraint(equalToConstant: 0)
+        peekFaviconWidthConstraint = peekFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             faviconLeadingConstraint,
@@ -141,14 +149,20 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             speakerButton.widthAnchor.constraint(equalToConstant: 16),
             speakerButton.heightAnchor.constraint(equalToConstant: 16),
 
+            // Fixed chain: title → closeButton → peekFavicon → trailing
             titleLeadingConstraint,
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleTrailingDefault,
+            titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
 
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            closeButton.trailingAnchor.constraint(equalTo: peekFaviconImageView.leadingAnchor, constant: -4),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 16),
+            closeButtonWidthConstraint,
             closeButton.heightAnchor.constraint(equalToConstant: 16),
+
+            peekFaviconImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            peekFaviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            peekFaviconWidthConstraint,
+            peekFaviconImageView.heightAnchor.constraint(equalToConstant: 16),
         ])
     }
 
@@ -157,7 +171,10 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     override func prepareForReuse() {
         super.prepareForReuse()
         isHovered = false
+        hasPeek = false
         closeButton.isHidden = true
+        peekFaviconImageView.isHidden = true
+        peekFaviconImageView.image = nil
         hoverBackground.isHidden = true
         indentLevel = 0
         onRename = nil
@@ -266,17 +283,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     private func updateLayoutState() {
-        // Leading: 8pt from favicon when no audio, 24pt (4+16+4) when speaker visible
         titleLeadingConstraint.constant = audioPlaying ? 24 : 8
-
-        // Trailing: title ends before close button on hover, at edge otherwise
-        titleTrailingDefault.isActive = false
-        titleTrailingHover.isActive = false
-        if isHovered {
-            titleTrailingHover.isActive = true
-        } else {
-            titleTrailingDefault.isActive = true
-        }
+        closeButtonWidthConstraint.constant = isHovered ? 16 : 0
+        peekFaviconWidthConstraint.constant = hasPeek ? 16 : 0
     }
 
     @objc private func speakerTapped() {
@@ -285,6 +294,13 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
     func updateFavicon(_ image: NSImage?) {
         faviconImageView.image = image ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website")
+    }
+
+    func updatePeekFavicon(_ image: NSImage?) {
+        hasPeek = image != nil
+        peekFaviconImageView.image = image
+        peekFaviconImageView.isHidden = !hasPeek
+        updateLayoutState()
     }
 
     func updateSleeping(_ isSleeping: Bool) {

@@ -57,6 +57,7 @@ class BrowserWindowController: NSWindowController {
     var contextMenuLinkAction: ContextMenuLinkAction = .none
 
     var peekOverlayView: PeekOverlayView?
+    private var peekFaviconSubscription: AnyCancellable?
     private var displayTabSubscriptions = Set<AnyCancellable>()
     private var peekWebViewTopConstraint: NSLayoutConstraint?
     private var peekWebViewBottomConstraint: NSLayoutConstraint?
@@ -685,6 +686,7 @@ class BrowserWindowController: NSWindowController {
             if existingPeek.isSleeping { existingPeek.wake() }
             claimPeekWebView(peekWebView)
             presentPeekWebView(peekWebView, clickPoint: nil, animate: false)
+            observePeekFavicon(existingPeek)
         } else if let peekURL = tab.peekURL {
             showPeekOverlay(url: peekURL, clickPoint: nil, interactionState: tab.peekInteractionState)
         }
@@ -1169,6 +1171,7 @@ class BrowserWindowController: NSWindowController {
 
     private func hidePeekUI() {
         guard peekOverlayView != nil else { return }
+        peekFaviconSubscription = nil
         selectedTab?.peekTab?.webView?.removeFromSuperview()
         peekOverlayView?.removeFromSuperview()
         peekOverlayView = nil
@@ -1180,6 +1183,25 @@ class BrowserWindowController: NSWindowController {
         webView.navigationDelegate = self
         webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
+    }
+
+    private func observePeekFavicon(_ peekTab: BrowserTab) {
+        peekFaviconSubscription = peekTab.$favicon
+            .dropFirst()
+            .removeDuplicates(by: ===)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.reloadSelectedTabSidebarCell()
+            }
+    }
+
+    private func reloadSelectedTabSidebarCell() {
+        guard let selectedTabID, let space = activeSpace else { return }
+        if let pinnedIdx = space.pinnedEntries.firstIndex(where: { $0.tab?.id == selectedTabID }) {
+            tabSidebar.reloadPinnedEntry(at: pinnedIdx)
+        } else if let tabIdx = space.tabs.firstIndex(where: { $0.id == selectedTabID }) {
+            tabSidebar.reloadTab(at: tabIdx)
+        }
     }
 
     func showPeekOverlay(url: URL, clickPoint: CGPoint? = nil, interactionState: Data? = nil) {
@@ -1203,6 +1225,9 @@ class BrowserWindowController: NSWindowController {
         claimPeekWebView(peekWebView)
         peekWebView.allowsBackForwardNavigationGestures = true
         tab.peekTab = newPeekTab
+        reloadSelectedTabSidebarCell()
+
+        observePeekFavicon(newPeekTab)
 
         presentPeekWebView(peekWebView, clickPoint: clickPoint, animate: true)
 
@@ -1290,9 +1315,11 @@ class BrowserWindowController: NSWindowController {
         let tab = selectedTab
         let peekWebView = tab?.peekTab?.webView
         peekWebView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+        peekFaviconSubscription = nil
         tab?.peekURL = nil
         tab?.peekInteractionState = nil
         tab?.peekTab = nil
+        reloadSelectedTabSidebarCell()
         store.scheduleSave()
         peekOverlayView = nil
         bindDisplayTab()
@@ -1328,9 +1355,11 @@ class BrowserWindowController: NSWindowController {
         }
 
         // Clear peek state on original tab
+        peekFaviconSubscription = nil
         selectedTab?.peekTab = nil
         selectedTab?.peekURL = nil
         selectedTab?.peekInteractionState = nil
+        reloadSelectedTabSidebarCell()
         store.scheduleSave()
 
         displayTabSubscriptions.removeAll()
