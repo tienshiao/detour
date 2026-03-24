@@ -199,13 +199,19 @@ class BrowserTab: NSObject {
     func enterPictureInPicture() {
         guard let webView else { return }
         let js = """
-        (function() {
-            const video = document.querySelector('video');
-            if (video && !video.paused && video.webkitSupportsPresentationMode
-                && video.webkitSupportsPresentationMode('picture-in-picture')) {
-                video.webkitSetPresentationMode('picture-in-picture');
+        (function search(doc) {
+            for (const video of doc.querySelectorAll('video')) {
+                if (!video.paused && video.webkitSupportsPresentationMode
+                    && video.webkitSupportsPresentationMode('picture-in-picture')) {
+                    video.webkitSetPresentationMode('picture-in-picture');
+                    return true;
+                }
             }
-        })()
+            for (const iframe of doc.querySelectorAll('iframe')) {
+                try { if (search(iframe.contentDocument)) return true; } catch(e) {}
+            }
+            return false;
+        })(document)
         """
         webView.evaluateJavaScript(js)
     }
@@ -213,12 +219,18 @@ class BrowserTab: NSObject {
     func exitPictureInPicture() {
         guard let webView else { return }
         let js = """
-        (function() {
-            const video = document.querySelector('video');
-            if (video && video.webkitPresentationMode === 'picture-in-picture') {
-                video.webkitSetPresentationMode('inline');
+        (function search(doc) {
+            for (const video of doc.querySelectorAll('video')) {
+                if (video.webkitPresentationMode === 'picture-in-picture') {
+                    video.webkitSetPresentationMode('inline');
+                    return true;
+                }
             }
-        })()
+            for (const iframe of doc.querySelectorAll('iframe')) {
+                try { if (search(iframe.contentDocument)) return true; } catch(e) {}
+            }
+            return false;
+        })(document)
         """
         webView.evaluateJavaScript(js)
     }
@@ -226,7 +238,15 @@ class BrowserTab: NSObject {
     func toggleMute() {
         guard let webView else { return }
         isMuted.toggle()
-        let js = "document.querySelectorAll('video, audio').forEach(el => el.muted = \(isMuted))"
+        let muted = isMuted
+        let js = """
+        (function search(doc) {
+            doc.querySelectorAll('video, audio').forEach(el => el.muted = \(muted));
+            for (const iframe of doc.querySelectorAll('iframe')) {
+                try { search(iframe.contentDocument); } catch(e) {}
+            }
+        })(document)
+        """
         webView.evaluateJavaScript(js)
     }
 

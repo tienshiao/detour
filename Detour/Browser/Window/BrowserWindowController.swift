@@ -616,9 +616,13 @@ class BrowserWindowController: NSWindowController {
 
         dismissCommandPalette()
 
-        hidePeekUI()
-
         if let previousTab = selectedTab {
+            // Enter PiP for peek before hidePeekUI() removes it from the hierarchy.
+            if let peekTab = previousTab.peekTab, peekTab.isPlayingAudio {
+                peekTab.enterPictureInPicture()
+                pipWebView = peekTab.webView
+            }
+            hidePeekUI()
             previousTab.lastDeselectedAt = Date()
             if ownsWebView {
                 previousTab.takeSnapshot { [weak self] image in
@@ -631,6 +635,8 @@ class BrowserWindowController: NSWindowController {
                 // video's on-screen frame for the PiP animation origin.
                 pipWebView = previousTab.webView
             }
+        } else {
+            hidePeekUI()
         }
         removeContentViews()
         localSnapshot = nil
@@ -680,6 +686,7 @@ class BrowserWindowController: NSWindowController {
         }
 
         tab.exitPictureInPicture()
+        tab.peekTab?.exitPictureInPicture()
 
         // Restore peek overlay if the incoming tab has one
         if let existingPeek = tab.peekTab, let peekWebView = existingPeek.webView {
@@ -1172,7 +1179,9 @@ class BrowserWindowController: NSWindowController {
     private func hidePeekUI() {
         guard peekOverlayView != nil else { return }
         peekFaviconSubscription = nil
-        selectedTab?.peekTab?.webView?.removeFromSuperview()
+        if selectedTab?.peekTab?.webView !== pipWebView {
+            selectedTab?.peekTab?.webView?.removeFromSuperview()
+        }
         peekOverlayView?.removeFromSuperview()
         peekOverlayView = nil
         displayTabSubscriptions.removeAll()
