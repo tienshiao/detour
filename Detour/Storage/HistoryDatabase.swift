@@ -168,6 +168,40 @@ struct HistoryDatabase {
         }
     }
 
+    /// Return the best URL completion for a typed prefix, matching against scheme-stripped URLs.
+    /// Uses prefix-matching with schemes prepended so SQLite can use the index on `url`.
+    func bestURLCompletion(prefix: String, spaceID: String) -> HistoryURL? {
+        guard !prefix.isEmpty else { return nil }
+        let escaped = prefix
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        let patterns = [
+            "https://\(escaped)%",
+            "http://\(escaped)%",
+            "https://www.\(escaped)%",
+            "http://www.\(escaped)%",
+        ]
+        do {
+            return try dbQueue.read { db in
+                try HistoryURL.fetchOne(db, sql: """
+                    SELECT h.*
+                    FROM historyURL h
+                    JOIN historyVisit v ON v.urlID = h.id
+                    WHERE v.spaceID = ?
+                      AND (h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\'
+                        OR h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\')
+                    GROUP BY h.url
+                    ORDER BY h.visitCount DESC, MAX(v.visitTime) DESC
+                    LIMIT 1
+                    """, arguments: [spaceID, patterns[0], patterns[1], patterns[2], patterns[3]])
+            }
+        } catch {
+            log.error("Failed to find URL completion: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     /// Look up a stored favicon URL for a page URL. Tries exact URL match first, then host match.
     func faviconURL(for pageURL: String) -> String? {
         do {

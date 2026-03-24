@@ -38,6 +38,18 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var debounceWorkItem: DispatchWorkItem?
     private var currentTask: Task<Void, Never>?
 
+    private var userTypedText: String = ""
+    private var isUpdatingTextProgrammatically = false
+    private var inlineCompletionSuffix: String?
+    private var wasPrepopulated = false
+
+    /// Set text field value without triggering `controlTextDidChange`.
+    private func setTextFieldQuietly(_ text: String) {
+        isUpdatingTextProgrammatically = true
+        textField.stringValue = text
+        isUpdatingTextProgrammatically = false
+    }
+
     private var scrollHeightConstraint: NSLayoutConstraint!
     private var boxBottomToTextField: NSLayoutConstraint!
     private var boxBottomToScroll: NSLayoutConstraint!
@@ -79,7 +91,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         textField.target = self
         textField.action = #selector(textFieldSubmitted)
         textField.delegate = self
-        textField.onEscape = { [weak self] in self?.dismiss() }
+        textField.onEscape = { [weak self] in self?.handleEscape() }
         textField.translatesAutoresizingMaskIntoConstraints = false
         box.addSubview(textField)
 
@@ -112,6 +124,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         scrollView.drawsBackground = false
         scrollView.isHidden = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrollViewDidScroll),
+                                               name: NSView.boundsDidChangeNotification,
+                                               object: scrollView.contentView)
         box.addSubview(scrollView)
 
         scrollHeightConstraint = scrollView.heightAnchor.constraint(equalToConstant: 0)
@@ -163,6 +179,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     }
 
     func show(in parentView: NSView, initialText: String? = nil, anchorFrame: NSRect? = nil) {
+        userTypedText = ""
+        inlineCompletionSuffix = nil
+        wasPrepopulated = initialText?.isEmpty == false
         if let initialText, !initialText.isEmpty {
             textField.stringValue = initialText
         }
@@ -207,6 +226,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         centerXConstraint.isActive = true
         centerYConstraint.isActive = true
 
+        userTypedText = ""
+        inlineCompletionSuffix = nil
         textField.stringValue = ""
         window?.makeFirstResponder(textField)
         loadDefaultSuggestions()
@@ -254,7 +275,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     private func updateSuggestions(_ items: [SuggestionItem]) {
         suggestions = items
-        selectedSuggestionIndex = nil
+        selectedSuggestionIndex = items.isEmpty ? nil : 0
         tableView.reloadData()
 
         let hasSuggestions = !items.isEmpty
@@ -272,10 +293,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
-    private func fetchSuggestions(for query: String) {
+    private func fetchSuggestions(for query: String, tabInfos: [SuggestionProvider.TabInfo]? = nil) {
         guard let spaceID = activeSpaceID else { return }
 
-        let tabInfos = gatherTabInfos()
+        let tabInfos = tabInfos ?? gatherTabInfos()
 
         currentTask?.cancel()
         currentTask = Task { [weak self] in
@@ -294,16 +315,28 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     // MARK: - NSTextFieldDelegate
 
     func controlTextDidChange(_ obj: Notification) {
-        debounceWorkItem?.cancel()
-        let query = textField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !isUpdatingTextProgrammatically else { return }
 
+        debounceWorkItem?.cancel()
+        let raw = textField.stringValue
+        userTypedText = raw
+        inlineCompletionSuffix = nil
+
+        let query = raw.trimmingCharacters(in: .whitespaces)
         if query.isEmpty {
             loadDefaultSuggestions()
             return
         }
 
+        // Gather tab infos once for both autocomplete and suggestion fetch
+        let tabInfos = gatherTabInfos()
+
+        // Immediate inline autocomplete (no debounce)
+        applyInlineAutocomplete(for: query, tabInfos: tabInfos)
+
+        // Debounced full suggestion fetch
         let work = DispatchWorkItem { [weak self] in
-            self?.fetchSuggestions(for: query)
+            self?.fetchSuggestions(for: query, tabInfos: tabInfos)
         }
         debounceWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
@@ -325,28 +358,84 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             }
             return false // let default action handler fire
         }
+        if commandSelector == #selector(NSResponder.deleteBackward(_:)) {
+            if inlineCompletionSuffix != nil {
+                inlineCompletionSuffix = nil
+                setTextFieldQuietly(userTypedText)
+                textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+                return true
+            }
+            return false
+        }
+        if commandSelector == #selector(NSResponder.insertTab(_:)) {
+            if let suffix = inlineCompletionSuffix {
+                userTypedText = userTypedText + suffix
+                inlineCompletionSuffix = nil
+                textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+                return true
+            }
+            return false
+        }
         return false
     }
 
     private func moveSelection(by delta: Int) {
         guard !suggestions.isEmpty else { return }
         let oldIndex = selectedSuggestionIndex
-        let current = oldIndex ?? -1
-        var next = current + delta
-        if next < 0 { next = suggestions.count - 1 }
-        if next >= suggestions.count { next = 0 }
-        selectedSuggestionIndex = next
+        inlineCompletionSuffix = nil
 
+        // Deselect old row
         if let old = oldIndex {
             (tableView.rowView(atRow: old, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = false
         }
-        (tableView.rowView(atRow: next, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = true
-        tableView.scrollRowToVisible(next)
+
+        // Compute next index, allowing nil (no selection = restore user text)
+        let newIndex: Int?
+        if let current = oldIndex {
+            let next = current + delta
+            if next < 0 || next >= suggestions.count {
+                newIndex = nil // moved past boundary → restore user text
+            } else {
+                newIndex = next
+            }
+        } else {
+            // Currently no selection
+            newIndex = delta > 0 ? 0 : suggestions.count - 1
+        }
+
+        selectedSuggestionIndex = newIndex
+
+        if let idx = newIndex {
+            (tableView.rowView(atRow: idx, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = true
+            tableView.scrollRowToVisible(idx)
+
+            let displayText = suggestionDisplayText(at: idx)
+            setTextFieldQuietly(displayText)
+            textField.currentEditor()?.selectAll(nil)
+        } else {
+            setTextFieldQuietly(userTypedText)
+            textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+        }
+    }
+
+    private func suggestionDisplayText(at index: Int) -> String {
+        switch suggestions[index] {
+        case .searchInput(let text):
+            return text
+        case .historyResult(let url, _, _):
+            return url
+        case .openTab(_, _, let url, _, _):
+            return url
+        case .searchSuggestion(let text):
+            return text
+        }
     }
 
     private func activateSuggestion(at index: Int) {
         guard index < suggestions.count else { return }
         switch suggestions[index] {
+        case .searchInput(let text):
+            delegate?.commandPalette(self, didSubmitInput: text)
         case .historyResult(let url, _, _):
             delegate?.commandPalette(self, didSubmitInput: url)
         case .searchSuggestion(let text):
@@ -360,6 +449,53 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let input = textField.stringValue.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return }
         delegate?.commandPalette(self, didSubmitInput: input)
+    }
+
+    private func applyInlineAutocomplete(for query: String, tabInfos: [SuggestionProvider.TabInfo]) {
+        guard let spaceID = activeSpaceID else { return }
+
+        guard let match = suggestionProvider.bestAutocomplete(for: query, spaceID: spaceID.uuidString, tabs: tabInfos) else { return }
+
+        // The match is a display URL (scheme-stripped). Find where the user's query ends in it.
+        guard match.lowercased().hasPrefix(query.lowercased()) else { return }
+        let suffix = String(match.dropFirst(query.count))
+        guard !suffix.isEmpty else { return }
+
+        inlineCompletionSuffix = suffix
+
+        setTextFieldQuietly(query + suffix)
+
+        if let editor = textField.currentEditor() {
+            editor.selectedRange = NSRange(location: query.count, length: suffix.count)
+        }
+    }
+
+    private func handleEscape() {
+        // Prepopulated mode (Cmd+L / sidebar click): Escape dismisses immediately
+        if wasPrepopulated {
+            dismiss()
+            return
+        }
+
+        // Multi-stage escape for user-typed input
+        if inlineCompletionSuffix != nil {
+            inlineCompletionSuffix = nil
+            setTextFieldQuietly(userTypedText)
+            textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+        } else if !textField.stringValue.isEmpty {
+            setTextFieldQuietly("")
+            userTypedText = ""
+            loadDefaultSuggestions()
+        } else {
+            dismiss()
+        }
+    }
+
+    @objc private func scrollViewDidScroll(_ notification: Notification) {
+        let visibleRows = tableView.rows(in: tableView.visibleRect)
+        for row in visibleRows.lowerBound..<visibleRows.upperBound {
+            (tableView.rowView(atRow: row, makeIfNecessary: false) as? CommandPaletteRowView)?.recheckHover()
+        }
     }
 
     @objc private func tableRowClicked() {
@@ -383,6 +519,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
         let item = suggestions[row]
         switch item {
+        case .searchInput(let text):
+            let looksLikeURL = text.contains(".") && !text.contains(" ")
+            cell.configure(title: text, url: nil, icon: nil, isSearch: !looksLikeURL, isGoTo: looksLikeURL)
         case .historyResult(let url, let title, let faviconURL):
             cell.configure(title: title, url: url, icon: nil, isSearch: false)
             if let faviconURL {
@@ -435,6 +574,16 @@ private class CommandPaletteRowView: NSTableRowView {
 
     override func mouseExited(with event: NSEvent) {
         isHovered = false
+        needsDisplay = true
+    }
+
+    func recheckHover() {
+        guard let window else { return }
+        let mouseInWindow = window.mouseLocationOutsideOfEventStream
+        let mouseInSelf = convert(mouseInWindow, from: nil)
+        let shouldHover = bounds.contains(mouseInSelf)
+        guard shouldHover != isHovered else { return }
+        isHovered = shouldHover
         needsDisplay = true
     }
 
@@ -527,7 +676,7 @@ private class SuggestionCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false) {
+    func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false, isGoTo: Bool = false) {
         titleLabel.stringValue = title.isEmpty ? (url ?? "") : title
 
         let showURL = !switchToTab && url != nil
@@ -538,6 +687,9 @@ private class SuggestionCellView: NSTableCellView {
 
         if isSearch {
             iconView.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+            iconView.contentTintColor = .secondaryLabelColor
+        } else if isGoTo {
+            iconView.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
             iconView.contentTintColor = .secondaryLabelColor
         } else if let icon {
             iconView.image = icon
