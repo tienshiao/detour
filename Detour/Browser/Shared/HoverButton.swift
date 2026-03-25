@@ -4,6 +4,7 @@ class HoverButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private let hoverBackground = NSView()
     var circular: Bool = false { didSet { needsLayout = true } }
+    var circularPadding: CGFloat = 3 { didSet { needsLayout = true } }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -18,8 +19,7 @@ class HoverButton: NSButton {
     override func layout() {
         super.layout()
         if circular {
-            let padding: CGFloat = 3
-            let side = min(bounds.width, bounds.height) + padding
+            let side = min(bounds.width, bounds.height) + circularPadding
             hoverBackground.frame = CGRect(
                 x: (bounds.width - side) / 2,
                 y: (bounds.height - side) / 2,

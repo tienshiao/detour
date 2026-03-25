@@ -708,6 +708,7 @@ class TabSidebarViewController: NSViewController {
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.circular = true
+        button.circularPadding = -1
         button.target = self
         button.action = action
         button.translatesAutoresizingMaskIntoConstraints = false
