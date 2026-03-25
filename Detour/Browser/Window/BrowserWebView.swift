@@ -4,6 +4,31 @@ class BrowserWebView: WKWebView {
     /// Context info captured from the most recent right-click event.
     var lastContextInfo: [String: String]?
 
+    // MARK: - Undo/Redo
+
+    /// True when the user is focused on an editable element (input, textarea, contentEditable).
+    /// Set via a JS focus/blur message handler.
+    var isEditingWebContent = false
+
+    /// When editing web content, let WKWebView handle Cmd+Z (text undo).
+    /// Otherwise, do browser undo (close tab, move tab, etc.).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command, event.charactersIgnoringModifiers == "z" {
+            if !isEditingWebContent, TabStore.shared.undoManager.canUndo {
+                TabStore.shared.undoManager.undo()
+                return true
+            }
+        }
+        if flags == [.command, .shift], event.charactersIgnoringModifiers == "z" {
+            if !isEditingWebContent, TabStore.shared.undoManager.canRedo {
+                TabStore.shared.undoManager.redo()
+                return true
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func otherMouseDown(with event: NSEvent) {
         // Mouse button 3 = back button
         if event.buttonNumber == 3 {

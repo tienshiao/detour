@@ -3,6 +3,10 @@ import AppKit
 import Combine
 import WebKit
 
+extension Notification.Name {
+    static let tabRestoredByUndo = Notification.Name("tabRestoredByUndo")
+}
+
 protocol TabStoreObserver: AnyObject {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space)
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space)
@@ -89,6 +93,9 @@ class Space {
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         config.userContentController.addUserScript(script)
 
+        let editableFocusScript = WKUserScript(source: Space.editableFieldFocusScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+        config.userContentController.addUserScript(editableFocusScript)
+
         // Capture context menu info (link URL, image src, selection) for extension context menus
         if !ExtensionManager.shared.enabledExtensions.isEmpty {
             let ctxScript = WKUserScript(source: Space.contextMenuInfoScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
@@ -142,6 +149,31 @@ class Space {
                 currentLink = null;
                 window.webkit.messageHandlers.linkHover.postMessage('');
             }
+        });
+    })();
+    """
+
+    /// Tracks focus/blur on editable elements (input, textarea, contentEditable)
+    /// and posts to `editableFieldFocus` so native undo routing can adapt.
+    private static let editableFieldFocusScript = """
+    (function() {
+        function isEditable(el) {
+            if (!el || el === document.body) return false;
+            var tag = el.tagName;
+            if (tag === 'TEXTAREA') return true;
+            if (tag === 'INPUT') {
+                var t = (el.type || 'text').toLowerCase();
+                return t === 'text' || t === 'search' || t === 'url' || t === 'email'
+                    || t === 'password' || t === 'tel' || t === 'number';
+            }
+            if (el.isContentEditable) return true;
+            return false;
+        }
+        document.addEventListener('focusin', function() {
+            window.webkit.messageHandlers.editableFieldFocus.postMessage(isEditable(document.activeElement));
+        });
+        document.addEventListener('focusout', function() {
+            window.webkit.messageHandlers.editableFieldFocus.postMessage(false);
         });
     })();
     """
@@ -286,6 +318,9 @@ class TabStore {
     private var tabSubscriptions: [UUID: Set<AnyCancellable>] = [:]
     private var saveWorkItem: DispatchWorkItem?
 
+    /// Undo manager for structural browser operations (tabs, pinned entries, folders, spaces).
+    let undoManager = UndoManager()
+
     /// Used only for persistence — the space that was last active when saving.
     /// Each window tracks its own active space independently.
     var lastActiveSpaceID: UUID?
@@ -296,6 +331,13 @@ class TabStore {
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared) {
         self.appDB = appDB
         self.historyDB = historyDB
+    }
+
+    // MARK: - Undo Helpers
+
+    private func registerUndo(actionName: String, handler: @escaping () -> Void) {
+        undoManager.registerUndo(withTarget: self) { _ in handler() }
+        undoManager.setActionName(actionName)
     }
 
     /// Removes a space by ID without the "keep at least one" guard.
@@ -684,6 +726,9 @@ class TabStore {
         let space = Space(name: name, emoji: emoji, colorHex: colorHex, profileID: profileID)
         space.profile = profile(withID: profileID)
         spaces.append(space)
+        registerUndo(actionName: "Add Space") { [weak self] in
+            self?.deleteSpace(id: space.id)
+        }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
         return space
@@ -692,7 +737,16 @@ class TabStore {
     func deleteSpace(id: UUID) {
         guard spaces.count > 1,
               let index = spaces.firstIndex(where: { $0.id == id }) else { return }
-        let space = spaces.remove(at: index)
+        let space = spaces[index]
+
+        // Capture state for undo before removing
+        let savedName = space.name
+        let savedEmoji = space.emoji
+        let savedColorHex = space.colorHex
+        let savedProfileID = space.profileID
+        let savedIndex = index
+
+        spaces.remove(at: index)
         for tab in space.tabs {
             tabSubscriptions.removeValue(forKey: tab.id)
             tab.teardown()
@@ -708,6 +762,19 @@ class TabStore {
         appDB.deleteClosedTabs(spaceID: spaceIDString)
         closedTabStack.removeAll { $0.spaceID == spaceIDString }
 
+        registerUndo(actionName: "Delete Space") { [weak self] in
+            guard let self else { return }
+            let restored = Space(id: id, name: savedName, emoji: savedEmoji, colorHex: savedColorHex, profileID: savedProfileID)
+            restored.profile = self.profile(withID: savedProfileID)
+            let insertAt = min(savedIndex, self.spaces.count)
+            self.spaces.insert(restored, at: insertAt)
+            self.registerUndo(actionName: "Add Space") { [weak self] in
+                self?.deleteSpace(id: id)
+            }
+            self.notifyObservers { $0.tabStoreDidUpdateSpaces() }
+            self.scheduleSave()
+        }
+
         // Data store belongs to profile now — don't remove it here
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
@@ -715,12 +782,19 @@ class TabStore {
 
     func updateSpace(id: UUID, name: String, emoji: String, colorHex: String, profileID: UUID) {
         guard let space = space(withID: id) else { return }
+        let oldName = space.name
+        let oldEmoji = space.emoji
+        let oldColorHex = space.colorHex
+        let oldProfileID = space.profileID
         space.name = name
         space.emoji = emoji
         space.colorHex = colorHex
         if space.profileID != profileID {
             space.profileID = profileID
             space.profile = profile(withID: profileID)
+        }
+        registerUndo(actionName: "Edit Space") { [weak self] in
+            self?.updateSpace(id: id, name: oldName, emoji: oldEmoji, colorHex: oldColorHex, profileID: oldProfileID)
         }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
@@ -824,16 +898,22 @@ class TabStore {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs[index]
 
+        // Capture state for undo before teardown
+        let stateData = tab.currentInteractionStateData()
+        let tabURL = tab.url?.absoluteString
+        let tabTitle = tab.title
+        let tabFaviconURL = tab.faviconURL?.absoluteString
+        let tabParentID = tab.parentID
+
         // Archive to closed tab stack (skip incognito)
         if !space.isIncognito {
-            let stateData = tab.currentInteractionStateData()
             let record = ClosedTabRecord(
                 id: nil,
                 tabID: tab.id.uuidString,
                 spaceID: space.id.uuidString,
-                url: tab.url?.absoluteString,
-                title: tab.title,
-                faviconURL: tab.faviconURL?.absoluteString,
+                url: tabURL,
+                title: tabTitle,
+                faviconURL: tabFaviconURL,
                 interactionState: stateData,
                 sortOrder: index,
                 archivedAt: archivedAt?.timeIntervalSince1970
@@ -849,6 +929,37 @@ class TabStore {
         tabSubscriptions.removeValue(forKey: tab.id)
         space.tabs.remove(at: index)
         tab.teardown()
+
+        // Register undo (skip for automated archival)
+        if archivedAt == nil {
+            registerUndo(actionName: "Close Tab") { [weak self] in
+                guard let self else { return }
+                let restored = BrowserTab(
+                    id: UUID(),
+                    title: tabTitle,
+                    archivedInteractionState: stateData,
+                    fallbackURL: tabURL.flatMap { URL(string: $0) },
+                    faviconURL: tabFaviconURL.flatMap { URL(string: $0) },
+                    configuration: space.makeWebViewConfiguration()
+                )
+                restored.spaceID = space.id
+                restored.parentID = tabParentID
+                let insertAt = min(index, space.tabs.count)
+                space.tabs.insert(restored, at: insertAt)
+                self.subscribeToTab(restored, spaceID: space.id)
+                // Remove the corresponding closed-tab-stack entry
+                if let stackIdx = self.closedTabStack.firstIndex(where: { $0.tabID == id.uuidString }) {
+                    self.closedTabStack.remove(at: stackIdx)
+                }
+                self.registerUndo(actionName: "Close Tab") { [weak self] in
+                    self?.closeTab(id: restored.id, in: space)
+                }
+                self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
+                self.scheduleSave()
+                NotificationCenter.default.post(name: .tabRestoredByUndo, object: nil, userInfo: ["tabID": restored.id, "spaceID": space.id])
+            }
+        }
+
         notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: space) }
         scheduleSave()
     }
@@ -859,6 +970,9 @@ class TabStore {
               destinationIndex >= 0, destinationIndex < space.tabs.count else { return }
         let tab = space.tabs.remove(at: sourceIndex)
         space.tabs.insert(tab, at: destinationIndex)
+        registerUndo(actionName: "Move Tab") { [weak self] in
+            self?.moveTab(from: destinationIndex, to: sourceIndex, in: space)
+        }
         notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
         scheduleSave()
     }
@@ -880,6 +994,10 @@ class TabStore {
         )
         let insertAt = min(destinationIndex ?? space.pinnedEntries.count, space.pinnedEntries.count)
         space.pinnedEntries.insert(entry, at: insertAt)
+        let savedTabIndex = index
+        registerUndo(actionName: "Pin Tab") { [weak self] in
+            self?.unpinTab(id: entry.id, in: space, at: savedTabIndex)
+        }
         notifyObservers { $0.tabStoreDidPinTab(entry, fromIndex: index, toIndex: insertAt, in: space) }
         scheduleSave()
     }
@@ -887,6 +1005,9 @@ class TabStore {
     func unpinTab(id: UUID, in space: Space, at destinationIndex: Int? = nil) {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
         let entry = space.pinnedEntries.remove(at: index)
+        let savedFolderID = entry.folderID
+        let savedSortOrder = entry.sortOrder
+        let savedPinnedIndex = index
         let tab: BrowserTab
         if let liveTab = entry.tab {
             tab = liveTab
@@ -905,6 +1026,28 @@ class TabStore {
         }
         let insertAt = min(destinationIndex ?? 0, space.tabs.count)
         space.tabs.insert(tab, at: insertAt)
+        registerUndo(actionName: "Unpin Tab") { [weak self] in
+            guard let self else { return }
+            // Re-pin: remove from tabs, create entry, insert at original pinned position
+            guard let tabIndex = space.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+            let tab = space.tabs.remove(at: tabIndex)
+            let reEntry = PinnedEntry(
+                id: tab.id,
+                pinnedURL: tab.url ?? URL(string: "about:blank")!,
+                pinnedTitle: tab.title,
+                faviconURL: tab.faviconURL,
+                folderID: savedFolderID,
+                sortOrder: savedSortOrder,
+                tab: tab
+            )
+            let reInsertAt = min(savedPinnedIndex, space.pinnedEntries.count)
+            space.pinnedEntries.insert(reEntry, at: reInsertAt)
+            self.registerUndo(actionName: "Unpin Tab") { [weak self] in
+                self?.unpinTab(id: reEntry.id, in: space, at: tabIndex)
+            }
+            self.notifyObservers { $0.tabStoreDidPinTab(reEntry, fromIndex: tabIndex, toIndex: reInsertAt, in: space) }
+            self.scheduleSave()
+        }
         notifyObservers { $0.tabStoreDidUnpinTab(entry, fromIndex: index, toIndex: insertAt, in: space) }
         scheduleSave()
     }
@@ -912,11 +1055,19 @@ class TabStore {
     func closePinnedTab(id: UUID, in space: Space) {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
         let entry = space.pinnedEntries[index]
+        // Capture tab state for undo before discarding
+        let tab = entry.tab
+        let stateData = tab?.currentInteractionStateData()
+        let tabURL = tab?.url
+        let tabTitle = tab?.title
+        let tabFaviconURL = tab?.faviconURL
+
         // Cache favicon before discarding tab
-        if let tab = entry.tab {
+        if let tab {
             if let url = tab.faviconURL { entry.faviconURL = url }
             if let image = tab.favicon { entry.favicon = image }
             tabSubscriptions.removeValue(forKey: tab.id)
+            tab.teardown()
         }
         entry.tab = nil  // Always make dormant, never remove entry
         entry.onFaviconDownloaded = { [weak self, weak entry] in
@@ -928,6 +1079,33 @@ class TabStore {
                 }
             }
         }
+
+        if tab != nil {
+            registerUndo(actionName: "Close Tab") { [weak self] in
+                guard let self else { return }
+                guard let idx = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
+                let entry = space.pinnedEntries[idx]
+                guard entry.tab == nil else { return }  // Already live
+                let restored = BrowserTab(
+                    id: UUID(),
+                    title: tabTitle ?? entry.pinnedTitle,
+                    archivedInteractionState: stateData,
+                    fallbackURL: tabURL ?? entry.pinnedURL,
+                    faviconURL: tabFaviconURL ?? entry.faviconURL,
+                    configuration: space.makeWebViewConfiguration()
+                )
+                restored.spaceID = space.id
+                entry.tab = restored
+                self.subscribeToTab(restored, spaceID: space.id)
+                self.registerUndo(actionName: "Close Tab") { [weak self] in
+                    self?.closePinnedTab(id: id, in: space)
+                }
+                self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: idx, in: space) }
+                self.scheduleSave()
+                NotificationCenter.default.post(name: .tabRestoredByUndo, object: nil, userInfo: ["tabID": restored.id, "spaceID": space.id])
+            }
+        }
+
         notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
         scheduleSave()
     }
@@ -935,10 +1113,40 @@ class TabStore {
     func deletePinnedEntry(id: UUID, in space: Space) {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
         let entry = space.pinnedEntries[index]
+        // Capture state for undo
+        let savedPinnedURL = entry.pinnedURL
+        let savedPinnedTitle = entry.pinnedTitle
+        let savedFaviconURL = entry.faviconURL
+        let savedFavicon = entry.favicon
+        let savedFolderID = entry.folderID
+        let savedSortOrder = entry.sortOrder
+
         if let tab = entry.tab {
             tabSubscriptions.removeValue(forKey: tab.id)
+            tab.teardown()
         }
         space.pinnedEntries.remove(at: index)
+
+        registerUndo(actionName: "Delete Tab") { [weak self] in
+            guard let self else { return }
+            let restored = PinnedEntry(
+                id: id,
+                pinnedURL: savedPinnedURL,
+                pinnedTitle: savedPinnedTitle,
+                faviconURL: savedFaviconURL,
+                favicon: savedFavicon,
+                folderID: savedFolderID,
+                sortOrder: savedSortOrder
+            )
+            let insertAt = min(index, space.pinnedEntries.count)
+            space.pinnedEntries.insert(restored, at: insertAt)
+            self.registerUndo(actionName: "Delete Tab") { [weak self] in
+                self?.deletePinnedEntry(id: id, in: space)
+            }
+            self.notifyObservers { $0.tabStoreDidInsertPinnedEntry(restored, at: insertAt, in: space) }
+            self.scheduleSave()
+        }
+
         notifyObservers { $0.tabStoreDidRemovePinnedEntry(entry, at: index, in: space) }
         scheduleSave()
     }
@@ -970,6 +1178,9 @@ class TabStore {
         let maxTabOrder = space.pinnedEntries.map(\.sortOrder).max() ?? -1
         let folder = PinnedFolder(name: name, parentFolderID: parentFolderID, sortOrder: max(maxFolderOrder, maxTabOrder) + 1)
         space.pinnedFolders.append(folder)
+        registerUndo(actionName: "New Folder") { [weak self] in
+            self?.deletePinnedFolder(id: folder.id, in: space)
+        }
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
         scheduleSave()
         return folder
@@ -978,6 +1189,13 @@ class TabStore {
     func deletePinnedFolder(id: UUID, in space: Space) {
         guard let folder = space.pinnedFolders.first(where: { $0.id == id }) else { return }
         let parentID = folder.parentFolderID
+        let savedName = folder.name
+        let savedIsCollapsed = folder.isCollapsed
+        let savedSortOrder = folder.sortOrder
+
+        // Capture which entries/folders will be reparented
+        let reparentedEntryIDs = space.pinnedEntries.filter { $0.folderID == id }.map(\.id)
+        let reparentedFolderIDs = space.pinnedFolders.filter { $0.parentFolderID == id }.map(\.id)
 
         // Reparent direct children (entries and folders) to the deleted folder's parent
         for entry in space.pinnedEntries where entry.folderID == id {
@@ -988,20 +1206,48 @@ class TabStore {
         }
 
         space.pinnedFolders.removeAll { $0.id == id }
+
+        registerUndo(actionName: "Delete Folder") { [weak self] in
+            guard let self else { return }
+            // Recreate folder
+            let restored = PinnedFolder(id: id, name: savedName, parentFolderID: parentID, isCollapsed: savedIsCollapsed, sortOrder: savedSortOrder)
+            space.pinnedFolders.append(restored)
+            // Restore children's parent references
+            for entry in space.pinnedEntries where reparentedEntryIDs.contains(entry.id) {
+                entry.folderID = id
+            }
+            for child in space.pinnedFolders where reparentedFolderIDs.contains(child.id) {
+                child.parentFolderID = id
+            }
+            self.registerUndo(actionName: "Delete Folder") { [weak self] in
+                self?.deletePinnedFolder(id: id, in: space)
+            }
+            self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+            self.scheduleSave()
+        }
+
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
         scheduleSave()
     }
 
     func renamePinnedEntry(id: UUID, name: String, in space: Space) {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
+        let oldName = space.pinnedEntries[index].pinnedTitle
         space.pinnedEntries[index].pinnedTitle = name
+        registerUndo(actionName: "Rename") { [weak self] in
+            self?.renamePinnedEntry(id: id, name: oldName, in: space)
+        }
         notifyObservers { $0.tabStoreDidUpdatePinnedEntry(space.pinnedEntries[index], at: index, in: space) }
         scheduleSave()
     }
 
     func renamePinnedFolder(id: UUID, name: String, in space: Space) {
         guard let folder = space.pinnedFolders.first(where: { $0.id == id }) else { return }
+        let oldName = folder.name
         folder.name = name
+        registerUndo(actionName: "Rename Folder") { [weak self] in
+            self?.renamePinnedFolder(id: id, name: oldName, in: space)
+        }
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
         scheduleSave()
     }
@@ -1015,6 +1261,12 @@ class TabStore {
 
     func movePinnedTabToFolder(tabID: UUID, folderID: UUID?, beforeItemID: UUID? = nil, in space: Space) {
         guard let entry = space.pinnedEntries.first(where: { $0.id == tabID }) else { return }
+        let oldFolderID = entry.folderID
+        let oldSortOrder = entry.sortOrder
+        // Capture sort orders of all entries and folders for undo
+        let savedEntrySortOrders = space.pinnedEntries.map { (id: $0.id, folderID: $0.folderID, sortOrder: $0.sortOrder) }
+        let savedFolderSortOrders = space.pinnedFolders.map { (id: $0.id, parentFolderID: $0.parentFolderID, sortOrder: $0.sortOrder) }
+
         entry.folderID = folderID
 
         // Collect all sibling items (entries + folders) at the target level, excluding the moved entry
@@ -1050,12 +1302,38 @@ class TabStore {
             }
         }
 
+        registerUndo(actionName: "Move Tab") { [weak self] in
+            guard let self else { return }
+            // Restore all sort orders and folder assignments
+            for saved in savedEntrySortOrders {
+                if let e = space.pinnedEntries.first(where: { $0.id == saved.id }) {
+                    e.folderID = saved.folderID
+                    e.sortOrder = saved.sortOrder
+                }
+            }
+            for saved in savedFolderSortOrders {
+                if let f = space.pinnedFolders.first(where: { $0.id == saved.id }) {
+                    f.parentFolderID = saved.parentFolderID
+                    f.sortOrder = saved.sortOrder
+                }
+            }
+            self.registerUndo(actionName: "Move Tab") { [weak self] in
+                self?.movePinnedTabToFolder(tabID: tabID, folderID: folderID, beforeItemID: beforeItemID, in: space)
+            }
+            self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+            self.scheduleSave()
+        }
+
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
         scheduleSave()
     }
 
     func movePinnedFolder(folderID: UUID, parentFolderID: UUID?, beforeItemID: UUID? = nil, in space: Space) {
         guard let folder = space.pinnedFolders.first(where: { $0.id == folderID }) else { return }
+        // Capture state for undo
+        let savedEntrySortOrders = space.pinnedEntries.map { (id: $0.id, folderID: $0.folderID, sortOrder: $0.sortOrder) }
+        let savedFolderSortOrders = space.pinnedFolders.map { (id: $0.id, parentFolderID: $0.parentFolderID, sortOrder: $0.sortOrder) }
+
         folder.parentFolderID = parentFolderID
 
         // Collect all sibling items at the target level, excluding the moved folder
@@ -1087,6 +1365,27 @@ class TabStore {
             case .entry(let e): e.sortOrder = i
             case .folder(let f): f.sortOrder = i
             }
+        }
+
+        registerUndo(actionName: "Move Folder") { [weak self] in
+            guard let self else { return }
+            for saved in savedEntrySortOrders {
+                if let e = space.pinnedEntries.first(where: { $0.id == saved.id }) {
+                    e.folderID = saved.folderID
+                    e.sortOrder = saved.sortOrder
+                }
+            }
+            for saved in savedFolderSortOrders {
+                if let f = space.pinnedFolders.first(where: { $0.id == saved.id }) {
+                    f.parentFolderID = saved.parentFolderID
+                    f.sortOrder = saved.sortOrder
+                }
+            }
+            self.registerUndo(actionName: "Move Folder") { [weak self] in
+                self?.movePinnedFolder(folderID: folderID, parentFolderID: parentFolderID, beforeItemID: beforeItemID, in: space)
+            }
+            self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+            self.scheduleSave()
         }
 
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }

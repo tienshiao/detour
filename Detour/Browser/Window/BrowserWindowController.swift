@@ -66,6 +66,10 @@ class BrowserWindowController: NSWindowController {
 
     var store: TabStore { TabStore.shared }
 
+    override var undoManager: UndoManager? {
+        store.undoManager
+    }
+
     // MARK: - Per-window space state
 
     var activeSpaceID: UUID?
@@ -207,11 +211,25 @@ class BrowserWindowController: NSWindowController {
             name: ExtensionManager.extensionActionDidChangeNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleTabRestoredByUndo(_:)),
+            name: .tabRestoredByUndo,
+            object: nil
+        )
     }
 
     @objc private func handleExtensionActionDidChange(_ notification: Notification) {
         guard let extensionID = notification.userInfo?["extensionID"] as? String else { return }
         ExtensionToolbarManager.updateToolbarButton(for: extensionID)
+    }
+
+    @objc private func handleTabRestoredByUndo(_ notification: Notification) {
+        guard let tabID = notification.userInfo?["tabID"] as? UUID,
+              let spaceID = notification.userInfo?["spaceID"] as? UUID,
+              spaceID == activeSpaceID else { return }
+        selectTab(id: tabID)
     }
 
     @objc private func handleExtensionPopupOpenURL(_ notification: Notification) {
@@ -732,6 +750,8 @@ class BrowserWindowController: NSWindowController {
         webView.configuration.userContentController.add(self, name: "contextMenuInfo")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "editableFieldFocus")
+        webView.configuration.userContentController.add(self, name: "editableFieldFocus")
 
         // Use frame-based layout (not constraints) for WKWebView — Auto Layout breaks Web Inspector.
         webView.translatesAutoresizingMaskIntoConstraints = true
@@ -785,6 +805,8 @@ class BrowserWindowController: NSWindowController {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "contextMenuInfo")
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+                webView.configuration.userContentController.removeScriptMessageHandler(forName: "editableFieldFocus")
+                (webView as? BrowserWebView)?.isEditingWebContent = false
             }
             subview.removeFromSuperview()
         }
@@ -1456,7 +1478,31 @@ class BrowserWindowController: NSWindowController {
 // MARK: - NSMenuItemValidation
 
 extension BrowserWindowController: NSMenuItemValidation {
+    @objc func browserUndo(_ sender: Any?) {
+        store.undoManager.undo()
+    }
+
+    @objc func browserRedo(_ sender: Any?) {
+        store.undoManager.redo()
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(browserUndo(_:)) {
+            if let webView = selectedTab?.webView as? BrowserWebView, webView.isEditingWebContent {
+                menuItem.title = "Undo"
+                return true
+            }
+            menuItem.title = store.undoManager.undoMenuItemTitle
+            return store.undoManager.canUndo
+        }
+        if menuItem.action == #selector(browserRedo(_:)) {
+            if let webView = selectedTab?.webView as? BrowserWebView, webView.isEditingWebContent {
+                menuItem.title = "Redo"
+                return true
+            }
+            menuItem.title = store.undoManager.redoMenuItemTitle
+            return store.undoManager.canRedo
+        }
         if menuItem.action == #selector(reopenClosedTab(_:)) {
             guard let space = activeSpace else { return false }
             return store.canReopenClosedTab(in: space)
@@ -1593,6 +1639,10 @@ extension BrowserWindowController: WKScriptMessageHandler {
         } else if message.name == "contextMenuInfo", let info = message.body as? [String: String] {
             if let browserWebView = message.webView as? BrowserWebView {
                 browserWebView.lastContextInfo = info
+            }
+        } else if message.name == "editableFieldFocus", let editing = message.body as? Bool {
+            if let webView = message.webView as? BrowserWebView {
+                webView.isEditingWebContent = editing
             }
         } else if message.name == BlockedResourceTracker.messageName, let count = message.body as? Int {
             if let peek = selectedTab?.peekTab, message.webView == peek.webView {

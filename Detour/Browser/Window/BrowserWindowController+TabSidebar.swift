@@ -274,7 +274,7 @@ extension BrowserWindowController: TabSidebarDelegate {
 
         let alert = NSAlert()
         alert.messageText = "Delete \"\(space.name)\"?"
-        alert.informativeText = "This action cannot be undone."
+        alert.informativeText = "This space will be removed."
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
