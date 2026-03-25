@@ -50,6 +50,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         TabStore.shared.saveNow()
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let windowCount = windowControllers.count
+        guard windowCount > 0 else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.messageText = "Quit Detour?"
+        alert.informativeText = windowCount == 1
+            ? "You have 1 window open."
+            : "You have \(windowCount) windows open."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
