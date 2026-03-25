@@ -41,6 +41,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var userTypedText: String = ""
     private var isUpdatingTextProgrammatically = false
     private var inlineCompletionSuffix: String?
+    private var suppressNextAutocomplete = false
     private var wasPrepopulated = false
 
     /// Set text field value without triggering `controlTextDidChange`.
@@ -329,11 +330,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return
         }
 
-        // Gather tab infos once for both autocomplete and suggestion fetch
-        let tabInfos = gatherTabInfos()
-
-        // Immediate inline autocomplete (no debounce)
-        applyInlineAutocomplete(for: query, tabInfos: tabInfos)
+        // Gather tab infos and apply inline autocomplete (suppressed on backspace)
+        var tabInfos: [SuggestionProvider.TabInfo]?
+        if suppressNextAutocomplete {
+            suppressNextAutocomplete = false
+        } else {
+            let infos = gatherTabInfos()
+            applyInlineAutocomplete(for: query, tabInfos: infos)
+            tabInfos = infos
+        }
 
         // Debounced full suggestion fetch
         let work = DispatchWorkItem { [weak self] in
@@ -365,8 +370,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 updateFirstSearchInput(text: userTypedText, reloadRow: true)
                 setTextFieldQuietly(userTypedText)
                 textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+                suppressNextAutocomplete = true
                 return true
             }
+            suppressNextAutocomplete = true
             return false
         }
         if commandSelector == #selector(NSResponder.insertTab(_:)) {
@@ -444,8 +451,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private func activateSuggestion(at index: Int) {
         guard index < suggestions.count else { return }
         switch suggestions[index] {
-        case .searchInput(let text):
-            delegate?.commandPalette(self, didSubmitInput: text)
+        case .searchInput:
+            let input = textField.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !input.isEmpty else { return }
+            delegate?.commandPalette(self, didSubmitInput: input)
         case .historyResult(let url, _, _):
             delegate?.commandPalette(self, didSubmitInput: url)
         case .searchSuggestion(let text):
