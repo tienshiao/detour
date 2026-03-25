@@ -601,6 +601,17 @@ class TabStore {
                     sortOrder: pinnedRecord.sortOrder,
                     tab: backingTab
                 )
+                if backingTab == nil {
+                    entry.onFaviconDownloaded = { [weak self, weak entry] in
+                        guard let self, let entry else { return }
+                        for space in self.spaces {
+                            if let index = space.pinnedEntries.firstIndex(where: { $0.id == entry.id }) {
+                                self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
+                                return
+                            }
+                        }
+                    }
+                }
                 space.pinnedEntries.append(entry)
             }
 
@@ -908,6 +919,15 @@ class TabStore {
             tabSubscriptions.removeValue(forKey: tab.id)
         }
         entry.tab = nil  // Always make dormant, never remove entry
+        entry.onFaviconDownloaded = { [weak self, weak entry] in
+            guard let self, let entry else { return }
+            for space in self.spaces {
+                if let idx = space.pinnedEntries.firstIndex(where: { $0.id == entry.id }) {
+                    self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: idx, in: space) }
+                    return
+                }
+            }
+        }
         notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
         scheduleSave()
     }

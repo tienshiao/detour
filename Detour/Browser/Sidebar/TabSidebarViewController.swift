@@ -199,6 +199,17 @@ class TabSidebarViewController: NSViewController {
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
                     cell.indentLevel = depth
                     cell.updatePinnedMode(entry: entry)
+                    cell.onClose = { [weak self] in
+                        guard let self else { return }
+                        let row = self.tableView.row(for: cell)
+                        guard row >= 0, case .pinnedItem(let idx) = self.sidebarRow(for: row) else { return }
+                        if case .entry(let e, _) = self.flattenedPinnedItems[idx] {
+                            if let pinnedIdx = self.pinnedEntries.firstIndex(where: { $0.id == e.id }) {
+                                self.delegate?.tabSidebar(self, didRequestClosePinnedTabAt: pinnedIdx)
+                            }
+                        }
+                    }
+                    cell.onToggleMute = { entry.tab?.toggleMute() }
                 }
             case .folder(let folder, let depth):
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FolderCellView {
@@ -1062,6 +1073,18 @@ class TabSidebarViewController: NSViewController {
             cell.updateLoading(tab?.isLoading ?? false)
             cell.updateProgress(tab?.estimatedProgress ?? 0)
             cell.updateAudio(isPlaying: tab?.isPlayingAudio ?? false, isMuted: tab?.isMuted ?? false)
+            cell.updatePinnedMode(entry: entry)
+            cell.onClose = { [weak self] in
+                guard let self else { return }
+                let row = self.tableView.row(for: cell)
+                guard row >= 0, case .pinnedItem(let idx) = self.sidebarRow(for: row) else { return }
+                if case .entry(let e, _) = self.flattenedPinnedItems[idx] {
+                    if let pinnedIdx = self.pinnedEntries.firstIndex(where: { $0.id == e.id }) {
+                        self.delegate?.tabSidebar(self, didRequestClosePinnedTabAt: pinnedIdx)
+                    }
+                }
+            }
+            cell.onToggleMute = { entry.tab?.toggleMute() }
             return
         }
         tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))

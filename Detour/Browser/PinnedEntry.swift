@@ -7,6 +7,7 @@ class PinnedEntry {
     var pinnedTitle: String
     var faviconURL: URL?       // cached for dormant display
     var favicon: NSImage?      // cached image for dormant display
+    var onFaviconDownloaded: (() -> Void)?
     var folderID: UUID?
     var sortOrder: Int
     var tab: BrowserTab?       // nil = dormant
@@ -64,6 +65,7 @@ class PinnedEntry {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.tab == nil else { return }
                 self.favicon = image
+                self.onFaviconDownloaded?()
             }
         }.resume()
     }
