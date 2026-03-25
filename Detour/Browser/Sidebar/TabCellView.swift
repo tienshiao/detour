@@ -32,7 +32,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     let titleLabel = NSTextField(labelWithString: "")
     let faviconImageView = NSImageView()
     private let sleepBadge = NSImageView()
-    private let closeButton: NSButton
+    private let closeButton: HoverButton
     private let speakerButton: NSButton
     private let peekFaviconImageView = NSImageView()
     private var trackingArea: NSTrackingArea?
@@ -63,11 +63,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private var currentProgress: Double = 0
 
     override init(frame frameRect: NSRect) {
-        closeButton = NSButton(
-            image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!.withSymbolConfiguration(.init(pointSize: 12, weight: .bold))!,
-            target: nil,
-            action: nil
-        )
+        closeButton = HoverButton()
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!.withSymbolConfiguration(.init(pointSize: 12, weight: .bold))!
+        closeButton.fixedHoverSize = 20
         speakerButton = NSButton(
             image: NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: "Audio")!,
             target: nil,
@@ -99,6 +97,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
+        closeButton.imagePosition = .imageOnly
         closeButton.isHidden = true
         closeButton.target = self
         closeButton.action = #selector(closeTapped)

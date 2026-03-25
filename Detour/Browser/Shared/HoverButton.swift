@@ -5,6 +5,7 @@ class HoverButton: NSButton {
     private let hoverBackground = NSView()
     var circular: Bool = false { didSet { needsLayout = true } }
     var circularPadding: CGFloat = 3 { didSet { needsLayout = true } }
+    var fixedHoverSize: CGFloat? { didSet { needsLayout = true } }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -27,8 +28,15 @@ class HoverButton: NSButton {
                 height: side
             )
             hoverBackground.layer?.cornerRadius = side / 2
+        } else if let size = fixedHoverSize {
+            hoverBackground.frame = CGRect(
+                x: (bounds.width - size) / 2,
+                y: (bounds.height - size) / 2,
+                width: size,
+                height: size
+            )
+            hoverBackground.layer?.cornerRadius = UIConstants.defaultCornerRadius
         } else {
-            // Match the source list selection inset: 10pt from each side of the full sidebar width
             hoverBackground.frame = bounds.insetBy(dx: 10, dy: 1)
             hoverBackground.layer?.cornerRadius = UIConstants.defaultCornerRadius
         }
