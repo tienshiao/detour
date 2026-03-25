@@ -275,6 +275,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     private func updateSuggestions(_ items: [SuggestionItem]) {
         suggestions = items
+        updateFirstSearchInput(text: inlineCompletionSuffix.map { userTypedText + $0 })
         selectedSuggestionIndex = items.isEmpty ? nil : 0
         tableView.reloadData()
 
@@ -361,6 +362,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         if commandSelector == #selector(NSResponder.deleteBackward(_:)) {
             if inlineCompletionSuffix != nil {
                 inlineCompletionSuffix = nil
+                updateFirstSearchInput(text: userTypedText, reloadRow: true)
                 setTextFieldQuietly(userTypedText)
                 textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
                 return true
@@ -431,6 +433,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
+    private func updateFirstSearchInput(text: String?, reloadRow: Bool = false) {
+        guard let text, !suggestions.isEmpty, case .searchInput = suggestions[0] else { return }
+        suggestions[0] = .searchInput(text: text)
+        if reloadRow {
+            tableView.reloadData(forRowIndexes: IndexSet(integer: 0), columnIndexes: IndexSet(integer: 0))
+        }
+    }
+
     private func activateSuggestion(at index: Int) {
         guard index < suggestions.count else { return }
         switch suggestions[index] {
@@ -462,6 +472,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         guard !suffix.isEmpty else { return }
 
         inlineCompletionSuffix = suffix
+
+        updateFirstSearchInput(text: query + suffix, reloadRow: true)
 
         setTextFieldQuietly(query + suffix)
 
