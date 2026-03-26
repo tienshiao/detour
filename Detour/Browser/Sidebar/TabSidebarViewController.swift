@@ -695,7 +695,7 @@ class TabSidebarViewController: NSViewController {
             button.wantsLayer = true
 
             if space.id == activeSpaceID {
-                button.layer?.backgroundColor = space.color.withAlphaComponent(0.15).cgColor
+                button.layer?.backgroundColor = space.color.sidebarSafe.withAlphaComponent(0.15).cgColor
                 button.layer?.cornerRadius = UIConstants.defaultCornerRadius
             }
 
