@@ -41,6 +41,7 @@ class NativeMessagingHost {
     private var process: Process?
     private var stdinPipe: Pipe?
     private var stdoutPipe: Pipe?
+    private var stderrPipe: Pipe?
     private let readQueue = DispatchQueue(label: "com.detour.native-messaging.read")
 
     /// Called on the main queue when a message is received from the native host.
@@ -48,7 +49,12 @@ class NativeMessagingHost {
     /// Called on the main queue when the native host disconnects (process exit or error).
     var onDisconnect: ((String?) -> Void)?
 
-    private var isConnected = false
+    private let lock = NSLock()
+    private var _isConnected = false
+    private(set) var isConnected: Bool {
+        get { lock.withLock { _isConnected } }
+        set { lock.withLock { _isConnected = newValue } }
+    }
 
     init(hostName: String, extensionID: String) {
         self.hostName = hostName
@@ -89,16 +95,27 @@ class NativeMessagingHost {
 
         let stdin = Pipe()
         let stdout = Pipe()
+        let stderr = Pipe()
         proc.standardInput = stdin
         proc.standardOutput = stdout
-        // Discard stderr to avoid pipe buffer deadlocks
-        proc.standardError = FileHandle.nullDevice
+        proc.standardError = stderr
+
+        let stderrHostName = hostName
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            log.notice("[1PW-DEBUG] NM STDERR [\(stderrHostName, privacy: .public)]: \(text, privacy: .public)")
+        }
 
         self.stdinPipe = stdin
         self.stdoutPipe = stdout
+        self.stderrPipe = stderr
         self.process = proc
 
+        let hostNameCopy = hostName
         proc.terminationHandler = { [weak self] process in
+            log.notice("[1PW-DEBUG] NM EXIT [\(hostNameCopy, privacy: .public)] status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)")
+            stderr.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
                 guard let self, self.isConnected else { return }
                 self.isConnected = false
@@ -130,12 +147,11 @@ class NativeMessagingHost {
             throw NativeMessagingError.messageTooLarge(data.count)
         }
 
-        // Write 4-byte little-endian length prefix + message data
-        var length = UInt32(data.count).littleEndian
-        var packet = Data(bytes: &length, count: 4)
-        packet.append(data)
+        if let preview = String(data: data.prefix(500), encoding: .utf8) {
+            log.notice("[1PW-DEBUG] → NM SEND [\(self.hostName, privacy: .public)] (\(data.count) bytes): \(preview, privacy: .public)")
+        }
 
-        stdinPipe.fileHandleForWriting.write(packet)
+        stdinPipe.fileHandleForWriting.write(Self.encodeMessage(data))
     }
 
     /// Disconnect the native host (terminates the process).
@@ -144,11 +160,13 @@ class NativeMessagingHost {
         log.info("Disconnecting native host \(self.hostName, privacy: .public) for extension \(self.extensionID, privacy: .public)")
         isConnected = false
 
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
         stdinPipe?.fileHandleForWriting.closeFile()
         process?.terminate()
         process = nil
         stdinPipe = nil
         stdoutPipe = nil
+        stderrPipe = nil
     }
 
     // MARK: - Private
@@ -179,6 +197,7 @@ class NativeMessagingHost {
                 let lengthData = stdout.readData(ofLength: 4)
                 guard lengthData.count == 4 else {
                     // EOF or error — native host disconnected
+                    log.notice("[1PW-DEBUG] ← NM EOF [\(self.hostName, privacy: .public)] (read \(lengthData.count) bytes instead of 4)")
                     DispatchQueue.main.async {
                         guard self.isConnected else { return }
                         self.isConnected = false
@@ -208,9 +227,14 @@ class NativeMessagingHost {
 
                 // Parse JSON and deliver
                 if let json = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] {
+                    if let preview = String(data: messageData.prefix(500), encoding: .utf8) {
+                        log.notice("[1PW-DEBUG] ← NM RECV [\(self.hostName, privacy: .public)] (\(messageData.count) bytes): \(preview, privacy: .public)")
+                    }
                     DispatchQueue.main.async {
                         self.onMessage?(json)
                     }
+                } else {
+                    log.error("[1PW-DEBUG] ← NM RECV [\(self.hostName, privacy: .public)] (\(messageData.count) bytes): failed to parse as JSON")
                 }
             }
         }

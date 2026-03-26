@@ -18,6 +18,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.detourbrowser.mac
         INFOPLIST_FILE: Detour/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Detour/Resources/Detour.entitlements
+        DEVELOPMENT_TEAM: 58MN2R524R
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: YES
+        OTHER_CODE_SIGN_FLAGS: "--timestamp"
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
   DetourTests:

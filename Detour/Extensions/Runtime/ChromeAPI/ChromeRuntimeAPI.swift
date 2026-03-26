@@ -149,7 +149,11 @@ struct ChromeRuntimeAPI {
                         },
                         hasListener: function(cb) { return disconnectListeners.includes(cb); }
                     },
-                    sender: { id: extensionID },
+                    sender: {
+                        id: extensionID,
+                        origin: 'chrome-extension://' + extensionID,
+                        url: window.location.href
+                    },
                     __dispatchMessage: function(msg) {
                         for (var i = 0; i < messageListeners.length; i++) {
                             try { messageListeners[i](msg, port); } catch(e) {
@@ -196,8 +200,12 @@ struct ChromeRuntimeAPI {
             chrome.runtime.onConnect = __detourMakeEventEmitter(onConnectListeners);
 
             // Internal: called by native bridge when a port connection is initiated from another context
-            window.__extensionDispatchConnect = function(portID, name) {
+            window.__extensionDispatchConnect = function(portID, name, senderInfo) {
                 var port = createPort(portID, name);
+                // Enrich sender with info passed from the bridge
+                if (senderInfo) {
+                    port.sender = senderInfo;
+                }
                 window.__extensionPorts[portID] = port;
                 for (var i = 0; i < onConnectListeners.length; i++) {
                     try { onConnectListeners[i](port); } catch(e) {

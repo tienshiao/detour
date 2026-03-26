@@ -17,6 +17,13 @@ struct ChromeAPIBundle {
                 hasListener: function(cb) { return listeners.includes(cb); }
             };
         };
+        // Monotonic counter for generating unique callback IDs (avoids Date.now() collisions)
+        if (!window.__detourNextCallbackId) {
+            window.__detourNextCallbackId = 1;
+        }
+        window.__detourMakeCallbackId = function(prefix) {
+            return (prefix || 'cb') + '_' + (window.__detourNextCallbackId++);
+        };
     })();
     """
 
@@ -88,6 +95,9 @@ struct ChromeAPIBundle {
             }
         })();
         """)
+
+        // CORS bypass: override fetch() in extension pages to proxy through native URLSession.
+        parts.append(ChromeCorsBypassAPI.generateJS(extensionID: ext.id, isContentScript: isContentScript))
 
         // Alias: Chrome MV3 provides `browser` as an alias for `chrome`.
         // Many extensions (including 1Password) use `browser.*` APIs.

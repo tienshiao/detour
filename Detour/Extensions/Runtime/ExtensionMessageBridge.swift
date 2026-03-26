@@ -97,6 +97,7 @@ private enum MsgType {
     static let tabsCaptureVisibleTab = "tabs.captureVisibleTab"
 
     static let runtimeReload = "runtime.reload"
+    static let fetchProxy = "fetch.proxy"
 
     static let downloadsDownload = "downloads.download"
 
@@ -471,6 +472,11 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         case MsgType.runtimeReload:
             handleRuntimeReload(body: body, extensionID: extensionID)
 
+        // Fetch proxy (CORS bypass for extension pages)
+        case MsgType.fetchProxy:
+            guard let ctx else { return }
+            handleFetchProxy(ctx: ctx, body: body)
+
         // Notifications
         case MsgType.notificationsCreate:
             guard let ctx else { return }
@@ -533,8 +539,9 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
         guard let ext = ExtensionManager.shared.extension(withID: ctx.extensionID) else { return }
 
-        // Serialize message to JSON for transport
-        guard let messageData = try? JSONSerialization.data(withJSONObject: message),
+        // Serialize message to JSON for transport. Sanitize first — WebKit's JS-to-native
+        // bridge can produce NSDate objects from JS Date values, which JSONSerialization rejects.
+        guard let messageData = Self.jsonData(from: message),
               let messageJSON = String(data: messageData, encoding: .utf8) else { return }
 
         var sender: [String: Any] = [
@@ -626,7 +633,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         guard let pending = pendingResponses.removeValue(forKey: ctx.callbackID) else { return }
 
         let response = body["response"] ?? [String: Any]()
-        guard let responseData = try? JSONSerialization.data(withJSONObject: response),
+        guard let responseData = Self.jsonData(from: response),
               let responseJSON = String(data: responseData, encoding: .utf8) else { return }
 
         let js = "window.__extensionDeliverResponse('\(ctx.callbackID)', \(responseJSON));"
@@ -1004,7 +1011,7 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         if let errorMsg = result["__error"] as? String {
             log.error("API error for extension \(extensionID, privacy: .public): \(errorMsg, privacy: .public)")
         }
-        guard let resultData = try? JSONSerialization.data(withJSONObject: result),
+        guard let resultData = Self.jsonData(from: result),
               let resultJSON = String(data: resultData, encoding: .utf8) else { return }
         deliverJS("window.__extensionDeliverResponse('\(callbackID)', \(resultJSON));",
                   extensionID: extensionID, webView: webView, isContentScript: isContentScript, frameInfo: frameInfo)
@@ -1701,6 +1708,12 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         for portID in orphaned.keys {
             openPorts.removeValue(forKey: portID)
         }
+        // Clean up native hosts that are no longer connected
+        let staleHosts = nativeHosts.filter { !$0.value.isConnected }
+        for (portID, host) in staleHosts {
+            host.disconnect()
+            nativeHosts.removeValue(forKey: portID)
+        }
         cleanupOrphanedResponses()
         cleanupStaleCachedDocumentIds()
     }
@@ -1737,9 +1750,14 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         let isContentScript = body["isContentScript"] as? Bool ?? true
 
         guard let ext = ExtensionManager.shared.extension(withID: extensionID),
-              let backgroundHost = ExtensionManager.shared.backgroundHost(for: extensionID) else { return }
+              let backgroundHost = ExtensionManager.shared.backgroundHost(for: extensionID) else {
+            log.notice("[1PW-DEBUG] PORT CONNECT [\(portID, privacy: .public)] name='\(name, privacy: .public)' FAILED: no background host for \(extensionID, privacy: .public)")
+            return
+        }
 
         let sourceWorld: WKContentWorld = isContentScript ? ext.contentWorld : .page
+
+        log.notice("[1PW-DEBUG] PORT CONNECT [\(portID, privacy: .public)] name='\(name, privacy: .public)' ext=\(extensionID, privacy: .public) isContentScript=\(isContentScript) bgWebView=\(backgroundHost.webView != nil)")
 
         // Store the port connection. Track frameInfo for subframes so port messages
         // are routed back to the correct iframe rather than the main frame.
@@ -1752,9 +1770,27 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             portID: portID
         )
 
+        // Build sender info for the background's onConnect handler
+        var senderDict: [String: Any] = [
+            "id": extensionID,
+            "origin": "chrome-extension://\(extensionID)"
+        ]
+        if isContentScript, let url = sourceWebView?.url?.absoluteString {
+            senderDict["url"] = url
+        } else {
+            senderDict["url"] = "chrome-extension://\(extensionID)/"
+        }
+        let senderJSON: String
+        if let data = try? JSONSerialization.data(withJSONObject: senderDict),
+           let str = String(data: data, encoding: .utf8) {
+            senderJSON = str
+        } else {
+            senderJSON = "{ id: '\(extensionID)' }"
+        }
+
         // Notify the background script's onConnect listeners
         let escapedName = name.jsEscapedForSingleQuotes
-        let js = "if (window.__extensionDispatchConnect) { window.__extensionDispatchConnect('\(portID)', '\(escapedName)'); }"
+        let js = "if (window.__extensionDispatchConnect) { window.__extensionDispatchConnect('\(portID)', '\(escapedName)', \(senderJSON)); }"
         backgroundHost.evaluateJavaScript(js)
     }
 
@@ -1764,33 +1800,48 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
         // Check if this is a native messaging port
         if let host = nativeHosts[portID] {
-            guard let msgDict = message as? [String: Any] else { return }
+            guard let msgDict = message as? [String: Any] else {
+                log.notice("[1PW-DEBUG] PORT MSG [\(portID, privacy: .public)] native port: message is not a dict")
+                return
+            }
             do {
                 try host.sendMessage(msgDict)
             } catch {
-                log.error("Native port postMessage failed: \(error.localizedDescription)")
+                log.notice("[1PW-DEBUG] PORT MSG [\(portID, privacy: .public)] native port postMessage failed: \(error.localizedDescription)")
             }
             return
         }
 
-        guard let port = openPorts[portID] else { return }
+        guard let port = openPorts[portID] else {
+            log.notice("[1PW-DEBUG] PORT MSG [\(portID, privacy: .public)] no open port found (orphaned?)")
+            return
+        }
 
-        guard let messageData = try? JSONSerialization.data(withJSONObject: message),
-              let messageJSON = String(data: messageData, encoding: .utf8) else { return }
+        guard let messageData = Self.jsonData(from: message),
+              let messageJSON = String(data: messageData, encoding: .utf8) else {
+            log.notice("[1PW-DEBUG] PORT MSG [\(portID, privacy: .public)] failed to serialize message as JSON")
+            return
+        }
 
         // Route to the other end of the port
         let targetWebView: WKWebView?
         let targetWorld: WKContentWorld
         let targetFrameInfo: WKFrameInfo?
+        let direction: String
         if sourceWebView === port.sourceWebView {
             targetWebView = port.targetWebView
             targetWorld = port.targetContentWorld
             targetFrameInfo = nil
+            direction = "source→target"
         } else {
             targetWebView = port.sourceWebView
             targetWorld = port.sourceContentWorld
             targetFrameInfo = port.sourceFrameInfo
+            direction = "target→source"
         }
+
+        let preview = String(messageJSON.prefix(300))
+        log.notice("[1PW-DEBUG] PORT MSG [\(portID, privacy: .public)] \(direction, privacy: .public) (\(messageData.count) bytes): \(preview, privacy: .public)")
 
         let js = "if (window.__extensionDispatchPortMessage) { window.__extensionDispatchPortMessage('\(portID)', \(messageJSON)); }"
         if let targetFrameInfo, !targetFrameInfo.isMainFrame {
@@ -1807,11 +1858,17 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
         // Check if this is a native messaging port
         if let host = nativeHosts.removeValue(forKey: portID) {
+            log.notice("[1PW-DEBUG] PORT DISCONNECT [\(portID, privacy: .public)] native port — terminating host")
             host.disconnect()
             return
         }
 
-        guard let port = openPorts.removeValue(forKey: portID) else { return }
+        guard let port = openPorts.removeValue(forKey: portID) else {
+            log.notice("[1PW-DEBUG] PORT DISCONNECT [\(portID, privacy: .public)] no open port found")
+            return
+        }
+
+        log.notice("[1PW-DEBUG] PORT DISCONNECT [\(portID, privacy: .public)]")
 
         // Notify the other end
         let js = "if (window.__extensionDispatchPortDisconnect) { window.__extensionDispatchPortDisconnect('\(portID)'); }"
@@ -2380,6 +2437,97 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         deliverResponse(ctx, result: [:] as [String: Any])
     }
 
+    // MARK: - Fetch Proxy (CORS Bypass)
+
+    /// Ephemeral session for extension fetch proxy — no shared cookies/cache with the browser.
+    private static let fetchProxySession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 30
+        config.httpMaximumConnectionsPerHost = 6
+        return URLSession(configuration: config)
+    }()
+
+    /// Handles fetch requests from extension pages by proxying them through URLSession,
+    /// which is not subject to CORS. Chrome extensions with host_permissions are exempt
+    /// from CORS; this replicates that behavior for WKWebView-based extension contexts.
+    private func handleFetchProxy(ctx: MessageContext, body: [String: Any]) {
+        guard let urlString = body["url"] as? String,
+              let url = URL(string: urlString) else {
+            deliverResponse(ctx, result: ["__error": "Invalid URL"])
+            return
+        }
+
+        // Only proxy for extensions with matching host permissions
+        guard let ext = ExtensionManager.shared.extension(withID: ctx.extensionID),
+              ExtensionPermissionChecker.hasHostPermission(for: url, extension: ext) else {
+            deliverResponse(ctx, result: ["__error": "Host permission not granted for \(url.host ?? "unknown")"])
+            return
+        }
+
+        let method = body["method"] as? String ?? "GET"
+        let headers = body["headers"] as? [String: String] ?? [:]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        // Set body if present
+        if let bodyString = body["body"] as? String {
+            let bodyIsBase64 = body["bodyIsBase64"] as? Bool ?? false
+            if bodyIsBase64, let data = Data(base64Encoded: bodyString) {
+                request.httpBody = data
+            } else {
+                request.httpBody = bodyString.data(using: .utf8)
+            }
+        }
+
+        Self.fetchProxySession.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+
+            DispatchQueue.main.async {
+                if let error {
+                    self.deliverResponse(ctx, result: ["__error": error.localizedDescription])
+                    return
+                }
+
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    self.deliverResponse(ctx, result: ["__error": "Not an HTTP response"])
+                    return
+                }
+
+                var result: [String: Any] = [
+                    "status": httpResponse.statusCode,
+                    "statusText": HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode),
+                ]
+
+                var responseHeaders: [String: String] = [:]
+                for (key, value) in httpResponse.allHeaderFields {
+                    responseHeaders[String(describing: key)] = String(describing: value)
+                }
+                result["headers"] = responseHeaders
+
+                // Pass text responses as UTF-8 strings to avoid base64 overhead;
+                // fall back to base64 for binary content.
+                if let data {
+                    let contentType = responseHeaders["Content-Type"] ?? ""
+                    let isText = contentType.hasPrefix("text/") ||
+                        contentType.contains("json") ||
+                        contentType.contains("xml") ||
+                        contentType.contains("javascript")
+                    if isText, let text = String(data: data, encoding: .utf8) {
+                        result["body"] = text
+                    } else {
+                        result["bodyBase64"] = data.base64EncodedString()
+                    }
+                }
+
+                self.deliverResponse(ctx, result: result)
+            }
+        }.resume()
+    }
+
     // MARK: - Native Messaging Handlers
 
     /// Active native messaging hosts keyed by portID.
@@ -2390,10 +2538,13 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
               let application = body["application"] as? String else { return }
         let isContentScript = body["isContentScript"] as? Bool ?? true
 
+        log.notice("[1PW-DEBUG] NM CONNECT [\(portID, privacy: .public)] app='\(application, privacy: .public)' ext=\(extensionID, privacy: .public)")
+
         guard let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
 
         // Check nativeMessaging permission
         guard ExtensionPermissionChecker.hasPermission("nativeMessaging", extension: ext) else {
+            log.notice("[1PW-DEBUG] NM CONNECT [\(portID, privacy: .public)] DENIED: missing nativeMessaging permission")
             let errorJS = "if (window.__extensionDispatchPortDisconnect) { window.__extensionDispatchPortDisconnect('\(portID)'); }"
             deliverJS(errorJS, extensionID: extensionID, webView: sourceWebView, isContentScript: isContentScript)
             return
@@ -2405,23 +2556,26 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             guard let self else { return }
             guard let messageData = try? JSONSerialization.data(withJSONObject: message),
                   let messageJSON = String(data: messageData, encoding: .utf8) else { return }
+            log.notice("[1PW-DEBUG] NM→JS [\(portID, privacy: .public)] delivering message to extension (\(messageData.count) bytes)")
             let js = "if (window.__extensionDispatchPortMessage) { window.__extensionDispatchPortMessage('\(portID)', \(messageJSON)); }"
             self.deliverJS(js, extensionID: extensionID, webView: sourceWebView, isContentScript: isContentScript)
         }
 
         host.onDisconnect = { [weak self] errorMessage in
             guard let self else { return }
+            log.notice("[1PW-DEBUG] NM DISCONNECT [\(portID, privacy: .public)] error: \(errorMessage ?? "none", privacy: .public)")
             self.nativeHosts.removeValue(forKey: portID)
-            let js = "if (window.__extensionDispatchPortDisconnect) { window.__extensionDispatchPortDisconnect('\(portID)'); }"
+            let js = Self.portDisconnectJS(portID: portID, errorMessage: errorMessage)
             self.deliverJS(js, extensionID: extensionID, webView: sourceWebView, isContentScript: isContentScript)
         }
 
         do {
             try host.connect()
             nativeHosts[portID] = host
+            log.notice("[1PW-DEBUG] NM CONNECT [\(portID, privacy: .public)] SUCCESS — host process running")
         } catch {
-            log.error("Native messaging connect failed for extension \(extensionID, privacy: .public): \(error.localizedDescription)")
-            let js = "if (window.__extensionDispatchPortDisconnect) { window.__extensionDispatchPortDisconnect('\(portID)'); }"
+            log.notice("[1PW-DEBUG] NM CONNECT [\(portID, privacy: .public)] FAILED: \(error.localizedDescription)")
+            let js = Self.portDisconnectJS(portID: portID, errorMessage: error.localizedDescription)
             deliverJS(js, extensionID: extensionID, webView: sourceWebView, isContentScript: isContentScript)
         }
     }
@@ -2798,5 +2952,43 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         } else {
             webView.evaluateJavaScript(js) { _, _ in }
         }
+    }
+
+    // MARK: - JS Helpers
+
+    /// Builds JS that sets `chrome.runtime.lastError`, fires port disconnect, then clears lastError.
+    static func portDisconnectJS(portID: String, errorMessage: String?) -> String {
+        var js = ""
+        if let errorMessage {
+            let escaped = errorMessage.jsEscapedForSingleQuotes
+            js += "chrome.runtime.lastError = { message: '\(escaped)' }; "
+        }
+        js += "if (window.__extensionDispatchPortDisconnect) { window.__extensionDispatchPortDisconnect('\(portID)'); } "
+        js += "chrome.runtime.lastError = null;"
+        return js
+    }
+
+    // MARK: - JSON Sanitization
+
+    /// Recursively converts non-JSON-safe types (e.g. NSDate from JS Date objects)
+    /// into JSON-safe equivalents so JSONSerialization doesn't crash.
+    static func sanitizeForJSON(_ value: Any) -> Any {
+        switch value {
+        case let dict as [String: Any]:
+            return dict.mapValues { sanitizeForJSON($0) }
+        case let array as [Any]:
+            return array.map { sanitizeForJSON($0) }
+        case let date as Date:
+            return date.timeIntervalSince1970 * 1000 // JS Date convention: milliseconds
+        case is String, is NSNumber, is NSNull: // NSNumber covers Bool, Int, Double, Float
+            return value
+        default:
+            return String(describing: value)
+        }
+    }
+
+    /// Serialize to JSON, sanitizing non-JSON-safe types first.
+    static func jsonData(from value: Any) -> Data? {
+        try? JSONSerialization.data(withJSONObject: sanitizeForJSON(value))
     }
 }
