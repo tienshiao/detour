@@ -800,6 +800,19 @@ class TabStore {
         scheduleSave()
     }
 
+    func moveSpace(from sourceIndex: Int, to destinationIndex: Int) {
+        guard sourceIndex != destinationIndex,
+              sourceIndex >= 0, sourceIndex < spaces.count,
+              destinationIndex >= 0, destinationIndex < spaces.count else { return }
+        let space = spaces.remove(at: sourceIndex)
+        spaces.insert(space, at: destinationIndex)
+        registerUndo(actionName: "Move Space") { [weak self] in
+            self?.moveSpace(from: destinationIndex, to: sourceIndex)
+        }
+        notifyObservers { $0.tabStoreDidUpdateSpaces() }
+        scheduleSave()
+    }
+
     func ensureDefaultSpace() {
         guard spaces.isEmpty else { return }
         let profile = ensureDefaultProfile()

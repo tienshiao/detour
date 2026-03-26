@@ -213,7 +213,7 @@ class TabSidebarViewController: NSViewController {
                 }
             case .folder(let folder, let depth):
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FolderCellView {
-                    cell.configure(name: folder.name, isCollapsed: folder.isCollapsed, depth: depth, color: tintColor)
+                    cell.configure(name: folder.name, isCollapsed: folder.isCollapsed, depth: depth, color: safeTintColor)
                 }
             }
         }
@@ -277,16 +277,23 @@ class TabSidebarViewController: NSViewController {
         return Detour.rowForPinnedItem(at: index)
     }
 
+    private(set) var safeTintColor: NSColor?
+
     var tintColor: NSColor? {
         didSet {
+            safeTintColor = tintColor?.sidebarSafe
+            let safeColor = safeTintColor
             view.wantsLayer = true
             if let color = tintColor {
                 view.layer?.backgroundColor = color.withAlphaComponent(0.1).cgColor
             } else {
                 view.layer?.backgroundColor = nil
             }
-            tableView.enumerateAvailableRowViews { rowView, _ in
-                (rowView as? TabRowView)?.selectionColor = tintColor
+            tableView.enumerateAvailableRowViews { rowView, row in
+                (rowView as? TabRowView)?.selectionColor = safeColor
+                if let folderCell = rowView.view(atColumn: 0) as? FolderCellView {
+                    folderCell.updateColor(safeColor)
+                }
             }
         }
     }
@@ -1458,7 +1465,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
     }
 
     private func configureFolderCell(_ cell: FolderCellView, folder: PinnedFolder, depth: Int, isActive: Bool) {
-        cell.configure(name: folder.name, isCollapsed: folder.isCollapsed, depth: depth, color: tintColor)
+        cell.configure(name: folder.name, isCollapsed: folder.isCollapsed, depth: depth, color: safeTintColor)
         if isActive {
             cell.onToggleCollapse = { [weak self] in
                 guard let self else { return }
@@ -1485,7 +1492,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             return NSTableRowView()
         default:
             let rowView = TabRowView()
-            rowView.selectionColor = tintColor
+            rowView.selectionColor = safeTintColor
             return rowView
         }
     }

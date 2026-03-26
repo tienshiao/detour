@@ -103,6 +103,13 @@ extension BrowserWindowController: TabStoreObserver {
         let nonIncognitoSpaces = store.spaces.filter { !$0.isIncognito }
         tabSidebar.updateSpaceButtons(spaces: nonIncognitoSpaces, activeSpaceID: activeSpaceID)
 
+        if let space = activeSpace {
+            let newColor = space.color
+            if tabSidebar.tintColor?.toHex() != newColor.toHex() {
+                tabSidebar.tintColor = newColor
+            }
+        }
+
         // If our active space was deleted, switch to the first available space
         if activeSpaceID == nil || store.space(withID: activeSpaceID!) == nil, let firstSpace = nonIncognitoSpaces.first {
             setActiveSpace(id: firstSpace.id)

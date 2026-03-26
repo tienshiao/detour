@@ -699,8 +699,3 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         updateButtonStates()
     }
 }
-
-/// A clip view that draws content from the top down (flipped coordinate system).
-private class FlippedClipView: NSClipView {
-    override var isFlipped: Bool { true }
-}

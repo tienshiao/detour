@@ -57,6 +57,10 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
         leadingConstraint.constant = 2 + CGFloat(depth) * 16
         let symbolName = isCollapsed ? "font-awesome-folder.fill" : "font-awesome-folder-open.fill"
         disclosureButton.image = NSImage(named: symbolName)
+        updateColor(color)
+    }
+
+    func updateColor(_ color: NSColor?) {
         disclosureButton.contentTintColor = (color ?? .secondaryLabelColor).withAlphaComponent(0.7)
     }
 

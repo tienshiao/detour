@@ -7,6 +7,7 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     static let shared = SettingsWindowController()
 
     private static let generalID = NSToolbarItem.Identifier("general")
+    private static let spacesID = NSToolbarItem.Identifier("spaces")
     private static let profilesID = NSToolbarItem.Identifier("profiles")
     private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
@@ -14,7 +15,7 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let fixedWidth: CGFloat = 740
 
     private var panes: [NSToolbarItem.Identifier: NSViewController] = [:]
-    private let paneOrder: [NSToolbarItem.Identifier] = [generalID, profilesID, extensionsID, contentBlockerID]
+    private let paneOrder: [NSToolbarItem.Identifier] = [generalID, spacesID, profilesID, extensionsID, contentBlockerID]
 
     private init() {
         let window = NSWindow(
@@ -31,6 +32,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
         let generalVC = GeneralSettingsViewController()
         panes[Self.generalID] = generalVC
+
+        let spacesVC = SpacesSettingsViewController()
+        panes[Self.spacesID] = spacesVC
 
         let profilesVC = ProfilesSettingsViewController()
         panes[Self.profilesID] = profilesVC
@@ -67,6 +71,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         case Self.generalID:
             item.label = "General"
             item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "General")
+        case Self.spacesID:
+            item.label = "Spaces"
+            item.image = NSImage(systemSymbolName: "square.on.square", accessibilityDescription: "Spaces")
         case Self.profilesID:
             item.label = "Profiles"
             item.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: "Profiles")
@@ -99,6 +106,16 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     @objc private func selectPane(_ sender: NSToolbarItem) {
         guard let vc = panes[sender.itemIdentifier] else { return }
         switchToPane(vc, identifier: sender.itemIdentifier)
+    }
+
+    /// Programmatically show the Spaces pane, optionally selecting a space by ID.
+    func showSpacesPane(selectSpaceID: UUID? = nil) {
+        showWindow(nil)
+        guard let vc = panes[Self.spacesID] as? SpacesSettingsViewController else { return }
+        if let spaceID = selectSpaceID {
+            vc.selectSpace(id: spaceID)
+        }
+        switchToPane(vc, identifier: Self.spacesID)
     }
 
     /// Programmatically show the Extensions pane.

@@ -98,11 +98,11 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {
-        showAddSpacePopover(relativeTo: sourceButton)
+        SettingsWindowController.shared.showSpacesPane()
     }
 
     func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton) {
-        showEditSpacePopover(spaceID: spaceID, relativeTo: sourceButton)
+        SettingsWindowController.shared.showSpacesPane(selectSpaceID: spaceID)
     }
 
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {
