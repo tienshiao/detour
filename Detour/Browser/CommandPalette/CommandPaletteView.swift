@@ -334,7 +334,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         var tabInfos: [SuggestionProvider.TabInfo]?
         if suppressNextAutocomplete {
             suppressNextAutocomplete = false
-        } else {
+        } else if raw == query {
+            // Only autocomplete when there's no trailing whitespace;
+            // a trailing space means the user is typing a multi-word search.
             let infos = gatherTabInfos()
             applyInlineAutocomplete(for: query, tabInfos: infos)
             tabInfos = infos
