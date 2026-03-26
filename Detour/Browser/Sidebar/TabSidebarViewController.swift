@@ -102,6 +102,11 @@ class TabSidebarViewController: NSViewController {
     private var spaceButtonsContainer = NSStackView()
     private var addSpaceButton = HoverButton()
     private var isAnimatingSwipe = false
+    private let leftOverflowDot = NSView()
+    private let rightOverflowDot = NSView()
+    private var lastVisibleSpaceRange: Range<Int>?
+    private var lastVisibleActiveID: UUID?
+    private var lastBottomBarWidth: CGFloat = 0
 
     // Page strip: all spaces laid out side-by-side, clipped by pageClipView
     private let pageClipView = NSView()
@@ -437,6 +442,25 @@ class TabSidebarViewController: NSViewController {
             downloadBadge.topAnchor.constraint(equalTo: downloadButton.topAnchor, constant: 1),
         ])
 
+        // Overflow dot indicators
+        for dot in [leftOverflowDot, rightOverflowDot] {
+            dot.wantsLayer = true
+            dot.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
+            dot.layer?.cornerRadius = 2.5
+            dot.translatesAutoresizingMaskIntoConstraints = false
+            dot.isHidden = true
+            bottomBar.addSubview(dot)
+            NSLayoutConstraint.activate([
+                dot.widthAnchor.constraint(equalToConstant: 5),
+                dot.heightAnchor.constraint(equalToConstant: 5),
+                dot.centerYAnchor.constraint(equalTo: spaceButtonsContainer.centerYAnchor),
+            ])
+        }
+        NSLayoutConstraint.activate([
+            leftOverflowDot.trailingAnchor.constraint(equalTo: spaceButtonsContainer.leadingAnchor, constant: -4),
+            rightOverflowDot.leadingAnchor.constraint(equalTo: spaceButtonsContainer.trailingAnchor, constant: 4),
+        ])
+
         // Page clip view (clips the horizontal page strip)
         pageClipView.wantsLayer = true
         pageClipView.layer?.masksToBounds = true
@@ -535,6 +559,7 @@ class TabSidebarViewController: NSViewController {
         super.viewDidLayout()
         relayoutPages()
         updateFadeShadows()
+        rebuildVisibleSpaceButtons()
     }
 
     // MARK: - Page Management
@@ -673,16 +698,60 @@ class TabSidebarViewController: NSViewController {
     }
 
     func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
-        // Remove old buttons
+        lastVisibleSpaceRange = nil  // force rebuild
+        rebuildVisibleSpaceButtons()
+        rebuildPages()
+    }
+
+    private func rebuildVisibleSpaceButtons() {
+        let spaces = relevantSpaces
+        let activeSpaceID = self.activeSpaceID
+
+        addSpaceButton.isHidden = isIncognito
+
+        guard !spaces.isEmpty else {
+            leftOverflowDot.isHidden = true
+            rightOverflowDot.isHidden = true
+            return
+        }
+
+        let buttonWidth: CGFloat = 28
+        let spacing: CGFloat = 4
+        let availableWidth = addSpaceButton.frame.minX - downloadButton.frame.maxX - 16
+        let maxVisible = max(1, Int((availableWidth + spacing) / (buttonWidth + spacing)))
+
+        let visibleRange: Range<Int>
+        if spaces.count <= maxVisible {
+            visibleRange = 0..<spaces.count
+        } else {
+            // Account for dot indicators taking space (5px dot + 4px gap on each side = 18px)
+            let adjustedWidth = availableWidth - 18
+            let adjustedMax = max(1, Int((adjustedWidth + spacing) / (buttonWidth + spacing)))
+            let activeIndex = spaces.firstIndex(where: { $0.id == activeSpaceID }) ?? 0
+            var start = activeIndex - adjustedMax / 2
+            start = max(0, min(start, spaces.count - adjustedMax))
+            visibleRange = start..<(start + adjustedMax)
+        }
+
+        // Early exit if nothing changed
+        let currentWidth = bottomBar.bounds.width
+        if visibleRange == lastVisibleSpaceRange && activeSpaceID == lastVisibleActiveID && currentWidth == lastBottomBarWidth {
+            return
+        }
+        lastVisibleSpaceRange = visibleRange
+        lastVisibleActiveID = activeSpaceID
+        lastBottomBarWidth = currentWidth
+
         for view in spaceButtonsContainer.arrangedSubviews {
             spaceButtonsContainer.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
 
-        // Hide "Add Space" button in incognito mode
-        addSpaceButton.isHidden = isIncognito
+        leftOverflowDot.isHidden = visibleRange.lowerBound <= 0
+        rightOverflowDot.isHidden = visibleRange.upperBound >= spaces.count
 
-        for space in spaces {
+        for i in visibleRange {
+            let space = spaces[i]
             let button = NSButton()
             button.title = space.emoji
             button.font = .systemFont(ofSize: 14)
@@ -690,7 +759,7 @@ class TabSidebarViewController: NSViewController {
             button.isBordered = false
             button.target = self
             button.action = #selector(spaceButtonClicked(_:))
-            button.tag = spaces.firstIndex(where: { $0.id == space.id }) ?? 0
+            button.tag = i
             button.toolTip = isIncognito ? "Private Browsing" : space.name
             button.wantsLayer = true
 
@@ -699,15 +768,14 @@ class TabSidebarViewController: NSViewController {
                 button.layer?.cornerRadius = UIConstants.defaultCornerRadius
             }
 
-            // No context menu in incognito mode
             if !isIncognito {
                 let menu = NSMenu()
                 let editItem = NSMenuItem(title: "Edit Space…", action: #selector(editSpaceClicked(_:)), keyEquivalent: "")
                 editItem.target = self
-                editItem.tag = button.tag
+                editItem.tag = i
                 let deleteItem = NSMenuItem(title: "Delete Space", action: #selector(deleteSpaceClicked(_:)), keyEquivalent: "")
                 deleteItem.target = self
-                deleteItem.tag = button.tag
+                deleteItem.tag = i
                 menu.addItem(editItem)
                 menu.addItem(deleteItem)
                 button.menu = menu
@@ -715,14 +783,12 @@ class TabSidebarViewController: NSViewController {
 
             button.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
-                button.widthAnchor.constraint(equalToConstant: 28),
+                button.widthAnchor.constraint(equalToConstant: buttonWidth),
                 button.heightAnchor.constraint(equalToConstant: 24),
             ])
 
             spaceButtonsContainer.addArrangedSubview(button)
         }
-
-        rebuildPages()
     }
 
     private func makeNavButton(symbolName: String, accessibilityLabel: String, action: Selector) -> HoverButton {
