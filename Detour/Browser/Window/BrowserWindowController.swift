@@ -280,7 +280,7 @@ class BrowserWindowController: NSWindowController {
             store.lastActiveSpaceID = id
         }
 
-        tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders, tabs: space.tabs)
+        tabSidebar.resetState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders, tabs: space.tabs)
         tabSidebar.tintColor = space.color
         tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: id)
 

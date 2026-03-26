@@ -230,6 +230,24 @@ class TabSidebarViewController: NSViewController {
         recheckHoverForVisibleCells()
     }
 
+    /// Non-animated state reset for space switches. Unlike `applyState`, this does
+    /// not diff — it sets the model directly and reloads the table view.
+    func resetState(pinnedEntries newPinned: [PinnedEntry], pinnedFolders newFolders: [PinnedFolder],
+                    tabs newTabs: [BrowserTab], selectedTabID: UUID? = nil) {
+        let collapsedIDs = Set(newFolders.filter(\.isCollapsed).map(\.id))
+        let resolvedID = resolveSelectedTabID(selectedTabID)
+
+        pinnedFolders = newFolders
+        pinnedEntries = newPinned
+        tabs = newTabs
+        flattenedPinnedItems = flattenPinnedTree(
+            entries: newPinned, folders: newFolders,
+            collapsedFolderIDs: collapsedIDs, selectedTabID: resolvedID
+        )
+        tableView.reloadData()
+        recheckHoverForVisibleCells()
+    }
+
     /// Apply the pending state deferred during drag, with full animation.
     /// Deferred to the next run loop tick so the drag session fully completes
     /// before we issue batch updates — moveRow doesn't work reliably during
