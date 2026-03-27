@@ -7,10 +7,25 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-
 /// Injects content scripts from enabled extensions into WKWebView configurations.
 class ContentScriptInjector {
 
+    /// Cached resource override JS per extension ID. Contains data URI map +
+    /// prototype overrides (img.src, innerHTML, backgroundImage, etc.).
+    /// Prepended to code passed to evaluateJavaScript so overrides share
+    /// the same execution context (WebKit isolates WKUserScript patches
+    /// from evaluateJavaScript code, even in the same content world).
+    private var resourceCacheByExtension: [String: String] = [:]
+
+    /// Get the resource cache JS for a given extension ID.
+    func resourceCacheJS(for extensionID: String) -> String? {
+        resourceCacheByExtension[extensionID]
+    }
+
     /// Add enabled extensions' content scripts to a WKUserContentController.
     /// Called during `Space.makeWebViewConfiguration()`.
     func addContentScripts(to controller: WKUserContentController, profileID: UUID) {
-        for ext in ExtensionManager.shared.enabledExtensions(for: profileID) {
+        let extensions = ExtensionManager.shared.enabledExtensions(for: profileID)
+        guard !extensions.isEmpty else { return }
+
+        for ext in extensions {
             registerContentScripts(for: ext, on: controller)
         }
     }
@@ -18,8 +33,137 @@ class ContentScriptInjector {
     /// Register a single extension's content scripts as persistent WKUserScripts
     /// on a WKUserContentController. Scripts registered this way fire automatically
     /// on every future page load.
+    /// Build a JS map of extension resource paths → data URIs for files that
+    /// would be blocked by CSP (images, CSS). Injected into the content world
+    /// so innerHTML/insertAdjacentHTML overrides can synchronously replace
+    /// chrome-extension:// URLs before the HTML parser loads them.
+    private func buildResourceCacheJS(for ext: WebExtension) -> String {
+        let baseURL = ext.basePath
+        let scheme = ExtensionPageSchemeHandler.scheme
+        let extBaseURL = "\(scheme)://\(ext.id)"
+        var entries: [String] = []
+
+        // Cache only inline/ subdirectory resources (images, CSS, fonts) used by
+        // content script UI. The full extension may have 500+ files / 10MB+ which
+        // is too large for a WKUserScript. The inline/ directory is ~250KB.
+        let inlineDir = baseURL.appendingPathComponent("inline")
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: inlineDir, includingPropertiesForKeys: nil) else {
+            return ""
+        }
+        let imageExts: Set<String> = ["svg", "png", "jpg", "jpeg", "gif", "webp", "ico"]
+        let cssExts: Set<String> = ["css"]
+        let fontExts: Set<String> = ["ttf", "woff", "woff2"]
+        let allowedExts = imageExts.union(cssExts).union(fontExts)
+
+        for case let fileURL as URL in enumerator {
+            let fileExt = fileURL.pathExtension.lowercased()
+            guard allowedExts.contains(fileExt) else { continue }
+            guard let data = try? Data(contentsOf: fileURL) else { continue }
+
+            // Path relative to extension base (not inline dir) for correct URL matching
+            let relativePath = fileURL.path.replacingOccurrences(of: baseURL.path, with: "")
+            let fullURL = extBaseURL + relativePath
+            let mimeType = ExtensionPageSchemeHandler.mimeType(for: fileURL)
+            let base64 = data.base64EncodedString()
+            let dataURI = "data:\(mimeType);base64,\(base64)"
+
+            // Escape for JS string
+            let escapedURL = fullURL.replacingOccurrences(of: "'", with: "\\'")
+            entries.append("'\(escapedURL)':'\(dataURI)'")
+        }
+
+        guard !entries.isEmpty else { return "" }
+
+        log.debug("Resource cache: \(entries.count) entries for \(ext.id, privacy: .public)")
+        return """
+        (function() {
+            if (window.__detourResourceCache) return;
+            var cache = {\(entries.joined(separator: ","))};
+            window.__detourResourceCache = cache;
+
+            // Replace chrome-extension:// URLs with cached data URIs in HTML strings.
+            // Called synchronously BEFORE the HTML parser processes the string.
+            function rewriteExtURLs(html) {
+                if (typeof html !== 'string' || html.indexOf('\(extBaseURL)') === -1) return html;
+                for (var url in cache) {
+                    if (html.indexOf(url) !== -1) {
+                        html = html.split(url).join(cache[url]);
+                    }
+                }
+                return html;
+            }
+            window.__detourRewriteExtURLs = rewriteExtURLs;
+
+            // --- Patch innerHTML/insertAdjacentHTML ---
+            var _innerHTMLDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+            if (_innerHTMLDesc && _innerHTMLDesc.set) {
+                var _origInnerHTMLSet = _innerHTMLDesc.set;
+                Object.defineProperty(Element.prototype, 'innerHTML', {
+                    get: _innerHTMLDesc.get,
+                    set: function(v) { _origInnerHTMLSet.call(this, rewriteExtURLs(v)); },
+                    configurable: true
+                });
+            }
+            var _srInnerHTMLDesc = Object.getOwnPropertyDescriptor(ShadowRoot.prototype, 'innerHTML');
+            if (_srInnerHTMLDesc && _srInnerHTMLDesc.set) {
+                var _origSRInnerHTMLSet = _srInnerHTMLDesc.set;
+                Object.defineProperty(ShadowRoot.prototype, 'innerHTML', {
+                    get: _srInnerHTMLDesc.get,
+                    set: function(v) { _origSRInnerHTMLSet.call(this, rewriteExtURLs(v)); },
+                    configurable: true
+                });
+            }
+            var _origInsertAdjacentHTML = Element.prototype.insertAdjacentHTML;
+            Element.prototype.insertAdjacentHTML = function(position, html) {
+                _origInsertAdjacentHTML.call(this, position, rewriteExtURLs(html));
+            };
+
+            // --- Patch img.src (synchronous cache lookup) ---
+            var _imgSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+            if (_imgSrcDesc && _imgSrcDesc.set) {
+                var _origImgSrcSet = _imgSrcDesc.set;
+                Object.defineProperty(HTMLImageElement.prototype, 'src', {
+                    get: _imgSrcDesc.get,
+                    set: function(value) {
+                        if (typeof value === 'string' && cache[value]) {
+                            _origImgSrcSet.call(this, cache[value]);
+                        } else {
+                            _origImgSrcSet.call(this, value);
+                        }
+                    },
+                    configurable: true
+                });
+            }
+
+            // Patch Element.prototype.setAttribute to replace cached src values
+            var _origElemSetAttr = Element.prototype.setAttribute;
+            Element.prototype.setAttribute = function(name, value) {
+                if (name === 'src' && typeof value === 'string' && cache[value]) {
+                    value = cache[value];
+                }
+                _origElemSetAttr.call(this, name, value);
+            };
+
+            // --- Patch CSS backgroundImage (synchronous cache lookup) ---
+            ['backgroundImage', 'background'].forEach(function(prop) {
+                var desc = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, prop);
+                if (desc && desc.set) {
+                    var origSet = desc.set;
+                    Object.defineProperty(CSSStyleDeclaration.prototype, prop, {
+                        get: desc.get,
+                        set: function(value) { origSet.call(this, rewriteExtURLs(value)); },
+                        configurable: true
+                    });
+                }
+            });
+        })();
+        """
+    }
+
     func registerContentScripts(for ext: WebExtension, on controller: WKUserContentController) {
         log.info("Registering content scripts for \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public))")
+
         // Inject the chrome API polyfill in this extension's content world
         let apiBundle = ChromeAPIBundle.generateBundle(for: ext)
         let apiScript = WKUserScript(
@@ -32,6 +176,23 @@ class ContentScriptInjector {
 
         // Register the message bridge in this extension's content world
         ExtensionMessageBridge.shared.register(on: controller, contentWorld: ext.contentWorld)
+
+        // Pre-cache extension resources (images, CSS) as data URIs and prototype
+        // overrides (img.src, innerHTML, backgroundImage). Stored per-extension so
+        // it can be prepended to evaluateJavaScript calls (WebKit isolates WKUserScript
+        // prototype patches from evaluateJavaScript code in the same content world).
+        // Also injected as a WKUserScript for content scripts that DON'T use evaluateJavaScript.
+        let resourceCacheJS = resourceCacheByExtension[ext.id] ?? buildResourceCacheJS(for: ext)
+        if !resourceCacheJS.isEmpty {
+            resourceCacheByExtension[ext.id] = resourceCacheJS
+            let cacheScript = WKUserScript(
+                source: resourceCacheJS,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false,
+                in: ext.contentWorld
+            )
+            controller.addUserScript(cacheScript)
+        }
 
         // WebKit cancels subframe navigations to custom URL schemes (chrome-extension://).
         // We intercept iframe.src assignments in the content world, fetch HTML + resources,
@@ -375,12 +536,14 @@ class ContentScriptInjector {
                 origSetAttribute.call(this, name, value);
             };
 
-            // Override chrome.runtime.getURL for empty/root paths to return the page origin.
-            // Extensions use getURL("") as a postMessage targetOrigin when communicating
-            // with their iframes. Since our iframes are same-origin about:blank (not
-            // chrome-extension://), the targetOrigin must match the page origin.
-            // Patching postMessage directly is impossible due to WebKit content world isolation.
-            if (chrome && chrome.runtime && chrome.runtime.getURL) {
+            // In srcdoc iframes, override chrome.runtime.getURL for empty/root paths
+            // to return the page origin. Extensions use getURL("") as a postMessage
+            // targetOrigin when communicating with their iframes. Since our iframes
+            // are same-origin about:srcdoc (not chrome-extension://), the targetOrigin
+            // must match the page origin. This override is scoped to srcdoc iframes
+            // only — in the main page, getURL("") must return the extension's URL
+            // so extensions can construct chrome-extension:// resource URLs.
+            if (window.location.href === 'about:srcdoc' && chrome && chrome.runtime && chrome.runtime.getURL) {
                 const _origGetURL = chrome.runtime.getURL;
                 chrome.runtime.getURL = function(path) {
                     if (path === '' || path === '/') {
@@ -554,6 +717,19 @@ class ContentScriptInjector {
             EventRelayHandler.shared.register(on: controller, contentWorld: ext.contentWorld)
         }
 
+        // Inject a dynamic-import polyfill in the extension's content world.
+        // Extensions (e.g. 1Password) use `import()` to dynamically load scripts from
+        // chrome-extension:// URLs. WebKit's native import() can't resolve custom URL
+        // schemes from content worlds on HTTPS pages.
+        let dynamicImportHelperJS = Self.dynamicImportHelperJS(extensionID: ext.id)
+        let dynamicImportHelperScript = WKUserScript(
+            source: dynamicImportHelperJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: ext.contentWorld
+        )
+        controller.addUserScript(dynamicImportHelperScript)
+
         // Inject pushState/replaceState/hashchange detection in the page world
         // so we can fire webNavigation.onHistoryStateUpdated / onReferenceFragmentUpdated
         let navDetectJS = ChromeWebNavigationAPI.generatePageDetectionJS(extensionID: ext.id)
@@ -600,7 +776,16 @@ class ContentScriptInjector {
             // Inject JS files
             for jsFile in csGroup.scripts {
                 let jsURL = ext.basePath.appendingPathComponent(jsFile)
-                guard let jsContent = try? String(contentsOf: jsURL, encoding: .utf8) else { continue }
+                guard var jsContent = try? String(contentsOf: jsURL, encoding: .utf8) else { continue }
+
+                // Replace dynamic import() calls for chrome-extension:// URLs with our
+                // polyfill. Native import() can't resolve custom URL schemes from content
+                // worlds. The regex targets the `import(expr)` call syntax while preserving
+                // static `import ... from` declarations (which are handled by the module
+                // bundler). Lookbehind excludes `__detourDynamicImport` to avoid double-replacing.
+                if !isMainWorld {
+                    jsContent = jsContent.replacingDynamicImports()
+                }
 
                 let wrappedJS: String
                 let wkInjectionTime: WKUserScriptInjectionTime
@@ -686,6 +871,10 @@ class ContentScriptInjector {
         let apiBundle = ChromeAPIBundle.generateBundle(for: ext)
         webView.evaluateJavaScript(apiBundle, in: nil, in: ext.contentWorld) { _ in }
 
+        // Inject dynamic import helper for existing tabs too
+        let importHelper = Self.dynamicImportHelperJS(extensionID: ext.id)
+        webView.evaluateJavaScript(importHelper, in: nil, in: ext.contentWorld) { _ in }
+
         for csGroup in matchingGroups {
             let isMainWorld = csGroup.world?.uppercased() == "MAIN"
             let targetWorld: WKContentWorld = isMainWorld ? .page : ext.contentWorld
@@ -707,10 +896,58 @@ class ContentScriptInjector {
 
             for jsFile in csGroup.scripts {
                 let jsURL = ext.basePath.appendingPathComponent(jsFile)
-                guard let jsContent = try? String(contentsOf: jsURL, encoding: .utf8) else { continue }
+                guard var jsContent = try? String(contentsOf: jsURL, encoding: .utf8) else { continue }
+                if !isMainWorld {
+                    jsContent = jsContent.replacingDynamicImports()
+                }
                 webView.evaluateJavaScript(jsContent, in: nil, in: targetWorld) { _ in }
             }
         }
+    }
+
+    // MARK: - Dynamic import polyfill
+
+    /// Generates JS that polyfills `import()` for chrome-extension:// URLs.
+    /// Tries blob URL import first, falls back to native evaluateJavaScript.
+    private static func dynamicImportHelperJS(extensionID: String) -> String {
+        """
+        (function() {
+            if (window.__detourDynamicImport) return;
+            window.__detourDynamicImport = async function(specifier) {
+                if (typeof specifier === 'string' && specifier.startsWith('chrome-extension:')) {
+                    var resp = await fetch(specifier);
+                    if (!resp.ok) throw new Error('fetch failed: ' + resp.status + ' ' + specifier);
+                    var code = await resp.text();
+                    try {
+                        var blob = new Blob([code], { type: 'application/javascript' });
+                        var url = URL.createObjectURL(blob);
+                        try { return await import(url); }
+                        finally { URL.revokeObjectURL(url); }
+                    } catch(blobErr) {
+                        return new Promise(function(resolve, reject) {
+                            var callbackID = 'eval_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                            if (!window.__extensionCallbacks) window.__extensionCallbacks = {};
+                            window.__extensionCallbacks[callbackID] = function(result) {
+                                delete window.__extensionCallbacks[callbackID];
+                                if (result && result.__error) reject(new Error(result.__error));
+                                else resolve({});
+                            };
+                            try {
+                                window.webkit.messageHandlers.extensionMessage.postMessage({
+                                    extensionID: '\(extensionID)',
+                                    type: 'eval.inContentWorld',
+                                    code: code,
+                                    callbackID: callbackID,
+                                    isContentScript: true
+                                });
+                            } catch(e) { reject(e); }
+                        });
+                    }
+                }
+                return import(specifier);
+            };
+        })();
+        """
     }
 
     /// Re-inject content scripts for all enabled extensions into a tab (e.g. after wake()).
@@ -718,5 +955,24 @@ class ContentScriptInjector {
         for ext in ExtensionManager.shared.enabledExtensions {
             injectIntoExistingTab(tab, for: ext)
         }
+    }
+}
+
+// MARK: - Dynamic import() rewriting
+
+extension String {
+    private static let dynamicImportRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"(?<![a-zA-Z0-9_$\.])import\("#
+    )
+
+    /// Replace `import(expr)` with `__detourDynamicImport(expr)` so that dynamic
+    /// imports of chrome-extension:// URLs go through our fetch-based polyfill.
+    func replacingDynamicImports() -> String {
+        guard let regex = Self.dynamicImportRegex else { return self }
+        return regex.stringByReplacingMatches(
+            in: self,
+            range: NSRange(startIndex..., in: self),
+            withTemplate: "window.__detourDynamicImport("
+        )
     }
 }

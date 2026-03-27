@@ -40,6 +40,9 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Detour.app/Contents/MacOS/Detour"
         BUNDLE_LOADER: "$(TEST_HOST)"
+        DEVELOPMENT_TEAM: 58MN2R524R
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        CODE_SIGN_STYLE: Manual
     info:
       path: DetourTests/Info.plist
       properties:

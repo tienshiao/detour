@@ -51,6 +51,7 @@ private enum MsgType {
     static let portDisconnect = "port.disconnect"
 
     static let resourceGet = "resource.get"
+    static let evalInContentWorld = "eval.inContentWorld"
 
     static let actionSetIcon = "action.setIcon"
     static let actionSetBadgeText = "action.setBadgeText"
@@ -315,6 +316,9 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
 
         case MsgType.resourceGet:
             handleResourceGet(ctx: ctx, body: body)
+
+        case MsgType.evalInContentWorld:
+            handleEvalInContentWorld(ctx: ctx, body: body, extensionID: extensionID, webView: message.webView)
 
         // Storage sync handlers
         case MsgType.storageSyncGet:
@@ -2041,7 +2045,9 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
             return
         }
 
-        let fileURL = ext.basePath.appendingPathComponent(path)
+        // Strip query string from path (e.g. "inline/menu/menu.html?token=abc" → "inline/menu/menu.html")
+        let cleanPath = path.components(separatedBy: "?").first ?? path
+        let fileURL = ext.basePath.appendingPathComponent(cleanPath)
 
         // Security: ensure the path is within the extension's base directory
         let resolvedPath = fileURL.standardizedFileURL.path
@@ -2057,6 +2063,43 @@ class ExtensionMessageBridge: NSObject, WKScriptMessageHandler {
         let mimeType = ExtensionPageSchemeHandler.mimeType(for: fileURL)
         if let ctx {
             deliverResponse(ctx, result: ["data": data, "mimeType": mimeType])
+        }
+    }
+
+    // MARK: - Eval: inContentWorld (dynamic import fallback)
+
+    /// Evaluates JavaScript code in the extension's content world via native
+    /// `evaluateJavaScript`, which bypasses CSP. Used as a fallback when
+    /// blob URL `import()` is blocked by the page's Content Security Policy.
+    private func handleEvalInContentWorld(ctx: MessageContext?, body: [String: Any], extensionID: String, webView: WKWebView?) {
+        guard let ctx,
+              let code = body["code"] as? String,
+              let webView,
+              let ext = ExtensionManager.shared.extension(withID: extensionID) else {
+            if let ctx {
+                deliverResponse(ctx, result: ["__error": "Missing parameters"])
+            }
+            return
+        }
+
+        log.debug("eval.inContentWorld: evaluating \(code.count) chars for \(extensionID, privacy: .public)")
+        // Prepend resource cache + prototype overrides so they share the same
+        // evaluateJavaScript execution context as the extension code. WebKit
+        // isolates WKUserScript prototype patches from evaluateJavaScript code
+        // even within the same WKContentWorld, so we must combine them.
+        let cacheJS = ExtensionManager.shared.injector.resourceCacheJS(for: extensionID) ?? ""
+        // Append `void 0` so the last expression returns undefined — WebKit's
+        // evaluateJavaScript fails with "unsupported type" if the result can't
+        // be serialized (e.g. the IIFE returns an internal object).
+        let safeCode = cacheJS + "\n" + code + "\n;void 0;"
+        webView.evaluateJavaScript(safeCode, in: nil, in: ext.contentWorld) { [weak self] result in
+            switch result {
+            case .success:
+                self?.deliverResponse(ctx, result: ["success": true])
+            case .failure(let error):
+                log.error("eval.inContentWorld failed: \(error.localizedDescription)")
+                self?.deliverResponse(ctx, result: ["__error": error.localizedDescription])
+            }
         }
     }
 
