@@ -118,6 +118,7 @@ class TabSidebarViewController: NSViewController {
     private var lastSpaceCount = 0
     private var lastActiveSpaceIndex = -1
     private var lastBottomBarWidth: CGFloat = 0
+    private var lastSpaceSignature = ""
 
     private let spaceButtonWidth: CGFloat = 28
     private let spaceButtonSpacing: CGFloat = 4
@@ -726,12 +727,14 @@ class TabSidebarViewController: NSViewController {
 
         let currentWidth = bottomBar.bounds.width
         let clipReady = spaceClipView.bounds.width > 0
-        if spaces.count == lastSpaceCount && activeIndex == lastActiveSpaceIndex && currentWidth == lastBottomBarWidth && clipReady {
+        let spaceSignature = spaces.map { $0.emoji + $0.colorHex }.joined()
+        if spaces.count == lastSpaceCount && activeIndex == lastActiveSpaceIndex && currentWidth == lastBottomBarWidth && spaceSignature == lastSpaceSignature && clipReady {
             return
         }
         lastSpaceCount = spaces.count
         lastActiveSpaceIndex = activeIndex
         lastBottomBarWidth = currentWidth
+        lastSpaceSignature = spaceSignature
 
         for btn in spaceButtons { btn.removeFromSuperview() }
         for dot in spaceDots { dot.removeFromSuperview() }
