@@ -103,7 +103,13 @@ class TabSidebarViewController: NSViewController {
     private let spaceStripView = NSView()
     private var spaceButtons: [NSButton] = []
     private var spaceDots: [NSView] = []
-    private var spaceButtonColors: [CGColor] = []  // cached sidebarSafe colors per button
+    private var spaceButtonColors: [NSColor] = []  // cached sidebarSafe colors for blending
+    private let spaceHighlightView: NSView = {
+        let v = NSView()
+        v.wantsLayer = true
+        v.layer?.cornerRadius = UIConstants.defaultCornerRadius
+        return v
+    }()
     private var spaceClipWidthConstraint: NSLayoutConstraint?
     private var addSpaceButton = HoverButton()
     private var isAnimatingSwipe = false
@@ -728,6 +734,7 @@ class TabSidebarViewController: NSViewController {
 
         for btn in spaceButtons { btn.removeFromSuperview() }
         for dot in spaceDots { dot.removeFromSuperview() }
+        spaceHighlightView.removeFromSuperview()
         spaceButtons.removeAll()
         spaceDots.removeAll()
         spaceButtonColors.removeAll()
@@ -736,6 +743,9 @@ class TabSidebarViewController: NSViewController {
 
         let totalWidth = CGFloat(spaces.count) * spaceButtonWidth + CGFloat(max(0, spaces.count - 1)) * spaceButtonSpacing
         spaceStripView.frame = NSRect(x: 0, y: 0, width: totalWidth, height: spaceButtonHeight)
+
+        spaceHighlightView.frame = NSRect(x: 0, y: 0, width: spaceButtonWidth, height: spaceButtonHeight)
+        spaceStripView.addSubview(spaceHighlightView, positioned: .below, relativeTo: nil)
 
         for (i, space) in spaces.enumerated() {
             let button = NSButton()
@@ -767,7 +777,7 @@ class TabSidebarViewController: NSViewController {
             button.frame = NSRect(x: x, y: 0, width: spaceButtonWidth, height: spaceButtonHeight)
             spaceStripView.addSubview(button)
             spaceButtons.append(button)
-            spaceButtonColors.append(space.color.sidebarSafe.cgColor)
+            spaceButtonColors.append(space.color.sidebarSafe)
 
             let dot = NSView(frame: NSRect(
                 x: x + (spaceButtonWidth - spaceDotSize) / 2,
@@ -819,30 +829,70 @@ class TabSidebarViewController: NSViewController {
 
     private func updateSpaceButtonAppearances(activeIndex: CGFloat) {
         let clipW = spaceClipView.bounds.width
-        guard clipW > 0 else { return }
+        guard clipW > 0, !spaceButtonColors.isEmpty else { return }
         let halfBtn = spaceButtonWidth / 2
         let cy = spaceButtonHeight / 2
+        let step = spaceButtonWidth + spaceButtonSpacing
+
+        let maxIdx = CGFloat(max(0, spaceButtons.count - 1))
+        let clampedIndex = activeIndex.clamped(to: 0...maxIdx)
+        let overscroll = activeIndex - clampedIndex
+        let baseIdx = floor(clampedIndex)
+        let frac = clampedIndex - baseIdx
+
+        // Highlight frame: squish on overscroll, stretch during normal sliding
+        let highlightFrame: NSRect
+        if abs(overscroll) > 0.001 {
+            let squish = min(abs(overscroll), 1.0)
+            let compression = squish * spaceButtonWidth * 0.3
+            let heightGrow = squish * 2
+            let xOffset = overscroll > 0 ? compression : 0
+            highlightFrame = NSRect(
+                x: clampedIndex * step + xOffset,
+                y: -heightGrow / 2,
+                width: spaceButtonWidth - compression,
+                height: spaceButtonHeight + heightGrow
+            )
+        } else if frac > 0 {
+            let leadFrac = pow(frac, 0.6)
+            let trailFrac = pow(frac, 1.6)
+            let trailX = (baseIdx + trailFrac) * step
+            let leadX = (baseIdx + leadFrac) * step + spaceButtonWidth
+            let stretchAmount = 4 * frac * (1 - frac)
+            highlightFrame = NSRect(
+                x: trailX, y: stretchAmount,
+                width: leadX - trailX,
+                height: spaceButtonHeight - stretchAmount * 2
+            )
+        } else {
+            highlightFrame = NSRect(
+                x: baseIdx * step, y: 0,
+                width: spaceButtonWidth, height: spaceButtonHeight
+            )
+        }
+        spaceHighlightView.frame = highlightFrame
+
+        // Blend color between adjacent spaces using cached NSColors
+        let leftIdx = Int(baseIdx).clamped(to: 0...(spaceButtonColors.count - 1))
+        let rightIdx = min(spaceButtonColors.count - 1, leftIdx + 1)
+        let blended = spaceButtonColors[leftIdx].blended(withFraction: frac, of: spaceButtonColors[rightIdx])
+            ?? spaceButtonColors[leftIdx]
+        spaceHighlightView.layer?.backgroundColor = blended.withAlphaComponent(0.15).cgColor
+
+        // Edge visibility for the highlight
+        let hlCenterInClip = highlightFrame.midX + spaceStripView.frame.origin.x
+        let hlEdgeT = (min(hlCenterInClip, clipW - hlCenterInClip) / halfBtn).clamped(to: 0...1)
+        spaceHighlightView.alphaValue = hlEdgeT
 
         for (i, button) in spaceButtons.enumerated() {
             guard i < spaceButtonColors.count else { continue }
 
-            // Highlight based on proximity to the active index
-            let distance = abs(CGFloat(i) - activeIndex)
-            let highlight = max(0, 1.0 - distance)
-            if highlight > 0.01 {
-                button.layer?.backgroundColor = spaceButtonColors[i].copy(alpha: 0.15 * highlight)
-            } else {
-                button.layer?.backgroundColor = nil
-            }
-
-            // Edge visibility: shrink toward 0 at clip edges
             let buttonCenterInClip = button.frame.midX + spaceStripView.frame.origin.x
             let distFromLeft = buttonCenterInClip
             let distFromRight = clipW - buttonCenterInClip
             let edgeDist = min(distFromLeft, distFromRight)
-            let edgeT = max(0, min(1, edgeDist / halfBtn))
+            let edgeT = (edgeDist / halfBtn).clamped(to: 0...1)
 
-            // Scale from the inward edge (toward visible buttons)
             let onLeftEdge = distFromLeft < distFromRight
             let cx = onLeftEdge ? spaceButtonWidth * 1.4: spaceButtonWidth * -0.4
 
@@ -854,7 +904,6 @@ class TabSidebarViewController: NSViewController {
             button.layer?.transform = transform
             button.alphaValue = edgeT
 
-            // Dot: fade in inversely, positioned on the inward side
             if i < spaceDots.count {
                 spaceDots[i].alphaValue = 1.0 - edgeT
                 spaceDots[i].frame.origin.x = onLeftEdge
