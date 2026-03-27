@@ -114,6 +114,7 @@ class TabSidebarViewController: NSViewController {
     private var addSpaceButton = HoverButton()
     private var isAnimatingSwipe = false
     private var isSwipingSpaces = false
+    private var spaceClickAnimation: (timer: Timer, from: CGFloat, to: CGFloat, start: CFTimeInterval, duration: Double)?
     private var lastSpaceCount = 0
     private var lastActiveSpaceIndex = -1
     private var lastBottomBarWidth: CGFloat = 0
@@ -958,7 +959,13 @@ class TabSidebarViewController: NSViewController {
         animateToSpace(id: spaces[sender.tag].id)
     }
 
+    private func stopSpaceClickAnimation() {
+        spaceClickAnimation?.timer.invalidate()
+        spaceClickAnimation = nil
+    }
+
     private func animateToSpace(id: UUID) {
+        stopSpaceClickAnimation()
         let spaces = relevantSpaces
         guard let targetIndex = spaces.firstIndex(where: { $0.id == id }),
               targetIndex != activePageIndex,
@@ -991,6 +998,30 @@ class TabSidebarViewController: NSViewController {
             self.isAnimatingSwipe = false
             self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
         })
+
+        // Drive highlight through fractional positions so the stretch effect is visible
+        let startIndex = CGFloat(activePageIndex)
+        let endIndex = CGFloat(targetIndex)
+        let startTime = CACurrentMediaTime()
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let elapsed = CACurrentMediaTime() - startTime
+            let rawT = (elapsed / duration).clamped(to: 0...1)
+            let t = rawT < 0.5 ? 2 * rawT * rawT : 1 - pow(-2 * rawT + 2, 2) / 2
+            let currentIndex = startIndex + (endIndex - startIndex) * CGFloat(t)
+
+            if let x = self.spaceStripX(forIndex: currentIndex) {
+                self.spaceStripView.frame.origin.x = x
+            }
+            self.updateSpaceButtonAppearances(activeIndex: currentIndex)
+
+            if rawT >= 1 {
+                timer.invalidate()
+                self.spaceClickAnimation = nil
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        spaceClickAnimation = (timer, startIndex, endIndex, startTime, duration)
     }
 
     @objc private func downloadButtonClicked() {
@@ -1068,6 +1099,7 @@ class TabSidebarViewController: NSViewController {
         isTrackingHorizontalSwipe = true
         swipeStartTintColor = tintColor
         isSwipingSpaces = true
+        stopSpaceClickAnimation()
         installSwipeMonitor()
         return processSwipeEvent(event)
     }
