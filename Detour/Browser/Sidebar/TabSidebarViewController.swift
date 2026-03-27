@@ -99,14 +99,24 @@ class TabSidebarViewController: NSViewController {
 
     private var isDragging = false
     private var bottomBar = DraggableBarView()
-    private var spaceButtonsContainer = NSStackView()
+    private let spaceClipView = NSView()
+    private let spaceStripView = NSView()
+    private var spaceButtons: [NSButton] = []
+    private var spaceDots: [NSView] = []
+    private var spaceButtonColors: [CGColor] = []  // cached sidebarSafe colors per button
+    private var spaceClipWidthConstraint: NSLayoutConstraint?
     private var addSpaceButton = HoverButton()
     private var isAnimatingSwipe = false
-    private let leftOverflowDot = NSView()
-    private let rightOverflowDot = NSView()
-    private var lastVisibleSpaceRange: Range<Int>?
-    private var lastVisibleActiveID: UUID?
+    private var isSwipingSpaces = false
+    private var lastSpaceCount = 0
+    private var lastActiveSpaceIndex = -1
     private var lastBottomBarWidth: CGFloat = 0
+
+    private let spaceButtonWidth: CGFloat = 28
+    private let spaceButtonSpacing: CGFloat = 4
+    private let spaceDotSize: CGFloat = 5
+    private let spaceButtonHeight: CGFloat = 24
+    private var maxVisibleSpaces = 1
 
     // Page strip: all spaces laid out side-by-side, clipped by pageClipView
     private let pageClipView = NSView()
@@ -387,11 +397,15 @@ class TabSidebarViewController: NSViewController {
         bottomBar.wantsLayer = true
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
 
-        // Space buttons container (centered)
-        spaceButtonsContainer.orientation = .horizontal
-        spaceButtonsContainer.spacing = 4
-        spaceButtonsContainer.translatesAutoresizingMaskIntoConstraints = false
-        bottomBar.addSubview(spaceButtonsContainer)
+        // Space buttons: clip view (visible window) + strip view (all buttons)
+        spaceClipView.wantsLayer = true
+        spaceClipView.layer?.masksToBounds = true
+        spaceClipView.translatesAutoresizingMaskIntoConstraints = false
+        bottomBar.addSubview(spaceClipView)
+
+        spaceStripView.wantsLayer = true
+        spaceStripView.translatesAutoresizingMaskIntoConstraints = false
+        spaceClipView.addSubview(spaceStripView)
 
         // Add space button
         let boldConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .bold)
@@ -423,8 +437,13 @@ class TabSidebarViewController: NSViewController {
         bottomBar.addSubview(downloadBadge)
 
         NSLayoutConstraint.activate([
-            spaceButtonsContainer.centerXAnchor.constraint(equalTo: bottomBar.centerXAnchor),
-            spaceButtonsContainer.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
+            spaceClipView.centerXAnchor.constraint(equalTo: bottomBar.centerXAnchor),
+            spaceClipView.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
+            spaceClipView.heightAnchor.constraint(equalToConstant: spaceButtonHeight),
+
+            spaceStripView.topAnchor.constraint(equalTo: spaceClipView.topAnchor),
+            spaceStripView.heightAnchor.constraint(equalTo: spaceClipView.heightAnchor),
+            // Leading is NOT constrained — we position it manually via frame.origin.x
 
             downloadButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 8),
             downloadButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
@@ -440,25 +459,6 @@ class TabSidebarViewController: NSViewController {
             downloadBadge.heightAnchor.constraint(equalToConstant: 6),
             downloadBadge.leadingAnchor.constraint(equalTo: downloadButton.trailingAnchor, constant: -9),
             downloadBadge.topAnchor.constraint(equalTo: downloadButton.topAnchor, constant: 1),
-        ])
-
-        // Overflow dot indicators
-        for dot in [leftOverflowDot, rightOverflowDot] {
-            dot.wantsLayer = true
-            dot.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
-            dot.layer?.cornerRadius = 2.5
-            dot.translatesAutoresizingMaskIntoConstraints = false
-            dot.isHidden = true
-            bottomBar.addSubview(dot)
-            NSLayoutConstraint.activate([
-                dot.widthAnchor.constraint(equalToConstant: 5),
-                dot.heightAnchor.constraint(equalToConstant: 5),
-                dot.centerYAnchor.constraint(equalTo: spaceButtonsContainer.centerYAnchor),
-            ])
-        }
-        NSLayoutConstraint.activate([
-            leftOverflowDot.trailingAnchor.constraint(equalTo: spaceButtonsContainer.leadingAnchor, constant: -4),
-            rightOverflowDot.leadingAnchor.constraint(equalTo: spaceButtonsContainer.trailingAnchor, constant: 4),
         ])
 
         // Page clip view (clips the horizontal page strip)
@@ -559,7 +559,7 @@ class TabSidebarViewController: NSViewController {
         super.viewDidLayout()
         relayoutPages()
         updateFadeShadows()
-        rebuildVisibleSpaceButtons()
+        rebuildAllSpaceButtons()
     }
 
     // MARK: - Page Management
@@ -698,60 +698,46 @@ class TabSidebarViewController: NSViewController {
     }
 
     func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
-        lastVisibleSpaceRange = nil  // force rebuild
-        rebuildVisibleSpaceButtons()
+        rebuildAllSpaceButtons()
         rebuildPages()
     }
 
-    private func rebuildVisibleSpaceButtons() {
+    /// Rebuilds ALL space buttons in the strip and positions the viewport.
+    private func rebuildAllSpaceButtons() {
         let spaces = relevantSpaces
         let activeSpaceID = self.activeSpaceID
+        let activeIndex = spaces.firstIndex(where: { $0.id == activeSpaceID }) ?? 0
 
         addSpaceButton.isHidden = isIncognito
 
-        guard !spaces.isEmpty else {
-            leftOverflowDot.isHidden = true
-            rightOverflowDot.isHidden = true
-            return
-        }
-
-        let buttonWidth: CGFloat = 28
-        let spacing: CGFloat = 4
+        // Calculate how many buttons fit in the available space
         let availableWidth = addSpaceButton.frame.minX - downloadButton.frame.maxX - 16
-        let maxVisible = max(1, Int((availableWidth + spacing) / (buttonWidth + spacing)))
+        let needsDots = spaces.count > max(1, Int((availableWidth + spaceButtonSpacing) / (spaceButtonWidth + spaceButtonSpacing)))
+        let dotSpace: CGFloat = needsDots ? 18 : 0  // 5px dot + 4px gap on each side
+        let effectiveWidth = availableWidth - dotSpace
+        maxVisibleSpaces = max(1, Int((effectiveWidth + spaceButtonSpacing) / (spaceButtonWidth + spaceButtonSpacing)))
 
-        let visibleRange: Range<Int>
-        if spaces.count <= maxVisible {
-            visibleRange = 0..<spaces.count
-        } else {
-            // Account for dot indicators taking space (5px dot + 4px gap on each side = 18px)
-            let adjustedWidth = availableWidth - 18
-            let adjustedMax = max(1, Int((adjustedWidth + spacing) / (buttonWidth + spacing)))
-            let activeIndex = spaces.firstIndex(where: { $0.id == activeSpaceID }) ?? 0
-            var start = activeIndex - adjustedMax / 2
-            start = max(0, min(start, spaces.count - adjustedMax))
-            visibleRange = start..<(start + adjustedMax)
-        }
-
-        // Early exit if nothing changed
         let currentWidth = bottomBar.bounds.width
-        if visibleRange == lastVisibleSpaceRange && activeSpaceID == lastVisibleActiveID && currentWidth == lastBottomBarWidth {
+        let clipReady = spaceClipView.bounds.width > 0
+        if spaces.count == lastSpaceCount && activeIndex == lastActiveSpaceIndex && currentWidth == lastBottomBarWidth && clipReady {
             return
         }
-        lastVisibleSpaceRange = visibleRange
-        lastVisibleActiveID = activeSpaceID
+        lastSpaceCount = spaces.count
+        lastActiveSpaceIndex = activeIndex
         lastBottomBarWidth = currentWidth
 
-        for view in spaceButtonsContainer.arrangedSubviews {
-            spaceButtonsContainer.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        for btn in spaceButtons { btn.removeFromSuperview() }
+        for dot in spaceDots { dot.removeFromSuperview() }
+        spaceButtons.removeAll()
+        spaceDots.removeAll()
+        spaceButtonColors.removeAll()
 
-        leftOverflowDot.isHidden = visibleRange.lowerBound <= 0
-        rightOverflowDot.isHidden = visibleRange.upperBound >= spaces.count
+        guard !spaces.isEmpty else { return }
 
-        for i in visibleRange {
-            let space = spaces[i]
+        let totalWidth = CGFloat(spaces.count) * spaceButtonWidth + CGFloat(max(0, spaces.count - 1)) * spaceButtonSpacing
+        spaceStripView.frame = NSRect(x: 0, y: 0, width: totalWidth, height: spaceButtonHeight)
+
+        for (i, space) in spaces.enumerated() {
             let button = NSButton()
             button.title = space.emoji
             button.font = .systemFont(ofSize: 14)
@@ -762,11 +748,7 @@ class TabSidebarViewController: NSViewController {
             button.tag = i
             button.toolTip = isIncognito ? "Private Browsing" : space.name
             button.wantsLayer = true
-
-            if space.id == activeSpaceID {
-                button.layer?.backgroundColor = space.color.sidebarSafe.withAlphaComponent(0.15).cgColor
-                button.layer?.cornerRadius = UIConstants.defaultCornerRadius
-            }
+            button.layer?.cornerRadius = UIConstants.defaultCornerRadius
 
             if !isIncognito {
                 let menu = NSMenu()
@@ -781,13 +763,104 @@ class TabSidebarViewController: NSViewController {
                 button.menu = menu
             }
 
-            button.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                button.widthAnchor.constraint(equalToConstant: buttonWidth),
-                button.heightAnchor.constraint(equalToConstant: 24),
-            ])
+            let x = CGFloat(i) * (spaceButtonWidth + spaceButtonSpacing)
+            button.frame = NSRect(x: x, y: 0, width: spaceButtonWidth, height: spaceButtonHeight)
+            spaceStripView.addSubview(button)
+            spaceButtons.append(button)
+            spaceButtonColors.append(space.color.sidebarSafe.cgColor)
 
-            spaceButtonsContainer.addArrangedSubview(button)
+            let dot = NSView(frame: NSRect(
+                x: x + (spaceButtonWidth - spaceDotSize) / 2,
+                y: (spaceButtonHeight - spaceDotSize) / 2,
+                width: spaceDotSize, height: spaceDotSize
+            ))
+            dot.wantsLayer = true
+            dot.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
+            dot.layer?.cornerRadius = spaceDotSize / 2
+            dot.alphaValue = 0
+            spaceStripView.addSubview(dot)
+            spaceDots.append(dot)
+        }
+
+        // Size the clip view: visible buttons + padding for edge dots
+        let buttonsWidth = CGFloat(maxVisibleSpaces) * spaceButtonWidth + CGFloat(max(0, maxVisibleSpaces - 1)) * spaceButtonSpacing
+        let dotPadding: CGFloat = spaces.count > maxVisibleSpaces ? spaceButtonSpacing + spaceDotSize : 0
+        let clipWidth = min(totalWidth, buttonsWidth + dotPadding * 2)
+        if let constraint = spaceClipWidthConstraint {
+            constraint.constant = clipWidth
+        } else {
+            let constraint = spaceClipView.widthAnchor.constraint(equalToConstant: clipWidth)
+            constraint.isActive = true
+            spaceClipWidthConstraint = constraint
+        }
+
+        bottomBar.layoutSubtreeIfNeeded()
+        positionSpaceStrip(forActiveIndex: activeIndex)
+        updateSpaceButtonAppearances(activeIndex: CGFloat(activeIndex))
+    }
+
+    /// Computes the clamped strip X position for a given fractional space index.
+    private func spaceStripX(forIndex index: CGFloat) -> CGFloat? {
+        let clipW = spaceClipView.bounds.width
+        let totalWidth = spaceStripView.frame.width
+        guard clipW > 0, totalWidth > 0 else { return nil }
+
+        let step = spaceButtonWidth + spaceButtonSpacing
+        let center = index * step + spaceButtonWidth / 2
+        let x = clipW / 2 - center
+        return max(clipW - totalWidth, min(0, x))
+    }
+
+    private func positionSpaceStrip(forActiveIndex activeIndex: Int) {
+        guard !relevantSpaces.isEmpty,
+              let x = spaceStripX(forIndex: CGFloat(activeIndex)) else { return }
+        spaceStripView.frame.origin.x = x
+    }
+
+    private func updateSpaceButtonAppearances(activeIndex: CGFloat) {
+        let clipW = spaceClipView.bounds.width
+        guard clipW > 0 else { return }
+        let halfBtn = spaceButtonWidth / 2
+        let cy = spaceButtonHeight / 2
+
+        for (i, button) in spaceButtons.enumerated() {
+            guard i < spaceButtonColors.count else { continue }
+
+            // Highlight based on proximity to the active index
+            let distance = abs(CGFloat(i) - activeIndex)
+            let highlight = max(0, 1.0 - distance)
+            if highlight > 0.01 {
+                button.layer?.backgroundColor = spaceButtonColors[i].copy(alpha: 0.15 * highlight)
+            } else {
+                button.layer?.backgroundColor = nil
+            }
+
+            // Edge visibility: shrink toward 0 at clip edges
+            let buttonCenterInClip = button.frame.midX + spaceStripView.frame.origin.x
+            let distFromLeft = buttonCenterInClip
+            let distFromRight = clipW - buttonCenterInClip
+            let edgeDist = min(distFromLeft, distFromRight)
+            let edgeT = max(0, min(1, edgeDist / halfBtn))
+
+            // Scale from the inward edge (toward visible buttons)
+            let onLeftEdge = distFromLeft < distFromRight
+            let cx = onLeftEdge ? spaceButtonWidth * 1.4: spaceButtonWidth * -0.4
+
+            let scale = 0.2 + 0.8 * edgeT
+            var transform = CATransform3DIdentity
+            transform = CATransform3DTranslate(transform, cx, cy, 0)
+            transform = CATransform3DScale(transform, scale, scale, 1)
+            transform = CATransform3DTranslate(transform, -cx, -cy, 0)
+            button.layer?.transform = transform
+            button.alphaValue = edgeT
+
+            // Dot: fade in inversely, positioned on the inward side
+            if i < spaceDots.count {
+                spaceDots[i].alphaValue = 1.0 - edgeT
+                spaceDots[i].frame.origin.x = onLeftEdge
+                    ? button.frame.maxX - spaceDotSize
+                    : button.frame.minX
+            }
         }
     }
 
@@ -887,9 +960,7 @@ class TabSidebarViewController: NSViewController {
         let spaces = relevantSpaces
         guard sender.tag >= 0, sender.tag < spaces.count else { return }
         let spaceID = spaces[sender.tag].id
-        let button = spaceButtonsContainer.arrangedSubviews
-            .compactMap { $0 as? NSButton }
-            .first { $0.tag == sender.tag } ?? addSpaceButton
+        let button = spaceButtons.first { $0.tag == sender.tag } ?? addSpaceButton
         delegate?.tabSidebarDidRequestEditSpace(self, spaceID: spaceID, sourceButton: button)
     }
 
@@ -908,6 +979,7 @@ class TabSidebarViewController: NSViewController {
     private var swipeEventMonitor: Any?
     private var lastProcessedSwipeEvent: NSEvent?
 
+
     /// Returns `true` when the event is consumed by horizontal swipe handling.
     @discardableResult
     private func handleSpaceSwipe(_ event: NSEvent) -> Bool {
@@ -925,6 +997,9 @@ class TabSidebarViewController: NSViewController {
             // If the previous gesture left the strip displaced, snap it back
             if isAnimatingSwipe {
                 isAnimatingSwipe = false
+                isSwipingSpaces = false
+                positionSpaceStrip(forActiveIndex: activePageIndex)
+                updateSpaceButtonAppearances(activeIndex: CGFloat(activePageIndex))
                 let pageW = pageClipView.bounds.width
                 if pageW > 0 {
                     pageStripView.frame.origin.x = -CGFloat(activePageIndex) * pageW
@@ -943,6 +1018,7 @@ class TabSidebarViewController: NSViewController {
               event.scrollingDeltaX != 0 else { return false }
         isTrackingHorizontalSwipe = true
         swipeStartTintColor = tintColor
+        isSwipingSpaces = true
         installSwipeMonitor()
         return processSwipeEvent(event)
     }
@@ -1022,6 +1098,16 @@ class TabSidebarViewController: NSViewController {
             let edgeIndex = fractionalPage < 0 ? 0 : spaces.count - 1
             view.layer?.backgroundColor = spaces[edgeIndex].color.withAlphaComponent(0.1).cgColor
         }
+
+        // Drive space button strip position and appearances proportionally to swipe
+        updateSpaceButtonsDuringSwipe(fractionalPage: fractionalPage)
+    }
+
+    private func updateSpaceButtonsDuringSwipe(fractionalPage: CGFloat) {
+        guard isSwipingSpaces,
+              let x = spaceStripX(forIndex: fractionalPage) else { return }
+        spaceStripView.frame.origin.x = x
+        updateSpaceButtonAppearances(activeIndex: fractionalPage)
     }
 
     private func handleSwipeEnd() {
@@ -1049,23 +1135,39 @@ class TabSidebarViewController: NSViewController {
 
         isAnimatingSwipe = true
 
+        let committing = targetPage != activePageIndex
+
+        let spaceTargetX = spaceStripX(forIndex: CGFloat(targetPage)) ?? spaceStripView.frame.origin.x
+
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = duration
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+
             var frame = pageStripView.frame
             frame.origin.x = targetX
             pageStripView.animator().frame = frame
+
+            // Animate space button strip to target position
+            var spaceFrame = spaceStripView.frame
+            spaceFrame.origin.x = spaceTargetX
+            spaceStripView.animator().frame = spaceFrame
         }, completionHandler: { [weak self] in
             guard let self else { return }
             self.isAnimatingSwipe = false
+            self.isSwipingSpaces = false
 
-            if targetPage != self.activePageIndex {
+            if committing {
                 let spaces = self.relevantSpaces
                 guard targetPage < spaces.count else { return }
                 self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: spaces[targetPage].id)
-            } else if let startColor = self.swipeStartTintColor {
-                // Cancelled — restore original tint
-                self.view.layer?.backgroundColor = startColor.withAlphaComponent(0.1).cgColor
+            } else {
+                // Cancelled — restore button appearances and tint
+                self.positionSpaceStrip(forActiveIndex: self.activePageIndex)
+                self.updateSpaceButtonAppearances(activeIndex: CGFloat(self.activePageIndex))
+                if let startColor = self.swipeStartTintColor {
+                    self.view.layer?.backgroundColor = startColor.withAlphaComponent(0.1).cgColor
+                }
             }
         })
 
