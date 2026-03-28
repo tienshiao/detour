@@ -69,25 +69,29 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // --- Idle ---
 
-chrome.idle.onStateChanged.addListener((newState) => {
-  console.log('[API Explorer] idle.onStateChanged', newState);
-  appendLog({ event: 'idle.onStateChanged', newState });
-});
+if (chrome.idle) {
+  chrome.idle.onStateChanged.addListener((newState) => {
+    console.log('[API Explorer] idle.onStateChanged', newState);
+    appendLog({ event: 'idle.onStateChanged', newState });
+  });
 
-// Set detection interval to 60 seconds
-chrome.idle.setDetectionInterval(60);
+  // Set detection interval to 60 seconds
+  chrome.idle.setDetectionInterval(60);
+}
 
 // --- Notifications ---
 
-chrome.notifications.onClicked.addListener((notificationId) => {
-  console.log('[API Explorer] notifications.onClicked', notificationId);
-  appendLog({ event: 'notifications.onClicked', notificationId });
-});
+if (chrome.notifications) {
+  chrome.notifications.onClicked.addListener((notificationId) => {
+    console.log('[API Explorer] notifications.onClicked', notificationId);
+    appendLog({ event: 'notifications.onClicked', notificationId });
+  });
 
-chrome.notifications.onClosed.addListener((notificationId, byUser) => {
-  console.log('[API Explorer] notifications.onClosed', notificationId, byUser);
-  appendLog({ event: 'notifications.onClosed', notificationId, byUser });
-});
+  chrome.notifications.onClosed.addListener((notificationId, byUser) => {
+    console.log('[API Explorer] notifications.onClosed', notificationId, byUser);
+    appendLog({ event: 'notifications.onClosed', notificationId, byUser });
+  });
+}
 
 // --- Commands ---
 

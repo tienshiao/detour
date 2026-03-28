@@ -89,24 +89,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             do {
-                // Parse manifest first to show permission prompt
+                // Parse manifest for display name
                 let manifestURL = url.appendingPathComponent("manifest.json")
                 let manifest = try ExtensionManifest.parse(at: manifestURL)
-
-                let summary = ExtensionPermissionChecker.permissionSummary(for: manifest)
-
-                // Resolve i18n placeholders for display
-                let i18nMessages = ExtensionI18n.loadDefaultMessages(basePath: url, defaultLocale: manifest.defaultLocale)
-                let displayName = ExtensionI18n.resolve(manifest.name, messages: i18nMessages)
+                let displayName = WebExtension.resolveI18nName(manifest.name, basePath: url, defaultLocale: manifest.defaultLocale)
 
                 let confirmAlert = NSAlert()
                 confirmAlert.messageText = "Install \"\(displayName)\"?"
-                if summary.isEmpty {
-                    confirmAlert.informativeText = "This extension does not request any special permissions."
-                } else {
-                    let bullets = summary.map { "\u{2022} \($0)" }.joined(separator: "\n")
-                    confirmAlert.informativeText = "This extension requests:\n\(bullets)"
-                }
+                confirmAlert.informativeText = "This extension will be installed and enabled."
                 confirmAlert.alertStyle = .warning
                 confirmAlert.addButton(withTitle: "Install")
                 confirmAlert.addButton(withTitle: "Cancel")
@@ -342,12 +332,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func extensionMenuClicked(_ sender: NSMenuItem) {
         guard let extID = sender.representedObject as? String,
-              let ext = ExtensionManager.shared.extension(withID: extID),
-              ext.popupURL != nil else { return }
+              ExtensionManager.shared.context(for: extID) != nil else { return }
 
         guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController else { return }
         let addressBar = wc.tabSidebar.fauxAddressBar
-        let popover = ExtensionPopoverController(extension: ext)
+        let popover = ExtensionPopoverController(extensionID: extID)
         popover.show(relativeTo: addressBar.bounds, of: addressBar, preferredEdge: .minY)
         // Retain until closed
         objc_setAssociatedObject(wc, "extensionMenuPopover", popover, .OBJC_ASSOCIATION_RETAIN)
@@ -366,26 +355,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func inspectExtensionBackground(_ sender: NSMenuItem) {
         guard let extID = sender.representedObject as? String,
-              let bgHost = ExtensionManager.shared.backgroundHost(for: extID),
-              let webView = bgHost.webView else { return }
+              ExtensionManager.shared.context(for: extID) != nil else { return }
 
-        // The inspector requires the webView to be in a window hierarchy.
-        if webView.window == nil {
-            let window = NSWindow(
-                contentRect: .zero,
-                styleMask: [],
-                backing: .buffered,
-                defer: false
-            )
-            window.contentView = webView
-            window.orderOut(nil)
-            inspectorWindows[extID] = window
-        }
-
-        DispatchQueue.main.async {
-            guard let inspector = webView.value(forKey: "_inspector") as? NSObject else { return }
-            inspector.perform(Selector(("show")))
-        }
+        // Native WKWebExtension manages background content internally.
+        // Background pages are inspectable via Safari's Develop menu when isInspectable = true.
+        let alert = NSAlert()
+        alert.messageText = "Inspect Background"
+        alert.informativeText = "Use Safari's Develop menu to inspect this extension's background page."
+        alert.alertStyle = .informational
+        alert.runModal()
     }
 }
 
@@ -425,10 +403,12 @@ extension AppDelegate: NSMenuDelegate {
         let insertIndex = max(menu.items.count - 2, 0)
 
         for (i, ext) in profileExtensions.enumerated() {
-            let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+            let displayName = ExtensionManager.shared.displayName(for: ext.id)
+            let hasPopup = ExtensionManager.shared.context(for: ext.id)?.action(for: nil)?.popupWebView != nil
+                || ext.manifest.action?.defaultPopup != nil
             let item = NSMenuItem(
-                title: resolvedName,
-                action: ext.popupURL != nil ? #selector(extensionMenuClicked(_:)) : nil,
+                title: displayName,
+                action: hasPopup ? #selector(extensionMenuClicked(_:)) : nil,
                 keyEquivalent: ""
             )
             item.target = self
@@ -442,7 +422,7 @@ extension AppDelegate: NSMenuDelegate {
                     return true
                 }
             } else {
-                item.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: resolvedName)
+                item.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: displayName)
             }
 
             menu.insertItem(item, at: insertIndex + i)
@@ -467,9 +447,9 @@ extension AppDelegate: NSMenuDelegate {
         menu.addItem(separator)
 
         for ext in extensions {
-            let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+            let displayName = ExtensionManager.shared.displayName(for: ext.id)
             let item = NSMenuItem(
-                title: "Inspect \"\(resolvedName)\" Background",
+                title: "Inspect \"\(displayName)\" Background",
                 action: #selector(inspectExtensionBackground(_:)),
                 keyEquivalent: ""
             )

@@ -93,26 +93,14 @@ class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let identifier = response.notification.request.identifier
 
         if let mapping = notificationMap[identifier] {
-            let js: String
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
                 log.info("Notification clicked: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
-                // Click
-                let escapedID = mapping.notificationID.jsEscapedForSingleQuotes
-                js = "if (window.__extensionDispatchNotificationClicked) { window.__extensionDispatchNotificationClicked('\(escapedID)'); }"
             } else if response.actionIdentifier == UNNotificationDismissActionIdentifier {
                 log.info("Notification closed: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
-                // Closed
-                let escapedID = mapping.notificationID.jsEscapedForSingleQuotes
-                js = "if (window.__extensionDispatchNotificationClosed) { window.__extensionDispatchNotificationClosed('\(escapedID)', true); }"
                 notificationMap.removeValue(forKey: identifier)
                 activeNotifications[mapping.extensionID]?.remove(mapping.notificationID)
-            } else {
-                js = ""
             }
-
-            if !js.isEmpty {
-                ExtensionManager.shared.backgroundHost(for: mapping.extensionID)?.evaluateJavaScript(js)
-            }
+            // Native WKWebExtension handles chrome.notifications event dispatch
         }
 
         completionHandler()

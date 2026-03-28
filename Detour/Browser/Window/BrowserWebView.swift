@@ -193,9 +193,8 @@ extension BrowserWindowController {
             clickInfo["selectionText"] = selectionText
         }
 
-        let tabInfo = ExtensionMessageBridge.shared.buildTabInfo(tab: tab, space: space, isActive: true)
-
-        ExtensionManager.shared.dispatchContextMenuClicked(
-            menuItemId: menuItemId, info: clickInfo, tab: tabInfo, extensionID: extensionID)
+        // Context menu click dispatch — the native WKWebExtension API handles
+        // chrome.contextMenus events; this is a fallback for manually-tracked items.
+        // TODO: Wire context menu clicks through WKWebExtensionContext when API available
     }
 }

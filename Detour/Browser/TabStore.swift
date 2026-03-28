@@ -59,6 +59,8 @@ class Space {
 
     var isIncognito: Bool { profile?.isIncognito ?? false }
 
+    var pinnedTabs: [BrowserTab] { pinnedEntries.compactMap(\.tab) }
+
     var color: NSColor {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
@@ -86,9 +88,8 @@ class Space {
             config.websiteDataStore = dataStore
         }
 
-        // Register the chrome-extension:// scheme so content scripts can load
-        // web-accessible resources via chrome.runtime.getURL()
-        ExtensionPageSchemeHandler.register(on: config)
+        // Wire this profile's extension controller so content scripts inject automatically
+        config.webExtensionController = profile?.extensionController
 
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         config.userContentController.addUserScript(script)
@@ -106,9 +107,6 @@ class Space {
         if let profile {
             ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
         }
-
-        // Inject extension content scripts for this space's profile
-        ExtensionManager.shared.injector.addContentScripts(to: config.userContentController, profileID: profileID)
 
         // Inject Chrome Web Store install interceptor (at document start for API polyfill)
         let cwsEarlyScript = WKUserScript(

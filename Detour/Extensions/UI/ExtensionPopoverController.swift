@@ -1,60 +1,82 @@
 import Foundation
 import AppKit
 import WebKit
+import os
 
-/// Presents an extension's popup.html in an NSPopover with a WKWebView.
-class ExtensionPopoverController: NSObject {
-    private let ext: WebExtension
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "ext-popup")
+
+/// Presents an extension's popup in an NSPopover.
+///
+/// For user-initiated clicks: get `action.popupWebView` directly and present it.
+/// `performAction()` is only for the no-popup case (fires `browser.action.onClicked`).
+/// The delegate `presentActionPopup` is for extension-initiated opens (`browser.action.openPopup()`).
+class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHandler {
+    private let extensionID: String
     private var popover: NSPopover?
-    private(set) var webView: WKWebView?
+    private weak var popupWebView: WKWebView?
 
-    /// Chrome's maximum popup dimensions.
     private static let maxWidth: CGFloat = 800
     private static let maxHeight: CGFloat = 600
-    /// Default size used if content measurement fails.
     private static let defaultSize = NSSize(width: 360, height: 480)
 
-    // Positioning info saved from show() for deferred popover presentation
     private weak var positioningView: NSView?
     private var positioningRect: NSRect = .zero
     private var preferredEdge: NSRectEdge = .maxY
 
-    init(extension ext: WebExtension) {
-        self.ext = ext
+    /// Called when the popover closes. Used by ExtensionManager to clean up retention and call completion handlers.
+    var onClose: (() -> Void)?
+
+    init(extensionID: String) {
+        self.extensionID = extensionID
         super.init()
     }
 
-    /// Show the extension popup relative to the given toolbar item view.
-    /// Creates the WKWebView and starts loading immediately, but defers showing
-    /// the popover until the content has loaded and been measured.
-    func show(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge = .maxY) {
-        guard let popupURL = ext.popupURL else { return }
+    /// Set positioning without triggering the action (used by the delegate fallback path).
+    func setPositioning(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge = .maxY) {
+        self.positioningView = positioningView
+        self.positioningRect = positioningRect
+        self.preferredEdge = preferredEdge
+    }
 
-        // Save positioning for when we're ready to present
+    /// Show the extension popup for a user-initiated toolbar button click.
+    func show(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge = .maxY) {
+        guard let context = ExtensionManager.shared.context(for: extensionID) else { return }
+
         self.positioningView = positioningView
         self.positioningRect = positioningRect
         self.preferredEdge = preferredEdge
 
-        let config = ext.makePageConfiguration()
+        let activeTab = (NSApp.keyWindow?.windowController as? BrowserWindowController)?.selectedTab
+        let tab: (any WKWebExtensionTab)? = activeTab?.webView(for: context) != nil ? activeTab : nil
+        let action = context.action(for: tab)
 
-        let wv = WKWebView(frame: NSRect(origin: .zero, size: Self.defaultSize), configuration: config)
-        wv.isInspectable = true
-        wv.navigationDelegate = self
-        wv.uiDelegate = self
-        wv.setValue(false, forKey: "drawsBackground")
-        wv.load(URLRequest(url: popupURL))
-        self.webView = wv
+        if let action, action.presentsPopup, let webView = action.popupWebView {
+            // User click with popup — reload to match Chrome behavior (popups are recreated each open)
+            webView.reload()
+            presentPopupWebView(webView)
+        } else if let action, !action.presentsPopup {
+            // No popup — fire browser.action.onClicked in the background script
+            context.performAction(for: tab)
+        }
+    }
 
-        // Register the popup webView so the message bridge can dispatch messages
-        // to it even before the popover is shown (background may send during load)
-        ExtensionManager.shared.registerPopupWebView(wv, for: ext.id)
+    /// Called by ExtensionManager's delegate for extension-initiated popup opens
+    /// (e.g. `browser.action.openPopup()` from background script).
+    func presentPopupWebView(_ webView: WKWebView) {
+        self.popupWebView = webView
+
+        // Wait briefly for the extension's JS to render, then measure and present
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.measureAndPresent()
+        }
     }
 
     func close() {
         popover?.close()
     }
 
-    /// JavaScript to measure popup content size.
+    // MARK: - Content Measurement
+
     private static let measureJS = """
     (function() {
         const body = document.body;
@@ -68,7 +90,6 @@ class ExtensionPopoverController: NSObject {
     })();
     """
 
-    /// Parse a measurement JSON string into a clamped NSSize, or nil if invalid.
     private static func parseSize(from jsonString: String) -> NSSize? {
         guard let data = jsonString.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: CGFloat],
@@ -80,9 +101,8 @@ class ExtensionPopoverController: NSObject {
         )
     }
 
-    /// Measure the content and present the popover at the correct size.
     private func measureAndPresent() {
-        guard let wv = webView, positioningView != nil else {
+        guard let wv = popupWebView, positioningView != nil else {
             presentPopover(size: Self.defaultSize)
             return
         }
@@ -95,10 +115,10 @@ class ExtensionPopoverController: NSObject {
         }
     }
 
-    /// Install a ResizeObserver on the document body so the popover resizes
-    /// dynamically when the extension's content changes (e.g. after a translation).
+    // MARK: - Resize Observer
+
     private func installResizeObserver() {
-        guard let wv = webView else { return }
+        guard let wv = popupWebView else { return }
 
         let js = """
         (function() {
@@ -119,16 +139,15 @@ class ExtensionPopoverController: NSObject {
         })();
         """
 
-        // Register the message handler for resize notifications
-        let contentController = wv.configuration.userContentController
-        contentController.add(self, name: "extensionPopupResize")
-
+        wv.configuration.userContentController.removeScriptMessageHandler(forName: "extensionPopupResize")
+        wv.configuration.userContentController.add(self, name: "extensionPopupResize")
         wv.evaluateJavaScript(js, completionHandler: nil)
     }
 
-    /// Create and show the NSPopover at the given size.
+    // MARK: - Popover Presentation
+
     private func presentPopover(size: NSSize) {
-        guard let wv = webView, let posView = positioningView, popover == nil else { return }
+        guard let wv = popupWebView, let posView = positioningView, popover == nil else { return }
 
         wv.frame.size = size
 
@@ -144,62 +163,18 @@ class ExtensionPopoverController: NSObject {
 
         pop.show(relativeTo: positioningRect, of: posView, preferredEdge: preferredEdge)
     }
-}
 
-extension ExtensionPopoverController: NSPopoverDelegate {
+    // MARK: - NSPopoverDelegate
+
     func popoverDidClose(_ notification: Notification) {
-        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "extensionPopupResize")
-        ExtensionManager.shared.unregisterPopupWebView(for: ext.id)
-        webView = nil
+        popupWebView = nil
         popover = nil
-    }
-}
-
-extension ExtensionPopoverController: WKNavigationDelegate {
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // After the page loads, wait briefly for the extension's JS to render the DOM,
-        // then measure the content and show the popover at the correct size.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.measureAndPresent()
-        }
+        onClose?()
+        onClose = nil
     }
 
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        // Allow initial page load and subresource loads
-        if navigationAction.navigationType == .other {
-            decisionHandler(.allow)
-            return
-        }
+    // MARK: - WKScriptMessageHandler (resize)
 
-        // Link clicks to chrome-extension:// pages (e.g. options page) open in the browser
-        if let url = navigationAction.request.url, url.scheme == ExtensionPageSchemeHandler.scheme {
-            decisionHandler(.cancel)
-            NotificationCenter.default.post(
-                name: ExtensionManager.popupOpenURLNotification,
-                object: nil,
-                userInfo: ["url": url]
-            )
-            close()
-            return
-        }
-
-        // Open external links in the browser
-        if let url = navigationAction.request.url, url.scheme == "https" || url.scheme == "http" {
-            decisionHandler(.cancel)
-            NotificationCenter.default.post(
-                name: ExtensionManager.popupOpenURLNotification,
-                object: nil,
-                userInfo: ["url": url]
-            )
-            close()
-            return
-        }
-
-        decisionHandler(.allow)
-    }
-}
-
-extension ExtensionPopoverController: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "extensionPopupResize",
               let body = message.body as? [String: Any],
@@ -213,24 +188,6 @@ extension ExtensionPopoverController: WKScriptMessageHandler {
             height: min(max(CGFloat(h), 100), Self.maxHeight)
         )
         pop.contentSize = size
-        webView?.frame.size = size
-    }
-}
-
-extension ExtensionPopoverController: WKUIDelegate {
-    func webViewDidClose(_ webView: WKWebView) {
-        close()
-    }
-
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        // Handle target=_blank links by opening them in the browser
-        if let url = navigationAction.request.url, url.scheme == "https" || url.scheme == "http" {
-            NotificationCenter.default.post(
-                name: ExtensionManager.popupOpenURLNotification,
-                object: nil,
-                userInfo: ["url": url]
-            )
-        }
-        return nil
+        popupWebView?.frame.size = size
     }
 }

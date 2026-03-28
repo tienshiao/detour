@@ -196,8 +196,8 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             iconView.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
         }
 
-        let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
-        let resolvedDesc = ext.manifest.description.map { ExtensionI18n.resolve($0, messages: ext.messages) }
+        let resolvedName = ExtensionManager.shared.displayName(for: ext.id)
+        let resolvedDesc = ExtensionManager.shared.displayDescription(for: ext.id)
 
         let nameLabel = NSTextField(labelWithString: resolvedName)
         nameLabel.font = .systemFont(ofSize: 15, weight: .bold)
@@ -238,8 +238,13 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         enabledRow.orientation = .horizontal
         enabledRow.spacing = 8
 
-        // Permissions section
-        let permsSummary = ExtensionPermissionChecker.permissionSummary(for: ext.manifest)
+        // Permissions section — read from manifest permissions + host_permissions
+        let permsSummary: [String] = {
+            var perms: [String] = []
+            if let p = ext.manifest.permissions { perms.append(contentsOf: p) }
+            if let hp = ext.manifest.hostPermissions { perms.append(contentsOf: hp) }
+            return perms
+        }()
         let permsHeader = NSTextField(labelWithString: "Permissions")
         permsHeader.font = .systemFont(ofSize: 13, weight: .medium)
 
@@ -351,20 +356,11 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             do {
                 let manifestURL = url.appendingPathComponent("manifest.json")
                 let manifest = try ExtensionManifest.parse(at: manifestURL)
-                let summary = ExtensionPermissionChecker.permissionSummary(for: manifest)
-
-                // Resolve i18n placeholders for display
-                let i18nMessages = ExtensionI18n.loadDefaultMessages(basePath: url, defaultLocale: manifest.defaultLocale)
-                let displayName = ExtensionI18n.resolve(manifest.name, messages: i18nMessages)
+                let displayName = WebExtension.resolveI18nName(manifest.name, basePath: url, defaultLocale: manifest.defaultLocale)
 
                 let confirmAlert = NSAlert()
                 confirmAlert.messageText = "Install \"\(displayName)\"?"
-                if summary.isEmpty {
-                    confirmAlert.informativeText = "This extension does not request any special permissions."
-                } else {
-                    let bullets = summary.map { "\u{2022} \($0)" }.joined(separator: "\n")
-                    confirmAlert.informativeText = "This extension requests:\n\(bullets)"
-                }
+                confirmAlert.informativeText = "This extension will be installed and enabled."
                 confirmAlert.alertStyle = .warning
                 confirmAlert.addButton(withTitle: "Install")
                 confirmAlert.addButton(withTitle: "Cancel")
@@ -404,7 +400,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         guard let ext = selectedExtension else { return }
 
         let alert = NSAlert()
-        let uninstallName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+        let uninstallName = ExtensionManager.shared.displayName(for: ext.id)
         alert.messageText = "Uninstall \"\(uninstallName)\"?"
         alert.informativeText = "This will remove the extension and all its data."
         alert.alertStyle = .warning
@@ -471,7 +467,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             }
         }
         if let nameLabel = cell.viewWithTag(1) as? NSTextField {
-            nameLabel.stringValue = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+            nameLabel.stringValue = ExtensionManager.shared.displayName(for: ext.id)
         }
         return cell
     }

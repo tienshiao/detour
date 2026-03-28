@@ -43,7 +43,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         if let url = navigationAction.request.url,
            let scheme = url.scheme,
            scheme != "http", scheme != "https",
-           scheme != "about", scheme != "blob", scheme != ExtensionPageSchemeHandler.scheme, scheme != ErrorPage.scheme {
+           scheme != "about", scheme != "blob", scheme != "webkit-extension", scheme != ErrorPage.scheme {
             NSWorkspace.shared.open(url)
             return .cancel
         }
@@ -76,18 +76,6 @@ extension BrowserWindowController: WKNavigationDelegate {
         // Apply Chrome UA spoofing for domains that require it
         if let url = navigationAction.request.url, let tab = selectedTab {
             tab.applySpoofedUserAgent(for: url)
-        }
-
-        // Fire chrome.webNavigation.onBeforeNavigate for extensions
-        if let tab = selectedTab, let url = navigationAction.request.url {
-            let mgr = ExtensionManager.shared
-            let tabID = mgr.tabIDMap.intID(for: tab.id)
-            mgr.fireWebNavigationEvent("onBeforeNavigate", details: [
-                "tabId": tabID,
-                "url": url.absoluteString,
-                "frameId": 0,
-                "timeStamp": Date().timeIntervalSince1970 * 1000
-            ])
         }
 
         return .allow
@@ -159,23 +147,14 @@ extension BrowserWindowController: WKNavigationDelegate {
             let unpackedDir = crxResult.directory
             defer { try? FileManager.default.removeItem(at: unpackedDir) }
 
-            // Parse manifest for permission prompt
+            // Parse manifest for display name
             let manifestURL = unpackedDir.appendingPathComponent("manifest.json")
             let manifest = try ExtensionManifest.parse(at: manifestURL)
-            let summary = ExtensionPermissionChecker.permissionSummary(for: manifest)
-
-            // Resolve i18n placeholders for display
-            let i18nMessages = ExtensionI18n.loadDefaultMessages(basePath: unpackedDir, defaultLocale: manifest.defaultLocale)
-            let displayName = ExtensionI18n.resolve(manifest.name, messages: i18nMessages)
+            let displayName = WebExtension.resolveI18nName(manifest.name, basePath: unpackedDir, defaultLocale: manifest.defaultLocale)
 
             let confirmAlert = NSAlert()
             confirmAlert.messageText = "Install \"\(displayName)\"?"
-            if summary.isEmpty {
-                confirmAlert.informativeText = "This extension does not request any special permissions."
-            } else {
-                let bullets = summary.map { "\u{2022} \($0)" }.joined(separator: "\n")
-                confirmAlert.informativeText = "This extension requests:\n\(bullets)"
-            }
+            confirmAlert.informativeText = "This extension will be installed and enabled."
             confirmAlert.alertStyle = .warning
             confirmAlert.addButton(withTitle: "Install")
             confirmAlert.addButton(withTitle: "Cancel")
@@ -218,33 +197,11 @@ extension BrowserWindowController: WKNavigationDelegate {
         if webView.url?.scheme == ErrorPage.scheme { return }
         selectedTab?.didCommitNavigation()
 
-        // Fire chrome.webNavigation.onCommitted for extensions
-        if let tab = selectedTab, let url = webView.url, let spaceID = activeSpaceID {
-            let mgr = ExtensionManager.shared
-            let tabID = mgr.tabIDMap.intID(for: tab.id)
-            mgr.fireWebNavigationEvent("onCommitted", details: [
-                "tabId": tabID,
-                "url": url.absoluteString,
-                "frameId": 0,
-                "timeStamp": Date().timeIntervalSince1970 * 1000
-            ])
-        }
+        // Native WKWebExtension handles chrome.webNavigation events
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Fire chrome.webNavigation.onDOMContentLoaded and onCompleted for extensions
-        if let tab = selectedTab, let url = webView.url {
-            let mgr = ExtensionManager.shared
-            let tabID = mgr.tabIDMap.intID(for: tab.id)
-            let details: [String: Any] = [
-                "tabId": tabID,
-                "url": url.absoluteString,
-                "frameId": 0,
-                "timeStamp": Date().timeIntervalSince1970 * 1000
-            ]
-            mgr.fireWebNavigationEvent("onDOMContentLoaded", details: details)
-            mgr.fireWebNavigationEvent("onCompleted", details: details)
-        }
+        // Native WKWebExtension handles chrome.webNavigation events
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -254,18 +211,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return }
         selectedTab?.didFailProvisionalNavigation(error: error)
 
-        // Fire chrome.webNavigation.onErrorOccurred for extensions
-        if let tab = selectedTab, let url = webView.url ?? tab.url {
-            let mgr = ExtensionManager.shared
-            let tabID = mgr.tabIDMap.intID(for: tab.id)
-            mgr.fireWebNavigationEvent("onErrorOccurred", details: [
-                "tabId": tabID,
-                "url": url.absoluteString,
-                "frameId": 0,
-                "error": nsError.localizedDescription,
-                "timeStamp": Date().timeIntervalSince1970 * 1000
-            ])
-        }
+        // Native WKWebExtension handles chrome.webNavigation events
     }
 
     internal func triggerDownloadAnimation(iconName: String = "doc.fill") {

@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "EXT-LOAD")
 
 // MARK: - UserAgentMode
 
@@ -141,6 +144,115 @@ class Profile {
         }
         return WKWebsiteDataStore(forIdentifier: id)
     }()
+
+    // MARK: - Extension Controller
+
+    /// Extension controller for this profile. Lazy-initialized like dataStore.
+    /// Non-persistent for incognito profiles so extension data isn't written to disk.
+    lazy var extensionController: WKWebExtensionController = {
+        let config: WKWebExtensionController.Configuration
+        if isIncognito {
+            config = .nonPersistent()
+        } else {
+            config = WKWebExtensionController.Configuration(identifier: id)
+        }
+        config.defaultWebsiteDataStore = dataStore
+        let controller = WKWebExtensionController(configuration: config)
+        controller.delegate = ExtensionManager.shared
+        return controller
+    }()
+
+    /// Extension contexts loaded in this profile's controller. ExtensionID → context.
+    var extensionContexts: [String: WKWebExtensionContext] = [:]
+
+    private static let allURLsPattern = try? WKWebExtension.MatchPattern(string: "<all_urls>")
+
+    /// Load an extension context into this profile's controller (synchronous).
+    /// Returns true if the context was loaded and background content should be started.
+    @MainActor
+    func loadExtensionContext(_ ext: WebExtension) -> Bool {
+        guard let wkExt = ext.wkExtension else {
+            log.error("Skipping \(ext.id, privacy: .public) — wkExtension is nil")
+            return false
+        }
+
+        if extensionContexts[ext.id] != nil {
+            log.info("Skipping \(ext.id, privacy: .public) — already loaded")
+            return false
+        }
+
+        let context = WKWebExtensionContext(for: wkExt)
+        context.isInspectable = true
+
+        for permission in wkExt.requestedPermissions {
+            context.setPermissionStatus(.grantedExplicitly, for: permission)
+        }
+        for pattern in wkExt.requestedPermissionMatchPatterns {
+            context.setPermissionStatus(.grantedExplicitly, for: pattern)
+        }
+        if let allURLs = Self.allURLsPattern {
+            context.setPermissionStatus(.grantedExplicitly, for: allURLs)
+        }
+
+        do {
+            try extensionController.load(context)
+            extensionContexts[ext.id] = context
+            log.info("Context loaded for \(ext.id, privacy: .public), baseURL: \(context.baseURL.absoluteString, privacy: .public)")
+            return wkExt.hasBackgroundContent
+        } catch {
+            let nsError = error as NSError
+            log.error("Failed to load \(ext.id, privacy: .public): domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+            return false
+        }
+    }
+
+    /// Start background content for an extension. Times out after 10s to avoid blocking forever.
+    @MainActor
+    func startBackgroundContent(for ext: WebExtension) async {
+        guard let context = extensionContexts[ext.id] else { return }
+
+        log.info("Loading background content for \(ext.id, privacy: .public)")
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { @MainActor in
+                    try await context.loadBackgroundContent()
+                }
+                group.addTask { @MainActor in
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                    throw CancellationError()
+                }
+                try await group.next()
+                group.cancelAll()
+            }
+            log.info("Background content loaded for \(ext.id, privacy: .public)")
+        } catch {
+            log.error("Background content failed/timed out for \(ext.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+
+        if !context.errors.isEmpty {
+            log.error("Context errors for \(ext.id, privacy: .public): \(context.errors.map { $0.localizedDescription }, privacy: .public)")
+        }
+    }
+
+    /// Load context + start background in one call. Used by install and enable flows.
+    @MainActor
+    func loadExtension(_ ext: WebExtension) async {
+        let needsBackground = loadExtensionContext(ext)
+        if needsBackground {
+            await startBackgroundContent(for: ext)
+        }
+    }
+
+    /// Unload an extension from this profile's controller.
+    func unloadExtension(id: String) {
+        guard let context = extensionContexts.removeValue(forKey: id) else { return }
+        try? extensionController.unload(context)
+    }
+
+    /// Get the extension context for a given extension ID in this profile.
+    func extensionContext(for extensionID: String) -> WKWebExtensionContext? {
+        extensionContexts[extensionID]
+    }
 
     init(id: UUID = UUID(), name: String, userAgentMode: UserAgentMode = .detour,
          customUserAgent: String? = nil, archiveThreshold: ArchiveThreshold = .twelveHours,

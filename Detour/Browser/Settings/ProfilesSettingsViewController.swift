@@ -461,7 +461,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             toggle.target = self
             toggle.action = #selector(extensionToggled(_:))
 
-            let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
+            let resolvedName = ExtensionManager.shared.displayName(for: ext.id)
             let label = NSTextField(labelWithString: resolvedName)
             label.font = .systemFont(ofSize: 12)
 

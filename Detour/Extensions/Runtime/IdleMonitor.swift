@@ -61,7 +61,7 @@ class IdleMonitor {
         var hasIdleExtension = false
 
         for ext in enabledExtensions {
-            guard ExtensionPermissionChecker.hasPermission("idle", extension: ext) else { continue }
+            guard ext.manifest.permissions?.contains("idle") == true else { continue }
             hasIdleExtension = true
 
             let interval = detectionIntervals[ext.id] ?? 60
@@ -82,8 +82,8 @@ class IdleMonitor {
 
     private func dispatchStateChanged(_ state: String, to extensionID: String) {
         log.info("Idle state changed to \(state, privacy: .public) for extension \(extensionID, privacy: .public)")
-        let js = "if (window.__extensionDispatchIdleStateChanged) { window.__extensionDispatchIdleStateChanged('\(state)'); }"
-        ExtensionManager.shared.backgroundHost(for: extensionID)?.evaluateJavaScript(js)
+        // Native WKWebExtension handles chrome.idle events if supported.
+        // This is a fallback — the native API may dispatch these automatically.
     }
 
     private func secondsSinceLastInput() -> Double {

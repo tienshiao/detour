@@ -241,16 +241,11 @@ class BrowserWindowController: NSWindowController {
 
     @objc private func handleExtensionOpenOptionsPage(_ notification: Notification) {
         guard let extensionID = notification.userInfo?["extensionID"] as? String,
-              let ext = ExtensionManager.shared.extension(withID: extensionID),
-              let optionsURL = ext.optionsURL,
+              let context = ExtensionManager.shared.context(for: extensionID),
+              let optionsURL = context.optionsPageURL,
               let space = activeSpace else { return }
 
-        let config = ext.makePageConfiguration()
-
-        let wv = WKWebView(frame: .zero, configuration: config)
-        wv.isInspectable = true
-        wv.load(URLRequest(url: optionsURL))
-        let tab = store.addTab(in: space, webView: wv)
+        let tab = store.addTab(in: space, url: optionsURL)
         selectTab(id: tab.id)
     }
 
@@ -1572,10 +1567,9 @@ extension BrowserWindowController: ExtensionToolbarActions {
         // Sender is the NSButton used as the toolbar item's view
         guard let button = sender as? NSButton,
               let extID = button.identifier?.rawValue,
-              let ext = ExtensionManager.shared.extension(withID: extID),
-              ext.popupURL != nil else { return }
+              ExtensionManager.shared.context(for: extID) != nil else { return }
 
-        let popover = ExtensionPopoverController(extension: ext)
+        let popover = ExtensionPopoverController(extensionID: extID)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
         // Retain the popover controller until it closes
         objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)

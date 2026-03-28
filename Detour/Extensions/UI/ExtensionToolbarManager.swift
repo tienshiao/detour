@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import WebKit
 
 /// Manages extension toolbar button identifiers and item creation.
 class ExtensionToolbarManager {
@@ -24,34 +25,35 @@ class ExtensionToolbarManager {
         guard let ext = ExtensionManager.shared.extension(withID: extID) else { return nil }
 
         let item = NSToolbarItem(itemIdentifier: identifier)
-        let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
-        let resolvedTitle = ext.manifest.action?.defaultTitle.map { ExtensionI18n.resolve($0, messages: ext.messages) }
+        let displayName = ExtensionManager.shared.displayName(for: extID)
 
-        item.label = resolvedName
-        item.toolTip = ExtensionManager.shared.actionTitle[extID] ?? resolvedTitle ?? resolvedName
+        item.label = displayName
+        item.toolTip = ext.manifest.action?.defaultTitle ?? displayName
 
         let image = iconImage(for: extID, ext: ext)
 
-        // Use an NSButton as the toolbar item's view so clicks work reliably
         let button = NSButton(image: image, target: target,
                               action: #selector(ExtensionToolbarActions.extensionToolbarItemClicked(_:)))
         button.bezelStyle = .texturedRounded
         button.isBordered = false
         button.imageScaling = .scaleProportionallyDown
         button.setFrameSize(NSSize(width: 28, height: 22))
-        // Store the extension ID on the button so the handler can retrieve it
         button.identifier = NSUserInterfaceItemIdentifier(extID)
         item.view = button
 
         return item
     }
 
-    /// Build the icon image for a toolbar button, compositing badge text if set.
+    /// Build the icon image for a toolbar button, compositing badge text from WKWebExtension.Action.
     private static func iconImage(for extID: String, ext: WebExtension) -> NSImage {
-        let mgr = ExtensionManager.shared
+        // Try to get badge info from the native WKWebExtension.Action
+        let context = ExtensionManager.shared.context(for: extID)
+        let action = context?.action(for: nil) // nil = default action (not tab-specific)
+        let badgeText = action?.badgeText ?? ""
+
         let baseIcon: NSImage
-        if let customIcon = mgr.customIcons[extID] {
-            baseIcon = customIcon
+        if let actionIcon = action?.icon(for: NSSize(width: 20, height: 20)) {
+            baseIcon = actionIcon
         } else if let icon = ext.icon {
             baseIcon = icon
         } else {
@@ -59,7 +61,6 @@ class ExtensionToolbarManager {
                 ?? NSImage(named: NSImage.actionTemplateName)!
         }
 
-        let badgeText = mgr.badgeText[extID] ?? ""
         let size = NSSize(width: 20, height: 20)
 
         if badgeText.isEmpty {
@@ -73,7 +74,7 @@ class ExtensionToolbarManager {
         return NSImage(size: size, flipped: false) { rect in
             baseIcon.draw(in: rect)
 
-            let badgeColor = mgr.badgeBackgroundColor[extID] ?? NSColor.systemRed
+            let badgeColor = NSColor.systemRed
             let badgeFont = NSFont.systemFont(ofSize: 7, weight: .bold)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: badgeFont,
@@ -110,14 +111,10 @@ class ExtensionToolbarManager {
         guard let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
         let identifier = NSToolbarItem.Identifier(itemIdentifierPrefix + extensionID)
 
-        // Find all windows and update their toolbar items
         for window in NSApp.windows {
             guard let toolbar = window.toolbar else { continue }
             for item in toolbar.items where item.itemIdentifier == identifier {
-                let mgr = ExtensionManager.shared
-                let resolvedName = ExtensionI18n.resolve(ext.manifest.name, messages: ext.messages)
-                let resolvedTitle = ext.manifest.action?.defaultTitle.map { ExtensionI18n.resolve($0, messages: ext.messages) }
-                item.toolTip = mgr.actionTitle[extensionID] ?? resolvedTitle ?? resolvedName
+                item.toolTip = ext.manifest.action?.defaultTitle ?? ExtensionManager.shared.displayName(for: extensionID)
 
                 let image = iconImage(for: extensionID, ext: ext)
                 if let button = item.view as? NSButton {

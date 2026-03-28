@@ -72,9 +72,7 @@ struct ExtensionInstaller {
             throw InstallerError.copyFailed(error.localizedDescription)
         }
 
-        // Resolve i18n placeholders in name and description
-        let i18nMessages = ExtensionI18n.loadDefaultMessages(basePath: destDir, defaultLocale: manifest.defaultLocale)
-        let resolvedName = ExtensionI18n.resolve(manifest.name, messages: i18nMessages)
+        let resolvedName = WebExtension.resolveI18nName(manifest.name, basePath: destDir, defaultLocale: manifest.defaultLocale)
 
         // Save to database
         let manifestData = try manifest.toJSONData()
