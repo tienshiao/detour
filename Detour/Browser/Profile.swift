@@ -182,6 +182,7 @@ class Profile {
         }
 
         let context = WKWebExtensionContext(for: wkExt)
+        context.uniqueIdentifier = ext.id
         context.isInspectable = true
 
         for permission in wkExt.requestedPermissions {
