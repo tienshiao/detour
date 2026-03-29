@@ -28,7 +28,7 @@ class ExtensionToolbarManager {
         let displayName = ExtensionManager.shared.displayName(for: extID)
 
         item.label = displayName
-        item.toolTip = ext.manifest.action?.defaultTitle ?? displayName
+        item.toolTip = ext.manifest.action?.defaultTitle.map { ext.resolveI18n($0) } ?? displayName
 
         let image = iconImage(for: extID, ext: ext)
 
@@ -114,7 +114,7 @@ class ExtensionToolbarManager {
         for window in NSApp.windows {
             guard let toolbar = window.toolbar else { continue }
             for item in toolbar.items where item.itemIdentifier == identifier {
-                item.toolTip = ext.manifest.action?.defaultTitle ?? ExtensionManager.shared.displayName(for: extensionID)
+                item.toolTip = ext.manifest.action?.defaultTitle.map { ext.resolveI18n($0) } ?? ExtensionManager.shared.displayName(for: extensionID)
 
                 let image = iconImage(for: extensionID, ext: ext)
                 if let button = item.view as? NSButton {
