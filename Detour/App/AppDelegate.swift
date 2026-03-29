@@ -353,17 +353,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Hidden windows that host background webViews so the inspector can attach.
     private var inspectorWindows: [String: NSWindow] = [:]
 
-    @objc func inspectExtensionBackground(_ sender: NSMenuItem) {
-        guard let extID = sender.representedObject as? String,
-              ExtensionManager.shared.context(for: extID) != nil else { return }
+    @objc func inspectExtensionOffscreen(_ sender: NSMenuItem) {
+        guard let extID = sender.representedObject as? String else { return }
 
-        // Native WKWebExtension manages background content internally.
-        // Background pages are inspectable via Safari's Develop menu when isInspectable = true.
-        let alert = NSAlert()
-        alert.messageText = "Inspect Background"
-        alert.informativeText = "Use Safari's Develop menu to inspect this extension's background page."
-        alert.alertStyle = .informational
-        alert.runModal()
+        let host = TabStore.shared.profiles.lazy
+            .compactMap { $0.polyfillHandler?.offscreenHosts[extID] }
+            .first
+        guard let host,
+              let webView = host.webView else {
+            let alert = NSAlert()
+            alert.messageText = "No Offscreen Document"
+            alert.informativeText = "This extension doesn't have an active offscreen document. It will be created when the extension requests one."
+            alert.alertStyle = .informational
+            alert.runModal()
+            return
+        }
+
+        // Host the offscreen webView in a visible window so the inspector can attach
+        let window: NSWindow
+        if let existing = inspectorWindows[extID] {
+            window = existing
+        } else {
+            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled, .closable, .resizable],
+                              backing: .buffered, defer: false)
+            let name = ExtensionManager.shared.displayName(for: extID)
+            window.title = "\(name) — Offscreen Document"
+            inspectorWindows[extID] = window
+        }
+        window.contentView = webView
+        window.makeKeyAndOrderFront(nil)
+
+        // Open the web inspector
+        if let inspector = webView.value(forKey: "_inspector") as? NSObject {
+            inspector.perform(Selector(("show")))
+        }
     }
 }
 
@@ -449,8 +473,8 @@ extension AppDelegate: NSMenuDelegate {
         for ext in extensions {
             let displayName = ExtensionManager.shared.displayName(for: ext.id)
             let item = NSMenuItem(
-                title: "Inspect \"\(displayName)\" Background",
-                action: #selector(inspectExtensionBackground(_:)),
+                title: "Inspect \"\(displayName)\" Offscreen",
+                action: #selector(inspectExtensionOffscreen(_:)),
                 keyEquivalent: ""
             )
             item.target = self

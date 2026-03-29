@@ -77,17 +77,23 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
 
     // MARK: - Content Measurement
 
-    private static let measureJS = """
-    (function() {
+    /// Shared measurement function injected once, called by both initial measure and resize observer.
+    private static let measureFnJS = """
+    window.__detourMeasureBody = function() {
         const body = document.body;
-        if (!body) return JSON.stringify({width: 0, height: 0});
+        if (!body) return {width: 0, height: 0};
+        const doc = document.documentElement;
         const style = window.getComputedStyle(body);
-        const marginH = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
         const marginV = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
-        const width = Math.ceil(body.offsetWidth + marginH);
-        const height = Math.ceil(body.offsetHeight + marginV);
-        return JSON.stringify({width: width, height: height});
-    })();
+        return {
+            width: Math.ceil(Math.max(body.scrollWidth, doc.scrollWidth)),
+            height: Math.ceil(Math.max(body.offsetHeight, body.scrollHeight, doc.scrollHeight) + marginV)
+        };
+    };
+    """
+
+    private static let measureJS = """
+    JSON.stringify(window.__detourMeasureBody ? window.__detourMeasureBody() : {width: 0, height: 0});
     """
 
     private static func parseSize(from jsonString: String) -> NSSize? {
@@ -107,11 +113,14 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
             return
         }
 
-        wv.evaluateJavaScript(Self.measureJS) { [weak self] result, _ in
-            guard let self else { return }
-            let size = (result as? String).flatMap(Self.parseSize) ?? Self.defaultSize
-            self.presentPopover(size: size)
-            self.installResizeObserver()
+        // Inject shared measure function, then call it
+        wv.evaluateJavaScript(Self.measureFnJS) { _, _ in
+            wv.evaluateJavaScript(Self.measureJS) { [weak self] result, _ in
+                guard let self else { return }
+                let size = (result as? String).flatMap(Self.parseSize) ?? Self.defaultSize
+                self.presentPopover(size: size)
+                self.installResizeObserver()
+            }
         }
     }
 
@@ -124,16 +133,10 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         (function() {
             if (window.__detourResizeObserver) return;
             const handler = window.webkit.messageHandlers.extensionPopupResize;
-            if (!handler) return;
+            if (!handler || !window.__detourMeasureBody) return;
             window.__detourResizeObserver = new ResizeObserver(() => {
-                const body = document.body;
-                if (!body) return;
-                const style = window.getComputedStyle(body);
-                const marginH = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
-                const marginV = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
-                const width = Math.ceil(body.offsetWidth + marginH);
-                const height = Math.ceil(body.offsetHeight + marginV);
-                handler.postMessage({width: width, height: height});
+                const size = window.__detourMeasureBody();
+                handler.postMessage(size);
             });
             window.__detourResizeObserver.observe(document.body);
         })();

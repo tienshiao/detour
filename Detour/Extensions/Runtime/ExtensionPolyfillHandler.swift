@@ -199,18 +199,25 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         // MARK: - Offscreen
         case "offscreen.createDocument":
             let url = params["url"] as? String ?? "offscreen.html"
-            guard let ext = ExtensionManager.shared.extension(withID: extensionID) else {
+            log.info("offscreen.createDocument: url=\(url, privacy: .public) ext=\(extensionID, privacy: .public)")
+            guard let ext = ExtensionManager.shared.extension(withID: extensionID),
+                  let context = ExtensionManager.shared.context(for: extensionID) else {
+                log.error("offscreen.createDocument: extension or context not found for \(extensionID, privacy: .public)")
                 replyHandler(nil, "Extension not found")
                 return
             }
             guard offscreenHosts[extensionID] == nil else {
-                replyHandler(nil, "Only one offscreen document may be created at a time")
+                log.info("offscreen.createDocument: already exists for \(extensionID, privacy: .public), returning success")
+                replyHandler(true, nil)
                 return
             }
 
             let host = OffscreenDocumentHost(extensionID: extensionID, basePath: ext.basePath)
             offscreenHosts[extensionID] = host
-            host.load(url: url) {
+            let config = context.webViewConfiguration
+            log.info("offscreen.createDocument: baseURL=\(context.baseURL.absoluteString, privacy: .public)")
+            host.load(url: url, configuration: config, baseURL: context.baseURL) {
+                log.info("offscreen.createDocument: loaded successfully for \(extensionID, privacy: .public)")
                 replyHandler(true, nil)
             }
 

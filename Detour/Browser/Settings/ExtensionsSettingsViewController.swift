@@ -103,7 +103,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyStateView.addSubview(emptyLabel)
 
-        let loadButton = NSButton(title: "Load Unpacked Extension...", target: self, action: #selector(addExtensionClicked))
+        let loadButton = NSButton(title: "Add Extension…", target: self, action: #selector(addExtensionClicked))
         loadButton.translatesAutoresizingMaskIntoConstraints = false
         emptyStateView.addSubview(loadButton)
 
@@ -333,14 +333,13 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: enabled)
     }
 
-    @objc private func addExtensionClicked() {
+    @objc private func addExtensionClicked(_ sender: NSButton) {
         let menu = NSMenu()
         menu.addItem(withTitle: "Load Unpacked Extension…", action: #selector(loadUnpackedExtension), keyEquivalent: "")
         menu.addItem(withTitle: "Install from Chrome Web Store…", action: #selector(openChromeWebStore), keyEquivalent: "")
         for item in menu.items { item.target = self }
 
-        let button = addButton!
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
     }
 
     @objc private func loadUnpackedExtension() {
