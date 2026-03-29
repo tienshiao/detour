@@ -898,6 +898,15 @@ class TabStore {
         return tab
     }
 
+    /// Create a tab for an extension page (webkit-extension://) using the extension
+    /// context's webViewConfiguration, which is required to resolve the URL scheme.
+    @discardableResult
+    func addExtensionTab(in space: Space, url: URL, configuration: WKWebViewConfiguration) -> BrowserTab {
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.load(URLRequest(url: url))
+        return addTab(in: space, webView: webView)
+    }
+
     @discardableResult
     func addTab(in space: Space, webView: WKWebView, parentID: UUID? = nil) -> BrowserTab {
         let tab = BrowserTab(webView: webView)

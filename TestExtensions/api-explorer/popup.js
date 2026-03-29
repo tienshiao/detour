@@ -582,3 +582,18 @@ document.getElementById('btn-session-test').addEventListener('click', async () =
 
 // Auto-load the event log on popup open
 document.getElementById('btn-refresh-log').click();
+
+// Auto-load polyfill diagnostics
+(async () => {
+  try {
+    const { _polyfillDiag } = await chrome.storage.local.get('_polyfillDiag');
+    if (_polyfillDiag) {
+      const lines = Object.entries(_polyfillDiag).map(([k, v]) => `${k}: ${v}`);
+      const el = document.getElementById('res-event-log');
+      if (el) {
+        el.textContent = '--- Polyfill Diagnostics ---\n' + lines.join('\n') + '\n\n' + (el.textContent || '');
+        el.classList.add('visible');
+      }
+    }
+  } catch(e) {}
+})();

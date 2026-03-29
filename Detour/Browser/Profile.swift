@@ -147,6 +147,9 @@ class Profile {
 
     // MARK: - Extension Controller
 
+    /// Retained polyfill handler for APIs not natively provided by WKWebExtension.
+    var polyfillHandler: ExtensionPolyfillHandler?
+
     /// Extension controller for this profile. Lazy-initialized like dataStore.
     /// Non-persistent for incognito profiles so extension data isn't written to disk.
     lazy var extensionController: WKWebExtensionController = {
@@ -157,6 +160,20 @@ class Profile {
             config = WKWebExtensionController.Configuration(identifier: id)
         }
         config.defaultWebsiteDataStore = dataStore
+
+        // Inject polyfills for Chrome APIs not natively provided by WKWebExtension
+        // (idle, notifications, history, management, fontSettings, sessions, search, offscreen, etc.)
+        let handler = ExtensionPolyfillHandler()
+        self.polyfillHandler = handler
+        let ucc = config.webViewConfiguration.userContentController
+        ucc.addScriptMessageHandler(handler, contentWorld: .page, name: ExtensionPolyfillHandler.handlerName)
+        let polyfillScript = WKUserScript(
+            source: ExtensionAPIPolyfill.polyfillJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        ucc.addUserScript(polyfillScript)
+
         let controller = WKWebExtensionController(configuration: config)
         controller.delegate = ExtensionManager.shared
         return controller
@@ -188,6 +205,9 @@ class Profile {
         for permission in wkExt.requestedPermissions {
             context.setPermissionStatus(.grantedExplicitly, for: permission)
         }
+        // Grant nativeMessaging so the polyfill bridge can use
+        // browser.runtime.sendNativeMessage() from service workers.
+        context.setPermissionStatus(.grantedExplicitly, for: .nativeMessaging)
         for pattern in wkExt.requestedPermissionMatchPatterns {
             context.setPermissionStatus(.grantedExplicitly, for: pattern)
         }

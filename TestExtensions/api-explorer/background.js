@@ -211,7 +211,9 @@ chrome.runtime.onConnect.addListener((port) => {
 // --- Message handling from popup ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  handleMessage(message).then(sendResponse);
+  handleMessage(message)
+    .then(sendResponse)
+    .catch(err => sendResponse({ error: err.message || String(err) }));
   return true; // keep channel open for async response
 });
 

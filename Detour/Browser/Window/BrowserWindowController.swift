@@ -243,9 +243,10 @@ class BrowserWindowController: NSWindowController {
         guard let extensionID = notification.userInfo?["extensionID"] as? String,
               let context = ExtensionManager.shared.context(for: extensionID),
               let optionsURL = context.optionsPageURL,
+              let extConfig = context.webViewConfiguration,
               let space = activeSpace else { return }
 
-        let tab = store.addTab(in: space, url: optionsURL)
+        let tab = store.addExtensionTab(in: space, url: optionsURL, configuration: extConfig)
         selectTab(id: tab.id)
     }
 

@@ -90,6 +90,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             pendingExtensions.append(ext)
         }
 
+        // Inject polyfill into each extension's service worker before loading
+        for ext in pendingExtensions {
+            injectServiceWorkerPolyfill(into: ext)
+        }
+
         // Load WKWebExtension resources in parallel (async I/O)
         await withTaskGroup(of: (WebExtension, WKWebExtension?).self) { group in
             for ext in pendingExtensions {
@@ -256,6 +261,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         extensions.append(ext)
 
+        // Inject polyfill into service worker before WKWebExtension reads the files
+        injectServiceWorkerPolyfill(into: ext)
+
         // Load via WKWebExtension asynchronously, then into all profiles
         Task { @MainActor in
             do {
@@ -416,11 +424,65 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         tabObserver.dispatchActivated(tabID: tabID, spaceID: spaceID)
     }
 
+    // MARK: - Service Worker Polyfill Injection
+
+    /// Writes the polyfill JS file into the extension directory and prepends
+    /// `importScripts('_detour_polyfill.js')` to the service worker script.
+    /// This is necessary because WKWebExtension's service worker runs in an
+    /// opaque process where WKUserScript injection doesn't work.
+    private func injectServiceWorkerPolyfill(into ext: WebExtension) {
+        guard let swFile = ext.manifest.background?.serviceWorker else { return }
+
+        let polyfillFilename = "_detour_polyfill.js"
+        let polyfillURL = ext.basePath.appendingPathComponent(polyfillFilename)
+        let swURL = ext.basePath.appendingPathComponent(swFile)
+
+        let polyfillJS = ExtensionAPIPolyfill.polyfillJS
+        let existingPolyfill = try? String(contentsOf: polyfillURL, encoding: .utf8)
+        if existingPolyfill != polyfillJS {
+            do {
+                try polyfillJS.write(to: polyfillURL, atomically: true, encoding: .utf8)
+            } catch {
+                log.error("Failed to write polyfill for \(ext.id, privacy: .public): \(error.localizedDescription)")
+                return
+            }
+        }
+
+        let importLine = "importScripts('\(polyfillFilename)');"
+        do {
+            let swSource = try String(contentsOf: swURL, encoding: .utf8)
+            if !swSource.contains(importLine) {
+                let patched = importLine + "\n" + swSource
+                try patched.write(to: swURL, atomically: true, encoding: .utf8)
+                log.info("Injected polyfill into service worker for \(ext.id, privacy: .public)")
+            }
+        } catch {
+            log.error("Failed to patch service worker for \(ext.id, privacy: .public): \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Helpers
 
     /// Find the profile that owns a given controller.
     private func profile(for controller: WKWebExtensionController) -> Profile? {
         TabStore.shared.profiles.first { $0.extensionController === controller }
+    }
+
+    /// Find a space belonging to the profile that owns a controller.
+    private func space(for controller: WKWebExtensionController) -> Space? {
+        let targetProfile = profile(for: controller)
+        return TabStore.shared.spaces.first { $0.profileID == targetProfile?.id }
+            ?? TabStore.shared.spaces.first
+    }
+
+    /// Select a tab and notify window controllers.
+    private func selectTab(_ tab: BrowserTab, in space: Space) {
+        space.selectedTabID = tab.id
+        NotificationCenter.default.post(
+            name: Self.tabShouldSelectNotification,
+            object: nil,
+            userInfo: ["tabID": tab.id, "spaceID": space.id]
+        )
     }
 
     /// Find the extension ID for a context by searching the owning profile.
@@ -454,29 +516,42 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     func webExtensionController(
         _ controller: WKWebExtensionController,
+        openOptionsPageFor extensionContext: WKWebExtensionContext,
+        completionHandler: @escaping ((any Error)?) -> Void
+    ) {
+        guard let optionsURL = extensionContext.optionsPageURL,
+              let extConfig = extensionContext.webViewConfiguration,
+              let space = space(for: controller) else {
+            completionHandler(nil)
+            return
+        }
+
+        let tab = TabStore.shared.addExtensionTab(in: space, url: optionsURL, configuration: extConfig)
+        selectTab(tab, in: space)
+        completionHandler(nil)
+    }
+
+    func webExtensionController(
+        _ controller: WKWebExtensionController,
         openNewTabUsing configuration: WKWebExtension.TabConfiguration,
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping ((any WKWebExtensionTab)?, (any Error)?) -> Void
     ) {
-        // Find a space that uses this controller's profile
-        let targetProfile = profile(for: controller)
-        let space = TabStore.shared.spaces.first { $0.profileID == targetProfile?.id }
-            ?? TabStore.shared.spaces.first
-
-        guard let space else {
+        guard let space = space(for: controller) else {
             completionHandler(nil, nil)
             return
         }
 
         let url = configuration.url ?? URL(string: "about:blank")!
-        let tab = TabStore.shared.addTab(in: space, url: url)
+        let tab: BrowserTab
+        if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
+            tab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
+        } else {
+            tab = TabStore.shared.addTab(in: space, url: url)
+        }
+
         if configuration.shouldBeActive {
-            space.selectedTabID = tab.id
-            NotificationCenter.default.post(
-                name: Self.tabShouldSelectNotification,
-                object: nil,
-                userInfo: ["tabID": tab.id, "spaceID": space.id]
-            )
+            selectTab(tab, in: space)
         }
         completionHandler(tab, nil)
     }
@@ -570,9 +645,39 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         replyHandler: @escaping (Any?, (any Error)?) -> Void
     ) {
+        // Route polyfill messages from service workers (where webkit.messageHandlers
+        // is unavailable and the polyfill falls back to sendNativeMessage).
+        if appID == ExtensionPolyfillHandler.handlerName,
+           let body = message as? [String: Any] {
+            log.debug("Routing polyfill native message: \(body["type"] as? String ?? "(no type)", privacy: .public)")
+            let profile = profile(for: controller)
+            if let handler = profile?.polyfillHandler {
+                handler.handleNativeMessage(body, replyHandler: replyHandler)
+            } else {
+                log.error("No polyfill handler for profile")
+                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
+                                          userInfo: [NSLocalizedDescriptionKey: "No polyfill handler for profile"]))
+            }
+            return
+        }
+
+        log.info("sendNativeMessage to appID: \(appID ?? "(nil)", privacy: .public)")
+
         guard let hostName = appID,
               let extID = extensionIDFromContext(extensionContext) else {
             replyHandler(nil, nil)
+            return
+        }
+
+        // nativeMessaging is auto-granted so the polyfill bridge works, but
+        // real native messaging hosts should only be reachable by extensions
+        // that explicitly declared the permission in their manifest.
+        let ext = self.extension(withID: extID)
+        let manifestPermissions = ext?.manifest.permissions ?? []
+        if !manifestPermissions.contains("nativeMessaging") {
+            log.warning("Extension \(extID, privacy: .public) tried native messaging to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
+            replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
+                                      userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
             return
         }
 

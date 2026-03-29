@@ -45,23 +45,7 @@
   <input type="text" id="display-name" placeholder="API Explorer">
   <button id="save">Save</button>
   <div id="status">Settings saved.</div>
-
-  <script>
-    // Load saved settings
-    chrome.storage.local.get('optionsDisplayName', function(result) {
-      if (result.optionsDisplayName) {
-        document.getElementById('display-name').value = result.optionsDisplayName;
-      }
-    });
-
-    document.getElementById('save').addEventListener('click', function() {
-      var name = document.getElementById('display-name').value;
-      chrome.storage.local.set({ optionsDisplayName: name }, function() {
-        var status = document.getElementById('status');
-        status.style.display = 'block';
-        setTimeout(function() { status.style.display = 'none'; }, 2000);
-      });
-    });
-  </script>
+  <pre id="diag" style="margin-top:20px; padding:10px; background:#f0f0f0; border-radius:4px; font-size:12px; white-space:pre-wrap;"></pre>
+  <script src="options.js"></script>
 </body>
 </html>
