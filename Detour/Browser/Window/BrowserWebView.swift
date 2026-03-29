@@ -1,9 +1,6 @@
 import WebKit
 
 class BrowserWebView: WKWebView {
-    /// Context info captured from the most recent right-click event.
-    var lastContextInfo: [String: String]?
-
     // MARK: - Undo/Redo
 
     /// True when the user is focused on an editable element (input, textarea, contentEditable).
@@ -77,82 +74,23 @@ class BrowserWebView: WKWebView {
     }
 
     private func appendExtensionMenuItems(to menu: NSMenu, windowController: BrowserWindowController?) {
-        // Detect the active contexts from WebKit's default menu items
-        var contexts: Set<String> = ["page"]
+        guard let tab = windowController?.selectedTab,
+              let profileID = windowController?.activeSpace?.profileID,
+              let profile = TabStore.shared.profiles.first(where: { $0.id == profileID }) else { return }
 
-        let itemIDs = Set(menu.items.compactMap { $0.identifier?.rawValue })
-
-        // Link context: WebKit adds "OpenLinkInNewWindow" for links
-        let hasLink = itemIDs.contains("WKMenuItemIdentifierOpenLinkInNewWindow")
-            || itemIDs.contains("WKMenuItemIdentifierOpenLink")
-        if hasLink { contexts.insert("link") }
-
-        // Image context: WebKit adds copy/download image items
-        let hasImage = itemIDs.contains("WKMenuItemIdentifierCopyImage")
-            || itemIDs.contains("WKMenuItemIdentifierDownloadImage")
-        if hasImage { contexts.insert("image") }
-
-        // Selection context: WebKit adds "Copy" or "Look Up" items when text is selected
-        let hasCopy = itemIDs.contains("WKMenuItemIdentifierCopy")
-        let hasLookUp = itemIDs.contains("WKMenuItemIdentifierLookUp")
-        if hasCopy || hasLookUp { contexts.insert("selection") }
-
-        // Get the context info we captured from the contextmenu DOM event
-        let contextInfo = lastContextInfo
-
-        // Filter to extensions enabled for the current profile
-        let profileID = windowController?.activeSpace?.profileID
-        let enabledIDs: Set<String>
-        if let profileID {
-            enabledIDs = Set(ExtensionManager.shared.enabledExtensions(for: profileID).map { $0.id })
-        } else {
-            enabledIDs = Set(ExtensionManager.shared.enabledExtensions.map { $0.id })
+        // Use the native WKWebExtensionContext.menuItems(for:) API — WKWebExtension
+        // handles chrome.contextMenus internally and returns ready-to-use NSMenuItems.
+        var allItems: [NSMenuItem] = []
+        for context in profile.extensionContexts.values {
+            context.userGesturePerformed(in: tab)
+            let items = context.menuItems(for: tab)
+            allItems.append(contentsOf: items)
         }
 
-        let extensionItems = ExtensionManager.shared.allContextMenuItems.filter { item, extID in
-            guard enabledIDs.contains(extID) else { return false }
-            // Show if any of the item's contexts match the detected contexts, or "all"
-            return item.contexts.contains("all") || !Set(item.contexts).isDisjoint(with: contexts)
-        }
-
-        guard !extensionItems.isEmpty else { return }
-
+        guard !allItems.isEmpty else { return }
         menu.addItem(NSMenuItem.separator())
-        for (ctxItem, extID) in extensionItems {
-            guard ctxItem.type != "separator" else {
-                menu.addItem(NSMenuItem.separator())
-                continue
-            }
-
-            // Chrome supports %s in titles, replaced with selected text
-            var displayTitle = ctxItem.title
-            if let sel = contextInfo?["selectionText"], !sel.isEmpty {
-                displayTitle = displayTitle.replacingOccurrences(of: "%s", with: sel)
-            }
-
-            let menuItem = NSMenuItem(
-                title: displayTitle,
-                action: #selector(BrowserWindowController.contextMenuExtensionAction(_:)),
-                keyEquivalent: ""
-            )
-            var info: [String: String] = ["menuItemId": ctxItem.id, "extensionID": extID]
-            // Attach context info so the action handler has linkUrl/srcUrl/selectionText
-            if let contextInfo {
-                info.merge(contextInfo) { current, _ in current }
-            }
-            menuItem.representedObject = info
-            menuItem.target = windowController
-
-            if let ext = ExtensionManager.shared.extension(withID: extID),
-               let icon = ext.icon {
-                let resized = NSImage(size: NSSize(width: 16, height: 16))
-                resized.lockFocus()
-                icon.draw(in: NSRect(origin: .zero, size: NSSize(width: 16, height: 16)))
-                resized.unlockFocus()
-                menuItem.image = resized
-            }
-
-            menu.addItem(menuItem)
+        for item in allItems {
+            menu.addItem(item)
         }
     }
 }
@@ -171,30 +109,4 @@ extension BrowserWindowController {
         _ = originalItem.target?.perform(originalItem.action, with: originalItem)
     }
 
-    @objc func contextMenuExtensionAction(_ sender: NSMenuItem) {
-        guard let info = sender.representedObject as? [String: String],
-              let menuItemId = info["menuItemId"],
-              let extensionID = info["extensionID"] else { return }
-
-        guard let space = activeSpace, let tab = selectedTab else { return }
-
-        // Build click info from the pre-captured context
-        var clickInfo: [String: Any] = ["menuItemId": menuItemId]
-        if let url = tab.url {
-            clickInfo["pageUrl"] = url.absoluteString
-        }
-        if let linkUrl = info["linkUrl"], !linkUrl.isEmpty {
-            clickInfo["linkUrl"] = linkUrl
-        }
-        if let srcUrl = info["srcUrl"], !srcUrl.isEmpty {
-            clickInfo["srcUrl"] = srcUrl
-        }
-        if let selectionText = info["selectionText"], !selectionText.isEmpty {
-            clickInfo["selectionText"] = selectionText
-        }
-
-        // Context menu click dispatch — the native WKWebExtension API handles
-        // chrome.contextMenus events; this is a fallback for manually-tracked items.
-        // TODO: Wire context menu clicks through WKWebExtensionContext when API available
-    }
 }

@@ -95,12 +95,12 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 
 The polyfill JS (`ExtensionAPIPolyfill.polyfillJS`) only reaches extension-owned contexts, not web pages:
 
-| Context | Injection method | Communication channel |
-|---------|-----------------|----------------------|
-| Service worker | `importScripts('_detour_polyfill.js')` prepended to SW file on disk | `browser.runtime.sendNativeMessage('detourPolyfill', msg)` |
-| Popup / Options | `WKUserScript` on extension controller's `userContentController` | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
-| Offscreen document | Inherited via `context.webViewConfiguration` (same `userContentController`) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
-| Content scripts | **Not injected** — only native `chrome.*` APIs from WebKit | N/A |
+| Context | Injection method | World | Communication channel |
+|---------|-----------------|-------|----------------------|
+| Service worker | `importScripts('_detour_polyfill.js')` prepended to SW file on disk | Extension (SW global scope) | `browser.runtime.sendNativeMessage('detourPolyfill', msg)` |
+| Popup / Options | `WKUserScript` on extension controller's `userContentController` | Extension (page) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
+| Offscreen document | Inherited via `context.webViewConfiguration` (same `userContentController`) | Extension (page) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
+| Content scripts | `chrome.scripting.registerContentScripts` from SW polyfill | Isolated | N/A (stubs only, no native messaging) |
 
 The service worker path exists because `WKUserScript` injection doesn't work in WebKit's opaque service worker process. `ExtensionManager.injectServiceWorkerPolyfill(into:)` writes `_detour_polyfill.js` to the extension directory and prepends `importScripts(...)` to the manifest's `background.service_worker` file before `WKWebExtension` initialization.
 

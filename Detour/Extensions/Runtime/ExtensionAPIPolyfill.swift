@@ -8,9 +8,67 @@ struct ExtensionAPIPolyfill {
     /// Cached polyfill JS — deterministic output, no need to regenerate.
     static let polyfillJS: String = generatePolyfillJS()
 
+    /// Content script polyfill — injected into the extension's isolated content world
+    /// via chrome.scripting.registerContentScripts from the service worker.
+    /// Bridges chrome.i18n.detectLanguage to the native NLLanguageRecognizer via
+    /// chrome.runtime.sendMessage → service worker → native polyfill handler.
+    static let contentPolyfillJS = """
+    (function() {
+        if (typeof chrome === 'undefined') return;
+
+        // Bridge language detection to native NLLanguageRecognizer via the service worker.
+        // Content scripts can't talk to native directly, so we round-trip through
+        // chrome.runtime.sendMessage → SW onMessage → native polyfill handler.
+        function detectLanguageViaBackground(text, callback) {
+            chrome.runtime.sendMessage(
+                { _detourDetectLanguage: true, text: String(text).substring(0, 1000) },
+                function(response) {
+                    if (response && response.languages) {
+                        callback(response);
+                    } else {
+                        callback({ isReliable: false, languages: [{ language: 'und', percentage: 100 }] });
+                    }
+                }
+            );
+        }
+
+        function install(obj, prop, fn) {
+            try {
+                Object.defineProperty(obj, prop, { value: fn, writable: true, configurable: true });
+            } catch(e) {
+                try { obj[prop] = fn; } catch(e2) {}
+            }
+        }
+
+        // chrome.i18n.detectLanguage — detect language of arbitrary text
+        if (chrome.i18n) {
+            install(chrome.i18n, 'detectLanguage', detectLanguageViaBackground);
+        }
+
+        // chrome.tabs.detectLanguage — detect language of active tab's page
+        // In popup/options contexts chrome.tabs may not exist; create a stub.
+        if (!chrome.tabs) {
+            try { chrome.tabs = {}; } catch(e) {}
+        }
+        if (chrome.tabs) {
+            install(chrome.tabs, 'detectLanguage', function(tabIdOrCb, cb) {
+                if (typeof tabIdOrCb === 'function') { cb = tabIdOrCb; tabIdOrCb = null; }
+                // Route through background to use the native tabs.detectLanguage polyfill
+                chrome.runtime.sendMessage(
+                    { _detourTabsDetectLanguage: true, tabId: tabIdOrCb },
+                    function(response) {
+                        if (cb) cb(response || 'und');
+                    }
+                );
+            });
+        }
+    })();
+    """
+
     private static func generatePolyfillJS() -> String {
         let modules = [
             preambleJS,
+            contentPolyfillBridgeJS,
             consoleJS,
             idleJS,
             notificationsJS,
@@ -20,6 +78,7 @@ struct ExtensionAPIPolyfill {
             sessionsJS,
             searchJS,
             offscreenJS,
+            tabsDetectLanguageJS,
             extensionJS,
             webRequestJS,
         ].joined(separator: "\n")
@@ -28,7 +87,7 @@ struct ExtensionAPIPolyfill {
         // This is the only reliable way to surface errors from the service worker
         // since console.log is not visible in the web inspector for SW contexts.
         return """
-        var __detourPolyfillDiag = { loaded: false, env: typeof ServiceWorkerGlobalScope !== 'undefined' ? 'service-worker' : 'web-view' };
+        let __detourPolyfillDiag = { loaded: false, env: typeof ServiceWorkerGlobalScope !== 'undefined' ? 'service-worker' : 'web-view' };
         try {
         \(modules)
         __detourPolyfillDiag.loaded = true;
@@ -63,7 +122,7 @@ struct ExtensionAPIPolyfill {
     private static let preambleJS = """
     (function() {
         'use strict';
-        var g = globalThis;
+        const g = globalThis;
         if (!g.chrome) g.chrome = {};
         if (!g.browser) g.browser = {};
 
@@ -86,7 +145,7 @@ struct ExtensionAPIPolyfill {
                 return {
                     addListener: function(cb) { listeners.push(cb); },
                     removeListener: function(cb) {
-                        var idx = listeners.indexOf(cb);
+                        const idx = listeners.indexOf(cb);
                         if (idx !== -1) listeners.splice(idx, 1);
                     },
                     hasListener: function(cb) { return listeners.includes(cb); },
@@ -98,15 +157,15 @@ struct ExtensionAPIPolyfill {
         // Helper: send message to native polyfill handler and get async response.
         // In web view contexts (popup, options), uses webkit.messageHandlers.
         // In service worker contexts, falls back to browser.runtime.sendNativeMessage.
-        var _hasWebkitHandler = false;
+        let _hasWebkitHandler = false;
         try { _hasWebkitHandler = typeof webkit !== 'undefined' && !!webkit.messageHandlers.detourPolyfill; } catch(e) {}
 
         g.__detourPolyfillRequest = function(type, params) {
-            var extensionID = '';
+            let extensionID = '';
             try { extensionID = chrome.runtime.id || ''; } catch(e) {}
             try { if (!extensionID) extensionID = browser.runtime.id || ''; } catch(e) {}
 
-            var msg = { type: type, params: params || {}, extensionID: extensionID };
+            const msg = { type: type, params: params || {}, extensionID: extensionID };
 
             if (_hasWebkitHandler) {
                 return webkit.messageHandlers.detourPolyfill.postMessage(msg);
@@ -133,21 +192,49 @@ struct ExtensionAPIPolyfill {
     })();
     """
 
+    // MARK: - Content polyfill bridge
+
+    /// Message listener in the service worker that bridges polyfill requests from
+    /// content scripts (which can't access webkit.messageHandlers) through to the
+    /// native polyfill handler via __detourPolyfillRequest.
+    private static let contentPolyfillBridgeJS = """
+    (function() {
+        if (typeof ServiceWorkerGlobalScope === 'undefined') return;
+
+        chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+            if (message && message._detourDetectLanguage) {
+                __detourPolyfillRequest('i18n.detectLanguage', { text: message.text })
+                    .then(function(result) { sendResponse(result); })
+                    .catch(function(e) {
+                        sendResponse({ isReliable: false, languages: [{ language: 'und', percentage: 100 }] });
+                    });
+                return true;
+            }
+            if (message && message._detourTabsDetectLanguage) {
+                __detourPolyfillRequest('tabs.detectLanguage', { tabId: message.tabId })
+                    .then(function(lang) { sendResponse(lang); })
+                    .catch(function(e) { sendResponse('und'); });
+                return true;
+            }
+        });
+    })();
+    """
+
     // MARK: - Console bridge
 
     /// Wraps console.log/warn/error to also send messages to Swift via the
     /// polyfill bridge. This makes service worker output visible in Xcode console.
     private static let consoleJS = """
     (function() {
-        var g = globalThis;
-        var _origLog = console.log.bind(console);
-        var _origWarn = console.warn.bind(console);
-        var _origError = console.error.bind(console);
+        const g = globalThis;
+        const _origLog = console.log.bind(console);
+        const _origWarn = console.warn.bind(console);
+        const _origError = console.error.bind(console);
 
         function sendLog(level, args) {
-            var parts = [];
-            for (var i = 0; i < args.length; i++) {
-                var a = args[i];
+            const parts = [];
+            for (let i = 0; i < args.length; i++) {
+                const a = args[i];
                 if (a === null) { parts.push('null'); }
                 else if (a === undefined) { parts.push('undefined'); }
                 else if (typeof a === 'object') { try { parts.push(JSON.stringify(a)); } catch(e) { parts.push(String(a)); } }
@@ -164,18 +251,19 @@ struct ExtensionAPIPolyfill {
     })();
     """
 
+
     // MARK: - chrome.idle
 
     private static let idleJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
-        var onStateChangedListeners = [];
+        const onStateChangedListeners = [];
 
         __detourDefine(chrome, 'idle', {
             queryState: function(detectionIntervalInSeconds, callback) {
-                var promise = __detourPolyfillRequest('idle.queryState', {
+                const promise =__detourPolyfillRequest('idle.queryState', {
                     detectionIntervalInSeconds: detectionIntervalInSeconds
                 });
                 if (callback) { promise.then(callback); return; }
@@ -195,7 +283,7 @@ struct ExtensionAPIPolyfill {
 
         // Dispatch function for native code to fire events
         globalThis.__extensionDispatchIdleStateChanged = function(newState) {
-            for (var i = 0; i < onStateChangedListeners.length; i++) {
+            for (let i = 0; i < onStateChangedListeners.length; i++) {
                 try { onStateChangedListeners[i](newState); } catch(e) {
                     console.error('[chrome.idle.onStateChanged] listener error:', e);
                 }
@@ -209,11 +297,11 @@ struct ExtensionAPIPolyfill {
     private static let notificationsJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
-        var _onClickedListeners = [];
-        var _onButtonClickedListeners = [];
-        var _onClosedListeners = [];
+        const _onClickedListeners = [];
+        const _onButtonClickedListeners = [];
+        const _onClosedListeners = [];
 
         __detourDefine(chrome, 'notifications', {
             create: function(notificationId, options, callback) {
@@ -222,7 +310,7 @@ struct ExtensionAPIPolyfill {
                     options = notificationId;
                     notificationId = null;
                 }
-                var promise = __detourPolyfillRequest('notifications.create', {
+                const promise =__detourPolyfillRequest('notifications.create', {
                     notificationId: notificationId,
                     options: options || {}
                 }).then(function(r) { return r.notificationId || ''; });
@@ -231,7 +319,7 @@ struct ExtensionAPIPolyfill {
             },
 
             update: function(notificationId, options, callback) {
-                var promise = __detourPolyfillRequest('notifications.update', {
+                const promise =__detourPolyfillRequest('notifications.update', {
                     notificationId: notificationId,
                     options: options || {}
                 }).then(function(r) { return r.wasUpdated === true; });
@@ -240,7 +328,7 @@ struct ExtensionAPIPolyfill {
             },
 
             clear: function(notificationId, callback) {
-                var promise = __detourPolyfillRequest('notifications.clear', {
+                const promise =__detourPolyfillRequest('notifications.clear', {
                     notificationId: notificationId
                 }).then(function(r) { return r.wasCleared === true; });
                 if (callback) { promise.then(function(v) { callback(v); }); return; }
@@ -248,7 +336,7 @@ struct ExtensionAPIPolyfill {
             },
 
             getAll: function(callback) {
-                var promise = __detourPolyfillRequest('notifications.getAll', {});
+                const promise =__detourPolyfillRequest('notifications.getAll', {});
                 if (callback) { promise.then(callback); return; }
                 return promise;
             },
@@ -259,19 +347,19 @@ struct ExtensionAPIPolyfill {
         });
 
         globalThis.__extensionDispatchNotificationClicked = function(notificationId) {
-            for (var i = 0; i < _onClickedListeners.length; i++) {
+            for (let i = 0; i < _onClickedListeners.length; i++) {
                 try { _onClickedListeners[i](notificationId); } catch(e) {}
             }
         };
 
         globalThis.__extensionDispatchNotificationButtonClicked = function(notificationId, buttonIndex) {
-            for (var i = 0; i < _onButtonClickedListeners.length; i++) {
+            for (let i = 0; i < _onButtonClickedListeners.length; i++) {
                 try { _onButtonClickedListeners[i](notificationId, buttonIndex); } catch(e) {}
             }
         };
 
         globalThis.__extensionDispatchNotificationClosed = function(notificationId, byUser) {
-            for (var i = 0; i < _onClosedListeners.length; i++) {
+            for (let i = 0; i < _onClosedListeners.length; i++) {
                 try { _onClosedListeners[i](notificationId, byUser); } catch(e) {}
             }
         };
@@ -283,14 +371,14 @@ struct ExtensionAPIPolyfill {
     private static let historyJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
-        var onVisitedListeners = [];
-        var onVisitRemovedListeners = [];
+        const onVisitedListeners = [];
+        const onVisitRemovedListeners = [];
 
         __detourDefine(chrome, 'history', {
             search: function(query, callback) {
-                var promise = __detourPolyfillRequest('history.search', {
+                const promise =__detourPolyfillRequest('history.search', {
                     query: query || {}
                 }).then(function(r) { return r.results || []; });
                 if (callback) { promise.then(callback); return; }
@@ -298,7 +386,7 @@ struct ExtensionAPIPolyfill {
             },
 
             getVisits: function(details, callback) {
-                var promise = Promise.resolve([]);
+                const promise =Promise.resolve([]);
                 if (callback) { callback([]); return; }
                 return promise;
             },
@@ -328,13 +416,13 @@ struct ExtensionAPIPolyfill {
         });
 
         globalThis.__extensionDispatchHistoryEvent = function(eventName, data) {
-            var listeners;
+            let listeners;
             switch (eventName) {
                 case 'onVisited': listeners = onVisitedListeners; break;
                 case 'onVisitRemoved': listeners = onVisitRemovedListeners; break;
                 default: return;
             }
-            for (var i = 0; i < listeners.length; i++) {
+            for (let i = 0; i < listeners.length; i++) {
                 try { listeners[i](data); } catch(e) {
                     console.error('[chrome.history.' + eventName + '] listener error:', e);
                 }
@@ -348,28 +436,28 @@ struct ExtensionAPIPolyfill {
     private static let managementJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
-        var _onEnabledListeners = [];
-        var _onDisabledListeners = [];
-        var _onInstalledListeners = [];
-        var _onUninstalledListeners = [];
+        const _onEnabledListeners = [];
+        const _onDisabledListeners = [];
+        const _onInstalledListeners = [];
+        const _onUninstalledListeners = [];
 
         __detourDefine(chrome, 'management', {
             getSelf: function(callback) {
-                var promise = __detourPolyfillRequest('management.getSelf', {});
+                const promise =__detourPolyfillRequest('management.getSelf', {});
                 if (callback) { promise.then(callback); return; }
                 return promise;
             },
 
             getAll: function(callback) {
-                var promise = __detourPolyfillRequest('management.getAll', {});
+                const promise =__detourPolyfillRequest('management.getAll', {});
                 if (callback) { promise.then(callback); return; }
                 return promise;
             },
 
             setEnabled: function(id, enabled, callback) {
-                var promise = __detourPolyfillRequest('management.setEnabled', {
+                const promise =__detourPolyfillRequest('management.setEnabled', {
                     id: id, enabled: enabled
                 });
                 if (callback) { promise.then(function() { callback(); }); return; }
@@ -389,11 +477,11 @@ struct ExtensionAPIPolyfill {
     private static let fontSettingsJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
         __detourDefine(chrome, 'fontSettings', {
             getFontList: function(callback) {
-                var promise = __detourPolyfillRequest('fontSettings.getFontList', {});
+                const promise =__detourPolyfillRequest('fontSettings.getFontList', {});
                 if (callback) { promise.then(callback); return; }
                 return promise;
             }
@@ -406,13 +494,13 @@ struct ExtensionAPIPolyfill {
     private static let sessionsJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
-        var onChangedListeners = [];
+        const onChangedListeners = [];
 
         __detourDefine(chrome, 'sessions', {
             restore: function(sessionId, callback) {
-                var promise = __detourPolyfillRequest('sessions.restore', {
+                const promise =__detourPolyfillRequest('sessions.restore', {
                     sessionId: sessionId
                 });
                 if (callback) { promise.then(callback); return; }
@@ -421,14 +509,14 @@ struct ExtensionAPIPolyfill {
 
             getRecentlyClosed: function(filter, callback) {
                 if (typeof filter === 'function') { callback = filter; filter = {}; }
-                var promise = Promise.resolve([]);
+                const promise =Promise.resolve([]);
                 if (callback) { callback([]); return; }
                 return promise;
             },
 
             getDevices: function(filter, callback) {
                 if (typeof filter === 'function') { callback = filter; filter = {}; }
-                var promise = Promise.resolve([]);
+                const promise =Promise.resolve([]);
                 if (callback) { callback([]); return; }
                 return promise;
             },
@@ -444,11 +532,11 @@ struct ExtensionAPIPolyfill {
     private static let searchJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
         __detourDefine(chrome, 'search', {
             query: function(queryInfo, callback) {
-                var promise = __detourPolyfillRequest('search.query', {
+                const promise =__detourPolyfillRequest('search.query', {
                     query: queryInfo || {}
                 });
                 if (callback) { promise.then(function() { callback(); }); return; }
@@ -463,23 +551,23 @@ struct ExtensionAPIPolyfill {
     private static let offscreenJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
         __detourDefine(chrome, 'offscreen', {
             createDocument: function(params, callback) {
-                var promise = __detourPolyfillRequest('offscreen.createDocument', params || {});
+                const promise =__detourPolyfillRequest('offscreen.createDocument', params || {});
                 if (callback) { promise.then(function() { callback(); }); return; }
                 return promise;
             },
 
             closeDocument: function(callback) {
-                var promise = __detourPolyfillRequest('offscreen.closeDocument', {});
+                const promise =__detourPolyfillRequest('offscreen.closeDocument', {});
                 if (callback) { promise.then(function() { callback(); }); return; }
                 return promise;
             },
 
             hasDocument: function(callback) {
-                var promise = __detourPolyfillRequest('offscreen.hasDocument', {});
+                const promise =__detourPolyfillRequest('offscreen.hasDocument', {});
                 if (callback) { promise.then(callback); return; }
                 return promise;
             },
@@ -505,12 +593,45 @@ struct ExtensionAPIPolyfill {
     })();
     """
 
+    // MARK: - chrome.tabs.detectLanguage
+
+    /// Polyfill for chrome.tabs.detectLanguage which WKWebExtension doesn't implement.
+    /// Delegates to the native handler which reads document.documentElement.lang from
+    /// the tab's webView, falling back to NLLanguageRecognizer on page text.
+    private static let tabsDetectLanguageJS = """
+    (function() {
+        const g = globalThis;
+        if (!g.chrome) g.chrome = {};
+
+        const _detectLanguage = function(tabIdOrCb, cb) {
+            if (typeof tabIdOrCb === 'function') {
+                cb = tabIdOrCb;
+                tabIdOrCb = null;
+            }
+            const promise = __detourPolyfillRequest('tabs.detectLanguage', {
+                tabId: tabIdOrCb
+            }).then(function(r) { return r || 'und'; });
+            if (cb) { promise.then(function(lang) { cb(lang); }); return; }
+            return promise;
+        };
+
+        if (g.chrome.tabs) {
+            __detourDefine(g.chrome.tabs, 'detectLanguage', _detectLanguage);
+        } else {
+            __detourDefine(g.chrome, 'tabs', { detectLanguage: _detectLanguage });
+        }
+        if (g.browser && g.browser.tabs) {
+            __detourDefine(g.browser.tabs, 'detectLanguage', _detectLanguage);
+        }
+    })();
+    """
+
     // MARK: - chrome.extension
 
     private static let extensionJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
         __detourDefine(chrome, 'extension', {
             getBackgroundPage: function() { return null; },
@@ -532,10 +653,10 @@ struct ExtensionAPIPolyfill {
     private static let webRequestJS = """
     (function() {
         // Always install — WebKit may provide stubs that don't work
-        var chrome = globalThis.chrome;
+        const chrome = globalThis.chrome;
 
         function makeNoOpEventEmitter(name) {
-            var warned = false;
+            let warned = false;
             return {
                 addListener: function(cb, filter, extraInfoSpec) {
                     if (!warned) {

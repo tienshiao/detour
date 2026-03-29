@@ -45,7 +45,6 @@ private final class TestObserver: NSObject, XCTestObservation {
             AppDatabase.shared.deleteExtension(id: record.id)
         }
         ExtensionManager.shared.extensions.removeAll()
-        ExtensionManager.shared.contextMenuItems.removeAll()
 
         // Clean up any leftover extension files in the test data directory
         let extDir = detourDataDirectory().appendingPathComponent("Extensions")

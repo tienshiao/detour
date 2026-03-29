@@ -742,8 +742,6 @@ class BrowserWindowController: NSWindowController {
         webView.allowsBackForwardNavigationGestures = true
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
         webView.configuration.userContentController.add(self, name: "linkHover")
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "contextMenuInfo")
-        webView.configuration.userContentController.add(self, name: "contextMenuInfo")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "editableFieldFocus")
@@ -799,7 +797,6 @@ class BrowserWindowController: NSWindowController {
         for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipWebView {
             if let webView = subview as? WKWebView {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
-                webView.configuration.userContentController.removeScriptMessageHandler(forName: "contextMenuInfo")
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "editableFieldFocus")
                 (webView as? BrowserWebView)?.isEditingWebContent = false
@@ -1630,10 +1627,6 @@ extension BrowserWindowController: WKScriptMessageHandler {
                 linkStatusBar.hide()
             } else {
                 linkStatusBar.show(url: urlString)
-            }
-        } else if message.name == "contextMenuInfo", let info = message.body as? [String: String] {
-            if let browserWebView = message.webView as? BrowserWebView {
-                browserWebView.lastContextInfo = info
             }
         } else if message.name == "editableFieldFocus", let editing = message.body as? Bool {
             if let webView = message.webView as? BrowserWebView {

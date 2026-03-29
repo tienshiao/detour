@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import WebKit
 import os
 
@@ -33,14 +34,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// Called by ExtensionManager's delegate when appID == "detourPolyfill".
     func handleNativeMessage(_ body: [String: Any], replyHandler: @escaping (Any?, (any Error)?) -> Void) {
         let type = body["type"] as? String ?? "(unknown)"
-        log.info("Native message bridge: \(type, privacy: .public)")
+        log.debug("Native message bridge: \(type, privacy: .public)")
         dispatch(body) { result, errorString in
             if let errorString {
                 log.error("Polyfill error for \(type, privacy: .public): \(errorString, privacy: .public)")
                 replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
                                           userInfo: [NSLocalizedDescriptionKey: errorString]))
             } else {
-                log.info("Polyfill success for \(type, privacy: .public)")
+                log.debug("Polyfill success for \(type, privacy: .public)")
                 replyHandler(result, nil)
             }
         }
@@ -56,7 +57,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             return
         }
 
-        log.info("Polyfill request: \(type, privacy: .public) from \(extensionID, privacy: .public)")
+        log.debug("Polyfill request: \(type, privacy: .public) from \(extensionID, privacy: .public)")
         let params = body["params"] as? [String: Any] ?? [:]
 
         switch type {
@@ -229,6 +230,66 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         case "offscreen.hasDocument":
             let hasDoc = offscreenHosts[extensionID] != nil
             replyHandler(hasDoc, nil)
+
+        // MARK: - i18n
+        case "i18n.detectLanguage":
+            let text = params["text"] as? String ?? ""
+            guard !text.isEmpty else {
+                replyHandler(["isReliable": false, "languages": [["language": "und", "percentage": 100]]], nil)
+                return
+            }
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(text)
+            var languages: [[String: Any]] = []
+            // Get top hypotheses with confidence scores
+            let hypotheses = recognizer.languageHypotheses(withMaximum: 3)
+            for (lang, confidence) in hypotheses.sorted(by: { $0.value > $1.value }) {
+                languages.append([
+                    "language": lang.rawValue,
+                    "percentage": Int(confidence * 100)
+                ])
+            }
+            if languages.isEmpty {
+                languages.append(["language": "und", "percentage": 100])
+            }
+            let isReliable = (hypotheses.first?.value ?? 0) > 0.7
+            replyHandler(["isReliable": isReliable, "languages": languages], nil)
+
+        // MARK: - Tabs
+        case "tabs.detectLanguage":
+            // Detect the primary language of a tab's page content.
+            // Reads document.documentElement.lang, falling back to NLLanguageRecognizer.
+            let tab: BrowserTab?
+            if let tabId = params["tabId"] as? Int, tabId != 0 {
+                tab = TabStore.shared.spaces.flatMap({ $0.pinnedTabs + $0.tabs }).first { $0.id.hashValue == tabId }
+            } else {
+                // No tabId — use the active tab in the last active space
+                let spaceID = ExtensionManager.shared.lastActiveSpaceID
+                let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
+                    ?? TabStore.shared.spaces.first
+                tab = space?.selectedTabID.flatMap { id in space?.tabs.first { $0.id == id } }
+            }
+
+            guard let webView = tab?.webView else {
+                replyHandler("und", nil)
+                return
+            }
+
+            webView.evaluateJavaScript("document.documentElement.lang || ''") { result, error in
+                var lang = (result as? String ?? "").trimmingCharacters(in: .whitespaces)
+                // Normalize: "en-US" → "en", "zh-CN" stays as-is
+                if lang.isEmpty {
+                    // Fallback: use NLLanguageRecognizer on page title
+                    if let title = tab?.title, !title.isEmpty {
+                        let recognizer = NLLanguageRecognizer()
+                        recognizer.processString(title)
+                        lang = recognizer.dominantLanguage?.rawValue ?? "und"
+                    } else {
+                        lang = "und"
+                    }
+                }
+                replyHandler(lang, nil)
+            }
 
         // MARK: - Logging Bridge
         case "log":

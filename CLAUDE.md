@@ -84,3 +84,4 @@ The table view's row 0 is always the "New Tab" cell. Actual tabs start at row 1.
 ### Reminders
 * When adding/updating Web Extension APIS, make sure to add/update corresponding tests and update the API Explorer extension to cover the new APIs.
 * When adding/updating extension permissions, make sure to add/update the corresponding tests with both positive and negative cases.
+* When implementing polyfills, prefer `let`/`const` over `var`.

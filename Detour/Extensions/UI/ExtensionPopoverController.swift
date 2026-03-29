@@ -10,7 +10,7 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "ext-popu
 /// For user-initiated clicks: get `action.popupWebView` directly and present it.
 /// `performAction()` is only for the no-popup case (fires `browser.action.onClicked`).
 /// The delegate `presentActionPopup` is for extension-initiated opens (`browser.action.openPopup()`).
-class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHandler {
+class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHandler, WKUIDelegate {
     private let extensionID: String
     private var popover: NSPopover?
     private weak var popupWebView: WKWebView?
@@ -64,6 +64,7 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
     /// (e.g. `browser.action.openPopup()` from background script).
     func presentPopupWebView(_ webView: WKWebView) {
         self.popupWebView = webView
+        webView.uiDelegate = self
 
         // Wait briefly for the extension's JS to render, then measure and present
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -174,6 +175,12 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         popover = nil
         onClose?()
         onClose = nil
+    }
+
+    // MARK: - WKUIDelegate
+
+    func webViewDidClose(_ webView: WKWebView) {
+        close()
     }
 
     // MARK: - WKScriptMessageHandler (resize)

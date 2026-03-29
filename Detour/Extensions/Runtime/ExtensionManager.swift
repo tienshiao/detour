@@ -14,9 +14,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Each element's `.wkExtension` is populated asynchronously after init.
     var extensions: [WebExtension] = []
 
-    /// Context menu items registered by extensions via chrome.contextMenus.
-    var contextMenuItems: [String: [ContextMenuItem]] = [:]
-
     /// Uninstall URLs per extension, set via chrome.runtime.setUninstallURL.
     var uninstallURLs: [String: URL] = [:]
 
@@ -90,9 +87,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             pendingExtensions.append(ext)
         }
 
-        // Inject polyfill into each extension's service worker before loading
+        // Inject polyfills into each extension before loading
         for ext in pendingExtensions {
             injectServiceWorkerPolyfill(into: ext)
+            writeContentPolyfill(into: ext)
         }
 
         // Load WKWebExtension resources in parallel (async I/O)
@@ -255,14 +253,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             for profile in TabStore.shared.profiles {
                 profile.unloadExtension(id: ext.id)
             }
-            contextMenuItems.removeValue(forKey: ext.id)
             extensions.remove(at: existingIdx)
         }
 
         extensions.append(ext)
 
-        // Inject polyfill into service worker before WKWebExtension reads the files
+        // Inject polyfills before WKWebExtension reads the files
         injectServiceWorkerPolyfill(into: ext)
+        writeContentPolyfill(into: ext)
 
         // Load via WKWebExtension asynchronously, then into all profiles
         Task { @MainActor in
@@ -320,7 +318,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             profile.unloadExtension(id: id)
         }
 
-        contextMenuItems.removeValue(forKey: id)
         uninstallURLs.removeValue(forKey: id)
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
@@ -383,37 +380,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
-    // MARK: - Context Menu Items
-
-    func addContextMenuItem(_ item: ContextMenuItem, for extensionID: String) {
-        if contextMenuItems[extensionID] == nil {
-            contextMenuItems[extensionID] = []
-        }
-        contextMenuItems[extensionID]?.removeAll { $0.id == item.id }
-        contextMenuItems[extensionID]?.append(item)
-    }
-
-    func updateContextMenuItem(id: String, properties: [String: Any], for extensionID: String) {
-        guard let index = contextMenuItems[extensionID]?.firstIndex(where: { $0.id == id }) else { return }
-        var item = contextMenuItems[extensionID]![index]
-        if let title = properties["title"] as? String { item.title = title }
-        if let contexts = properties["contexts"] as? [String] { item.contexts = contexts }
-        contextMenuItems[extensionID]![index] = item
-    }
-
-    func removeContextMenuItem(id: String, for extensionID: String) {
-        contextMenuItems[extensionID]?.removeAll { $0.id == id }
-    }
-
-    func removeAllContextMenuItems(for extensionID: String) {
-        contextMenuItems.removeValue(forKey: extensionID)
-    }
-
-    var allContextMenuItems: [(item: ContextMenuItem, extensionID: String)] {
-        contextMenuItems.flatMap { (extID, items) in
-            items.map { ($0, extID) }
-        }
-    }
 
     // MARK: - Tab Activation
 
@@ -458,6 +424,49 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
         } catch {
             log.error("Failed to patch service worker for \(ext.id, privacy: .public): \(error.localizedDescription)")
+        }
+    }
+
+    /// Writes the content polyfill file and inserts it as the first script in each
+    /// content_scripts entry in the manifest, so it runs before the extension's own scripts.
+    private func writeContentPolyfill(into ext: WebExtension) {
+        let filename = "_detour_content_polyfill.js"
+        let fileURL = ext.basePath.appendingPathComponent(filename)
+
+        // Write the polyfill file (update if changed)
+        let js = ExtensionAPIPolyfill.contentPolyfillJS
+        let existing = try? String(contentsOf: fileURL, encoding: .utf8)
+        if existing != js {
+            do {
+                try js.write(to: fileURL, atomically: true, encoding: .utf8)
+            } catch {
+                log.error("Failed to write content polyfill for \(ext.id, privacy: .public): \(error.localizedDescription)")
+                return
+            }
+        }
+
+        // Insert polyfill as first script in each content_scripts entry in manifest.json
+        let manifestURL = ext.basePath.appendingPathComponent("manifest.json")
+        guard let manifestData = try? Data(contentsOf: manifestURL),
+              var manifest = try? JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
+              var contentScripts = manifest["content_scripts"] as? [[String: Any]] else { return }
+
+        var modified = false
+        for i in contentScripts.indices {
+            guard var jsFiles = contentScripts[i]["js"] as? [String] else { continue }
+            if !jsFiles.contains(filename) {
+                jsFiles.insert(filename, at: 0)
+                contentScripts[i]["js"] = jsFiles
+                modified = true
+            }
+        }
+
+        if modified {
+            manifest["content_scripts"] = contentScripts
+            if let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: manifestURL, options: .atomic)
+                log.info("Injected content polyfill into manifest for \(ext.id, privacy: .public)")
+            }
         }
     }
 
