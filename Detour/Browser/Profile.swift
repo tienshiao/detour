@@ -161,6 +161,11 @@ class Profile {
         }
         config.defaultWebsiteDataStore = dataStore
 
+        // Register favicon scheme handler so extensions can use chrome.runtime.getURL("/_favicon/...")
+        config.webViewConfiguration.setURLSchemeHandler(
+            FaviconSchemeHandler(), forURLScheme: FaviconSchemeHandler.scheme
+        )
+
         // Inject polyfills for Chrome APIs not natively provided by WKWebExtension
         // (idle, notifications, history, management, fontSettings, sessions, search, offscreen, etc.)
         let handler = ExtensionPolyfillHandler()

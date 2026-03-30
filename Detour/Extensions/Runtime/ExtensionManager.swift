@@ -403,19 +403,26 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     // MARK: - Service Worker Polyfill Injection
 
-    /// Writes the polyfill JS file into the extension directory and prepends
-    /// `importScripts('_detour_polyfill.js')` to the service worker script.
-    /// This is necessary because WKWebExtension's service worker runs in an
-    /// opaque process where WKUserScript injection doesn't work.
+    /// When true, module service workers are bundled into a single classic script
+    /// via ModuleBundler. When false, the polyfill is injected as an ES module import.
+    /// Bundling provides better scope isolation for polyfill patches but is more
+    /// invasive. The module-import approach is simpler and less likely to break.
+    private static let useModuleBundler = false
+
     private func injectServiceWorkerPolyfill(into ext: WebExtension) {
         guard let swFile = ext.manifest.background?.serviceWorker else { return }
         let polyfillFilename = "_detour_polyfill.js"
         let swURL = ext.basePath.appendingPathComponent(swFile)
 
         if ext.manifest.background?.isModule == true {
-            // Module SWs: inject the full polyfill as an ES module import.
-            // WKUserScripts don't run in SW contexts, so this is the only way
-            // to provide polyfill APIs (webNavigation, console bridge, etc.)
+            if Self.useModuleBundler {
+                do {
+                    try ModuleBundler.bundle(extension: ext)
+                    return
+                } catch {
+                    log.error("Bundler failed for \(ext.id, privacy: .public): \(error.localizedDescription, privacy: .public), falling back to module import")
+                }
+            }
             injectModuleSWPolyfill(ext: ext, swURL: swURL)
             return
         }

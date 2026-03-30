@@ -44,31 +44,40 @@ struct ModuleBundler {
         }
 
         let root = ext.basePath
-        let swURL = root.appendingPathComponent(swFile)
-
-        guard FileManager.default.fileExists(atPath: swURL.path) else {
-            throw BundlerError.fileNotFound(swFile)
-        }
-
-        // Build the dependency graph starting from the entry point
-        var graph = [String: ModuleInfo]()
-        try buildDependencyGraph(entryRelPath: swFile, extensionRoot: root, graph: &graph)
-
-        // Topological sort so dependencies come before dependents
-        let order = topologicalSort(entryPoint: swFile, graph: graph)
-
-        // Assemble the bundled output
-        let bundled = assemble(order: order, graph: graph)
+        let result = try bundleModules(entryFile: swFile, extensionRoot: root)
 
         // Write the bundled file
         let outURL = root.appendingPathComponent(bundledFilename)
-        try bundled.write(to: outURL, atomically: true, encoding: .utf8)
+        try result.source.write(to: outURL, atomically: true, encoding: .utf8)
 
         // Update manifest.json to point to the bundled file
         try updateManifest(extensionRoot: root, bundledFilename: bundledFilename)
 
-        log.info("Bundled \(order.count) modules into \(bundledFilename) for \(ext.id, privacy: .public)")
+        log.info("Bundled \(result.moduleOrder.count) modules into \(bundledFilename) for \(ext.id, privacy: .public)")
         return bundledFilename
+    }
+
+    /// Result of bundling, exposed for testing.
+    struct BundleResult {
+        let source: String
+        let moduleOrder: [String]
+    }
+
+    /// Core bundling logic, independent of WebExtension.
+    /// Exposed as internal for unit testing.
+    static func bundleModules(entryFile: String, extensionRoot: URL) throws -> BundleResult {
+        let swURL = extensionRoot.appendingPathComponent(entryFile)
+        guard FileManager.default.fileExists(atPath: swURL.path) else {
+            throw BundlerError.fileNotFound(entryFile)
+        }
+
+        var graph = [String: ModuleInfo]()
+        try buildDependencyGraph(entryRelPath: entryFile, extensionRoot: extensionRoot, graph: &graph)
+
+        let order = topologicalSort(entryPoint: entryFile, graph: graph)
+        let bundled = assemble(order: order, graph: graph)
+
+        return BundleResult(source: bundled, moduleOrder: order)
     }
 
     // MARK: - Import parsing
@@ -86,45 +95,73 @@ struct ModuleBundler {
         pattern: #"^import\s*\*\s*as\s+(\w+)\s+from\s*["']([^"']+)["']\s*;?\s*$"#,
         options: .anchorsMatchLines)
 
+    // Re-export: export { A, B } from "./file.js"
+    private static let reExportPattern = try! NSRegularExpression(
+        pattern: #"^export\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']\s*;?\s*$"#,
+        options: .anchorsMatchLines)
+
     private static func parseImports(source: String) -> [ImportDirective] {
         let range = NSRange(source.startIndex..., in: source)
-        var directives: [ImportDirective] = []
+
+        // Collect all matches with their source positions so we can sort by
+        // declaration order. This is critical for DFS post-order to match ES
+        // module execution semantics.
+        struct MatchEntry {
+            let location: Int
+            let directive: ImportDirective
+        }
+        var entries: [MatchEntry] = []
+        var seenSpecifiers = Set<String>()
 
         // Namespace imports: import * as X from "./file.js"
         for match in namespacePattern.matches(in: source, range: range) {
             let alias = String(source[Range(match.range(at: 1), in: source)!])
             let specifier = String(source[Range(match.range(at: 2), in: source)!])
-            directives.append(ImportDirective(kind: .namespace(alias), specifier: specifier, resolvedPath: ""))
+            seenSpecifiers.insert(specifier)
+            entries.append(MatchEntry(
+                location: match.range.location,
+                directive: ImportDirective(kind: .namespace(alias), specifier: specifier, resolvedPath: "")))
         }
 
         // Named imports: import { A, B } from "./file.js"
         for match in namedPattern.matches(in: source, range: range) {
             let namesList = String(source[Range(match.range(at: 1), in: source)!])
             let specifier = String(source[Range(match.range(at: 2), in: source)!])
+            // Skip if already captured as a namespace import for the same specifier
+            guard !seenSpecifiers.contains(specifier) else { continue }
             let names = namesList.split(separator: ",").map {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines)
             }.filter { !$0.isEmpty }
-            // Skip if this was already captured as a namespace import
-            let alreadyCaptured = directives.contains { d in
-                guard d.specifier == specifier else { return false }
-                if case .namespace = d.kind { return true }
-                return false
-            }
-            if !alreadyCaptured {
-                directives.append(ImportDirective(kind: .named(names), specifier: specifier, resolvedPath: ""))
-            }
+            seenSpecifiers.insert(specifier)
+            entries.append(MatchEntry(
+                location: match.range.location,
+                directive: ImportDirective(kind: .named(names), specifier: specifier, resolvedPath: "")))
         }
 
         // Side-effect imports: import "./file.js"
         for match in sideEffectPattern.matches(in: source, range: range) {
             let specifier = String(source[Range(match.range(at: 1), in: source)!])
-            // Skip if already captured as named/namespace
-            if !directives.contains(where: { $0.specifier == specifier }) {
-                directives.append(ImportDirective(kind: .sideEffect, specifier: specifier, resolvedPath: ""))
-            }
+            guard !seenSpecifiers.contains(specifier) else { continue }
+            seenSpecifiers.insert(specifier)
+            entries.append(MatchEntry(
+                location: match.range.location,
+                directive: ImportDirective(kind: .sideEffect, specifier: specifier, resolvedPath: "")))
         }
 
-        return directives
+        // Re-exports: export { A, B } from "./file.js" — treated as side-effect
+        // imports so the source module is included in the dependency graph.
+        for match in reExportPattern.matches(in: source, range: range) {
+            let specifier = String(source[Range(match.range(at: 2), in: source)!])
+            guard !seenSpecifiers.contains(specifier) else { continue }
+            seenSpecifiers.insert(specifier)
+            entries.append(MatchEntry(
+                location: match.range.location,
+                directive: ImportDirective(kind: .sideEffect, specifier: specifier, resolvedPath: "")))
+        }
+
+        // Sort by source position to preserve declaration order
+        entries.sort { $0.location < $1.location }
+        return entries.map(\.directive)
     }
 
     // MARK: - Export parsing & stripping
@@ -269,42 +306,36 @@ struct ModuleBundler {
         }
     }
 
-    // MARK: - Topological sort (Kahn's algorithm)
+    // MARK: - Topological sort (DFS post-order)
 
+    /// Depth-first post-order traversal matching ES module execution semantics:
+    /// imports within a file execute in declaration order, and a module's
+    /// dependencies execute before the module itself.
     private static func topologicalSort(entryPoint: String, graph: [String: ModuleInfo]) -> [String] {
-        // Build adjacency list and in-degree count
-        var inDegree = [String: Int]()
-        var dependents = [String: [String]]() // dependency → [files that depend on it]
-
-        for (path, info) in graph {
-            if inDegree[path] == nil { inDegree[path] = 0 }
-            for imp in info.imports where !imp.resolvedPath.isEmpty && graph[imp.resolvedPath] != nil {
-                inDegree[path, default: 0] += 1
-                dependents[imp.resolvedPath, default: []].append(path)
-            }
-        }
-
-        // Start with zero-dependency modules
-        var queue = inDegree.filter { $0.value == 0 }.map(\.key).sorted()
+        var visited = Set<String>()
         var result: [String] = []
 
-        while !queue.isEmpty {
-            let node = queue.removeFirst()
-            result.append(node)
-            for dep in dependents[node, default: []] {
-                inDegree[dep, default: 1] -= 1
-                if inDegree[dep] == 0 {
-                    queue.append(dep)
-                    queue.sort() // Keep deterministic order
+        func visit(_ path: String) {
+            guard !visited.contains(path) else { return }
+            visited.insert(path)
+            if let info = graph[path] {
+                // Visit imports in declaration order (depth-first)
+                for imp in info.imports where !imp.resolvedPath.isEmpty && graph[imp.resolvedPath] != nil {
+                    visit(imp.resolvedPath)
                 }
             }
+            result.append(path)
         }
 
-        // Any remaining nodes are part of cycles — append them
-        let remaining = Set(graph.keys).subtracting(result)
+        visit(entryPoint)
+
+        // Include any modules not reachable from the entry point
+        let remaining = Set(graph.keys).subtracting(visited)
         if !remaining.isEmpty {
-            log.warning("Circular imports detected: \(remaining.sorted(), privacy: .public)")
-            result.append(contentsOf: remaining.sorted())
+            log.warning("Unreachable modules: \(remaining.sorted(), privacy: .public)")
+            for path in remaining.sorted() {
+                visit(path)
+            }
         }
 
         return result
@@ -336,9 +367,12 @@ struct ModuleBundler {
             }
         }
 
+        let entryPoint = order.last // Entry module is last in DFS post-order
+
         for path in order {
             guard let info = graph[path] else { continue }
             let hasExports = !info.exportedNames.isEmpty
+            let isEntry = path == entryPoint
 
             output += "// === \(path) ===\n"
 
@@ -350,10 +384,18 @@ struct ModuleBundler {
                 if !info.processedSource.hasSuffix("\n") { output += "\n" }
                 output += "return { \(info.exportedNames.joined(separator: ", ")) };\n"
                 output += "})();\n"
-            } else {
-                // No exports — just include the source (side-effect module)
+            } else if isEntry {
+                // Entry module runs in global scope so top-level registrations
+                // (event listeners, globalThis assignments) work correctly.
                 output += info.processedSource
                 if !info.processedSource.hasSuffix("\n") { output += "\n" }
+            } else {
+                // Non-exporting, non-entry modules: wrap in IIFE to prevent
+                // const/let/class name collisions between modules.
+                output += "(function() {\n"
+                output += info.processedSource
+                if !info.processedSource.hasSuffix("\n") { output += "\n" }
+                output += "})();\n"
             }
 
             // Synthesize namespace objects for this module (one per unique alias)

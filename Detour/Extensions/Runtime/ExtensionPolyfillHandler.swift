@@ -303,6 +303,15 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(["frameId": frameId, "parentFrameId": -1, "url": ""], nil)
             }
 
+        // MARK: - Favicon
+        case "favicon.lookup":
+            let pageUrl = params["pageUrl"] as? String ?? ""
+            if let faviconURL = HistoryDatabase.shared.faviconURL(for: pageUrl) {
+                replyHandler(["faviconURL": faviconURL], nil)
+            } else {
+                replyHandler([:] as [String: Any], nil)
+            }
+
         // MARK: - Logging Bridge
         case "log":
             let level = params["level"] as? String ?? "info"

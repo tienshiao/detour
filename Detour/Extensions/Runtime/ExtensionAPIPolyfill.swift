@@ -71,9 +71,9 @@ struct ExtensionAPIPolyfill {
     private static func generatePolyfillJS() -> String {
         let modules = [
             preambleJS,
+            consoleJS,
             missingStubsJS,
             contentPolyfillBridgeJS,
-            consoleJS,
             idleJS,
             notificationsJS,
             historyJS,
@@ -212,6 +212,17 @@ struct ExtensionAPIPolyfill {
         // chrome.tabs.onReplaced — event for tab prerender replacement (rare)
         if (chrome.tabs && !chrome.tabs.onReplaced) {
             chrome.tabs.onReplaced = __detourMakeEventEmitter([]);
+        }
+        // chrome.runtime.getURL — redirect /_favicon/ to our custom scheme handler.
+        // Scheme must match FaviconSchemeHandler.scheme ("detour-favicon").
+        if (chrome.runtime && typeof chrome.runtime.getURL === 'function') {
+            const _nativeGetURL = chrome.runtime.getURL.bind(chrome.runtime);
+            chrome.runtime.getURL = function(path) {
+                if (path && path.startsWith('/_favicon/')) {
+                    return 'detour-favicon://favicon' + path;
+                }
+                return _nativeGetURL(path);
+            };
         }
     })();
     """
