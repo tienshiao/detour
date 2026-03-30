@@ -130,10 +130,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func createNewWindow() {
         let wc = BrowserWindowController(incognito: false)
-        windowControllers.append(wc)
+        assignDefaultSpace(to: wc)
+        wc.showWindow(nil)
+        registerWindowController(wc)
+    }
 
-        // Set active space before showing the window to avoid stealing WebView ownership.
-        // selectTab: false ensures no tab is selected when the window becomes key.
+    func createNewWindowWithURL(_ url: URL) {
+        let wc = BrowserWindowController(incognito: false)
+        assignDefaultSpace(to: wc)
+        if let space = wc.activeSpace {
+            let tab = TabStore.shared.addTab(in: space, url: url)
+            wc.selectTab(id: tab.id)
+        }
+        wc.showWindow(nil)
+        registerWindowController(wc)
+    }
+
+    @objc func createNewIncognitoWindow() {
+        let wc = BrowserWindowController(incognito: true)
+        wc.showWindow(nil)
+        wc.newTab(nil)
+        registerWindowController(wc)
+    }
+
+    /// Sets the active space on a new non-incognito window using the best available default.
+    func assignDefaultSpace(to wc: BrowserWindowController) {
+        guard !wc.isIncognito else { return }
         if let currentWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
            !currentWC.isIncognito,
            let spaceID = currentWC.activeSpaceID,
@@ -145,39 +167,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let firstSpace = TabStore.shared.spaces.first(where: { !$0.isIncognito }) {
             wc.setActiveSpace(id: firstSpace.id, selectTab: false)
         }
-
-        wc.showWindow(nil)
-        observeWindowClose(wc)
-    }
-
-    func createNewWindowWithURL(_ url: URL) {
-        let wc = BrowserWindowController(incognito: false)
-        windowControllers.append(wc)
-
-        // Set up space and tab before showing the window to avoid snapshot flicker
-        if let currentWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
-           !currentWC.isIncognito,
-           let spaceID = currentWC.activeSpaceID,
-           let space = TabStore.shared.space(withID: spaceID) {
-            wc.setActiveSpace(id: spaceID)
-            let tab = TabStore.shared.addTab(in: space, url: url)
-            wc.selectTab(id: tab.id)
-        } else if let space = TabStore.shared.spaces.first(where: { !$0.isIncognito }) {
-            wc.setActiveSpace(id: space.id)
-            let tab = TabStore.shared.addTab(in: space, url: url)
-            wc.selectTab(id: tab.id)
-        }
-
-        wc.showWindow(nil)
-        observeWindowClose(wc)
-    }
-
-    @objc func createNewIncognitoWindow() {
-        let wc = BrowserWindowController(incognito: true)
-        windowControllers.append(wc)
-        wc.showWindow(nil)
-        wc.newTab(nil)
-        observeWindowClose(wc)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -198,6 +187,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "New Window", action: #selector(createNewWindow), keyEquivalent: "")
         menu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "")
         return menu
+    }
+
+    /// Registers a window controller for lifecycle management and cleanup on close.
+    func registerWindowController(_ wc: BrowserWindowController) {
+        windowControllers.append(wc)
+        observeWindowClose(wc)
     }
 
     private func observeWindowClose(_ wc: BrowserWindowController) {

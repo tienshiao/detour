@@ -59,6 +59,33 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             self, selector: #selector(handleTabActivated(_:)),
             name: Self.tabActivatedNotification, object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowDidResignKey(_:)),
+            name: NSWindow.didResignKeyNotification, object: nil
+        )
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              let wc = window.windowController as? BrowserWindowController else { return }
+        for profile in TabStore.shared.profiles {
+            profile.extensionController.didFocusWindow(wc)
+        }
+    }
+
+    @objc private func windowDidResignKey(_ notification: Notification) {
+        // Defer check: NSApp.keyWindow hasn't updated yet in the same run loop pass
+        DispatchQueue.main.async {
+            if NSApp.keyWindow?.windowController is BrowserWindowController { return }
+            for profile in TabStore.shared.profiles {
+                profile.extensionController.didFocusWindow(nil)
+            }
+        }
     }
 
     @MainActor
@@ -610,6 +637,63 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             selectTab(tab, in: space)
         }
         completionHandler(tab, nil)
+    }
+
+    func webExtensionController(
+        _ controller: WKWebExtensionController,
+        openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
+        for extensionContext: WKWebExtensionContext,
+        completionHandler: @escaping ((any WKWebExtensionWindow)?, (any Error)?) -> Void
+    ) {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else {
+            completionHandler(nil, nil)
+            return
+        }
+
+        let wc = BrowserWindowController(incognito: configuration.shouldBePrivate)
+        appDelegate.assignDefaultSpace(to: wc)
+
+        // TODO: Handle configuration.tabs (moving existing tabs to new window)
+
+        // Open new tabs for specified URLs
+        var lastTab: BrowserTab?
+        if let space = wc.activeSpace {
+            for url in configuration.tabURLs {
+                if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
+                    lastTab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
+                } else {
+                    lastTab = TabStore.shared.addTab(in: space, url: url)
+                }
+            }
+        }
+
+        wc.showWindow(nil)
+        if let lastTab {
+            wc.selectTab(id: lastTab.id)
+        } else if configuration.tabURLs.isEmpty && configuration.tabs.isEmpty {
+            wc.newTab(nil)
+        }
+
+        appDelegate.registerWindowController(wc)
+
+        if configuration.shouldBeFocused {
+            wc.window?.makeKeyAndOrderFront(nil)
+        }
+
+        // Apply window frame if specified (NaN means not specified)
+        let frame = configuration.frame
+        if let window = wc.window {
+            var currentFrame = window.frame
+            if !frame.origin.x.isNaN { currentFrame.origin.x = frame.origin.x }
+            if !frame.origin.y.isNaN { currentFrame.origin.y = frame.origin.y }
+            if !frame.size.width.isNaN { currentFrame.size.width = frame.size.width }
+            if !frame.size.height.isNaN { currentFrame.size.height = frame.size.height }
+            if currentFrame != window.frame {
+                window.setFrame(currentFrame, display: true)
+            }
+        }
+
+        completionHandler(wc, nil)
     }
 
     func webExtensionController(

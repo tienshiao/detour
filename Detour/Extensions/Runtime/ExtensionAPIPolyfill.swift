@@ -71,6 +71,7 @@ struct ExtensionAPIPolyfill {
     private static func generatePolyfillJS() -> String {
         let modules = [
             preambleJS,
+            missingStubsJS,
             contentPolyfillBridgeJS,
             consoleJS,
             idleJS,
@@ -83,6 +84,7 @@ struct ExtensionAPIPolyfill {
             offscreenJS,
             tabsDetectLanguageJS,
             extensionJS,
+            bookmarksJS,
             webRequestJS,
             webNavigationJS,
         ].joined(separator: "\n")
@@ -193,6 +195,24 @@ struct ExtensionAPIPolyfill {
             }
             return Promise.reject(new Error('Polyfill bridge unavailable: no webkit handler or sendNativeMessage'));
         };
+    })();
+    """
+
+    // MARK: - Missing event/constant stubs
+
+    /// Patches missing constants and event stubs on native chrome.* objects.
+    /// These must not replace anything natively provided — only fill gaps.
+    private static let missingStubsJS = """
+    (function() {
+        const chrome = globalThis.chrome;
+        // chrome.windows.WINDOW_ID_NONE — constant for "no window focused"
+        if (chrome.windows && chrome.windows.WINDOW_ID_NONE === undefined) {
+            chrome.windows.WINDOW_ID_NONE = -1;
+        }
+        // chrome.tabs.onReplaced — event for tab prerender replacement (rare)
+        if (chrome.tabs && !chrome.tabs.onReplaced) {
+            chrome.tabs.onReplaced = __detourMakeEventEmitter([]);
+        }
     })();
     """
 
@@ -679,6 +699,53 @@ struct ExtensionAPIPolyfill {
     })();
     """
 
+    // MARK: - chrome.bookmarks
+
+    /// Stub for chrome.bookmarks — browser has no bookmark system yet.
+    /// Returns empty tree so extensions that query bookmarks don't crash.
+    private static let bookmarksJS = """
+    (function() {
+        const chrome = globalThis.chrome;
+        if (chrome.bookmarks && typeof chrome.bookmarks.getTree === 'function') return;
+
+        const emptyTree = [{
+            id: '0',
+            title: '',
+            children: [
+                { id: '1', title: 'Bookmarks Bar', children: [], parentId: '0' },
+                { id: '2', title: 'Other Bookmarks', children: [], parentId: '0' }
+            ]
+        }];
+
+        function freshTree() { return JSON.parse(JSON.stringify(emptyTree)); }
+
+        const bookmarks = {
+            getTree: function(callback) {
+                const tree = freshTree();
+                if (callback) { callback(tree); return; }
+                return Promise.resolve(tree);
+            },
+            get: function(idOrList, callback) {
+                const result = [];
+                if (callback) { callback(result); return; }
+                return Promise.resolve(result);
+            },
+            getChildren: function(id, callback) {
+                const result = [];
+                if (callback) { callback(result); return; }
+                return Promise.resolve(result);
+            },
+            search: function(query, callback) {
+                const result = [];
+                if (callback) { callback(result); return; }
+                return Promise.resolve(result);
+            }
+        };
+
+        __detourDefine(chrome, 'bookmarks', bookmarks);
+    })();
+    """
+
     // MARK: - chrome.webRequest
 
     /// No-op event emitters — WebKit provides no pre-request interception API.
@@ -725,8 +792,18 @@ struct ExtensionAPIPolyfill {
     static let webNavigationJS = """
     (function() {
         const chrome = globalThis.chrome;
-        if (chrome.webNavigation && chrome.webNavigation.getAllFrames &&
-            chrome.webNavigation._detourPolyfill) return;
+        if (chrome.webNavigation && chrome.webNavigation._detourPolyfill) return;
+
+        // WKWebExtension may provide a native chrome.webNavigation with some events
+        // (e.g. onCommitted, onCompleted) but not others (e.g. onHistoryStateUpdated).
+        // Instead of replacing the whole object, patch in missing pieces.
+        let nav = chrome.webNavigation;
+        let createdNav = false;
+        if (!nav) {
+            nav = {};
+            createdNav = true;
+        }
+        nav._detourPolyfill = true;
 
         const eventNames = [
             'onBeforeNavigate', 'onCommitted', 'onDOMContentLoaded', 'onCompleted',
@@ -734,32 +811,66 @@ struct ExtensionAPIPolyfill {
             'onReferenceFragmentUpdated', 'onTabReplaced'
         ];
         const listenerMap = {};
-        const nav = { _detourPolyfill: true };
         for (let i = 0; i < eventNames.length; i++) {
-            const arr = [];
-            listenerMap[eventNames[i]] = arr;
-            nav[eventNames[i]] = __detourMakeEventEmitter(arr);
+            const name = eventNames[i];
+            if (nav[name] && typeof nav[name].addListener === 'function') {
+                // Native event exists — wrap it so our dispatch function can also
+                // fire polyfill-sourced events (e.g. SPA pushState detection).
+                const nativeEvent = nav[name];
+                const polyArr = [];
+                listenerMap[name] = polyArr;
+                nav[name] = {
+                    addListener: function(cb) {
+                        nativeEvent.addListener(cb);
+                        polyArr.push(cb);
+                    },
+                    removeListener: function(cb) {
+                        nativeEvent.removeListener(cb);
+                        const idx = polyArr.indexOf(cb);
+                        if (idx !== -1) polyArr.splice(idx, 1);
+                    },
+                    hasListener: function(cb) {
+                        return nativeEvent.hasListener(cb) || polyArr.includes(cb);
+                    },
+                    hasListeners: function() {
+                        return nativeEvent.hasListeners() || polyArr.length > 0;
+                    }
+                };
+            } else {
+                // Missing event — create a pure polyfill emitter.
+                const arr = [];
+                listenerMap[name] = arr;
+                nav[name] = __detourMakeEventEmitter(arr);
+            }
         }
 
-        nav.getAllFrames = function(details, callback) {
-            const promise = __detourPolyfillRequest('webNavigation.getAllFrames', {
-                tabId: details ? details.tabId : undefined
-            });
-            if (callback) { promise.then(callback); return; }
-            return promise;
-        };
+        if (!nav.getAllFrames) {
+            nav.getAllFrames = function(details, callback) {
+                const promise = __detourPolyfillRequest('webNavigation.getAllFrames', {
+                    tabId: details ? details.tabId : undefined
+                });
+                if (callback) { promise.then(callback); return; }
+                return promise;
+            };
+        }
 
-        nav.getFrame = function(details, callback) {
-            const promise = __detourPolyfillRequest('webNavigation.getFrame', {
-                tabId: details ? details.tabId : undefined,
-                frameId: details ? details.frameId : 0
-            });
-            if (callback) { promise.then(callback); return; }
-            return promise;
-        };
+        if (!nav.getFrame) {
+            nav.getFrame = function(details, callback) {
+                const promise = __detourPolyfillRequest('webNavigation.getFrame', {
+                    tabId: details ? details.tabId : undefined,
+                    frameId: details ? details.frameId : 0
+                });
+                if (callback) { promise.then(callback); return; }
+                return promise;
+            };
+        }
 
-        __detourDefine(chrome, 'webNavigation', nav);
+        if (createdNav) {
+            __detourDefine(chrome, 'webNavigation', nav);
+        }
 
+        // Dispatch function for polyfill-sourced events (content script SPA detection).
+        // Only fires to polyfill listeners, not native ones (native gets its own events).
         globalThis.__extensionDispatchWebNavEvent = function(eventName, details) {
             const listeners = listenerMap[eventName];
             if (!listeners) return;
