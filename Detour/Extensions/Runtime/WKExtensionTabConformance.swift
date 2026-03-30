@@ -5,7 +5,6 @@ import WebKit
 
 extension BrowserTab: WKWebExtensionTab {
     func webView(for context: WKWebExtensionContext) -> WKWebView? {
-        // Per the docs: the webView's controller must match the context's controller
         guard webView?.configuration.webExtensionController === context.webExtensionController else {
             return nil
         }

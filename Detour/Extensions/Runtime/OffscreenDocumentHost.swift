@@ -107,6 +107,7 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         // Register native audio bridge handler. The AudioContext shim itself is injected
         // via evaluateJavaScript in didFinish rather than as a WKUserScript, because the
         // extension context's userContentController is shared with the service worker.
+        config.userContentController.removeScriptMessageHandler(forName: Self.audioBridgeHandler)
         config.userContentController.add(self, name: Self.audioBridgeHandler)
 
         let wv = WKWebView(frame: .zero, configuration: config)

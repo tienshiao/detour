@@ -3,3 +3,5 @@ xcuserdata/
 build/
 DerivedData/
 .DS_Store
+TestExtensions/1Password
+TestExtensions/vimium

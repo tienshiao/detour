@@ -227,41 +227,10 @@ class Profile {
         }
     }
 
-    /// Start background content for an extension. Times out after 10s to avoid blocking forever.
+    /// Load an extension context into this profile. Background content loads on demand.
     @MainActor
-    func startBackgroundContent(for ext: WebExtension) async {
-        guard let context = extensionContexts[ext.id] else { return }
-
-        log.info("Loading background content for \(ext.id, privacy: .public)")
-        do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask { @MainActor in
-                    try await context.loadBackgroundContent()
-                }
-                group.addTask { @MainActor in
-                    try await Task.sleep(nanoseconds: 10_000_000_000)
-                    throw CancellationError()
-                }
-                try await group.next()
-                group.cancelAll()
-            }
-            log.info("Background content loaded for \(ext.id, privacy: .public)")
-        } catch {
-            log.error("Background content failed/timed out for \(ext.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-        }
-
-        if !context.errors.isEmpty {
-            log.error("Context errors for \(ext.id, privacy: .public): \(context.errors.map { $0.localizedDescription }, privacy: .public)")
-        }
-    }
-
-    /// Load context + start background in one call. Used by install and enable flows.
-    @MainActor
-    func loadExtension(_ ext: WebExtension) async {
-        let needsBackground = loadExtensionContext(ext)
-        if needsBackground {
-            await startBackgroundContent(for: ext)
-        }
+    func loadExtension(_ ext: WebExtension) {
+        loadExtensionContext(ext)
     }
 
     /// Unload an extension from this profile's controller.

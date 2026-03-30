@@ -31,9 +31,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Retained native messaging hosts for one-shot sendMessage calls.
     private var activeMessagingHosts: [ObjectIdentifier: NativeMessagingHost] = [:]
 
-    /// Background loading tasks, keyed by extensionID, for cancellation on unload.
-    private var backgroundLoadTasks: [String: Task<Void, Never>] = [:]
-
     // MARK: - Notifications
 
     static let extensionsDidChangeNotification = Notification.Name("ExtensionManagerExtensionsDidChange")
@@ -116,7 +113,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Load enabled extensions into each profile's controller
         // (notifyExistingTabs is called inside loadExtensionsIntoProfile after contexts are registered)
         for profile in TabStore.shared.profiles {
-            await loadExtensionsIntoProfile(profile)
+            loadExtensionsIntoProfile(profile)
         }
 
         invalidateEnabledExtensionsCache()
@@ -125,29 +122,16 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     /// Load all globally-enabled extensions into a profile's controller (respecting per-profile disabling).
     @MainActor
-    func loadExtensionsIntoProfile(_ profile: Profile) async {
+    func loadExtensionsIntoProfile(_ profile: Profile) {
         let enabledIDs = AppDatabase.shared.enabledExtensionIDs(for: profile.id.uuidString)
         log.info("Loading extensions for profile \(profile.name, privacy: .public), enabledIDs: \(enabledIDs, privacy: .public)")
 
-        // Phase 1: Load all contexts (fast, synchronous)
-        var needsBackground: [WebExtension] = []
+        // Load all contexts. Background content loads on demand when needed.
         for ext in extensions where enabledIDs.contains(ext.id) {
-            if profile.loadExtensionContext(ext) {
-                needsBackground.append(ext)
-            }
+            profile.loadExtensionContext(ext)
         }
 
-        // Phase 2: Notify existing tabs (must happen after contexts are registered)
         notifyExistingTabs(for: profile)
-
-        // Phase 3: Start background content in parallel (can be slow/hang)
-        for ext in needsBackground {
-            let task = Task { @MainActor in
-                await profile.startBackgroundContent(for: ext)
-                self.backgroundLoadTasks.removeValue(forKey: ext.id)
-            }
-            backgroundLoadTasks[ext.id] = task
-        }
     }
 
     private func notifyExistingTabs(for profile: Profile) {
@@ -157,7 +141,16 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         for wc in windowControllers {
             controller.didOpenWindow(wc)
-            for tab in (wc.activeSpace?.pinnedTabs ?? []) + wc.currentTabs {
+        }
+
+        // Report ALL tabs across ALL spaces for this profile, not just the active space.
+        // WKWebExtension uses didOpenTab to associate web views with WKWebExtensionTab objects;
+        // without this, sender.tab is null for content script messages from non-active spaces.
+        // Report non-sleeping tabs across all spaces for this profile.
+        // Sleeping tabs have no webView and can't run content scripts.
+        let profileSpaces = TabStore.shared.spaces.filter { $0.profileID == profile.id }
+        for space in profileSpaces {
+            for tab in space.pinnedTabs + space.tabs where !tab.isSleeping {
                 for context in profile.extensionContexts.values {
                     context.didOpenTab(tab)
                 }
@@ -270,7 +263,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 for profile in TabStore.shared.profiles {
                     let enabledIDs = AppDatabase.shared.enabledExtensionIDs(for: profile.id.uuidString)
                     if enabledIDs.contains(ext.id) {
-                        await profile.loadExtension(ext)
+                        profile.loadExtension(ext)
                     }
                 }
 
@@ -312,8 +305,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
         }
 
-        // Cancel any pending background load and unload from all profiles
-        backgroundLoadTasks.removeValue(forKey: id)?.cancel()
+        // Unload from all profiles
         for profile in TabStore.shared.profiles {
             profile.unloadExtension(id: id)
         }
@@ -337,14 +329,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         ext.isEnabled = enabled
         AppDatabase.shared.setEnabled(id: id, enabled: enabled)
 
-        if !enabled {
-            backgroundLoadTasks.removeValue(forKey: id)?.cancel()
-        }
-
         Task { @MainActor in
             for profile in TabStore.shared.profiles {
                 if enabled {
-                    await profile.loadExtension(ext)
+                    profile.loadExtension(ext)
                     notifyExistingTabs(for: profile)
                 } else {
                     profile.unloadExtension(id: id)
@@ -359,16 +347,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func setEnabled(id: String, profileID: UUID, enabled: Bool) {
         AppDatabase.shared.setProfileExtensionEnabled(extensionID: id, profileID: profileID.uuidString, enabled: enabled)
 
-        if !enabled {
-            backgroundLoadTasks.removeValue(forKey: id)?.cancel()
-        }
-
         // Load/unload in the specific profile
         if let profile = TabStore.shared.profiles.first(where: { $0.id == profileID }),
            let ext = self.extension(withID: id) {
             Task { @MainActor in
                 if enabled {
-                    await profile.loadExtension(ext)
+                    profile.loadExtension(ext)
                     notifyExistingTabs(for: profile)
                 } else {
                     profile.unloadExtension(id: id)
@@ -398,20 +382,28 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// opaque process where WKUserScript injection doesn't work.
     private func injectServiceWorkerPolyfill(into ext: WebExtension) {
         guard let swFile = ext.manifest.background?.serviceWorker else { return }
-
         let polyfillFilename = "_detour_polyfill.js"
-        let polyfillURL = ext.basePath.appendingPathComponent(polyfillFilename)
         let swURL = ext.basePath.appendingPathComponent(swFile)
 
-        let polyfillJS = ExtensionAPIPolyfill.polyfillJS
-        let existingPolyfill = try? String(contentsOf: polyfillURL, encoding: .utf8)
-        if existingPolyfill != polyfillJS {
-            do {
-                try polyfillJS.write(to: polyfillURL, atomically: true, encoding: .utf8)
-            } catch {
-                log.error("Failed to write polyfill for \(ext.id, privacy: .public): \(error.localizedDescription)")
-                return
-            }
+        if ext.manifest.background?.isModule == true {
+            // Module SWs: inject the full polyfill as an ES module import.
+            // WKUserScripts don't run in SW contexts, so this is the only way
+            // to provide polyfill APIs (webNavigation, console bridge, etc.)
+            injectModuleSWPolyfill(ext: ext, swURL: swURL)
+            return
+        }
+
+        // Classic service workers: write polyfill file + importScripts
+        injectClassicSWPolyfill(ext: ext, swURL: swURL, polyfillFilename: polyfillFilename)
+    }
+
+    private func injectClassicSWPolyfill(ext: WebExtension, swURL: URL, polyfillFilename: String) {
+        let polyfillURL = ext.basePath.appendingPathComponent(polyfillFilename)
+        do {
+            try writeIfChanged(ExtensionAPIPolyfill.polyfillJS, to: polyfillURL)
+        } catch {
+            log.error("Failed to write polyfill for \(ext.id, privacy: .public): \(error.localizedDescription)")
+            return
         }
 
         let importLine = "importScripts('\(polyfillFilename)');"
@@ -420,10 +412,62 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             if !swSource.contains(importLine) {
                 let patched = importLine + "\n" + swSource
                 try patched.write(to: swURL, atomically: true, encoding: .utf8)
-                log.info("Injected polyfill into service worker for \(ext.id, privacy: .public)")
+                log.info("Injected polyfill into classic SW for \(ext.id, privacy: .public)")
             }
         } catch {
-            log.error("Failed to patch service worker for \(ext.id, privacy: .public): \(error.localizedDescription)")
+            log.error("Failed to patch classic SW for \(ext.id, privacy: .public): \(error.localizedDescription)")
+        }
+    }
+
+    private static let moduleSWPolyfillFilename = "_detour_polyfill_module.js"
+
+    private func injectModuleSWPolyfill(ext: WebExtension, swURL: URL) {
+        let polyfillFilename = Self.moduleSWPolyfillFilename
+        let polyfillURL = ext.basePath.appendingPathComponent(polyfillFilename)
+
+        // Write/update the polyfill module file
+        do {
+            try writeIfChanged(ExtensionAPIPolyfill.polyfillJS, to: polyfillURL)
+        } catch {
+            log.error("Failed to write module SW polyfill for \(ext.id, privacy: .public): \(error.localizedDescription)")
+            return
+        }
+
+        // Prepend import to the SW file, using correct relative path from SW to root
+        let swDir = swURL.deletingLastPathComponent().standardized.path
+        let rootDir = ext.basePath.standardized.path
+        let depth = swDir.dropFirst(rootDir.count + 1).components(separatedBy: "/").count
+        let prefix = depth > 0 ? String(repeating: "../", count: depth) : "./"
+        let importLine = "import '\(prefix)\(polyfillFilename)';"
+
+        // Also clean up old console bridge imports
+        let oldBridgeFilename = "_detour_console_bridge.js"
+
+        do {
+            var swSource = try String(contentsOf: swURL, encoding: .utf8)
+            // Remove old console bridge import if present
+            if swSource.contains(oldBridgeFilename) {
+                swSource = swSource.replacingOccurrences(
+                    of: #"import\s+['"][^'"]*_detour_console_bridge\.js['"];\n?"#,
+                    with: "",
+                    options: .regularExpression
+                )
+            }
+            // Remove old polyfill import with a different path
+            if swSource.contains(polyfillFilename) && !swSource.contains(importLine) {
+                swSource = swSource.replacingOccurrences(
+                    of: #"import\s+['"][^'"]*\#(polyfillFilename)['"];\n?"#,
+                    with: "",
+                    options: .regularExpression
+                )
+            }
+            if !swSource.contains(importLine) {
+                let patched = importLine + "\n" + swSource
+                try patched.write(to: swURL, atomically: true, encoding: .utf8)
+                log.info("Injected polyfill module into module SW for \(ext.id, privacy: .public)")
+            }
+        } catch {
+            log.error("Failed to patch module SW for \(ext.id, privacy: .public): \(error.localizedDescription)")
         }
     }
 
@@ -434,15 +478,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let fileURL = ext.basePath.appendingPathComponent(filename)
 
         // Write the polyfill file (update if changed)
-        let js = ExtensionAPIPolyfill.contentPolyfillJS
-        let existing = try? String(contentsOf: fileURL, encoding: .utf8)
-        if existing != js {
-            do {
-                try js.write(to: fileURL, atomically: true, encoding: .utf8)
-            } catch {
-                log.error("Failed to write content polyfill for \(ext.id, privacy: .public): \(error.localizedDescription)")
-                return
-            }
+        do {
+            try writeIfChanged(ExtensionAPIPolyfill.contentPolyfillJS, to: fileURL)
+        } catch {
+            log.error("Failed to write content polyfill for \(ext.id, privacy: .public): \(error.localizedDescription)")
+            return
         }
 
         // Insert polyfill as first script in each content_scripts entry in manifest.json
@@ -471,6 +511,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     // MARK: - Helpers
+
+    /// Write content to a file only if it differs from the existing content.
+    private func writeIfChanged(_ content: String, to url: URL) throws {
+        let existing = try? String(contentsOf: url, encoding: .utf8)
+        guard existing != content else { return }
+        try content.write(to: url, atomically: true, encoding: .utf8)
+    }
 
     /// Find the profile that owns a given controller.
     private func profile(for controller: WKWebExtensionController) -> Profile? {

@@ -423,6 +423,16 @@ class BrowserTab: NSObject {
 
         isSleeping = false
         cachedInteractionState = nil
+
+        // Notify extension contexts that this tab is now available.
+        // WKWebExtension needs didOpenTab to associate the new webView
+        // with this tab for content script messaging.
+        if let spaceID, let space = TabStore.shared.space(withID: spaceID),
+           let profile = space.profile {
+            for context in profile.extensionContexts.values {
+                context.didOpenTab(self)
+            }
+        }
     }
 
     func currentInteractionStateData() -> Data? {

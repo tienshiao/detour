@@ -291,6 +291,18 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(lang, nil)
             }
 
+        // MARK: - WebNavigation
+        case "webNavigation.getAllFrames":
+            replyHandler(Self.defaultFrameInfo, nil)
+
+        case "webNavigation.getFrame":
+            let frameId = params["frameId"] as? Int ?? 0
+            if frameId == 0 {
+                replyHandler(Self.defaultFrameInfo[0], nil)
+            } else {
+                replyHandler(["frameId": frameId, "parentFrameId": -1, "url": ""], nil)
+            }
+
         // MARK: - Logging Bridge
         case "log":
             let level = params["level"] as? String ?? "info"
@@ -308,6 +320,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(nil, "Unknown polyfill message type: \(type)")
         }
     }
+
+    /// Basic top-level frame info. Cross-origin iframe enumeration isn't possible
+    /// from the extension context, so we return a minimal result.
+    private static let defaultFrameInfo: [[String: Any]] = [["frameId": 0, "parentFrameId": -1, "url": ""]]
 
     // MARK: - Helpers
 

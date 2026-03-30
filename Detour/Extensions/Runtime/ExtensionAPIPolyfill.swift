@@ -63,6 +63,9 @@ struct ExtensionAPIPolyfill {
             });
         }
     })();
+
+    // Detect pushState/replaceState/hashchange and notify the SW
+    \(webNavigationPageDetectionJS)
     """
 
     private static func generatePolyfillJS() -> String {
@@ -81,6 +84,7 @@ struct ExtensionAPIPolyfill {
             tabsDetectLanguageJS,
             extensionJS,
             webRequestJS,
+            webNavigationJS,
         ].joined(separator: "\n")
 
         // Wrap everything in a try/catch that writes diagnostics to storage.
@@ -216,6 +220,22 @@ struct ExtensionAPIPolyfill {
                     .catch(function(e) { sendResponse('und'); });
                 return true;
             }
+            // Route webNavigation events from content scripts
+            if (message && message._detourWebNav) {
+                const tabId = sender.tab ? sender.tab.id : -1;
+                const details = {
+                    tabId: tabId,
+                    url: message.url || '',
+                    frameId: message.frameId || 0,
+                    timeStamp: Date.now()
+                };
+                const eventName = message._detourWebNavType === 'referenceFragmentUpdated'
+                    ? 'onReferenceFragmentUpdated' : 'onHistoryStateUpdated';
+                if (typeof globalThis.__extensionDispatchWebNavEvent === 'function') {
+                    globalThis.__extensionDispatchWebNavEvent(eventName, details);
+                }
+                return false;
+            }
         });
     })();
     """
@@ -240,9 +260,21 @@ struct ExtensionAPIPolyfill {
                 else if (typeof a === 'object') { try { parts.push(JSON.stringify(a)); } catch(e) { parts.push(String(a)); } }
                 else { parts.push(String(a)); }
             }
-            try {
-                g.__detourPolyfillRequest('log', { level: level, message: parts.join(' ') });
-            } catch(e) {}
+            const message = parts.join(' ');
+            // Use __detourPolyfillRequest if available (web view contexts),
+            // otherwise fall back to sendNativeMessage (service worker contexts).
+            if (typeof g.__detourPolyfillRequest === 'function') {
+                try { g.__detourPolyfillRequest('log', { level: level, message: message }); } catch(e) {}
+            } else {
+                let extID = '';
+                try { extID = chrome.runtime.id || ''; } catch(e) {}
+                try {
+                    chrome.runtime.sendNativeMessage('detourPolyfill', {
+                        type: 'log', extensionID: extID,
+                        params: { level: level, message: message }
+                    });
+                } catch(e) {}
+            }
         }
 
         console.log = function() { _origLog.apply(console, arguments); sendLog('info', arguments); };
@@ -681,6 +713,104 @@ struct ExtensionAPIPolyfill {
             onBeforeRedirect: makeNoOpEventEmitter('onBeforeRedirect'),
             onCompleted: makeNoOpEventEmitter('onCompleted'),
             onErrorOccurred: makeNoOpEventEmitter('onErrorOccurred')
+        });
+    })();
+    """
+
+    // MARK: - chrome.webNavigation
+
+    /// Polyfill for chrome.webNavigation — WKWebExtension does not provide this API.
+    /// Event emitters for all navigation events, getAllFrames/getFrame backed by
+    /// native polyfill handler, and dispatch function for native-fired events.
+    static let webNavigationJS = """
+    (function() {
+        const chrome = globalThis.chrome;
+        if (chrome.webNavigation && chrome.webNavigation.getAllFrames &&
+            chrome.webNavigation._detourPolyfill) return;
+
+        const eventNames = [
+            'onBeforeNavigate', 'onCommitted', 'onDOMContentLoaded', 'onCompleted',
+            'onErrorOccurred', 'onCreatedNavigationTarget', 'onHistoryStateUpdated',
+            'onReferenceFragmentUpdated', 'onTabReplaced'
+        ];
+        const listenerMap = {};
+        const nav = { _detourPolyfill: true };
+        for (let i = 0; i < eventNames.length; i++) {
+            const arr = [];
+            listenerMap[eventNames[i]] = arr;
+            nav[eventNames[i]] = __detourMakeEventEmitter(arr);
+        }
+
+        nav.getAllFrames = function(details, callback) {
+            const promise = __detourPolyfillRequest('webNavigation.getAllFrames', {
+                tabId: details ? details.tabId : undefined
+            });
+            if (callback) { promise.then(callback); return; }
+            return promise;
+        };
+
+        nav.getFrame = function(details, callback) {
+            const promise = __detourPolyfillRequest('webNavigation.getFrame', {
+                tabId: details ? details.tabId : undefined,
+                frameId: details ? details.frameId : 0
+            });
+            if (callback) { promise.then(callback); return; }
+            return promise;
+        };
+
+        __detourDefine(chrome, 'webNavigation', nav);
+
+        globalThis.__extensionDispatchWebNavEvent = function(eventName, details) {
+            const listeners = listenerMap[eventName];
+            if (!listeners) return;
+            for (let i = 0; i < listeners.length; i++) {
+                try { listeners[i](details); } catch(e) {
+                    console.error('[chrome.webNavigation.' + eventName + '] listener error:', e);
+                }
+            }
+        };
+    })();
+    """
+
+    // MARK: - webNavigation page detection (content script)
+
+    /// JavaScript injected into content scripts to detect pushState/replaceState
+    /// and hashchange events. Sends messages to the SW which dispatches them as
+    /// webNavigation events.
+    static let webNavigationPageDetectionJS = """
+    (function() {
+        if (typeof chrome === 'undefined' || !chrome.runtime) return;
+        if (globalThis.__detourNavDetect) return;
+        globalThis.__detourNavDetect = true;
+
+        function sendNavEvent(type) {
+            try {
+                chrome.runtime.sendMessage({
+                    _detourWebNav: true,
+                    _detourWebNavType: type,
+                    url: location.href,
+                    frameId: (self === top) ? 0 : -1
+                });
+            } catch(e) {}
+        }
+
+        const origPushState = history.pushState;
+        const origReplaceState = history.replaceState;
+
+        history.pushState = function() {
+            const result = origPushState.apply(this, arguments);
+            sendNavEvent('historyStateUpdated');
+            return result;
+        };
+
+        history.replaceState = function() {
+            const result = origReplaceState.apply(this, arguments);
+            sendNavEvent('historyStateUpdated');
+            return result;
+        };
+
+        window.addEventListener('hashchange', function() {
+            sendNavEvent('referenceFragmentUpdated');
         });
     })();
     """

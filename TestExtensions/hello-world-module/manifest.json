@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Hello World (Module)",
+  "version": "1.0.0",
+  "description": "Test extension with type:module background to verify WKWebExtension module support",
+  "permissions": ["storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png",
+    "default_title": "Hello World Module Extension"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "48": "icon.png"
+  }
+}
