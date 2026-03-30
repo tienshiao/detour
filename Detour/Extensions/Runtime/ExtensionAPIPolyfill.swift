@@ -64,6 +64,20 @@ struct ExtensionAPIPolyfill {
         }
     })();
 
+    // Fix WebKit bug: iframe.focus() inside a Shadow DOM updates the shadow root's
+    // activeElement but doesn't make the iframe the focused frame for keyboard events.
+    // Patch focus() to also call contentWindow.focus() which correctly updates WebKit's
+    // frame focus controller.
+    (function() {
+        const originalFocus = HTMLIFrameElement.prototype.focus;
+        HTMLIFrameElement.prototype.focus = function(options) {
+            originalFocus.call(this, options);
+            if (this.getRootNode() instanceof ShadowRoot) {
+                try { this.contentWindow.focus(); } catch(e) {}
+            }
+        };
+    })();
+
     // Detect pushState/replaceState/hashchange and notify the SW
     \(webNavigationPageDetectionJS)
     """
