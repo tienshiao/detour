@@ -223,6 +223,11 @@ class Profile {
         do {
             try extensionController.load(context)
             extensionContexts[ext.id] = context
+            // Cache favicon permission for the scheme handler (checked per-request on any thread)
+            if let host = context.baseURL.host,
+               ext.manifest.permissions?.contains("favicon") == true {
+                FaviconSchemeHandler.grantFaviconPermission(forWebKitHost: host)
+            }
             log.info("Context loaded for \(ext.id, privacy: .public), baseURL: \(context.baseURL.absoluteString, privacy: .public)")
             return wkExt.hasBackgroundContent
         } catch {
@@ -241,6 +246,9 @@ class Profile {
     /// Unload an extension from this profile's controller.
     func unloadExtension(id: String) {
         guard let context = extensionContexts.removeValue(forKey: id) else { return }
+        if let host = context.baseURL.host {
+            FaviconSchemeHandler.revokeFaviconPermission(forWebKitHost: host)
+        }
         try? extensionController.unload(context)
     }
 

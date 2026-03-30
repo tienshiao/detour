@@ -1,3 +1,4 @@
+import AppKit
 import WebKit
 
 /// Handles `detour-favicon://` URLs by looking up favicon images from the history database.
@@ -21,14 +22,37 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
         return Data(bytes)
     }()
 
+    /// WebKit-assigned extension hosts that have the "favicon" manifest permission.
+    /// Populated at extension load time by Profile.loadExtensionContext(_:).
+    private static var permittedHosts = Set<String>()
+    private static let permittedHostsLock = NSLock()
+
+    static func grantFaviconPermission(forWebKitHost host: String) {
+        permittedHostsLock.lock()
+        permittedHosts.insert(host)
+        permittedHostsLock.unlock()
+    }
+
+    static func revokeFaviconPermission(forWebKitHost host: String) {
+        permittedHostsLock.lock()
+        permittedHosts.remove(host)
+        permittedHostsLock.unlock()
+    }
+
+    private static func hasFaviconPermission(forWebKitHost host: String) -> Bool {
+        permittedHostsLock.lock()
+        defer { permittedHostsLock.unlock() }
+        return permittedHosts.contains(host)
+    }
+
+    private static let cache: NSCache<NSString, NSData> = {
+        let c = NSCache<NSString, NSData>()
+        c.countLimit = 200
+        return c
+    }()
+
     private let lock = NSLock()
     private var activeTasks = Set<ObjectIdentifier>()
-    private let cache = NSCache<NSString, NSData>()
-
-    override init() {
-        cache.countLimit = 200
-        super.init()
-    }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
         let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
@@ -37,13 +61,27 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
 
         guard let requestURL = urlSchemeTask.request.url,
               let components = URLComponents(url: requestURL, resolvingAgainstBaseURL: false),
+              let extensionID = requestURL.host, !extensionID.isEmpty,
               let pageUrl = components.queryItems?.first(where: { $0.name == "pageUrl" })?.value else {
             respond(urlSchemeTask, taskID: taskID, data: nil, mimeType: nil)
             return
         }
 
+        // Verify the extension has the "favicon" permission (cached at load time).
+        guard Self.hasFaviconPermission(forWebKitHost: extensionID) else {
+            respond(urlSchemeTask, taskID: taskID, data: nil, mimeType: nil)
+            return
+        }
+
+        let requestedSize = components.queryItems?
+            .first(where: { $0.name == "size" })
+            .flatMap { $0.value.flatMap(Int.init) } ?? 0
+
+        // Cache key includes size so different sizes are cached separately
+        let cacheKey = (requestedSize > 0 ? "\(pageUrl)@\(requestedSize)" : pageUrl) as NSString
+
         // Check cache first
-        if let cached = cache.object(forKey: pageUrl as NSString) {
+        if let cached = Self.cache.object(forKey: cacheKey) {
             respond(urlSchemeTask, taskID: taskID, data: cached as Data, mimeType: "image/png")
             return
         }
@@ -58,8 +96,11 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let self else { return }
             let httpResponse = response as? HTTPURLResponse
             if let data, httpResponse?.statusCode == 200 {
-                self.cache.setObject(data as NSData, forKey: pageUrl as NSString)
-                self.respond(urlSchemeTask, taskID: taskID, data: data, mimeType: httpResponse?.mimeType)
+                let finalData = requestedSize > 0
+                    ? self.resizedPNG(data, to: requestedSize) ?? data
+                    : data
+                Self.cache.setObject(finalData as NSData, forKey: cacheKey)
+                self.respond(urlSchemeTask, taskID: taskID, data: finalData, mimeType: "image/png")
             } else {
                 self.respond(urlSchemeTask, taskID: taskID, data: nil, mimeType: nil)
             }
@@ -70,6 +111,20 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         lock.lock(); defer { lock.unlock() }
         activeTasks.remove(ObjectIdentifier(urlSchemeTask as AnyObject))
+    }
+
+    private func resizedPNG(_ data: Data, to size: Int) -> Data? {
+        guard let image = NSImage(data: data) else { return nil }
+        let targetSize = NSSize(width: size, height: size)
+        let resized = NSImage(size: targetSize, flipped: false) { rect in
+            NSGraphicsContext.current?.imageInterpolation = .high
+            image.draw(in: rect)
+            return true
+        }
+        guard let tiff = resized.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        return png
     }
 
     private func respond(_ task: any WKURLSchemeTask, taskID: ObjectIdentifier, data: Data?, mimeType: String?) {
