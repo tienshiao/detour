@@ -152,9 +152,15 @@ extension BrowserWindowController: WKNavigationDelegate {
             let manifest = try ExtensionManifest.parse(at: manifestURL)
             let displayName = WebExtension.resolveI18nName(manifest.name, basePath: unpackedDir, defaultLocale: manifest.defaultLocale)
 
+            let permissionSummary = ExtensionPermissionDescriptions.formatForAlert(
+                permissions: manifest.permissions ?? [],
+                hostPermissions: manifest.hostPermissions ?? [],
+                optionalPermissions: manifest.optionalPermissions
+            )
+
             let confirmAlert = NSAlert()
             confirmAlert.messageText = "Install \"\(displayName)\"?"
-            confirmAlert.informativeText = "This extension will be installed and enabled."
+            confirmAlert.informativeText = permissionSummary
             confirmAlert.alertStyle = .warning
             confirmAlert.addButton(withTitle: "Install")
             confirmAlert.addButton(withTitle: "Cancel")
