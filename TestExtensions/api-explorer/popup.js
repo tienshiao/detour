@@ -457,6 +457,24 @@ document.getElementById('btn-perm-getall').addEventListener('click', async () =>
   }
 });
 
+document.getElementById('btn-perm-request').addEventListener('click', async () => {
+  try {
+    const granted = await chrome.permissions.request({ permissions: ['cookies'] });
+    showResult('res-permissions', `permissions.request("cookies"): ${granted}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
+document.getElementById('btn-perm-remove').addEventListener('click', async () => {
+  try {
+    const removed = await chrome.permissions.remove({ permissions: ['cookies'] });
+    showResult('res-permissions', `permissions.remove("cookies"): ${removed}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
 // --- Runtime Extras ---
 
 document.getElementById('btn-file-access').addEventListener('click', async () => {

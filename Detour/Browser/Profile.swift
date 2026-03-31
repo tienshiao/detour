@@ -207,17 +207,38 @@ class Profile {
         context.uniqueIdentifier = ext.id
         context.isInspectable = true
 
-        for permission in wkExt.requestedPermissions {
-            context.setPermissionStatus(.grantedExplicitly, for: permission)
-        }
-        // Grant nativeMessaging so the polyfill bridge can use
-        // browser.runtime.sendNativeMessage() from service workers.
+        // Always grant nativeMessaging at the context level so the polyfill bridge
+        // can use browser.runtime.sendNativeMessage(). The user's grant/deny decision
+        // for nativeMessaging is checked after the polyfill bridge logic.
         context.setPermissionStatus(.grantedExplicitly, for: .nativeMessaging)
-        for pattern in wkExt.requestedPermissionMatchPatterns {
-            context.setPermissionStatus(.grantedExplicitly, for: pattern)
+
+        // Restore saved permission decisions from DB; leave unknown permissions
+        // for WebKit to prompt via the delegate.
+        let savedByKey = AppDatabase.shared.loadPermissionsByKey(extensionID: ext.id)
+
+        for permission in wkExt.requestedPermissions {
+            if permission == .nativeMessaging { continue }
+            if let saved = savedByKey[permission.rawValue] {
+                context.setPermissionStatus(
+                    saved == .granted ? .grantedExplicitly : .deniedExplicitly,
+                    for: permission
+                )
+            }
         }
+
+        for pattern in wkExt.requestedPermissionMatchPatterns {
+            if let saved = savedByKey[pattern.string] {
+                context.setPermissionStatus(
+                    saved == .granted ? .grantedExplicitly : .deniedExplicitly,
+                    for: pattern
+                )
+            }
+        }
+
         if let allURLs = Self.allURLsPattern {
-            context.setPermissionStatus(.grantedExplicitly, for: allURLs)
+            if let saved = savedByKey["<all_urls>"], saved == .granted {
+                context.setPermissionStatus(.grantedExplicitly, for: allURLs)
+            }
         }
 
         do {

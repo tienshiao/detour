@@ -278,6 +278,23 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         extensions.append(ext)
 
+        // Save all declared permissions as granted in the DB so they're
+        // restored on subsequent launches without re-prompting.
+        var permRecords: [ExtensionPermissionRecord] = []
+        for perm in ext.manifest.permissions ?? [] {
+            permRecords.append(ExtensionPermissionRecord(
+                extensionID: ext.id, key: perm, type: .apiPermission, status: .granted
+            ))
+        }
+        for pattern in ext.manifest.hostPermissions ?? [] {
+            permRecords.append(ExtensionPermissionRecord(
+                extensionID: ext.id, key: pattern, type: .matchPattern, status: .granted
+            ))
+        }
+        if !permRecords.isEmpty {
+            AppDatabase.shared.savePermissions(permRecords)
+        }
+
         // Inject polyfills before WKWebExtension reads the files
         injectServiceWorkerPolyfill(into: ext)
         writeContentPolyfill(into: ext)
@@ -748,7 +765,23 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.Permission>, Date?) -> Void
     ) {
-        completionHandler(permissions, nil)
+        let extID = extensionIDFromContext(extensionContext)
+        let name = extID.map { displayName(for: $0) } ?? "This extension"
+        let descriptions = permissions.map { ExtensionPermissionDescriptions.describe($0.rawValue) }
+
+        let granted = promptUserForPermission(
+            extensionName: name,
+            itemDescriptions: descriptions
+        )
+
+        if let extID {
+            let status: ExtensionPermissionStatus = granted ? .granted : .denied
+            let records = permissions.map {
+                ExtensionPermissionRecord(extensionID: extID, key: $0.rawValue, type: .apiPermission, status: status)
+            }
+            AppDatabase.shared.savePermissions(records)
+        }
+        completionHandler(granted ? permissions : Set(), nil)
     }
 
     func webExtensionController(
@@ -758,7 +791,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<URL>, Date?) -> Void
     ) {
-        completionHandler(urls, nil)
+        let extID = extensionIDFromContext(extensionContext)
+        let name = extID.map { displayName(for: $0) } ?? "This extension"
+        let descriptions = urls.map { $0.absoluteString }
+
+        let granted = promptUserForPermission(
+            extensionName: name,
+            itemDescriptions: descriptions,
+            category: "site access"
+        )
+
+        if let extID {
+            let status: ExtensionPermissionStatus = granted ? .granted : .denied
+            let records = urls.map {
+                ExtensionPermissionRecord(extensionID: extID, key: $0.absoluteString, type: .matchPattern, status: status)
+            }
+            AppDatabase.shared.savePermissions(records)
+        }
+        completionHandler(granted ? urls : Set(), nil)
     }
 
     func webExtensionController(
@@ -768,7 +818,42 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.MatchPattern>, Date?) -> Void
     ) {
-        completionHandler(matchPatterns, nil)
+        let extID = extensionIDFromContext(extensionContext)
+        let name = extID.map { displayName(for: $0) } ?? "This extension"
+        let descriptions = matchPatterns.map { pattern -> String in
+            pattern.string == "<all_urls>" ? "All websites" : pattern.string
+        }
+
+        let granted = promptUserForPermission(
+            extensionName: name,
+            itemDescriptions: descriptions,
+            category: "site access"
+        )
+
+        if let extID {
+            let status: ExtensionPermissionStatus = granted ? .granted : .denied
+            let records = matchPatterns.map {
+                ExtensionPermissionRecord(extensionID: extID, key: $0.string, type: .matchPattern, status: status)
+            }
+            AppDatabase.shared.savePermissions(records)
+        }
+        completionHandler(granted ? matchPatterns : Set(), nil)
+    }
+
+    /// Shows an NSAlert prompting the user to allow or deny permissions.
+    /// Returns true if the user clicked Allow.
+    private func promptUserForPermission(
+        extensionName: String,
+        itemDescriptions: [String],
+        category: String = "permissions"
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "\"\(extensionName)\" is requesting additional \(category)"
+        alert.informativeText = itemDescriptions.map { "\u{2022} \($0)" }.joined(separator: "\n")
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Deny")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func webExtensionController(

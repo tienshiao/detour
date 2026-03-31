@@ -50,7 +50,7 @@ class FauxAddressBar: NSView {
         label.font = .systemFont(ofSize: NSFont.systemFontSize)
         label.textColor = .secondaryLabelColor
         label.placeholderAttributedString = NSAttributedString(
-            string: "Where do you want to go?",
+            string: "Where to?",
             attributes: [
                 .foregroundColor: NSColor.tertiaryLabelColor,
                 .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),

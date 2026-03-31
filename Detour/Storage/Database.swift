@@ -449,6 +449,18 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v3") { db in
+            try db.create(table: "extensionPermission") { t in
+                t.column("extensionID", .text).notNull()
+                    .references("extension", onDelete: .cascade)
+                t.column("permissionKey", .text).notNull()
+                t.column("permissionType", .integer).notNull()
+                t.column("status", .integer).notNull()
+                t.column("grantedAt", .double).notNull()
+                t.primaryKey(["extensionID", "permissionKey", "permissionType"])
+            }
+        }
+
         return migrator
     }
 
@@ -542,6 +554,61 @@ struct AppDatabase {
         performWrite("clear extension storage") { db in
             try ExtensionStorageRecord
                 .filter(Column("extensionID") == extensionID)
+                .deleteAll(db)
+        }
+    }
+
+    // MARK: - Extension Permissions
+
+    func savePermission(_ record: ExtensionPermissionRecord) {
+        performWrite("save extension permission") { db in
+            try record.save(db)
+        }
+    }
+
+    func savePermissions(_ records: [ExtensionPermissionRecord]) {
+        performWrite("save extension permissions") { db in
+            for record in records {
+                try record.save(db)
+            }
+        }
+    }
+
+    func loadPermissionsByKey(extensionID: String) -> [String: ExtensionPermissionStatus] {
+        let records = loadPermissions(extensionID: extensionID)
+        return Dictionary(
+            records.map { ($0.permissionKey, ExtensionPermissionStatus(rawValue: $0.status) ?? .denied) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+    }
+
+    func loadPermissions(extensionID: String) -> [ExtensionPermissionRecord] {
+        performRead("load extension permissions", default: []) { db in
+            try ExtensionPermissionRecord
+                .filter(Column("extensionID") == extensionID)
+                .fetchAll(db)
+        }
+    }
+
+    func permissionStatus(extensionID: String, key: String, type: ExtensionPermissionType) -> ExtensionPermissionStatus? {
+        performRead("check extension permission", default: nil) { db in
+            if let record = try ExtensionPermissionRecord
+                .filter(Column("extensionID") == extensionID
+                    && Column("permissionKey") == key
+                    && Column("permissionType") == type.rawValue)
+                .fetchOne(db) {
+                return ExtensionPermissionStatus(rawValue: record.status)
+            }
+            return nil
+        }
+    }
+
+    func revokePermission(extensionID: String, key: String, type: ExtensionPermissionType) {
+        performWrite("revoke extension permission") { db in
+            try ExtensionPermissionRecord
+                .filter(Column("extensionID") == extensionID
+                    && Column("permissionKey") == key
+                    && Column("permissionType") == type.rawValue)
                 .deleteAll(db)
         }
     }

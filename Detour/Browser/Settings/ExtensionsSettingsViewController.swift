@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 
 class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
@@ -238,28 +239,60 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         enabledRow.orientation = .horizontal
         enabledRow.spacing = 8
 
-        // Permissions section — read from manifest permissions + host_permissions
-        let permsSummary: [String] = {
-            var perms: [String] = []
-            if let p = ext.manifest.permissions { perms.append(contentsOf: p) }
-            if let hp = ext.manifest.hostPermissions { perms.append(contentsOf: hp) }
-            return perms
-        }()
+        // Permissions section — interactive toggles
         let permsHeader = NSTextField(labelWithString: "Permissions")
         permsHeader.font = .systemFont(ofSize: 13, weight: .medium)
 
+        let savedByKey = AppDatabase.shared.loadPermissionsByKey(extensionID: ext.id)
+
+        let requiredPerms = ext.manifest.permissions ?? []
+        let hostPerms = ext.manifest.hostPermissions ?? []
+        let optionalPerms = ext.manifest.optionalPermissions ?? []
+
         var permContentViews: [NSView] = []
-        if permsSummary.isEmpty {
+
+        if requiredPerms.isEmpty && hostPerms.isEmpty && optionalPerms.isEmpty {
             let noneLabel = NSTextField(labelWithString: "No special permissions requested.")
             noneLabel.font = .systemFont(ofSize: 12)
             noneLabel.textColor = .secondaryLabelColor
             permContentViews.append(noneLabel)
         } else {
-            for perm in permsSummary {
-                let permLabel = NSTextField(labelWithString: "\u{2022} \(perm)")
-                permLabel.font = .systemFont(ofSize: 12)
-                permLabel.textColor = .secondaryLabelColor
-                permContentViews.append(permLabel)
+            // Required API permissions
+            for perm in requiredPerms {
+                let row = makePermissionRow(
+                    extensionID: ext.id, key: perm,
+                    type: .apiPermission, isGranted: savedByKey[perm] == .granted,
+                    label: ExtensionPermissionDescriptions.describe(perm),
+                    isRequired: true
+                )
+                permContentViews.append(row)
+            }
+            // Host permissions
+            for pattern in hostPerms {
+                let display = pattern == "<all_urls>" ? "All websites" : pattern
+                let row = makePermissionRow(
+                    extensionID: ext.id, key: pattern,
+                    type: .matchPattern, isGranted: savedByKey[pattern] == .granted,
+                    label: display,
+                    isRequired: true
+                )
+                permContentViews.append(row)
+            }
+            // Optional permissions
+            if !optionalPerms.isEmpty {
+                let optHeader = NSTextField(labelWithString: "Optional:")
+                optHeader.font = .systemFont(ofSize: 11, weight: .medium)
+                optHeader.textColor = .secondaryLabelColor
+                permContentViews.append(optHeader)
+                for perm in optionalPerms {
+                    let row = makePermissionRow(
+                        extensionID: ext.id, key: perm,
+                        type: .apiPermission, isGranted: savedByKey[perm] == .granted,
+                        label: ExtensionPermissionDescriptions.describe(perm),
+                        isRequired: false
+                    )
+                    permContentViews.append(row)
+                }
             }
         }
 
@@ -333,6 +366,81 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: enabled)
     }
 
+    private func makePermissionRow(
+        extensionID: String, key: String, type: ExtensionPermissionType,
+        isGranted: Bool, label: String, isRequired: Bool
+    ) -> NSView {
+        let toggle = NSSwitch()
+        toggle.controlSize = .mini
+        toggle.state = isGranted ? .on : .off
+        toggle.target = self
+        toggle.action = #selector(permissionToggled(_:))
+        // Encode extension ID, permission key, and type into the identifier
+        toggle.identifier = NSUserInterfaceItemIdentifier("\(extensionID)\t\(key)\t\(type.rawValue)")
+
+        let permLabel = NSTextField(labelWithString: label)
+        permLabel.font = .systemFont(ofSize: 12)
+        permLabel.textColor = .secondaryLabelColor
+
+        let row = NSStackView(views: [toggle, permLabel])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.alignment = .centerY
+        return row
+    }
+
+    @objc private func permissionToggled(_ sender: NSSwitch) {
+        guard let parts = sender.identifier?.rawValue.split(separator: "\t", maxSplits: 2),
+              parts.count == 3,
+              let typeRaw = Int(parts[2]),
+              let type = ExtensionPermissionType(rawValue: typeRaw) else { return }
+
+        let extensionID = String(parts[0])
+        let key = String(parts[1])
+        let isGranted = sender.state == .on
+
+        if !isGranted {
+            // Warn when revoking a required permission
+            let ext = extensions.first { $0.id == extensionID }
+            let isRequired: Bool = {
+                let required = (ext?.manifest.permissions ?? []) + (ext?.manifest.hostPermissions ?? [])
+                return required.contains(key)
+            }()
+            if isRequired {
+                let alert = NSAlert()
+                alert.messageText = "Revoke Permission?"
+                alert.informativeText = "Revoking this permission may cause the extension to stop working."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Revoke")
+                alert.addButton(withTitle: "Cancel")
+                if alert.runModal() != .alertFirstButtonReturn {
+                    sender.state = .on
+                    return
+                }
+            }
+        }
+
+        AppDatabase.shared.savePermission(ExtensionPermissionRecord(
+            extensionID: extensionID, key: key, type: type,
+            status: isGranted ? .granted : .denied
+        ))
+
+        // Update the WKWebExtensionContext permission status in all loaded profiles
+        let wkStatus: WKWebExtensionContext.PermissionStatus = isGranted ? .grantedExplicitly : .deniedExplicitly
+        for profile in TabStore.shared.profiles {
+            guard let context = profile.extensionContext(for: extensionID) else { continue }
+            switch type {
+            case .apiPermission:
+                let permission = WKWebExtension.Permission(rawValue: key)
+                context.setPermissionStatus(wkStatus, for: permission)
+            case .matchPattern:
+                if let pattern = try? WKWebExtension.MatchPattern(string: key) {
+                    context.setPermissionStatus(wkStatus, for: pattern)
+                }
+            }
+        }
+    }
+
     @objc private func addExtensionClicked(_ sender: NSButton) {
         let menu = NSMenu()
         menu.addItem(withTitle: "Load Unpacked Extension…", action: #selector(loadUnpackedExtension), keyEquivalent: "")
@@ -357,9 +465,15 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
                 let manifest = try ExtensionManifest.parse(at: manifestURL)
                 let displayName = WebExtension.resolveI18nName(manifest.name, basePath: url, defaultLocale: manifest.defaultLocale)
 
+                let permissionSummary = ExtensionPermissionDescriptions.formatForAlert(
+                    permissions: manifest.permissions ?? [],
+                    hostPermissions: manifest.hostPermissions ?? [],
+                    optionalPermissions: manifest.optionalPermissions
+                )
+
                 let confirmAlert = NSAlert()
                 confirmAlert.messageText = "Install \"\(displayName)\"?"
-                confirmAlert.informativeText = "This extension will be installed and enabled."
+                confirmAlert.informativeText = permissionSummary
                 confirmAlert.alertStyle = .warning
                 confirmAlert.addButton(withTitle: "Install")
                 confirmAlert.addButton(withTitle: "Cancel")

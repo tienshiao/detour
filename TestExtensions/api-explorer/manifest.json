@@ -6,7 +6,7 @@
   "default_locale": "en",
   "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen", "alarms", "fontSettings", "idle", "notifications", "history", "bookmarks", "sessions", "search"],
   "host_permissions": ["<all_urls>"],
-  "optional_permissions": ["bookmarks"],
+  "optional_permissions": ["cookies"],
   "commands": {
     "test-command": {
       "suggested_key": {"default": "Alt+Shift+E", "mac": "Alt+Shift+E"},
