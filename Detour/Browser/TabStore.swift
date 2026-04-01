@@ -95,15 +95,6 @@ class Space {
         // load favicon images via detour-favicon:// URLs rewritten by the polyfill.
         config.setURLSchemeHandler(FaviconSchemeHandler(), forURLScheme: FaviconSchemeHandler.scheme)
 
-        // Inject favicon URL rewriter into all frames (including extension page iframes
-        // like the Vomnibar) so /_favicon/ img src URLs get rewritten to detour-favicon://.
-        let faviconRewrite = WKUserScript(
-            source: ExtensionAPIPolyfill.faviconRewriteJS,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false
-        )
-        config.userContentController.addUserScript(faviconRewrite)
-
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         config.userContentController.addUserScript(script)
 

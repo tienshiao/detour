@@ -219,33 +219,63 @@ struct ExtensionAPIPolyfill {
     private static let missingStubsJS = """
     (function() {
         const chrome = globalThis.chrome;
-        // chrome.windows.WINDOW_ID_NONE — constant for "no window focused"
+
+        // Pin patched namespace wrappers as own properties on chrome so GC
+        // cannot collect the weakly-cached JS wrappers and lose our patches.
+        // See docs/chrome-runtime-patching.md for details.
+
+        // chrome.windows — add WINDOW_ID_NONE constant
         if (chrome.windows && chrome.windows.WINDOW_ID_NONE === undefined) {
-            chrome.windows.WINDOW_ID_NONE = -1;
+            const windows = chrome.windows;
+            windows.WINDOW_ID_NONE = -1;
+            Object.defineProperty(chrome, 'windows', {
+                value: windows, writable: false, configurable: true, enumerable: true
+            });
         }
-        // chrome.tabs.onReplaced — event for tab prerender replacement (rare)
+
+        // chrome.tabs — add onReplaced event stub
         if (chrome.tabs && !chrome.tabs.onReplaced) {
-            chrome.tabs.onReplaced = __detourMakeEventEmitter([]);
+            const tabs = chrome.tabs;
+            tabs.onReplaced = __detourMakeEventEmitter([]);
+            Object.defineProperty(chrome, 'tabs', {
+                value: tabs, writable: false, configurable: true, enumerable: true
+            });
         }
-        // chrome.runtime.getURL — redirect /_favicon/ to our custom scheme handler.
-        // Scheme must match FaviconSchemeHandler.scheme ("detour-favicon").
-        if (chrome.runtime && typeof chrome.runtime.getURL === 'function') {
-            const _nativeGetURL = chrome.runtime.getURL.bind(chrome.runtime);
-            chrome.runtime.getURL = function(path) {
-                if (path && path.startsWith('/_favicon/')) {
-                    return 'detour-favicon://' + (chrome.runtime.id || 'unknown') + path;
-                }
-                return _nativeGetURL(path);
-            };
-        }
-        // chrome.runtime.setUninstallURL — store URL on the native side so the
-        // browser can open it when the extension is removed.
+
+        // chrome.runtime — patch getURL and add setUninstallURL, then pin
         if (chrome.runtime) {
-            chrome.runtime.setUninstallURL = function(url, callback) {
+            const runtime = chrome.runtime;
+
+            // getURL — redirect /_favicon/ to our custom scheme handler.
+            // Scheme must match FaviconSchemeHandler.scheme ("detour-favicon").
+            if (typeof runtime.getURL === 'function') {
+                const _nativeGetURL = runtime.getURL.bind(runtime);
+                // Extract the WebKit-assigned host UUID from the native URL so the
+                // favicon scheme handler can match it against permitted hosts.
+                let _webkitHost = '';
+                try {
+                    const probe = new URL(_nativeGetURL(''));
+                    _webkitHost = probe.host;
+                } catch(e) {}
+                runtime.getURL = function(path) {
+                    if (path && path.startsWith('/_favicon/') && _webkitHost) {
+                        return 'detour-favicon://' + _webkitHost + path;
+                    }
+                    return _nativeGetURL(path);
+                };
+            }
+
+            // setUninstallURL — store URL on the native side so the
+            // browser can open it when the extension is removed.
+            runtime.setUninstallURL = function(url, callback) {
                 const promise = __detourPolyfillRequest('runtime.setUninstallURL', { url: url });
                 if (callback) { promise.then(function() { callback(); }); return; }
                 return promise;
             };
+
+            Object.defineProperty(chrome, 'runtime', {
+                value: runtime, writable: false, configurable: true, enumerable: true
+            });
         }
     })();
     """
@@ -901,6 +931,11 @@ struct ExtensionAPIPolyfill {
 
         if (createdNav) {
             __detourDefine(chrome, 'webNavigation', nav);
+        } else {
+            // Pin the patched native wrapper to survive GC
+            Object.defineProperty(chrome, 'webNavigation', {
+                value: nav, writable: false, configurable: true, enumerable: true
+            });
         }
 
         // Dispatch function for polyfill-sourced events (content script SPA detection).
@@ -914,78 +949,6 @@ struct ExtensionAPIPolyfill {
                 }
             }
         };
-    })();
-    """
-
-    // MARK: - Favicon URL rewrite (extension pages)
-
-    /// MutationObserver that rewrites `webkit-extension://.../_favicon/` img src
-    /// URLs to `detour-favicon://` so the FaviconSchemeHandler can serve them.
-    /// WebKit re-initializes chrome.runtime after polyfill injection, so the
-    /// getURL override doesn't persist. This DOM-level approach catches images
-    /// as they're inserted and rewrites before the browser attempts to load.
-    static let faviconRewriteJS = """
-    (function() {
-        // Only run in extension page contexts (not service workers or regular pages)
-        if (typeof document === 'undefined') return;
-        if (typeof location === 'undefined' || !location.protocol.startsWith('webkit-extension')) return;
-        if (globalThis.__detourFaviconRewrite) return;
-        globalThis.__detourFaviconRewrite = true;
-
-        function rewriteFaviconSrc(img) {
-            const src = img.getAttribute('src') || '';
-            if (!src.includes('/_favicon/')) return;
-            if (src.startsWith('detour-favicon://')) return;
-            try {
-                const url = new URL(src);
-                const extensionId = url.host;
-                const pageUrl = url.searchParams.get('pageUrl');
-                const size = url.searchParams.get('size') || '16';
-                if (pageUrl && extensionId) {
-                    img.src = 'detour-favicon://' + extensionId +
-                        '/_favicon/?pageUrl=' +
-                        encodeURIComponent(pageUrl) + '&size=' + size;
-                }
-            } catch(e) {}
-        }
-
-        function scanNode(node) {
-            if (node.nodeName === 'IMG') rewriteFaviconSrc(node);
-            if (node.querySelectorAll) {
-                const imgs = node.querySelectorAll('img[src*="/_favicon/"]');
-                for (let i = 0; i < imgs.length; i++) rewriteFaviconSrc(imgs[i]);
-            }
-        }
-
-        const observer = new MutationObserver(function(mutations) {
-            for (let i = 0; i < mutations.length; i++) {
-                const mutation = mutations[i];
-                if (mutation.type === 'childList') {
-                    const added = mutation.addedNodes;
-                    for (let j = 0; j < added.length; j++) scanNode(added[j]);
-                } else if (mutation.type === 'attributes' && mutation.target.nodeName === 'IMG') {
-                    rewriteFaviconSrc(mutation.target);
-                }
-            }
-        });
-
-        function startObserving() {
-            observer.observe(document.body, {
-                childList: true,
-                subtree: true,
-                attributes: true,
-                attributeFilter: ['src']
-            });
-            // Scan any images already in the DOM
-            const existing = document.body.querySelectorAll('img[src*="/_favicon/"]');
-            for (let i = 0; i < existing.length; i++) rewriteFaviconSrc(existing[i]);
-        }
-
-        if (document.body) {
-            startObserving();
-        } else {
-            document.addEventListener('DOMContentLoaded', startObserving);
-        }
     })();
     """
 
