@@ -473,13 +473,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
     }
 
-    private static let moduleSWPolyfillFilename = "_detour_polyfill_module.js"
-
     private func injectModuleSWPolyfill(ext: WebExtension, swURL: URL) {
-        let polyfillFilename = Self.moduleSWPolyfillFilename
-        let polyfillURL = ext.basePath.appendingPathComponent(polyfillFilename)
-
-        // Write/update the polyfill module file
+        let polyfillFilename = "_detour_polyfill_module.js"
+        // Write the polyfill file next to the service worker, matching the classic strategy.
+        let swDir = swURL.deletingLastPathComponent()
+        let polyfillURL = swDir.appendingPathComponent(polyfillFilename)
         do {
             try writeIfChanged(ExtensionAPIPolyfill.polyfillJS, to: polyfillURL)
         } catch {
@@ -487,34 +485,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return
         }
 
-        // Prepend import to the SW file, using correct relative path from SW to root
-        let swDir = swURL.deletingLastPathComponent().standardized.path
-        let rootDir = ext.basePath.standardized.path
-        let depth = swDir.dropFirst(rootDir.count + 1).components(separatedBy: "/").count
-        let prefix = depth > 0 ? String(repeating: "../", count: depth) : "./"
-        let importLine = "import '\(prefix)\(polyfillFilename)';"
-
-        // Also clean up old console bridge imports
-        let oldBridgeFilename = "_detour_console_bridge.js"
-
+        let importLine = "import './\(polyfillFilename)';"
         do {
-            var swSource = try String(contentsOf: swURL, encoding: .utf8)
-            // Remove old console bridge import if present
-            if swSource.contains(oldBridgeFilename) {
-                swSource = swSource.replacingOccurrences(
-                    of: #"import\s+['"][^'"]*_detour_console_bridge\.js['"];\n?"#,
-                    with: "",
-                    options: .regularExpression
-                )
-            }
-            // Remove old polyfill import with a different path
-            if swSource.contains(polyfillFilename) && !swSource.contains(importLine) {
-                swSource = swSource.replacingOccurrences(
-                    of: #"import\s+['"][^'"]*\#(polyfillFilename)['"];\n?"#,
-                    with: "",
-                    options: .regularExpression
-                )
-            }
+            let swSource = try String(contentsOf: swURL, encoding: .utf8)
             if !swSource.contains(importLine) {
                 let patched = importLine + "\n" + swSource
                 try patched.write(to: swURL, atomically: true, encoding: .utf8)
