@@ -244,6 +244,14 @@ class Profile {
         do {
             try extensionController.load(context)
             extensionContexts[ext.id] = context
+            // Observe extension context errors for debugging
+            NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak context] _ in
+                guard let context else { return }
+                for error in context.errors {
+                    let nsError = error as NSError
+                    log.error("Extension error [\(ext.id, privacy: .public)]: \(nsError.localizedDescription, privacy: .public)")
+                }
+            }
             // Cache favicon permission for the scheme handler (checked per-request on any thread)
             if let host = context.baseURL.host,
                ext.manifest.permissions?.contains("favicon") == true {

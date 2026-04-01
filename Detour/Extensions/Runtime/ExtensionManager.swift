@@ -449,7 +449,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     private func injectClassicSWPolyfill(ext: WebExtension, swURL: URL, polyfillFilename: String) {
-        let polyfillURL = ext.basePath.appendingPathComponent(polyfillFilename)
+        // Write the polyfill file next to the service worker, since importScripts
+        // resolves paths relative to the SW file's directory, not the extension root.
+        let swDir = swURL.deletingLastPathComponent()
+        let polyfillURL = swDir.appendingPathComponent(polyfillFilename)
         do {
             try writeIfChanged(ExtensionAPIPolyfill.polyfillJS, to: polyfillURL)
         } catch {
