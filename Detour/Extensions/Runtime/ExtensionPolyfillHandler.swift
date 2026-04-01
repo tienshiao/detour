@@ -312,6 +312,16 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler([:] as [String: Any], nil)
             }
 
+        // MARK: - Runtime
+        case "runtime.setUninstallURL":
+            let urlString = params["url"] as? String ?? ""
+            if let url = URL(string: urlString), !urlString.isEmpty {
+                ExtensionManager.shared.uninstallURLs[extensionID] = url
+            } else {
+                ExtensionManager.shared.uninstallURLs.removeValue(forKey: extensionID)
+            }
+            replyHandler(true, nil)
+
         // MARK: - Logging Bridge
         case "log":
             let level = params["level"] as? String ?? "info"

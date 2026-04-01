@@ -238,6 +238,15 @@ struct ExtensionAPIPolyfill {
                 return _nativeGetURL(path);
             };
         }
+        // chrome.runtime.setUninstallURL — store URL on the native side so the
+        // browser can open it when the extension is removed.
+        if (chrome.runtime) {
+            chrome.runtime.setUninstallURL = function(url, callback) {
+                const promise = __detourPolyfillRequest('runtime.setUninstallURL', { url: url });
+                if (callback) { promise.then(function() { callback(); }); return; }
+                return promise;
+            };
+        }
     })();
     """
 
