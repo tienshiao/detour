@@ -579,10 +579,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     /// Find a space belonging to the profile that owns a controller.
+    /// Returns nil if the profile has no open spaces — callers should not create
+    /// tabs in a different profile's space.
     private func space(for controller: WKWebExtensionController) -> Space? {
         let targetProfile = profile(for: controller)
         return TabStore.shared.spaces.first { $0.profileID == targetProfile?.id }
-            ?? TabStore.shared.spaces.first
     }
 
     /// Select a tab and notify window controllers.
