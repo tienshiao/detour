@@ -671,7 +671,17 @@ class BrowserWindowController: NSWindowController {
 
         guard let tab = selectedTab else { return }
         tab.lastDeselectedAt = nil
-        if tab.isSleeping { tab.wake() }
+        if tab.isSleeping {
+            tab.wake()
+            // Notify extension contexts that this previously-sleeping tab is now open and active.
+            // Sleeping tabs are skipped during notifyExistingTabs, so didOpenTab was never called.
+            if let space = activeSpace, let profile = space.profile {
+                for context in profile.extensionContexts.values {
+                    context.didOpenTab(tab)
+                    context.didActivateTab(tab, previousActiveTab: nil)
+                }
+            }
+        }
 
         bindDisplayTab()
 
