@@ -118,15 +118,6 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(exists, "object")
     }
 
-    func testExtensionNamespaceExists() async throws {
-        let exists = try await eval("return typeof chrome.extension") as? String
-        XCTAssertEqual(exists, "object")
-    }
-
-    func testWebRequestNamespaceExists() async throws {
-        let exists = try await eval("return typeof chrome.webRequest") as? String
-        XCTAssertEqual(exists, "object")
-    }
 
     // MARK: - chrome.idle
 
@@ -296,38 +287,6 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result as? Bool, false)
     }
 
-    // MARK: - chrome.extension
-
-    func testExtensionGetBackgroundPageReturnsNull() async throws {
-        let result = try await eval("return chrome.extension.getBackgroundPage()")
-        // JS null comes through as NSNull, not Swift nil
-        XCTAssertTrue(result is NSNull || result == nil,
-                       "getBackgroundPage() should return null, got: \(String(describing: result))")
-    }
-
-    func testExtensionIsAllowedFileSchemeAccess() async throws {
-        let result = try await eval("return await chrome.extension.isAllowedFileSchemeAccess()")
-        XCTAssertEqual(result as? Bool, false)
-    }
-
-    func testExtensionIsAllowedIncognitoAccess() async throws {
-        let result = try await eval("return await chrome.extension.isAllowedIncognitoAccess()")
-        XCTAssertEqual(result as? Bool, false)
-    }
-
-    // MARK: - chrome.webRequest
-
-    func testWebRequestEventEmitters() async throws {
-        let onBefore = try await eval("return typeof chrome.webRequest.onBeforeRequest.addListener") as? String
-        XCTAssertEqual(onBefore, "function")
-        let onHeaders = try await eval("return typeof chrome.webRequest.onHeadersReceived.addListener") as? String
-        XCTAssertEqual(onHeaders, "function")
-    }
-
-    func testWebRequestHasListenerReturnsFalse() async throws {
-        let result = try await eval("return chrome.webRequest.onBeforeRequest.hasListener(function(){})") as? Bool
-        XCTAssertEqual(result, false)
-    }
 
     // MARK: - Event Emitter Utility
 

@@ -45,23 +45,6 @@ struct ExtensionAPIPolyfill {
             install(chrome.i18n, 'detectLanguage', detectLanguageViaBackground);
         }
 
-        // chrome.tabs.detectLanguage — detect language of active tab's page
-        // In popup/options contexts chrome.tabs may not exist; create a stub.
-        if (!chrome.tabs) {
-            try { chrome.tabs = {}; } catch(e) {}
-        }
-        if (chrome.tabs) {
-            install(chrome.tabs, 'detectLanguage', function(tabIdOrCb, cb) {
-                if (typeof tabIdOrCb === 'function') { cb = tabIdOrCb; tabIdOrCb = null; }
-                // Route through background to use the native tabs.detectLanguage polyfill
-                chrome.runtime.sendMessage(
-                    { _detourTabsDetectLanguage: true, tabId: tabIdOrCb },
-                    function(response) {
-                        if (cb) cb(response || 'und');
-                    }
-                );
-            });
-        }
     })();
 
     // Fix WebKit bug: iframe.focus() inside a Shadow DOM updates the shadow root's
@@ -96,10 +79,6 @@ struct ExtensionAPIPolyfill {
             sessionsJS,
             searchJS,
             offscreenJS,
-            tabsDetectLanguageJS,
-            extensionJS,
-            bookmarksJS,
-            webRequestJS,
             webNavigationJS,
         ].joined(separator: "\n")
 
@@ -220,29 +199,9 @@ struct ExtensionAPIPolyfill {
     (function() {
         const chrome = globalThis.chrome;
 
-        // Pin patched namespace wrappers as own properties on chrome so GC
-        // cannot collect the weakly-cached JS wrappers and lose our patches.
+        // Pin the runtime wrapper as an own property on chrome so GC
+        // cannot collect the weakly-cached JS wrapper and lose our patches.
         // See docs/chrome-runtime-patching.md for details.
-
-        // chrome.windows — add WINDOW_ID_NONE constant
-        if (chrome.windows && chrome.windows.WINDOW_ID_NONE === undefined) {
-            const windows = chrome.windows;
-            windows.WINDOW_ID_NONE = -1;
-            Object.defineProperty(chrome, 'windows', {
-                value: windows, writable: false, configurable: true, enumerable: true
-            });
-        }
-
-        // chrome.tabs — add onReplaced event stub
-        if (chrome.tabs && !chrome.tabs.onReplaced) {
-            const tabs = chrome.tabs;
-            tabs.onReplaced = __detourMakeEventEmitter([]);
-            Object.defineProperty(chrome, 'tabs', {
-                value: tabs, writable: false, configurable: true, enumerable: true
-            });
-        }
-
-        // chrome.runtime — patch getURL and add setUninstallURL, then pin
         if (chrome.runtime) {
             const runtime = chrome.runtime;
 
@@ -264,14 +223,6 @@ struct ExtensionAPIPolyfill {
                     return _nativeGetURL(path);
                 };
             }
-
-            // setUninstallURL — store URL on the native side so the
-            // browser can open it when the extension is removed.
-            runtime.setUninstallURL = function(url, callback) {
-                const promise = __detourPolyfillRequest('runtime.setUninstallURL', { url: url });
-                if (callback) { promise.then(function() { callback(); }); return; }
-                return promise;
-            };
 
             Object.defineProperty(chrome, 'runtime', {
                 value: runtime, writable: false, configurable: true, enumerable: true
@@ -296,12 +247,6 @@ struct ExtensionAPIPolyfill {
                     .catch(function(e) {
                         sendResponse({ isReliable: false, languages: [{ language: 'und', percentage: 100 }] });
                     });
-                return true;
-            }
-            if (message && message._detourTabsDetectLanguage) {
-                __detourPolyfillRequest('tabs.detectLanguage', { tabId: message.tabId })
-                    .then(function(lang) { sendResponse(lang); })
-                    .catch(function(e) { sendResponse('und'); });
                 return true;
             }
             // Route webNavigation events from content scripts
@@ -705,145 +650,6 @@ struct ExtensionAPIPolyfill {
                 MATCH_MEDIA: 'MATCH_MEDIA',
                 GEOLOCATION: 'GEOLOCATION'
             }
-        });
-    })();
-    """
-
-    // MARK: - chrome.tabs.detectLanguage
-
-    /// Polyfill for chrome.tabs.detectLanguage which WKWebExtension doesn't implement.
-    /// Delegates to the native handler which reads document.documentElement.lang from
-    /// the tab's webView, falling back to NLLanguageRecognizer on page text.
-    private static let tabsDetectLanguageJS = """
-    (function() {
-        const g = globalThis;
-        if (!g.chrome) g.chrome = {};
-
-        const _detectLanguage = function(tabIdOrCb, cb) {
-            if (typeof tabIdOrCb === 'function') {
-                cb = tabIdOrCb;
-                tabIdOrCb = null;
-            }
-            const promise = __detourPolyfillRequest('tabs.detectLanguage', {
-                tabId: tabIdOrCb
-            }).then(function(r) { return r || 'und'; });
-            if (cb) { promise.then(function(lang) { cb(lang); }); return; }
-            return promise;
-        };
-
-        if (g.chrome.tabs) {
-            __detourDefine(g.chrome.tabs, 'detectLanguage', _detectLanguage);
-        } else {
-            __detourDefine(g.chrome, 'tabs', { detectLanguage: _detectLanguage });
-        }
-        if (g.browser && g.browser.tabs) {
-            __detourDefine(g.browser.tabs, 'detectLanguage', _detectLanguage);
-        }
-    })();
-    """
-
-    // MARK: - chrome.extension
-
-    private static let extensionJS = """
-    (function() {
-        // Always install — WebKit may provide stubs that don't work
-        const chrome = globalThis.chrome;
-
-        __detourDefine(chrome, 'extension', {
-            getBackgroundPage: function() { return null; },
-            isAllowedFileSchemeAccess: function(callback) {
-                if (callback) { callback(false); return; }
-                return Promise.resolve(false);
-            },
-            isAllowedIncognitoAccess: function(callback) {
-                if (callback) { callback(false); return; }
-                return Promise.resolve(false);
-            }
-        });
-    })();
-    """
-
-    // MARK: - chrome.bookmarks
-
-    /// Stub for chrome.bookmarks — browser has no bookmark system yet.
-    /// Returns empty tree so extensions that query bookmarks don't crash.
-    private static let bookmarksJS = """
-    (function() {
-        const chrome = globalThis.chrome;
-        if (chrome.bookmarks && typeof chrome.bookmarks.getTree === 'function') return;
-
-        const emptyTree = [{
-            id: '0',
-            title: '',
-            children: [
-                { id: '1', title: 'Bookmarks Bar', children: [], parentId: '0' },
-                { id: '2', title: 'Other Bookmarks', children: [], parentId: '0' }
-            ]
-        }];
-
-        function freshTree() { return JSON.parse(JSON.stringify(emptyTree)); }
-
-        const bookmarks = {
-            getTree: function(callback) {
-                const tree = freshTree();
-                if (callback) { callback(tree); return; }
-                return Promise.resolve(tree);
-            },
-            get: function(idOrList, callback) {
-                const result = [];
-                if (callback) { callback(result); return; }
-                return Promise.resolve(result);
-            },
-            getChildren: function(id, callback) {
-                const result = [];
-                if (callback) { callback(result); return; }
-                return Promise.resolve(result);
-            },
-            search: function(query, callback) {
-                const result = [];
-                if (callback) { callback(result); return; }
-                return Promise.resolve(result);
-            }
-        };
-
-        __detourDefine(chrome, 'bookmarks', bookmarks);
-    })();
-    """
-
-    // MARK: - chrome.webRequest
-
-    /// No-op event emitters — WebKit provides no pre-request interception API.
-    private static let webRequestJS = """
-    (function() {
-        // Always install — WebKit may provide stubs that don't work
-        const chrome = globalThis.chrome;
-
-        function makeNoOpEventEmitter(name) {
-            let warned = false;
-            return {
-                addListener: function(cb, filter, extraInfoSpec) {
-                    if (!warned) {
-                        console.warn('[Detour] chrome.webRequest.' + name +
-                            ' is a no-op stub. WebKit does not support request interception.');
-                        warned = true;
-                    }
-                },
-                removeListener: function(cb) {},
-                hasListener: function(cb) { return false; },
-                hasListeners: function() { return false; }
-            };
-        }
-
-        __detourDefine(chrome, 'webRequest', {
-            onBeforeRequest: makeNoOpEventEmitter('onBeforeRequest'),
-            onBeforeSendHeaders: makeNoOpEventEmitter('onBeforeSendHeaders'),
-            onSendHeaders: makeNoOpEventEmitter('onSendHeaders'),
-            onHeadersReceived: makeNoOpEventEmitter('onHeadersReceived'),
-            onAuthRequired: makeNoOpEventEmitter('onAuthRequired'),
-            onResponseStarted: makeNoOpEventEmitter('onResponseStarted'),
-            onBeforeRedirect: makeNoOpEventEmitter('onBeforeRedirect'),
-            onCompleted: makeNoOpEventEmitter('onCompleted'),
-            onErrorOccurred: makeNoOpEventEmitter('onErrorOccurred')
         });
     })();
     """

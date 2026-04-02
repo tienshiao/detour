@@ -255,42 +255,6 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             let isReliable = (hypotheses.first?.value ?? 0) > 0.7
             replyHandler(["isReliable": isReliable, "languages": languages], nil)
 
-        // MARK: - Tabs
-        case "tabs.detectLanguage":
-            // Detect the primary language of a tab's page content.
-            // Reads document.documentElement.lang, falling back to NLLanguageRecognizer.
-            let tab: BrowserTab?
-            if let tabId = params["tabId"] as? Int, tabId != 0 {
-                tab = TabStore.shared.spaces.flatMap({ $0.pinnedTabs + $0.tabs }).first { $0.id.hashValue == tabId }
-            } else {
-                // No tabId — use the active tab in the last active space
-                let spaceID = ExtensionManager.shared.lastActiveSpaceID
-                let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
-                    ?? TabStore.shared.spaces.first
-                tab = space?.selectedTabID.flatMap { id in space?.tabs.first { $0.id == id } }
-            }
-
-            guard let webView = tab?.webView else {
-                replyHandler("und", nil)
-                return
-            }
-
-            webView.evaluateJavaScript("document.documentElement.lang || ''") { result, error in
-                var lang = (result as? String ?? "").trimmingCharacters(in: .whitespaces)
-                // Normalize: "en-US" → "en", "zh-CN" stays as-is
-                if lang.isEmpty {
-                    // Fallback: use NLLanguageRecognizer on page title
-                    if let title = tab?.title, !title.isEmpty {
-                        let recognizer = NLLanguageRecognizer()
-                        recognizer.processString(title)
-                        lang = recognizer.dominantLanguage?.rawValue ?? "und"
-                    } else {
-                        lang = "und"
-                    }
-                }
-                replyHandler(lang, nil)
-            }
-
         // MARK: - WebNavigation
         case "webNavigation.getAllFrames":
             replyHandler(Self.defaultFrameInfo, nil)
@@ -311,16 +275,6 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             } else {
                 replyHandler([:] as [String: Any], nil)
             }
-
-        // MARK: - Runtime
-        case "runtime.setUninstallURL":
-            let urlString = params["url"] as? String ?? ""
-            if let url = URL(string: urlString), !urlString.isEmpty {
-                ExtensionManager.shared.uninstallURLs[extensionID] = url
-            } else {
-                ExtensionManager.shared.uninstallURLs.removeValue(forKey: extensionID)
-            }
-            replyHandler(true, nil)
 
         // MARK: - Logging Bridge
         case "log":

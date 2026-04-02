@@ -14,9 +14,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Each element's `.wkExtension` is populated asynchronously after init.
     var extensions: [WebExtension] = []
 
-    /// Uninstall URLs per extension, set via chrome.runtime.setUninstallURL.
-    var uninstallURLs: [String: URL] = [:]
-
     /// The most recently focused space ID, used for `currentWindow` queries.
     var lastActiveSpaceID: UUID?
 
@@ -332,29 +329,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func uninstall(id: String) {
         log.info("Uninstalling extension \(id, privacy: .public)")
 
-        // Open uninstall URL if set
-        if let uninstallURL = uninstallURLs[id] {
-            if let activeSpaceID = lastActiveSpaceID,
-               let space = TabStore.shared.space(withID: activeSpaceID) {
-                let tab = TabStore.shared.addTab(in: space, url: uninstallURL)
-                space.selectedTabID = tab.id
-                NotificationCenter.default.post(
-                    name: Self.tabShouldSelectNotification,
-                    object: nil,
-                    userInfo: ["tabID": tab.id, "spaceID": space.id]
-                )
-            } else if let space = TabStore.shared.spaces.first {
-                let tab = TabStore.shared.addTab(in: space, url: uninstallURL)
-                space.selectedTabID = tab.id
-            }
-        }
-
         // Unload from all profiles
         for profile in TabStore.shared.profiles {
             profile.unloadExtension(id: id)
         }
 
-        uninstallURLs.removeValue(forKey: id)
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
 

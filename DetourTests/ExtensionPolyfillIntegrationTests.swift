@@ -198,8 +198,6 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
                 sessions: typeof chrome.sessions === 'object',
                 search: typeof chrome.search === 'object',
                 offscreen: typeof chrome.offscreen === 'object',
-                extension: typeof chrome.extension === 'object',
-                webRequest: typeof chrome.webRequest === 'object'
             })
         """, in: wv) as? [String: Any]
 
@@ -267,23 +265,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(result, false)
     }
 
-    func testExtensionGetBackgroundPageWithController() async throws {
-        let wv = try await makeExtensionWebView()
-        let result = try await eval("return chrome.extension.getBackgroundPage() === null", in: wv) as? Bool
-        XCTAssertEqual(result, true)
-    }
 
-    func testWebRequestStubsWithController() async throws {
-        let wv = try await makeExtensionWebView()
-        let result = try await evalJSON("""
-            return JSON.stringify({
-                onBeforeRequest: typeof chrome.webRequest.onBeforeRequest.addListener === 'function',
-                onCompleted: typeof chrome.webRequest.onCompleted.addListener === 'function'
-            })
-        """, in: wv) as? [String: Any]
-        XCTAssertEqual(result?["onBeforeRequest"] as? Bool, true)
-        XCTAssertEqual(result?["onCompleted"] as? Bool, true)
-    }
 
     func testSessionsGetRecentlyClosedWithController() async throws {
         let wv = try await makeExtensionWebView()
