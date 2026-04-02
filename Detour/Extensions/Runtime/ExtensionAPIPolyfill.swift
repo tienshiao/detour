@@ -40,9 +40,15 @@ struct ExtensionAPIPolyfill {
             }
         }
 
-        // chrome.i18n.detectLanguage — detect language of arbitrary text
+        // chrome.i18n.detectLanguage — detect language of arbitrary text.
+        // Pin the i18n wrapper to prevent GC from collecting our patch
+        // (same weak-wrapper issue as chrome.runtime, see docs/chrome-runtime-patching.md).
         if (chrome.i18n) {
-            install(chrome.i18n, 'detectLanguage', detectLanguageViaBackground);
+            const i18n = chrome.i18n;
+            install(i18n, 'detectLanguage', detectLanguageViaBackground);
+            Object.defineProperty(chrome, 'i18n', {
+                value: i18n, writable: false, configurable: true, enumerable: true
+            });
         }
 
     })();
