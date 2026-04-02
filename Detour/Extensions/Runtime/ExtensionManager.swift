@@ -682,8 +682,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping ((any Error)?) -> Void
     ) {
-        // This delegate is for extension-initiated opens (browser.action.openPopup()),
-        // NOT for user toolbar clicks (those use action.popupWebView directly).
+        // This delegate is for extension-initiated opens (browser.action.openPopup()).
+        // User toolbar clicks use userGesturePerformed + manual popup presentation.
         guard let popupWebView = action.popupWebView,
               let extID = extensionIDFromContext(extensionContext) else {
             completionHandler(nil)
@@ -748,6 +748,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         completionHandler: @escaping (Set<URL>, Date?) -> Void
     ) {
         let extID = extensionIDFromContext(extensionContext)
+
+        if shouldAutoGrantForActiveTab(context: extensionContext, tab: tab) {
+            log.info("activeTab auto-grant URLs for \(extID ?? "?", privacy: .public)")
+            completionHandler(urls, nil)
+            return
+        }
+
         let name = extID.map { displayName(for: $0) } ?? "This extension"
         let descriptions = urls.map { $0.absoluteString }
 
@@ -775,6 +782,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         completionHandler: @escaping (Set<WKWebExtension.MatchPattern>, Date?) -> Void
     ) {
         let extID = extensionIDFromContext(extensionContext)
+
+        if shouldAutoGrantForActiveTab(context: extensionContext, tab: tab) {
+            log.info("activeTab auto-grant match patterns for \(extID ?? "?", privacy: .public)")
+            completionHandler(matchPatterns, nil)
+            return
+        }
+
         let name = extID.map { displayName(for: $0) } ?? "This extension"
         let descriptions = matchPatterns.map { pattern -> String in
             pattern.string == "<all_urls>" ? "All websites" : pattern.string
@@ -794,6 +808,17 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             AppDatabase.shared.savePermissions(records)
         }
         completionHandler(granted ? matchPatterns : Set(), nil)
+    }
+
+    /// Returns true if the extension has activeTab and the request should be
+    /// auto-granted (either tab-scoped with a gesture, or from the service worker).
+    private func shouldAutoGrantForActiveTab(
+        context: WKWebExtensionContext, tab: (any WKWebExtensionTab)?
+    ) -> Bool {
+        guard context.hasPermission(.activeTab) else { return false }
+        if let tab { return context.hasActiveUserGesture(in: tab) }
+        // nil tab = service worker request on behalf of a user action
+        return true
     }
 
     /// Shows an NSAlert prompting the user to allow or deny permissions.

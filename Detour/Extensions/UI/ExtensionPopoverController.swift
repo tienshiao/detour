@@ -7,9 +7,9 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "ext-popu
 
 /// Presents an extension's popup in an NSPopover.
 ///
-/// For user-initiated clicks: get `action.popupWebView` directly and present it.
-/// `performAction()` is only for the no-popup case (fires `browser.action.onClicked`).
-/// The delegate `presentActionPopup` is for extension-initiated opens (`browser.action.openPopup()`).
+/// For user-initiated clicks: `show()` calls `userGesturePerformed(in:)` to register the
+/// user gesture (needed for `activeTab`), then presents the popup directly.
+/// The delegate `presentActionPopup` handles extension-initiated opens (`browser.action.openPopup()`).
 class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHandler, WKUIDelegate {
     private let extensionID: String
     private var popover: NSPopover?
@@ -46,16 +46,20 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         self.positioningRect = positioningRect
         self.preferredEdge = preferredEdge
 
-        let activeTab = (NSApp.keyWindow?.windowController as? BrowserWindowController)?.selectedTab
-        let tab: (any WKWebExtensionTab)? = activeTab?.webView(for: context) != nil ? activeTab : nil
+        let tab = (NSApp.keyWindow?.windowController as? BrowserWindowController)?.selectedTab
+
+        // Record the user gesture so activeTab permission grants work.
+        if let tab {
+            context.userGesturePerformed(in: tab)
+        }
+
         let action = context.action(for: tab)
 
         if let action, action.presentsPopup, let webView = action.popupWebView {
-            // User click with popup — reload to match Chrome behavior (popups are recreated each open)
             webView.reload()
             presentPopupWebView(webView)
-        } else if let action, !action.presentsPopup {
-            // No popup — fire browser.action.onClicked in the background script
+        } else {
+            // No popup — fire browser.action.onClicked
             context.performAction(for: tab)
         }
     }

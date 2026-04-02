@@ -77,6 +77,13 @@ extension BrowserTab: WKWebExtensionTab {
         completionHandler(nil)
     }
 
+    /// Required for `activeTab` to work. When `userGesturePerformed(in:)` is called,
+    /// WebKit checks this to decide whether to create a temporary match pattern for the
+    /// tab's URL. Defaults to `false` if not implemented, which silently blocks the grant.
+    func shouldGrantPermissionsOnUserGesture(for context: WKWebExtensionContext) -> Bool {
+        true
+    }
+
     func close(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
         guard let spaceID, let space = TabStore.shared.space(withID: spaceID) else {
             completionHandler(nil)
