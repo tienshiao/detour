@@ -273,12 +273,21 @@ class Profile {
     }
 
     /// Unload an extension from this profile's controller.
-    func unloadExtension(id: String) {
+    func unloadExtension(id: String, removeData: Bool = false) {
         guard let context = extensionContexts.removeValue(forKey: id) else { return }
         if let host = context.baseURL.host {
             FaviconSchemeHandler.revokeFaviconPermission(forWebKitHost: host)
         }
         try? extensionController.unload(context)
+        if removeData {
+            let allTypes = WKWebExtensionController.allExtensionDataTypes
+            extensionController.fetchDataRecord(ofTypes: allTypes, for: context) { [weak self] record in
+                guard let record, let self else { return }
+                self.extensionController.removeData(ofTypes: allTypes, from: [record]) {
+                    log.info("Removed extension data for \(id, privacy: .public)")
+                }
+            }
+        }
     }
 
     /// Get the extension context for a given extension ID in this profile.

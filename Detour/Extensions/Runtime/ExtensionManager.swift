@@ -329,9 +329,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func uninstall(id: String) {
         log.info("Uninstalling extension \(id, privacy: .public)")
 
-        // Unload from all profiles
+        // Unload from all profiles and remove WebKit extension data
         for profile in TabStore.shared.profiles {
-            profile.unloadExtension(id: id)
+            profile.unloadExtension(id: id, removeData: true)
         }
 
         extensions.removeAll { $0.id == id }
