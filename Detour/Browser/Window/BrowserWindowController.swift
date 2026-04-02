@@ -848,6 +848,14 @@ class BrowserWindowController: NSWindowController {
             }
             .store(in: &displayTabSubscriptions)
 
+        tab.$isLoading
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isLoading in
+                self?.tabSidebar.updateReloadButton(isLoading: isLoading)
+            }
+            .store(in: &displayTabSubscriptions)
+
         tab.$canGoBack
             .receive(on: RunLoop.main)
             .sink { [weak self] canGoBack in

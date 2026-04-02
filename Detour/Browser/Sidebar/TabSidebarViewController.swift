@@ -9,6 +9,7 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestGoBack(_ sidebar: TabSidebarViewController)
     func tabSidebarDidRequestGoForward(_ sidebar: TabSidebarViewController)
     func tabSidebarDidRequestReload(_ sidebar: TabSidebarViewController)
+    func tabSidebarDidRequestStop(_ sidebar: TabSidebarViewController)
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect)
     func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController)
     func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTabFrom sourceIndex: Int, to destinationIndex: Int)
@@ -66,6 +67,8 @@ extension TabSidebarDelegate {
 private let tabReorderPasteboardType = NSPasteboard.PasteboardType("com.mybrowser.tab-reorder")
 
 class TabSidebarViewController: NSViewController {
+    private static let navSymbolConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .bold)
+
     weak var delegate: TabSidebarDelegate?
     var isIncognito = false
 
@@ -416,9 +419,8 @@ class TabSidebarViewController: NSViewController {
         spaceClipView.addSubview(spaceStripView)
 
         // Add space button
-        let boldConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .bold)
         addSpaceButton = HoverButton()
-        addSpaceButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Space")?.withSymbolConfiguration(boldConfig)
+        addSpaceButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Space")?.withSymbolConfiguration(Self.navSymbolConfig)
         addSpaceButton.bezelStyle = .inline
         addSpaceButton.isBordered = false
         addSpaceButton.imagePosition = .imageOnly
@@ -431,7 +433,7 @@ class TabSidebarViewController: NSViewController {
 
         // Download button
         downloadButton = HoverButton()
-        downloadButton.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "Downloads")?.withSymbolConfiguration(boldConfig)
+        downloadButton.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "Downloads")?.withSymbolConfiguration(Self.navSymbolConfig)
         downloadButton.bezelStyle = .inline
         downloadButton.isBordered = false
         downloadButton.imagePosition = .imageOnly
@@ -919,8 +921,7 @@ class TabSidebarViewController: NSViewController {
 
     private func makeNavButton(symbolName: String, accessibilityLabel: String, action: Selector) -> HoverButton {
         let button = HoverButton()
-        let boldConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .bold)
-        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityLabel)?.withSymbolConfiguration(boldConfig)
+        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityLabel)?.withSymbolConfiguration(Self.navSymbolConfig)
         button.bezelStyle = .inline
         button.isBordered = false
         button.imagePosition = .imageOnly
@@ -946,6 +947,20 @@ class TabSidebarViewController: NSViewController {
 
     @objc private func reloadClicked() {
         delegate?.tabSidebarDidRequestReload(self)
+    }
+
+    @objc private func stopClicked() {
+        delegate?.tabSidebarDidRequestStop(self)
+    }
+
+    func updateReloadButton(isLoading: Bool) {
+        if isLoading {
+            reloadButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Stop")?.withSymbolConfiguration(Self.navSymbolConfig)
+            reloadButton.action = #selector(stopClicked)
+        } else {
+            reloadButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Reload")?.withSymbolConfiguration(Self.navSymbolConfig)
+            reloadButton.action = #selector(reloadClicked)
+        }
     }
 
     @objc private func addTabClicked() {

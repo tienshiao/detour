@@ -31,6 +31,10 @@ extension BrowserWindowController: TabSidebarDelegate {
         reloadPage(nil)
     }
 
+    func tabSidebarDidRequestStop(_ sidebar: TabSidebarViewController) {
+        selectedTab?.webView?.stopLoading()
+    }
+
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect) {
         commandPaletteNavigatesInPlace = displayTab === selectedTab
         showCommandPalette(initialText: displayTab?.url?.absoluteString, anchorFrame: anchorFrame)
