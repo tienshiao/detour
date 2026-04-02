@@ -39,6 +39,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private var titleLeadingConstraint: NSLayoutConstraint!
     private var faviconLeadingConstraint: NSLayoutConstraint!
     private var closeButtonWidthConstraint: NSLayoutConstraint!
+    private var closeButtonTrailingConstraint: NSLayoutConstraint!
     private var peekFaviconWidthConstraint: NSLayoutConstraint!
     private let hoverBackground = NSView()
     var onClose: (() -> Void)?
@@ -131,6 +132,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         titleLeadingConstraint = titleLabel.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
         faviconLeadingConstraint = faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
         closeButtonWidthConstraint = closeButton.widthAnchor.constraint(equalToConstant: 0)
+        closeButtonTrailingConstraint = closeButton.trailingAnchor.constraint(equalTo: peekFaviconImageView.leadingAnchor, constant: 0)
         peekFaviconWidthConstraint = peekFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
@@ -154,7 +156,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
 
-            closeButton.trailingAnchor.constraint(equalTo: peekFaviconImageView.leadingAnchor, constant: -4),
+            closeButtonTrailingConstraint,
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButtonWidthConstraint,
             closeButton.heightAnchor.constraint(equalToConstant: 16),
@@ -287,6 +289,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private func updateLayoutState() {
         titleLeadingConstraint.constant = audioPlaying ? 24 : 8
         closeButtonWidthConstraint.constant = isHovered ? 16 : 0
+        closeButtonTrailingConstraint.constant = hasPeek ? -4 : 0
         peekFaviconWidthConstraint.constant = hasPeek ? 16 : 0
     }
 
