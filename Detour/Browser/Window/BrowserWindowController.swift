@@ -1588,18 +1588,28 @@ extension BrowserWindowController: ExtensionToolbarActions {
 
 extension BrowserWindowController: CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String) {
+        guard let url = urlFromInput(input) else { return }
+        paletteLoadURL(url)
+    }
+
+    func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String) {
+        let engine = activeSpace?.profile?.searchEngine ?? .google
+        guard let url = engine.searchURL(for: query) else { return }
+        paletteLoadURL(url)
+    }
+
+    private func paletteLoadURL(_ url: URL) {
         let navigateInPlace = commandPaletteNavigatesInPlace
         dismissCommandPalette()
 
         if navigateInPlace, selectedTab != nil {
-            navigateToAddress(input)
+            ensureOwnsWebView()
+            selectedTab?.load(url)
         } else {
             guard let space = activeSpace else { return }
             let tab = store.addTab(in: space)
             selectTab(id: tab.id)
-            if let url = urlFromInput(input) {
-                tab.load(url)
-            }
+            tab.load(url)
         }
     }
 

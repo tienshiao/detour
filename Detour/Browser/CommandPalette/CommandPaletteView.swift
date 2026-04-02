@@ -2,11 +2,13 @@ import AppKit
 
 protocol CommandPaletteDelegate: AnyObject {
     func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String)
+    func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String)
     func commandPaletteDidDismiss(_ palette: CommandPaletteView)
     func commandPalette(_ palette: CommandPaletteView, didRequestSwitchToTab tabID: UUID, in spaceID: UUID)
 }
 
 extension CommandPaletteDelegate {
+    func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String) {}
     func commandPalette(_ palette: CommandPaletteView, didRequestSwitchToTab tabID: UUID, in spaceID: UUID) {}
 }
 
@@ -460,7 +462,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         case .historyResult(let url, _, _):
             delegate?.commandPalette(self, didSubmitInput: url)
         case .searchSuggestion(let text):
-            delegate?.commandPalette(self, didSubmitInput: text)
+            delegate?.commandPalette(self, didSubmitSearch: text)
         case .openTab(let tabID, let spaceID, _, _, _):
             delegate?.commandPalette(self, didRequestSwitchToTab: tabID, in: spaceID)
         }
