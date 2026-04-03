@@ -71,6 +71,7 @@ class TabSidebarViewController: NSViewController {
 
     weak var delegate: TabSidebarDelegate?
     var isIncognito = false
+    private var isBatchUpdating = false
 
     // Active page views — updated by updateActivePage()
     private(set) var tableView = DraggableTableView()
@@ -340,6 +341,14 @@ class TabSidebarViewController: NSViewController {
                 }
             }
         }
+    }
+
+    /// Runs a block with `tableViewSelectionDidChange` suppressed, preventing re-entrant tab selection
+    /// when programmatically changing the table view selection.
+    func suppressingSelectionCallbacks(_ block: () -> Void) {
+        isBatchUpdating = true
+        defer { isBatchUpdating = false }
+        block()
     }
 
     var selectedTabIndex: Int {
@@ -1339,7 +1348,7 @@ class TabSidebarViewController: NSViewController {
         tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
         // After reload the new cell has no hover state — recheck since mouse may already be over it
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, row < self.tableView.numberOfRows else { return }
             if let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
                 cell.recheckHover()
             }
@@ -1791,7 +1800,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard let notifyingTable = notification.object as? NSTableView,
+        guard !isBatchUpdating,
+              let notifyingTable = notification.object as? NSTableView,
               notifyingTable === tableView else { return }
         let row = tableView.selectedRow
         guard row >= 0 else { return }

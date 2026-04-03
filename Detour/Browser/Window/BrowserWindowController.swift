@@ -697,10 +697,12 @@ class BrowserWindowController: NSWindowController {
                                   tabs: currentTabs, selectedTabID: id)
         }
 
-        if let index = activeSpace?.pinnedEntries.firstIndex(where: { $0.tab?.id == id }) {
-            tabSidebar.selectedPinnedTabIndex = index
-        } else if let index = currentTabs.firstIndex(where: { $0.id == id }) {
-            tabSidebar.selectedTabIndex = index
+        tabSidebar.suppressingSelectionCallbacks {
+            if let index = activeSpace?.pinnedEntries.firstIndex(where: { $0.tab?.id == id }) {
+                tabSidebar.selectedPinnedTabIndex = index
+            } else if let index = currentTabs.firstIndex(where: { $0.id == id }) {
+                tabSidebar.selectedTabIndex = index
+            }
         }
 
         if window?.isKeyWindow == true || tab.webView?.superview == nil {
