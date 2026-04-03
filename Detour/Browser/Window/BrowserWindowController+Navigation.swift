@@ -211,13 +211,21 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        let nsError = error as NSError
-        // WebKitErrorFrameLoadInterruptedByPolicyChange (102) fires when a navigation
-        // becomes a download — not a real failure, so don't show an error page.
-        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return }
+        guard !isIgnoredNavigationError(error) else { return }
         selectedTab?.didFailProvisionalNavigation(error: error)
+    }
 
-        // Native WKWebExtension handles chrome.webNavigation events
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard !isIgnoredNavigationError(error) else { return }
+        selectedTab?.didFailNavigation(error: error)
+    }
+
+    /// Download-policy interruptions and user-initiated cancellations aren't real failures.
+    private func isIgnoredNavigationError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return true }
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return true }
+        return false
     }
 
     internal func triggerDownloadAnimation(iconName: String = "doc.fill") {

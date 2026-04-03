@@ -266,8 +266,10 @@ class BrowserTab: NSObject {
         webView.publisher(for: \.url)
             .sink { [weak self] url in
                 guard let self else { return }
-                if let url, !self.navigationPending { self.lastAttemptedURL = url }
+                if let url, !self.navigationPending, url.scheme != ErrorPage.scheme { self.lastAttemptedURL = url }
                 if url?.scheme == ErrorPage.scheme { return }
+                // After cancellation, webView URL reverts to nil — keep showing the attempted URL.
+                if url == nil, self.lastAttemptedURL != nil { return }
                 self.url = url
             }
             .store(in: &faviconCancellables)
@@ -471,7 +473,11 @@ class BrowserTab: NSObject {
 
     func reload() {
         if isSleeping { wake() }
-        if webView?.url?.scheme == ErrorPage.scheme, let lastAttemptedURL {
+        if webView?.url?.scheme == ErrorPage.scheme {
+            let retryURL = lastAttemptedURL
+                ?? webView?.url.flatMap { ErrorPage.originalURL(from: $0) }
+            if let retryURL { load(retryURL) }
+        } else if webView?.url == nil, let lastAttemptedURL {
             load(lastAttemptedURL)
         } else {
             webView?.reload()
@@ -486,14 +492,21 @@ class BrowserTab: NSObject {
 
     func didFailProvisionalNavigation(error: Error) {
         guard let lastAttemptedURL else { return }
+        showErrorPage(for: lastAttemptedURL, error: error)
+    }
 
-        url = lastAttemptedURL
+    func didFailNavigation(error: Error) {
+        guard let failedURL = webView?.url ?? lastAttemptedURL else { return }
+        showErrorPage(for: failedURL, error: error)
+    }
+
+    private func showErrorPage(for failedURL: URL, error: Error) {
+        url = failedURL
         favicon = nil
         faviconURL = nil
         faviconGeneration += 1
         previousHost = nil
-
-        webView?.load(URLRequest(url: ErrorPage.url(for: lastAttemptedURL, error: error)))
+        webView?.load(URLRequest(url: ErrorPage.url(for: failedURL, error: error)))
     }
 
     private func updateTitle() {
