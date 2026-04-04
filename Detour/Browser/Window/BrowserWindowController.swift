@@ -1461,44 +1461,6 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
-    // MARK: - Add Space Popover
-
-    func showAddSpacePopover(relativeTo button: NSButton) {
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentSize = NSSize(width: 240, height: 210)
-
-        let vc = AddSpaceViewController()
-        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex, profileID in
-            popover?.close()
-            guard let self else { return }
-            let space = self.store.addSpace(name: name, emoji: emoji, colorHex: colorHex, profileID: profileID)
-            self.setActiveSpace(id: space.id)
-        }
-        popover.contentViewController = vc
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    }
-
-    func showEditSpacePopover(spaceID: UUID, relativeTo button: NSButton) {
-        guard let space = store.space(withID: spaceID) else { return }
-
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentSize = NSSize(width: 240, height: 210)
-
-        let vc = AddSpaceViewController()
-        vc.existingSpace = (name: space.name, emoji: space.emoji, colorHex: space.colorHex, profileID: space.profileID)
-        vc.onCreate = { [weak self, weak popover] name, emoji, colorHex, profileID in
-            popover?.close()
-            guard let self else { return }
-            self.store.updateSpace(id: spaceID, name: name, emoji: emoji, colorHex: colorHex, profileID: profileID)
-            if self.activeSpaceID == spaceID {
-                self.tabSidebar.tintColor = self.store.space(withID: spaceID)?.color
-            }
-        }
-        popover.contentViewController = vc
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    }
 }
 
 // MARK: - NSMenuItemValidation
