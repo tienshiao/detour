@@ -8,7 +8,8 @@ class AddSpaceViewController: NSViewController {
     private var colorButtons: [NSButton] = []
     private var actionButton: NSButton!
     private var nameField: NSTextField!
-    private var emojiField: NSTextField!
+    private var emojiButton: NSButton!
+    private var selectedEmoji = "⭐️"
     private var profilePopUp: NSPopUpButton!
     private var profileIDs: [UUID] = []
 
@@ -19,9 +20,10 @@ class AddSpaceViewController: NSViewController {
         nameField.placeholderString = "Space name"
         nameField.translatesAutoresizingMaskIntoConstraints = false
 
-        emojiField = NSTextField()
-        emojiField.placeholderString = "Emoji"
-        emojiField.translatesAutoresizingMaskIntoConstraints = false
+        emojiButton = NSButton(title: "⭐️", target: self, action: #selector(showEmojiPicker))
+        emojiButton.bezelStyle = .rounded
+        emojiButton.font = .systemFont(ofSize: 20)
+        emojiButton.translatesAutoresizingMaskIntoConstraints = false
 
         // Profile dropdown
         let profileLabel = NSTextField(labelWithString: "Profile:")
@@ -78,11 +80,12 @@ class AddSpaceViewController: NSViewController {
 
         if let existing = existingSpace {
             nameField.stringValue = existing.name
-            emojiField.stringValue = existing.emoji
+            selectedEmoji = existing.emoji
+            emojiButton.title = existing.emoji
         }
 
         container.addSubview(nameField)
-        container.addSubview(emojiField)
+        container.addSubview(emojiButton)
         container.addSubview(profileLabel)
         container.addSubview(profilePopUp)
         container.addSubview(colorStack)
@@ -93,11 +96,10 @@ class AddSpaceViewController: NSViewController {
             nameField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
             nameField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
 
-            emojiField.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 8),
-            emojiField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            emojiField.widthAnchor.constraint(equalToConstant: 60),
+            emojiButton.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 8),
+            emojiButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
 
-            profileLabel.topAnchor.constraint(equalTo: emojiField.bottomAnchor, constant: 12),
+            profileLabel.topAnchor.constraint(equalTo: emojiButton.bottomAnchor, constant: 12),
             profileLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
 
             profilePopUp.centerYAnchor.constraint(equalTo: profileLabel.centerYAnchor),
@@ -164,11 +166,18 @@ class AddSpaceViewController: NSViewController {
         sender.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.5).cgColor
     }
 
+    @objc private func showEmojiPicker() {
+        EmojiPickerViewController.showPicker(relativeTo: emojiButton) { [weak self] emoji in
+            guard let self else { return }
+            self.selectedEmoji = emoji
+            self.emojiButton.title = emoji
+        }
+    }
+
     @objc private func createClicked() {
         let name = nameField.stringValue
-        let emoji = emojiField.stringValue
         let finalName = name.isEmpty ? "Space" : name
-        let finalEmoji = emoji.isEmpty ? "⭐️" : String(emoji.prefix(1))
+        let finalEmoji = selectedEmoji
 
         // Warn if editing and profile changed
         if let existing = existingSpace, existing.profileID != selectedProfileID {

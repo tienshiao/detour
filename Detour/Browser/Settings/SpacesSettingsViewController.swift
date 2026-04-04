@@ -1,10 +1,9 @@
 import AppKit
 
-class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
     private var nameField: NSTextField!
     private var emojiButton: NSButton!
-    private var hiddenEmojiField: NSTextField!
     private var profilePopUp: NSPopUpButton!
     private var colorWell: NSColorWell!
     private var gridView: NSGridView!
@@ -112,19 +111,10 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         nameField.target = self
         nameField.action = #selector(nameChanged)
 
-        // Emoji button + hidden text field for character palette input
         emojiButton = NSButton(title: "⭐️", target: self, action: #selector(showEmojiPicker))
         emojiButton.bezelStyle = .rounded
         emojiButton.font = .systemFont(ofSize: 20)
         emojiButton.translatesAutoresizingMaskIntoConstraints = false
-
-        hiddenEmojiField = NSTextField()
-        hiddenEmojiField.translatesAutoresizingMaskIntoConstraints = false
-        hiddenEmojiField.alphaValue = 0
-        hiddenEmojiField.delegate = self
-        hiddenEmojiField.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        hiddenEmojiField.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        container.addSubview(hiddenEmojiField)
 
         // Profile dropdown
         profilePopUp = NSPopUpButton()
@@ -197,8 +187,6 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
             gridView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
             gridView.trailingAnchor.constraint(lessThanOrEqualTo: clipView.trailingAnchor),
 
-            hiddenEmojiField.leadingAnchor.constraint(equalTo: emojiButton.leadingAnchor),
-            hiddenEmojiField.topAnchor.constraint(equalTo: emojiButton.topAnchor),
         ])
     }
 
@@ -251,7 +239,6 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         guard let space = selectedSpace else { return }
         nameField.stringValue = space.name
         emojiButton.title = space.emoji
-        hiddenEmojiField.stringValue = space.emoji
         colorWell.color = NSColor(hex: space.colorHex) ?? .controlAccentColor
 
         // Select the space's profile in the dropdown
@@ -289,20 +276,12 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         saveSpace(space, name: newName)
     }
 
-    func controlTextDidChange(_ obj: Notification) {
-        guard let field = obj.object as? NSTextField, field === hiddenEmojiField else { return }
-        guard let space = selectedSpace else { return }
-        let newEmoji = hiddenEmojiField.stringValue
-        guard !newEmoji.isEmpty else { return }
-        let emoji = String(newEmoji.prefix(1))
-        hiddenEmojiField.stringValue = emoji
-        emojiButton.title = emoji
-        saveSpace(space, emoji: emoji)
-    }
-
     @objc private func showEmojiPicker() {
-        view.window?.makeFirstResponder(hiddenEmojiField)
-        NSApp.orderFrontCharacterPalette(nil)
+        EmojiPickerViewController.showPicker(relativeTo: emojiButton) { [weak self] emoji in
+            guard let self, let space = self.selectedSpace else { return }
+            self.emojiButton.title = emoji
+            self.saveSpace(space, emoji: emoji)
+        }
     }
 
     @objc private func profileChanged() {
