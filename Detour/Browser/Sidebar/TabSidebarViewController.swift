@@ -118,6 +118,7 @@ class TabSidebarViewController: NSViewController {
     }()
 
     private var isDragging = false
+    private var pendingInsertionOrigin: NSPoint?
     private var bottomBar = DraggableBarView()
     private let spaceClipView = NSView()
     private let spaceStripView = NSView()
@@ -210,12 +211,16 @@ class TabSidebarViewController: NSViewController {
         )
 
         if diff.hasChanges {
+            let insertionOrigin = pendingInsertionOrigin
+            pendingInsertionOrigin = nil
+
             // Declare operations first, then update model before endUpdates.
             // This ensures beginUpdates captures the old state, operations describe
             // the transition, and the data source reflects the new state at endUpdates.
+            let insertAnimation: NSTableView.AnimationOptions = insertionOrigin != nil ? [] : .slideDown
             tableView.beginUpdates()
             tableView.removeRows(at: diff.removedRows, withAnimation: .effectFade)
-            tableView.insertRows(at: diff.insertedRows, withAnimation: .slideDown)
+            tableView.insertRows(at: diff.insertedRows, withAnimation: insertAnimation)
             for move in diff.movedRows {
                 tableView.moveRow(at: move.from, to: move.to)
             }
@@ -224,6 +229,24 @@ class TabSidebarViewController: NSViewController {
             tabs = newTabs
             flattenedPinnedItems = newPinnedItems
             tableView.endUpdates()
+
+            // Animate inserted row from the favorite tile's origin
+            if let origin = insertionOrigin, let insertedRow = diff.insertedRows.first {
+                let finalRect = tableView.rect(ofRow: insertedRow)
+                if let rowView = tableView.rowView(atRow: insertedRow, makeIfNecessary: false) {
+                    let startRect = NSRect(x: origin.x - finalRect.width / 2,
+                                           y: origin.y - finalRect.height / 2,
+                                           width: finalRect.width, height: finalRect.height)
+                    rowView.frame = startRect
+                    rowView.alphaValue = 0
+                    NSAnimationContext.runAnimationGroup { ctx in
+                        ctx.duration = 0.25
+                        ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                        rowView.animator().frame = finalRect
+                        rowView.animator().alphaValue = 1
+                    }
+                }
+            }
         } else {
             pinnedFolders = newFolders
             pinnedEntries = newPinned
@@ -292,10 +315,13 @@ class TabSidebarViewController: NSViewController {
     /// Deferred to the next run loop tick so the drag session fully completes
     /// before we issue batch updates — moveRow doesn't work reliably during
     /// an active drag session.
-    private func applyPendingState(selectTabID: UUID? = nil) {
+    private func applyPendingState(selectTabID: UUID? = nil, insertionOrigin: NSPoint? = nil) {
         guard let pending = pendingState else { return }
         pendingState = nil
         DispatchQueue.main.async { [self] in
+            if let insertionOrigin {
+                pendingInsertionOrigin = insertionOrigin
+            }
             applyState(pinnedEntries: pending.pinnedEntries, pinnedFolders: pending.pinnedFolders,
                        tabs: pending.tabs, selectedTabID: pending.selectedTabID)
             if let selectTabID {
@@ -352,6 +378,9 @@ class TabSidebarViewController: NSViewController {
                 if let folderCell = rowView.view(atColumn: 0) as? FolderCellView {
                     folderCell.updateColor(safeColor)
                 }
+            }
+            for page in spacePages {
+                page.favoritesBar.selectionColor = safeColor
             }
         }
     }
@@ -523,7 +552,7 @@ class TabSidebarViewController: NSViewController {
             // Page clip: below address field, above bottom bar
             fauxAddressBar.heightAnchor.constraint(equalToConstant: 34),
 
-            pageClipView.topAnchor.constraint(equalTo: fauxAddressBar.bottomAnchor, constant: 8),
+            pageClipView.topAnchor.constraint(equalTo: fauxAddressBar.bottomAnchor, constant: 4),
             pageClipView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             pageClipView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -581,6 +610,7 @@ class TabSidebarViewController: NSViewController {
             )
             page.update(emoji: space.emoji, name: space.name)
             page.favoritesBar.delegate = self
+            page.favoritesBar.selectionColor = safeTintColor
 
             // Update favorites from profile
             if let profile = space.profile {
@@ -1447,12 +1477,22 @@ extension TabSidebarViewController: NSTableViewDataSource {
 
         // Favorite being dragged into the table — accept in tab/pinned areas
         if pasteboard.pasteboardItems?.first?.string(forType: favoritePasteboardType) != nil {
-            guard dropOperation == .above else { return [] }
+            if dropOperation == .on {
+                // Allow dropping favorites ON folders
+                let destRow = sidebarRow(for: row)
+                if case .pinnedItem(let idx) = destRow, idx < flattenedPinnedItems.count,
+                   case .folder = flattenedPinnedItems[idx] {
+                    return .move
+                }
+                return []
+            }
             let destRow = sidebarRow(for: row)
             switch destRow {
             case .topSpacer:
                 tableView.setDropRow(rowForPinnedItem(at: 0), dropOperation: .above)
-            case .separator, .newTab:
+            case .separator:
+                tableView.setDropRow(1 + flattenedPinnedItems.count, dropOperation: .above)
+            case .newTab:
                 tableView.setDropRow(rowForNormalTab(at: 0), dropOperation: .above)
             case .pinnedItem, .normalTab:
                 break
@@ -1528,6 +1568,23 @@ extension TabSidebarViewController: NSTableViewDataSource {
         if let favItem = pasteboard.pasteboardItems?.first,
            let favIdxStr = favItem.string(forType: favoritePasteboardType),
            let favIdx = Int(favIdxStr) {
+            let favBar = spacePages[activePageIndex].favoritesBar
+            let animOrigin: NSPoint? = favBar.tileFrame(at: favIdx).map { frame in
+                tableView.convert(NSPoint(x: frame.midX, y: frame.midY), from: favBar)
+            }
+
+            // Dropping favorite ON a folder
+            if dropOperation == .on {
+                let destRow = sidebarRow(for: row)
+                guard case .pinnedItem(let destIdx) = destRow,
+                      destIdx < flattenedPinnedItems.count,
+                      case .folder(let folder, _) = flattenedPinnedItems[destIdx] else {
+                    return false
+                }
+                dropFavoriteIntoPinned(favIdx: favIdx, destIdx: 0, folderID: folder.id, beforeItemID: nil, insertionOrigin: animOrigin)
+                return true
+            }
+
             var destSection = sidebarRow(for: row)
             switch destSection {
             case .topSpacer: destSection = .pinnedItem(index: 0)
@@ -1537,10 +1594,13 @@ extension TabSidebarViewController: NSTableViewDataSource {
             }
             switch destSection {
             case .normalTab(let dstIdx):
+                pendingInsertionOrigin = animOrigin
                 delegate?.tabSidebar(self, didDragFavoriteAt: favIdx, toTabAt: dstIdx)
                 return true
             case .pinnedItem(let dstIdx):
-                delegate?.tabSidebar(self, didDragFavoriteAt: favIdx, toPinnedAt: dstIdx)
+                let targetFolderID = folderIDForFlattenedIndex(dstIdx)
+                let beforeItemID = itemIDAtDropIndex(dstIdx, in: flattenedPinnedItems)
+                dropFavoriteIntoPinned(favIdx: favIdx, destIdx: dstIdx, folderID: targetFolderID, beforeItemID: beforeItemID, insertionOrigin: animOrigin)
                 return true
             default:
                 return false
@@ -1649,6 +1709,17 @@ extension TabSidebarViewController: NSTableViewDataSource {
         default:
             return false
         }
+    }
+
+    private func dropFavoriteIntoPinned(favIdx: Int, destIdx: Int, folderID: UUID?, beforeItemID: UUID?, insertionOrigin: NSPoint?) {
+        let oldIDs = Set(pinnedEntries.map(\.id))
+        isDragging = true
+        delegate?.tabSidebar(self, didDragFavoriteAt: favIdx, toPinnedAt: destIdx)
+        if let newEntry = pendingState?.pinnedEntries.first(where: { !oldIDs.contains($0.id) }) {
+            delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: newEntry.id, folderID: folderID, beforeItemID: beforeItemID)
+        }
+        isDragging = false
+        applyPendingState(insertionOrigin: insertionOrigin)
     }
 
     private func folderIDForFlattenedIndex(_ index: Int) -> UUID? {

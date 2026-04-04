@@ -20,7 +20,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
     private static let tileSize: CGFloat = 40
     private static let iconSize: CGFloat = 16
     private static let maxPerRow = 4
-    private static let hPad: CGFloat = 8
+    private static let hPad: CGFloat = 10
     private static let tileSpacing: CGFloat = 8
     private static let vPad: CGFloat = 4
 
@@ -44,6 +44,14 @@ class FavoritesBarView: NSView, NSDraggingSource {
         heightConstraintRef = constraint
     }
     private var selectedFavoriteID: UUID?
+
+    var selectionColor: NSColor? {
+        didSet {
+            for tile in tileViews {
+                tile.selectionColor = selectionColor
+            }
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -111,6 +119,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
                 newTiles.append(existing)
             } else {
                 let tile = FavoriteTileView(favorite: fav, index: index)
+                tile.selectionColor = selectionColor
                 tile.isSelected = fav.tab?.id == selectedTabID
                 if index < targetFrames.count {
                     if let origin = animOrigin {
@@ -151,6 +160,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
         for (index, fav) in favorites.enumerated() {
             let tile = FavoriteTileView(favorite: fav, index: index)
+            tile.selectionColor = selectionColor
             tile.isSelected = fav.tab?.id == selectedTabID
             addSubview(tile)
             tileViews.append(tile)
@@ -161,6 +171,12 @@ class FavoritesBarView: NSView, NSDraggingSource {
             heightConstraintRef?.constant = newHeight
         }
         needsLayout = true
+    }
+
+    /// Returns the frame of the tile at `index` in this view's coordinate space.
+    func tileFrame(at index: Int) -> NSRect? {
+        guard index < tileViews.count else { return nil }
+        return tileViews[index].frame
     }
 
     /// Sets the origin point (in this view's coordinates) for the next tile addition animation.
@@ -196,6 +212,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
     override func layout() {
         super.layout()
         layoutTiles()
+        updateDropZoneBorderPath()
     }
 
     private func computeHeight() -> CGFloat {
@@ -444,9 +461,9 @@ class FavoriteTileView: NSView {
 
     private static let restingColor = NSColor.labelColor.withAlphaComponent(0.04)
     private static let hoverColor = UIConstants.hoverBackgroundColor
-    private static let selectedColor = NSColor.labelColor.withAlphaComponent(0.10)
 
     var isSelected = false { didSet { updateBackground() } }
+    var selectionColor: NSColor? { didSet { updateBackground() } }
 
     // Prevent window drag when clicking/dragging on tiles
     override var mouseDownCanMoveWindow: Bool { false }
@@ -486,8 +503,8 @@ class FavoriteTileView: NSView {
     }
 
     private func updateBackground() {
-        if isSelected {
-            layer?.backgroundColor = Self.selectedColor.cgColor
+        if isSelected, let color = selectionColor {
+            layer?.backgroundColor = color.withAlphaComponent(0.15).cgColor
         } else if isHovering {
             layer?.backgroundColor = Self.hoverColor.cgColor
         } else {

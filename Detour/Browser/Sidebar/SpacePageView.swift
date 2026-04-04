@@ -3,7 +3,7 @@ import AppKit
 /// A single page in the horizontal space strip, containing a favorites bar, space header, and a scroll view with a table view.
 class SpacePageView: NSView {
     private static let headerHeight: CGFloat = 24
-    private static let headerTopPad: CGFloat = 6
+    private static let headerTopPad: CGFloat = 2
 
     private let header = SpaceHeaderView()
     let favoritesBar = FavoritesBarView()
@@ -69,7 +69,7 @@ class SpacePageView: NSView {
             favoritesBar.trailingAnchor.constraint(equalTo: trailingAnchor),
             favoritesBarHeightConstraint,
 
-            header.topAnchor.constraint(equalTo: favoritesBar.bottomAnchor),
+            header.topAnchor.constraint(equalTo: favoritesBar.bottomAnchor, constant: 6),
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
