@@ -44,7 +44,7 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
             disclosureButton.widthAnchor.constraint(equalToConstant: 20),
             disclosureButton.heightAnchor.constraint(equalToConstant: 20),
 
-            nameLabel.leadingAnchor.constraint(equalTo: disclosureButton.trailingAnchor, constant: 4),
+            nameLabel.leadingAnchor.constraint(equalTo: disclosureButton.trailingAnchor, constant: 6),
             nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
         ])

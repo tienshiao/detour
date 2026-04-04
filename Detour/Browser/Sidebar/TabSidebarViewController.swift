@@ -133,12 +133,9 @@ class TabSidebarViewController: NSViewController {
     // Page strip: all spaces laid out side-by-side, clipped by pageClipView
     private let pageClipView = NSView()
     private let pageStripView = NSView()
-    private var pageScrollViews: [DraggableScrollView] = []
-    private var pageTableViews: [DraggableTableView] = []
+    private var spacePages: [SpacePageView] = []
     private var pageSpaceIDs: [UUID] = []
     private var activePageIndex = 0
-    private var topFadeShadow: NSView!
-    private var bottomFadeShadow: NSView!
 
     var activeSpaceID: UUID? {
         didSet { updateActivePage() }
@@ -522,56 +519,13 @@ class TabSidebarViewController: NSViewController {
             bottomBar.heightAnchor.constraint(equalToConstant: 32),
         ])
 
-        // Scroll edge fade shadows
-        topFadeShadow = makeFadeShadow(flipped: true)
-        bottomFadeShadow = makeFadeShadow(flipped: false)
-        pageClipView.addSubview(topFadeShadow, positioned: .above, relativeTo: pageStripView)
-        pageClipView.addSubview(bottomFadeShadow, positioned: .above, relativeTo: pageStripView)
-
-        NSLayoutConstraint.activate([
-            topFadeShadow.topAnchor.constraint(equalTo: pageClipView.topAnchor),
-            topFadeShadow.leadingAnchor.constraint(equalTo: pageClipView.leadingAnchor),
-            topFadeShadow.trailingAnchor.constraint(equalTo: pageClipView.trailingAnchor),
-            topFadeShadow.heightAnchor.constraint(equalToConstant: 12),
-
-            bottomFadeShadow.bottomAnchor.constraint(equalTo: pageClipView.bottomAnchor),
-            bottomFadeShadow.leadingAnchor.constraint(equalTo: pageClipView.leadingAnchor),
-            bottomFadeShadow.trailingAnchor.constraint(equalTo: pageClipView.trailingAnchor),
-            bottomFadeShadow.heightAnchor.constraint(equalToConstant: 12),
-        ])
-
         container.allowedTouchTypes = .indirect
         self.view = container
     }
 
-    private func makeFadeShadow(flipped: Bool) -> NSView {
-        let view = FadeShadowView(flipped: flipped)
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.alphaValue = 0
-        return view
-    }
-
     private func updateFadeShadows() {
-        let clipView = scrollView.contentView
-        guard let documentView = scrollView.documentView else { return }
-
-        let contentHeight = documentView.frame.height
-        let visibleHeight = clipView.bounds.height
-        let scrollY = clipView.bounds.origin.y
-
-        let showTop = scrollY > 0
-        let showBottom = contentHeight - visibleHeight - scrollY > 0.5
-
-        let targetTopAlpha: CGFloat = showTop ? 1 : 0
-        let targetBottomAlpha: CGFloat = showBottom ? 1 : 0
-
-        guard topFadeShadow.alphaValue != targetTopAlpha || bottomFadeShadow.alphaValue != targetBottomAlpha else { return }
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
-            topFadeShadow.animator().alphaValue = targetTopAlpha
-            bottomFadeShadow.animator().alphaValue = targetBottomAlpha
-        }
+        guard activePageIndex < spacePages.count else { return }
+        spacePages[activePageIndex].updateFadeShadows()
     }
 
     override func viewDidLayout() {
@@ -594,60 +548,44 @@ class TabSidebarViewController: NSViewController {
         pageSpaceIDs = newIDs
 
         // Tear down old pages
-        for sv in pageScrollViews {
-            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: sv.contentView)
-            sv.removeFromSuperview()
+        for page in spacePages {
+            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: page.scrollView.contentView)
+            page.removeFromSuperview()
         }
-        pageScrollViews.removeAll()
-        pageTableViews.removeAll()
+        spacePages.removeAll()
 
-        // Build one scroll view + table view per space
-        for _ in spaces {
-            let tv = DraggableTableView()
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("TabColumn"))
-            tv.addTableColumn(column)
-            tv.headerView = nil
-            tv.rowHeight = 36
-            tv.style = .sourceList
-            tv.dataSource = self
-            tv.delegate = self
-            tv.registerForDraggedTypes([tabReorderPasteboardType])
-            tv.draggingDestinationFeedbackStyle = .sourceList
+        // Build one page per space
+        for space in spaces {
+            let page = SpacePageView(
+                tableViewDataSource: self,
+                tableViewDelegate: self,
+                menuDelegate: self,
+                dragType: tabReorderPasteboardType,
+                onScrollWheel: { [weak self] in self?.handleSpaceSwipe($0) ?? false }
+            )
+            page.update(emoji: space.emoji, name: space.name)
 
-            let menu = NSMenu()
-            menu.delegate = self
-            tv.menu = menu
-
-            let sv = DraggableScrollView()
-            sv.contentView = DraggableClipView()
-            sv.documentView = tv
-            sv.hasVerticalScroller = true
-            sv.horizontalScrollElasticity = .none
-            sv.drawsBackground = false
-            sv.onScrollWheel = { [weak self] in self?.handleSpaceSwipe($0) ?? false }
-
-            pageStripView.addSubview(sv)
-            pageScrollViews.append(sv)
-            pageTableViews.append(tv)
+            pageStripView.addSubview(page)
+            spacePages.append(page)
         }
 
         relayoutPages()
         updateActivePage()
 
         // Observe scroll (clip view bounds changes) to fix hover state on scroll
-        for sv in pageScrollViews {
-            sv.contentView.postsBoundsChangedNotifications = true
+        for page in spacePages {
+            page.scrollView.contentView.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(scrollViewDidScroll(_:)),
                 name: NSView.boundsDidChangeNotification,
-                object: sv.contentView
+                object: page.scrollView.contentView
             )
         }
 
         // Reload all non-active pages from TabStore
-        for (i, tv) in pageTableViews.enumerated() where i != activePageIndex {
-            tv.reloadData()
+        for (i, page) in spacePages.enumerated() where i != activePageIndex {
+            page.tableView.reloadData()
         }
     }
 
@@ -656,13 +594,13 @@ class TabSidebarViewController: NSViewController {
         let pageH = pageClipView.bounds.height
         guard pageW > 0 else { return }
 
-        for (i, sv) in pageScrollViews.enumerated() {
-            sv.frame = NSRect(x: CGFloat(i) * pageW, y: 0, width: pageW, height: pageH)
+        for (i, page) in spacePages.enumerated() {
+            page.frame = NSRect(x: CGFloat(i) * pageW, y: 0, width: pageW, height: pageH)
         }
         pageStripView.frame = NSRect(
             x: -CGFloat(activePageIndex) * pageW,
             y: 0,
-            width: CGFloat(max(1, pageScrollViews.count)) * pageW,
+            width: CGFloat(max(1, spacePages.count)) * pageW,
             height: pageH)
     }
 
@@ -674,11 +612,11 @@ class TabSidebarViewController: NSViewController {
         } else {
             newIndex = 0
         }
-        guard newIndex < pageScrollViews.count else { return }
+        guard newIndex < spacePages.count else { return }
 
         activePageIndex = newIndex
-        scrollView = pageScrollViews[newIndex]
-        tableView = pageTableViews[newIndex]
+        scrollView = spacePages[newIndex].scrollView
+        tableView = spacePages[newIndex].tableView
 
         // Snap strip to active page (no animation)
         let pageW = pageClipView.bounds.width
@@ -689,11 +627,18 @@ class TabSidebarViewController: NSViewController {
         updateFadeShadows()
     }
 
+    private func updateSpaceLabels() {
+        let spaces = relevantSpaces
+        for (i, page) in spacePages.enumerated() where i < spaces.count {
+            page.update(emoji: spaces[i].emoji, name: spaces[i].name)
+        }
+    }
+
     @objc private func scrollViewDidScroll(_ notification: Notification) {
         guard let clipView = notification.object as? NSClipView,
               let scrollView = clipView.enclosingScrollView as? DraggableScrollView,
-              let pageIndex = pageScrollViews.firstIndex(of: scrollView) else { return }
-        recheckHoverForVisibleCells(in: pageTableViews[pageIndex])
+              let pageIndex = spacePages.firstIndex(where: { $0.scrollView === scrollView }) else { return }
+        recheckHoverForVisibleCells(in: spacePages[pageIndex].tableView)
 
         if pageIndex == activePageIndex {
             updateFadeShadows()
@@ -719,6 +664,7 @@ class TabSidebarViewController: NSViewController {
     func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
         rebuildAllSpaceButtons()
         rebuildPages()
+        updateSpaceLabels()
     }
 
     /// Rebuilds ALL space buttons in the strip and positions the viewport.
@@ -1175,7 +1121,7 @@ class TabSidebarViewController: NSViewController {
 
         let baseX = -CGFloat(activePageIndex) * pageW
         let maxX: CGFloat = 0
-        let minX = -CGFloat(max(0, pageScrollViews.count - 1)) * pageW
+        let minX = -CGFloat(max(0, spacePages.count - 1)) * pageW
 
         var targetX = baseX + swipeAccumulatedX
         // Rubber-band at edges — logarithmic curve for gradually increasing resistance
@@ -1231,10 +1177,10 @@ class TabSidebarViewController: NSViewController {
             if swipeAccumulatedX > 0 {
                 targetPage = max(0, activePageIndex - 1)
             } else {
-                targetPage = min(pageScrollViews.count - 1, activePageIndex + 1)
+                targetPage = min(spacePages.count - 1, activePageIndex + 1)
             }
         } else {
-            targetPage = Int(round(fractionalPage)).clamped(to: 0...(max(0, pageScrollViews.count - 1)))
+            targetPage = Int(round(fractionalPage)).clamped(to: 0...(max(0, spacePages.count - 1)))
         }
 
         let targetX = -CGFloat(targetPage) * pageW
@@ -1294,7 +1240,7 @@ class TabSidebarViewController: NSViewController {
     }
 
     private func tabsForTableView(_ tv: NSTableView) -> [BrowserTab] {
-        guard let index = pageTableViews.firstIndex(where: { $0 === tv }) else { return tabs }
+        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else { return tabs }
         if index == activePageIndex { return tabs }
         let spaces = relevantSpaces
         guard index < spaces.count else { return [] }
@@ -1302,7 +1248,7 @@ class TabSidebarViewController: NSViewController {
     }
 
     private func tabsAndPinnedForTableView(_ tv: NSTableView) -> (pinnedEntries: [PinnedEntry], normal: [BrowserTab]) {
-        guard let index = pageTableViews.firstIndex(where: { $0 === tv }) else {
+        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else {
             return (pinnedEntries, tabs)
         }
         if index == activePageIndex { return (pinnedEntries, tabs) }
@@ -1312,7 +1258,7 @@ class TabSidebarViewController: NSViewController {
     }
 
     private func pinnedItemCountForTableView(_ tv: NSTableView) -> Int {
-        guard let index = pageTableViews.firstIndex(where: { $0 === tv }) else {
+        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else {
             return flattenedPinnedItems.count
         }
         if index == activePageIndex { return flattenedPinnedItems.count }
