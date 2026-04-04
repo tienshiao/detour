@@ -137,6 +137,7 @@ class Profile {
     var isEasyPrivacyEnabled: Bool
     var isEasyListCookieEnabled: Bool
     var isMalwareFilterEnabled: Bool
+    var favorites: [Favorite] = []
 
     lazy var dataStore: WKWebsiteDataStore = {
         if isIncognito {

@@ -32,6 +32,15 @@ protocol TabSidebarDelegate: AnyObject {
     // Pinned entry operations
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String)
 
+    // Favorite operations
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavoriteAtRow tabRow: Int, at index: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didClickFavoriteAt index: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDoubleClickFavoriteAt index: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toTabAt tabIndex: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toPinnedAt pinnedIndex: Int)
+
     // Folder operations
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNewFolderIn parentFolderID: UUID?)
@@ -56,6 +65,13 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinTabAt index: Int) {}
     func tabSidebarSpacesForContextMenu(_ sidebar: TabSidebarViewController) -> [(id: UUID, name: String, emoji: String, isCurrent: Bool)] { [] }
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavoriteAtRow tabRow: Int, at index: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didClickFavoriteAt index: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDoubleClickFavoriteAt index: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toTabAt tabIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toPinnedAt pinnedIndex: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNewFolderIn parentFolderID: UUID?) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedFolder folderID: UUID, newName: String) {}
@@ -564,6 +580,12 @@ class TabSidebarViewController: NSViewController {
                 onScrollWheel: { [weak self] in self?.handleSpaceSwipe($0) ?? false }
             )
             page.update(emoji: space.emoji, name: space.name)
+            page.favoritesBar.delegate = self
+
+            // Update favorites from profile
+            if let profile = space.profile {
+                page.updateFavorites(profile.favorites)
+            }
 
             pageStripView.addSubview(page)
             spacePages.append(page)
@@ -659,6 +681,16 @@ class TabSidebarViewController: NSViewController {
                 }
             }
         }
+    }
+
+    func updateFavorites(_ favorites: [Favorite], selectedTabID: UUID? = nil) {
+        guard activePageIndex < spacePages.count else { return }
+        spacePages[activePageIndex].updateFavorites(favorites, selectedTabID: selectedTabID)
+    }
+
+    func updateFavoriteSelection(selectedTabID: UUID?) {
+        guard activePageIndex < spacePages.count else { return }
+        spacePages[activePageIndex].updateFavoriteSelection(selectedTabID: selectedTabID)
     }
 
     func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
@@ -1396,16 +1428,45 @@ extension TabSidebarViewController: NSTableViewDataSource {
             let origin = NSPoint(x: draggingItem.draggingFrame.origin.x - 6, y: draggingItem.draggingFrame.origin.y)
             draggingItem.setDraggingFrame(NSRect(origin: origin, size: imageSize), contents: image)
         }
+
+        // Show favorites drop zone on active page
+        if activePageIndex < spacePages.count {
+            spacePages[activePageIndex].setDragSessionActive(true)
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        // Hide favorites drop zone
+        if activePageIndex < spacePages.count {
+            spacePages[activePageIndex].setDragSessionActive(false)
+        }
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+        let pasteboard = info.draggingPasteboard
+
+        // Favorite being dragged into the table — accept in tab/pinned areas
+        if pasteboard.pasteboardItems?.first?.string(forType: favoritePasteboardType) != nil {
+            guard dropOperation == .above else { return [] }
+            let destRow = sidebarRow(for: row)
+            switch destRow {
+            case .topSpacer:
+                tableView.setDropRow(rowForPinnedItem(at: 0), dropOperation: .above)
+            case .separator, .newTab:
+                tableView.setDropRow(rowForNormalTab(at: 0), dropOperation: .above)
+            case .pinnedItem, .normalTab:
+                break
+            }
+            return .move
+        }
+
         // Allow .on drops on folder rows (to put items inside)
         if dropOperation == .on {
             let destRow = sidebarRow(for: row)
             if case .pinnedItem(let idx) = destRow, idx < flattenedPinnedItems.count,
                case .folder(let destFolder, _) = flattenedPinnedItems[idx] {
                 // Don't allow dropping a folder onto itself
-                if let item = info.draggingPasteboard.pasteboardItems?.first,
+                if let item = pasteboard.pasteboardItems?.first,
                    let rowString = item.string(forType: tabReorderPasteboardType),
                    let srcRow = Int(rowString),
                    case .pinnedItem(let srcIdx) = sidebarRow(for: srcRow),
@@ -1423,7 +1484,7 @@ extension TabSidebarViewController: NSTableViewDataSource {
 
         // Determine if the dragged item is a folder
         let isDraggingFolder: Bool
-        if let item = info.draggingPasteboard.pasteboardItems?.first,
+        if let item = pasteboard.pasteboardItems?.first,
            let rowString = item.string(forType: tabReorderPasteboardType),
            let srcRow = Int(rowString),
            case .pinnedItem(let srcIdx) = sidebarRow(for: srcRow),
@@ -1461,7 +1522,32 @@ extension TabSidebarViewController: NSTableViewDataSource {
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard let item = info.draggingPasteboard.pasteboardItems?.first,
+        let pasteboard = info.draggingPasteboard
+
+        // Handle favorite → table drop (restore as tab/pinned)
+        if let favItem = pasteboard.pasteboardItems?.first,
+           let favIdxStr = favItem.string(forType: favoritePasteboardType),
+           let favIdx = Int(favIdxStr) {
+            var destSection = sidebarRow(for: row)
+            switch destSection {
+            case .topSpacer: destSection = .pinnedItem(index: 0)
+            case .separator: destSection = .pinnedItem(index: flattenedPinnedItems.count)
+            case .newTab: destSection = .normalTab(index: 0)
+            default: break
+            }
+            switch destSection {
+            case .normalTab(let dstIdx):
+                delegate?.tabSidebar(self, didDragFavoriteAt: favIdx, toTabAt: dstIdx)
+                return true
+            case .pinnedItem(let dstIdx):
+                delegate?.tabSidebar(self, didDragFavoriteAt: favIdx, toPinnedAt: dstIdx)
+                return true
+            default:
+                return false
+            }
+        }
+
+        guard let item = pasteboard.pasteboardItems?.first,
               let rowString = item.string(forType: tabReorderPasteboardType),
               let sourceRow = Int(rowString) else { return false }
 
@@ -2033,6 +2119,37 @@ extension TabSidebarViewController: NSMenuDelegate {
         let folderItem = NSMenuItem(title: "New Folder", action: #selector(contextMenuNewFolder(_:)), keyEquivalent: "")
         folderItem.target = self
         menu.addItem(folderItem)
+    }
+}
+
+// MARK: - FavoritesBarDelegate
+
+extension TabSidebarViewController: FavoritesBarDelegate {
+    func favoritesBar(_ bar: FavoritesBarView, didReceiveDropOfTabRow row: Int, at index: Int) {
+        // Capture the source row's position so the new tile can animate from it
+        let rowRect = tableView.rect(ofRow: row)
+        if !rowRect.isEmpty {
+            let rowCenter = NSPoint(x: rowRect.midX, y: rowRect.midY)
+            let barPoint = bar.convert(rowCenter, from: tableView)
+            bar.setAnimationOrigin(barPoint)
+        }
+        delegate?.tabSidebar(self, didDragTabToFavoriteAtRow: row, at: index)
+    }
+
+    func favoritesBar(_ bar: FavoritesBarView, didClickFavoriteAt index: Int) {
+        delegate?.tabSidebar(self, didClickFavoriteAt: index)
+    }
+
+    func favoritesBar(_ bar: FavoritesBarView, didDoubleClickFavoriteAt index: Int) {
+        delegate?.tabSidebar(self, didDoubleClickFavoriteAt: index)
+    }
+
+    func favoritesBar(_ bar: FavoritesBarView, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int) {
+        delegate?.tabSidebar(self, didReorderFavoriteFrom: sourceIndex, to: destinationIndex)
+    }
+
+    func favoritesBar(_ bar: FavoritesBarView, didRemoveFavoriteAt index: Int) {
+        delegate?.tabSidebar(self, didRemoveFavoriteAt: index)
     }
 }
 

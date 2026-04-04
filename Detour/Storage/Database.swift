@@ -461,7 +461,43 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v4") { db in
+            try db.create(table: "favorite") { t in
+                t.primaryKey("id", .text)
+                t.column("profileID", .text).notNull()
+                    .references("profile", onDelete: .cascade)
+                t.column("url", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("faviconURL", .text)
+                t.column("sortOrder", .integer).notNull()
+                t.column("tabID", .text)
+                    .references("tab", onDelete: .setNull)
+            }
+        }
+
         return migrator
+    }
+
+    // MARK: - Favorites
+
+    func saveFavorites(_ records: [FavoriteRecord], profileID: String) {
+        performWrite("save favorites") { db in
+            try FavoriteRecord
+                .filter(Column("profileID") == profileID)
+                .deleteAll(db)
+            for record in records {
+                try record.insert(db)
+            }
+        }
+    }
+
+    func loadFavorites(profileID: String) -> [FavoriteRecord] {
+        performRead("load favorites", default: []) { db in
+            try FavoriteRecord
+                .filter(Column("profileID") == profileID)
+                .order(Column("sortOrder"))
+                .fetchAll(db)
+        }
     }
 
     // MARK: - Extension CRUD

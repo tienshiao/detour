@@ -86,6 +86,7 @@ class BrowserWindowController: NSWindowController {
     var selectedTab: BrowserTab? {
         guard let selectedTabID else { return nil }
         return activeSpace?.pinnedEntries.first { $0.tab?.id == selectedTabID }?.tab
+            ?? activeSpace?.profile?.favorites.first { $0.tab?.id == selectedTabID }?.tab
             ?? currentTabs.first { $0.id == selectedTabID }
     }
 
@@ -278,6 +279,9 @@ class BrowserWindowController: NSWindowController {
 
         tabSidebar.resetState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders, tabs: space.tabs)
         tabSidebar.tintColor = space.color
+        if let profile = space.profile {
+            tabSidebar.updateFavorites(profile.favorites, selectedTabID: selectedTabID)
+        }
         tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: id)
 
         if selectTab {
@@ -625,8 +629,9 @@ class BrowserWindowController: NSWindowController {
 
     func selectTab(id: UUID) {
         let isPinnedTab = activeSpace?.pinnedEntries.contains(where: { $0.tab?.id == id }) ?? false
+        let isFavoriteTab = activeSpace?.profile?.favorites.contains(where: { $0.tab?.id == id }) ?? false
         let isNormalTab = currentTabs.contains(where: { $0.id == id })
-        guard isPinnedTab || isNormalTab else { return }
+        guard isPinnedTab || isFavoriteTab || isNormalTab else { return }
 
         dismissCommandPalette()
 
@@ -702,8 +707,14 @@ class BrowserWindowController: NSWindowController {
                 tabSidebar.selectedPinnedTabIndex = index
             } else if let index = currentTabs.firstIndex(where: { $0.id == id }) {
                 tabSidebar.selectedTabIndex = index
+            } else if isFavoriteTab {
+                // Favorite tabs aren't in the table — deselect any table row
+                tabSidebar.tableView.deselectAll(nil)
             }
         }
+
+        // Update favorite selection highlight
+        tabSidebar.updateFavoriteSelection(selectedTabID: id)
 
         if window?.isKeyWindow == true || tab.webView?.superview == nil {
             claimWebView(for: tab)
@@ -1135,6 +1146,7 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.forwardButton.isEnabled = false
         tabSidebar.reloadButton.isEnabled = false
         tabSidebar.tableView.deselectAll(nil)
+        tabSidebar.updateFavoriteSelection(selectedTabID: nil)
         window?.title = "Detour"
     }
 

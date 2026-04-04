@@ -26,6 +26,9 @@ protocol TabStoreObserver: AnyObject {
 
     // Pinned folder notifications
     func tabStoreDidUpdatePinnedFolders(in space: Space)
+
+    // Favorites notifications
+    func tabStoreDidUpdateFavorites(for profile: Profile)
 }
 
 extension TabStoreObserver {
@@ -40,6 +43,7 @@ extension TabStoreObserver {
     func tabStoreDidUpdatePinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {}
     func tabStoreDidPinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {}
     func tabStoreDidUnpinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {}
+    func tabStoreDidUpdateFavorites(for profile: Profile) {}
     func tabStoreDidUpdatePinnedFolders(in space: Space) {}
 }
 
@@ -442,6 +446,35 @@ class TabStore {
             sessionData.append((spaceRecord, tabRecords))
         }
 
+        // Append favorite backing tabs to session data BEFORE saving.
+        // Each live favorite's tab is hosted in the first persistent space with its profile.
+        var savedProfileIDs = Set<UUID>()
+        for profile in profiles where !profile.isIncognito && !savedProfileIDs.contains(profile.id) {
+            savedProfileIDs.insert(profile.id)
+            guard let hostSpaceID = persistentSpaces.first(where: { $0.profileID == profile.id })?.id else { continue }
+            for fav in profile.favorites {
+                guard let tab = fav.tab else { continue }
+                let stateData = tab.currentInteractionStateData()
+                let tabRecord = TabRecord(
+                    id: tab.id.uuidString,
+                    spaceID: hostSpaceID.uuidString,
+                    url: tab.url?.absoluteString,
+                    title: tab.title,
+                    faviconURL: tab.faviconURL?.absoluteString,
+                    interactionState: stateData,
+                    sortOrder: -2,
+                    lastDeselectedAt: nil,
+                    parentID: nil,
+                    peekURL: nil,
+                    peekInteractionState: nil,
+                    peekFaviconURL: nil
+                )
+                if let idx = sessionData.firstIndex(where: { $0.0.id == hostSpaceID.uuidString }) {
+                    sessionData[idx].1.append(tabRecord)
+                }
+            }
+        }
+
         appDB.saveSession(
             spaces: sessionData,
             lastActiveSpaceID: lastActiveSpaceID?.uuidString
@@ -482,6 +515,24 @@ class TabStore {
 
             appDB.savePinnedFoldersAndTabs(folders: folderRecords, tabs: pinnedRecords, spaceID: space.id.uuidString)
         }
+
+        // Save favorites per profile (AFTER session so tab FKs exist)
+        savedProfileIDs.removeAll()
+        for profile in profiles where !profile.isIncognito && !savedProfileIDs.contains(profile.id) {
+            savedProfileIDs.insert(profile.id)
+            let records = profile.favorites.enumerated().map { (i, fav) in
+                FavoriteRecord(
+                    id: fav.id.uuidString,
+                    profileID: profile.id.uuidString,
+                    url: fav.url.absoluteString,
+                    title: fav.title,
+                    faviconURL: fav.faviconURL?.absoluteString,
+                    sortOrder: i,
+                    tabID: fav.tab?.id.uuidString
+                )
+            }
+            appDB.saveFavorites(records, profileID: profile.id.uuidString)
+        }
     }
 
     /// Restores session. Returns (activeSpaceID, selectedTabID) for the window to use.
@@ -493,6 +544,59 @@ class TabStore {
         for record in profileRecords {
             if let profile = Profile.from(record: record) {
                 profiles.append(profile)
+            }
+        }
+
+        // Load favorites for each profile (after spaces so backing tabs can be found)
+        // Build a global lookup of all tab records by ID for matching backing tabs
+        var allTabRecordsByID: [String: (TabRecord, UUID)] = [:]  // tabID → (record, spaceID)
+        for (spaceRecord, tabRecords) in session.spaces {
+            guard let spaceID = UUID(uuidString: spaceRecord.id) else { continue }
+            for tabRecord in tabRecords where tabRecord.sortOrder == -2 {
+                allTabRecordsByID[tabRecord.id] = (tabRecord, spaceID)
+            }
+        }
+        for profile in profiles {
+            let favRecords = appDB.loadFavorites(profileID: profile.id.uuidString)
+            // Find a space with this profile for creating tabs
+            let hostSpace = self.spaces.first(where: { $0.profileID == profile.id && !$0.isIncognito })
+            for record in favRecords {
+                guard let favID = UUID(uuidString: record.id) else { continue }
+
+                var backingTab: BrowserTab? = nil
+                if let tabIDStr = record.tabID,
+                   let tabID = UUID(uuidString: tabIDStr),
+                   let (tabRecord, _) = allTabRecordsByID[tabIDStr],
+                   let hostSpace {
+                    backingTab = BrowserTab(
+                        id: tabID,
+                        title: tabRecord.title,
+                        url: tabRecord.url.flatMap { URL(string: $0) },
+                        faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
+                        cachedInteractionState: tabRecord.interactionState,
+                        spaceID: hostSpace.id
+                    )
+                    backingTab?.spaceID = hostSpace.id
+                    if let tab = backingTab {
+                        self.subscribeToTab(tab, spaceID: hostSpace.id)
+                    }
+                }
+
+                let favorite = Favorite(
+                    id: favID,
+                    url: URL(string: record.url) ?? URL(string: "about:blank")!,
+                    title: record.title,
+                    faviconURL: record.faviconURL.flatMap { URL(string: $0) },
+                    sortOrder: record.sortOrder,
+                    tab: backingTab
+                )
+                if backingTab == nil {
+                    favorite.onFaviconDownloaded = { [weak self, weak favorite] in
+                        guard let self, let favorite else { return }
+                        self.notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+                    }
+                }
+                profile.favorites.append(favorite)
             }
         }
 
@@ -518,10 +622,11 @@ class TabStore {
             let pinnedRecords = appDB.loadPinnedTabs(spaceID: spaceRecord.id)
             let backingTabIDs = Set(pinnedRecords.compactMap(\.tabID))
 
-            // Load normal tabs (exclude backing tabs, which are identified by FK)
+            // Load normal tabs (exclude pinned backing tabs and favorite backing tabs)
             for tabRecord in tabRecords {
                 guard let tabID = UUID(uuidString: tabRecord.id) else { continue }
                 guard !backingTabIDs.contains(tabRecord.id) else { continue }
+                guard tabRecord.sortOrder >= 0 else { continue }
                 let isSelected = space.selectedTabID == tabID
                 let tab: BrowserTab
                 if isSelected {
@@ -643,6 +748,141 @@ class TabStore {
 
         let activeSpace = self.space(withID: activeID)
         return (activeID, activeSpace?.selectedTabID)
+    }
+
+    // MARK: - Favorites
+
+    private func reindexFavorites(_ profile: Profile) {
+        for (i, fav) in profile.favorites.enumerated() { fav.sortOrder = i }
+    }
+
+    func addFavorite(from tab: BrowserTab, profileID: UUID, at index: Int? = nil) {
+        guard let url = tab.url, let profile = profiles.first(where: { $0.id == profileID }) else { return }
+
+        let favorite = Favorite(url: url, title: tab.title, faviconURL: tab.faviconURL, sortOrder: 0, tab: tab)
+        let insertAt = min(index ?? profile.favorites.count, profile.favorites.count)
+        profile.favorites.insert(favorite, at: insertAt)
+        reindexFavorites(profile)
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    func addFavoriteFromEntry(url: URL, title: String, faviconURL: URL?, favicon: NSImage?,
+                              profileID: UUID, at index: Int) {
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
+
+        let favorite = Favorite(url: url, title: title, faviconURL: faviconURL, sortOrder: 0)
+        favorite.favicon = favicon
+        let insertAt = min(index, profile.favorites.count)
+        profile.favorites.insert(favorite, at: insertAt)
+        reindexFavorites(profile)
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    func activateFavorite(id: UUID, profileID: UUID, in space: Space) {
+        guard let profile = profiles.first(where: { $0.id == profileID }),
+              let fav = profile.favorites.first(where: { $0.id == id }),
+              fav.tab == nil else { return }
+
+        let tab = BrowserTab(
+            id: UUID(),
+            title: fav.title,
+            archivedInteractionState: nil,
+            fallbackURL: fav.url,
+            faviconURL: fav.faviconURL,
+            configuration: space.makeWebViewConfiguration()
+        )
+        tab.spaceID = space.id
+        fav.tab = tab
+        subscribeToTab(tab, spaceID: space.id)
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    func removeFavorite(id: UUID, profileID: UUID) {
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
+        profile.favorites.removeAll { $0.id == id }
+        reindexFavorites(profile)
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    /// Moves a favorite back into the tab list, removing it from favorites.
+    func restoreFavoriteAsTab(id: UUID, profileID: UUID, in space: Space, at tabIndex: Int) {
+        guard let profile = profiles.first(where: { $0.id == profileID }),
+              let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return }
+        let fav = profile.favorites.remove(at: favIdx)
+        reindexFavorites(profile)
+
+        let tab: BrowserTab
+        if let liveTab = fav.tab {
+            tab = liveTab
+        } else {
+            tab = BrowserTab(
+                id: UUID(),
+                title: fav.title,
+                archivedInteractionState: nil,
+                fallbackURL: fav.url,
+                faviconURL: fav.faviconURL,
+                configuration: space.makeWebViewConfiguration()
+            )
+            tab.spaceID = space.id
+            subscribeToTab(tab, spaceID: space.id)
+        }
+
+        let insertAt = min(tabIndex, space.tabs.count)
+        space.tabs.insert(tab, at: insertAt)
+        notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertAt, in: space) }
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    /// Moves a favorite back into the pinned section, removing it from favorites.
+    func restoreFavoriteAsPinned(id: UUID, profileID: UUID, in space: Space, at pinnedIndex: Int) {
+        guard let profile = profiles.first(where: { $0.id == profileID }),
+              let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return }
+        let fav = profile.favorites.remove(at: favIdx)
+        reindexFavorites(profile)
+
+        let maxEntryOrder = space.pinnedEntries.map(\.sortOrder).max() ?? -1
+        let maxFolderOrder = space.pinnedFolders.map(\.sortOrder).max() ?? -1
+        let entry = PinnedEntry(
+            id: UUID(),
+            pinnedURL: fav.url,
+            pinnedTitle: fav.title,
+            faviconURL: fav.faviconURL,
+            sortOrder: max(maxEntryOrder, maxFolderOrder) + 1,
+            tab: fav.tab
+        )
+        if fav.tab == nil {
+            entry.onFaviconDownloaded = { [weak self, weak entry] in
+                guard let self, let entry else { return }
+                for space in self.spaces {
+                    if let index = space.pinnedEntries.firstIndex(where: { $0.id == entry.id }) {
+                        self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
+                        return
+                    }
+                }
+            }
+        }
+
+        let insertAt = min(pinnedIndex, space.pinnedEntries.count)
+        space.pinnedEntries.insert(entry, at: insertAt)
+        notifyObservers { $0.tabStoreDidInsertPinnedEntry(entry, at: insertAt, in: space) }
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    func reorderFavorite(from sourceIndex: Int, to destinationIndex: Int, profileID: UUID) {
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
+        guard sourceIndex >= 0, sourceIndex < profile.favorites.count else { return }
+        let fav = profile.favorites.remove(at: sourceIndex)
+        let insertAt = min(destinationIndex, profile.favorites.count)
+        profile.favorites.insert(fav, at: insertAt)
+        reindexFavorites(profile)
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
     }
 
     // MARK: - History Recording
@@ -890,6 +1130,25 @@ class TabStore {
         return tab
     }
 
+    /// Detaches a tab from a space without closing or archiving it.
+    /// Used when moving a tab to become a favorite's backing tab.
+    func detachTab(id: UUID, from space: Space) {
+        guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
+        let tab = space.tabs.remove(at: index)
+        notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: space) }
+        scheduleSave()
+    }
+
+    /// Detaches a pinned entry from a space without closing or archiving it.
+    /// Returns the backing tab if it was live.
+    func detachPinnedEntry(id: UUID, from space: Space) -> BrowserTab? {
+        guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return nil }
+        let entry = space.pinnedEntries.remove(at: index)
+        notifyObservers { $0.tabStoreDidRemovePinnedEntry(entry, at: index, in: space) }
+        scheduleSave()
+        return entry.tab
+    }
+
     func closeTab(id: UUID, in space: Space, archivedAt: Date? = nil) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs[index]
@@ -995,6 +1254,33 @@ class TabStore {
             self?.unpinTab(id: entry.id, in: space, at: savedTabIndex)
         }
         notifyObservers { $0.tabStoreDidPinTab(entry, fromIndex: index, toIndex: insertAt, in: space) }
+        scheduleSave()
+    }
+
+    /// Creates a dormant pinned entry from a URL (e.g. when restoring a favorite to pinned).
+    func pinURL(_ url: URL, title: String, faviconURL: URL?, in space: Space, at destinationIndex: Int? = nil) {
+        let maxEntryOrder = space.pinnedEntries.map(\.sortOrder).max() ?? -1
+        let maxFolderOrder = space.pinnedFolders.map(\.sortOrder).max() ?? -1
+        let entry = PinnedEntry(
+            id: UUID(),
+            pinnedURL: url,
+            pinnedTitle: title,
+            faviconURL: faviconURL,
+            sortOrder: max(maxEntryOrder, maxFolderOrder) + 1,
+            tab: nil
+        )
+        entry.onFaviconDownloaded = { [weak self, weak entry] in
+            guard let self, let entry else { return }
+            for space in self.spaces {
+                if let index = space.pinnedEntries.firstIndex(where: { $0.id == entry.id }) {
+                    self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
+                    return
+                }
+            }
+        }
+        let insertAt = min(destinationIndex ?? space.pinnedEntries.count, space.pinnedEntries.count)
+        space.pinnedEntries.insert(entry, at: insertAt)
+        notifyObservers { $0.tabStoreDidInsertPinnedEntry(entry, at: insertAt, in: space) }
         scheduleSave()
     }
 

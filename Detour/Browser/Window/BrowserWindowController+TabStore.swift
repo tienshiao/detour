@@ -91,6 +91,11 @@ extension BrowserWindowController: TabStoreObserver {
         }
     }
 
+    func tabStoreDidUpdateFavorites(for profile: Profile) {
+        guard let space = activeSpace, space.profileID == profile.id else { return }
+        tabSidebar.updateFavorites(profile.favorites, selectedTabID: selectedTabID)
+    }
+
     func tabStoreDidUpdateSpaces() {
         if isIncognito {
             // Incognito windows only show their own space; never switch away

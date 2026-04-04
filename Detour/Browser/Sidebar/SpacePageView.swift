@@ -1,15 +1,17 @@
 import AppKit
 
-/// A single page in the horizontal space strip, containing a space header and a scroll view with a table view.
+/// A single page in the horizontal space strip, containing a favorites bar, space header, and a scroll view with a table view.
 class SpacePageView: NSView {
     private static let headerHeight: CGFloat = 24
     private static let headerTopPad: CGFloat = 6
 
     private let header = SpaceHeaderView()
+    let favoritesBar = FavoritesBarView()
     let scrollView: DraggableScrollView
     let tableView: DraggableTableView
     private let topFadeShadow: NSView
     private let bottomFadeShadow: NSView
+    private var favoritesBarHeightConstraint: NSLayoutConstraint!
 
     init(tableViewDataSource: NSTableViewDataSource,
          tableViewDelegate: NSTableViewDelegate,
@@ -24,7 +26,7 @@ class SpacePageView: NSView {
         tableView.style = .sourceList
         tableView.dataSource = tableViewDataSource
         tableView.delegate = tableViewDelegate
-        tableView.registerForDraggedTypes([dragType])
+        tableView.registerForDraggedTypes([dragType, favoritePasteboardType])
         tableView.draggingDestinationFeedbackStyle = .sourceList
 
         let menu = NSMenu()
@@ -49,15 +51,25 @@ class SpacePageView: NSView {
 
         super.init(frame: .zero)
 
+        favoritesBar.translatesAutoresizingMaskIntoConstraints = false
         header.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(favoritesBar)
         addSubview(header)
         addSubview(scrollView)
         addSubview(topFadeShadow, positioned: .above, relativeTo: scrollView)
         addSubview(bottomFadeShadow, positioned: .above, relativeTo: scrollView)
 
+        favoritesBarHeightConstraint = favoritesBar.heightAnchor.constraint(equalToConstant: 0)
+        favoritesBar.setHeightConstraint(favoritesBarHeightConstraint)
+
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: topAnchor, constant: Self.headerTopPad),
+            favoritesBar.topAnchor.constraint(equalTo: topAnchor, constant: Self.headerTopPad),
+            favoritesBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            favoritesBar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            favoritesBarHeightConstraint,
+
+            header.topAnchor.constraint(equalTo: favoritesBar.bottomAnchor),
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
@@ -85,6 +97,18 @@ class SpacePageView: NSView {
 
     func update(emoji: String, name: String) {
         header.update(emoji: emoji, name: name)
+    }
+
+    func updateFavorites(_ favorites: [Favorite], selectedTabID: UUID? = nil) {
+        favoritesBar.update(favorites: favorites, selectedTabID: selectedTabID)
+    }
+
+    func updateFavoriteSelection(selectedTabID: UUID?) {
+        favoritesBar.updateSelection(selectedTabID: selectedTabID)
+    }
+
+    func setDragSessionActive(_ active: Bool) {
+        favoritesBar.showDropZone(active)
     }
 
     func updateFadeShadows() {
