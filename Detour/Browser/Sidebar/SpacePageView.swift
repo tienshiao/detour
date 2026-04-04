@@ -117,6 +117,7 @@ class SpacePageView: NSView {
 
         let contentHeight = documentView.frame.height
         let visibleHeight = clipView.bounds.height
+        guard visibleHeight > 0 else { return }
         let scrollY = clipView.bounds.origin.y
 
         let targetTopAlpha: CGFloat = scrollY > 0 ? 1 : 0
