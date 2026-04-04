@@ -501,6 +501,11 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             profileNameField.stringValue = profile.name
             return
         }
+        let isDuplicate = profiles.contains { $0.id != profile.id && $0.name.caseInsensitiveCompare(newName) == .orderedSame }
+        guard !isDuplicate else {
+            profileNameField.stringValue = profile.name
+            return
+        }
         profile.name = newName
         TabStore.shared.updateProfile(profile)
         tableView.reloadData()
@@ -601,7 +606,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         let addVC = AddProfileViewController()
         addVC.onCreate = { [weak self] name in
             guard let self else { return }
-            self.dismiss(nil)
+            self.dismiss(addVC)
             TabStore.shared.addProfile(name: name)
             self.tableView.reloadData()
             self.selectedIndex = self.profiles.count - 1
