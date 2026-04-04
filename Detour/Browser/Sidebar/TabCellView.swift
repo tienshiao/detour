@@ -252,16 +252,16 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     func updateAudio(isPlaying: Bool, isMuted: Bool) {
-        let newAudioPlaying = isPlaying || isMuted
-        guard newAudioPlaying != audioPlaying else { return }
-        audioPlaying = newAudioPlaying
-
-        // Update icon immediately (no animation needed for icon swap)
+        // Update icon immediately — must happen even when audioPlaying doesn't change
         if isMuted {
             speakerButton.image = NSImage(systemSymbolName: "speaker.slash.fill", accessibilityDescription: "Muted")
         } else if isPlaying {
             speakerButton.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: "Playing Audio")
         }
+
+        let newAudioPlaying = isPlaying || isMuted
+        guard newAudioPlaying != audioPlaying else { return }
+        audioPlaying = newAudioPlaying
 
         // Show button before animating in (hide after animating out in completion)
         if audioPlaying {
