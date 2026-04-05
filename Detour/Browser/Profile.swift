@@ -242,6 +242,21 @@ class Profile {
             }
         }
 
+        // Grant content script match patterns as host permissions when the extension
+        // has activeTab. In Chrome, extensions with active content scripts can use
+        // tab APIs (detectLanguage, sendMessage, etc.) on pages where their content
+        // scripts run. WebKit doesn't grant this implicitly, so we set the content
+        // script match patterns as granted permissions on the context.
+        if ext.manifest.permissions?.contains("activeTab") == true {
+            for cs in ext.manifest.contentScripts ?? [] {
+                for pattern in cs.matches {
+                    if let matchPattern = try? WKWebExtension.MatchPattern(string: pattern) {
+                        context.setPermissionStatus(.grantedExplicitly, for: matchPattern)
+                    }
+                }
+            }
+        }
+
         do {
             try extensionController.load(context)
             extensionContexts[ext.id] = context
