@@ -27,8 +27,8 @@ class FauxAddressBar: NSView {
 
     private let label = NSTextField(labelWithString: "")
     private let leadingIcon = NSImageView()
-    let shieldButton = NSButton()
-    private let copyButton = NSButton()
+    let shieldButton = HoverButton()
+    private let copyButton = HoverButton()
     private let badgeLabel = NSTextField(labelWithString: "")
     private var labelLeadingDefault: NSLayoutConstraint!
     private var labelLeadingAfterIcon: NSLayoutConstraint!
@@ -78,6 +78,7 @@ class FauxAddressBar: NSView {
         shieldButton.setContentHuggingPriority(.required, for: .horizontal)
         shieldButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         shieldButton.isHidden = true
+        shieldButton.fixedHoverSize = 22
         addSubview(shieldButton)
 
         // Badge for blocked count
@@ -105,6 +106,7 @@ class FauxAddressBar: NSView {
         copyButton.setContentHuggingPriority(.required, for: .horizontal)
         copyButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         copyButton.alphaValue = 0
+        copyButton.fixedHoverSize = 22
         addSubview(copyButton)
 
         labelLeadingDefault = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
