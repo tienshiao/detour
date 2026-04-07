@@ -117,30 +117,77 @@ extension BrowserWindowController: TabSidebarDelegate {
         popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .minY)
     }
 
-    func tabSidebarDidRequestShowContentBlocker(_ sidebar: TabSidebarViewController, sourceButton: NSView) {
-        guard let host = displayTab?.url?.host else { return }
+    func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView) {
+        let host = displayTab?.url?.host ?? ""
         let profileID = activeSpace?.profile?.id ?? UUID()
-        let isWhitelisted = ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
+        let isWhitelisted = host.isEmpty ? false : ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
 
-        let vc = ContentBlockerPopoverViewController()
+        let vc = SettingsPopoverViewController()
         vc.host = host
         vc.isBlockingEnabled = !isWhitelisted
         vc.blockedCount = displayTab?.blockedCount ?? 0
-        vc.onToggle = { [weak self] in
-            guard let self, let profile = self.activeSpace?.profile else { return }
+
+        // Populate extensions list (fetch pinned IDs once to avoid per-extension DB queries)
+        let enabledExts = ExtensionManager.shared.enabledExtensions(for: profileID)
+            .filter { $0.manifest.action != nil }
+        let pinnedIDs = Set(AppDatabase.shared.pinnedExtensionIDs(for: profileID.uuidString))
+        vc.extensions = enabledExts.map { ext in
+            SettingsPopoverViewController.ExtensionItem(
+                id: ext.id,
+                name: ExtensionManager.shared.displayName(for: ext.id),
+                icon: ExtensionManager.iconImage(for: ext.id, ext: ext),
+                isPinned: pinnedIDs.contains(ext.id)
+            )
+        }
+
+        vc.onBlockingToggle = { [weak self] in
+            guard let self, let profile = self.activeSpace?.profile, !host.isEmpty else { return }
             ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id) {
                 DispatchQueue.main.async {
-                    self.updateContentBlockerStatus()
                     ContentBlockerManager.shared.reapplyRuleLists()
                 }
             }
         }
 
+        vc.onPinToggle = { [weak self] extensionID in
+            guard let profile = self?.activeSpace?.profile else { return }
+            ExtensionManager.shared.toggleExtensionPinned(extensionID, profileID: profile.id)
+        }
+
+        vc.onExtensionClick = { [weak self] extensionID in
+            guard let self else { return }
+            let popover = ExtensionPopoverController(extensionID: extensionID)
+            popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
+            objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
+        }
+
+        vc.onOpenExtensionSettings = {
+            SettingsWindowController.shared.showExtensionsPane()
+        }
+
+        let fauxBar = tabSidebar.fauxAddressBar
+        fauxBar.keepButtonsVisible = true
+
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 260, height: 120)
         popover.contentViewController = vc
+        let closeHandler = FauxAddressBarPopoverDelegate(fauxAddressBar: fauxBar)
+        popover.delegate = closeHandler
+        objc_setAssociatedObject(popover, "popoverDelegate", closeHandler, .OBJC_ASSOCIATION_RETAIN)
         popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
+    }
+
+    func tabSidebarDidRequestShowExtensionPopup(_ sidebar: TabSidebarViewController, extensionID: String, sourceButton: NSView) {
+        guard ExtensionManager.shared.context(for: extensionID) != nil else { return }
+        let fauxBar = tabSidebar.fauxAddressBar
+        fauxBar.keepButtonsVisible = true
+
+        let popover = ExtensionPopoverController(extensionID: extensionID)
+        popover.onClose = { [weak fauxBar] in
+            fauxBar?.dismissPopoverKeep()
+        }
+        popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
+        objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDuplicateTabAt index: Int, isPinned: Bool) {
@@ -386,5 +433,19 @@ extension BrowserWindowController: TabSidebarDelegate {
         if wasActive, let firstSpace = store.spaces.first {
             setActiveSpace(id: firstSpace.id)
         }
+    }
+}
+
+// MARK: - Popover delegate to keep faux address bar buttons visible
+
+class FauxAddressBarPopoverDelegate: NSObject, NSPopoverDelegate {
+    private weak var fauxAddressBar: FauxAddressBar?
+
+    init(fauxAddressBar: FauxAddressBar) {
+        self.fauxAddressBar = fauxAddressBar
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        fauxAddressBar?.dismissPopoverKeep()
     }
 }

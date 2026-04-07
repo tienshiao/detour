@@ -219,11 +219,20 @@ class BrowserWindowController: NSWindowController {
             name: .tabRestoredByUndo,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleExtensionPinStateDidChange),
+            name: ExtensionManager.extensionPinStateDidChangeNotification,
+            object: nil
+        )
     }
 
     @objc private func handleExtensionActionDidChange(_ notification: Notification) {
-        guard let extensionID = notification.userInfo?["extensionID"] as? String else { return }
-        ExtensionToolbarManager.updateToolbarButton(for: extensionID)
+        guard let extensionID = notification.userInfo?["extensionID"] as? String,
+              let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
+        let image = ExtensionManager.iconImage(for: extensionID, ext: ext)
+        tabSidebar.fauxAddressBar.updatePinnedExtensionIcon(extensionID: extensionID, image: image)
     }
 
     @objc private func handleTabRestoredByUndo(_ notification: Notification) {
@@ -252,7 +261,11 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc private func handleExtensionsDidChange() {
-        rebuildExtensionToolbar()
+        updatePinnedExtensionIcons()
+    }
+
+    @objc private func handleExtensionPinStateDidChange() {
+        updatePinnedExtensionIcons()
     }
 
     deinit {
@@ -300,39 +313,31 @@ class BrowserWindowController: NSWindowController {
             deselectAllTabs()
         }
 
-        // Rebuild toolbar to reflect per-profile extension state
-        rebuildExtensionToolbar()
+        // Update pinned extension icons for the new profile
+        updatePinnedExtensionIcons()
 
         store.scheduleSave()
     }
 
-    /// Rebuild the window toolbar to match the current space's profile extension state.
-    func rebuildExtensionToolbar() {
-        guard let toolbar = window?.toolbar, window?.isVisible == true else { return }
-        // Remove existing extension items (iterate indices in reverse to avoid shifting)
-        for i in stride(from: toolbar.items.count - 1, through: 0, by: -1) {
-            if toolbar.items[i].itemIdentifier.rawValue.hasPrefix(ExtensionToolbarManager.itemIdentifierPrefix) {
-                toolbar.removeItem(at: i)
-            }
+    /// Update pinned extension icons in the faux address bar for the current profile.
+    func updatePinnedExtensionIcons() {
+        guard let profileID = activeSpace?.profile?.id else {
+            tabSidebar.fauxAddressBar.setPinnedExtensions([])
+            return
         }
-        // Add items for extensions enabled in the current profile, skipping duplicates
-        let profileID = activeSpace?.profileID
-        var insertedIDs = Set<NSToolbarItem.Identifier>()
-        for id in ExtensionToolbarManager.toolbarItemIdentifiers(profileID: profileID) {
-            guard !insertedIDs.contains(id) else { continue }
-            // Also check if the toolbar already contains this item (defensive)
-            guard !toolbar.items.contains(where: { $0.itemIdentifier == id }) else { continue }
-            insertedIDs.insert(id)
-            toolbar.insertItem(withItemIdentifier: id, at: toolbar.items.count)
+        let pinned = ExtensionManager.shared.pinnedExtensions(for: profileID)
+        let items = pinned.map { ext in
+            (id: ext.id, image: ExtensionManager.iconImage(for: ext.id, ext: ext))
         }
+        tabSidebar.fauxAddressBar.setPinnedExtensions(items)
     }
 
     // MARK: - Setup
 
+    /// An empty toolbar is required so that the traffic light buttons (close/minimize/zoom)
+    /// are positioned inside the sidebar area rather than overlapping the content view.
     private func setupToolbar() {
         let toolbar = NSToolbar(identifier: "BrowserToolbar")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
         toolbar.showsBaselineSeparator = false
         window?.toolbar = toolbar
         window?.toolbarStyle = .unified
@@ -850,14 +855,6 @@ class BrowserWindowController: NSWindowController {
                 self?.tabSidebar.fauxAddressBar.displayText = tab.displayHost
                 self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
                 self?.tabSidebar.reloadButton.isEnabled = url != nil
-                self?.updateContentBlockerStatus()
-            }
-            .store(in: &displayTabSubscriptions)
-
-        tab.$blockedCount
-            .receive(on: RunLoop.main)
-            .sink { [weak self] count in
-                self?.tabSidebar.fauxAddressBar.blockedCount = count
             }
             .store(in: &displayTabSubscriptions)
 
@@ -936,15 +933,6 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
-    func updateContentBlockerStatus() {
-        guard let host = displayTab?.url?.host,
-              let profileID = activeSpace?.profile?.id else {
-            tabSidebar.fauxAddressBar.isBlockingEnabledForHost = true
-            return
-        }
-        let isWhitelisted = ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
-        tabSidebar.fauxAddressBar.isBlockingEnabledForHost = !isWhitelisted
-    }
 
     func navigateToAddress(_ input: String) {
         guard selectedTab != nil else { return }
@@ -1537,37 +1525,7 @@ extension BrowserWindowController: NSWindowDelegate {
     }
 }
 
-// MARK: - NSToolbarDelegate
 
-extension BrowserWindowController: NSToolbarDelegate {
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        let profileID = activeSpace?.profileID
-        return ExtensionToolbarManager.toolbarItemIdentifiers(profileID: profileID)
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        let profileID = activeSpace?.profileID
-        return ExtensionToolbarManager.toolbarItemIdentifiers(profileID: profileID)
-    }
-
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        ExtensionToolbarManager.makeToolbarItem(identifier: itemIdentifier, target: self)
-    }
-}
-
-extension BrowserWindowController: ExtensionToolbarActions {
-    @objc func extensionToolbarItemClicked(_ sender: Any) {
-        // Sender is the NSButton used as the toolbar item's view
-        guard let button = sender as? NSButton,
-              let extID = button.identifier?.rawValue,
-              ExtensionManager.shared.context(for: extID) != nil else { return }
-
-        let popover = ExtensionPopoverController(extensionID: extID)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
-        // Retain the popover controller until it closes
-        objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
-    }
-}
 
 // MARK: - CommandPaletteDelegate
 

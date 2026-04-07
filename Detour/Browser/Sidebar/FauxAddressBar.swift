@@ -5,7 +5,6 @@ class FauxAddressBar: NSView {
         didSet {
             label.stringValue = displayText
             updateLeadingIcon()
-            updateShieldVisibility()
         }
     }
 
@@ -13,25 +12,25 @@ class FauxAddressBar: NSView {
         didSet { updateLeadingIcon() }
     }
 
-    var blockedCount: Int = 0 {
-        didSet { updateBadge() }
-    }
-
-    var isBlockingEnabledForHost: Bool = true {
-        didSet { updateShieldIcon() }
-    }
-
     var onClick: (() -> Void)?
     var onCopyURL: (() -> Void)?
-    var onShieldClick: (() -> Void)?
+    var onSettingsClick: (() -> Void)?
+    var onPinnedExtensionClick: ((String) -> Void)?
 
     private let label = NSTextField(labelWithString: "")
     private let leadingIcon = NSImageView()
-    let shieldButton = HoverButton()
+    let settingsButton = HoverButton()
     private let copyButton = HoverButton()
-    private let badgeLabel = NSTextField(labelWithString: "")
+    let pinnedExtensionStack = NSStackView()
     private var labelLeadingDefault: NSLayoutConstraint!
     private var labelLeadingAfterIcon: NSLayoutConstraint!
+    private var labelTrailingToButtons: NSLayoutConstraint!
+    private var labelTrailingToEdge: NSLayoutConstraint!
+    private var copyToStackConstraint: NSLayoutConstraint!
+    private var copyToSettingsConstraint: NSLayoutConstraint!
+    private var hasPinnedExtensions = false
+    private var isHovering = false
+    var keepButtonsVisible = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -67,34 +66,29 @@ class FauxAddressBar: NSView {
         leadingIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
         addSubview(leadingIcon)
 
-        // Shield button (content blocker indicator)
-        shieldButton.bezelStyle = .inline
-        shieldButton.isBordered = false
-        shieldButton.image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Content blocker")
-        shieldButton.contentTintColor = .controlAccentColor
-        shieldButton.target = self
-        shieldButton.action = #selector(shieldClicked)
-        shieldButton.translatesAutoresizingMaskIntoConstraints = false
-        shieldButton.setContentHuggingPriority(.required, for: .horizontal)
-        shieldButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        shieldButton.isHidden = true
-        shieldButton.fixedHoverSize = 22
-        addSubview(shieldButton)
+        // Settings button
+        settingsButton.bezelStyle = .inline
+        settingsButton.isBordered = false
+        settingsButton.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: "Settings")
+        settingsButton.contentTintColor = .secondaryLabelColor
+        settingsButton.target = self
+        settingsButton.action = #selector(settingsClicked)
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+        settingsButton.setContentHuggingPriority(.required, for: .horizontal)
+        settingsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        settingsButton.alphaValue = 0
+        settingsButton.fixedHoverSize = 22
+        addSubview(settingsButton)
 
-        // Badge for blocked count
-        badgeLabel.font = .systemFont(ofSize: 7, weight: .bold)
-        badgeLabel.textColor = .white
-        badgeLabel.backgroundColor = .controlAccentColor
-        badgeLabel.drawsBackground = true
-        badgeLabel.isBezeled = false
-        badgeLabel.isEditable = false
-        badgeLabel.alignment = .center
-        badgeLabel.wantsLayer = true
-        badgeLabel.layer?.cornerRadius = 4.5
-        badgeLabel.layer?.masksToBounds = true
-        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
-        badgeLabel.isHidden = true
-        addSubview(badgeLabel)
+        // Pinned extension icons stack
+        pinnedExtensionStack.orientation = .horizontal
+        pinnedExtensionStack.spacing = 2
+        pinnedExtensionStack.distribution = .fill
+        pinnedExtensionStack.translatesAutoresizingMaskIntoConstraints = false
+        pinnedExtensionStack.setContentHuggingPriority(.required, for: .horizontal)
+        pinnedExtensionStack.setContentCompressionResistancePriority(.required, for: .horizontal)
+        pinnedExtensionStack.alphaValue = 0
+        addSubview(pinnedExtensionStack)
 
         copyButton.bezelStyle = .inline
         copyButton.isBordered = false
@@ -111,26 +105,82 @@ class FauxAddressBar: NSView {
 
         labelLeadingDefault = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
         labelLeadingAfterIcon = label.leadingAnchor.constraint(equalTo: leadingIcon.trailingAnchor, constant: 6)
+        labelTrailingToButtons = label.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -4)
+        labelTrailingToEdge = label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
+        copyToStackConstraint = copyButton.trailingAnchor.constraint(equalTo: pinnedExtensionStack.leadingAnchor, constant: -2)
+        copyToSettingsConstraint = copyButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -2)
+
+        // Start with buttons hidden — label extends to trailing edge
+        pinnedExtensionStack.isHidden = true
+        labelTrailingToEdge.isActive = true
+        copyToSettingsConstraint.isActive = true
 
         NSLayoutConstraint.activate([
             leadingIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             leadingIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
             leadingIcon.widthAnchor.constraint(equalToConstant: 14),
             leadingIcon.heightAnchor.constraint(equalToConstant: 14),
-            label.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -4),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            copyButton.trailingAnchor.constraint(equalTo: shieldButton.leadingAnchor, constant: -2),
             copyButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            shieldButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            shieldButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badgeLabel.bottomAnchor.constraint(equalTo: shieldButton.bottomAnchor, constant: 4),
-            badgeLabel.centerXAnchor.constraint(equalTo: shieldButton.centerXAnchor),
-            badgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 12),
-            badgeLabel.heightAnchor.constraint(equalToConstant: 10),
+            pinnedExtensionStack.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -2),
+            pinnedExtensionStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            settingsButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            settingsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
         updateLeadingIcon()
     }
+
+    // MARK: - Pinned Extensions
+
+    func setPinnedExtensions(_ items: [(id: String, image: NSImage)]) {
+        pinnedExtensionStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        hasPinnedExtensions = !items.isEmpty
+        pinnedExtensionStack.isHidden = !hasPinnedExtensions
+        copyToStackConstraint.isActive = hasPinnedExtensions
+        copyToSettingsConstraint.isActive = !hasPinnedExtensions
+
+        for item in items {
+            let button = HoverButton()
+            button.bezelStyle = .inline
+            button.isBordered = false
+            // Resize to 14x14 to match SF Symbol visual weight of copy/settings buttons
+            let iconSize = NSSize(width: 14, height: 14)
+            let resized = NSImage(size: iconSize, flipped: false) { rect in
+                item.image.draw(in: rect)
+                return true
+            }
+            button.image = resized
+            button.imageScaling = .scaleNone
+            button.identifier = NSUserInterfaceItemIdentifier(item.id)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.fixedHoverSize = 22
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+            button.widthAnchor.constraint(equalToConstant: 22).isActive = true
+            button.target = self
+            button.action = #selector(pinnedExtensionClicked(_:))
+            pinnedExtensionStack.addArrangedSubview(button)
+        }
+
+        // Update alpha to match current hover state
+        let alpha: CGFloat = isHovering && !displayText.isEmpty ? 1 : 0
+        pinnedExtensionStack.alphaValue = alpha
+
+        window?.invalidateCursorRects(for: self)
+    }
+
+    func updatePinnedExtensionIcon(extensionID: String, image: NSImage) {
+        for view in pinnedExtensionStack.arrangedSubviews {
+            if let button = view as? HoverButton, button.identifier?.rawValue == extensionID {
+                button.image = image
+                break
+            }
+        }
+    }
+
+    // MARK: - State Updates
 
     private func updateLeadingIcon() {
         if displayText.isEmpty {
@@ -155,40 +205,47 @@ class FauxAddressBar: NSView {
         }
     }
 
-    private func updateShieldVisibility() {
-        shieldButton.isHidden = displayText.isEmpty
-        if displayText.isEmpty {
-            badgeLabel.isHidden = true
-        }
-    }
-
-    private func updateShieldIcon() {
-        if isBlockingEnabledForHost {
-            shieldButton.image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Content blocking active")
-            shieldButton.contentTintColor = .controlAccentColor
-            shieldButton.toolTip = "Content blocking is enabled for this site"
-        } else {
-            shieldButton.image = NSImage(systemSymbolName: "shield.slash", accessibilityDescription: "Content blocking disabled")
-            shieldButton.contentTintColor = .secondaryLabelColor
-            shieldButton.toolTip = "Content blocking is disabled for this site"
-        }
-    }
-
-    private func updateBadge() {
-        if blockedCount > 0 {
-            badgeLabel.stringValue = blockedCount > 99 ? "99+" : "\(blockedCount)"
-            badgeLabel.isHidden = false
-        } else {
-            badgeLabel.isHidden = true
-        }
-    }
+    // MARK: - Actions
 
     @objc private func copyClicked() {
         onCopyURL?()
     }
 
-    @objc private func shieldClicked() {
-        onShieldClick?()
+    @objc private func settingsClicked() {
+        onSettingsClick?()
+    }
+
+    @objc private func pinnedExtensionClicked(_ sender: HoverButton) {
+        guard let extID = sender.identifier?.rawValue else { return }
+        onPinnedExtensionClick?(extID)
+    }
+
+    // MARK: - Mouse Tracking
+
+    private func showButtons() {
+        isHovering = true
+        labelTrailingToEdge.isActive = false
+        labelTrailingToButtons.isActive = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            copyButton.animator().alphaValue = 1
+            settingsButton.animator().alphaValue = 1
+            if hasPinnedExtensions {
+                pinnedExtensionStack.animator().alphaValue = 1
+            }
+        }
+    }
+
+    private func hideButtons() {
+        isHovering = false
+        labelTrailingToButtons.isActive = false
+        labelTrailingToEdge.isActive = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            copyButton.animator().alphaValue = 0
+            settingsButton.animator().alphaValue = 0
+            pinnedExtensionStack.animator().alphaValue = 0
+        }
     }
 
     override func updateTrackingAreas() {
@@ -199,23 +256,33 @@ class FauxAddressBar: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         guard !displayText.isEmpty else { return }
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            copyButton.animator().alphaValue = 1
-        }
+        showButtons()
     }
 
     override func mouseExited(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            copyButton.animator().alphaValue = 0
+        guard !keepButtonsVisible else { return }
+        hideButtons()
+    }
+
+    /// Called when a popover anchored to this bar closes, to hide buttons if the mouse is no longer inside.
+    func dismissPopoverKeep() {
+        keepButtonsVisible = false
+        // Check if mouse is still inside
+        guard let window else { hideButtons(); return }
+        let mouseInWindow = window.mouseLocationOutsideOfEventStream
+        let mouseInSelf = convert(mouseInWindow, from: nil)
+        if !bounds.contains(mouseInSelf) {
+            hideButtons()
         }
     }
 
     override func resetCursorRects() {
         addCursorRect(label.frame, cursor: .iBeam)
         addCursorRect(copyButton.frame, cursor: .arrow)
-        addCursorRect(shieldButton.frame, cursor: .arrow)
+        addCursorRect(settingsButton.frame, cursor: .arrow)
+        for view in pinnedExtensionStack.arrangedSubviews {
+            addCursorRect(convert(view.bounds, from: view), cursor: .arrow)
+        }
         if !leadingIcon.isHidden {
             addCursorRect(leadingIcon.frame, cursor: .arrow)
         }
@@ -223,25 +290,44 @@ class FauxAddressBar: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
-            copyButton.contentTintColor = .labelColor
-            return
-        }
-        if !shieldButton.isHidden && shieldButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
-            return
+        if isHovering {
+            if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
+                copyButton.contentTintColor = .labelColor
+                return
+            }
+            if settingsButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
+                return
+            }
+            for view in pinnedExtensionStack.arrangedSubviews {
+                let buttonFrame = convert(view.bounds, from: view)
+                if buttonFrame.insetBy(dx: -4, dy: -4).contains(point) {
+                    return
+                }
+            }
         }
         onClick?()
     }
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        guard isHovering else { return }
         if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
             copyButton.contentTintColor = .secondaryLabelColor
             onCopyURL?()
             return
         }
-        if !shieldButton.isHidden && shieldButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
-            onShieldClick?()
+        if settingsButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
+            onSettingsClick?()
+            return
+        }
+        for view in pinnedExtensionStack.arrangedSubviews {
+            let buttonFrame = convert(view.bounds, from: view)
+            if buttonFrame.insetBy(dx: -4, dy: -4).contains(point) {
+                if let button = view as? HoverButton {
+                    pinnedExtensionClicked(button)
+                }
+                return
+            }
         }
     }
 }

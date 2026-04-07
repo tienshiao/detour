@@ -475,6 +475,12 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v5") { db in
+            try db.alter(table: "profileExtension") { t in
+                t.add(column: "isPinned", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         return migrator
     }
 
@@ -673,8 +679,38 @@ struct AppDatabase {
     /// Upsert per-profile extension enabled state.
     func setProfileExtensionEnabled(extensionID: String, profileID: String, enabled: Bool) {
         performWrite("set profile extension enabled") { db in
-            let record = ProfileExtensionRecord(profileID: profileID, extensionID: extensionID, isEnabled: enabled)
-            try record.save(db)
+            if var existing = try ProfileExtensionRecord
+                .filter(Column("profileID") == profileID && Column("extensionID") == extensionID)
+                .fetchOne(db) {
+                existing.isEnabled = enabled
+                try existing.update(db)
+            } else {
+                try ProfileExtensionRecord(profileID: profileID, extensionID: extensionID, isEnabled: enabled, isPinned: false).insert(db)
+            }
+        }
+    }
+
+    /// Returns extension IDs that are pinned for this profile.
+    func pinnedExtensionIDs(for profileID: String) -> [String] {
+        performRead("load pinned extension IDs", default: []) { db in
+            try ProfileExtensionRecord
+                .filter(Column("profileID") == profileID && Column("isPinned") == true)
+                .fetchAll(db)
+                .map(\.extensionID)
+        }
+    }
+
+    /// Toggle the pinned state for an extension in a single transaction.
+    func toggleExtensionPinned(extensionID: String, profileID: String) {
+        performWrite("toggle extension pinned") { db in
+            if var existing = try ProfileExtensionRecord
+                .filter(Column("profileID") == profileID && Column("extensionID") == extensionID)
+                .fetchOne(db) {
+                existing.isPinned = !existing.isPinned
+                try existing.update(db)
+            } else {
+                try ProfileExtensionRecord(profileID: profileID, extensionID: extensionID, isEnabled: true, isPinned: true).insert(db)
+            }
         }
     }
 

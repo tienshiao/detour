@@ -36,6 +36,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     static let popupOpenURLNotification = Notification.Name("extensionPopupOpenURL")
     static let openOptionsPageNotification = Notification.Name("extensionOpenOptionsPage")
     static let extensionActionDidChangeNotification = Notification.Name("extensionActionDidChange")
+    static let extensionPinStateDidChangeNotification = Notification.Name("extensionPinStateDidChange")
 
     // MARK: - Init
 
@@ -213,6 +214,77 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     func invalidateEnabledExtensionsCache() {
         enabledIDsCache.removeAll()
+    }
+
+    // MARK: - Pinned Extensions
+
+    func toggleExtensionPinned(_ extensionID: String, profileID: UUID) {
+        AppDatabase.shared.toggleExtensionPinned(extensionID: extensionID, profileID: profileID.uuidString)
+        NotificationCenter.default.post(name: Self.extensionPinStateDidChangeNotification, object: nil)
+    }
+
+    func pinnedExtensions(for profileID: UUID) -> [WebExtension] {
+        let pinnedIDs = AppDatabase.shared.pinnedExtensionIDs(for: profileID.uuidString)
+        return pinnedIDs.compactMap { id in extensions.first { $0.id == id } }.filter { $0.isEnabled }
+    }
+
+    /// Build an icon image for an extension, compositing badge text from WKWebExtension.Action.
+    static func iconImage(for extID: String, ext: WebExtension) -> NSImage {
+        let context = shared.context(for: extID)
+        let action = context?.action(for: nil)
+        let badgeText = action?.badgeText ?? ""
+
+        let baseIcon: NSImage
+        if let actionIcon = action?.icon(for: NSSize(width: 20, height: 20)) {
+            baseIcon = actionIcon
+        } else if let icon = ext.icon {
+            baseIcon = icon
+        } else {
+            return NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: ext.manifest.name)
+                ?? NSImage(named: NSImage.actionTemplateName)!
+        }
+
+        let size = NSSize(width: 20, height: 20)
+
+        if badgeText.isEmpty {
+            return NSImage(size: size, flipped: false) { rect in
+                baseIcon.draw(in: rect)
+                return true
+            }
+        }
+
+        return NSImage(size: size, flipped: false) { rect in
+            baseIcon.draw(in: rect)
+
+            let badgeFont = NSFont.systemFont(ofSize: 7, weight: .bold)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: badgeFont,
+                .foregroundColor: NSColor.white
+            ]
+            let textSize = (badgeText as NSString).size(withAttributes: attrs)
+            let badgeWidth = max(textSize.width + 4, 10)
+            let badgeHeight: CGFloat = 9
+            let badgeRect = NSRect(
+                x: rect.maxX - badgeWidth,
+                y: rect.minY,
+                width: badgeWidth,
+                height: badgeHeight
+            )
+
+            let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 3, yRadius: 3)
+            NSColor.systemRed.setFill()
+            badgePath.fill()
+
+            let textRect = NSRect(
+                x: badgeRect.midX - textSize.width / 2,
+                y: badgeRect.midY - textSize.height / 2,
+                width: textSize.width,
+                height: textSize.height
+            )
+            (badgeText as NSString).draw(in: textRect, withAttributes: attrs)
+
+            return true
+        }
     }
 
     func `extension`(withID id: String) -> WebExtension? {
@@ -692,12 +764,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         let popoverController = ExtensionPopoverController(extensionID: extID)
 
-        // Anchor to toolbar button if available, otherwise top-right of window
-        if let window = NSApp.keyWindow, let toolbar = window.toolbar {
-            let identifier = NSToolbarItem.Identifier(ExtensionToolbarManager.itemIdentifierPrefix + extID)
-            if let toolbarItem = toolbar.items.first(where: { $0.itemIdentifier == identifier }),
-               let buttonView = toolbarItem.view {
-                popoverController.setPositioning(relativeTo: buttonView.bounds, of: buttonView, preferredEdge: .maxY)
+        // Anchor to pinned extension button in faux address bar, or settings button, or top-right of window
+        if let wc = NSApp.keyWindow?.windowController as? BrowserWindowController {
+            let fauxBar = wc.tabSidebar.fauxAddressBar
+            if let pinnedButton = fauxBar.pinnedExtensionStack.arrangedSubviews
+                .first(where: { $0.identifier?.rawValue == extID }) {
+                popoverController.setPositioning(relativeTo: pinnedButton.bounds, of: pinnedButton, preferredEdge: .maxY)
+            } else {
+                popoverController.setPositioning(relativeTo: fauxBar.settingsButton.bounds, of: fauxBar.settingsButton, preferredEdge: .maxY)
             }
         } else if let contentView = NSApp.keyWindow?.contentView {
             let rect = NSRect(x: contentView.bounds.maxX - 50, y: contentView.bounds.maxY - 10, width: 1, height: 1)

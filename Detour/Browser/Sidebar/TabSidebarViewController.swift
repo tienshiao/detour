@@ -20,7 +20,8 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton)
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
-    func tabSidebarDidRequestShowContentBlocker(_ sidebar: TabSidebarViewController, sourceButton: NSView)
+    func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView)
+    func tabSidebarDidRequestShowExtensionPopup(_ sidebar: TabSidebarViewController, extensionID: String, sourceButton: NSView)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDuplicateTabAt index: Int, isPinned: Bool)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMoveTabAt index: Int, isPinned: Bool, toSpaceID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestArchiveTabAt index: Int)
@@ -52,7 +53,8 @@ protocol TabSidebarDelegate: AnyObject {
 
 extension TabSidebarDelegate {
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {}
-    func tabSidebarDidRequestShowContentBlocker(_ sidebar: TabSidebarViewController, sourceButton: NSView) {}
+    func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView) {}
+    func tabSidebarDidRequestShowExtensionPopup(_ sidebar: TabSidebarViewController, extensionID: String, sourceButton: NSView) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didSelectPinnedTabAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClosePinnedTabAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPinAt index: Int, destinationIndex: Int) {}
@@ -450,9 +452,16 @@ class TabSidebarViewController: NSViewController {
             let frameInWindow = self.fauxAddressBar.convert(self.fauxAddressBar.bounds, to: nil)
             self.delegate?.tabSidebarDidRequestOpenCommandPalette(self, anchorFrame: frameInWindow)
         }
-        fauxAddressBar.onShieldClick = { [weak self] in
+        fauxAddressBar.onSettingsClick = { [weak self] in
             guard let self else { return }
-            self.delegate?.tabSidebarDidRequestShowContentBlocker(self, sourceButton: self.fauxAddressBar.shieldButton)
+            self.delegate?.tabSidebarDidRequestShowSettings(self, sourceButton: self.fauxAddressBar.settingsButton)
+        }
+        fauxAddressBar.onPinnedExtensionClick = { [weak self] extensionID in
+            guard let self else { return }
+            // Find the pinned button to use as anchor
+            let sourceButton = self.fauxAddressBar.pinnedExtensionStack.arrangedSubviews
+                .first { $0.identifier?.rawValue == extensionID } ?? self.fauxAddressBar.settingsButton
+            self.delegate?.tabSidebarDidRequestShowExtensionPopup(self, extensionID: extensionID, sourceButton: sourceButton)
         }
 
         // Bottom bar for spaces

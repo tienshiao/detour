@@ -7,4 +7,5 @@ struct ProfileExtensionRecord: Codable, FetchableRecord, PersistableRecord {
     var profileID: String
     var extensionID: String
     var isEnabled: Bool
+    var isPinned: Bool
 }
