@@ -132,6 +132,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let wc = BrowserWindowController(incognito: false)
         assignDefaultSpace(to: wc)
         wc.showWindow(nil)
+        wc.newTab(nil)
         registerWindowController(wc)
     }
 
