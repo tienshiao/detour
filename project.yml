@@ -6,6 +6,9 @@ packages:
   GRDB:
     url: https://github.com/groue/GRDB.swift
     from: "7.0.0"
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.7.0"
 targets:
   Detour:
     type: application
@@ -14,6 +17,7 @@ targets:
       - Detour
     dependencies:
       - package: GRDB
+      - package: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.detourbrowser.mac

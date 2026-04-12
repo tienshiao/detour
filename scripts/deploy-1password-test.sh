@@ -1,8 +1,8 @@
 #!/bin/bash
 # Deploy a signed Release build of Detour to /Applications for 1Password testing.
 # Usage:
-#   ./scripts/deploy-release.sh          # build, sign, deploy, launch
-#   ./scripts/deploy-release.sh --log    # also stream 1PW-DEBUG logs after launch
+#   ./scripts/deploy-1password-test.sh          # build, sign, deploy, launch
+#   ./scripts/deploy-1password-test.sh --log    # also stream 1PW-DEBUG logs after launch
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
