@@ -177,7 +177,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     override func mouseDown(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
         if !glassContainer.frame.contains(location) {
+            let targetWindow = window
             dismiss()
+            targetWindow?.sendEvent(event)
         }
     }
 
