@@ -217,7 +217,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
         closeButton.isHidden = false
-        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        }
         hoverBackground.isHidden = false
         updateLayoutState()
     }
@@ -241,7 +243,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         if shouldHover {
             isHovered = true
             closeButton.isHidden = false
-            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+            }
             hoverBackground.isHidden = false
         } else {
             isHovered = false
@@ -470,7 +474,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     private func pulseCommit() {
-        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        }
         hoverBackground.isHidden = false
         hoverBackground.alphaValue = 1
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -537,7 +543,7 @@ class SeparatorCellView: NSTableCellView {
     }
 
     private func updateColors() {
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let isDark = effectiveAppearance.isDark
         shadowLine.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.06).cgColor
         highlightLine.layer?.backgroundColor = NSColor.white.withAlphaComponent(isDark ? 0.18 : 0.45).cgColor
     }
@@ -601,7 +607,9 @@ class NewTabCellView: NSTableCellView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        }
         hoverBackground.isHidden = false
     }
 
@@ -615,7 +623,9 @@ class NewTabCellView: NSTableCellView {
         let mouseInSelf = convert(mouseInWindow, from: nil)
         let shouldHover = bounds.contains(mouseInSelf)
         if shouldHover {
-            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+            }
             hoverBackground.isHidden = false
         } else {
             hoverBackground.isHidden = true

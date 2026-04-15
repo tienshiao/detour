@@ -1,5 +1,11 @@
 import AppKit
 
+extension NSAppearance {
+    var isDark: Bool {
+        bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+}
+
 extension NSColor {
     convenience init?(hex: String) {
         let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
@@ -31,8 +37,12 @@ extension NSColor {
              + 0.0722 * linearize(rgb.blueComponent)
     }
 
-    /// Returns a darkened variant if the color is too light for use on a light sidebar background.
-    var sidebarSafe: NSColor {
-        luminance > 0.7 ? blended(withFraction: 0.5, of: .black) ?? self : self
+    /// Returns a color adjusted for visibility on the sidebar background.
+    /// Darkens light colors on light backgrounds; lightens dark colors on dark backgrounds.
+    func sidebarSafe(darkBackground: Bool = false) -> NSColor {
+        if darkBackground {
+            return luminance < 0.15 ? blended(withFraction: 0.5, of: .white) ?? self : self
+        }
+        return luminance > 0.7 ? blended(withFraction: 0.5, of: .black) ?? self : self
     }
 }

@@ -69,7 +69,7 @@ class FadeShadowView: NSView {
 
     private func updateGradientColors() {
         guard let gradient = layer?.sublayers?.first as? CAGradientLayer else { return }
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let isDark = effectiveAppearance.isDark
         let alpha: CGFloat = isDark ? 0.25 : 0.05
         gradient.colors = [
             NSColor.black.withAlphaComponent(alpha).cgColor,

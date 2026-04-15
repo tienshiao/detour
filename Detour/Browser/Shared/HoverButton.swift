@@ -56,7 +56,9 @@ class HoverButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        }
         hoverBackground.isHidden = false
     }
 

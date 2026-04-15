@@ -91,6 +91,10 @@ class TabSidebarViewController: NSViewController {
     var isIncognito = false
     private var isBatchUpdating = false
 
+    private var isDarkBackground: Bool {
+        view.effectiveAppearance.isDark
+    }
+
     // Active page views — updated by updateActivePage()
     private(set) var tableView = DraggableTableView()
     private var scrollView = DraggableScrollView()
@@ -367,10 +371,10 @@ class TabSidebarViewController: NSViewController {
 
     var tintColor: NSColor? {
         didSet {
-            safeTintColor = tintColor?.sidebarSafe
+            safeTintColor = tintColor?.sidebarSafe(darkBackground: isDarkBackground)
             let safeColor = safeTintColor
             view.wantsLayer = true
-            if let color = tintColor {
+            if let color = safeColor ?? tintColor {
                 view.layer?.backgroundColor = color.withAlphaComponent(0.1).cgColor
             } else {
                 view.layer?.backgroundColor = nil
@@ -773,6 +777,7 @@ class TabSidebarViewController: NSViewController {
 
         guard !spaces.isEmpty else { return }
 
+        let dark = isDarkBackground
         let totalWidth = CGFloat(spaces.count) * spaceButtonWidth + CGFloat(max(0, spaces.count - 1)) * spaceButtonSpacing
         spaceStripView.frame = NSRect(x: 0, y: 0, width: totalWidth, height: spaceButtonHeight)
 
@@ -809,7 +814,7 @@ class TabSidebarViewController: NSViewController {
             button.frame = NSRect(x: x, y: 0, width: spaceButtonWidth, height: spaceButtonHeight)
             spaceStripView.addSubview(button)
             spaceButtons.append(button)
-            spaceButtonColors.append(space.color.sidebarSafe)
+            spaceButtonColors.append(space.color.sidebarSafe(darkBackground: dark))
 
             let dot = NSView(frame: NSRect(
                 x: x + (spaceButtonWidth - spaceDotSize) / 2,

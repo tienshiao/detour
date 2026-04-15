@@ -93,7 +93,9 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
 
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
-        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        }
         hoverBackground.isHidden = false
     }
 
@@ -135,7 +137,9 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     private func pulseCommit() {
-        hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor
+        }
         hoverBackground.isHidden = false
         hoverBackground.alphaValue = 1
         NSAnimationContext.runAnimationGroup({ ctx in
