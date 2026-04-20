@@ -1149,6 +1149,7 @@ class BrowserWindowController: NSWindowController {
         activeSpace?.selectedTabID = nil
         activeTabSubscriptions.removeAll()
         displayTabSubscriptions.removeAll()
+        hidePeekUI()
         dragHandle.isHidden = true
         removeContentViews()
         let hasTabs = !(activeSpace?.tabs.isEmpty ?? true) || !(activeSpace?.pinnedEntries.isEmpty ?? true)
