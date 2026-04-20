@@ -76,6 +76,11 @@ extension BrowserWindowController: TabStoreObserver {
 
     func tabStoreDidUpdatePinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {
         guard space.id == activeSpaceID else { return }
+        // Pinned tab close fires Update (not Remove) — entries stay as dormant
+        // slots. Key window handles deselect itself; background windows don't.
+        if entry.tab == nil, selectedTabID != nil, selectedTab == nil, window?.isKeyWindow == false {
+            deselectAllTabs()
+        }
         tabSidebar.reloadPinnedEntry(at: index)
     }
 

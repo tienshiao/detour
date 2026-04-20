@@ -19,8 +19,11 @@ private var localSnapshot: NSImage?      // Cached snapshot image
 A `BrowserTab` has:
 
 ```swift
-private(set) var webView: WKWebView?     // nil when sleeping
+private(set) var webView: WKWebView?         // nil when sleeping
+private(set) var webViewContainer: NSView?   // wraps webView; retains docked inspector views across detach/reattach
 ```
+
+The `webViewContainer` is the actual view added to a window's `contentContainerView`. The raw `webView` is a subview of the container. WebKit places docked UI (e.g., Web Inspector) as siblings of the webView — i.e., inside the container — so moving the container preserves that UI.
 
 ## Transfer Mechanism
 
@@ -29,22 +32,22 @@ When a window becomes the key window (gains focus):
 1. `NSWindow.didBecomeKeyNotification` fires
 2. The window posts `Notification.Name.webViewOwnershipChanged`
 3. **All windows** receive this notification and re-evaluate ownership
-4. The newly focused window takes ownership: attaches the tab's `webView` to its `contentContainerView`
+4. The newly focused window takes ownership: attaches the tab's `webViewContainer` to its `contentContainerView`
 5. Other windows showing the same tab switch to displaying `snapshotImageView`
 
-Before releasing the WebView, the departing owner takes a snapshot via `tab.takeSnapshot()` and caches it locally for display.
+Before releasing the container, the departing owner captures a synchronous bitmap of the container (webView + docked inspector pixels) and caches it locally for display.
 
 ## Snapshot System
 
 ```
-tab.takeSnapshot(completion:)
-  -> webView.takeSnapshot(with: nil)
-     -> completion(NSImage?)
+container.bitmapImageRepForCachingDisplay(in: container.bounds)
+  -> container.cacheDisplay(in:to:)
+     -> NSImage
 ```
 
 Snapshots are taken:
-- When a window loses WebView ownership (before the WebView is moved)
-- When switching tabs within a window (snapshot of the departing tab)
+- When a window loses ownership (before the container is moved)
+- When switching tabs within a window (snapshot of the departing tab's container)
 - On demand for peek overlays
 
 If a tab's WebView is nil (sleeping) or unavailable, the snapshot is nil and the window shows an empty state.

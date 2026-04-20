@@ -10,6 +10,22 @@ class BrowserTab: NSObject {
     let id: UUID
     private(set) var webView: WKWebView?
 
+    /// Wraps `webView` so WebKit's docked Web Inspector (a sibling view)
+    /// travels with the webView across detach/reattach.
+    private(set) var webViewContainer: NSView?
+
+    func ensureWebViewContainer() {
+        guard webViewContainer == nil, let webView else { return }
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = true
+        container.autoresizingMask = [.width, .height]
+        webView.translatesAutoresizingMaskIntoConstraints = true
+        webView.autoresizingMask = [.width, .height]
+        webView.frame = container.bounds
+        container.addSubview(webView)
+        webViewContainer = container
+    }
+
     private static func unarchiveInteractionState(_ data: Data) -> Any? {
         guard let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
         unarchiver.requiresSecureCoding = false
@@ -154,13 +170,6 @@ class BrowserTab: NSObject {
             webView?.interactionState = state
         } else if let fallbackURL {
             load(fallbackURL)
-        }
-    }
-
-    func takeSnapshot(completion: ((NSImage?) -> Void)? = nil) {
-        guard let webView else { completion?(nil); return }
-        webView.takeSnapshot(with: nil) { image, _ in
-            completion?(image)
         }
     }
 
@@ -366,11 +375,20 @@ class BrowserTab: NSObject {
     func teardown() {
         peekTab?.teardown()
         peekTab = nil
+        webView?.pauseAllMediaPlayback(completionHandler: nil)
+        releaseWebView()
+    }
+
+    /// Tears down observers, removes the webView and its container from the
+    /// view hierarchy, and nils out both references. Shared by `teardown()`
+    /// and `sleep()`.
+    private func releaseWebView() {
         guard let webView else { return }
         webView.removeObserver(self, forKeyPath: "_isPlayingAudio")
         faviconCancellables.removeAll()
-        webView.pauseAllMediaPlayback(completionHandler: nil)
         webView.removeFromSuperview()
+        webViewContainer?.removeFromSuperview()
+        webViewContainer = nil
         self.webView = nil
     }
 
@@ -384,16 +402,11 @@ class BrowserTab: NSObject {
             peek.sleep()
         }
 
-        // Capture interaction state for later restoration
         if let state = webView.interactionState {
             cachedInteractionState = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
         }
 
-        // Tear down observers and webView
-        webView.removeObserver(self, forKeyPath: "_isPlayingAudio")
-        faviconCancellables.removeAll()
-        webView.removeFromSuperview()
-        self.webView = nil
+        releaseWebView()
 
         isSleeping = true
         isLoading = false

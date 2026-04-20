@@ -23,7 +23,7 @@ class BrowserWindowController: NSWindowController {
     private var snapshotImageView: NSImageView?
     private var ownsWebView = false
     private var localSnapshot: NSImage?
-    private weak var pipWebView: WKWebView?
+    private weak var pipContentView: NSView?
 
     private let findBar = FindBarView()
     private let dragHandle = WindowDragView()
@@ -510,16 +510,31 @@ class BrowserWindowController: NSWindowController {
         ])
     }
 
+    private var linkStatusBarConstraints: [NSLayoutConstraint] = []
+
     private func setupLinkStatusBar() {
         linkStatusBar.isHidden = true
         linkStatusBar.translatesAutoresizingMaskIntoConstraints = false
-        contentContainerView.addSubview(linkStatusBar)
-        NSLayoutConstraint.activate([
-            linkStatusBar.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor, constant: -4),
-            linkStatusBar.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor, constant: 4),
-            linkStatusBar.widthAnchor.constraint(lessThanOrEqualTo: contentContainerView.widthAnchor, multiplier: 0.5),
+        anchorLinkStatusBar(to: contentContainerView)
+    }
+
+    /// Pins linkStatusBar to the bottom-left of `view` with a 4pt margin.
+    /// When `view` is the active webView, the bar tracks the webView's bounds —
+    /// so a docked Web Inspector shrinking the webView slides the bar up
+    /// instead of letting it cover the inspector.
+    private func anchorLinkStatusBar(to view: NSView) {
+        NSLayoutConstraint.deactivate(linkStatusBarConstraints)
+        linkStatusBarConstraints.removeAll()
+        if linkStatusBar.superview !== view {
+            view.addSubview(linkStatusBar, positioned: .above, relativeTo: nil)
+        }
+        linkStatusBarConstraints = [
+            linkStatusBar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4),
+            linkStatusBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
+            linkStatusBar.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.5),
             linkStatusBar.heightAnchor.constraint(equalToConstant: 22),
-        ])
+        ]
+        NSLayoutConstraint.activate(linkStatusBarConstraints)
     }
 
     // MARK: - Find Bar Actions
@@ -644,20 +659,15 @@ class BrowserWindowController: NSWindowController {
             // Enter PiP for peek before hidePeekUI() removes it from the hierarchy.
             if let peekTab = previousTab.peekTab, peekTab.isPlayingAudio {
                 peekTab.enterPictureInPicture()
-                pipWebView = peekTab.webView
+                pipContentView = peekTab.webView
             }
             hidePeekUI()
             previousTab.lastDeselectedAt = Date()
-            if ownsWebView {
-                previousTab.takeSnapshot { [weak self] image in
-                    self?.localSnapshot = image
-                }
-            }
             if previousTab.isPlayingAudio {
                 previousTab.enterPictureInPicture()
-                // Keep the webView in the hierarchy so WebKit can capture the
+                // Keep the container in the hierarchy so WebKit can capture the
                 // video's on-screen frame for the PiP animation origin.
-                pipWebView = previousTab.webView
+                pipContentView = previousTab.webViewContainer
             }
         } else {
             hidePeekUI()
@@ -721,7 +731,7 @@ class BrowserWindowController: NSWindowController {
         // Update favorite selection highlight
         tabSidebar.updateFavoriteSelection(selectedTabID: id)
 
-        if window?.isKeyWindow == true || tab.webView?.superview == nil {
+        if window?.isKeyWindow == true || tab.webViewContainer?.superview == nil {
             claimWebView(for: tab)
         } else {
             showSnapshot(for: tab)
@@ -743,28 +753,25 @@ class BrowserWindowController: NSWindowController {
 
     private func claimWebView(for tab: BrowserTab) {
         guard let webView = tab.webView else { return }
+        tab.ensureWebViewContainer()
+        guard let container = tab.webViewContainer else { return }
 
-        if webView.superview?.isDescendant(of: contentContainerView) == true {
+        let tabID = tab.id
+
+        if container.superview === contentContainerView {
+            container.isHidden = false
+            container.frame = contentContainerView.bounds
+            ownsWebView = true
+            anchorLinkStatusBar(to: webView)
             return
         }
 
+        // Snapshot the container (webView + any docked inspector) at its current size.
+        let priorSnapshot = snapshotImage(of: container)
+
         removeContentViews()
 
-        if let inspector = webView.value(forKey: "_inspector") as? NSObject {
-            inspector.perform(NSSelectorFromString("close"))
-        }
-
-        // Snapshot the webView at its current size (the old window's size) before stealing it.
-        var priorSnapshot: NSImage?
-        if let bitmap = webView.bitmapImageRepForCachingDisplay(in: webView.bounds) {
-            webView.cacheDisplay(in: webView.bounds, to: bitmap)
-            let image = NSImage(size: webView.bounds.size)
-            image.addRepresentation(bitmap)
-            priorSnapshot = image
-        }
-        let tabID = tab.id
-
-        webView.removeFromSuperview()
+        container.removeFromSuperview()
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
@@ -776,15 +783,11 @@ class BrowserWindowController: NSWindowController {
         webView.configuration.userContentController.add(self, name: "editableFieldFocus")
 
         // Use frame-based layout (not constraints) for WKWebView — Auto Layout breaks Web Inspector.
-        webView.translatesAutoresizingMaskIntoConstraints = true
-        webView.autoresizingMask = [.width, .height]
-        contentContainerView.addSubview(webView, positioned: .below, relativeTo: dragHandle)
-
-        let bounds = contentContainerView.bounds
-        webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
+        contentContainerView.addSubview(container, positioned: .below, relativeTo: dragHandle)
+        container.frame = contentContainerView.bounds
 
         ownsWebView = true
-        contentContainerView.addSubview(linkStatusBar, positioned: .above, relativeTo: webView)
+        anchorLinkStatusBar(to: webView)
 
         var userInfo: [String: Any] = ["tabID": tabID]
         if let priorSnapshot {
@@ -795,6 +798,17 @@ class BrowserWindowController: NSWindowController {
             object: self,
             userInfo: userInfo
         )
+    }
+
+    private func snapshotImage(of view: NSView) -> NSImage? {
+        guard view.bounds.width > 0, view.bounds.height > 0,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return nil
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(bitmap)
+        return image
     }
 
     private func showSnapshot(for tab: BrowserTab) {
@@ -821,9 +835,13 @@ class BrowserWindowController: NSWindowController {
 
     private func removeContentViews() {
         emptyStateLabel.isHidden = true
+        // Reparent before the container teardown below removes its subtree.
+        if linkStatusBar.superview !== contentContainerView {
+            anchorLinkStatusBar(to: contentContainerView)
+        }
         let currentPeekWebView = selectedTab?.peekTab?.webView
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipWebView {
-            if let webView = subview as? WKWebView {
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView {
+            if let webView = webView(in: subview) {
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "editableFieldFocus")
@@ -836,13 +854,21 @@ class BrowserWindowController: NSWindowController {
         ownsWebView = false
         linkStatusBar.hide()
 
-        // Clean up the PiP webView after WebKit has captured the animation origin.
-        if let pipping = pipWebView {
+        // Clean up the PiP content view after WebKit has captured the animation origin.
+        if let pipping = pipContentView {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 pipping.removeFromSuperview()
-                self?.pipWebView = nil
+                self?.pipContentView = nil
             }
         }
+    }
+
+    /// Returns the WKWebView for a direct subview of `contentContainerView`.
+    /// Subviews may be raw webviews (peek, PiP) or a `BrowserTab.webViewContainer`
+    /// wrapping the tab's webview as its first subview.
+    private func webView(in subview: NSView) -> WKWebView? {
+        if let webView = subview as? WKWebView { return webView }
+        return subview.subviews.first { $0 is WKWebView } as? WKWebView
     }
 
     private func bindDisplayTab() {
@@ -1217,7 +1243,7 @@ class BrowserWindowController: NSWindowController {
     private func hidePeekUI() {
         guard peekOverlayView != nil else { return }
         peekFaviconSubscription = nil
-        if selectedTab?.peekTab?.webView !== pipWebView {
+        if selectedTab?.peekTab?.webView !== pipContentView {
             selectedTab?.peekTab?.webView?.removeFromSuperview()
         }
         peekOverlayView?.removeFromSuperview()
