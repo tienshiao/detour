@@ -117,6 +117,34 @@ extension BrowserWindowController: WKUIDelegate {
         }
     }
 
+    // MARK: - Picture-in-Picture
+    //
+    // Private WKUIDelegate SPI. WebKit's PIPViewController delegate calls
+    // `pipShouldClose:` when the user clicks "Return to Window"; that path emits
+    // `_webViewFullscreenMayReturnToInline:` after a UI<->web roundtrip. WebKit
+    // also queues a request to exit PiP that only fires once the document is
+    // visible again — which means we have to put the WKWebView back into the
+    // view hierarchy ourselves. Selecting the originating tab does both: it
+    // claims the webView (making the document visible, which lets WebKit's
+    // queued callback fire and the video animate back inline) and restores any
+    // peek overlay if the source was a peek tab.
+    @objc(_webViewFullscreenMayReturnToInline:)
+    func _webViewFullscreenMayReturnToInline(_ webView: WKWebView) {
+        for space in TabStore.shared.spaces {
+            for tab in space.tabs {
+                if tab.webView === webView || tab.peekTab?.webView === webView {
+                    if activeSpaceID != space.id {
+                        setActiveSpace(id: space.id)
+                    }
+                    selectTab(id: tab.id)
+                    window?.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    return
+                }
+            }
+        }
+    }
+
     // MARK: - Private Helpers
 
     private func originString(from origin: WKSecurityOrigin) -> String {
