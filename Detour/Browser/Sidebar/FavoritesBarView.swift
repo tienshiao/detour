@@ -30,6 +30,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
     private var dropZoneBorder: CAShapeLayer?
     private var isDragHighlighted = false
     private var dragInsertionIndex: Int? { didSet { updateInsertionIndicator() } }
+    private var isAnimatingTileUpdate = false
 
     // Internal drag tracking
     private var dragSourceIndex: Int?
@@ -84,33 +85,22 @@ class FavoritesBarView: NSView, NSDraggingSource {
         let removedIDs = Set(oldIDs).subtracting(newIDs)
         let addedIDs = Set(newIDs).subtracting(oldIDs)
 
-        // Fade out removed tiles
-        for id in removedIDs {
-            if let tile = oldTilesByID[id] {
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.2
-                    tile.animator().alphaValue = 0
-                } completionHandler: {
-                    tile.removeFromSuperview()
-                }
-            }
-        }
-
-        // Animate height change first so target frames use correct bounds
         let newHeight = computeHeight()
-        let heightChanged = heightConstraintRef?.constant != newHeight
-        if heightChanged {
-            heightConstraintRef?.constant = newHeight
-            superview?.layoutSubtreeIfNeeded()
-        }
-
-        // Compute target frames after height is set
         let targetFrames = computeTileFrames(for: favorites.count)
+
+        // If bounds aren't ready (e.g. first update before layout), animation can't
+        // compute frames. Fall back to a non-animated rebuild so a later layout pass
+        // positions the tiles instead of leaving them invisible.
+        if !favorites.isEmpty && targetFrames.isEmpty {
+            rebuildTiles(selectedTabID: selectedTabID)
+            return
+        }
 
         let animOrigin = pendingAnimationOrigin
         pendingAnimationOrigin = nil
 
-        // Build new tile array, reusing existing tiles where possible
+        // Reuse existing tiles without resetting their frames so the animator below
+        // captures each tile's current position as the animation's starting point.
         var newTiles: [FavoriteTileView] = []
         for (index, fav) in favorites.enumerated() {
             if let existing = oldTilesByID[fav.id] {
@@ -139,17 +129,35 @@ class FavoritesBarView: NSView, NSDraggingSource {
         }
         tileViews = newTiles
 
+        // Suppress layoutTiles() during the animation so the implicit Auto Layout pass
+        // driven by the height-constraint animation can't overwrite the explicit tile
+        // frame animations below.
+        isAnimatingTileUpdate = true
+
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.25
             ctx.allowsImplicitAnimation = true
 
-            for (i, tile) in tileViews.enumerated() where i < targetFrames.count {
+            if heightConstraintRef?.constant != newHeight {
+                heightConstraintRef?.animator().constant = newHeight
+            }
+
+            for id in removedIDs {
+                oldTilesByID[id]?.animator().alphaValue = 0
+            }
+
+            for (i, tile) in newTiles.enumerated() where i < targetFrames.count {
+                tile.animator().frame = targetFrames[i]
                 if addedIDs.contains(favorites[i].id) {
-                    tile.animator().frame = targetFrames[i]
                     tile.animator().alphaValue = 1
-                } else {
-                    tile.animator().frame = targetFrames[i]
                 }
+            }
+
+            superview?.layoutSubtreeIfNeeded()
+        } completionHandler: { [weak self] in
+            self?.isAnimatingTileUpdate = false
+            for id in removedIDs {
+                oldTilesByID[id]?.removeFromSuperview()
             }
         }
     }
@@ -211,7 +219,9 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
     override func layout() {
         super.layout()
-        layoutTiles()
+        if !isAnimatingTileUpdate {
+            layoutTiles()
+        }
         updateDropZoneBorderPath()
     }
 
@@ -263,13 +273,19 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
     private func insertionIndex(for point: NSPoint) -> Int {
         guard !favorites.isEmpty else { return 0 }
-        // Find the closest tile boundary
-        for (index, tile) in tileViews.enumerated() {
-            if point.x < tile.frame.midX {
+        let count = favorites.count
+        let numRows = (count + Self.maxPerRow - 1) / Self.maxPerRow
+        let distanceFromTop = bounds.height - Self.vPad - point.y
+        let rawRow = Int(floor(distanceFromTop / (Self.tileSize + Self.tileSpacing)))
+        let targetRow = max(0, min(numRows - 1, rawRow))
+        let rowStart = targetRow * Self.maxPerRow
+        let rowEnd = min(rowStart + Self.maxPerRow, count)
+        for index in rowStart..<rowEnd {
+            if point.x < tileViews[index].frame.midX {
                 return index
             }
         }
-        return favorites.count
+        return rowEnd
     }
 
     // MARK: - Drop Zone Appearance
@@ -341,17 +357,21 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
         // Position: vertical bar at the insertion boundary
         let x: CGFloat
+        let y: CGFloat
         if index < tileViews.count {
-            x = tileViews[index].frame.minX - Self.tileSpacing / 2
+            let frame = tileViews[index].frame
+            x = frame.minX - Self.tileSpacing / 2
+            y = frame.minY + 4
         } else if let last = tileViews.last {
             x = last.frame.maxX + Self.tileSpacing / 2
+            y = last.frame.minY + 4
         } else {
             x = Self.hPad
+            y = bounds.height - Self.vPad - Self.tileSize + 4
         }
 
         let indicatorWidth: CGFloat = 2
         let indicatorHeight: CGFloat = Self.tileSize - 8
-        let y = bounds.height - Self.vPad - Self.tileSize + 4
         insertionIndicator?.frame = NSRect(x: x - indicatorWidth / 2, y: y, width: indicatorWidth, height: indicatorHeight)
     }
 
@@ -428,7 +448,10 @@ class FavoritesBarView: NSView, NSDraggingSource {
         // Internal favorite reorder
         if let data = pasteboard.string(forType: favoritePasteboardType),
            let srcIdx = Int(data) {
-            let destIdx = dragInsertionIndex ?? favorites.count
+            let rawDest = dragInsertionIndex ?? favorites.count
+            // dragInsertionIndex is in pre-removal coordinates, but the reorder
+            // API removes the source first then inserts; shift down for forward moves.
+            let destIdx = srcIdx < rawDest ? rawDest - 1 : rawDest
             guard srcIdx != destIdx else { return false }
             delegate?.favoritesBar(self, didReorderFavoriteFrom: srcIdx, to: destIdx)
             return true
