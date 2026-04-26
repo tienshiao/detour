@@ -291,6 +291,9 @@ class TabStore {
 
     private(set) var profiles: [Profile] = []
     private(set) var spaces: [Space] = []
+
+    var nonIncognitoSpaces: [Space] { spaces.filter { !$0.isIncognito } }
+
     private(set) var closedTabStack: [ClosedTabRecord] = []
     private var observers: [WeakObserver] = []
     private var tabSubscriptions: [UUID: Set<AnyCancellable>] = [:]

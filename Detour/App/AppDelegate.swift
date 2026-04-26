@@ -156,10 +156,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerWindowController(wc)
     }
 
+    private var keyBrowserWindowController: BrowserWindowController? {
+        NSApp.keyWindow?.windowController as? BrowserWindowController
+    }
+
     /// Sets the active space on a new non-incognito window using the best available default.
     func assignDefaultSpace(to wc: BrowserWindowController) {
         guard !wc.isIncognito else { return }
-        if let currentWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
+        if let currentWC = keyBrowserWindowController,
            !currentWC.isIncognito,
            let spaceID = currentWC.activeSpaceID,
            TabStore.shared.space(withID: spaceID) != nil {
@@ -175,7 +179,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             guard url.scheme == "http" || url.scheme == "https" else { continue }
-            if let wc = NSApp.keyWindow?.windowController as? BrowserWindowController,
+            if let wc = keyBrowserWindowController,
                let space = wc.activeSpace {
                 let tab = TabStore.shared.addTab(in: space, url: url)
                 wc.selectTab(id: tab.id)
@@ -289,6 +293,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         navigateMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
         navigateMenuItem.submenu = navigateMenu
 
+        // Spaces menu
+        let spacesMenuItem = NSMenuItem()
+        mainMenu.addItem(spacesMenuItem)
+        let spacesMenu = NSMenu(title: "Spaces")
+        spacesMenu.delegate = self
+        let nextSpaceItem = spacesMenu.addItem(withTitle: "Next Space", action: #selector(BrowserWindowController.nextSpace(_:)), keyEquivalent: "\u{F703}")
+        nextSpaceItem.keyEquivalentModifierMask = [.command, .option]
+        let prevSpaceItem = spacesMenu.addItem(withTitle: "Previous Space", action: #selector(BrowserWindowController.previousSpace(_:)), keyEquivalent: "\u{F702}")
+        prevSpaceItem.keyEquivalentModifierMask = [.command, .option]
+        spacesMenu.addItem(.separator())
+        spacesMenu.addItem(withTitle: "Manage Spaces…", action: #selector(BrowserWindowController.openSpacesSettings(_:)), keyEquivalent: "")
+        spacesMenuItem.submenu = spacesMenu
+
         // Extensions menu
         let extensionsMenuItem = NSMenuItem()
         mainMenu.addItem(extensionsMenuItem)
@@ -323,7 +340,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openChromeWebStore() {
         let url = URL(string: "https://chromewebstore.google.com")!
-        if let wc = NSApp.keyWindow?.windowController as? BrowserWindowController,
+        if let wc = keyBrowserWindowController,
            let space = wc.activeSpace {
             let tab = TabStore.shared.addTab(in: space, url: url)
             wc.selectTab(id: tab.id)
@@ -336,7 +353,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let extID = sender.representedObject as? String,
               ExtensionManager.shared.context(for: extID) != nil else { return }
 
-        guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController else { return }
+        guard let wc = keyBrowserWindowController else { return }
         let addressBar = wc.tabSidebar.fauxAddressBar
         let popover = ExtensionPopoverController(extensionID: extID)
         popover.show(relativeTo: addressBar.bounds, of: addressBar, preferredEdge: .minY)
@@ -345,6 +362,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Extension Inspector
+
+    /// Tag used to identify dynamically-added space menu items.
+    private static let spacesMenuTag = 7000
 
     /// Tag used to identify dynamically-added extension menu items.
     private static let extensionMenuTag = 8000
@@ -398,6 +418,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         switch menu.title {
+        case "Spaces":
+            updateSpacesMenu(menu)
         case "Extensions":
             updateExtensionsMenu(menu)
         case "Develop":
@@ -405,6 +427,37 @@ extension AppDelegate: NSMenuDelegate {
         default:
             break
         }
+    }
+
+    private func updateSpacesMenu(_ menu: NSMenu) {
+        // Remove previous dynamic space items
+        menu.items
+            .filter { $0.tag == AppDelegate.spacesMenuTag }
+            .forEach { menu.removeItem($0) }
+
+        let spaces = TabStore.shared.nonIncognitoSpaces
+        guard !spaces.isEmpty else { return }
+
+        let activeID = keyBrowserWindowController?.activeSpaceID
+
+        // Static layout is: [Next, Previous, separator, "Manage Spaces…"].
+        // Insert the dynamic space items + a trailing separator before "Manage Spaces…".
+        let manageIndex = menu.items.firstIndex(where: { $0.action == #selector(BrowserWindowController.openSpacesSettings(_:)) }) ?? menu.items.count
+        var insertAt = manageIndex
+
+        for space in spaces {
+            let title = "\(space.emoji) \(space.name)"
+            let item = NSMenuItem(title: title, action: #selector(BrowserWindowController.selectSpaceFromMenu(_:)), keyEquivalent: "")
+            item.representedObject = space.id
+            item.tag = AppDelegate.spacesMenuTag
+            item.state = (space.id == activeID) ? .on : .off
+            menu.insertItem(item, at: insertAt)
+            insertAt += 1
+        }
+
+        let separator = NSMenuItem.separator()
+        separator.tag = AppDelegate.spacesMenuTag
+        menu.insertItem(separator, at: insertAt)
     }
 
     private func updateExtensionsMenu(_ menu: NSMenu) {
@@ -415,7 +468,7 @@ extension AppDelegate: NSMenuDelegate {
 
         // Get extensions enabled for the current profile
         let profileExtensions: [WebExtension]
-        if let wc = NSApp.keyWindow?.windowController as? BrowserWindowController,
+        if let wc = keyBrowserWindowController,
            let profileID = wc.activeSpace?.profileID {
             profileExtensions = ExtensionManager.shared.enabledExtensions(for: profileID)
         } else {

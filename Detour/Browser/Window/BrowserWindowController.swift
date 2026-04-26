@@ -319,6 +319,36 @@ class BrowserWindowController: NSWindowController {
         store.scheduleSave()
     }
 
+    @objc func nextSpace(_ sender: Any?) { navigateSpace(offset: 1) }
+
+    @objc func previousSpace(_ sender: Any?) { navigateSpace(offset: -1) }
+
+    private func navigateSpace(offset: Int) {
+        let list = store.nonIncognitoSpaces
+        guard let activeID = activeSpaceID,
+              let i = list.firstIndex(where: { $0.id == activeID }) else { return }
+        let target = i + offset
+        guard target >= 0, target < list.count else { return }
+        tabSidebar.animateToSpace(id: list[target].id)
+    }
+
+    private func canNavigateSpace(offset: Int) -> Bool {
+        let list = store.nonIncognitoSpaces
+        guard let activeID = activeSpaceID,
+              let i = list.firstIndex(where: { $0.id == activeID }) else { return false }
+        let target = i + offset
+        return target >= 0 && target < list.count
+    }
+
+    @objc func selectSpaceFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        tabSidebar.animateToSpace(id: id)
+    }
+
+    @objc func openSpacesSettings(_ sender: Any?) {
+        SettingsWindowController.shared.showSpacesPane()
+    }
+
     /// Update pinned extension icons in the faux address bar for the current profile.
     func updatePinnedExtensionIcons() {
         guard let profileID = activeSpace?.profile?.id else {
@@ -1517,6 +1547,16 @@ extension BrowserWindowController: NSMenuItemValidation {
             menuItem.title = isPinned ? "Unpin Tab" : "Pin Tab"
             if !isPinned && tab.url == nil { return false }
             return true
+        }
+        if menuItem.action == #selector(nextSpace(_:)) {
+            return !isIncognito && canNavigateSpace(offset: 1)
+        }
+        if menuItem.action == #selector(previousSpace(_:)) {
+            return !isIncognito && canNavigateSpace(offset: -1)
+        }
+        if menuItem.action == #selector(selectSpaceFromMenu(_:))
+            || menuItem.action == #selector(openSpacesSettings(_:)) {
+            return !isIncognito
         }
         return true
     }

@@ -1013,7 +1013,7 @@ class TabSidebarViewController: NSViewController {
         spaceClickAnimation = nil
     }
 
-    private func animateToSpace(id: UUID) {
+    func animateToSpace(id: UUID) {
         stopSpaceClickAnimation()
         let spaces = relevantSpaces
         guard let targetIndex = spaces.firstIndex(where: { $0.id == id }),
