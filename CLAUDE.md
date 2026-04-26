@@ -20,7 +20,7 @@ xcodebuild -scheme DetourTests -configuration Debug test -only-testing:DetourTes
 
 ## Architecture
 
-macOS native browser (Swift 5.10, macOS 14+) using WebKit. Organized around **Spaces** (workspaces with isolated cookie stores) containing **Tabs**.
+macOS native browser (Swift 5.10, macOS 14+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
 
 ### Key Architectural Decisions
 
@@ -32,7 +32,7 @@ macOS native browser (Swift 5.10, macOS 14+) using WebKit. Organized around **Sp
 
 **Per-window space state**: Each `BrowserWindowController` tracks its own `activeSpaceID`. Spaces are global in `TabStore` but the active space is per-window.
 
-**Incognito**: Creates an isolated `Space` with a non-persistent `WKWebsiteDataStore`. No history recording. Space removed on window close.
+**Incognito**: Assigns the Space to a special incognito `Profile`, whose `dataStore` is `.nonPersistent()`. No history recording. Space removed on window close.
 
 ### Directory Layout
 
@@ -67,7 +67,8 @@ BrowserWindowController (per window)                    [Browser/Window/]
   └── WKWebView (owned tab) or NSImageView (snapshot)
 
 TabStore.shared (singleton)                             [Browser/TabStore.swift]
-  ├── Space[] (each with tabs[], WKWebsiteDataStore)
+  ├── Profile[] (each owns a WKWebsiteDataStore)         [Browser/Profile.swift]
+  ├── Space[] (each references a Profile for its data store)
   ├── TabStoreObserver[] (weak references)
   ├── Database.shared (session persistence)             [Storage/Database.swift]
   └── HistoryDatabase.shared (visit recording)          [Storage/HistoryDatabase.swift]
