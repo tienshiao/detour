@@ -91,6 +91,10 @@ class FindBarView: NSView {
             stack.trailingAnchor.constraint(equalTo: glassContainer.contentView.trailingAnchor),
 
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+
+            // Match the toast height (computed from a sibling ToastView so any
+            // future change to ToastView's metrics stays in sync).
+            heightAnchor.constraint(equalToConstant: ToastView().fittingSize.height),
         ])
     }
 
