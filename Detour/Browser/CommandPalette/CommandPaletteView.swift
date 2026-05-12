@@ -334,6 +334,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return
         }
 
+        // Clear the stale selection on the previous suggestion list so that hitting
+        // Enter before the debounced fetch returns submits the typed text rather
+        // than activating an unrelated default-history suggestion.
+        if let old = selectedSuggestionIndex {
+            (tableView.rowView(atRow: old, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = false
+            selectedSuggestionIndex = nil
+        }
+
         // Gather tab infos and apply inline autocomplete (suppressed on backspace)
         var tabInfos: [SuggestionProvider.TabInfo]?
         if suppressNextAutocomplete {
