@@ -403,6 +403,79 @@ final class TabStoreTests: XCTestCase {
 
         XCTAssertEqual(observer.reorderCalls, 1)
     }
+
+    // MARK: - Profile Swap
+
+    private func makeStoreWithTwoProfiles() throws -> (TabStore, Space, old: Profile, new: Profile) {
+        let db = try makeDatabase()
+        let store = TabStore(appDB: db)
+        let oldProfile = store.addProfile(name: "Old")
+        let newProfile = store.addProfile(name: "New")
+        let space = store.addSpace(name: "Swap", emoji: "🧪", colorHex: "007AFF", profileID: oldProfile.id)
+        return (store, space, oldProfile, newProfile)
+    }
+
+    private func swapProfile(_ store: TabStore, _ space: Space, to profile: Profile) {
+        store.updateSpace(id: space.id, name: space.name, emoji: space.emoji,
+                          colorHex: space.colorHex, profileID: profile.id)
+    }
+
+    func testProfileSwapForceSleepsAudioPlayingTab() throws {
+        let (store, space, _, newProfile) = try makeStoreWithTwoProfiles()
+        let tab = store.addTab(in: space, url: URL(string: "https://example.com"))
+        XCTAssertNotNil(tab.webView)
+        tab.isPlayingAudio = true
+
+        swapProfile(store, space, to: newProfile)
+
+        XCTAssertTrue(tab.isSleeping, "audio playback must not exempt a tab from a profile swap")
+        XCTAssertNil(tab.webView, "the old profile's webView must be released")
+    }
+
+    func testProfileSwapDeactivatesFavoriteBackedTab() throws {
+        let (store, space, oldProfile, newProfile) = try makeStoreWithTwoProfiles()
+        store.addFavoriteFromEntry(url: URL(string: "https://example.com")!, title: "Fav",
+                                   faviconURL: nil, favicon: nil, profileID: oldProfile.id, at: 0)
+        let fav = oldProfile.favorites[0]
+        store.activateFavorite(id: fav.id, profileID: oldProfile.id, in: space)
+        XCTAssertNotNil(fav.tab?.webView)
+
+        swapProfile(store, space, to: newProfile)
+
+        XCTAssertNil(fav.tab, "favorite backing tab bound to the swapped space must return to a dormant tile")
+    }
+
+    func testProfileSwapMovesSelectionOffFavoriteBackedTab() throws {
+        let (store, space, oldProfile, newProfile) = try makeStoreWithTwoProfiles()
+        let normalTab = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(normalTab)
+        store.addFavoriteFromEntry(url: URL(string: "https://example.com")!, title: "Fav",
+                                   faviconURL: nil, favicon: nil, profileID: oldProfile.id, at: 0)
+        let fav = oldProfile.favorites[0]
+        store.activateFavorite(id: fav.id, profileID: oldProfile.id, in: space)
+        space.selectedTabID = fav.tab?.id
+
+        swapProfile(store, space, to: newProfile)
+
+        XCTAssertEqual(space.selectedTabID, normalTab.id,
+                       "selection must move to a surviving tab before the favorite's tab is torn down")
+    }
+
+    func testProfileSwapLeavesOtherSpacesFavoriteTabsAlone() throws {
+        let (store, space, oldProfile, newProfile) = try makeStoreWithTwoProfiles()
+        let otherSpace = store.addSpace(name: "Other", emoji: "🅾️", colorHex: "FF0000",
+                                        profileID: oldProfile.id)
+        store.addFavoriteFromEntry(url: URL(string: "https://example.com")!, title: "Fav",
+                                   faviconURL: nil, favicon: nil, profileID: oldProfile.id, at: 0)
+        let fav = oldProfile.favorites[0]
+        store.activateFavorite(id: fav.id, profileID: oldProfile.id, in: otherSpace)
+        XCTAssertNotNil(fav.tab?.webView)
+
+        swapProfile(store, space, to: newProfile)
+
+        XCTAssertNotNil(fav.tab?.webView,
+                        "a favorite tab bound to a different space on the old profile must stay live")
+    }
 }
 
 // MARK: - Mock Observer

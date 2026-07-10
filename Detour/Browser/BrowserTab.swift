@@ -386,12 +386,18 @@ class BrowserTab: NSObject {
 
     // MARK: - Sleep / Wake
 
-    func sleep() {
-        guard let webView, !isSleeping, !isPlayingAudio else { return }
+    /// `force` sleeps the tab even while it is playing audio (pausing the media
+    /// first). Used when the tab must release its webView regardless of playback,
+    /// e.g. a profile swap rebinding the tab to a different data store.
+    func sleep(force: Bool = false) {
+        guard let webView, !isSleeping, force || !isPlayingAudio else { return }
+        if force {
+            webView.pauseAllMediaPlayback(completionHandler: nil)
+        }
 
         if let peek = peekTab {
             savePeekStateForPersistence()
-            peek.sleep()
+            peek.sleep(force: force)
         }
 
         if let state = webView.interactionState {

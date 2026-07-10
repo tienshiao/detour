@@ -1199,19 +1199,49 @@ class TabStore {
             // wakes and is rebuilt from the NEW profile's configuration. sleep()
             // preserves interaction state (cachedInteractionState) and sets
             // isSleeping, which the display path (selectTab → wake) relies on.
+            // force: a profile swap is an explicit isolation action, so audio
+            // playback does not exempt a tab — its media is paused and the tab
+            // rebinds like any other.
             var liveTabs = space.tabs
             liveTabs.append(contentsOf: space.pinnedEntries.compactMap(\.tab))
             for tab in liveTabs where tab.webView != nil {
-                tab.sleep()
+                tab.sleep(force: true)
+            }
+
+            // The OLD profile's favorites can hold live backing tabs bound to this
+            // space (favorites are per-profile; their tabs live on Favorite.tab,
+            // not in space.tabs/pinnedEntries, so the loop above misses them).
+            // Those favorites disappear from this space's sidebar after the swap,
+            // so return them to dormant tiles rather than leaving live webviews on
+            // the old profile. Like Cmd+W on a favorite (deactivateFavorite), this
+            // is not reversed by Edit Space undo.
+            if let oldProfile = profile(withID: oldProfileID) {
+                var deactivatedAny = false
+                for fav in oldProfile.favorites {
+                    guard let favTab = fav.tab, favTab.spaceID == id else { continue }
+                    // Move selection off the favorite's tab before teardown so the
+                    // refresh notification below re-selects a tab that still
+                    // exists (selectTab no-ops on unresolvable IDs, which would
+                    // leave the window on an empty pane).
+                    if space.selectedTabID == favTab.id {
+                        space.selectedTabID = space.tabs.first?.id
+                            ?? space.pinnedEntries.first(where: { $0.tab != nil })?.tab?.id
+                    }
+                    tabSubscriptions.removeValue(forKey: favTab.id)
+                    favTab.teardown()
+                    fav.tab = nil
+                    deactivatedAny = true
+                }
+                if deactivatedAny {
+                    notifyObservers { $0.tabStoreDidUpdateFavorites(for: oldProfile) }
+                }
             }
 
             // Refresh the tab currently displayed by any window on this space so it
             // is reloaded under the new profile rather than left blank: the window's
             // handleTabRestoredByUndo re-selects (and wakes) this tab.
             //
-            // Residual limitations: (1) a tab actively playing audio is skipped by
-            // sleep()'s guard, so it keeps the old profile's store/extensions until
-            // it is next reloaded; (2) a window showing this space but a *different*
+            // Residual limitation: a window showing this space but a *different*
             // tab will re-select the space's selected tab.
             if let selectedTabID = space.selectedTabID {
                 NotificationCenter.default.post(
