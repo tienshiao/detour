@@ -939,7 +939,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             log.debug("Routing polyfill native message: \(body["type"] as? String ?? "(no type)", privacy: .public)")
             let profile = profile(for: controller)
             if let handler = profile?.polyfillHandler {
-                handler.handleNativeMessage(body, replyHandler: replyHandler)
+                handler.handleNativeMessage(
+                    body,
+                    verifiedExtensionID: extensionIDFromContext(extensionContext),
+                    replyHandler: replyHandler
+                )
             } else {
                 log.error("No polyfill handler for profile")
                 replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
@@ -999,6 +1003,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         guard let hostName = port.applicationIdentifier,
               let extID = extensionIDFromContext(extensionContext) else {
             completionHandler(nil)
+            return
+        }
+
+        // Mirror the sendNativeMessage gate (see above): connecting to a real
+        // native host requires the extension to have declared the nativeMessaging
+        // permission. It is auto-granted at the context level so the polyfill
+        // bridge works, so the manifest declaration is the real gate.
+        let manifestPermissions = self.extension(withID: extID)?.manifest.permissions ?? []
+        guard manifestPermissions.contains("nativeMessaging") else {
+            log.warning("Extension \(extID, privacy: .public) tried connectNative to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
+            completionHandler(NSError(domain: "DetourExtension", code: -1,
+                                      userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
             return
         }
 

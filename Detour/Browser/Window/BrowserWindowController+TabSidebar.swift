@@ -388,13 +388,14 @@ extension BrowserWindowController: TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toPinnedAt pinnedIndex: Int) {
         guard let space = activeSpace, let profile = space.profile,
               let fav = profile.favorites.first(where: { $0.id == favoriteID }) else { return }
-        let wasSelected = fav.tab?.id == selectedTabID
+        // Capture the dragged favorite's live tab id so we can re-select exactly
+        // that tab after it becomes a pinned entry — not just the first live
+        // pinned entry, which may be an unrelated earlier tab.
+        let draggedTabID = fav.tab?.id
+        let wasSelected = draggedTabID == selectedTabID
         store.restoreFavoriteAsPinned(id: favoriteID, profileID: profile.id, in: space, at: pinnedIndex)
-        if wasSelected {
-            if let entry = space.pinnedEntries.first(where: { $0.tab?.id != nil }),
-               let tabID = entry.tab?.id {
-                selectTab(id: tabID)
-            }
+        if wasSelected, let draggedTabID {
+            selectTab(id: draggedTabID)
         }
     }
 

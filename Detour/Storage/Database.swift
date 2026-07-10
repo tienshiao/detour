@@ -164,6 +164,18 @@ struct AppDatabase {
         }
     }
 
+    /// Deletes the closed-tab row(s) for a specific tab. Used when undoing a tab
+    /// close so the in-memory stack and the DB stay in sync (otherwise the row is
+    /// reloaded on next launch and Cmd+Shift+T reopens a duplicate). A given tabID
+    /// appears at most once because reopen/undo always mint a fresh tab UUID.
+    func deleteClosedTab(tabID: String) {
+        performWrite("delete closed tab") { db in
+            try ClosedTabRecord
+                .filter(Column("tabID") == tabID)
+                .deleteAll(db)
+        }
+    }
+
     // MARK: - Downloads
 
     func saveDownload(_ record: DownloadRecord) {

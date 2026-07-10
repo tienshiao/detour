@@ -27,15 +27,29 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(nil, "Invalid message format")
             return
         }
-        dispatch(body, replyHandler: replyHandler)
+        dispatch(body, verifiedExtensionID: verifiedExtensionID(from: message), replyHandler: replyHandler)
+    }
+
+    /// The trustworthy extension identity for a message from an extension web
+    /// view (popup/options), derived from the frame's security origin rather
+    /// than the self-reported body field. Extension pages load from an origin
+    /// whose host is the context's `uniqueIdentifier` (== the chrome extension
+    /// id, see Profile.loadExtension). Returns nil when the origin can't be
+    /// matched to a loaded extension, in which case the caller falls back to
+    /// the body value.
+    private func verifiedExtensionID(from message: WKScriptMessage) -> String? {
+        let host = message.frameInfo.securityOrigin.host
+        guard !host.isEmpty, ExtensionManager.shared.extension(withID: host) != nil else { return nil }
+        return host
     }
 
     /// Entry point for service worker contexts via browser.runtime.sendNativeMessage.
     /// Called by ExtensionManager's delegate when appID == "detourPolyfill".
-    func handleNativeMessage(_ body: [String: Any], replyHandler: @escaping (Any?, (any Error)?) -> Void) {
+    /// `verifiedExtensionID` is derived from the sending `WKWebExtensionContext`.
+    func handleNativeMessage(_ body: [String: Any], verifiedExtensionID: String?, replyHandler: @escaping (Any?, (any Error)?) -> Void) {
         let type = body["type"] as? String ?? "(unknown)"
         log.debug("Native message bridge: \(type, privacy: .public)")
-        dispatch(body) { result, errorString in
+        dispatch(body, verifiedExtensionID: verifiedExtensionID) { result, errorString in
             if let errorString {
                 log.error("Polyfill error for \(type, privacy: .public): \(errorString, privacy: .public)")
                 replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
@@ -49,11 +63,25 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     // MARK: - Dispatch
 
-    private func dispatch(_ body: [String: Any], replyHandler: @escaping (Any?, String?) -> Void) {
-        guard let type = body["type"] as? String,
-              let extensionID = body["extensionID"] as? String else {
-            log.error("Invalid polyfill message: missing type or extensionID in \(String(describing: body), privacy: .public)")
-            replyHandler(nil, "Invalid message format: missing type or extensionID")
+    private func dispatch(_ body: [String: Any], verifiedExtensionID: String?, replyHandler: @escaping (Any?, String?) -> Void) {
+        guard let type = body["type"] as? String else {
+            log.error("Invalid polyfill message: missing type in \(String(describing: body), privacy: .public)")
+            replyHandler(nil, "Invalid message format: missing type")
+            return
+        }
+
+        // Trust the identity verified from the sending context/frame over the
+        // self-reported body value. When both are present and disagree, the
+        // caller is impersonating another extension — reject it.
+        let claimedID = body["extensionID"] as? String
+        if let verifiedExtensionID, let claimedID, claimedID != verifiedExtensionID {
+            log.error("Extension \(verifiedExtensionID, privacy: .public) attempted to act as \(claimedID, privacy: .public); rejecting")
+            replyHandler(nil, "Extension identity mismatch")
+            return
+        }
+        guard let extensionID = verifiedExtensionID ?? claimedID else {
+            log.error("Invalid polyfill message: missing extensionID in \(String(describing: body), privacy: .public)")
+            replyHandler(nil, "Invalid message format: missing extensionID")
             return
         }
 
@@ -111,6 +139,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
         // MARK: - History
         case "history.search":
+            guard hasPermission("history", extensionID: extensionID) else {
+                replyHandler(nil, "history permission not declared")
+                return
+            }
             let query = params["query"] as? [String: Any] ?? [:]
             let text = query["text"] as? String ?? ""
             let maxResults = query["maxResults"] as? Int ?? 100
@@ -151,6 +183,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(buildExtensionInfo(extensionID: extensionID), nil)
 
         case "management.getAll":
+            guard hasPermission("management", extensionID: extensionID) else {
+                replyHandler(nil, "management permission not declared")
+                return
+            }
             let allInfos = ExtensionManager.shared.extensions.map { ext in
                 buildExtensionInfo(ext: ext)
             }
@@ -299,6 +335,13 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     private static let defaultFrameInfo: [[String: Any]] = [["frameId": 0, "parentFrameId": -1, "url": ""]]
 
     // MARK: - Helpers
+
+    /// Whether the extension declared a given manifest permission. Used to gate
+    /// polyfilled APIs (history, management) that WKWebExtension doesn't itself
+    /// permission-check because they're implemented natively here.
+    private func hasPermission(_ permission: String, extensionID: String) -> Bool {
+        ExtensionManager.shared.extension(withID: extensionID)?.manifest.permissions?.contains(permission) ?? false
+    }
 
     private func buildExtensionInfo(extensionID: String) -> [String: Any] {
         if let ext = ExtensionManager.shared.extension(withID: extensionID) {

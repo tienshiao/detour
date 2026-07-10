@@ -22,6 +22,33 @@ final class ContentBlockerTests: XCTestCase {
         XCTAssertTrue(urlFilter.contains("\\$"), "Dollar sign should be escaped: \(urlFilter)")
     }
 
+    func testBackslashEscaped() {
+        // A literal backslash in a pattern must be escaped to \\ so the regex stays
+        // valid and matches the backslash literally (interior + trailing cases).
+
+        // Interior backslash: "example.com\path" — the \ must not form an escape
+        // sequence with the following 'p'.
+        let interior = parser.parse(text: "example.com\\path\n")
+        XCTAssertFalse(interior.rules.isEmpty, "Interior backslash rule should compile")
+        let interiorFilter = (interior.rules[0]["trigger"] as? [String: Any])?["url-filter"] as? String ?? ""
+        XCTAssertTrue(interiorFilter.contains("\\\\"), "Backslash should be escaped to \\\\: \(interiorFilter)")
+        XCTAssertNotNil(try? NSRegularExpression(pattern: interiorFilter), "Produced regex must be valid: \(interiorFilter)")
+        // The escaped backslash must match a literal backslash in the URL.
+        let subject = "http://example.com\\path"
+        let regex = try? NSRegularExpression(pattern: interiorFilter)
+        let range = NSRange(subject.startIndex..., in: subject)
+        XCTAssertNotNil(regex?.firstMatch(in: subject, range: range),
+                        "Regex should match a URL containing a literal backslash: \(interiorFilter)")
+
+        // Trailing backslash: "example.com\" would produce a dangling escape (invalid
+        // regex) without the fix, causing the rule to be dropped.
+        let trailing = parser.parse(text: "example.com\\\n")
+        XCTAssertFalse(trailing.rules.isEmpty, "Trailing backslash rule should compile")
+        let trailingFilter = (trailing.rules[0]["trigger"] as? [String: Any])?["url-filter"] as? String ?? ""
+        XCTAssertTrue(trailingFilter.hasSuffix("\\\\"), "Trailing backslash should be escaped: \(trailingFilter)")
+        XCTAssertNotNil(try? NSRegularExpression(pattern: trailingFilter), "Produced regex must be valid: \(trailingFilter)")
+    }
+
     func testCaretSeparatorNoBackslashW() {
         // ^ separator should expand without \w which WebKit doesn't support in character classes
         let result = parser.parse(text: "||example.com^\n")

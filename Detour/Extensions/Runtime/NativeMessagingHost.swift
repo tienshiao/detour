@@ -171,7 +171,24 @@ class NativeMessagingHost {
 
     // MARK: - Private
 
+    /// Chrome native-messaging host names are restricted to lowercase
+    /// alphanumerics, dots and underscores, with no leading/trailing/double
+    /// dots. Enforcing this rejects attacker-supplied names like "../../evil"
+    /// that would otherwise traverse out of the search directories when joined
+    /// via `appendingPathComponent`.
+    static func isValidHostName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 255 else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789._")
+        guard name.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return false }
+        if name.hasPrefix(".") || name.hasSuffix(".") || name.contains("..") { return false }
+        return true
+    }
+
     private func discoverManifest() throws -> NativeHostManifest {
+        guard Self.isValidHostName(hostName) else {
+            log.error("Rejecting native host name with illegal characters: \(self.hostName, privacy: .public)")
+            throw NativeMessagingError.manifestNotFound(hostName)
+        }
         let filename = "\(hostName).json"
 
         for dir in Self.searchDirectories {

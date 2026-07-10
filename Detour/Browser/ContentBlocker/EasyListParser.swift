@@ -413,6 +413,8 @@ class EasyListParser {
         var result = ""
         for char in pattern {
             switch char {
+            case "\\":
+                result += "\\\\"
             case "*":
                 result += ".*"
             case "^":

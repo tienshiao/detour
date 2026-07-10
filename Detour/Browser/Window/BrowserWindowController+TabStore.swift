@@ -15,11 +15,30 @@ extension BrowserWindowController: TabStoreObserver {
 
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {
         guard space.id == activeSpaceID else { return }
-        if tab.id == selectedTabID, window?.isKeyWindow == false {
-            deselectAllTabs()
+        // If our selected tab is still the one being removed, this removal did
+        // not come through our own closeTab (which settles selection before
+        // removing) — e.g. an extension chrome.tabs.remove or an undo. Advance
+        // selection to an adjacent tab regardless of key state, so a key window
+        // isn't left with a stale selection and a blank content pane.
+        if tab.id == selectedTabID {
+            selectAdjacentTabAfterRemoval(at: index, in: space)
         }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
+    }
+
+    /// Pick a sensible tab to select after the current selection was removed
+    /// out from under this window. Uses post-removal state (the tab is already
+    /// gone from `space.tabs`).
+    private func selectAdjacentTabAfterRemoval(at index: Int, in space: Space) {
+        let tabs = space.tabs
+        if !tabs.isEmpty {
+            selectTab(id: tabs[min(index, tabs.count - 1)].id)
+        } else if let liveEntry = space.pinnedEntries.first(where: { $0.tab != nil }), let tab = liveEntry.tab {
+            selectTab(id: tab.id)
+        } else {
+            deselectAllTabs()
+        }
     }
 
     func tabStoreDidReorderTabs(in space: Space) {

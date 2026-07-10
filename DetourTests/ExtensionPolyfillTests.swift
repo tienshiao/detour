@@ -11,10 +11,19 @@ final class ExtensionPolyfillTests: XCTestCase {
     private var webView: WKWebView!
     private var handler: ExtensionPolyfillHandler!
 
+    /// Extension ids registered in ExtensionManager during a test, torn down after.
+    private var registeredExtensionIDs: [String] = []
+
     override func setUp() async throws {
         try await super.setUp()
 
         handler = ExtensionPolyfillHandler()
+
+        // The injected shim sets chrome.runtime.id = 'test-polyfill-extension'.
+        // Register a matching extension declaring the permission-gated APIs
+        // (history, management) so the JS-path tests exercise the happy path;
+        // dedicated positive/negative gate tests live further below.
+        try registerExtension(id: "test-polyfill-extension", permissions: ["history", "management"])
 
         let config = WKWebViewConfiguration()
         let ucc = config.userContentController
@@ -52,7 +61,33 @@ final class ExtensionPolyfillTests: XCTestCase {
         webView?.configuration.userContentController.removeAllScriptMessageHandlers()
         webView = nil
         handler = nil
+        for id in registeredExtensionIDs {
+            ExtensionManager.shared.extensions.removeAll { $0.id == id }
+        }
+        registeredExtensionIDs.removeAll()
         super.tearDown()
+    }
+
+    /// Register a synthetic extension in ExtensionManager whose manifest declares
+    /// the given permissions, so permission-gated polyfill APIs (history,
+    /// management) can be exercised. Tracked in `registeredExtensionIDs` and
+    /// removed in tearDown. Mirrors the WebExtension construction used by
+    /// WKExtensionIntegrationTests, but builds the manifest in-memory.
+    @discardableResult
+    private func registerExtension(id: String, permissions: [String]) throws -> WebExtension {
+        let manifestDict: [String: Any] = [
+            "manifest_version": 3,
+            "name": "Polyfill Permission Test",
+            "version": "1.0.0",
+            "permissions": permissions
+        ]
+        let data = try JSONSerialization.data(withJSONObject: manifestDict)
+        let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+        let ext = WebExtension(id: id, manifest: manifest,
+                               basePath: FileManager.default.temporaryDirectory)
+        ExtensionManager.shared.extensions.append(ext)
+        registeredExtensionIDs.append(id)
+        return ext
     }
 
     /// Evaluate JS that returns a JSON-serializable value, parsed back to Swift.
@@ -325,7 +360,8 @@ final class ExtensionPolyfillTests: XCTestCase {
         let expectation = expectation(description: "idle.queryState via native bridge")
 
         handler.handleNativeMessage(
-            ["type": "idle.queryState", "extensionID": "test", "params": ["detectionIntervalInSeconds": 60]]
+            ["type": "idle.queryState", "extensionID": "test", "params": ["detectionIntervalInSeconds": 60]],
+            verifiedExtensionID: nil
         ) { result, error in
             XCTAssertNil(error)
             XCTAssertNotNil(result as? String)
@@ -341,7 +377,8 @@ final class ExtensionPolyfillTests: XCTestCase {
         let expectation = expectation(description: "fontSettings via native bridge")
 
         handler.handleNativeMessage(
-            ["type": "fontSettings.getFontList", "extensionID": "test", "params": [:] as [String: Any]]
+            ["type": "fontSettings.getFontList", "extensionID": "test", "params": [:] as [String: Any]],
+            verifiedExtensionID: nil
         ) { result, error in
             XCTAssertNil(error)
             let fonts = result as? [[String: String]]
@@ -353,17 +390,20 @@ final class ExtensionPolyfillTests: XCTestCase {
         wait(for: [expectation], timeout: 5)
     }
 
-    func testNativeMessageBridgeHistorySearch() {
+    /// history.search is gated behind the "history" manifest permission. With
+    /// an unregistered/unknown extension id (no manifest, no permission) the
+    /// bridge must refuse and surface the "history permission not declared" error.
+    func testHistorySearchDeniedWithoutPermission() {
         let handler = ExtensionPolyfillHandler()
-        let expectation = expectation(description: "history.search via native bridge")
+        let expectation = expectation(description: "history.search denied without permission")
 
         handler.handleNativeMessage(
             ["type": "history.search", "extensionID": "test",
-             "params": ["query": ["text": "", "maxResults": 10]]]
+             "params": ["query": ["text": "", "maxResults": 10]]],
+            verifiedExtensionID: nil
         ) { result, error in
-            XCTAssertNil(error)
-            let dict = result as? [String: Any]
-            XCTAssertNotNil(dict?["results"])
+            XCTAssertNil(result)
+            XCTAssertEqual((error as NSError?)?.localizedDescription, "history permission not declared")
             expectation.fulfill()
         }
 
@@ -375,7 +415,8 @@ final class ExtensionPolyfillTests: XCTestCase {
         let expectation = expectation(description: "offscreen.hasDocument via native bridge")
 
         handler.handleNativeMessage(
-            ["type": "offscreen.hasDocument", "extensionID": "test", "params": [:] as [String: Any]]
+            ["type": "offscreen.hasDocument", "extensionID": "test", "params": [:] as [String: Any]],
+            verifiedExtensionID: nil
         ) { result, error in
             XCTAssertNil(error)
             XCTAssertEqual(result as? Bool, false)
@@ -390,7 +431,8 @@ final class ExtensionPolyfillTests: XCTestCase {
         let expectation = expectation(description: "unknown type via native bridge")
 
         handler.handleNativeMessage(
-            ["type": "nonexistent.api", "extensionID": "test", "params": [:] as [String: Any]]
+            ["type": "nonexistent.api", "extensionID": "test", "params": [:] as [String: Any]],
+            verifiedExtensionID: nil
         ) { result, error in
             XCTAssertNotNil(error)
             expectation.fulfill()
@@ -404,9 +446,137 @@ final class ExtensionPolyfillTests: XCTestCase {
         let expectation = expectation(description: "missing type via native bridge")
 
         handler.handleNativeMessage(
-            ["extensionID": "test"]
+            ["extensionID": "test"],
+            verifiedExtensionID: nil
         ) { result, error in
             XCTAssertNotNil(error)
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    // MARK: - Permission Gating (history / management)
+
+    /// history.search POSITIVE: an extension that declared the "history"
+    /// permission is allowed through and gets a results array.
+    func testHistorySearchAllowedWithPermission() throws {
+        let handler = ExtensionPolyfillHandler()
+        try registerExtension(id: "histperm-ext", permissions: ["history"])
+        let expectation = expectation(description: "history.search allowed with permission")
+
+        handler.handleNativeMessage(
+            ["type": "history.search", "extensionID": "histperm-ext",
+             "params": ["query": ["text": "", "maxResults": 10]]],
+            verifiedExtensionID: nil
+        ) { result, error in
+            XCTAssertNil(error)
+            let dict = result as? [String: Any]
+            XCTAssertNotNil(dict?["results"] as? [[String: Any]],
+                            "history.search should return a results array")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    /// history.search NEGATIVE: a registered extension that did NOT declare the
+    /// "history" permission is refused, even though it exists in ExtensionManager.
+    func testHistorySearchDeniedWhenPermissionMissing() throws {
+        let handler = ExtensionPolyfillHandler()
+        try registerExtension(id: "nohistory-ext", permissions: ["storage"])
+        let expectation = expectation(description: "history.search denied when permission missing")
+
+        handler.handleNativeMessage(
+            ["type": "history.search", "extensionID": "nohistory-ext",
+             "params": ["query": ["text": "", "maxResults": 10]]],
+            verifiedExtensionID: nil
+        ) { result, error in
+            XCTAssertNil(result)
+            XCTAssertEqual((error as NSError?)?.localizedDescription, "history permission not declared")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    /// management.getAll POSITIVE: an extension that declared the "management"
+    /// permission gets the full extension list back.
+    func testManagementGetAllAllowedWithPermission() throws {
+        let handler = ExtensionPolyfillHandler()
+        try registerExtension(id: "mgmtperm-ext", permissions: ["management"])
+        let expectation = expectation(description: "management.getAll allowed with permission")
+
+        handler.handleNativeMessage(
+            ["type": "management.getAll", "extensionID": "mgmtperm-ext",
+             "params": [:] as [String: Any]],
+            verifiedExtensionID: nil
+        ) { result, error in
+            XCTAssertNil(error)
+            XCTAssertNotNil(result as? [[String: Any]],
+                            "management.getAll should return an array of extension info")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    /// management.getAll NEGATIVE: a registered extension without the
+    /// "management" permission is refused.
+    func testManagementGetAllDeniedWithoutPermission() throws {
+        let handler = ExtensionPolyfillHandler()
+        try registerExtension(id: "nomgmt-ext", permissions: ["storage"])
+        let expectation = expectation(description: "management.getAll denied without permission")
+
+        handler.handleNativeMessage(
+            ["type": "management.getAll", "extensionID": "nomgmt-ext",
+             "params": [:] as [String: Any]],
+            verifiedExtensionID: nil
+        ) { result, error in
+            XCTAssertNil(result)
+            XCTAssertEqual((error as NSError?)?.localizedDescription, "management permission not declared")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    // MARK: - Extension Identity Verification
+
+    /// NEGATIVE: when the verified id (derived from the sending context/frame)
+    /// disagrees with the self-reported body extensionID, the request is an
+    /// impersonation attempt and must be rejected.
+    func testIdentitySpoofingRejected() {
+        let handler = ExtensionPolyfillHandler()
+        let expectation = expectation(description: "identity spoofing rejected")
+
+        handler.handleNativeMessage(
+            ["type": "management.getSelf", "extensionID": "victim-id"],
+            verifiedExtensionID: "attacker-id"
+        ) { result, error in
+            XCTAssertNil(result)
+            XCTAssertEqual((error as NSError?)?.localizedDescription, "Extension identity mismatch")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    /// Happy path: when the verified id matches the claimed body id there is no
+    /// identity mismatch and the request proceeds. Uses idle.queryState since it
+    /// needs no manifest permission.
+    func testIdentityVerifiedHappyPath() {
+        let handler = ExtensionPolyfillHandler()
+        let expectation = expectation(description: "verified identity proceeds")
+
+        handler.handleNativeMessage(
+            ["type": "idle.queryState", "extensionID": "same-id",
+             "params": ["detectionIntervalInSeconds": 60]],
+            verifiedExtensionID: "same-id"
+        ) { result, error in
+            XCTAssertNil(error)
+            XCTAssertTrue(["active", "idle", "locked"].contains(result as? String ?? ""),
+                          "idle.queryState should succeed for a verified identity")
             expectation.fulfill()
         }
 

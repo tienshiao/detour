@@ -860,7 +860,11 @@ class BrowserWindowController: NSWindowController {
         ])
         snapshotImageView = imageView
 
-        imageView.image = localSnapshot
+        // Prefer the snapshot handed over when another window took ownership;
+        // otherwise render the tab's live web view (it's a shared instance, even
+        // if currently parented in another window) so we don't show an empty
+        // dimmed pane. Falls back to nil (empty) only for sleeping tabs.
+        imageView.image = localSnapshot ?? tab.webView.flatMap { snapshotImage(of: $0) }
     }
 
     private func removeContentViews() {
@@ -887,8 +891,16 @@ class BrowserWindowController: NSWindowController {
         // Clean up the PiP content view after WebKit has captured the animation origin.
         if let pipping = pipContentView {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self else { return }
+                // If the tab was re-selected within the delay, its container is
+                // now the active owned content — don't rip it out; just drop the
+                // stale PiP reference.
+                if pipping === self.selectedTab?.webViewContainer, pipping.superview === self.contentContainerView {
+                    if self.pipContentView === pipping { self.pipContentView = nil }
+                    return
+                }
                 pipping.removeFromSuperview()
-                self?.pipContentView = nil
+                if self.pipContentView === pipping { self.pipContentView = nil }
             }
         }
     }
@@ -1223,6 +1235,15 @@ class BrowserWindowController: NSWindowController {
             return
         }
 
+        // Favorite-backed tabs live only in profile.favorites (not space.tabs or
+        // pinnedEntries); closing one discards its backing tab and deselects.
+        if let profile = space.profile,
+           let fav = profile.favorites.first(where: { $0.tab?.id == id }) {
+            store.deactivateFavorite(id: fav.id, profileID: profile.id)
+            deselectAllTabs()
+            return
+        }
+
         let tabs = currentTabs
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         closeTab(at: index, wasSelected: true)
@@ -1241,15 +1262,15 @@ class BrowserWindowController: NSWindowController {
         let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
 
-        let nextID: UUID? = tabCloseSelectionID(
-            closingIndex: index,
-            tabs: tabs.map { ($0.id, $0.parentID) },
-            pinnedTabIDs: Set(space.pinnedEntries.compactMap { $0.tab?.id })
-        )
-
-        store.closeTab(id: tabs[index].id, in: space)
-
+        // Settle selection BEFORE removing the tab so the removal observer
+        // (tabStoreDidRemoveTab) sees selection already moved off the closing
+        // tab and doesn't also try to advance it.
         if wasSelected {
+            let nextID: UUID? = tabCloseSelectionID(
+                closingIndex: index,
+                tabs: tabs.map { ($0.id, $0.parentID) },
+                pinnedTabIDs: Set(space.pinnedEntries.compactMap { $0.tab?.id })
+            )
             if let nextID { selectTab(id: nextID) }
             else if let firstLiveEntry = space.pinnedEntries.first(where: { $0.tab != nil }),
                     let tab = firstLiveEntry.tab { selectTab(id: tab.id) }
@@ -1260,6 +1281,8 @@ class BrowserWindowController: NSWindowController {
             }
             else { deselectAllTabs() }
         }
+
+        store.closeTab(id: tabs[index].id, in: space)
     }
 
     // MARK: - Pin/Unpin
@@ -1591,12 +1614,31 @@ extension BrowserWindowController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         selectedTab?.savePeekStateForPersistence()
         hidePeekUI()
+        // Detach the script message handlers we added to the owned web view's
+        // userContentController. add(self, name:) retains this controller, so
+        // without this the controller (and its notification observers) leak and
+        // a zombie window can keep reacting to tab notifications after close.
+        releaseOwnedWebViewHandlers()
         store.saveNow()
         store.removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
 
         if isIncognito, let spaceID = incognitoSpaceID {
             store.removeIncognitoSpace(id: spaceID)
         }
+    }
+
+    /// Remove the script message handlers this controller registered on the
+    /// currently-owned tab's web view, breaking the userContentController's
+    /// strong reference to `self`.
+    private func releaseOwnedWebViewHandlers() {
+        guard ownsWebView, let webView = selectedTab?.webView else { return }
+        let ucc = webView.configuration.userContentController
+        ucc.removeScriptMessageHandler(forName: "linkHover")
+        ucc.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+        ucc.removeScriptMessageHandler(forName: "editableFieldFocus")
+        (webView as? BrowserWebView)?.isEditingWebContent = false
+        ownsWebView = false
     }
 }
 

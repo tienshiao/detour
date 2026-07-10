@@ -201,7 +201,7 @@ extension BrowserWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if webView.url?.scheme == ErrorPage.scheme { return }
-        selectedTab?.didCommitNavigation()
+        tab(owning: webView)?.didCommitNavigation()
 
         // Native WKWebExtension handles chrome.webNavigation events
     }
@@ -212,12 +212,27 @@ extension BrowserWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         guard !isIgnoredNavigationError(error) else { return }
-        selectedTab?.didFailProvisionalNavigation(error: error)
+        tab(owning: webView)?.didFailProvisionalNavigation(error: error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         guard !isIgnoredNavigationError(error) else { return }
-        selectedTab?.didFailNavigation(error: error)
+        tab(owning: webView)?.didFailNavigation(error: error)
+    }
+
+    /// Resolve the tab (or peek tab) that owns the web view firing a navigation
+    /// callback. Callbacks must act on the owning tab, not `selectedTab`: a peek
+    /// web view or a navigation still in flight after a tab switch would
+    /// otherwise attribute commits/errors (and error pages) to the wrong tab.
+    private func tab(owning webView: WKWebView) -> BrowserTab? {
+        var candidates: [BrowserTab] = []
+        if let space = activeSpace {
+            candidates.append(contentsOf: space.tabs)
+            candidates.append(contentsOf: space.pinnedEntries.compactMap { $0.tab })
+            candidates.append(contentsOf: space.profile?.favorites.compactMap { $0.tab } ?? [])
+        }
+        let peeks = candidates.compactMap { $0.peekTab }
+        return (candidates + peeks).first { $0.webView === webView }
     }
 
     /// Download-policy interruptions and user-initiated cancellations aren't real failures.

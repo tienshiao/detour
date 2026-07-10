@@ -550,59 +550,6 @@ class TabStore {
             }
         }
 
-        // Load favorites for each profile (after spaces so backing tabs can be found)
-        // Build a global lookup of all tab records by ID for matching backing tabs
-        var allTabRecordsByID: [String: (TabRecord, UUID)] = [:]  // tabID → (record, spaceID)
-        for (spaceRecord, tabRecords) in session.spaces {
-            guard let spaceID = UUID(uuidString: spaceRecord.id) else { continue }
-            for tabRecord in tabRecords where tabRecord.sortOrder == -2 {
-                allTabRecordsByID[tabRecord.id] = (tabRecord, spaceID)
-            }
-        }
-        for profile in profiles {
-            let favRecords = appDB.loadFavorites(profileID: profile.id.uuidString)
-            // Find a space with this profile for creating tabs
-            let hostSpace = self.spaces.first(where: { $0.profileID == profile.id && !$0.isIncognito })
-            for record in favRecords {
-                guard let favID = UUID(uuidString: record.id) else { continue }
-
-                var backingTab: BrowserTab? = nil
-                if let tabIDStr = record.tabID,
-                   let tabID = UUID(uuidString: tabIDStr),
-                   let (tabRecord, _) = allTabRecordsByID[tabIDStr],
-                   let hostSpace {
-                    backingTab = BrowserTab(
-                        id: tabID,
-                        title: tabRecord.title,
-                        url: tabRecord.url.flatMap { URL(string: $0) },
-                        faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
-                        cachedInteractionState: tabRecord.interactionState,
-                        spaceID: hostSpace.id
-                    )
-                    backingTab?.spaceID = hostSpace.id
-                    if let tab = backingTab {
-                        self.subscribeToTab(tab, spaceID: hostSpace.id)
-                    }
-                }
-
-                let favorite = Favorite(
-                    id: favID,
-                    url: URL(string: record.url) ?? URL(string: "about:blank")!,
-                    title: record.title,
-                    faviconURL: record.faviconURL.flatMap { URL(string: $0) },
-                    sortOrder: record.sortOrder,
-                    tab: backingTab
-                )
-                if backingTab == nil {
-                    favorite.onFaviconDownloaded = { [weak self, weak favorite] in
-                        guard let self, let favorite else { return }
-                        self.notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
-                    }
-                }
-                profile.favorites.append(favorite)
-            }
-        }
-
         // Ensure the built-in incognito profile exists
         ensureIncognitoProfile()
 
@@ -742,6 +689,63 @@ class TabStore {
             self.spaces.append(space)
         }
 
+        // Load favorites for each profile. This MUST run after the spaces loop
+        // above: a favorite's live backing tab is hosted in a restored space, so
+        // `hostSpace` can only be resolved once `self.spaces` is populated. Running
+        // it earlier left `hostSpace` nil, the backing tab was never recreated, and
+        // its orphaned TabRecord got garbage-collected on the next save.
+        // Build a global lookup of all tab records by ID for matching backing tabs
+        var allTabRecordsByID: [String: (TabRecord, UUID)] = [:]  // tabID → (record, spaceID)
+        for (spaceRecord, tabRecords) in session.spaces {
+            guard let spaceID = UUID(uuidString: spaceRecord.id) else { continue }
+            for tabRecord in tabRecords where tabRecord.sortOrder == -2 {
+                allTabRecordsByID[tabRecord.id] = (tabRecord, spaceID)
+            }
+        }
+        for profile in profiles {
+            let favRecords = appDB.loadFavorites(profileID: profile.id.uuidString)
+            // Find a space with this profile for creating tabs
+            let hostSpace = self.spaces.first(where: { $0.profileID == profile.id && !$0.isIncognito })
+            for record in favRecords {
+                guard let favID = UUID(uuidString: record.id) else { continue }
+
+                var backingTab: BrowserTab? = nil
+                if let tabIDStr = record.tabID,
+                   let tabID = UUID(uuidString: tabIDStr),
+                   let (tabRecord, _) = allTabRecordsByID[tabIDStr],
+                   let hostSpace {
+                    backingTab = BrowserTab(
+                        id: tabID,
+                        title: tabRecord.title,
+                        url: tabRecord.url.flatMap { URL(string: $0) },
+                        faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
+                        cachedInteractionState: tabRecord.interactionState,
+                        spaceID: hostSpace.id
+                    )
+                    backingTab?.spaceID = hostSpace.id
+                    if let tab = backingTab {
+                        self.subscribeToTab(tab, spaceID: hostSpace.id)
+                    }
+                }
+
+                let favorite = Favorite(
+                    id: favID,
+                    url: URL(string: record.url) ?? URL(string: "about:blank")!,
+                    title: record.title,
+                    faviconURL: record.faviconURL.flatMap { URL(string: $0) },
+                    sortOrder: record.sortOrder,
+                    tab: backingTab
+                )
+                if backingTab == nil {
+                    favorite.onFaviconDownloaded = { [weak self, weak favorite] in
+                        guard let self, let favorite else { return }
+                        self.notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+                    }
+                }
+                profile.favorites.append(favorite)
+            }
+        }
+
         // Load closed tab stack from DB
         self.closedTabStack = appDB.loadClosedTabs()
 
@@ -807,6 +811,20 @@ class TabStore {
         guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
         profile.favorites.removeAll { $0.id == id }
         reindexFavorites(profile)
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    /// Discards a favorite's live backing tab, returning it to a dormant tile
+    /// (the favorite itself is kept). Used when the user closes a favorite-backed
+    /// tab (Cmd+W). No-op if the favorite is already dormant.
+    func deactivateFavorite(id: UUID, profileID: UUID) {
+        guard let profile = profiles.first(where: { $0.id == profileID }),
+              let fav = profile.favorites.first(where: { $0.id == id }),
+              let tab = fav.tab else { return }
+        tabSubscriptions.removeValue(forKey: tab.id)
+        tab.teardown()
+        fav.tab = nil
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
     }
@@ -966,7 +984,87 @@ class TabStore {
         let savedEmoji = space.emoji
         let savedColorHex = space.colorHex
         let savedProfileID = space.profileID
+        let savedSelectedTabID = space.selectedTabID
         let savedIndex = index
+        let spaceIDString = id.uuidString
+
+        // Snapshot the FULL space contents for undo BEFORE teardown discards the
+        // webviews. teardown() releases each webView and its interaction state, so
+        // undo rebuilds fresh BrowserTab objects from these value snapshots — the
+        // same reconstruction restoreSession performs (selected tab live, rest
+        // sleeping). Capturing interaction state here (via currentInteractionStateData)
+        // must happen before the teardown loops below.
+        struct TabSnapshot {
+            let id: UUID
+            let title: String
+            let url: URL?
+            let faviconURL: URL?
+            let interactionState: Data?
+            let parentID: UUID?
+            let lastDeselectedAt: Date?
+            let peekURL: URL?
+            let peekInteractionState: Data?
+            let peekFaviconURL: URL?
+            let isSelected: Bool
+        }
+        struct EntrySnapshot {
+            let id: UUID
+            let pinnedURL: URL
+            let pinnedTitle: String
+            let faviconURL: URL?
+            let favicon: NSImage?
+            let folderID: UUID?
+            let sortOrder: Int
+            let backingTab: TabSnapshot?
+        }
+        struct FolderSnapshot {
+            let id: UUID
+            let name: String
+            let parentFolderID: UUID?
+            let isCollapsed: Bool
+            let sortOrder: Int
+        }
+
+        func snapshot(_ tab: BrowserTab) -> TabSnapshot {
+            TabSnapshot(
+                id: tab.id,
+                title: tab.title,
+                url: tab.url,
+                faviconURL: tab.faviconURL,
+                interactionState: tab.currentInteractionStateData(),
+                parentID: tab.parentID,
+                lastDeselectedAt: tab.lastDeselectedAt,
+                peekURL: tab.peekURL,
+                peekInteractionState: tab.peekInteractionState,
+                peekFaviconURL: tab.peekFaviconURL,
+                isSelected: space.selectedTabID == tab.id
+            )
+        }
+
+        let savedTabs = space.tabs.map(snapshot)
+        let savedEntries: [EntrySnapshot] = space.pinnedEntries.map { entry in
+            EntrySnapshot(
+                id: entry.id,
+                pinnedURL: entry.pinnedURL,
+                pinnedTitle: entry.pinnedTitle,
+                faviconURL: entry.faviconURL,
+                favicon: entry.favicon,
+                folderID: entry.folderID,
+                sortOrder: entry.sortOrder,
+                backingTab: entry.tab.map(snapshot)
+            )
+        }
+        let savedFolders: [FolderSnapshot] = space.pinnedFolders.map { folder in
+            FolderSnapshot(
+                id: folder.id,
+                name: folder.name,
+                parentFolderID: folder.parentFolderID,
+                isCollapsed: folder.isCollapsed,
+                sortOrder: folder.sortOrder
+            )
+        }
+        // Capture closed-tab records before they're purged so undo can restore them.
+        let savedClosedTabs = closedTabStack.filter { $0.spaceID == spaceIDString }
 
         spaces.remove(at: index)
         for tab in space.tabs {
@@ -979,8 +1077,7 @@ class TabStore {
                 tab.teardown()
             }
         }
-        // Clean up closed tab records for this space
-        let spaceIDString = id.uuidString
+        // Clean up closed tab records for this space (captured above for undo)
         appDB.deleteClosedTabs(spaceID: spaceIDString)
         closedTabStack.removeAll { $0.spaceID == spaceIDString }
 
@@ -988,8 +1085,88 @@ class TabStore {
             guard let self else { return }
             let restored = Space(id: id, name: savedName, emoji: savedEmoji, colorHex: savedColorHex, profileID: savedProfileID)
             restored.profile = self.profile(withID: savedProfileID)
+            restored.selectedTabID = savedSelectedTabID
+
+            // Rebuild a tab from its snapshot: selected tab live (displays
+            // immediately), the rest sleeping — mirroring restoreSession.
+            func rebuild(_ s: TabSnapshot) -> BrowserTab {
+                let tab: BrowserTab
+                if s.isSelected {
+                    tab = BrowserTab(
+                        id: s.id,
+                        title: s.title,
+                        archivedInteractionState: s.interactionState,
+                        fallbackURL: s.url,
+                        faviconURL: s.faviconURL,
+                        configuration: restored.makeWebViewConfiguration()
+                    )
+                    tab.lastDeselectedAt = nil
+                } else {
+                    tab = BrowserTab(
+                        id: s.id,
+                        title: s.title,
+                        url: s.url,
+                        faviconURL: s.faviconURL,
+                        cachedInteractionState: s.interactionState,
+                        spaceID: restored.id
+                    )
+                    tab.lastDeselectedAt = s.lastDeselectedAt ?? Date()
+                }
+                tab.spaceID = restored.id
+                tab.parentID = s.parentID
+                tab.peekURL = s.peekURL
+                tab.peekInteractionState = s.peekInteractionState
+                tab.peekFaviconURL = s.peekFaviconURL
+                tab.downloadPeekFavicon()
+                self.subscribeToTab(tab, spaceID: restored.id)
+                return tab
+            }
+
+            for s in savedTabs {
+                restored.tabs.append(rebuild(s))
+            }
+            for f in savedFolders {
+                restored.pinnedFolders.append(PinnedFolder(
+                    id: f.id, name: f.name, parentFolderID: f.parentFolderID,
+                    isCollapsed: f.isCollapsed, sortOrder: f.sortOrder
+                ))
+            }
+            for e in savedEntries {
+                let backing = e.backingTab.map(rebuild)
+                let entry = PinnedEntry(
+                    id: e.id,
+                    pinnedURL: e.pinnedURL,
+                    pinnedTitle: e.pinnedTitle,
+                    faviconURL: e.faviconURL,
+                    favicon: e.favicon,
+                    folderID: e.folderID,
+                    sortOrder: e.sortOrder,
+                    tab: backing
+                )
+                if backing == nil {
+                    entry.onFaviconDownloaded = { [weak self, weak entry] in
+                        guard let self, let entry else { return }
+                        for space in self.spaces {
+                            if let index = space.pinnedEntries.firstIndex(where: { $0.id == entry.id }) {
+                                self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
+                                return
+                            }
+                        }
+                    }
+                }
+                restored.pinnedEntries.append(entry)
+            }
+
             let insertAt = min(savedIndex, self.spaces.count)
             self.spaces.insert(restored, at: insertAt)
+
+            // Restore closed-tab records to both the DB and the in-memory stack so
+            // Cmd+Shift+T works again after undo.
+            for record in savedClosedTabs {
+                self.appDB.pushClosedTab(record)
+            }
+            self.closedTabStack.insert(contentsOf: savedClosedTabs, at: 0)
+
             self.registerUndo(actionName: "Add Space") { [weak self] in
                 self?.deleteSpace(id: id)
             }
@@ -1014,6 +1191,34 @@ class TabStore {
         if space.profileID != profileID {
             space.profileID = profileID
             space.profile = profile(withID: profileID)
+
+            // Existing live tabs still hold WKWebViews that were built against the
+            // OLD profile's data store and extension controller (configs are only
+            // built at tab creation/wake via makeWebViewConfiguration). Sleep each
+            // live tab so it releases the stale webView; on next display the tab
+            // wakes and is rebuilt from the NEW profile's configuration. sleep()
+            // preserves interaction state (cachedInteractionState) and sets
+            // isSleeping, which the display path (selectTab → wake) relies on.
+            var liveTabs = space.tabs
+            liveTabs.append(contentsOf: space.pinnedEntries.compactMap(\.tab))
+            for tab in liveTabs where tab.webView != nil {
+                tab.sleep()
+            }
+
+            // Refresh the tab currently displayed by any window on this space so it
+            // is reloaded under the new profile rather than left blank: the window's
+            // handleTabRestoredByUndo re-selects (and wakes) this tab.
+            //
+            // Residual limitations: (1) a tab actively playing audio is skipped by
+            // sleep()'s guard, so it keeps the old profile's store/extensions until
+            // it is next reloaded; (2) a window showing this space but a *different*
+            // tab will re-select the space's selected tab.
+            if let selectedTabID = space.selectedTabID {
+                NotificationCenter.default.post(
+                    name: .tabRestoredByUndo, object: nil,
+                    userInfo: ["tabID": selectedTabID, "spaceID": id]
+                )
+            }
         }
         registerUndo(actionName: "Edit Space") { [weak self] in
             self?.updateSpace(id: id, name: oldName, emoji: oldEmoji, colorHex: oldColorHex, profileID: oldProfileID)
@@ -1080,12 +1285,17 @@ class TabStore {
     func removeIncognitoSpace(id: UUID) {
         guard let index = spaces.firstIndex(where: { $0.id == id && $0.isIncognito }) else { return }
         let space = spaces.remove(at: index)
+        // Tear down tabs (mirror deleteSpace) so incognito webviews stop media and
+        // release memory. Without this, audio keeps playing and content stays
+        // resident — especially if an undo closure retains the space.
         for tab in space.tabs {
             tabSubscriptions.removeValue(forKey: tab.id)
+            tab.teardown()
         }
         for entry in space.pinnedEntries {
             if let tab = entry.tab {
                 tabSubscriptions.removeValue(forKey: tab.id)
+                tab.teardown()
             }
         }
         // Keep the built-in incognito profile — it persists across sessions
@@ -1210,10 +1420,13 @@ class TabStore {
                 let insertAt = min(index, space.tabs.count)
                 space.tabs.insert(restored, at: insertAt)
                 self.subscribeToTab(restored, spaceID: space.id)
-                // Remove the corresponding closed-tab-stack entry
+                // Remove the corresponding closed-tab-stack entry from both the
+                // in-memory stack and the DB. Skipping the DB row would leave it to
+                // be reloaded on next launch, so Cmd+Shift+T would reopen a duplicate.
                 if let stackIdx = self.closedTabStack.firstIndex(where: { $0.tabID == id.uuidString }) {
                     self.closedTabStack.remove(at: stackIdx)
                 }
+                self.appDB.deleteClosedTab(tabID: id.uuidString)
                 self.registerUndo(actionName: "Close Tab") { [weak self] in
                     self?.closeTab(id: restored.id, in: space)
                 }
