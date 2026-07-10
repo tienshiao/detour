@@ -228,6 +228,13 @@ class BrowserWindowController: NSWindowController {
 
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handleSpaceProfileDidSwap(_:)),
+            name: .spaceProfileDidSwap,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleExtensionPinStateDidChange),
             name: ExtensionManager.extensionPinStateDidChangeNotification,
             object: nil
@@ -246,6 +253,27 @@ class BrowserWindowController: NSWindowController {
               let spaceID = notification.userInfo?["spaceID"] as? UUID,
               spaceID == activeSpaceID else { return }
         selectTab(id: tabID)
+    }
+
+    /// After a profile swap slept the space's tabs, re-select this window's own
+    /// displayed tab (waking it under the new profile) so each window keeps its
+    /// place. Falls back to the space's selection when our tab no longer
+    /// resolves — e.g. it was a favorite backing tab the swap deactivated.
+    @objc private func handleSpaceProfileDidSwap(_ notification: Notification) {
+        guard let spaceID = notification.userInfo?["spaceID"] as? UUID,
+              spaceID == activeSpaceID else { return }
+        let candidates = [selectedTabID, activeSpace?.selectedTabID].compactMap { $0 }
+        if let id = candidates.first(where: displayableTab(id:)) {
+            selectTab(id: id)
+        }
+    }
+
+    /// Whether an ID resolves to a tab this window could display — mirrors the
+    /// guard in `selectTab(id:)`.
+    private func displayableTab(id: UUID) -> Bool {
+        (activeSpace?.pinnedEntries.contains { $0.tab?.id == id } ?? false)
+            || (activeSpace?.profile?.favorites.contains { $0.tab?.id == id } ?? false)
+            || currentTabs.contains { $0.id == id }
     }
 
     @objc private func handleExtensionPopupOpenURL(_ notification: Notification) {

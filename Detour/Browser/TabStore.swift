@@ -5,6 +5,10 @@ import WebKit
 
 extension Notification.Name {
     static let tabRestoredByUndo = Notification.Name("tabRestoredByUndo")
+    /// Posted after a space's profile changes and its live tabs were slept so
+    /// they rebind to the new profile. Windows showing the space re-select
+    /// their own displayed tab (userInfo: "spaceID").
+    static let spaceProfileDidSwap = Notification.Name("spaceProfileDidSwap")
 }
 
 protocol TabStoreObserver: AnyObject {
@@ -1237,18 +1241,16 @@ class TabStore {
                 }
             }
 
-            // Refresh the tab currently displayed by any window on this space so it
-            // is reloaded under the new profile rather than left blank: the window's
-            // handleTabRestoredByUndo re-selects (and wakes) this tab.
-            //
-            // Residual limitation: a window showing this space but a *different*
-            // tab will re-select the space's selected tab.
-            if let selectedTabID = space.selectedTabID {
-                NotificationCenter.default.post(
-                    name: .tabRestoredByUndo, object: nil,
-                    userInfo: ["tabID": selectedTabID, "spaceID": id]
-                )
-            }
+            // Every window on this space is now showing a dead pane (the sleeps
+            // above released the displayed webViews). Nudge each window to
+            // re-select and wake its own displayed tab under the new profile —
+            // per-window, so a second window showing a different tab of this
+            // space keeps its place (it falls back to space.selectedTabID only
+            // when its own tab no longer resolves).
+            NotificationCenter.default.post(
+                name: .spaceProfileDidSwap, object: nil,
+                userInfo: ["spaceID": id]
+            )
         }
         registerUndo(actionName: "Edit Space") { [weak self] in
             self?.updateSpace(id: id, name: oldName, emoji: oldEmoji, colorHex: oldColorHex, profileID: oldProfileID)

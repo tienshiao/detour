@@ -461,6 +461,17 @@ final class TabStoreTests: XCTestCase {
                        "selection must move to a surviving tab before the favorite's tab is torn down")
     }
 
+    func testProfileSwapPostsSpaceProfileDidSwapNotification() throws {
+        let (store, space, _, newProfile) = try makeStoreWithTwoProfiles()
+        let exp = expectation(forNotification: .spaceProfileDidSwap, object: nil) { note in
+            note.userInfo?["spaceID"] as? UUID == space.id
+        }
+
+        swapProfile(store, space, to: newProfile)
+
+        wait(for: [exp], timeout: 1)
+    }
+
     func testProfileSwapLeavesOtherSpacesFavoriteTabsAlone() throws {
         let (store, space, oldProfile, newProfile) = try makeStoreWithTwoProfiles()
         let otherSpace = store.addSpace(name: "Other", emoji: "🅾️", colorHex: "FF0000",
