@@ -86,3 +86,7 @@ The table view's row 0 is always the "New Tab" cell. Actual tabs start at row 1.
 * When adding/updating Web Extension APIS, make sure to add/update corresponding tests and update the API Explorer extension to cover the new APIs.
 * When adding/updating extension permissions, make sure to add/update the corresponding tests with both positive and negative cases.
 * When implementing polyfills, prefer `let`/`const` over `var`.
+
+## Model delegation when running as Fable
+
+If the task's complexity does not require Fable to solve, do the planning/analysis with Fable, then delegate the execution/implementation to a subagent running Opus (pass `model: "opus"` on the Agent call). Reserve Fable itself for the genuinely hard parts (e.g. WKWebView ownership-transfer and snapshot semantics across windows, extension permission security reviews, tab-index offset math and other invariant-heavy state logic in TabStore).
