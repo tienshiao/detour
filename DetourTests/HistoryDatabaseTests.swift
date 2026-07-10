@@ -11,7 +11,86 @@ final class HistoryDatabaseTests: XCTestCase {
         return try HistoryDatabase(dbQueue: dbQueue)
     }
 
+    // MARK: - bestURLCompletion
+
+    func testBestURLCompletionMatchesPrefixIgnoringSchemeAndWWW() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
+
+        let match = db.bestURLCompletion(prefix: "youtu", spaceID: "space1")
+
+        XCTAssertEqual(match?.url, "https://www.youtube.com/")
+    }
+
+    func testBestURLCompletionPrefersTypedVisits() throws {
+        let db = try makeDatabase()
+        // 3 link visits (3 × 100 = 300) vs 2 typed visits (2 × 2.0 × 100 = 400):
+        // the typed bonus outweighs the higher visit count.
+        for _ in 1...3 {
+            db.recordVisit(url: "https://apple.com", title: "Apple", faviconURL: nil, spaceID: "space1")
+        }
+        for _ in 1...2 {
+            db.recordVisit(url: "https://appfigures.com", title: "Appfigures", faviconURL: nil, spaceID: "space1", typed: true)
+        }
+
+        let match = db.bestURLCompletion(prefix: "ap", spaceID: "space1")
+
+        XCTAssertEqual(match?.url, "https://appfigures.com")
+    }
+
+    func testBestURLCompletionPrefersRecentOverOldFrequent() throws {
+        let db = try makeDatabase()
+        // 5 visits ~60 days ago (5 × 30 = 150) vs 2 today (2 × 100 = 200):
+        // recency decay outweighs the higher visit count.
+        for _ in 1...5 {
+            db.recordVisit(url: "https://apple.com", title: "Apple", faviconURL: nil, spaceID: "space1")
+        }
+        for _ in 1...2 {
+            db.recordVisit(url: "https://appfigures.com", title: "Appfigures", faviconURL: nil, spaceID: "space1")
+        }
+        let sixtyDaysAgo = Date().timeIntervalSince1970 - 60 * 24 * 3600
+        try db.dbQueue.write { conn in
+            try conn.execute(sql: """
+                UPDATE historyVisit SET visitTime = ?
+                WHERE urlID = (SELECT id FROM historyURL WHERE url = 'https://apple.com')
+                """, arguments: [sixtyDaysAgo])
+        }
+
+        let match = db.bestURLCompletion(prefix: "ap", spaceID: "space1")
+
+        XCTAssertEqual(match?.url, "https://appfigures.com")
+    }
+
+    func testBestURLCompletionIgnoresVisitsOlderThan90Days() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://apple.com", title: "Apple", faviconURL: nil, spaceID: "space1")
+        let hundredDaysAgo = Date().timeIntervalSince1970 - 100 * 24 * 3600
+        try db.dbQueue.write { conn in
+            try conn.execute(sql: """
+                UPDATE historyVisit SET visitTime = ?
+                WHERE urlID = (SELECT id FROM historyURL WHERE url = 'https://apple.com')
+                """, arguments: [hundredDaysAgo])
+        }
+
+        let match = db.bestURLCompletion(prefix: "ap", spaceID: "space1")
+
+        XCTAssertNil(match, "Visits older than 90 days must not produce a completion")
+    }
+
     // MARK: - recordVisit
+
+    func testRecordVisitStoresTypedFlag() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1", typed: true)
+        db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
+
+        try db.dbQueue.read { conn in
+            let typedCount = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit WHERE isTyped = 1")
+            XCTAssertEqual(typedCount, 1)
+            let total = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit")
+            XCTAssertEqual(total, 2)
+        }
+    }
 
     func testRecordVisitCreatesURLAndVisit() throws {
         let db = try makeDatabase()

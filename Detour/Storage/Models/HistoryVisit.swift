@@ -8,4 +8,5 @@ struct HistoryVisit: Codable, FetchableRecord, PersistableRecord {
     var urlID: Int64
     var spaceID: String
     var visitTime: Double
+    var isTyped: Bool = false
 }

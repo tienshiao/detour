@@ -891,6 +891,10 @@ class TabStore {
     // MARK: - History Recording
 
     func recordHistoryVisit(tab: BrowserTab, spaceID: UUID) {
+        // Consume the typed flag even if this visit ends up skipped below, so it
+        // can't leak onto a later, unrelated navigation.
+        let typed = tab.consumeNextVisitIsTyped()
+
         // Never record history for incognito spaces
         if let space = space(withID: spaceID), space.isIncognito { return }
 
@@ -903,7 +907,7 @@ class TabStore {
         // Deduplicate: skip if same (url, spaceID) recorded within 30 seconds
         let dedupKey = "\(urlString)|\(spaceID.uuidString)"
         let now = Date().timeIntervalSince1970
-        if let lastWrite = recentHistoryWrites[dedupKey], now - lastWrite < 30 {
+        if !typed, let lastWrite = recentHistoryWrites[dedupKey], now - lastWrite < 30 {
             return
         }
         recentHistoryWrites[dedupKey] = now
@@ -912,7 +916,8 @@ class TabStore {
             url: urlString,
             title: tab.title,
             faviconURL: tab.faviconURL?.absoluteString,
-            spaceID: spaceID.uuidString
+            spaceID: spaceID.uuidString,
+            typed: typed
         )
     }
 

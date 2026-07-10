@@ -46,6 +46,10 @@ class BrowserTab: NSObject {
     private(set) var faviconURL: URL?
     var spaceID: UUID?
     var parentID: UUID?
+    /// Set by `load(_:typed:)` when the next load was deliberately submitted by
+    /// the user (command palette URL/suggestion), so its history visit records as
+    /// typed. Consumed via `consumeNextVisitIsTyped()`.
+    private var nextVisitIsTyped = false
     private var cachedInteractionState: Data?
 
     // MARK: - Peek State
@@ -450,6 +454,12 @@ class BrowserTab: NSObject {
         }
     }
 
+    /// Returns whether the pending navigation was user-typed, resetting the flag.
+    func consumeNextVisitIsTyped() -> Bool {
+        defer { nextVisitIsTyped = false }
+        return nextVisitIsTyped
+    }
+
     func currentInteractionStateData() -> Data? {
         if let webView, let state = webView.interactionState {
             return try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
@@ -457,7 +467,8 @@ class BrowserTab: NSObject {
         return cachedInteractionState
     }
 
-    func load(_ url: URL) {
+    func load(_ url: URL, typed: Bool = false) {
+        nextVisitIsTyped = typed
         if isSleeping { wake() }
         lastAttemptedURL = url
         self.url = url

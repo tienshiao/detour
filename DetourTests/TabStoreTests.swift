@@ -334,6 +334,32 @@ final class TabStoreTests: XCTestCase {
                       "History must not be recorded for incognito spaces after DB round-trip")
     }
 
+    func testTypedNavigationBypassesHistoryDedup() throws {
+        let appDB = try makeDatabase()
+        let historyDB = try HistoryDatabase(dbQueue: DatabaseQueue())
+        let store = TabStore(appDB: appDB, historyDB: historyDB)
+        let profile = store.addProfile(name: "Test")
+        let space = store.addSpace(name: "Test", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
+
+        let url = URL(string: "https://example.com")!
+        let tab = makeSleepingTab(spaceID: space.id)
+        tab.url = url
+        tab.title = "Example"
+        space.tabs.append(tab)
+
+        // First (untyped) visit records and opens the 30s dedup window.
+        store.recordHistoryVisit(tab: tab, spaceID: space.id)
+
+        // A deliberate re-navigation within the window must still record.
+        tab.load(url, typed: true)
+        store.recordHistoryVisit(tab: tab, spaceID: space.id)
+
+        let visitCount = try historyDB.dbQueue.read { conn in
+            try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit")
+        }
+        XCTAssertEqual(visitCount, 2, "Typed navigation must bypass the 30s history dedup window")
+    }
+
     // MARK: - Observer Tests
 
     func testPinTabNotifiesObserver() throws {

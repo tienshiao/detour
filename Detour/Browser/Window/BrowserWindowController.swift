@@ -1002,13 +1002,20 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
-    func urlFromInput(_ input: String) -> URL? {
+    /// A URL the input denotes directly (explicit scheme or host-like); nil when
+    /// the input is a search phrase.
+    func directURL(from input: String) -> URL? {
         if input.hasPrefix("http://") || input.hasPrefix("https://") {
             return URL(string: input)
         }
         if input.contains(".") && !input.contains(" ") {
             return URL(string: "https://\(input)")
         }
+        return nil
+    }
+
+    func urlFromInput(_ input: String) -> URL? {
+        if let url = directURL(from: input) { return url }
         let engine = activeSpace?.profile?.searchEngine ?? .google
         return engine.searchURL(for: input)
     }
@@ -1123,6 +1130,7 @@ class BrowserWindowController: NSWindowController {
         palette.delegate = self
         palette.tabStore = store
         palette.activeSpaceID = activeSpaceID
+        palette.currentTabID = selectedTab?.id
         palette.profile = activeSpace?.profile
         commandPaletteView = palette
 
@@ -1598,28 +1606,33 @@ extension BrowserWindowController: NSWindowDelegate {
 
 extension BrowserWindowController: CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String) {
-        guard let url = urlFromInput(input) else { return }
-        paletteLoadURL(url)
+        if let url = directURL(from: input) {
+            paletteLoadURL(url, typed: true)
+        } else {
+            let engine = activeSpace?.profile?.searchEngine ?? .google
+            guard let url = engine.searchURL(for: input) else { return }
+            paletteLoadURL(url, typed: false)
+        }
     }
 
     func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String) {
         let engine = activeSpace?.profile?.searchEngine ?? .google
         guard let url = engine.searchURL(for: query) else { return }
-        paletteLoadURL(url)
+        paletteLoadURL(url, typed: false)
     }
 
-    private func paletteLoadURL(_ url: URL) {
+    private func paletteLoadURL(_ url: URL, typed: Bool) {
         let navigateInPlace = commandPaletteNavigatesInPlace
         dismissCommandPalette()
 
-        if navigateInPlace, selectedTab != nil {
+        if navigateInPlace, let tab = selectedTab {
             ensureOwnsWebView()
-            selectedTab?.load(url)
+            tab.load(url, typed: typed)
         } else {
             guard let space = activeSpace else { return }
             let tab = store.addTab(in: space)
             selectTab(id: tab.id)
-            tab.load(url)
+            tab.load(url, typed: typed)
         }
     }
 

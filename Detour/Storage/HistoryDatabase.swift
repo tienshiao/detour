@@ -56,10 +56,19 @@ struct HistoryDatabase {
             }
         }
 
+        migrator.registerMigration("h2") { db in
+            try db.alter(table: "historyVisit") { t in
+                t.add(column: "isTyped", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         return migrator
     }
 
-    func recordVisit(url: String, title: String, faviconURL: String?, spaceID: String) {
+    /// Records a visit. `typed` marks a deliberate navigation (the user submitted
+    /// the URL or picked it in the command palette, vs following a link); typed
+    /// visits weigh more in `bestURLCompletion` frecency ranking.
+    func recordVisit(url: String, title: String, faviconURL: String?, spaceID: String, typed: Bool = false) {
         do {
             try dbQueue.write { db in
                 let now = Date().timeIntervalSince1970
@@ -75,7 +84,7 @@ struct HistoryDatabase {
                         lastVisitTime = excluded.lastVisitTime
                     RETURNING id
                     """, arguments: [url, title, faviconURL, now])!
-                let visit = HistoryVisit(urlID: urlID, spaceID: spaceID, visitTime: now)
+                let visit = HistoryVisit(urlID: urlID, spaceID: spaceID, visitTime: now, isTyped: typed)
                 try visit.insert(db)
             }
         } catch {
@@ -170,6 +179,12 @@ struct HistoryDatabase {
 
     /// Return the best URL completion for a typed prefix, matching against scheme-stripped URLs.
     /// Uses prefix-matching with schemes prepended so SQLite can use the index on `url`.
+    ///
+    /// Candidates are ranked by a Firefox-style frecency score: each visit
+    /// contributes a recency-bucket weight (visits in the last 4 days count 10×
+    /// more than ones older than 90 days), doubled for typed visits, so the site
+    /// the user deliberately navigates to daily beats one they clicked into many
+    /// times weeks ago. Visits older than 90 days (the expiry window) are ignored.
     func bestURLCompletion(prefix: String, spaceID: String) -> HistoryURL? {
         guard !prefix.isEmpty else { return nil }
         let escaped = prefix
@@ -182,6 +197,8 @@ struct HistoryDatabase {
             "https://www.\(escaped)%",
             "http://www.\(escaped)%",
         ]
+        let now = Date().timeIntervalSince1970
+        let day = 24.0 * 3600
         do {
             return try dbQueue.read { db in
                 try HistoryURL.fetchOne(db, sql: """
@@ -191,10 +208,22 @@ struct HistoryDatabase {
                     WHERE v.spaceID = ?
                       AND (h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\'
                         OR h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\')
+                      AND v.visitTime >= ?
                     GROUP BY h.url
-                    ORDER BY h.visitCount DESC, MAX(v.visitTime) DESC
+                    ORDER BY SUM(
+                        (CASE WHEN v.isTyped THEN 2.0 ELSE 1.0 END) *
+                        (CASE
+                            WHEN v.visitTime >= ? THEN 100.0
+                            WHEN v.visitTime >= ? THEN 70.0
+                            WHEN v.visitTime >= ? THEN 50.0
+                            WHEN v.visitTime >= ? THEN 30.0
+                            ELSE 10.0
+                        END)) DESC,
+                        MAX(v.visitTime) DESC
                     LIMIT 1
-                    """, arguments: [spaceID, patterns[0], patterns[1], patterns[2], patterns[3]])
+                    """, arguments: [spaceID, patterns[0], patterns[1], patterns[2], patterns[3],
+                                     now - 90 * day,
+                                     now - 4 * day, now - 14 * day, now - 31 * day, now - 90 * day])
             }
         } catch {
             log.error("Failed to find URL completion: \(error.localizedDescription)")

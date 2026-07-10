@@ -1,6 +1,6 @@
 import AppKit
 
-enum SuggestionItem {
+enum SuggestionItem: Equatable {
     case searchInput(text: String)
     case historyResult(url: String, title: String, faviconURL: String?)
     case openTab(tabID: UUID, spaceID: UUID, url: String, title: String, favicon: NSImage?)

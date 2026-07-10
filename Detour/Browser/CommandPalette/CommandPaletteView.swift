@@ -24,6 +24,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     weak var delegate: CommandPaletteDelegate?
     var tabStore: TabStore?
     var activeSpaceID: UUID?
+    var currentTabID: UUID?
     var profile: Profile?
 
     private let textField = CommandPaletteTextField()
@@ -36,6 +37,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     private let suggestionProvider = SuggestionProvider()
     private var suggestions: [SuggestionItem] = []
+    /// The query the current suggestion list was built for; nil when showing
+    /// defaults. Used to reject stale async search-suggestion responses.
+    private var suggestionsQuery: String?
     private var selectedSuggestionIndex: Int? = nil
     private var debounceWorkItem: DispatchWorkItem?
     private var currentTask: Task<Void, Never>?
@@ -259,6 +263,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private func loadDefaultSuggestions() {
         guard let spaceID = activeSpaceID else { return }
         let items = suggestionProvider.defaultSuggestions(spaceID: spaceID.uuidString, tabs: gatherTabInfos())
+        suggestionsQuery = nil
         updateSuggestions(items)
     }
 
@@ -279,17 +284,48 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     }
 
     private func updateSuggestions(_ items: [SuggestionItem]) {
+        let old = suggestions
         suggestions = items
-        updateFirstSearchInput(text: inlineCompletionSuffix.map { userTypedText + $0 })
-        selectedSuggestionIndex = items.isEmpty ? nil : 0
-        tableView.reloadData()
 
-        let hasSuggestions = !items.isEmpty
+        // Adjust the row count at the tail, then reconfigure changed rows in place.
+        // Unchanged rows keep their views so the list stays stable while typing.
+        tableView.beginUpdates()
+        if items.count > old.count {
+            tableView.insertRows(at: IndexSet(integersIn: old.count..<items.count), withAnimation: [])
+        } else if items.count < old.count {
+            tableView.removeRows(at: IndexSet(integersIn: items.count..<old.count), withAnimation: [])
+        }
+        tableView.endUpdates()
+
+        for row in 0..<min(old.count, items.count) where old[row] != items[row] {
+            if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SuggestionCellView {
+                configureCell(cell, for: items[row])
+            } else {
+                tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+            }
+        }
+
+        setKeyboardSelection(to: items.isEmpty ? nil : 0)
+        updatePanelHeight()
+    }
+
+    private func setKeyboardSelection(to index: Int?) {
+        if let old = selectedSuggestionIndex, old != index, old < tableView.numberOfRows {
+            (tableView.rowView(atRow: old, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = false
+        }
+        selectedSuggestionIndex = index
+        if let new = index {
+            (tableView.rowView(atRow: new, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = true
+        }
+    }
+
+    private func updatePanelHeight() {
+        let hasSuggestions = !suggestions.isEmpty
         separator.isHidden = !hasSuggestions
         scrollView.isHidden = !hasSuggestions
 
         if hasSuggestions {
-            let height = min(CGFloat(items.count) * rowHeight, 6 * rowHeight)
+            let height = min(CGFloat(suggestions.count) * rowHeight, 6 * rowHeight)
             scrollHeightConstraint.constant = height
             boxBottomToTextField.isActive = false
             boxBottomToScroll.isActive = true
@@ -299,23 +335,32 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
-    private func fetchSuggestions(for query: String, tabInfos: [SuggestionProvider.TabInfo]? = nil) {
-        guard let spaceID = activeSpaceID else { return }
-
-        let tabInfos = tabInfos ?? gatherTabInfos()
-
+    private func fetchSearchSuggestions(for query: String) {
         currentTask?.cancel()
         currentTask = Task { [weak self] in
             guard let self else { return }
-            let items = await self.suggestionProvider.suggestions(
-                for: query, spaceID: spaceID.uuidString, tabs: tabInfos,
-                searchEngine: self.profile?.searchEngine ?? .google,
-                searchSuggestionsEnabled: self.profile?.searchSuggestionsEnabled ?? true)
+            let texts = await self.suggestionProvider.searchSuggestions(
+                for: query, engine: self.profile?.searchEngine ?? .google)
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                self.updateSuggestions(items)
+                self.appendSearchSuggestions(texts, forQuery: query)
             }
         }
+    }
+
+    private func appendSearchSuggestions(_ texts: [String], forQuery query: String) {
+        // Ignore responses that arrive after the list was rebuilt for different input.
+        guard query == suggestionsQuery else { return }
+
+        let room = SuggestionProvider.maxSuggestions - suggestions.count
+        guard room > 0 else { return }
+        let items = texts.prefix(min(SuggestionProvider.maxSearchSuggestions, room)).map { SuggestionItem.searchSuggestion(text: $0) }
+        guard !items.isEmpty else { return }
+
+        let start = suggestions.count
+        suggestions.append(contentsOf: items)
+        tableView.insertRows(at: IndexSet(integersIn: start..<suggestions.count), withAnimation: [])
+        updatePanelHeight()
     }
 
     // MARK: - NSTextFieldDelegate
@@ -324,39 +369,31 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         guard !isUpdatingTextProgrammatically else { return }
 
         debounceWorkItem?.cancel()
+        currentTask?.cancel()
         let raw = textField.stringValue
         userTypedText = raw
         inlineCompletionSuffix = nil
 
+        // Autocomplete is suppressed on backspace and when there's trailing
+        // whitespace (that means a multi-word search is being typed).
         let query = raw.trimmingCharacters(in: .whitespaces)
-        if query.isEmpty {
-            loadDefaultSuggestions()
-            return
-        }
-
-        // Clear the stale selection on the previous suggestion list so that hitting
-        // Enter before the debounced fetch returns submits the typed text rather
-        // than activating an unrelated default-history suggestion.
-        if let old = selectedSuggestionIndex {
-            (tableView.rowView(atRow: old, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = false
-            selectedSuggestionIndex = nil
-        }
-
-        // Gather tab infos and apply inline autocomplete (suppressed on backspace)
-        var tabInfos: [SuggestionProvider.TabInfo]?
+        let allowAutocomplete: Bool
         if suppressNextAutocomplete {
             suppressNextAutocomplete = false
-        } else if raw == query {
-            // Only autocomplete when there's no trailing whitespace;
-            // a trailing space means the user is typing a multi-word search.
-            let infos = gatherTabInfos()
-            applyInlineAutocomplete(for: query, tabInfos: infos)
-            tabInfos = infos
+            allowAutocomplete = false
+        } else {
+            allowAutocomplete = raw == query
         }
 
-        // Debounced full suggestion fetch
+        refreshLocalSuggestions(allowAutocomplete: allowAutocomplete)
+    }
+
+    /// Schedules the debounced network search-suggestion fetch; results are
+    /// appended below the local rows when they arrive.
+    private func scheduleSearchSuggestionFetch(for query: String) {
+        guard profile?.searchSuggestionsEnabled ?? true else { return }
         let work = DispatchWorkItem { [weak self] in
-            self?.fetchSuggestions(for: query, tabInfos: tabInfos)
+            self?.fetchSearchSuggestions(for: query)
         }
         debounceWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
@@ -381,10 +418,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         if commandSelector == #selector(NSResponder.deleteBackward(_:)) {
             if inlineCompletionSuffix != nil {
                 inlineCompletionSuffix = nil
-                updateFirstSearchInput(text: userTypedText, reloadRow: true)
                 setTextFieldQuietly(userTypedText)
                 textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
                 suppressNextAutocomplete = true
+                refreshLocalSuggestions(allowAutocomplete: false)
                 return true
             }
             suppressNextAutocomplete = true
@@ -395,6 +432,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 userTypedText = userTypedText + suffix
                 inlineCompletionSuffix = nil
                 textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+                refreshLocalSuggestions(allowAutocomplete: true)
                 return true
             }
             return false
@@ -404,17 +442,11 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     private func moveSelection(by delta: Int) {
         guard !suggestions.isEmpty else { return }
-        let oldIndex = selectedSuggestionIndex
         inlineCompletionSuffix = nil
-
-        // Deselect old row
-        if let old = oldIndex {
-            (tableView.rowView(atRow: old, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = false
-        }
 
         // Compute next index, allowing nil (no selection = restore user text)
         let newIndex: Int?
-        if let current = oldIndex {
+        if let current = selectedSuggestionIndex {
             let next = current + delta
             if next < 0 || next >= suggestions.count {
                 newIndex = nil // moved past boundary → restore user text
@@ -426,10 +458,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             newIndex = delta > 0 ? 0 : suggestions.count - 1
         }
 
-        selectedSuggestionIndex = newIndex
+        setKeyboardSelection(to: newIndex)
 
         if let idx = newIndex {
-            (tableView.rowView(atRow: idx, makeIfNecessary: false) as? CommandPaletteRowView)?.isKeyboardSelected = true
             tableView.scrollRowToVisible(idx)
 
             let displayText = suggestionDisplayText(at: idx)
@@ -454,19 +485,33 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
-    private func updateFirstSearchInput(text: String?, reloadRow: Bool = false) {
-        guard let text, !suggestions.isEmpty, case .searchInput = suggestions[0] else { return }
-        suggestions[0] = .searchInput(text: text)
-        if reloadRow {
-            tableView.reloadData(forRowIndexes: IndexSet(integer: 0), columnIndexes: IndexSet(integer: 0))
+    /// Rebuilds local suggestions for the current typed text and schedules the
+    /// network search fetch. Shared by every path that changes the query: typing,
+    /// and inline-completion accept (Tab) or reject (backspace/Escape).
+    private func refreshLocalSuggestions(allowAutocomplete: Bool) {
+        let query = userTypedText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else {
+            loadDefaultSuggestions()
+            return
         }
+        guard let spaceID = activeSpaceID else { return }
+        let local = suggestionProvider.localSuggestions(
+            for: query, spaceID: spaceID.uuidString, tabs: gatherTabInfos(),
+            allowAutocomplete: allowAutocomplete, currentTabID: currentTabID)
+        applyInlineCompletion(local.inlineCompletion, for: query)
+        suggestionsQuery = query
+        updateSuggestions(local.items)
+        scheduleSearchSuggestionFetch(for: query)
     }
 
     private func activateSuggestion(at index: Int) {
         guard index < suggestions.count else { return }
         switch suggestions[index] {
-        case .searchInput:
-            let input = textField.stringValue.trimmingCharacters(in: .whitespaces)
+        case .searchInput(let text):
+            // Submit the row's own text, not the field's: with an inline
+            // completion active the field holds the completed URL, but this row
+            // means "go with what I actually typed".
+            let input = text.trimmingCharacters(in: .whitespaces)
             guard !input.isEmpty else { return }
             delegate?.commandPalette(self, didSubmitInput: input)
         case .historyResult(let url, _, _):
@@ -484,24 +529,22 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         delegate?.commandPalette(self, didSubmitInput: input)
     }
 
-    private func applyInlineAutocomplete(for query: String, tabInfos: [SuggestionProvider.TabInfo]) {
-        guard let spaceID = activeSpaceID else { return }
-
-        guard let match = suggestionProvider.bestAutocomplete(for: query, spaceID: spaceID.uuidString, tabs: tabInfos) else { return }
-
-        // The match is a display URL (scheme-stripped). Find where the user's query ends in it.
-        guard match.lowercased().hasPrefix(query.lowercased()) else { return }
-        let suffix = String(match.dropFirst(query.count))
+    /// Extends the text field with the completion's suffix, selected so that
+    /// typing replaces it. `completion` is a display URL prefixed by `query`.
+    private func applyInlineCompletion(_ completion: String?, for query: String) {
+        guard let completion, completion.lowercased().hasPrefix(query.lowercased()) else { return }
+        let suffix = String(completion.dropFirst(query.count))
         guard !suffix.isEmpty else { return }
 
         inlineCompletionSuffix = suffix
-
-        updateFirstSearchInput(text: query + suffix, reloadRow: true)
 
         setTextFieldQuietly(query + suffix)
 
         if let editor = textField.currentEditor() {
             editor.selectedRange = NSRange(location: query.count, length: suffix.count)
+            // Selecting the suffix auto-scrolls a long completion so its tail is
+            // visible; scroll back so the typed prefix stays in view instead.
+            editor.scrollRangeToVisible(NSRange(location: query.count, length: 0))
         }
     }
 
@@ -517,6 +560,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             inlineCompletionSuffix = nil
             setTextFieldQuietly(userTypedText)
             textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+            refreshLocalSuggestions(allowAutocomplete: false)
         } else if !textField.stringValue.isEmpty {
             setTextFieldQuietly("")
             userTypedText = ""
@@ -551,8 +595,11 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let id = NSUserInterfaceItemIdentifier("SuggestionCell")
         let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? SuggestionCellView)
             ?? SuggestionCellView(identifier: id)
+        configureCell(cell, for: suggestions[row])
+        return cell
+    }
 
-        let item = suggestions[row]
+    private func configureCell(_ cell: SuggestionCellView, for item: SuggestionItem) {
         switch item {
         case .searchInput(let text):
             let looksLikeURL = text.contains(".") && !text.contains(" ")
@@ -560,8 +607,13 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         case .historyResult(let url, let title, let faviconURL):
             cell.configure(title: title, url: url, icon: nil, isSearch: false)
             if let faviconURL {
+                cell.expectedFaviconURL = faviconURL
                 suggestionProvider.loadFavicon(for: faviconURL) { [weak cell] image in
-                    cell?.iconView.image = image
+                    // The cell may have been reconfigured for another row by the
+                    // time the favicon loads; don't stamp it with a stale icon.
+                    guard let cell, cell.expectedFaviconURL == faviconURL, let image else { return }
+                    cell.iconView.image = image
+                    cell.iconView.contentTintColor = nil
                 }
             }
         case .openTab(_, _, _, let title, let favicon):
@@ -569,7 +621,6 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         case .searchSuggestion(let text):
             cell.configure(title: text, url: nil, icon: nil, isSearch: true)
         }
-        return cell
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -644,6 +695,7 @@ private class CommandPaletteRowView: NSTableRowView {
 
 private class SuggestionCellView: NSTableCellView {
     let iconView = NSImageView()
+    var expectedFaviconURL: String?
     private let titleLabel = NSTextField(labelWithString: "")
     private let urlLabel = NSTextField(labelWithString: "")
     private let badgeIcon = NSImageView()
@@ -712,6 +764,7 @@ private class SuggestionCellView: NSTableCellView {
     required init?(coder: NSCoder) { fatalError() }
 
     func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false, isGoTo: Bool = false) {
+        expectedFaviconURL = nil
         titleLabel.stringValue = title.isEmpty ? (url ?? "") : title
 
         let showURL = !switchToTab && url != nil

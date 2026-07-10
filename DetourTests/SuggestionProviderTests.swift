@@ -5,8 +5,7 @@ import GRDB
 final class SuggestionProviderTests: XCTestCase {
 
     private func makeProvider(db: HistoryDatabase) -> SuggestionProvider {
-        let provider = SuggestionProvider()
-        return provider
+        SuggestionProvider(db: db)
     }
 
     private func makeDatabase() throws -> HistoryDatabase {
@@ -136,6 +135,147 @@ final class SuggestionProviderTests: XCTestCase {
         // a.com should be filtered out because it's an open tab
         XCTAssertFalse(filtered.contains(where: { $0.url == "https://a.com" }))
         XCTAssertTrue(filtered.contains(where: { $0.url == "https://b.com" }))
+    }
+
+    // MARK: - Local suggestions
+
+    func testLocalSuggestionsStartsWithSearchInputThenTabsThenHistory() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://tab.com/page", title: "Tab Page", faviconURL: nil, spaceID: "space1")
+        db.recordVisit(url: "https://history.com/page", title: "History Page", faviconURL: nil, spaceID: "space1")
+        let provider = makeProvider(db: db)
+
+        let tabs = [
+            SuggestionProvider.TabInfo(tabID: UUID(), spaceID: UUID(), url: "https://tab.com/page", title: "Tab Page", favicon: nil),
+        ]
+        // "page" is not a URL prefix of either entry, so there is no top hit
+        let local = provider.localSuggestions(for: "page", spaceID: "space1", tabs: tabs, allowAutocomplete: true)
+        let items = local.items
+
+        XCTAssertNil(local.inlineCompletion)
+        guard case .searchInput(let text) = items[0] else {
+            return XCTFail("First item should be searchInput")
+        }
+        XCTAssertEqual(text, "page")
+
+        guard case .openTab(_, _, let tabURL, _, _) = items[1] else {
+            return XCTFail("Second item should be openTab")
+        }
+        XCTAssertEqual(tabURL, "https://tab.com/page")
+
+        // History deduplicates against the open tab, so only history.com remains
+        guard case .historyResult(let historyURL, _, _) = items[2] else {
+            return XCTFail("Third item should be historyResult")
+        }
+        XCTAssertEqual(historyURL, "https://history.com/page")
+        XCTAssertEqual(items.count, 3)
+    }
+
+    func testLocalSuggestionsWithNoMatchesReturnsOnlySearchInput() throws {
+        let db = try makeDatabase()
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "nomatch", spaceID: "space1", tabs: [], allowAutocomplete: true)
+
+        XCTAssertEqual(local.items.count, 1)
+        XCTAssertNil(local.inlineCompletion)
+        guard case .searchInput = local.items[0] else {
+            return XCTFail("Only item should be searchInput")
+        }
+    }
+
+    // MARK: - Top hit
+
+    func testTopHitFromHistoryRanksFirstThenVerbatimAndDedupes() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: [], allowAutocomplete: true)
+        let items = local.items
+
+        XCTAssertEqual(local.inlineCompletion, "youtube.com")
+        guard case .historyResult(let url, let title, _) = items[0] else {
+            return XCTFail("First item should be the history top hit")
+        }
+        XCTAssertEqual(url, "https://www.youtube.com/")
+        XCTAssertEqual(title, "YouTube")
+
+        guard case .searchInput(let text) = items[1] else {
+            return XCTFail("Second item should be the verbatim searchInput")
+        }
+        XCTAssertEqual(text, "youtu")
+
+        // The top hit must not appear again in the history section
+        XCTAssertEqual(items.count, 2)
+    }
+
+    func testTopHitFromOpenTabRanksFirstAndDedupes() throws {
+        let db = try makeDatabase()
+        let provider = makeProvider(db: db)
+
+        let tabID = UUID()
+        let tabs = [
+            SuggestionProvider.TabInfo(tabID: tabID, spaceID: UUID(), url: "https://github.com/foo", title: "Foo Repo", favicon: nil),
+        ]
+        let local = provider.localSuggestions(for: "github", spaceID: "space1", tabs: tabs, allowAutocomplete: true)
+        let items = local.items
+
+        XCTAssertEqual(local.inlineCompletion, "github.com/foo")
+        guard case .openTab(let hitTabID, _, _, _, _) = items[0] else {
+            return XCTFail("First item should be the open-tab top hit")
+        }
+        XCTAssertEqual(hitTabID, tabID)
+
+        guard case .searchInput = items[1] else {
+            return XCTFail("Second item should be the verbatim searchInput")
+        }
+
+        // The tab must not appear again in the open-tab section
+        XCTAssertEqual(items.count, 2)
+    }
+
+    func testTopHitSuppressedWhenAutocompleteDisallowed() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: [], allowAutocomplete: false)
+
+        XCTAssertNil(local.inlineCompletion)
+        guard case .searchInput = local.items[0] else {
+            return XCTFail("First item should be searchInput when autocomplete is disallowed")
+        }
+        // The history entry still appears in its normal section
+        guard case .historyResult(let url, _, _) = local.items[1] else {
+            return XCTFail("Second item should be the history match")
+        }
+        XCTAssertEqual(url, "https://www.youtube.com/")
+    }
+
+    func testCurrentTabExcludedFromTopHit() throws {
+        let db = try makeDatabase()
+        let provider = makeProvider(db: db)
+
+        let tabID = UUID()
+        let tabs = [
+            SuggestionProvider.TabInfo(tabID: tabID, spaceID: UUID(), url: "https://github.com/foo", title: "Foo Repo", favicon: nil),
+        ]
+        // The only prefix match is the current tab, so it must not become the top hit.
+        let local = provider.localSuggestions(
+            for: "github", spaceID: "space1", tabs: tabs,
+            allowAutocomplete: true, currentTabID: tabID)
+        let items = local.items
+
+        XCTAssertNil(local.inlineCompletion)
+        guard case .searchInput = items[0] else {
+            return XCTFail("First item should be the verbatim searchInput, not the current tab")
+        }
+        // The current tab still appears in the normal open-tab section.
+        XCTAssertTrue(items.contains {
+            if case .openTab(let id, _, _, _, _) = $0 { return id == tabID }
+            return false
+        })
     }
 
     // MARK: - Merge ordering
