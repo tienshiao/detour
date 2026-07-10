@@ -44,6 +44,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var debounceWorkItem: DispatchWorkItem?
     private var currentTask: Task<Void, Never>?
 
+    /// Bumped every time the local suggestion list is rebuilt (typing or clearing).
+    /// The background history read captures the value at dispatch and drops its
+    /// result on arrival if this has advanced — mirrors the `suggestionsQuery`
+    /// guard used for network search suggestions.
+    private var localSuggestionGeneration = 0
+    /// Serial queue for the per-keystroke history reads, so they run off the main
+    /// thread in FIFO order (stale ones are still dropped via the generation).
+    private let historyQueryQueue = DispatchQueue(label: "com.detourbrowser.mac.palette-history", qos: .userInitiated)
+
     private var userTypedText: String = ""
     private var isUpdatingTextProgrammatically = false
     private var inlineCompletionSuffix: String?
@@ -262,6 +271,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     private func loadDefaultSuggestions() {
         guard let spaceID = activeSpaceID else { return }
+        // Invalidate any in-flight background history read so its result can't
+        // overwrite the default list when it lands.
+        localSuggestionGeneration &+= 1
         let items = suggestionProvider.defaultSuggestions(spaceID: spaceID.uuidString, tabs: gatherTabInfos())
         suggestionsQuery = nil
         updateSuggestions(items)
@@ -488,6 +500,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// Rebuilds local suggestions for the current typed text and schedules the
     /// network search fetch. Shared by every path that changes the query: typing,
     /// and inline-completion accept (Tab) or reject (backspace/Escape).
+    ///
+    /// Two phases. First, an instant synchronous pass over the in-memory open
+    /// tabs (no SQLite) shows tab matches and applies the tab-based inline
+    /// autocomplete immediately, so typing never blocks on the database. Then a
+    /// background pass runs the two history queries (`bestURLCompletion` frecency
+    /// scan + FTS `searchHistory`) off the main thread and merges the full,
+    /// authoritative list back in — dropped on arrival if the query has since
+    /// changed.
     private func refreshLocalSuggestions(allowAutocomplete: Bool) {
         let query = userTypedText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else {
@@ -495,13 +515,61 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return
         }
         guard let spaceID = activeSpaceID else { return }
-        let local = suggestionProvider.localSuggestions(
-            for: query, spaceID: spaceID.uuidString, tabs: gatherTabInfos(),
-            allowAutocomplete: allowAutocomplete, currentTabID: currentTabID)
-        applyInlineCompletion(local.inlineCompletion, for: query)
+        let tabs = gatherTabInfos()
+
+        // --- Instant synchronous pass: open tabs only ---
+        let q = query.lowercased()
+        var topHitTabID: UUID?
+        var instantItems: [SuggestionItem] = []
+        var appliedTabCompletion = false
+        if allowAutocomplete,
+           let tab = tabs.first(where: { $0.tabID != currentTabID && $0.displayURL.lowercased().hasPrefix(q) }) {
+            instantItems.append(.openTab(tabID: tab.tabID, spaceID: tab.spaceID, url: tab.url, title: tab.title, favicon: tab.favicon))
+            topHitTabID = tab.tabID
+            applyInlineCompletion(tab.displayURL, for: query)
+            appliedTabCompletion = true
+        }
+        instantItems.append(.searchInput(text: query))
+        let matchingTabs = Array(tabs.filter {
+            $0.tabID != topHitTabID && ($0.url.lowercased().contains(q) || $0.title.lowercased().contains(q))
+        }.prefix(3))
+        let tabItems: [SuggestionItem] = matchingTabs.map {
+            .openTab(tabID: $0.tabID, spaceID: $0.spaceID, url: $0.url, title: $0.title, favicon: $0.favicon)
+        }
+        instantItems.append(contentsOf: tabItems)
         suggestionsQuery = query
-        updateSuggestions(local.items)
+        updateSuggestions(Array(instantItems.prefix(SuggestionProvider.maxSuggestions)))
         scheduleSearchSuggestionFetch(for: query)
+
+        // --- Background pass: history queries off the main thread ---
+        localSuggestionGeneration &+= 1
+        let generation = localSuggestionGeneration
+        let provider = suggestionProvider
+        let spaceIDString = spaceID.uuidString
+        let capturedTabID = currentTabID
+        historyQueryQueue.async { [weak self] in
+            // localSuggestions recomputes the open-tab matches too, but its two
+            // SQLite reads are what we moved off the main thread. It touches no
+            // shared mutable state, so it's safe to run here.
+            let local = provider.localSuggestions(
+                for: query, spaceID: spaceIDString, tabs: tabs,
+                allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Drop stale results: a newer rebuild started, or the field text
+                // changed since we dispatched (mirrors the network-suggestion guard).
+                guard generation == self.localSuggestionGeneration,
+                      self.userTypedText.trimmingCharacters(in: .whitespaces) == query else { return }
+                // Apply the history-derived inline completion only if we didn't
+                // already complete from an open tab and nothing has completed the
+                // field since — applying it now, after the user typed more, would
+                // fight their typing (which the staleness guard above prevents).
+                if !appliedTabCompletion, self.inlineCompletionSuffix == nil {
+                    self.applyInlineCompletion(local.inlineCompletion, for: query)
+                }
+                self.updateSuggestions(local.items)
+            }
+        }
     }
 
     private func activateSuggestion(at index: Int) {

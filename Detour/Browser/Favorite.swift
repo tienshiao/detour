@@ -32,16 +32,10 @@ class Favorite {
     }
 
     private func downloadFavicon(from url: URL) {
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, _ in
-            guard let data,
-                  let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let image = NSImage(data: data) else { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.tab == nil else { return }
-                self.favicon = image
-                self.onFaviconDownloaded?()
-            }
-        }.resume()
+        FaviconLoader.shared.load(from: url) { [weak self] image in
+            guard let self, self.tab == nil, let image else { return }
+            self.favicon = image
+            self.onFaviconDownloaded?()
+        }
     }
 }

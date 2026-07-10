@@ -69,27 +69,31 @@ struct HistoryDatabase {
     /// the URL or picked it in the command palette, vs following a link); typed
     /// visits weigh more in `bestURLCompletion` frecency ranking.
     func recordVisit(url: String, title: String, faviconURL: String?, spaceID: String, typed: Bool = false) {
-        do {
-            try dbQueue.write { db in
-                let now = Date().timeIntervalSince1970
+        // Fire-and-forget async write. Serialized on the writer queue, so visits
+        // are committed in call order (FIFO); callers that read afterwards on the
+        // same DatabaseQueue observe the write because their access is enqueued
+        // behind it.
+        dbQueue.asyncWrite({ db in
+            let now = Date().timeIntervalSince1970
 
-                // Upsert historyURL and get the row ID back in one query
-                let urlID = try Int64.fetchOne(db, sql: """
-                    INSERT INTO historyURL (url, title, faviconURL, visitCount, lastVisitTime)
-                    VALUES (?, ?, ?, 1, ?)
-                    ON CONFLICT(url) DO UPDATE SET
-                        title = excluded.title,
-                        faviconURL = excluded.faviconURL,
-                        visitCount = visitCount + 1,
-                        lastVisitTime = excluded.lastVisitTime
-                    RETURNING id
-                    """, arguments: [url, title, faviconURL, now])!
-                let visit = HistoryVisit(urlID: urlID, spaceID: spaceID, visitTime: now, isTyped: typed)
-                try visit.insert(db)
+            // Upsert historyURL and get the row ID back in one query
+            let urlID = try Int64.fetchOne(db, sql: """
+                INSERT INTO historyURL (url, title, faviconURL, visitCount, lastVisitTime)
+                VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(url) DO UPDATE SET
+                    title = excluded.title,
+                    faviconURL = excluded.faviconURL,
+                    visitCount = visitCount + 1,
+                    lastVisitTime = excluded.lastVisitTime
+                RETURNING id
+                """, arguments: [url, title, faviconURL, now])!
+            let visit = HistoryVisit(urlID: urlID, spaceID: spaceID, visitTime: now, isTyped: typed)
+            try visit.insert(db)
+        }, completion: { _, result in
+            if case .failure(let error) = result {
+                log.error("Failed to record history visit: \(error.localizedDescription)")
             }
-        } catch {
-            log.error("Failed to record history visit: \(error.localizedDescription)")
-        }
+        })
     }
 
     func recentHistory(spaceID: String, limit: Int = 12) -> [HistoryURL] {
@@ -256,19 +260,23 @@ struct HistoryDatabase {
         }
     }
 
+    /// Prunes visits older than `maxAge` and any URLs left with no visits.
+    /// Runs as a fire-and-forget async write so it never blocks the caller
+    /// (e.g. launch, before first paint). Serialized on the writer queue, so a
+    /// subsequent read on the same DatabaseQueue observes the pruning.
     func expireOldVisits(olderThan maxAge: TimeInterval = 90 * 24 * 3600) {
-        do {
-            try dbQueue.write { db in
-                let cutoff = Date().timeIntervalSince1970 - maxAge
-                // Delete old visits
-                try HistoryVisit.filter(Column("visitTime") < cutoff).deleteAll(db)
-                // Delete orphaned URLs (no remaining visits)
-                try db.execute(sql: """
-                    DELETE FROM historyURL WHERE id NOT IN (SELECT DISTINCT urlID FROM historyVisit)
-                    """)
+        dbQueue.asyncWrite({ db in
+            let cutoff = Date().timeIntervalSince1970 - maxAge
+            // Delete old visits
+            try HistoryVisit.filter(Column("visitTime") < cutoff).deleteAll(db)
+            // Delete orphaned URLs (no remaining visits)
+            try db.execute(sql: """
+                DELETE FROM historyURL WHERE id NOT IN (SELECT DISTINCT urlID FROM historyVisit)
+                """)
+        }, completion: { _, result in
+            if case .failure(let error) = result {
+                log.error("Failed to expire old history: \(error.localizedDescription)")
             }
-        } catch {
-            log.error("Failed to expire old history: \(error.localizedDescription)")
-        }
+        })
     }
 }

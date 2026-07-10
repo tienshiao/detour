@@ -4,10 +4,8 @@ final class SuggestionProvider {
     static let maxSuggestions = 12
     static let maxSearchSuggestions = 4
 
-    private let faviconCache = NSCache<NSString, NSImage>()
     private let db: HistoryDatabase
     private let searchService = SearchSuggestionsService.shared
-    private var inFlightFavicons: [String: [(NSImage?) -> Void]] = [:]
 
     init(db: HistoryDatabase = .shared) {
         self.db = db
@@ -105,30 +103,11 @@ final class SuggestionProvider {
     }
 
     func loadFavicon(for urlString: String, completion: @escaping (NSImage?) -> Void) {
-        if let cached = faviconCache.object(forKey: urlString as NSString) {
-            completion(cached)
-            return
-        }
         guard let url = URL(string: urlString) else {
             completion(nil)
             return
         }
-        // Coalesce concurrent loads for the same URL: queue the completion behind
-        // the in-flight request instead of starting a second network fetch.
-        if inFlightFavicons[urlString] != nil {
-            inFlightFavicons[urlString]?.append(completion)
-            return
-        }
-        inFlightFavicons[urlString] = [completion]
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            let image = data.flatMap { NSImage(data: $0) }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let image { self.faviconCache.setObject(image, forKey: urlString as NSString) }
-                let completions = self.inFlightFavicons.removeValue(forKey: urlString) ?? []
-                for completion in completions { completion(image) }
-            }
-        }.resume()
+        FaviconLoader.shared.load(from: url, completion: completion)
     }
 
     struct TabInfo {

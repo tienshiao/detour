@@ -795,23 +795,19 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.Permission>, Date?) -> Void
     ) {
-        let extID = extensionIDFromContext(extensionContext)
-        let name = extID.map { displayName(for: $0) } ?? "This extension"
-        let descriptions = permissions.map { ExtensionPermissionDescriptions.describe($0.rawValue) }
-
-        let granted = promptUserForPermission(
-            extensionName: name,
-            itemDescriptions: descriptions
+        // API permissions are never auto-granted by activeTab (activeTab grants
+        // site access, not API permissions).
+        handlePermissionPrompt(
+            items: permissions,
+            context: extensionContext,
+            tab: tab,
+            autoGrantsForActiveTab: false,
+            autoGrantLogLabel: "",
+            recordType: .apiPermission,
+            describe: { ExtensionPermissionDescriptions.describe($0.rawValue) },
+            recordKey: { $0.rawValue },
+            completionHandler: completionHandler
         )
-
-        if let extID {
-            let status: ExtensionPermissionStatus = granted ? .granted : .denied
-            let records = permissions.map {
-                ExtensionPermissionRecord(extensionID: extID, key: $0.rawValue, type: .apiPermission, status: status)
-            }
-            AppDatabase.shared.savePermissions(records)
-        }
-        completionHandler(granted ? permissions : Set(), nil)
     }
 
     func webExtensionController(
@@ -821,31 +817,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<URL>, Date?) -> Void
     ) {
-        let extID = extensionIDFromContext(extensionContext)
-
-        if shouldAutoGrantForActiveTab(context: extensionContext, tab: tab) {
-            log.info("activeTab auto-grant URLs for \(extID ?? "?", privacy: .public)")
-            completionHandler(urls, nil)
-            return
-        }
-
-        let name = extID.map { displayName(for: $0) } ?? "This extension"
-        let descriptions = urls.map { $0.absoluteString }
-
-        let granted = promptUserForPermission(
-            extensionName: name,
-            itemDescriptions: descriptions,
-            category: "site access"
+        handlePermissionPrompt(
+            items: urls,
+            context: extensionContext,
+            tab: tab,
+            autoGrantsForActiveTab: true,
+            autoGrantLogLabel: "URLs",
+            category: "site access",
+            recordType: .matchPattern,
+            describe: { $0.absoluteString },
+            recordKey: { $0.absoluteString },
+            completionHandler: completionHandler
         )
-
-        if let extID {
-            let status: ExtensionPermissionStatus = granted ? .granted : .denied
-            let records = urls.map {
-                ExtensionPermissionRecord(extensionID: extID, key: $0.absoluteString, type: .matchPattern, status: status)
-            }
-            AppDatabase.shared.savePermissions(records)
-        }
-        completionHandler(granted ? urls : Set(), nil)
     }
 
     func webExtensionController(
@@ -855,33 +838,62 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.MatchPattern>, Date?) -> Void
     ) {
+        handlePermissionPrompt(
+            items: matchPatterns,
+            context: extensionContext,
+            tab: tab,
+            autoGrantsForActiveTab: true,
+            autoGrantLogLabel: "match patterns",
+            category: "site access",
+            recordType: .matchPattern,
+            describe: { $0.string == "<all_urls>" ? "All websites" : $0.string },
+            recordKey: { $0.string },
+            completionHandler: completionHandler
+        )
+    }
+
+    /// Shared implementation for the three permission-prompt delegate callbacks.
+    /// Handles the optional activeTab auto-grant short-circuit, building the
+    /// prompt, persisting the granted/denied records, and invoking the
+    /// completion handler with the granted set (or empty on denial).
+    private func handlePermissionPrompt<Item: Hashable>(
+        items: Set<Item>,
+        context extensionContext: WKWebExtensionContext,
+        tab: (any WKWebExtensionTab)?,
+        autoGrantsForActiveTab: Bool,
+        autoGrantLogLabel: String,
+        category: String = "permissions",
+        recordType: ExtensionPermissionType,
+        describe: (Item) -> String,
+        recordKey: (Item) -> String,
+        completionHandler: (Set<Item>, Date?) -> Void
+    ) {
         let extID = extensionIDFromContext(extensionContext)
 
-        if shouldAutoGrantForActiveTab(context: extensionContext, tab: tab) {
-            log.info("activeTab auto-grant match patterns for \(extID ?? "?", privacy: .public)")
-            completionHandler(matchPatterns, nil)
+        if autoGrantsForActiveTab,
+           shouldAutoGrantForActiveTab(context: extensionContext, tab: tab) {
+            log.info("activeTab auto-grant \(autoGrantLogLabel, privacy: .public) for \(extID ?? "?", privacy: .public)")
+            completionHandler(items, nil)
             return
         }
 
         let name = extID.map { displayName(for: $0) } ?? "This extension"
-        let descriptions = matchPatterns.map { pattern -> String in
-            pattern.string == "<all_urls>" ? "All websites" : pattern.string
-        }
+        let descriptions = items.map(describe)
 
         let granted = promptUserForPermission(
             extensionName: name,
             itemDescriptions: descriptions,
-            category: "site access"
+            category: category
         )
 
         if let extID {
             let status: ExtensionPermissionStatus = granted ? .granted : .denied
-            let records = matchPatterns.map {
-                ExtensionPermissionRecord(extensionID: extID, key: $0.string, type: .matchPattern, status: status)
+            let records = items.map {
+                ExtensionPermissionRecord(extensionID: extID, key: recordKey($0), type: recordType, status: status)
             }
             AppDatabase.shared.savePermissions(records)
         }
-        completionHandler(granted ? matchPatterns : Set(), nil)
+        completionHandler(granted ? items : Set(), nil)
     }
 
     /// Returns true if the extension has activeTab and the request should be

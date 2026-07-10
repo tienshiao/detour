@@ -81,16 +81,10 @@ class BrowserTab: NSObject {
 
     func downloadPeekFavicon() {
         guard let url = peekFaviconURL else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, _ in
-            guard let data,
-                  let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let image = NSImage(data: data) else { return }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.peekFavicon = image
-            }
-        }.resume()
+        FaviconLoader.shared.load(from: url) { [weak self] image in
+            guard let self, let image else { return }
+            self.peekFavicon = image
+        }
     }
 
     // MARK: - Archiving
@@ -362,17 +356,11 @@ class BrowserTab: NSObject {
     }
 
     private func downloadFavicon(from url: URL, generation: Int) {
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, _ in
-            guard let data,
-                  let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let image = NSImage(data: data) else { return }
-            DispatchQueue.main.async {
-                guard let self, self.faviconGeneration == generation else { return }
-                self.faviconURL = url
-                self.favicon = image
-            }
-        }.resume()
+        FaviconLoader.shared.load(from: url) { [weak self] image in
+            guard let self, self.faviconGeneration == generation, let image else { return }
+            self.faviconURL = url
+            self.favicon = image
+        }
     }
 
     /// Used when closing a tab to immediately stop media and release the webview.

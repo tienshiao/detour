@@ -1377,16 +1377,6 @@ class TabSidebarViewController: NSViewController {
         return spaces[index].tabs
     }
 
-    private func tabsAndPinnedForTableView(_ tv: NSTableView) -> (pinnedEntries: [PinnedEntry], normal: [BrowserTab]) {
-        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else {
-            return (pinnedEntries, tabs)
-        }
-        if index == activePageIndex { return (pinnedEntries, tabs) }
-        let spaces = relevantSpaces
-        guard index < spaces.count else { return ([], []) }
-        return (spaces[index].pinnedEntries, spaces[index].tabs)
-    }
-
     private func pinnedItemCountForTableView(_ tv: NSTableView) -> Int {
         guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else {
             return flattenedPinnedItems.count

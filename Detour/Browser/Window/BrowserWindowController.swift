@@ -21,7 +21,13 @@ class BrowserWindowController: NSWindowController {
     var selectedTabID: UUID?
     private var activeTabSubscriptions = Set<AnyCancellable>()
     private var snapshotImageView: NSImageView?
-    private var ownsWebView = false
+    /// Whether this window currently displays the selected tab's live web view.
+    /// Derived from the view hierarchy — a container can only be parented in one
+    /// window at a time — so it cannot drift out of sync with reality.
+    private var ownsWebView: Bool {
+        guard let container = selectedTab?.webViewContainer else { return false }
+        return container.superview === contentContainerView
+    }
     private var localSnapshot: NSImage?
     private weak var pipContentView: NSView?
 
@@ -791,7 +797,6 @@ class BrowserWindowController: NSWindowController {
         if container.superview === contentContainerView {
             container.isHidden = false
             container.frame = contentContainerView.bounds
-            ownsWebView = true
             anchorLinkStatusBar(to: webView)
             return
         }
@@ -816,7 +821,6 @@ class BrowserWindowController: NSWindowController {
         contentContainerView.addSubview(container, positioned: .below, relativeTo: dragHandle)
         container.frame = contentContainerView.bounds
 
-        ownsWebView = true
         anchorLinkStatusBar(to: webView)
 
         var userInfo: [String: Any] = ["tabID": tabID]
@@ -843,7 +847,6 @@ class BrowserWindowController: NSWindowController {
 
     private func showSnapshot(for tab: BrowserTab) {
         removeContentViews()
-        ownsWebView = false
 
         let imageView = NSImageView()
         imageView.imageScaling = .scaleProportionallyUpOrDown
@@ -885,7 +888,6 @@ class BrowserWindowController: NSWindowController {
         }
         snapshotImageView = nil
         webViewTopConstraint = nil
-        ownsWebView = false
         linkStatusBar.hide()
 
         // Clean up the PiP content view after WebKit has captured the animation origin.
@@ -972,11 +974,13 @@ class BrowserWindowController: NSWindowController {
               tabID == selectedTabID,
               let tab = selectedTab else { return }
 
-        if ownsWebView {
+        // The sender has already reparented the container by the time this
+        // notification arrives, so `ownsWebView` is already false here. "We
+        // were the owner" ⟺ we were displaying live content, not a snapshot.
+        if snapshotImageView == nil {
             // Hide peek UI before losing ownership
             hidePeekUI()
 
-            ownsWebView = false
             if let image = notification.userInfo?["snapshot"] as? NSImage {
                 localSnapshot = image
             }
@@ -1638,7 +1642,6 @@ extension BrowserWindowController: NSWindowDelegate {
         ucc.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         ucc.removeScriptMessageHandler(forName: "editableFieldFocus")
         (webView as? BrowserWebView)?.isEditingWebContent = false
-        ownsWebView = false
     }
 }
 

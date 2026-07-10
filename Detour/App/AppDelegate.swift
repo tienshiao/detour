@@ -11,7 +11,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Initialize databases before restoring session
         _ = AppDatabase.shared
         _ = HistoryDatabase.shared
-        HistoryDatabase.shared.expireOldVisits()
+        // Prune old history off the launch critical path. expireOldVisits() is
+        // already a fire-and-forget async write; defer the call itself so the
+        // full-table anti-join is not even scheduled until after first paint.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            HistoryDatabase.shared.expireOldVisits()
+        }
 
         // Initialize content blocker (fetch/compile rule lists)
         ContentBlockerManager.shared.initialize()
