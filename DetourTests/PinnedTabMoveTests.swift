@@ -161,6 +161,29 @@ final class PinnedTabMoveTests: XCTestCase {
         XCTAssertEqual(flattenedIDs(space), [outer.id, inner.id])
     }
 
+    func testMoveFolderIntoItselfIsRejected() throws {
+        let (store, space) = try makeStore()
+        let folder = store.addPinnedFolder(name: "A", in: space)
+
+        store.movePinnedFolder(folderID: folder.id, parentFolderID: folder.id, in: space)
+
+        XCTAssertNil(folder.parentFolderID)
+        XCTAssertEqual(flattenedIDs(space), [folder.id])
+    }
+
+    func testMoveFolderIntoDescendantIsRejected() throws {
+        let (store, space) = try makeStore()
+        let outer = store.addPinnedFolder(name: "Outer", in: space)
+        let inner = PinnedFolder(name: "Inner", parentFolderID: outer.id, sortOrder: 0)
+        space.pinnedFolders.append(inner)
+
+        // Would create outer → inner → outer, hanging flattenPinnedTree
+        store.movePinnedFolder(folderID: outer.id, parentFolderID: inner.id, in: space)
+
+        XCTAssertNil(outer.parentFolderID)
+        XCTAssertEqual(flattenedIDs(space), [outer.id, inner.id])
+    }
+
     func testMoveFolderOutOfParent() throws {
         let (store, space) = try makeStore()
         let outer = store.addPinnedFolder(name: "Outer", in: space)

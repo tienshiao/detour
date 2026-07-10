@@ -12,9 +12,9 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestStop(_ sidebar: TabSidebarViewController)
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect)
     func tabSidebarDidRequestToggleSidebar(_ sidebar: TabSidebarViewController)
-    func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTabFrom sourceIndex: Int, to destinationIndex: Int)
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPinAt index: Int, destinationIndex: Int)
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpinAt index: Int, destinationIndex: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTab tabID: UUID, toGapIndex gapIndex: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPin tabID: UUID)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpin entryID: UUID, toGapIndex gapIndex: Int)
     func tabSidebarDidRequestSwitchToSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
     func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
     func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton)
@@ -34,13 +34,13 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String)
 
     // Favorite operations
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavoriteAtRow tabRow: Int, at index: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavorite tabID: UUID, isPinned: Bool, at index: Int)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int)
     func tabSidebar(_ sidebar: TabSidebarViewController, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int)
     func tabSidebar(_ sidebar: TabSidebarViewController, didClickFavoriteAt index: Int)
     func tabSidebar(_ sidebar: TabSidebarViewController, didDoubleClickFavoriteAt index: Int)
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toTabAt tabIndex: Int)
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toPinnedAt pinnedIndex: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toTabGapIndex gapIndex: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toPinnedAt pinnedIndex: Int)
 
     // Folder operations
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID)
@@ -57,8 +57,8 @@ extension TabSidebarDelegate {
     func tabSidebarDidRequestShowExtensionPopup(_ sidebar: TabSidebarViewController, extensionID: String, sourceButton: NSView) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didSelectPinnedTabAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClosePinnedTabAt index: Int) {}
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPinAt index: Int, destinationIndex: Int) {}
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpinAt index: Int, destinationIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPin tabID: UUID) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpin entryID: UUID, toGapIndex gapIndex: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDuplicateTabAt index: Int, isPinned: Bool) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMoveTabAt index: Int, isPinned: Bool, toSpaceID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestArchiveTabAt index: Int) {}
@@ -67,13 +67,13 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinTabAt index: Int) {}
     func tabSidebarSpacesForContextMenu(_ sidebar: TabSidebarViewController) -> [(id: UUID, name: String, emoji: String, isCurrent: Bool)] { [] }
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String) {}
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavoriteAtRow tabRow: Int, at index: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavorite tabID: UUID, isPinned: Bool, at index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didClickFavoriteAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didDoubleClickFavoriteAt index: Int) {}
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toTabAt tabIndex: Int) {}
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toPinnedAt pinnedIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toTabGapIndex gapIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toPinnedAt pinnedIndex: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNewFolderIn parentFolderID: UUID?) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedFolder folderID: UUID, newName: String) {}
@@ -82,14 +82,16 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMovePinnedFolder folderID: UUID, parentFolderID: UUID?, beforeItemID: UUID?) {}
 }
 
-private let tabReorderPasteboardType = NSPasteboard.PasteboardType("com.mybrowser.tab-reorder")
-
 class TabSidebarViewController: NSViewController {
     private static let navSymbolConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .bold)
 
     weak var delegate: TabSidebarDelegate?
     var isIncognito = false
     private var isBatchUpdating = false
+
+    /// Identifies this sidebar as a drag source, so drops from another window's
+    /// sidebar (whose payloads reference a different model) can be rejected.
+    let sidebarID = UUID()
 
     private var isDarkBackground: Bool {
         view.effectiveAppearance.isDark
@@ -105,9 +107,28 @@ class TabSidebarViewController: NSViewController {
     private(set) var reloadButton = HoverButton()
     private(set) var sidebarToggleButton = HoverButton()
 
-    private var contextMenuTabIndex: Int = -1
+    private var contextMenuTabID: UUID?
     private var contextMenuTabIsPinned: Bool = false
     private var contextMenuFolderID: UUID?
+
+    /// Context-menu targets resolved fresh against the current model — the tab list
+    /// can change while the menu is open, so a stored index would go stale.
+    private var contextMenuTab: BrowserTab? {
+        guard !contextMenuTabIsPinned, let id = contextMenuTabID else { return nil }
+        return tabs.first(where: { $0.id == id })
+    }
+
+    private var contextMenuPinnedEntry: PinnedEntry? {
+        guard contextMenuTabIsPinned, let id = contextMenuTabID else { return nil }
+        return pinnedEntries.first(where: { $0.id == id })
+    }
+
+    private var contextMenuResolvedIndex: Int? {
+        guard let id = contextMenuTabID else { return nil }
+        return contextMenuTabIsPinned
+            ? pinnedEntries.firstIndex(where: { $0.id == id })
+            : tabs.firstIndex(where: { $0.id == id })
+    }
 
     var pinnedFolders: [PinnedFolder] = []
     var flattenedPinnedItems: [PinnedItem] = []
@@ -172,6 +193,10 @@ class TabSidebarViewController: NSViewController {
     private var pendingState: (pinnedEntries: [PinnedEntry], pinnedFolders: [PinnedFolder],
                                tabs: [BrowserTab], selectedTabID: UUID?)?
 
+    /// Incremented every time state is actually applied (not deferred). Used to
+    /// discard a queued pending-state application when newer state landed first.
+    private var stateGeneration = 0
+
     private func resolveSelectedTabID(_ explicit: UUID?) -> UUID? {
         if let explicit { return explicit }
         let row = tableView.selectedRow
@@ -210,6 +235,8 @@ class TabSidebarViewController: NSViewController {
             entries: newPinned, folders: newFolders,
             collapsedFolderIDs: collapsedIDs, selectedTabID: resolvedID
         )
+
+        stateGeneration += 1
 
         let diff = diffSidebarState(
             oldPinnedItems: flattenedPinnedItems, newPinnedItems: newPinnedItems,
@@ -287,16 +314,26 @@ class TabSidebarViewController: NSViewController {
             }
         }
 
-        // Reset indentation on normal tab cells (may have been reused from pinned section)
+        // Reconfigure normal tab cells (may have been reused from the pinned section
+        // by moveRow, which keeps the cell's pinned-mode state and — critically —
+        // its pinned onClose handler, whose row guard fails on a normal-tab row)
         for i in 0..<tabs.count {
             let row = rowForNormalTab(at: i)
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
-                cell.indentLevel = 0
-                cell.updatePinnedMode(entry: nil)
+                configureTabCell(cell, tab: tabs[i], title: tabs[i].title, isActive: true) { [weak self] row in
+                    guard let self, case .normalTab(let idx) = self.sidebarRow(for: row) else { return }
+                    self.delegate?.tabSidebar(self, didRequestCloseTabAt: idx)
+                }
             }
         }
 
         recheckHoverForVisibleCells()
+        if diff.hasChanges {
+            // Rows animate to their final frames after the batch update; the
+            // immediate recheck sees mid-flight positions, so check again once
+            // the animation settles.
+            recheckHoverForVisibleCells(afterDelay: 0.3)
+        }
     }
 
     /// Non-animated state reset for space switches. Unlike `applyState`, this does
@@ -306,6 +343,7 @@ class TabSidebarViewController: NSViewController {
         let collapsedIDs = Set(newFolders.filter(\.isCollapsed).map(\.id))
         let resolvedID = resolveSelectedTabID(selectedTabID)
 
+        stateGeneration += 1
         pinnedFolders = newFolders
         pinnedEntries = newPinned
         tabs = newTabs
@@ -324,12 +362,17 @@ class TabSidebarViewController: NSViewController {
     private func applyPendingState(selectTabID: UUID? = nil, insertionOrigin: NSPoint? = nil) {
         guard let pending = pendingState else { return }
         pendingState = nil
+        let expectedGeneration = stateGeneration
         DispatchQueue.main.async { [self] in
-            if let insertionOrigin {
-                pendingInsertionOrigin = insertionOrigin
+            // Skip the (now stale) snapshot if newer state was applied while this
+            // was queued — but still restore the selection below.
+            if stateGeneration == expectedGeneration {
+                if let insertionOrigin {
+                    pendingInsertionOrigin = insertionOrigin
+                }
+                applyState(pinnedEntries: pending.pinnedEntries, pinnedFolders: pending.pinnedFolders,
+                           tabs: pending.tabs, selectedTabID: pending.selectedTabID)
             }
-            applyState(pinnedEntries: pending.pinnedEntries, pinnedFolders: pending.pinnedFolders,
-                       tabs: pending.tabs, selectedTabID: pending.selectedTabID)
             if let selectTabID {
                 // Select in pinned section
                 if let flatIdx = flattenedPinnedItems.firstIndex(where: {
@@ -344,6 +387,17 @@ class TabSidebarViewController: NSViewController {
                 }
             }
         }
+    }
+
+    /// Runs a drop's store mutations with table updates deferred, then applies the
+    /// final state in one animated pass. Any drop that issues more than one delegate
+    /// call must go through this, or each call animates separately.
+    private func performDropTransaction(selectTabID: UUID? = nil, insertionOrigin: NSPoint? = nil,
+                                        _ mutations: () -> Void) {
+        isDragging = true
+        mutations()
+        isDragging = false
+        applyPendingState(selectTabID: selectTabID, insertionOrigin: insertionOrigin)
     }
 
     // MARK: - Row Layout
@@ -618,11 +672,11 @@ class TabSidebarViewController: NSViewController {
                 tableViewDataSource: self,
                 tableViewDelegate: self,
                 menuDelegate: self,
-                dragType: tabReorderPasteboardType,
                 onScrollWheel: { [weak self] in self?.handleSpaceSwipe($0) ?? false }
             )
             page.update(emoji: space.emoji, name: space.name)
             page.favoritesBar.delegate = self
+            page.favoritesBar.sidebarID = sidebarID
             page.favoritesBar.selectionColor = safeTintColor
 
             // Update favorites from profile
@@ -710,9 +764,9 @@ class TabSidebarViewController: NSViewController {
         }
     }
 
-    private func recheckHoverForVisibleCells(in tv: NSTableView? = nil) {
+    private func recheckHoverForVisibleCells(in tv: NSTableView? = nil, afterDelay delay: TimeInterval = 0) {
         let targetTV = tv ?? tableView
-        DispatchQueue.main.async { [weak self, weak targetTV] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak targetTV] in
             guard self != nil, let tv = targetTV else { return }
             let visibleRows = tv.rows(in: tv.visibleRect)
             for row in visibleRows.lowerBound..<visibleRows.upperBound {
@@ -1338,7 +1392,8 @@ class TabSidebarViewController: NSViewController {
             return flattenedPinnedItems.count
         }
         if index == activePageIndex { return flattenedPinnedItems.count }
-        // Non-active pages: compute from the space's raw data (no folders collapsed)
+        // Non-active pages: compute from the space's raw data (honoring collapsed
+        // folders, without selected-tab exposure)
         let spaces = relevantSpaces
         guard index < spaces.count else { return 0 }
         let space = spaces[index]
@@ -1430,14 +1485,62 @@ extension TabSidebarViewController: NSTableViewDataSource {
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-        guard tableView === self.tableView else { return nil }
+        guard tableView === self.tableView, let spaceID = activeSpaceID else { return nil }
+
+        let payload: SidebarDragPayload
         switch sidebarRow(for: row) {
-        case .pinnedItem, .normalTab:
-            let item = NSPasteboardItem()
-            item.setString(String(row), forType: tabReorderPasteboardType)
-            return item
+        case .pinnedItem(let index):
+            guard index < flattenedPinnedItems.count else { return nil }
+            switch flattenedPinnedItems[index] {
+            case .entry(let entry, _):
+                payload = SidebarDragPayload(kind: .pinnedEntry, itemID: entry.id, spaceID: spaceID, sidebarID: sidebarID)
+            case .folder(let folder, _):
+                payload = SidebarDragPayload(kind: .pinnedFolder, itemID: folder.id, spaceID: spaceID, sidebarID: sidebarID)
+            }
+        case .normalTab(let index):
+            guard index < tabs.count else { return nil }
+            payload = SidebarDragPayload(kind: .normalTab, itemID: tabs[index].id, spaceID: spaceID, sidebarID: sidebarID)
         default:
             return nil
+        }
+
+        guard let string = payload.pasteboardString else { return nil }
+        let item = NSPasteboardItem()
+        item.setString(string, forType: tabReorderPasteboardType)
+        return item
+    }
+
+    /// Decodes the tab/pinned-item payload from a drag, or nil if this drag is not
+    /// ours (another window's sidebar, another space, or a foreign pasteboard type).
+    private func localDragPayload(from info: any NSDraggingInfo) -> SidebarDragPayload? {
+        guard let string = info.draggingPasteboard.pasteboardItems?.first?.string(forType: tabReorderPasteboardType),
+              let payload = SidebarDragPayload(pasteboardString: string),
+              payload.sidebarID == sidebarID,
+              payload.spaceID == activeSpaceID else { return nil }
+        return payload
+    }
+
+    /// Decodes the favorite payload from a drag, or nil if not a local favorite drag.
+    private func localFavoritePayload(from info: any NSDraggingInfo) -> FavoriteDragPayload? {
+        guard let string = info.draggingPasteboard.pasteboardItems?.first?.string(forType: favoritePasteboardType),
+              let payload = FavoriteDragPayload(pasteboardString: string),
+              payload.sidebarID == sidebarID else { return nil }
+        return payload
+    }
+
+    /// Resolves the dragged item against the current model. Returns nil if the item
+    /// no longer exists (e.g. the tab closed mid-drag).
+    private func resolveDragSource(_ payload: SidebarDragPayload) -> SidebarDragSource? {
+        switch payload.kind {
+        case .normalTab:
+            guard let index = tabs.firstIndex(where: { $0.id == payload.itemID }) else { return nil }
+            return .normalTab(index: index, tabID: payload.itemID)
+        case .pinnedEntry:
+            guard pinnedEntries.contains(where: { $0.id == payload.itemID }) else { return nil }
+            return .pinnedEntry(entryID: payload.itemID)
+        case .pinnedFolder:
+            guard pinnedFolders.contains(where: { $0.id == payload.itemID }) else { return nil }
+            return .pinnedFolder(folderID: payload.itemID)
         }
     }
 
@@ -1484,256 +1587,123 @@ extension TabSidebarViewController: NSTableViewDataSource {
         if activePageIndex < spacePages.count {
             spacePages[activePageIndex].setDragSessionActive(false)
         }
+        // mouseExited isn't delivered while a drag session is active, and rows shift
+        // under the cursor to open the drop gap, so cells can be left with a stale
+        // hover background — including on cancelled and no-op drops, where no model
+        // change triggers a recheck. Re-evaluate now, and again after the drop /
+        // slide-back animations settle.
+        recheckHoverForVisibleCells()
+        recheckHoverForVisibleCells(afterDelay: 0.35)
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-        let pasteboard = info.draggingPasteboard
-
-        // Favorite being dragged into the table — accept in tab/pinned areas
-        if pasteboard.pasteboardItems?.first?.string(forType: favoritePasteboardType) != nil {
-            if dropOperation == .on {
-                // Allow dropping favorites ON folders
-                let destRow = sidebarRow(for: row)
-                if case .pinnedItem(let idx) = destRow, idx < flattenedPinnedItems.count,
-                   case .folder = flattenedPinnedItems[idx] {
-                    return .move
-                }
-                return []
-            }
-            let destRow = sidebarRow(for: row)
-            switch destRow {
-            case .topSpacer:
-                tableView.setDropRow(rowForPinnedItem(at: 0), dropOperation: .above)
-            case .separator:
-                tableView.setDropRow(1 + flattenedPinnedItems.count, dropOperation: .above)
-            case .newTab:
-                tableView.setDropRow(rowForNormalTab(at: 0), dropOperation: .above)
-            case .pinnedItem, .normalTab:
-                break
-            }
-            return .move
-        }
-
-        // Allow .on drops on folder rows (to put items inside)
-        if dropOperation == .on {
-            let destRow = sidebarRow(for: row)
-            if case .pinnedItem(let idx) = destRow, idx < flattenedPinnedItems.count,
-               case .folder(let destFolder, _) = flattenedPinnedItems[idx] {
-                // Don't allow dropping a folder onto itself
-                if let item = pasteboard.pasteboardItems?.first,
-                   let rowString = item.string(forType: tabReorderPasteboardType),
-                   let srcRow = Int(rowString),
-                   case .pinnedItem(let srcIdx) = sidebarRow(for: srcRow),
-                   srcIdx < flattenedPinnedItems.count,
-                   case .folder(let srcFolder, _) = flattenedPinnedItems[srcIdx],
-                   srcFolder.id == destFolder.id {
-                    return []
-                }
-                return .move
-            }
+        let kind: SidebarDragKind
+        let sourceItemID: UUID?
+        if let favorite = localFavoritePayload(from: info) {
+            kind = .favorite
+            sourceItemID = favorite.favoriteID
+        } else if let payload = localDragPayload(from: info) {
+            kind = SidebarDragKind(payload.kind)
+            sourceItemID = payload.itemID
+        } else {
             return []
         }
 
-        guard dropOperation == .above else { return [] }
-
-        // Determine if the dragged item is a folder
-        let isDraggingFolder: Bool
-        if let item = pasteboard.pasteboardItems?.first,
-           let rowString = item.string(forType: tabReorderPasteboardType),
-           let srcRow = Int(rowString),
-           case .pinnedItem(let srcIdx) = sidebarRow(for: srcRow),
-           srcIdx < flattenedPinnedItems.count,
-           case .folder = flattenedPinnedItems[srcIdx] {
-            isDraggingFolder = true
-        } else {
-            isDraggingFolder = false
+        let validation = validateSidebarDrop(
+            kind: kind, sourceItemID: sourceItemID,
+            row: sidebarRow(for: row),
+            operation: dropOperation == .on ? .on : .above,
+            items: flattenedPinnedItems
+        )
+        switch validation {
+        case .reject:
+            return []
+        case .accept:
+            return .move
+        case .retargetToPinnedGap(let index):
+            tableView.setDropRow(rowForPinnedItem(at: index), dropOperation: .above)
+            return .move
+        case .retargetToNormalTabGap(let index):
+            tableView.setDropRow(rowForNormalTab(at: index), dropOperation: .above)
+            return .move
         }
-
-        let destRow = sidebarRow(for: row)
-
-        switch destRow {
-        case .topSpacer:
-            tableView.setDropRow(rowForPinnedItem(at: 0), dropOperation: .above)
-        case .separator:
-            // Folders stay in pinned section; tabs can cross into normal
-            if isDraggingFolder {
-                tableView.setDropRow(1 + flattenedPinnedItems.count, dropOperation: .above)
-            }
-        case .newTab:
-            if isDraggingFolder {
-                return []
-            }
-            tableView.setDropRow(rowForNormalTab(at: 0), dropOperation: .above)
-        case .normalTab:
-            if isDraggingFolder {
-                return []
-            }
-        default:
-            break
-        }
-
-        return .move
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        let pasteboard = info.draggingPasteboard
+        let destRow = sidebarRow(for: row)
+        let operation: SidebarDropOperation = dropOperation == .on ? .on : .above
 
-        // Handle favorite → table drop (restore as tab/pinned)
-        if let favItem = pasteboard.pasteboardItems?.first,
-           let favIdxStr = favItem.string(forType: favoritePasteboardType),
-           let favIdx = Int(favIdxStr) {
-            let favBar = spacePages[activePageIndex].favoritesBar
-            let animOrigin: NSPoint? = favBar.tileFrame(at: favIdx).map { frame in
-                tableView.convert(NSPoint(x: frame.midX, y: frame.midY), from: favBar)
-            }
-
-            // Dropping favorite ON a folder
-            if dropOperation == .on {
-                let destRow = sidebarRow(for: row)
-                guard case .pinnedItem(let destIdx) = destRow,
-                      destIdx < flattenedPinnedItems.count,
-                      case .folder(let folder, _) = flattenedPinnedItems[destIdx] else {
-                    return false
-                }
-                dropFavoriteIntoPinned(favIdx: favIdx, destIdx: 0, folderID: folder.id, beforeItemID: nil, insertionOrigin: animOrigin)
-                return true
-            }
-
-            var destSection = sidebarRow(for: row)
-            switch destSection {
-            case .topSpacer: destSection = .pinnedItem(index: 0)
-            case .separator: destSection = .pinnedItem(index: flattenedPinnedItems.count)
-            case .newTab: destSection = .normalTab(index: 0)
-            default: break
-            }
-            switch destSection {
-            case .normalTab(let dstIdx):
-                pendingInsertionOrigin = animOrigin
-                delegate?.tabSidebar(self, didDragFavoriteAt: favIdx, toTabAt: dstIdx)
-                return true
-            case .pinnedItem(let dstIdx):
-                let targetFolderID = folderIDForFlattenedIndex(dstIdx)
-                let beforeItemID = itemIDAtDropIndex(dstIdx, in: flattenedPinnedItems)
-                dropFavoriteIntoPinned(favIdx: favIdx, destIdx: dstIdx, folderID: targetFolderID, beforeItemID: beforeItemID, insertionOrigin: animOrigin)
-                return true
-            default:
-                return false
-            }
+        if let favorite = localFavoritePayload(from: info) {
+            return acceptFavoriteDrop(favorite, row: destRow, operation: operation)
         }
 
-        guard let item = pasteboard.pasteboardItems?.first,
-              let rowString = item.string(forType: tabReorderPasteboardType),
-              let sourceRow = Int(rowString) else { return false }
+        guard let payload = localDragPayload(from: info),
+              let source = resolveDragSource(payload),
+              let destination = sidebarDropDestination(row: destRow, operation: operation, items: flattenedPinnedItems),
+              let command = resolveSidebarDrop(source: source, destination: destination, items: flattenedPinnedItems)
+        else { return false }
 
-        // Handle .on drops (dropping onto a folder)
-        if dropOperation == .on {
-            let destRow = sidebarRow(for: row)
-            guard case .pinnedItem(let destIdx) = destRow,
-                  destIdx < flattenedPinnedItems.count,
-                  case .folder(let folder, _) = flattenedPinnedItems[destIdx] else { return false }
-
-            let sourceSection = sidebarRow(for: sourceRow)
-            switch sourceSection {
-            case .pinnedItem(let srcIdx):
-                guard srcIdx < flattenedPinnedItems.count else { return false }
-                switch flattenedPinnedItems[srcIdx] {
-                case .entry(let entry, _):
-                    delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: entry.id, folderID: folder.id, beforeItemID: nil)
-                case .folder(let srcFolder, _):
-                    guard srcFolder.id != folder.id else { return false }  // can't drop folder onto itself
-                    delegate?.tabSidebar(self, didRequestMovePinnedFolder: srcFolder.id, parentFolderID: folder.id, beforeItemID: nil)
-                }
-                return true
-            case .normalTab(let srcIdx):
-                let draggedTabID = self.tabs[srcIdx].id
-                isDragging = true
-                delegate?.tabSidebar(self, didDragTabToPinAt: srcIdx, destinationIndex: 0)
-                delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: draggedTabID, folderID: folder.id, beforeItemID: nil)
-                isDragging = false
-                applyPendingState(selectTabID: draggedTabID)
-                return true
-            default:
-                return false
-            }
-        }
-
-        let sourceSection = sidebarRow(for: sourceRow)
-        var destSection = sidebarRow(for: row)
-
-        // Remap non-droppable rows to the nearest section edge
-        switch destSection {
-        case .topSpacer:
-            destSection = .pinnedItem(index: 0)
-        case .separator:
-            destSection = .pinnedItem(index: flattenedPinnedItems.count)
-        case .newTab:
-            destSection = .normalTab(index: 0)
-        default:
-            break
-        }
-
-        switch (sourceSection, destSection) {
+        switch command {
         // Single-delegate cases: let the observer's applyState animate directly
-        case (.pinnedItem(let srcIdx), .pinnedItem(let dstIdx)):
-            guard srcIdx < flattenedPinnedItems.count else { return false }
+        case .reorderNormalTab(let tabID, _, let gapIndex):
+            delegate?.tabSidebar(self, didMoveTab: tabID, toGapIndex: gapIndex)
+        case .unpinEntry(let entryID, let gapIndex):
+            delegate?.tabSidebar(self, didDragPinnedTabToUnpin: entryID, toGapIndex: gapIndex)
+        case .movePinnedEntry(let entryID, let folderID, let beforeItemID):
+            delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: entryID,
+                                 folderID: folderID, beforeItemID: beforeItemID)
+        case .movePinnedFolder(let folderID, let parentFolderID, let beforeItemID):
+            delegate?.tabSidebar(self, didRequestMovePinnedFolder: folderID,
+                                 parentFolderID: parentFolderID, beforeItemID: beforeItemID)
 
-            let targetFolderID = folderIDForFlattenedIndex(dstIdx)
-            let beforeItemID = itemIDAtDropIndex(dstIdx, in: flattenedPinnedItems)
-            switch flattenedPinnedItems[srcIdx] {
-            case .entry(let entry, _):
-                delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: entry.id,
-                                     folderID: targetFolderID, beforeItemID: beforeItemID)
-
-            case .folder(let folder, _):
-                delegate?.tabSidebar(self, didRequestMovePinnedFolder: folder.id,
-                                     parentFolderID: targetFolderID, beforeItemID: beforeItemID)
+        // Multi-delegate case: defer intermediate updates, animate at the end
+        case .pinTab(let tabID, let folderID, let beforeItemID):
+            performDropTransaction(selectTabID: tabID) {
+                delegate?.tabSidebar(self, didDragTabToPin: tabID)
+                delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: tabID,
+                                     folderID: folderID, beforeItemID: beforeItemID)
             }
-
-            return true
-
-        case (.normalTab(let srcIdx), .normalTab(let dstIdx)):
-            let adjustedDest = srcIdx < dstIdx ? dstIdx - 1 : dstIdx
-            guard srcIdx != adjustedDest else { return false }
-            delegate?.tabSidebar(self, didMoveTabFrom: srcIdx, to: dstIdx)
-            return true
-
-        // Multi-delegate cases: defer intermediate updates, animate at the end
-        case (.normalTab(let srcIdx), .pinnedItem(let dstIdx)):
-            let targetFolderID = folderIDForFlattenedIndex(dstIdx)
-            let beforeItemID = itemIDAtDropIndex(dstIdx, in: flattenedPinnedItems)
-            let tabID = tabs[srcIdx].id
-
-            isDragging = true
-            delegate?.tabSidebar(self, didDragTabToPinAt: srcIdx, destinationIndex: dstIdx)
-            delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: tabID,
-                                 folderID: targetFolderID, beforeItemID: beforeItemID)
-            isDragging = false
-            applyPendingState(selectTabID: tabID)
-            return true
-
-        case (.pinnedItem(let srcIdx), .normalTab(let dstIdx)):
-            guard srcIdx < flattenedPinnedItems.count,
-                  case .entry(let entry, _) = flattenedPinnedItems[srcIdx],
-                  let pinnedArrayIdx = pinnedEntries.firstIndex(where: { $0.id == entry.id }) else { return false }
-
-            delegate?.tabSidebar(self, didDragPinnedTabToUnpinAt: pinnedArrayIdx, destinationIndex: dstIdx)
-
-            return true
-
-        default:
-            return false
         }
+        return true
     }
 
-    private func dropFavoriteIntoPinned(favIdx: Int, destIdx: Int, folderID: UUID?, beforeItemID: UUID?, insertionOrigin: NSPoint?) {
-        let oldIDs = Set(pinnedEntries.map(\.id))
-        isDragging = true
-        delegate?.tabSidebar(self, didDragFavoriteAt: favIdx, toPinnedAt: destIdx)
-        if let newEntry = pendingState?.pinnedEntries.first(where: { !oldIDs.contains($0.id) }) {
-            delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: newEntry.id, folderID: folderID, beforeItemID: beforeItemID)
+    /// Handles a favorite tile dropped into the table (restore as tab or pinned entry).
+    private func acceptFavoriteDrop(_ payload: FavoriteDragPayload, row destRow: SidebarRow, operation: SidebarDropOperation) -> Bool {
+        guard activePageIndex < spacePages.count else { return false }
+        let favBar = spacePages[activePageIndex].favoritesBar
+        guard let favoriteIndex = favBar.index(ofFavoriteID: payload.favoriteID),
+              let destination = sidebarDropDestination(row: destRow, operation: operation, items: flattenedPinnedItems)
+        else { return false }
+
+        let animOrigin: NSPoint? = favBar.tileFrame(at: favoriteIndex).map { frame in
+            tableView.convert(NSPoint(x: frame.midX, y: frame.midY), from: favBar)
         }
-        isDragging = false
-        applyPendingState(insertionOrigin: insertionOrigin)
+
+        switch destination {
+        case .beforeNormalTab(let gapIndex):
+            pendingInsertionOrigin = animOrigin
+            delegate?.tabSidebar(self, didDragFavorite: payload.favoriteID, toTabGapIndex: gapIndex)
+        case .beforePinnedItem(let flatIndex):
+            dropFavoriteIntoPinned(favoriteID: payload.favoriteID,
+                                   folderID: folderIDForFlattenedIndex(flatIndex),
+                                   beforeItemID: itemIDAtDropIndex(flatIndex, in: flattenedPinnedItems),
+                                   insertionOrigin: animOrigin)
+        case .intoFolder(let folderID):
+            dropFavoriteIntoPinned(favoriteID: payload.favoriteID, folderID: folderID,
+                                   beforeItemID: nil, insertionOrigin: animOrigin)
+        }
+        return true
+    }
+
+    private func dropFavoriteIntoPinned(favoriteID: UUID, folderID: UUID?, beforeItemID: UUID?, insertionOrigin: NSPoint?) {
+        let oldIDs = Set(pinnedEntries.map(\.id))
+        performDropTransaction(insertionOrigin: insertionOrigin) {
+            delegate?.tabSidebar(self, didDragFavorite: favoriteID, toPinnedAt: pinnedEntries.count)
+            // The restore created a new entry; position it at the drop target
+            if let newEntry = pendingState?.pinnedEntries.first(where: { !oldIDs.contains($0.id) }) {
+                delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: newEntry.id, folderID: folderID, beforeItemID: beforeItemID)
+            }
+        }
     }
 
     private func folderIDForFlattenedIndex(_ index: Int) -> UUID? {
@@ -1983,24 +1953,23 @@ extension TabSidebarViewController: NSMenuDelegate {
             return
         }
 
-        contextMenuTabIndex = tabIndex
         contextMenuTabIsPinned = isPinned
         contextMenuFolderID = nil
 
-        // For pinned items, resolve the actual pinned entry index
         let tab: BrowserTab?
         let entry: PinnedEntry?
         if isPinned {
             if case .entry(let e, _) = flattenedPinnedItems[tabIndex] {
                 entry = e
                 tab = e.tab
-                contextMenuTabIndex = pinnedEntries.firstIndex(where: { $0.id == e.id }) ?? tabIndex
+                contextMenuTabID = e.id
             } else {
                 return
             }
         } else {
             tab = tabs[tabIndex]
             entry = nil
+            contextMenuTabID = tab?.id
         }
         let isSelectedTab = clickedRow == tableView.selectedRow
 
@@ -2091,11 +2060,10 @@ extension TabSidebarViewController: NSMenuDelegate {
 
     @objc private func contextMenuCopyURL(_ sender: NSMenuItem) {
         let url: URL?
-        if contextMenuTabIsPinned {
-            let entry = pinnedEntries[contextMenuTabIndex]
+        if let entry = contextMenuPinnedEntry {
             url = entry.tab?.url ?? entry.pinnedURL
         } else {
-            url = tabs[contextMenuTabIndex].url
+            url = contextMenuTab?.url
         }
         guard let url else { return }
         NSPasteboard.general.clearContents()
@@ -2103,24 +2071,28 @@ extension TabSidebarViewController: NSMenuDelegate {
     }
 
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {
-        delegate?.tabSidebar(self, didRequestDuplicateTabAt: contextMenuTabIndex, isPinned: contextMenuTabIsPinned)
+        guard let index = contextMenuResolvedIndex else { return }
+        delegate?.tabSidebar(self, didRequestDuplicateTabAt: index, isPinned: contextMenuTabIsPinned)
     }
 
     @objc private func contextMenuMoveToSpace(_ sender: NSMenuItem) {
-        guard let spaceID = sender.representedObject as? UUID else { return }
-        delegate?.tabSidebar(self, didRequestMoveTabAt: contextMenuTabIndex, isPinned: contextMenuTabIsPinned, toSpaceID: spaceID)
+        guard let spaceID = sender.representedObject as? UUID,
+              let index = contextMenuResolvedIndex else { return }
+        delegate?.tabSidebar(self, didRequestMoveTabAt: index, isPinned: contextMenuTabIsPinned, toSpaceID: spaceID)
     }
 
     @objc private func contextMenuPinTab(_ sender: NSMenuItem) {
-        delegate?.tabSidebar(self, didRequestPinTabAt: contextMenuTabIndex)
+        guard let index = contextMenuResolvedIndex else { return }
+        delegate?.tabSidebar(self, didRequestPinTabAt: index)
     }
 
     @objc private func contextMenuUnpinTab(_ sender: NSMenuItem) {
-        delegate?.tabSidebar(self, didRequestUnpinTabAt: contextMenuTabIndex)
+        guard let index = contextMenuResolvedIndex else { return }
+        delegate?.tabSidebar(self, didRequestUnpinTabAt: index)
     }
 
     @objc private func contextMenuRenamePinnedTab(_ sender: NSMenuItem) {
-        let entry = pinnedEntries[contextMenuTabIndex]
+        guard let entry = contextMenuPinnedEntry else { return }
         guard let flatIdx = flattenedPinnedItems.firstIndex(where: {
             if case .entry(let e, _) = $0, e.id == entry.id { return true }
             return false
@@ -2136,11 +2108,13 @@ extension TabSidebarViewController: NSMenuDelegate {
     }
 
     @objc private func contextMenuArchiveTab(_ sender: NSMenuItem) {
-        delegate?.tabSidebar(self, didRequestArchiveTabAt: contextMenuTabIndex)
+        guard let index = contextMenuResolvedIndex, !contextMenuTabIsPinned else { return }
+        delegate?.tabSidebar(self, didRequestArchiveTabAt: index)
     }
 
     @objc private func contextMenuArchiveTabsBelow(_ sender: NSMenuItem) {
-        delegate?.tabSidebar(self, didRequestArchiveTabsBelowIndex: contextMenuTabIndex)
+        guard let index = contextMenuResolvedIndex, !contextMenuTabIsPinned else { return }
+        delegate?.tabSidebar(self, didRequestArchiveTabsBelowIndex: index)
     }
 
     @objc private func contextMenuNewFolder(_ sender: NSMenuItem) {
@@ -2210,15 +2184,31 @@ extension TabSidebarViewController: NSMenuDelegate {
 // MARK: - FavoritesBarDelegate
 
 extension TabSidebarViewController: FavoritesBarDelegate {
-    func favoritesBar(_ bar: FavoritesBarView, didReceiveDropOfTabRow row: Int, at index: Int) {
-        // Capture the source row's position so the new tile can animate from it
-        let rowRect = tableView.rect(ofRow: row)
-        if !rowRect.isEmpty {
-            let rowCenter = NSPoint(x: rowRect.midX, y: rowRect.midY)
-            let barPoint = bar.convert(rowCenter, from: tableView)
-            bar.setAnimationOrigin(barPoint)
+    func favoritesBar(_ bar: FavoritesBarView, didReceiveDropOfTab payload: SidebarDragPayload, at index: Int) {
+        guard payload.spaceID == activeSpaceID else { return }
+
+        let sourceRow: Int?
+        let isPinned: Bool
+        switch payload.kind {
+        case .normalTab:
+            sourceRow = tabs.firstIndex { $0.id == payload.itemID }.map(rowForNormalTab)
+            isPinned = false
+        case .pinnedEntry:
+            sourceRow = flattenedPinnedItems.firstIndex { pinnedItemID($0) == payload.itemID }.map(rowForPinnedItem)
+            isPinned = true
+        case .pinnedFolder:
+            return
         }
-        delegate?.tabSidebar(self, didDragTabToFavoriteAtRow: row, at: index)
+
+        // Capture the source row's position so the new tile can animate from it
+        if let sourceRow {
+            let rowRect = tableView.rect(ofRow: sourceRow)
+            if !rowRect.isEmpty {
+                let rowCenter = NSPoint(x: rowRect.midX, y: rowRect.midY)
+                bar.setAnimationOrigin(bar.convert(rowCenter, from: tableView))
+            }
+        }
+        delegate?.tabSidebar(self, didDragTabToFavorite: payload.itemID, isPinned: isPinned, at: index)
     }
 
     func favoritesBar(_ bar: FavoritesBarView, didClickFavoriteAt index: Int) {

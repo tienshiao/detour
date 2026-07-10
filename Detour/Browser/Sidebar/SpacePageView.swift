@@ -16,7 +16,6 @@ class SpacePageView: NSView {
     init(tableViewDataSource: NSTableViewDataSource,
          tableViewDelegate: NSTableViewDelegate,
          menuDelegate: NSMenuDelegate,
-         dragType: NSPasteboard.PasteboardType,
          onScrollWheel: @escaping (NSEvent) -> Bool) {
         tableView = DraggableTableView()
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("TabColumn"))
@@ -26,7 +25,7 @@ class SpacePageView: NSView {
         tableView.style = .sourceList
         tableView.dataSource = tableViewDataSource
         tableView.delegate = tableViewDelegate
-        tableView.registerForDraggedTypes([dragType, favoritePasteboardType])
+        tableView.registerForDraggedTypes([tabReorderPasteboardType, favoritePasteboardType])
         tableView.draggingDestinationFeedbackStyle = .sourceList
 
         let menu = NSMenu()

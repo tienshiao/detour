@@ -1,12 +1,7 @@
 import AppKit
 
-private let tabReorderPasteboardType = NSPasteboard.PasteboardType("com.mybrowser.tab-reorder")
-
-/// Shared pasteboard type for favorite drag-and-drop. Also registered in SpacePageView and TabSidebarViewController.
-let favoritePasteboardType = NSPasteboard.PasteboardType("com.mybrowser.favorite-reorder")
-
 protocol FavoritesBarDelegate: AnyObject {
-    func favoritesBar(_ bar: FavoritesBarView, didReceiveDropOfTabRow row: Int, at index: Int)
+    func favoritesBar(_ bar: FavoritesBarView, didReceiveDropOfTab payload: SidebarDragPayload, at index: Int)
     func favoritesBar(_ bar: FavoritesBarView, didClickFavoriteAt index: Int)
     func favoritesBar(_ bar: FavoritesBarView, didDoubleClickFavoriteAt index: Int)
     func favoritesBar(_ bar: FavoritesBarView, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int)
@@ -16,6 +11,10 @@ protocol FavoritesBarDelegate: AnyObject {
 class FavoritesBarView: NSView, NSDraggingSource {
     override var mouseDownCanMoveWindow: Bool { false }
     weak var delegate: FavoritesBarDelegate?
+
+    /// Identity of the owning sidebar, stamped into drag payloads so drops from
+    /// another window's bars are rejected. Set by TabSidebarViewController.
+    var sidebarID: UUID?
 
     private static let tileSize: CGFloat = 40
     private static let iconSize: CGFloat = 16
@@ -185,6 +184,11 @@ class FavoritesBarView: NSView, NSDraggingSource {
     func tileFrame(at index: Int) -> NSRect? {
         guard index < tileViews.count else { return nil }
         return tileViews[index].frame
+    }
+
+    /// Returns the current index of the favorite with the given ID, if present.
+    func index(ofFavoriteID id: UUID) -> Int? {
+        favorites.firstIndex(where: { $0.id == id })
     }
 
     /// Sets the origin point (in this view's coordinates) for the next tile addition animation.
@@ -393,12 +397,14 @@ class FavoritesBarView: NSView, NSDraggingSource {
     // MARK: - Dragging Source (for favorite tiles)
 
     func beginDraggingFavorite(at index: Int, event: NSEvent) {
-        guard index < tileViews.count else { return }
+        guard index < tileViews.count, index < favorites.count, let sidebarID else { return }
         let tile = tileViews[index]
         dragSourceIndex = index
 
+        let payload = FavoriteDragPayload(favoriteID: favorites[index].id, sidebarID: sidebarID)
+        guard let payloadString = payload.pasteboardString else { return }
         let pbItem = NSPasteboardItem()
-        pbItem.setString("\(index)", forType: favoritePasteboardType)
+        pbItem.setString(payloadString, forType: favoritePasteboardType)
         let item = NSDraggingItem(pasteboardWriter: pbItem)
         let image = tile.snapshotImage()
         item.setDraggingFrame(tile.frame, contents: image)
@@ -445,9 +451,11 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
         let pasteboard = sender.draggingPasteboard
 
-        // Internal favorite reorder
+        // Internal favorite reorder — resolve the source index by ID at drop time
         if let data = pasteboard.string(forType: favoritePasteboardType),
-           let srcIdx = Int(data) {
+           let payload = FavoriteDragPayload(pasteboardString: data) {
+            guard payload.sidebarID == sidebarID,
+                  let srcIdx = favorites.firstIndex(where: { $0.id == payload.favoriteID }) else { return false }
             let rawDest = dragInsertionIndex ?? favorites.count
             // dragInsertionIndex is in pre-removal coordinates, but the reorder
             // API removes the source first then inserts; shift down for forward moves.
@@ -459,9 +467,10 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
         // Tab drop → add favorite
         if let data = pasteboard.string(forType: tabReorderPasteboardType),
-           let tabRow = Int(data) {
+           let payload = SidebarDragPayload(pasteboardString: data) {
+            guard payload.sidebarID == sidebarID, payload.kind != .pinnedFolder else { return false }
             let destIdx = dragInsertionIndex ?? favorites.count
-            delegate?.favoritesBar(self, didReceiveDropOfTabRow: tabRow, at: destIdx)
+            delegate?.favoritesBar(self, didReceiveDropOfTab: payload, at: destIdx)
             return true
         }
 

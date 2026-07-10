@@ -78,9 +78,13 @@ TabStore.shared (singleton)                             [Browser/TabStore.swift]
 
 Sidebar actions flow through `TabSidebarDelegate` → `BrowserWindowController` → `TabStore`. The command palette uses `CommandPaletteDelegate`. The palette has two modes: "new tab" (Cmd+T) and "navigate in place" (Cmd+L or clicking the faux address bar), controlled by `commandPaletteNavigatesInPlace`.
 
-### Tab List Offset
+### Sidebar Row Layout
 
-The table view's row 0 is always the "New Tab" cell. Actual tabs start at row 1. All index conversions between table rows and tab array indices account for this +1 offset.
+Sidebar table rows are: top spacer (row 0), flattened pinned items (entries + folders), separator, "New Tab" cell, then normal tabs. Never do row math inline — all conversions between table rows and section indices go through the pure functions in `Sidebar/SidebarLayout.swift` (`sidebarRow(for:)`, `rowForNormalTab`, `rowForPinnedItem`), which are unit-tested in `SidebarLayoutTests`.
+
+### Sidebar Drag & Drop
+
+Drag pasteboards carry ID-based payloads (`SidebarDragPayload` / `FavoriteDragPayload` in `Sidebar/SidebarDragDrop.swift`), never row numbers or array indices — rows can shift mid-drag, and payloads from another window's sidebar are rejected via `sidebarID`. Drop handling resolves the source by ID at drop time, then runs through the pure functions `validateSidebarDrop` / `sidebarDropDestination` / `resolveSidebarDrop` (tested in `SidebarDragDropTests`). Any drop that issues more than one store mutation must wrap them in `TabSidebarViewController.performDropTransaction` so the table animates once. When adding new drop targets (e.g. split tabs), extend the resolver enums + tests rather than branching in the view controller.
 
 ### Reminders
 * When adding/updating Web Extension APIS, make sure to add/update corresponding tests and update the API Explorer extension to cover the new APIs.

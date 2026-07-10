@@ -1620,6 +1620,13 @@ class TabStore {
 
     func movePinnedFolder(folderID: UUID, parentFolderID: UUID?, beforeItemID: UUID? = nil, in space: Space) {
         guard let folder = space.pinnedFolders.first(where: { $0.id == folderID }) else { return }
+        // Reject moves that would create a parent cycle (folder into itself or a
+        // descendant) — a cycle makes flattenPinnedTree recurse forever.
+        var ancestorID = parentFolderID
+        while let currentID = ancestorID {
+            if currentID == folderID { return }
+            ancestorID = space.pinnedFolders.first(where: { $0.id == currentID })?.parentFolderID
+        }
         // Capture state for undo
         let savedEntrySortOrders = space.pinnedEntries.map { (id: $0.id, folderID: $0.folderID, sortOrder: $0.sortOrder) }
         let savedFolderSortOrders = space.pinnedFolders.map { (id: $0.id, parentFolderID: $0.parentFolderID, sortOrder: $0.sortOrder) }

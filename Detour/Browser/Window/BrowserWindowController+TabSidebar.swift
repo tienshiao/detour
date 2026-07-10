@@ -79,22 +79,25 @@ extension BrowserWindowController: TabSidebarDelegate {
         }
     }
 
-    func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTabFrom sourceIndex: Int, to destinationIndex: Int) {
+    func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTab tabID: UUID, toGapIndex gapIndex: Int) {
+        guard let space = activeSpace,
+              let sourceIndex = space.tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        // gapIndex is an insertion gap (0...count); convert to a post-removal index
+        let destination = sourceIndex < gapIndex ? gapIndex - 1 : gapIndex
+        guard destination != sourceIndex else { return }
+        store.moveTab(from: sourceIndex, to: destination, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPin tabID: UUID) {
+        guard let space = activeSpace,
+              let tab = space.tabs.first(where: { $0.id == tabID }),
+              tab.url != nil else { return }
+        store.pinTab(id: tabID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpin entryID: UUID, toGapIndex gapIndex: Int) {
         guard let space = activeSpace else { return }
-        let adjustedDestination = sourceIndex < destinationIndex ? destinationIndex - 1 : destinationIndex
-        store.moveTab(from: sourceIndex, to: adjustedDestination, in: space)
-    }
-
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPinAt index: Int, destinationIndex: Int) {
-        guard let space = activeSpace, index >= 0, index < space.tabs.count else { return }
-        let tab = space.tabs[index]
-        guard tab.url != nil else { return }
-        store.pinTab(id: tab.id, in: space, at: destinationIndex)
-    }
-
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpinAt index: Int, destinationIndex: Int) {
-        guard let space = activeSpace, index >= 0, index < space.pinnedEntries.count else { return }
-        store.unpinTab(id: space.pinnedEntries[index].id, in: space, at: destinationIndex)
+        store.unpinTab(id: entryID, in: space, at: gapIndex)
     }
 
     func tabSidebarDidRequestSwitchToSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
@@ -313,36 +316,27 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     // MARK: - Favorites
 
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavoriteAtRow tabRow: Int, at index: Int) {
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavorite tabID: UUID, isPinned: Bool, at index: Int) {
         guard let space = activeSpace, let profileID = space.profile?.id else { return }
-        let sRow = sidebar.sidebarRow(for: tabRow)
 
-        switch sRow {
-        case .normalTab(let idx):
-            guard idx >= 0, idx < space.tabs.count else { return }
-            let tab = space.tabs[idx]
+        if isPinned {
+            guard let entry = space.pinnedEntries.first(where: { $0.id == tabID }) else { return }
+            let wasSelected = entry.tab?.id == selectedTabID
+            if let tab = store.detachPinnedEntry(id: entry.id, from: space) {
+                store.addFavorite(from: tab, profileID: profileID, at: index)
+                if wasSelected { selectTab(id: tab.id) }
+            } else {
+                store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
+                                           faviconURL: entry.faviconURL, favicon: entry.favicon,
+                                           profileID: profileID, at: index)
+                if wasSelected { deselectAllTabs() }
+            }
+        } else {
+            guard let tab = space.tabs.first(where: { $0.id == tabID }) else { return }
             let wasSelected = tab.id == selectedTabID
             store.detachTab(id: tab.id, from: space)
             store.addFavorite(from: tab, profileID: profileID, at: index)
             if wasSelected { selectTab(id: tab.id) }
-
-        case .pinnedItem(let idx):
-            guard idx < sidebar.flattenedPinnedItems.count else { return }
-            if case .entry(let entry, _) = sidebar.flattenedPinnedItems[idx] {
-                let wasSelected = entry.tab?.id == selectedTabID
-                if let tab = store.detachPinnedEntry(id: entry.id, from: space) {
-                    store.addFavorite(from: tab, profileID: profileID, at: index)
-                    if wasSelected { selectTab(id: tab.id) }
-                } else {
-                    store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
-                                               faviconURL: entry.faviconURL, favicon: entry.favicon,
-                                               profileID: profileID, at: index)
-                    if wasSelected { deselectAllTabs() }
-                }
-            }
-
-        default:
-            return
         }
     }
 
@@ -380,24 +374,22 @@ extension BrowserWindowController: TabSidebarDelegate {
         return fav
     }
 
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toTabAt tabIndex: Int) {
-        guard let space = activeSpace, let profile = space.profile else { return }
-        guard favoriteIndex >= 0, favoriteIndex < profile.favorites.count else { return }
-        let fav = profile.favorites[favoriteIndex]
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toTabGapIndex gapIndex: Int) {
+        guard let space = activeSpace, let profile = space.profile,
+              let fav = profile.favorites.first(where: { $0.id == favoriteID }) else { return }
         let wasSelected = fav.tab?.id == selectedTabID
-        store.restoreFavoriteAsTab(id: fav.id, profileID: profile.id, in: space, at: tabIndex)
+        store.restoreFavoriteAsTab(id: favoriteID, profileID: profile.id, in: space, at: gapIndex)
         if wasSelected {
-            let insertAt = min(tabIndex, space.tabs.count - 1)
+            let insertAt = min(gapIndex, space.tabs.count - 1)
             if insertAt >= 0 { selectTab(id: space.tabs[insertAt].id) }
         }
     }
 
-    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavoriteAt favoriteIndex: Int, toPinnedAt pinnedIndex: Int) {
-        guard let space = activeSpace, let profile = space.profile else { return }
-        guard favoriteIndex >= 0, favoriteIndex < profile.favorites.count else { return }
-        let fav = profile.favorites[favoriteIndex]
+    func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toPinnedAt pinnedIndex: Int) {
+        guard let space = activeSpace, let profile = space.profile,
+              let fav = profile.favorites.first(where: { $0.id == favoriteID }) else { return }
         let wasSelected = fav.tab?.id == selectedTabID
-        store.restoreFavoriteAsPinned(id: fav.id, profileID: profile.id, in: space, at: pinnedIndex)
+        store.restoreFavoriteAsPinned(id: favoriteID, profileID: profile.id, in: space, at: pinnedIndex)
         if wasSelected {
             if let entry = space.pinnedEntries.first(where: { $0.tab?.id != nil }),
                let tabID = entry.tab?.id {
