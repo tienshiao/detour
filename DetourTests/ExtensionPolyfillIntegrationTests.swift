@@ -94,6 +94,10 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
         let context = WKWebExtensionContext(for: wkExt)
         context.isInspectable = true
+        // Mirror Profile.loadExtension: extension pages load from an origin whose
+        // host is the context's uniqueIdentifier, which the polyfill dispatcher
+        // uses to verify the caller's identity (and thus permission checks).
+        context.uniqueIdentifier = Self.extensionID
 
         for permission in wkExt.requestedPermissions {
             context.setPermissionStatus(.grantedExplicitly, for: permission)
