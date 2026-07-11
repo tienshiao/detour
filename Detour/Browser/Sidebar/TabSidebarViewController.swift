@@ -107,6 +107,17 @@ class TabSidebarViewController: NSViewController {
     private(set) var reloadButton = HoverButton()
     private(set) var sidebarToggleButton = HoverButton()
 
+    // Title-bar control alignment. The defaults match the traffic-light geometry
+    // up through macOS 26 (Tahoe); on macOS 27+ the constants are re-derived from
+    // the measured standardWindowButton frames (see alignTitleBarControls()). The
+    // toggle button and address bar anchor to the nav stack, so these two
+    // constraints position the whole title-bar row.
+    private var toggleLeadingConstraint: NSLayoutConstraint!
+    private var navTopConstraint: NSLayoutConstraint!
+    private static let defaultToggleLeading: CGFloat = 74
+    private static let defaultNavTop: CGFloat = 6
+    private static let navButtonHeight: CGFloat = 24
+
     private var contextMenuTabID: UUID?
     private var contextMenuTabIsPinned: Bool = false
     private var contextMenuFolderID: UUID?
@@ -601,18 +612,24 @@ class TabSidebarViewController: NSViewController {
         container.addSubview(pageClipView)
         container.addSubview(bottomBar)
 
+        // Title-bar row: created with the Tahoe defaults, re-derived from the real
+        // traffic-light frames on macOS 27+ in alignTitleBarControls(). The toggle
+        // and address bar follow the nav stack, so only these two constants move.
+        toggleLeadingConstraint = sidebarToggleButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.defaultToggleLeading)
+        navTopConstraint = navStack.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.defaultNavTop)
+
         NSLayoutConstraint.activate([
             // Sidebar toggle button: in title bar area, right of traffic lights
-            sidebarToggleButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
-            sidebarToggleButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 74),
+            sidebarToggleButton.topAnchor.constraint(equalTo: navStack.topAnchor),
+            toggleLeadingConstraint,
 
             // Nav buttons: pinned to top of view (title bar area), right-aligned
-            navStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
+            navTopConstraint,
             navStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            navStack.heightAnchor.constraint(equalToConstant: 24),
+            navStack.heightAnchor.constraint(equalToConstant: Self.navButtonHeight),
 
-            // Address field: below title bar area
-            fauxAddressBar.topAnchor.constraint(equalTo: container.topAnchor, constant: 38),
+            // Address field: below the nav row (38pt from top on Tahoe)
+            fauxAddressBar.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 8),
             fauxAddressBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
             fauxAddressBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
 
@@ -642,9 +659,42 @@ class TabSidebarViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        alignTitleBarControls()
         relayoutPages()
         updateFadeShadows()
         rebuildAllSpaceButtons()
+    }
+
+    /// On macOS 27 (Golden Gate) the sidebar content extends to the window edge and
+    /// the traffic lights sit lower and further right than on Tahoe, so the
+    /// hardcoded Tahoe constants misalign. Derive the title-bar control positions
+    /// from the measured traffic-light frames instead; fall back to the Tahoe
+    /// defaults when the buttons can't be measured (e.g. fullscreen).
+    private func alignTitleBarControls() {
+        guard #available(macOS 27.0, *) else { return }
+
+        var toggleLeading = Self.defaultToggleLeading
+        var navTop = Self.defaultNavTop
+
+        if let window = view.window,
+           !window.styleMask.contains(.fullScreen),
+           let zoomButton = window.standardWindowButton(.zoomButton),
+           // Mid fullscreen/space transition the titlebar container is reparented
+           // into an auxiliary window before styleMask reports .fullScreen —
+           // converting across windows would yield a plausible-but-wrong frame.
+           zoomButton.window === window,
+           let zoomSuperview = zoomButton.superview {
+            let zoomFrame = view.convert(zoomButton.frame, from: zoomSuperview)
+            let centerFromTop = view.isFlipped ? zoomFrame.midY : view.bounds.height - zoomFrame.midY
+            // The buttons must sit within the view for the derived row to fit.
+            if zoomFrame.maxX > 0, centerFromTop > Self.navButtonHeight / 2 {
+                toggleLeading = zoomFrame.maxX + 6
+                navTop = centerFromTop - Self.navButtonHeight / 2
+            }
+        }
+
+        toggleLeadingConstraint.constant = toggleLeading
+        navTopConstraint.constant = navTop
     }
 
     // MARK: - Page Management
@@ -1016,7 +1066,7 @@ class TabSidebarViewController: NSViewController {
         button.action = action
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        button.heightAnchor.constraint(equalToConstant: Self.navButtonHeight).isActive = true
         return button
     }
 
