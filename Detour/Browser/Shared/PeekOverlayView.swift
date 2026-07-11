@@ -36,8 +36,15 @@ private class GlassCircleButton: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func mouseDown(with event: NSEvent) {
-        onTap?()
+    // Claim the click so it doesn't fall through to the overlay's
+    // outside-the-panel close handling; fire on mouse-up inside, like a
+    // standard button, so a press can be cancelled by dragging away.
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onTap?()
+        }
     }
 }
 
@@ -153,20 +160,10 @@ class PeekOverlayView: NSView {
         ])
     }
 
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { // ESC
-            onClose?()
-        } else {
-            super.keyDown(with: event)
-        }
-    }
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
-    }
+    // Esc is handled by BrowserWindowController (keyDown/cancelOperation).
+    // The peek webview sits above this overlay and holds first responder, so
+    // events the page declines bubble up the webview's responder chain — this
+    // overlay is a sibling of the webview and would never see them.
 
     /// Build a transform that scales the shadowContainer to a point around the click origin.
     private func scaledDownTransform() -> CATransform3D? {
@@ -255,7 +252,7 @@ class PeekOverlayView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         if isClosing { return nil }
-        return super.hitTest(point) ?? self
+        return super.hitTest(point)
     }
 
     // The peek webview lives above this overlay in contentContainerView, so it

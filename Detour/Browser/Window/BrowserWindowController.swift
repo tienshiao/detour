@@ -63,7 +63,7 @@ class BrowserWindowController: NSWindowController {
     var contextMenuLinkAction: ContextMenuLinkAction = .none
 
     var peekOverlayView: PeekOverlayView?
-    private var peekFaviconSubscription: AnyCancellable?
+    private var peekTabSubscriptions = Set<AnyCancellable>()
     private var displayTabSubscriptions = Set<AnyCancellable>()
     private var peekWebViewTopConstraint: NSLayoutConstraint?
     private var peekWebViewBottomConstraint: NSLayoutConstraint?
@@ -805,14 +805,7 @@ class BrowserWindowController: NSWindowController {
         tab.peekTab?.exitPictureInPicture()
 
         // Restore peek overlay if the incoming tab has one
-        if let existingPeek = tab.peekTab, let peekWebView = existingPeek.webView {
-            if existingPeek.isSleeping { existingPeek.wake() }
-            claimPeekWebView(peekWebView)
-            presentPeekWebView(peekWebView, clickPoint: nil, animate: false)
-            observePeekFavicon(existingPeek)
-        } else if let peekURL = tab.peekURL {
-            showPeekOverlay(url: peekURL, clickPoint: nil, interactionState: tab.peekInteractionState)
-        }
+        restorePeekOverlayIfNeeded()
     }
 
     private func claimWebView(for tab: BrowserTab) {
@@ -1220,9 +1213,9 @@ class BrowserWindowController: NSWindowController {
         splitScrimView = nil
         contentScrimView?.removeFromSuperview()
         contentScrimView = nil
-        // Restore first responder to peek overlay so Esc still works
-        if let peek = peekOverlayView {
-            window?.makeFirstResponder(peek)
+        // Return focus to the peek webview so keys go to it, not the tab behind
+        if peekOverlayView != nil, let peekWebView = selectedTab?.peekTab?.webView {
+            window?.makeFirstResponder(peekWebView)
         }
     }
 
@@ -1334,11 +1327,38 @@ class BrowserWindowController: NSWindowController {
 
     // MARK: - Peek Overlay
 
+    // Esc handling for the peek lives here, not on PeekOverlayView: the peek
+    // webview holds first responder, and key events the page declines bubble
+    // up the webview's responder chain (contentContainerView → window → this
+    // controller). Pages that consume Esc — closing a site modal, exiting
+    // fullscreen — still win, because WebKit only re-dispatches unhandled
+    // events. Depending on how AppKit interprets the event it arrives as a
+    // raw keyDown or as cancelOperation, so both are overridden.
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, peekOverlayView != nil { // Esc
+            closePeekOverlay()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        if peekOverlayView != nil {
+            closePeekOverlay()
+        }
+    }
+
     private func hidePeekUI() {
         guard peekOverlayView != nil else { return }
-        peekFaviconSubscription = nil
-        if selectedTab?.peekTab?.webView !== pipContentView {
-            selectedTab?.peekTab?.webView?.removeFromSuperview()
+        peekTabSubscriptions.removeAll()
+        if let peekWebView = selectedTab?.peekTab?.webView {
+            // Symmetric with claimPeekWebView: drop the userContentController's
+            // strong reference to this controller while the peek is hidden —
+            // the next present re-claims it, possibly from another window.
+            peekWebView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+            if peekWebView !== pipContentView {
+                peekWebView.removeFromSuperview()
+            }
         }
         peekOverlayView?.removeFromSuperview()
         peekOverlayView = nil
@@ -1353,15 +1373,48 @@ class BrowserWindowController: NSWindowController {
         webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
     }
 
-    private func observePeekFavicon(_ peekTab: BrowserTab) {
-        peekFaviconSubscription = peekTab.$favicon
+    /// Re-presents the selected tab's peek overlay after it was hidden (tab
+    /// switch, webview ownership loss, window refocus). Reuses the live peek
+    /// tab when one exists — recreating from `peekURL` would discard in-peek
+    /// navigation history — and otherwise rebuilds from persisted state.
+    private func restorePeekOverlayIfNeeded() {
+        guard peekOverlayView == nil, let tab = selectedTab else { return }
+        if let existingPeek = tab.peekTab, let peekWebView = existingPeek.webView {
+            claimPeekWebView(peekWebView)
+            presentPeekWebView(peekWebView, clickPoint: nil, animate: false)
+            observePeekTab(existingPeek, for: tab)
+        } else if let peekURL = tab.peekURL {
+            showPeekOverlay(url: peekURL, clickPoint: nil, interactionState: tab.peekInteractionState)
+        }
+    }
+
+    /// Mirrors live peek-tab state onto the host tab. Without the URL sink,
+    /// `peekURL`/`peekInteractionState` hold open-time values until the next
+    /// sleep or window close, so mid-session saves would restore the peek to
+    /// the page it was opened at rather than where the user navigated.
+    private func observePeekTab(_ peekTab: BrowserTab, for host: BrowserTab) {
+        peekTabSubscriptions.removeAll()
+
+        peekTab.$favicon
             .dropFirst()
             .removeDuplicates(by: ===)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.selectedTab?.peekFaviconURL = peekTab.faviconURL
+            .sink { [weak self, weak host] _ in
+                host?.peekFaviconURL = peekTab.faviconURL
                 self?.reloadSelectedTabSidebarCell()
             }
+            .store(in: &peekTabSubscriptions)
+
+        peekTab.$url
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak host] url in
+                guard let host, url != nil else { return }
+                host.savePeekStateForPersistence()
+                self?.store.scheduleSave()
+            }
+            .store(in: &peekTabSubscriptions)
     }
 
     private func reloadSelectedTabSidebarCell() {
@@ -1381,7 +1434,9 @@ class BrowserWindowController: NSWindowController {
                 closePeekOverlay()
             } else {
                 hidePeekUI()
+                claimPeekWebView(peekWebView)
                 presentPeekWebView(peekWebView, clickPoint: clickPoint, animate: true)
+                observePeekTab(existingPeek, for: tab)
                 return
             }
         }
@@ -1396,7 +1451,7 @@ class BrowserWindowController: NSWindowController {
         tab.peekTab = newPeekTab
         reloadSelectedTabSidebarCell()
 
-        observePeekFavicon(newPeekTab)
+        observePeekTab(newPeekTab, for: tab)
 
         presentPeekWebView(peekWebView, clickPoint: clickPoint, animate: true)
 
@@ -1476,15 +1531,19 @@ class BrowserWindowController: NSWindowController {
 
         peekOverlayView = overlay
         bindDisplayTab()
+
+        // Focus the peek so keyboard input (space, arrows, Esc) targets it
+        // immediately instead of the tab's webview behind the overlay.
+        window?.makeFirstResponder(peekWebView)
     }
 
     /// Closes and destroys the peek tab. Used when the user explicitly dismisses.
     private func closePeekOverlay() {
         guard let overlay = peekOverlayView else { return }
         let tab = selectedTab
-        let peekWebView = tab?.peekTab?.webView
-        peekWebView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-        peekFaviconSubscription = nil
+        let peekTab = tab?.peekTab
+        peekTab?.webView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+        peekTabSubscriptions.removeAll()
         tab?.clearPeekState()
         reloadSelectedTabSidebarCell()
         store.scheduleSave()
@@ -1493,19 +1552,21 @@ class BrowserWindowController: NSWindowController {
         overlay.animateClose {
             overlay.removeFromSuperview()
         }
-        // Fade out and remove the webview
+        // Fade out the webview, then tear the peek tab down like any other
+        // closed tab (pauses media, removes observers, releases the webview).
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             context.allowsImplicitAnimation = true
-            peekWebView?.alphaValue = 0
+            peekTab?.webView?.alphaValue = 0
         }, completionHandler: {
-            peekWebView?.removeFromSuperview()
+            peekTab?.teardown()
         })
-        // Safety net: remove even if animation completion doesn't fire
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak overlay, weak peekWebView] in
+        // Safety net: tear down even if animation completion doesn't fire
+        // (teardown is idempotent)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak overlay] in
             overlay?.removeFromSuperview()
-            peekWebView?.removeFromSuperview()
+            peekTab?.teardown()
         }
         // Restore first responder to the web view
         if let webView = tab?.webView {
@@ -1522,7 +1583,7 @@ class BrowserWindowController: NSWindowController {
         }
 
         // Clear peek state on original tab
-        peekFaviconSubscription = nil
+        peekTabSubscriptions.removeAll()
         selectedTab?.clearPeekState()
         reloadSelectedTabSidebarCell()
         store.scheduleSave()
@@ -1636,10 +1697,11 @@ extension BrowserWindowController: NSWindowDelegate {
 
         if let tab = selectedTab {
             claimWebView(for: tab)
-            // Restore peek overlay if the tab has one and we don't already have it showing
-            if peekOverlayView == nil, let peekURL = tab.peekURL {
-                showPeekOverlay(url: peekURL, clickPoint: nil, interactionState: tab.peekInteractionState)
-            }
+            // Restore peek overlay if the tab has one and we don't already
+            // have it showing. Goes through the shared restore path so a live
+            // peek (possibly navigated away from `peekURL`) is reused rather
+            // than destroyed and recreated at its opening URL.
+            restorePeekOverlayIfNeeded()
         }
     }
 
