@@ -10,7 +10,17 @@ extension BrowserWindowController: TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didSelectTabAt index: Int) {
         let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
-        selectTab(id: tabs[index].id)
+        var id = tabs[index].id
+        // Selecting a split row focuses the group's remembered pane; the
+        // sidebar's representative (selected member, else left pane) is the
+        // fallback when this window has no focus memory for the group.
+        if let space = activeSpace,
+           let group = store.splitGroup(containing: id, in: space),
+           let remembered = lastFocusedSplitMember[group.groupID],
+           group.members.contains(where: { $0.id == remembered }) {
+            id = remembered
+        }
+        selectTab(id: id)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseTabAt index: Int) {

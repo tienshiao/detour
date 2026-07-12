@@ -1,6 +1,20 @@
 import WebKit
 
 class BrowserWebView: WKWebView {
+    // MARK: - Split pane focus
+
+    /// Clicking a pane of a split tab moves focus between panes; the window
+    /// controller retargets `selectedTabID` and rebinds chrome (no-op when the
+    /// selected tab isn't in a split).
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            (window?.windowController as? BrowserWindowController)?
+                .browserWebViewDidBecomeFirstResponder(self)
+        }
+        return accepted
+    }
+
     // MARK: - Undo/Redo
 
     /// True when the user is focused on an editable element (input, textarea, contentEditable).

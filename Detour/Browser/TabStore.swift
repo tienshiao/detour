@@ -1784,7 +1784,7 @@ class TabStore {
             member.teardown()
         }
 
-        registerUndo(actionName: "Close Split") { [weak self] in
+        registerUndo(actionName: "Close Both Splits") { [weak self] in
             guard let self else { return }
             let newGroupID = UUID()
             var restoredFirst: BrowserTab?
@@ -1820,7 +1820,7 @@ class TabStore {
                 self.appDB.deleteClosedTab(tabID: snapshot.tabID)
                 self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
             }
-            self.registerUndo(actionName: "Close Split") { [weak self] in
+            self.registerUndo(actionName: "Close Both Splits") { [weak self] in
                 self?.closeSplitGroup(groupID: newGroupID, in: space)
             }
             if let restoredFirst {

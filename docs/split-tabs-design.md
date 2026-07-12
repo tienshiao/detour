@@ -191,12 +191,13 @@ fallback).
 
 ## 6. Sidebar rendering & drag/drop
 
-**Split row.** One `TabCellView`-style row per group: two favicon slots + the
-*focused* member's title (secondary favicon slot already exists as
-`peekFaviconImageView`; give it a small vertical divider treatment so split reads
-differently from peek). Row-level close button closes the **whole split** (both
-tabs, one transaction); Cmd+W closes only the focused pane. Selection highlight
-applies when `selectedTabID ∈ group`.
+**Split row.** One `TabCellView`-style row per group, rendered as **two equal
+halves** around a divider centered in the row: each member gets favicon + title
+on its side, in visual pane order, with the focused member's title emphasized.
+**Each half has its own hover close button that closes that pane** (dissolving
+the group); the whole-split close lives in the context menu (**Close Both Splits**,
+one transaction) and Cmd+W closes the focused pane. Selection highlight applies
+when `selectedTabID ∈ group`.
 
 **Payload & source extensions** (`SidebarDragDrop.swift`):
 
@@ -363,8 +364,9 @@ Behavior:
    (The groupID model would extend to N, but nothing should be built assuming
    it.)
 2. **Vertical divider only** (side-by-side), no horizontal splits.
-3. Sidebar row **close button closes the whole split**; **Cmd+W closes the
-   focused pane**.
+3. Sidebar split row: **each half's close button closes its own pane**; the
+   context menu's **Close Both Splits** closes both (one transaction); **Cmd+W closes
+   the focused pane**.
 4. **Only normal tabs** can form splits — not pinned entries, favorites, or
    peek tabs. Pinning a member separates it first.
 5. Splits are **per-space, same-space only** (cross-space edge drops rejected,
@@ -386,12 +388,18 @@ reliably fire `becomeFirstResponder` on the WKWebView subclass.
    diff, split row rendering, **Separate Tabs** menu item, group-aware
    sleep/archive guards. Tests: flattener, layout math, TabStore mutations,
    insertion snapping. Creation path for testing: temporary context-menu item.
-2. **Window display:** NSSplitView hosting, generalized claim/release/snapshot,
+2. **DONE (Jul 11, 2026). Window display:** NSSplitView hosting, generalized claim/release/snapshot,
    focused-pane tracking via `becomeFirstResponder`, chrome/find/status-bar
    binding, Cmd+W semantics, divider → fraction persistence. **Option-click**
    branch in `decidePolicyFor` (+ `addTabInSplit` from phase 1) — this is the
    first end-to-end creation path, ahead of any DnD. Peek-in-split rules
-   verified here (mostly free).
+   verified here (mostly free). Implementation notes: focused-pane affordance is
+   a hairline accent border on the focused container (`updateSplitPaneFocus`);
+   the ownership notification now carries `tabIDs` (all claimed panes) and
+   windows match on group intersection, since two windows showing the same
+   split may focus different members; structural changes that bypass
+   `selectTab` (pane closed, Separate Tabs, split formed around the selection)
+   converge through `refreshSplitHostingIfNeeded()` from the store observers.
 3. **Sidebar DnD:** payload kinds, resolver cases + tests, edge-drop validate
    geometry + half-row highlight, member drag-out, split-row unit reorder,
    `performDropTransaction` wiring.

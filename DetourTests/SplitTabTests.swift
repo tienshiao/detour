@@ -327,6 +327,43 @@ final class SplitTabTests: XCTestCase {
                       "undoing Open in Split must not leave a phantom closed-tab record")
     }
 
+    /// The Option-click fallback (background tab instead of split) relies on
+    /// addTabInSplit returning nil for anchors that can't join a group.
+    func testAddTabInSplitRejectsGroupedAnchor() throws {
+        let (store, space) = try makeStore()
+        let (tabs, _) = makeSplitFixture(store, space)
+
+        let pane = store.addTabInSplit(with: tabs[1].id, url: URL(string: "https://example.com")!, in: space)
+
+        XCTAssertNil(pane)
+        XCTAssertEqual(space.tabs.count, 4)
+    }
+
+    func testAddTabInSplitRejectsPinnedAnchor() throws {
+        let (store, space) = try makeStore()
+        let tab = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(tab)
+        store.pinTab(id: tab.id, in: space)
+
+        let pane = store.addTabInSplit(with: tab.id, url: URL(string: "https://example.com")!, in: space)
+
+        XCTAssertNil(pane)
+        XCTAssertTrue(space.tabs.isEmpty)
+    }
+
+    func testAddTabInSplitFocusTargetIsRightPane() throws {
+        let (store, space) = try makeStore()
+        let anchor = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(anchor)
+
+        let pane = try XCTUnwrap(store.addTabInSplit(with: anchor.id, url: URL(string: "https://example.com")!, in: space))
+
+        XCTAssertEqual(space.tabs.map(\.id), [anchor.id, pane.id],
+                       "new pane opens on the right of its anchor")
+        XCTAssertEqual(pane.parentID, anchor.id)
+        XCTAssertEqual(pane.splitFraction, 0.5)
+    }
+
     // MARK: - splitGroup drag kind
 
     func testSplitGroupDragOnlyReordersInNormalSection() {

@@ -25,6 +25,8 @@ extension BrowserWindowController: TabStoreObserver {
         }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
+        // A removed pane dissolves its group; collapse the hosted split view.
+        refreshSplitHostingIfNeeded()
     }
 
     /// Pick a sensible tab to select after the current selection was removed
@@ -48,6 +50,9 @@ extension BrowserWindowController: TabStoreObserver {
         if let selectedTabID, let index = currentTabs.firstIndex(where: { $0.id == selectedTabID }) {
             tabSidebar.selectedTabIndex = index
         }
+        // Split create/separate around the selected tab lands here (group
+        // membership changes coincide with reorders); match hosting to it.
+        refreshSplitHostingIfNeeded()
     }
 
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space) {

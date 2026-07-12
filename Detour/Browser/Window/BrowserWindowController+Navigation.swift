@@ -12,19 +12,62 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
-        // Shift+click: open link in peek view
+        // Shift+click: open link in peek view. The clicked webview must be a
+        // pane of the selected tab's split (or the selected tab itself) — never
+        // the peek webview, so shift-clicking inside a peek still navigates it.
+        // The peek attaches to the clicked pane's tab, focusing that pane first.
         if navigationAction.navigationType == .linkActivated,
            navigationAction.modifierFlags.contains(.shift),
            let url = navigationAction.request.url,
-           let tab = selectedTab,
-           webView === tab.webView,
+           let clickedTab = tab(owning: webView),
+           let selected = selectedTab,
+           splitMembers(of: selected).contains(where: { $0 === clickedTab }),
            peekOverlayView == nil {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                if clickedTab.id != self.selectedTabID {
+                    self.window?.makeFirstResponder(webView)
+                }
                 let clickPoint = self.window.map {
                     self.contentContainerView.convert($0.mouseLocationOutsideOfEventStream, from: nil)
                 }
                 self.showPeekOverlay(url: url, clickPoint: clickPoint)
+            }
+            return .cancel
+        }
+
+        // Option+click: open link in a split pane. Must run BEFORE the
+        // shouldPerformDownload check below — WebKit sets that flag for
+        // Alt-clicked links (Safari's Option-click-downloads convention),
+        // which this deliberately retires; the context menu's "Download
+        // Linked File" still covers it. Modifier precedence: Cmd (new tab),
+        // then Shift (peek), then Option — the branch order above.
+        // Not while a peek is open (mirrors the Shift branch): a click inside
+        // the peek would resolve to the peek tab and fall through to a
+        // surprise background tab; letting it pass keeps Option-click-download
+        // working inside peeks.
+        if navigationAction.navigationType == .linkActivated,
+           navigationAction.modifierFlags.contains(.option),
+           peekOverlayView == nil,
+           let url = navigationAction.request.url,
+           let space = activeSpace,
+           let clickedTab = tab(owning: webView) {
+            // Resolved from the firing webView, not selectedTab: in a split, a
+            // link can be Option-clicked in the unfocused pane.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let group = self.store.splitGroup(containing: clickedTab.id, in: space),
+                   let otherPane = group.members.first(where: { $0.id != clickedTab.id }) {
+                    // Already split: send the link to the other pane.
+                    otherPane.load(url)
+                } else if let newTab = self.store.addTabInSplit(with: clickedTab.id, url: url, in: space) {
+                    // New right pane, focused.
+                    self.selectTab(id: newTab.id)
+                } else {
+                    // Pinned/favorite/peek tabs can't join groups — fall back
+                    // to Cmd+click behavior (background tab).
+                    _ = self.store.addTab(in: space, url: url, parentID: self.selectedTabID)
+                }
             }
             return .cancel
         }

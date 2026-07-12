@@ -23,11 +23,25 @@ class BrowserWindowController: NSWindowController {
     private var snapshotImageView: NSImageView?
     /// Whether this window currently displays the selected tab's live web view.
     /// Derived from the view hierarchy — a container can only be parented in one
-    /// window at a time — so it cannot drift out of sync with reality.
+    /// window at a time — so it cannot drift out of sync with reality. Split
+    /// panes sit one level deeper (inside `hostedSplitView`), hence descendant.
     private var ownsWebView: Bool {
         guard let container = selectedTab?.webViewContainer else { return false }
-        return container.superview === contentContainerView
+        return container.isDescendant(of: contentContainerView)
     }
+
+    /// Hosts the two pane containers when the selected tab is in a split group.
+    private var hostedSplitView: NSSplitView?
+    /// Per-group memory of the last focused pane, so re-selecting a split row
+    /// returns focus to the member the user was last in (default: left pane).
+    var lastFocusedSplitMember: [UUID: UUID] = [:]
+    private var splitFractionCommit: DispatchWorkItem?
+    private var isApplyingSplitLayout = false
+    /// Stored fraction that couldn't be applied yet because the split view had
+    /// no geometry at claim time (e.g. window restore selects a split before
+    /// the first layout pass); applied on the first real resize instead of
+    /// letting the 50/50 default get committed over the persisted value.
+    private var pendingSplitFraction: Double?
     private var localSnapshot: NSImage?
     private weak var pipContentView: NSView?
 
@@ -441,6 +455,9 @@ class BrowserWindowController: NSWindowController {
             } else {
                 self.setTrafficLightsHidden(false, animated: true)
             }
+            // The left split pane meets the window's rounded left corners only
+            // while the sidebar is collapsed — re-derive its border rounding.
+            self.updateSplitPaneFocus()
         }
 
         splitViewController.view.frame = window?.contentView?.bounds ?? .zero
@@ -726,7 +743,11 @@ class BrowserWindowController: NSWindowController {
                 pipContentView = peekTab.webView
             }
             hidePeekUI()
-            previousTab.lastDeselectedAt = Date()
+            // Stamp every pane of a split: the unfocused pane has no selection
+            // of its own, and without a timestamp it would never go stale.
+            for member in splitMembers(of: previousTab) {
+                member.lastDeselectedAt = Date()
+            }
             if previousTab.isPlayingAudio {
                 previousTab.enterPictureInPicture()
                 // Keep the container in the hierarchy so WebKit can capture the
@@ -754,27 +775,19 @@ class BrowserWindowController: NSWindowController {
         }
 
         guard let tab = selectedTab else { return }
-        tab.lastDeselectedAt = nil
-        if tab.isSleeping {
-            tab.wake()
-            // Notify extension contexts that this previously-sleeping tab is now open and active.
-            // Sleeping tabs are skipped during notifyExistingTabs, so didOpenTab was never called.
-            if let space = activeSpace, let profile = space.profile {
-                for context in profile.extensionContexts.values {
-                    context.didOpenTab(tab)
-                    context.didActivateTab(tab, previousActiveTab: nil)
-                }
-            }
+        // Both panes of a split are on screen together: wake and un-stamp the
+        // partner too, or it would sleep (or stay asleep) behind a live pane.
+        let members = splitMembers(of: tab)
+        for member in members {
+            member.lastDeselectedAt = nil
+            wakeIfNeeded(member)
+        }
+        if members.count == 2, let space = activeSpace,
+           let groupID = store.splitGroup(containing: tab.id, in: space)?.groupID {
+            lastFocusedSplitMember[groupID] = tab.id
         }
 
-        bindDisplayTab()
-
-        tab.$title
-            .receive(on: RunLoop.main)
-            .sink { [weak self] title in
-                self?.window?.title = title
-            }
-            .store(in: &activeTabSubscriptions)
+        bindSelectedTabChrome()
 
         if let space = activeSpace {
             tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
@@ -795,7 +808,7 @@ class BrowserWindowController: NSWindowController {
         // Update favorite selection highlight
         tabSidebar.updateFavoriteSelection(selectedTabID: id)
 
-        if window?.isKeyWindow == true || tab.webViewContainer?.superview == nil {
+        if window?.isKeyWindow == true || members.allSatisfy({ $0.webViewContainer?.superview == nil }) {
             claimWebView(for: tab)
         } else {
             showSnapshot(for: tab)
@@ -808,12 +821,67 @@ class BrowserWindowController: NSWindowController {
         restorePeekOverlayIfNeeded()
     }
 
+    /// The selected tab's split partners (both panes, visual order) — or just
+    /// the tab itself when it isn't in a split group.
+    func splitMembers(of tab: BrowserTab) -> [BrowserTab] {
+        guard let space = activeSpace,
+              let group = store.splitGroup(containing: tab.id, in: space) else { return [tab] }
+        return group.members
+    }
+
+    /// Script message handlers this controller registers on every owned pane webview.
+    private static let ownedScriptHandlerNames = ["linkHover", BlockedResourceTracker.messageName, "editableFieldFocus"]
+
+    /// Wake a sleeping split member alongside the focused pane, mirroring the
+    /// wake path in `selectTab` (including the extension open/activate notify
+    /// that `notifyExistingTabs` skipped while the tab slept).
+    private func wakeIfNeeded(_ tab: BrowserTab) {
+        guard tab.isSleeping else { return }
+        tab.wake()
+        if let space = activeSpace, let profile = space.profile {
+            for context in profile.extensionContexts.values {
+                context.didOpenTab(tab)
+                context.didActivateTab(tab, previousActiveTab: nil)
+            }
+        }
+    }
+
     private func claimWebView(for tab: BrowserTab) {
+        let members = splitMembers(of: tab)
+        if members.count == 2 {
+            claimSplitWebViews(members: members, focused: tab)
+        } else {
+            claimSingleWebView(for: tab)
+        }
+    }
+
+    private func wireOwnedWebView(_ webView: WKWebView) {
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        let ucc = webView.configuration.userContentController
+        for name in Self.ownedScriptHandlerNames {
+            ucc.removeScriptMessageHandler(forName: name)
+            ucc.add(self, name: name)
+        }
+    }
+
+    private func postOwnershipChanged(tabIDs: [UUID], focusedID: UUID, snapshot: NSImage?) {
+        var userInfo: [String: Any] = ["tabID": focusedID, "tabIDs": tabIDs]
+        if let snapshot {
+            userInfo["snapshot"] = snapshot
+        }
+        NotificationCenter.default.post(
+            name: .webViewOwnershipChanged,
+            object: self,
+            userInfo: userInfo
+        )
+    }
+
+    private func claimSingleWebView(for tab: BrowserTab) {
         guard let webView = tab.webView else { return }
         tab.ensureWebViewContainer()
         guard let container = tab.webViewContainer else { return }
-
-        let tabID = tab.id
 
         if container.superview === contentContainerView {
             container.isHidden = false
@@ -822,21 +890,17 @@ class BrowserWindowController: NSWindowController {
             return
         }
 
-        // Snapshot the container (webView + any docked inspector) at its current size.
-        let priorSnapshot = snapshotImage(of: container)
+        // Snapshot what the previous owner displayed at its current size: the
+        // whole split view when the pane was hosted in one (both panes, one
+        // image), otherwise the container (webView + any docked inspector).
+        let snapshotTarget = (container.superview as? NSSplitView) ?? container
+        let priorSnapshot = snapshotImage(of: snapshotTarget)
 
         removeContentViews()
 
         container.removeFromSuperview()
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
-        webView.allowsBackForwardNavigationGestures = true
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
-        webView.configuration.userContentController.add(self, name: "linkHover")
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-        webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "editableFieldFocus")
-        webView.configuration.userContentController.add(self, name: "editableFieldFocus")
+        container.layer?.borderWidth = 0
+        wireOwnedWebView(webView)
 
         // Use frame-based layout (not constraints) for WKWebView — Auto Layout breaks Web Inspector.
         contentContainerView.addSubview(container, positioned: .below, relativeTo: dragHandle)
@@ -844,15 +908,164 @@ class BrowserWindowController: NSWindowController {
 
         anchorLinkStatusBar(to: webView)
 
-        var userInfo: [String: Any] = ["tabID": tabID]
-        if let priorSnapshot {
-            userInfo["snapshot"] = priorSnapshot
+        postOwnershipChanged(tabIDs: [tab.id], focusedID: tab.id, snapshot: priorSnapshot)
+    }
+
+    /// Hosts both panes of the focused tab's split group in an NSSplitView.
+    /// NSSplitView manages child frames directly (no Auto Layout inside), which
+    /// preserves the frame-based-layout requirement that keeps the docked Web
+    /// Inspector working.
+    private func claimSplitWebViews(members: [BrowserTab], focused: BrowserTab) {
+        for member in members {
+            wakeIfNeeded(member)
+            member.ensureWebViewContainer()
         }
-        NotificationCenter.default.post(
-            name: .webViewOwnershipChanged,
-            object: self,
-            userInfo: userInfo
-        )
+        let containers = members.compactMap(\.webViewContainer)
+        guard containers.count == 2, let focusedWebView = focused.webView else {
+            claimSingleWebView(for: focused)
+            return
+        }
+        let fraction = members[0].splitFraction ?? 0.5
+
+        // Already hosting exactly these panes — just refresh.
+        if hostedSplitMatches(members), let split = hostedSplitView {
+            split.isHidden = false
+            split.frame = contentContainerView.bounds
+            applySplitFraction(fraction, to: split)
+            updateSplitPaneFocus()
+            anchorLinkStatusBar(to: focusedWebView)
+            return
+        }
+
+        // Snapshot what the previous owner displayed (see claimSingleWebView).
+        let snapshotTarget = containers.compactMap { $0.superview as? NSSplitView }.first
+            ?? containers.first { $0.superview != nil }
+        let priorSnapshot = snapshotTarget.flatMap { snapshotImage(of: $0) }
+
+        removeContentViews()
+
+        for member in members {
+            member.webViewContainer?.removeFromSuperview()
+            if let webView = member.webView {
+                wireOwnedWebView(webView)
+            }
+        }
+
+        let split = NSSplitView()
+        split.isVertical = true
+        split.dividerStyle = .thin
+        split.delegate = self
+        split.translatesAutoresizingMaskIntoConstraints = true
+        split.autoresizingMask = [.width, .height]
+        split.frame = contentContainerView.bounds
+        for container in containers {
+            container.isHidden = false
+            split.addArrangedSubview(container)
+        }
+        contentContainerView.addSubview(split, positioned: .below, relativeTo: dragHandle)
+        hostedSplitView = split
+        applySplitFraction(fraction, to: split)
+        updateSplitPaneFocus()
+
+        anchorLinkStatusBar(to: focusedWebView)
+
+        postOwnershipChanged(tabIDs: members.map(\.id), focusedID: focused.id, snapshot: priorSnapshot)
+    }
+
+    private func applySplitFraction(_ fraction: Double, to split: NSSplitView) {
+        let available = split.bounds.width - split.dividerThickness
+        guard available > 0 else {
+            pendingSplitFraction = fraction
+            return
+        }
+        pendingSplitFraction = nil
+        isApplyingSplitLayout = true
+        split.setPosition(round(available * fraction), ofDividerAt: 0)
+        split.layoutSubtreeIfNeeded()
+        isApplyingSplitLayout = false
+    }
+
+    /// Runs a pending debounced divider-fraction write immediately instead of
+    /// dropping it — content teardown inside the debounce window (tab switch,
+    /// ownership handoff) must not lose the user's divider position.
+    private func flushPendingSplitFractionCommit() {
+        guard let commit = splitFractionCommit else { return }
+        splitFractionCommit = nil
+        commit.perform()
+        commit.cancel()
+    }
+
+    /// Hairline accent border marking the focused pane of a hosted split. The
+    /// border rounds off at the corners where the pane meets the window's
+    /// rounded corners, so it follows the window shape instead of getting
+    /// clipped by the window mask. Fullscreen windows have square corners, so
+    /// no rounding there (re-derived from the fullscreen delegate callbacks).
+    private func updateSplitPaneFocus() {
+        guard let split = hostedSplitView else { return }
+        let focusedContainer = selectedTab?.webViewContainer
+        let isFullscreen = window?.styleMask.contains(.fullScreen) == true
+        let radius = isFullscreen ? 0 : windowCornerRadius
+        for pane in split.arrangedSubviews {
+            pane.wantsLayer = true
+            let isFocused = pane === focusedContainer
+            pane.layer?.borderWidth = isFocused ? 2 : 0
+            pane.layer?.borderColor = isFocused
+                ? NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor : nil
+            pane.layer?.cornerRadius = radius
+            pane.layer?.cornerCurve = .continuous
+            pane.layer?.maskedCorners = isFullscreen ? [] : windowEdgeCorners(of: pane)
+        }
+    }
+
+    /// The window frame's corner radius, read via KVC from the theme frame
+    /// (no public API); falls back to a sane constant if the key disappears.
+    private var windowCornerRadius: CGFloat {
+        guard let frameView = window?.contentView?.superview,
+              frameView.responds(to: Selector(("cornerRadius"))),
+              let radius = frameView.value(forKey: "cornerRadius") as? CGFloat,
+              radius > 0 else { return 12 }
+        return radius
+    }
+
+    /// The corners of `pane` that coincide with the window's rounded corners.
+    /// Panes span the content area's full height, and the content area always
+    /// reaches the window's right edge — the left edge only when the sidebar
+    /// is collapsed. Derived from sidebar state, not geometry: during the
+    /// collapse animation frames are mid-flight, but `isCollapsed` is final.
+    private func windowEdgeCorners(of pane: NSView) -> CACornerMask {
+        guard let split = hostedSplitView else { return [] }
+        var corners: CACornerMask = []
+        if pane === split.arrangedSubviews.first, sidebarItem.isCollapsed {
+            corners.insert(.layerMinXMinYCorner)
+            corners.insert(.layerMinXMaxYCorner)
+        }
+        if pane === split.arrangedSubviews.last {
+            corners.insert(.layerMaxXMinYCorner)
+            corners.insert(.layerMaxXMaxYCorner)
+        }
+        return corners
+    }
+
+    /// Whether the hosted split view is parented in this window's content area
+    /// and shows exactly `members`' containers, in order. The single source of
+    /// truth for "already hosting these panes" — claim and refresh both use it.
+    private func hostedSplitMatches(_ members: [BrowserTab]) -> Bool {
+        guard let split = hostedSplitView, split.superview === contentContainerView else { return false }
+        let containers = members.compactMap(\.webViewContainer)
+        return containers.count == members.count && split.arrangedSubviews == containers
+    }
+
+    /// Re-claims content after a structural split change that didn't go through
+    /// `selectTab` — a pane closed out from under the split, Separate Tabs, or a
+    /// split formed around the selected tab (context menu) — so the hosted view
+    /// (single container vs split view) matches the selected tab's group state.
+    func refreshSplitHostingIfNeeded() {
+        guard let tab = selectedTab, ownsWebView else { return }
+        let members = splitMembers(of: tab)
+        let hostingSplit = hostedSplitView?.superview === contentContainerView
+        let matches = members.count == 2 ? hostedSplitMatches(members) : !hostingSplit
+        guard !matches else { return }
+        claimWebView(for: tab)
     }
 
     private func snapshotImage(of view: NSView) -> NSImage? {
@@ -888,7 +1101,19 @@ class BrowserWindowController: NSWindowController {
         // otherwise render the tab's live web view (it's a shared instance, even
         // if currently parented in another window) so we don't show an empty
         // dimmed pane. Falls back to nil (empty) only for sleeping tabs.
-        imageView.image = localSnapshot ?? tab.webView.flatMap { snapshotImage(of: $0) }
+        imageView.image = localSnapshot ?? liveSnapshot(for: tab)
+    }
+
+    /// Renders the tab's live content wherever it is currently parented: the
+    /// whole split view when the tab's group is hosted in another window (both
+    /// panes in one image), else the tab's own webview.
+    private func liveSnapshot(for tab: BrowserTab) -> NSImage? {
+        let members = splitMembers(of: tab)
+        if members.count == 2,
+           let split = members[0].webViewContainer?.superview as? NSSplitView {
+            return snapshotImage(of: split)
+        }
+        return tab.webView.flatMap { snapshotImage(of: $0) }
     }
 
     private func removeContentViews() {
@@ -897,13 +1122,33 @@ class BrowserWindowController: NSWindowController {
         if linkStatusBar.superview !== contentContainerView {
             anchorLinkStatusBar(to: contentContainerView)
         }
+        flushPendingSplitFractionCommit()
         let currentPeekWebView = selectedTab?.peekTab?.webView
         for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView {
-            if let webView = webView(in: subview) {
-                webView.configuration.userContentController.removeScriptMessageHandler(forName: "linkHover")
-                webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-                webView.configuration.userContentController.removeScriptMessageHandler(forName: "editableFieldFocus")
+            for webView in webViews(in: subview) {
+                for name in Self.ownedScriptHandlerNames {
+                    webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
+                }
                 (webView as? BrowserWebView)?.isEditingWebContent = false
+            }
+            // Dismantle a split view before removing it so pane containers end
+            // up superview-less, like a single tab's container after handoff —
+            // downstream checks treat "has a superview" as "hosted somewhere".
+            // The pane entering PiP is instead kept parented as a direct
+            // subview (mirroring the single-tab path) so WebKit can capture
+            // the animation origin; the delayed cleanup below removes it.
+            if subview === hostedSplitView, let split = subview as? NSSplitView {
+                for pane in split.arrangedSubviews {
+                    let frameInContent = split.convert(pane.frame, to: contentContainerView)
+                    pane.removeFromSuperview()
+                    pane.layer?.borderWidth = 0
+                    if pane === pipContentView {
+                        pane.frame = frameInContent
+                        contentContainerView.addSubview(pane, positioned: .below, relativeTo: dragHandle)
+                    }
+                }
+                hostedSplitView = nil
+                pendingSplitFraction = nil
             }
             subview.removeFromSuperview()
         }
@@ -916,9 +1161,10 @@ class BrowserWindowController: NSWindowController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self else { return }
                 // If the tab was re-selected within the delay, its container is
-                // now the active owned content — don't rip it out; just drop the
-                // stale PiP reference.
-                if pipping === self.selectedTab?.webViewContainer, pipping.superview === self.contentContainerView {
+                // now the active owned content — don't rip it out; just drop
+                // the stale PiP reference. Descendant, not direct-subview: a
+                // re-selected split pane lives inside the hosted split view.
+                if pipping === self.selectedTab?.webViewContainer, pipping.isDescendant(of: self.contentContainerView) {
                     if self.pipContentView === pipping { self.pipContentView = nil }
                     return
                 }
@@ -928,12 +1174,81 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
-    /// Returns the WKWebView for a direct subview of `contentContainerView`.
-    /// Subviews may be raw webviews (peek, PiP) or a `BrowserTab.webViewContainer`
-    /// wrapping the tab's webview as its first subview.
-    private func webView(in subview: NSView) -> WKWebView? {
-        if let webView = subview as? WKWebView { return webView }
-        return subview.subviews.first { $0 is WKWebView } as? WKWebView
+    /// Returns the tab WKWebViews under a direct subview of `contentContainerView`.
+    /// Subviews may be raw webviews (peek, PiP), a `BrowserTab.webViewContainer`
+    /// wrapping the tab's webview as its first subview, or a hosted split view
+    /// holding two such containers. Deliberately shallow — never recurses into
+    /// webview or inspector internals.
+    private func webViews(in subview: NSView) -> [WKWebView] {
+        if let webView = subview as? WKWebView { return [webView] }
+        if let split = subview as? NSSplitView {
+            return split.arrangedSubviews.compactMap { pane in
+                pane.subviews.first { $0 is WKWebView } as? WKWebView
+            }
+        }
+        return (subview.subviews.first { $0 is WKWebView } as? WKWebView).map { [$0] } ?? []
+    }
+
+    /// Rebinds all selected-tab chrome (display bindings + window title) to the
+    /// current `selectedTab`. Split pane-focus changes call this without
+    /// re-running the content-view swap — both panes are already hosted.
+    private func bindSelectedTabChrome() {
+        activeTabSubscriptions.removeAll()
+        bindDisplayTab()
+        guard let tab = selectedTab else { return }
+        tab.$title
+            .receive(on: RunLoop.main)
+            .sink { [weak self] title in
+                self?.window?.title = title
+            }
+            .store(in: &activeTabSubscriptions)
+    }
+
+    /// A pane webview became first responder: move pane focus to its member.
+    /// The address bar, nav buttons, find bar, and extensions all key off
+    /// `selectedTabID`, which always identifies a specific member, so this is
+    /// a chrome rebind only.
+    func browserWebViewDidBecomeFirstResponder(_ webView: BrowserWebView) {
+        // While a peek is open it owns the interaction (the overlay is modal);
+        // retargeting selection out from under it would strand the outgoing
+        // pane's overlay — mouse paths can't get here, but keyboard key-view
+        // cycling can.
+        guard peekOverlayView == nil,
+              hostedSplitView != nil,
+              let current = selectedTab,
+              let space = activeSpace,
+              let group = store.splitGroup(containing: current.id, in: space),
+              let member = group.members.first(where: { $0.webView === webView }),
+              member.id != selectedTabID else { return }
+
+        selectedTabID = member.id
+        activeSpace?.selectedTabID = member.id
+        lastFocusedSplitMember[group.groupID] = member.id
+
+        bindSelectedTabChrome()
+        anchorLinkStatusBar(to: webView)
+        updateSplitPaneFocus()
+
+        // Same sidebar row stays selected; retarget its representative member
+        // so the row shows the focused pane's title.
+        if let index = currentTabs.firstIndex(where: { $0.id == member.id }) {
+            tabSidebar.suppressingSelectionCallbacks {
+                tabSidebar.selectedTabIndex = index
+            }
+        }
+        reloadSelectedTabSidebarCell()
+
+        if let spaceID = activeSpaceID {
+            NotificationCenter.default.post(
+                name: ExtensionManager.tabActivatedNotification,
+                object: nil,
+                userInfo: ["tabID": member.id, "spaceID": spaceID]
+            )
+        }
+
+        // A saved peek on this pane stays dormant while the pane is unfocused;
+        // focusing it restores the peek, matching tab-switch behavior.
+        restorePeekOverlayIfNeeded()
     }
 
     private func bindDisplayTab() {
@@ -980,20 +1295,28 @@ class BrowserWindowController: NSWindowController {
     // MARK: - Window Events
 
     @objc private func handleContentBlockerRulesChanged() {
-        guard let tab = selectedTab, let webView = tab.webView, ownsWebView,
+        guard let tab = selectedTab, ownsWebView,
               let profile = activeSpace?.profile else { return }
 
-        // Remove old rule lists and re-add current ones
-        let ucc = webView.configuration.userContentController
-        ucc.removeAllContentRuleLists()
-        ContentBlockerManager.shared.applyRuleLists(to: ucc, profile: profile)
+        // Remove old rule lists and re-add current ones — on every owned pane
+        for member in splitMembers(of: tab) {
+            guard let webView = member.webView else { continue }
+            let ucc = webView.configuration.userContentController
+            ucc.removeAllContentRuleLists()
+            ContentBlockerManager.shared.applyRuleLists(to: ucc, profile: profile)
+        }
     }
 
     @objc private func handleWebViewOwnershipChanged(_ notification: Notification) {
         guard let sender = notification.object as? BrowserWindowController, sender !== self,
-              let tabID = notification.userInfo?["tabID"] as? UUID,
-              tabID == selectedTabID,
               let tab = selectedTab else { return }
+        // Another window claiming any pane of our selected tab's group takes
+        // the whole hosted view with it — two windows showing the same split
+        // may focus different members, so match on group membership, not the
+        // single focused tabID.
+        let claimedIDs = notification.userInfo?["tabIDs"] as? [UUID]
+            ?? (notification.userInfo?["tabID"] as? UUID).map { [$0] } ?? []
+        guard !Set(splitMembers(of: tab).map(\.id)).isDisjoint(with: claimedIDs) else { return }
 
         // The sender has already reparented the container by the time this
         // notification arrives, so `ownsWebView` is already false here. "We
@@ -1290,7 +1613,14 @@ class BrowserWindowController: NSWindowController {
         // Settle selection BEFORE removing the tab so the removal observer
         // (tabStoreDidRemoveTab) sees selection already moved off the closing
         // tab and doesn't also try to advance it.
-        if wasSelected {
+        // Closing a split pane (Cmd+W closes the focused pane, not the row)
+        // stays in the split: the surviving partner wins over the generic
+        // adjacent-tab fallback.
+        if wasSelected,
+           let group = store.splitGroup(containing: tabs[index].id, in: space),
+           let partner = group.members.first(where: { $0.id != tabs[index].id }) {
+            selectTab(id: partner.id)
+        } else if wasSelected {
             let nextID: UUID? = tabCloseSelectionID(
                 closingIndex: index,
                 tabs: tabs.map { ($0.id, $0.parentID) },
@@ -1686,6 +2016,64 @@ extension BrowserWindowController: NSMenuItemValidation {
     }
 }
 
+// MARK: - NSSplitViewDelegate (hosted split tabs)
+
+// Delegate for `hostedSplitView` only — the window's sidebar/content split is
+// managed by its own NSSplitViewController. Guard every method on identity.
+extension BrowserWindowController: NSSplitViewDelegate {
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard splitView === hostedSplitView else { return proposedMinimumPosition }
+        return (splitView.bounds.width - splitView.dividerThickness) * 0.2
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard splitView === hostedSplitView else { return proposedMaximumPosition }
+        return (splitView.bounds.width - splitView.dividerThickness) * 0.8
+    }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard let split = notification.object as? NSSplitView,
+              split === hostedSplitView,
+              !isApplyingSplitLayout else { return }
+        // A fraction claimed before the split had geometry gets applied on the
+        // first real layout — committing here would persist the 50/50 default.
+        if let pending = pendingSplitFraction {
+            applySplitFraction(pending, to: split)
+            return
+        }
+        scheduleSplitFractionCommit(for: split)
+    }
+
+    /// Debounced divider→model write: no undo, save-only (via setSplitFraction).
+    /// Window resizes keep proportions, so the recomputed fraction matches the
+    /// stored one and the unchanged-guard skips those. The group is resolved at
+    /// schedule time so a flush during content teardown (when selection may
+    /// already have moved) still writes to the right group.
+    private func scheduleSplitFractionCommit(for split: NSSplitView) {
+        let available = split.bounds.width - split.dividerThickness
+        guard available > 0, let leftPane = split.arrangedSubviews.first,
+              let space = activeSpace, let tab = selectedTab,
+              let group = store.splitGroup(containing: tab.id, in: space) else { return }
+        // Cancel before the unchanged-guard: dragging away and back to the
+        // stored fraction must also drop the stale in-between commit.
+        splitFractionCommit?.cancel()
+        splitFractionCommit = nil
+
+        let fraction = Double(leftPane.frame.width / available)
+        let stored = group.members.first?.splitFraction ?? 0.5
+        guard abs(stored - fraction) > 0.001 else { return }
+
+        let groupID = group.groupID
+        let work = DispatchWorkItem { [weak self] in
+            self?.store.setSplitFraction(groupID: groupID, fraction: fraction, in: space)
+        }
+        splitFractionCommit = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+}
+
 // MARK: - NSWindowDelegate
 
 extension BrowserWindowController: NSWindowDelegate {
@@ -1705,6 +2093,15 @@ extension BrowserWindowController: NSWindowDelegate {
         }
     }
 
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        // Square window corners — drop the focused pane border's rounding.
+        updateSplitPaneFocus()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        updateSplitPaneFocus()
+    }
+
     func windowWillClose(_ notification: Notification) {
         selectedTab?.savePeekStateForPersistence()
         hidePeekUI()
@@ -1713,6 +2110,7 @@ extension BrowserWindowController: NSWindowDelegate {
         // without this the controller (and its notification observers) leak and
         // a zombie window can keep reacting to tab notifications after close.
         releaseOwnedWebViewHandlers()
+        flushPendingSplitFractionCommit()
         store.saveNow()
         store.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -1726,12 +2124,15 @@ extension BrowserWindowController: NSWindowDelegate {
     /// currently-owned tab's web view, breaking the userContentController's
     /// strong reference to `self`.
     private func releaseOwnedWebViewHandlers() {
-        guard ownsWebView, let webView = selectedTab?.webView else { return }
-        let ucc = webView.configuration.userContentController
-        ucc.removeScriptMessageHandler(forName: "linkHover")
-        ucc.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-        ucc.removeScriptMessageHandler(forName: "editableFieldFocus")
-        (webView as? BrowserWebView)?.isEditingWebContent = false
+        guard ownsWebView, let tab = selectedTab else { return }
+        for member in splitMembers(of: tab) {
+            guard let webView = member.webView else { continue }
+            let ucc = webView.configuration.userContentController
+            for name in Self.ownedScriptHandlerNames {
+                ucc.removeScriptMessageHandler(forName: name)
+            }
+            (webView as? BrowserWebView)?.isEditingWebContent = false
+        }
     }
 }
 
@@ -1813,6 +2214,10 @@ extension BrowserWindowController: WKScriptMessageHandler {
         } else if message.name == BlockedResourceTracker.messageName, let count = message.body as? Int {
             if let peek = selectedTab?.peekTab, message.webView == peek.webView {
                 peek.blockedCount = count
+            } else if let tab = selectedTab,
+                      let member = splitMembers(of: tab).first(where: { $0.webView === message.webView }) {
+                // In a split, the message may come from the unfocused pane.
+                member.blockedCount = count
             } else {
                 selectedTab?.blockedCount = count
             }

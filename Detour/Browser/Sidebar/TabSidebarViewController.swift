@@ -1501,7 +1501,7 @@ class TabSidebarViewController: NSViewController {
             cell.toolTip = tab.title
             cell.updateFavicon(tab.favicon)
             cell.updatePeekFavicon(tab.displayPeekFavicon)
-            cell.updateSplitSecondFavicon(nil)
+            cell.updateSplitPane(favicon: nil, title: nil)
             cell.updateSleeping(tab.isSleeping)
             cell.updateLoading(tab.isLoading)
             cell.updateProgress(tab.estimatedProgress)
@@ -1534,7 +1534,7 @@ class TabSidebarViewController: NSViewController {
             cell.toolTip = entry.pinnedTitle
             cell.updateFavicon(entry.displayFavicon)
             cell.updatePeekFavicon(tab?.displayPeekFavicon)
-            cell.updateSplitSecondFavicon(nil)
+            cell.updateSplitPane(favicon: nil, title: nil)
             cell.updateSleeping((tab?.isSleeping ?? false) || !entry.isLive)
             cell.updateLoading(tab?.isLoading ?? false)
             cell.updateProgress(tab?.estimatedProgress ?? 0)
@@ -1865,7 +1865,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 cell.toolTip = entry.pinnedTitle
                 cell.updateFavicon(favicon)
                 cell.updatePeekFavicon(tab?.displayPeekFavicon)
-                cell.updateSplitSecondFavicon(nil)
+                cell.updateSplitPane(favicon: nil, title: nil)
                 cell.updateSleeping(isSleeping || !entry.isLive)
                 cell.updateLoading(isLoading)
                 cell.updateProgress(progress)
@@ -1928,21 +1928,25 @@ extension TabSidebarViewController: NSTableViewDelegate {
         }
     }
 
-    /// Renders a split group as one row: left member's favicon primary, right
-    /// member's favicon beside it, representative member's title. Loading/audio
-    /// reflect any member; the row dims only when every member is sleeping; the
-    /// close button closes the whole split.
+    /// Renders a split group as one row of two equal halves — each member gets
+    /// favicon + title on its side of a centered divider, in visual pane order,
+    /// with the focused (representative) member's title emphasized. Loading/audio
+    /// reflect any member; the row dims only when every member is sleeping; each
+    /// half's close button closes its own pane.
     private func configureSplitCell(_ cell: TabCellView, item: TabListItem, members: [BrowserTab], isActive: Bool) {
         let left = members[0]
         let right = members.count > 1 ? members[1] : members[0]
         let rep = representativeTab(for: item)
         let audioMember = members.first { $0.isPlayingAudio || $0.isMuted }
 
-        cell.titleLabel.stringValue = rep.title
-        cell.toolTip = rep.title
+        cell.titleLabel.stringValue = left.title
+        cell.titleLabel.textColor = rep === left ? .labelColor : .secondaryLabelColor
+        cell.toolTip = "\(left.title) — \(right.title)"
         cell.updateFavicon(left.favicon)
         cell.updatePeekFavicon(nil)
-        cell.updateSplitSecondFavicon(right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"))
+        cell.updateSplitPane(favicon: right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"),
+                             title: right.title,
+                             emphasized: rep === right)
         cell.updateSleeping(members.allSatisfy { $0.isSleeping })
         cell.updateLoading(members.contains { $0.isLoading })
         cell.updateProgress(members.map(\.estimatedProgress).max() ?? 0)
@@ -1950,18 +1954,28 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.updatePinnedMode(entry: nil)
         cell.indentLevel = 0
         if isActive {
-            cell.onClose = { [weak self] in
-                guard let self else { return }
-                let row = self.tableView.row(for: cell)
-                guard row >= 0, case .normalTab(let idx) = self.sidebarRow(for: row),
-                      idx < self.tabItems.count, case .split(let groupID, _) = self.tabItems[idx] else { return }
-                self.delegate?.tabSidebar(self, didRequestCloseSplitGroup: groupID)
-            }
+            // Each half's close button closes its own pane (the group dissolves
+            // in the store); the context menu's "Close Both Splits" covers the whole row.
+            cell.onCloseLeft = { [weak self] in self?.closeSplitMember(of: cell, side: 0) }
+            cell.onClose = { [weak self] in self?.closeSplitMember(of: cell, side: 1) }
             cell.onToggleMute = { audioMember?.toggleMute() }
         } else {
             cell.onClose = nil
+            cell.onCloseLeft = nil
             cell.onToggleMute = nil
         }
+    }
+
+    /// Closes one pane of the split row hosting `cell`. Resolves the member at
+    /// click time via the row (rows shift under cells), then routes through the
+    /// ordinary single-tab close path — closing a member dissolves its group.
+    private func closeSplitMember(of cell: TabCellView, side: Int) {
+        let row = tableView.row(for: cell)
+        guard row >= 0, case .normalTab(let idx) = sidebarRow(for: row),
+              idx < tabItems.count, case .split(_, let members) = tabItems[idx],
+              side < members.count,
+              let tabIdx = tabs.firstIndex(where: { $0.id == members[side].id }) else { return }
+        delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
     }
 
     private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, indentLevel: Int = 0, onClose: @escaping (Int) -> Void) {
@@ -1969,7 +1983,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.toolTip = tab.title
         cell.updateFavicon(tab.favicon)
         cell.updatePeekFavicon(tab.displayPeekFavicon)
-        cell.updateSplitSecondFavicon(nil)
+        cell.updateSplitPane(favicon: nil, title: nil)
         cell.updateSleeping(tab.isSleeping)
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.estimatedProgress)
@@ -2261,7 +2275,7 @@ extension TabSidebarViewController: NSMenuDelegate {
         separateItem.target = self
         menu.addItem(separateItem)
 
-        let closeItem = NSMenuItem(title: "Close Split", action: #selector(contextMenuCloseSplit(_:)), keyEquivalent: "")
+        let closeItem = NSMenuItem(title: "Close Both Splits", action: #selector(contextMenuCloseSplit(_:)), keyEquivalent: "")
         closeItem.target = self
         menu.addItem(closeItem)
     }

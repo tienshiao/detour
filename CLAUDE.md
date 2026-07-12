@@ -84,7 +84,7 @@ Sidebar table rows are: top spacer (row 0), flattened pinned items (entries + fo
 
 ### Split Tabs
 
-A split is two adjacent normal tabs sharing `splitGroupID` (one split per tab, 2 panes max — product decision). TabStore enforces member contiguity in every mutation: insertion indices snap out of group interiors (`snappedToSplitGroupBoundary`), `moveTab` moves the whole block, `closeTab`/`pinTab`/`detachTab` dissolve undersized groups. Design + phasing: `docs/split-tabs-design.md`.
+A split is two adjacent normal tabs sharing `splitGroupID` (one split per tab, 2 panes max — product decision). TabStore enforces member contiguity in every mutation: insertion indices snap out of group interiors (`snappedToSplitGroupBoundary`), `moveTab` moves the whole block, `closeTab`/`pinTab`/`detachTab` dissolve undersized groups. In the window, a selected split hosts both pane containers in an `NSSplitView` (frame-based — Auto Layout breaks the docked Web Inspector); `selectedTabID` always identifies the *focused pane*, never the group, and pane focus follows `becomeFirstResponder`. Structural changes that bypass `selectTab` converge via `refreshSplitHostingIfNeeded()`. Design + phasing: `docs/split-tabs-design.md`.
 
 ### Sidebar Drag & Drop
 
