@@ -30,6 +30,11 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinTabAt index: Int)
     func tabSidebarSpacesForContextMenu(_ sidebar: TabSidebarViewController) -> [(id: UUID, name: String, emoji: String, isCurrent: Bool)]
 
+    // Split operations
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparateSplit groupID: UUID)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseSplitGroup groupID: UUID)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID)
+
     // Pinned entry operations
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String)
 
@@ -66,6 +71,9 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestPinTabAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinTabAt index: Int) {}
     func tabSidebarSpacesForContextMenu(_ sidebar: TabSidebarViewController) -> [(id: UUID, name: String, emoji: String, isCurrent: Bool)] { [] }
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparateSplit groupID: UUID) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseSplitGroup groupID: UUID) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavorite tabID: UUID, isPinned: Bool, at index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int) {}
@@ -121,6 +129,7 @@ class TabSidebarViewController: NSViewController {
     private var contextMenuTabID: UUID?
     private var contextMenuTabIsPinned: Bool = false
     private var contextMenuFolderID: UUID?
+    private var contextMenuSplitGroupID: UUID?
 
     /// Context-menu targets resolved fresh against the current model — the tab list
     /// can change while the menu is open, so a stored index would go stale.
@@ -197,7 +206,31 @@ class TabSidebarViewController: NSViewController {
     }
 
     var pinnedEntries: [PinnedEntry] = []
-    var tabs: [BrowserTab] = []
+    var tabs: [BrowserTab] = [] {
+        didSet { tabItems = tabListItems(from: tabs) }
+    }
+
+    /// Rendered tab-section items derived from `tabs` — a split group is one item.
+    /// Row math for the tab section is in item space; `.normalTab(index)` indexes here.
+    private(set) var tabItems: [TabListItem] = []
+
+    /// The selected normal tab's ID, tracked so a collapsed split row can pick its
+    /// representative member (the selected pane, else the left pane). Set by the
+    /// window through `selectedTabIndex`.
+    private var selectedNormalTabID: UUID?
+
+    /// The member of `item` whose title/state a collapsed split row represents.
+    private func representativeTab(for item: TabListItem) -> BrowserTab {
+        switch item {
+        case .single(let tab):
+            return tab
+        case .split(_, let members):
+            if let selectedNormalTabID, let match = members.first(where: { $0.id == selectedNormalTabID }) {
+                return match
+            }
+            return members[0]
+        }
+    }
 
     /// Pending state deferred during drag. The last applyState call during isDragging
     /// stores its args here; the drag handler applies it after clearing isDragging.
@@ -251,7 +284,7 @@ class TabSidebarViewController: NSViewController {
 
         let diff = diffSidebarState(
             oldPinnedItems: flattenedPinnedItems, newPinnedItems: newPinnedItems,
-            oldTabs: tabs, newTabs: newTabs
+            oldTabs: tabItems, newTabs: tabListItems(from: newTabs)
         )
 
         if diff.hasChanges {
@@ -328,13 +361,10 @@ class TabSidebarViewController: NSViewController {
         // Reconfigure normal tab cells (may have been reused from the pinned section
         // by moveRow, which keeps the cell's pinned-mode state and — critically —
         // its pinned onClose handler, whose row guard fails on a normal-tab row)
-        for i in 0..<tabs.count {
+        for (i, item) in tabItems.enumerated() {
             let row = rowForNormalTab(at: i)
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
-                configureTabCell(cell, tab: tabs[i], title: tabs[i].title, isActive: true) { [weak self] row in
-                    guard let self, case .normalTab(let idx) = self.sidebarRow(for: row) else { return }
-                    self.delegate?.tabSidebar(self, didRequestCloseTabAt: idx)
-                }
+                configureItemCell(cell, item: item, isActive: true)
             }
         }
 
@@ -392,9 +422,12 @@ class TabSidebarViewController: NSViewController {
                 }) {
                     tableView.selectRowIndexes(IndexSet(integer: rowForPinnedItem(at: flatIdx)), byExtendingSelection: false)
                 }
-                // Select in normal section
-                else if let index = tabs.firstIndex(where: { $0.id == selectTabID }) {
-                    tableView.selectRowIndexes(IndexSet(integer: rowForNormalTab(at: index)), byExtendingSelection: false)
+                // Select in normal section (highlight the containing item row).
+                // Keep the focused-member cache in sync — representativeTab reads
+                // it to pick which pane a split row titles/activates.
+                else if let itemIdx = itemIndex(containingTabID: selectTabID, in: tabItems) {
+                    selectedNormalTabID = selectTabID
+                    tableView.selectRowIndexes(IndexSet(integer: rowForNormalTab(at: itemIdx)), byExtendingSelection: false)
                 }
             }
         }
@@ -419,13 +452,14 @@ class TabSidebarViewController: NSViewController {
     }
 
     private func totalRowCount(forTableView tv: NSTableView) -> Int {
-        let itemCount = pinnedItemCountForTableView(tv)
-        let tabCount = tabsForTableView(tv).count
-        return totalSidebarRowCount(pinnedItemCount: itemCount, tabCount: tabCount)
+        let pinnedCount = pinnedItemCountForTableView(tv)
+        let itemCount = tabItemsForTableView(tv).count
+        return totalSidebarRowCount(pinnedItemCount: pinnedCount, itemCount: itemCount)
     }
 
-    func rowForNormalTab(at tabIndex: Int) -> Int {
-        return Detour.rowForNormalTab(at: tabIndex, pinnedItemCount: flattenedPinnedItems.count)
+    /// `itemIndex` indexes the tab-section `[TabListItem]` list (a split is one item).
+    func rowForNormalTab(at itemIndex: Int) -> Int {
+        return Detour.rowForNormalTab(at: itemIndex, pinnedItemCount: flattenedPinnedItems.count)
     }
 
     func rowForPinnedItem(at index: Int) -> Int {
@@ -464,17 +498,21 @@ class TabSidebarViewController: NSViewController {
         block()
     }
 
+    /// The selected tab as a TAB index into `tabs` (not an item index). Setting it
+    /// highlights the item row that contains that tab; a split shows as selected
+    /// when any member is selected.
     var selectedTabIndex: Int {
         get {
             let row = tableView.selectedRow
-            switch sidebarRow(for: row) {
-            case .normalTab(let index): return index
-            default: return -1
-            }
+            guard case .normalTab(let itemIdx) = sidebarRow(for: row), itemIdx < tabItems.count else { return -1 }
+            let rep = representativeTab(for: tabItems[itemIdx])
+            return tabs.firstIndex(where: { $0.id == rep.id }) ?? -1
         }
         set {
             guard newValue >= 0, newValue < tabs.count else { return }
-            tableView.selectRowIndexes(IndexSet(integer: rowForNormalTab(at: newValue)), byExtendingSelection: false)
+            selectedNormalTabID = tabs[newValue].id
+            guard let itemIdx = itemIndex(forTabIndex: newValue, in: tabItems) else { return }
+            tableView.selectRowIndexes(IndexSet(integer: rowForNormalTab(at: itemIdx)), byExtendingSelection: false)
         }
     }
 
@@ -1419,12 +1457,12 @@ class TabSidebarViewController: NSViewController {
         return TabStore.shared.spaces.filter { !$0.isIncognito }
     }
 
-    private func tabsForTableView(_ tv: NSTableView) -> [BrowserTab] {
-        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else { return tabs }
-        if index == activePageIndex { return tabs }
+    private func tabItemsForTableView(_ tv: NSTableView) -> [TabListItem] {
+        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else { return tabItems }
+        if index == activePageIndex { return tabItems }
         let spaces = relevantSpaces
         guard index < spaces.count else { return [] }
-        return spaces[index].tabs
+        return tabListItems(from: spaces[index].tabs)
     }
 
     private func pinnedItemCountForTableView(_ tv: NSTableView) -> Int {
@@ -1447,15 +1485,23 @@ class TabSidebarViewController: NSViewController {
     }
 
     func reloadTab(at index: Int) {
-        guard index >= 0, index < tabs.count else { return }
-        let row = rowForNormalTab(at: index)
+        guard index >= 0, index < tabs.count,
+              let itemIdx = itemIndex(forTabIndex: index, in: tabItems) else { return }
+        let row = rowForNormalTab(at: itemIdx)
+        let item = tabItems[itemIdx]
         // Update existing cell in-place if visible (preserves hover state, enables smooth animation)
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
+            // A split row's state is a fold over both members — reconfigure it whole.
+            if case .split = item {
+                configureItemCell(cell, item: item, isActive: true)
+                return
+            }
             let tab = tabs[index]
             cell.titleLabel.stringValue = tab.title
             cell.toolTip = tab.title
             cell.updateFavicon(tab.favicon)
             cell.updatePeekFavicon(tab.displayPeekFavicon)
+            cell.updateSplitSecondFavicon(nil)
             cell.updateSleeping(tab.isSleeping)
             cell.updateLoading(tab.isLoading)
             cell.updateProgress(tab.estimatedProgress)
@@ -1488,6 +1534,7 @@ class TabSidebarViewController: NSViewController {
             cell.toolTip = entry.pinnedTitle
             cell.updateFavicon(entry.displayFavicon)
             cell.updatePeekFavicon(tab?.displayPeekFavicon)
+            cell.updateSplitSecondFavicon(nil)
             cell.updateSleeping((tab?.isSleeping ?? false) || !entry.isLive)
             cell.updateLoading(tab?.isLoading ?? false)
             cell.updateProgress(tab?.estimatedProgress ?? 0)
@@ -1538,8 +1585,15 @@ extension TabSidebarViewController: NSTableViewDataSource {
                 payload = SidebarDragPayload(kind: .pinnedFolder, itemID: folder.id, spaceID: spaceID, sidebarID: sidebarID)
             }
         case .normalTab(let index):
-            guard index < tabs.count else { return nil }
-            payload = SidebarDragPayload(kind: .normalTab, itemID: tabs[index].id, spaceID: spaceID, sidebarID: sidebarID)
+            guard index < tabItems.count, let first = tabItems[index].tabs.first else { return nil }
+            // A split row travels as a unit: the .splitGroup kind lets the drop
+            // resolver reject pin/folder/favorite targets that would scatter it.
+            switch tabItems[index] {
+            case .single:
+                payload = SidebarDragPayload(kind: .normalTab, itemID: first.id, spaceID: spaceID, sidebarID: sidebarID)
+            case .split:
+                payload = SidebarDragPayload(kind: .splitGroup, itemID: first.id, spaceID: spaceID, sidebarID: sidebarID)
+            }
         default:
             return nil
         }
@@ -1573,7 +1627,9 @@ extension TabSidebarViewController: NSTableViewDataSource {
     private func resolveDragSource(_ payload: SidebarDragPayload) -> SidebarDragSource? {
         switch payload.kind {
         case .normalTab:
-            guard let index = tabs.firstIndex(where: { $0.id == payload.itemID }) else { return nil }
+            // Source index is an ITEM index — resolveSidebarDrop compares it against
+            // item-space gap indices.
+            guard let index = itemIndex(containingTabID: payload.itemID, in: tabItems) else { return nil }
             return .normalTab(index: index, tabID: payload.itemID)
         case .pinnedEntry:
             guard pinnedEntries.contains(where: { $0.id == payload.itemID }) else { return nil }
@@ -1581,6 +1637,14 @@ extension TabSidebarViewController: NSTableViewDataSource {
         case .pinnedFolder:
             guard pinnedFolders.contains(where: { $0.id == payload.itemID }) else { return nil }
             return .pinnedFolder(folderID: payload.itemID)
+        case .splitGroup:
+            // Re-resolve as a split only if the group survived mid-drag mutations;
+            // a dissolved group degrades to a plain tab drag.
+            guard let index = itemIndex(containingTabID: payload.itemID, in: tabItems) else { return nil }
+            if case .split = tabItems[index] {
+                return .splitGroup(index: index, firstTabID: payload.itemID)
+            }
+            return .normalTab(index: index, tabID: payload.itemID)
         }
     }
 
@@ -1684,11 +1748,13 @@ extension TabSidebarViewController: NSTableViewDataSource {
         else { return false }
 
         switch command {
-        // Single-delegate cases: let the observer's applyState animate directly
+        // Single-delegate cases: let the observer's applyState animate directly.
+        // Gap indices arrive in item space — convert to tab-array gaps for the
+        // tab-index-based delegate methods (TabStore.moveTab / unpinTab).
         case .reorderNormalTab(let tabID, _, let gapIndex):
-            delegate?.tabSidebar(self, didMoveTab: tabID, toGapIndex: gapIndex)
+            delegate?.tabSidebar(self, didMoveTab: tabID, toGapIndex: tabGapIndex(forItemGap: gapIndex, in: tabItems))
         case .unpinEntry(let entryID, let gapIndex):
-            delegate?.tabSidebar(self, didDragPinnedTabToUnpin: entryID, toGapIndex: gapIndex)
+            delegate?.tabSidebar(self, didDragPinnedTabToUnpin: entryID, toGapIndex: tabGapIndex(forItemGap: gapIndex, in: tabItems))
         case .movePinnedEntry(let entryID, let folderID, let beforeItemID):
             delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: entryID,
                                  folderID: folderID, beforeItemID: beforeItemID)
@@ -1722,7 +1788,8 @@ extension TabSidebarViewController: NSTableViewDataSource {
         switch destination {
         case .beforeNormalTab(let gapIndex):
             pendingInsertionOrigin = animOrigin
-            delegate?.tabSidebar(self, didDragFavorite: payload.favoriteID, toTabGapIndex: gapIndex)
+            // gapIndex is an item-space gap; restore inserts into the tabs array.
+            delegate?.tabSidebar(self, didDragFavorite: payload.favoriteID, toTabGapIndex: tabGapIndex(forItemGap: gapIndex, in: tabItems))
         case .beforePinnedItem(let flatIndex):
             dropFavoriteIntoPinned(favoriteID: payload.favoriteID,
                                    folderID: folderIDForFlattenedIndex(flatIndex),
@@ -1798,6 +1865,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 cell.toolTip = entry.pinnedTitle
                 cell.updateFavicon(favicon)
                 cell.updatePeekFavicon(tab?.displayPeekFavicon)
+                cell.updateSplitSecondFavicon(nil)
                 cell.updateSleeping(isSleeping || !entry.isLive)
                 cell.updateLoading(isLoading)
                 cell.updateProgress(progress)
@@ -1827,15 +1895,11 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 return cell
             }
 
-        case .normalTab(let tabIndex):
-            let tabsForTable = tabsForTableView(tableView)
-            guard tabIndex < tabsForTable.count else { return makeTabCell(tableView) }
-            let tab = tabsForTable[tabIndex]
+        case .normalTab(let itemIndex):
+            let items = tabItemsForTableView(tableView)
+            guard itemIndex < items.count else { return makeTabCell(tableView) }
             let cell = makeTabCell(tableView)
-            configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive) { [weak self] row in
-                guard let self, case .normalTab(let idx) = self.sidebarRow(for: row) else { return }
-                self.delegate?.tabSidebar(self, didRequestCloseTabAt: idx)
-            }
+            configureItemCell(cell, item: items[itemIndex], isActive: isActive)
             return cell
         }
     }
@@ -1850,11 +1914,62 @@ extension TabSidebarViewController: NSTableViewDelegate {
         return cell
     }
 
+    /// Configures a tab-section cell for a `TabListItem` (single tab or split row).
+    private func configureItemCell(_ cell: TabCellView, item: TabListItem, isActive: Bool) {
+        switch item {
+        case .single(let tab):
+            configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive) { [weak self] row in
+                guard let self, case .normalTab(let idx) = self.sidebarRow(for: row),
+                      let tabIdx = firstTabIndex(forItemIndex: idx, in: self.tabItems) else { return }
+                self.delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
+            }
+        case .split(_, let members):
+            configureSplitCell(cell, item: item, members: members, isActive: isActive)
+        }
+    }
+
+    /// Renders a split group as one row: left member's favicon primary, right
+    /// member's favicon beside it, representative member's title. Loading/audio
+    /// reflect any member; the row dims only when every member is sleeping; the
+    /// close button closes the whole split.
+    private func configureSplitCell(_ cell: TabCellView, item: TabListItem, members: [BrowserTab], isActive: Bool) {
+        let left = members[0]
+        let right = members.count > 1 ? members[1] : members[0]
+        let rep = representativeTab(for: item)
+        let audioMember = members.first { $0.isPlayingAudio || $0.isMuted }
+
+        cell.titleLabel.stringValue = rep.title
+        cell.toolTip = rep.title
+        cell.updateFavicon(left.favicon)
+        cell.updatePeekFavicon(nil)
+        cell.updateSplitSecondFavicon(right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"))
+        cell.updateSleeping(members.allSatisfy { $0.isSleeping })
+        cell.updateLoading(members.contains { $0.isLoading })
+        cell.updateProgress(members.map(\.estimatedProgress).max() ?? 0)
+        cell.updateAudio(isPlaying: audioMember?.isPlayingAudio ?? false, isMuted: audioMember?.isMuted ?? false)
+        cell.updatePinnedMode(entry: nil)
+        cell.indentLevel = 0
+        if isActive {
+            cell.onClose = { [weak self] in
+                guard let self else { return }
+                let row = self.tableView.row(for: cell)
+                guard row >= 0, case .normalTab(let idx) = self.sidebarRow(for: row),
+                      idx < self.tabItems.count, case .split(let groupID, _) = self.tabItems[idx] else { return }
+                self.delegate?.tabSidebar(self, didRequestCloseSplitGroup: groupID)
+            }
+            cell.onToggleMute = { audioMember?.toggleMute() }
+        } else {
+            cell.onClose = nil
+            cell.onToggleMute = nil
+        }
+    }
+
     private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, indentLevel: Int = 0, onClose: @escaping (Int) -> Void) {
         cell.titleLabel.stringValue = title
         cell.toolTip = tab.title
         cell.updateFavicon(tab.favicon)
         cell.updatePeekFavicon(tab.displayPeekFavicon)
+        cell.updateSplitSecondFavicon(nil)
         cell.updateSleeping(tab.isSleeping)
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.estimatedProgress)
@@ -1948,8 +2063,13 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 tableView.deselectRow(row)
                 delegate?.tabSidebar(self, didTogglePinnedFolder: folder.id)
             }
-        case .normalTab(let index):
-            delegate?.tabSidebar(self, didSelectTabAt: index)
+        case .normalTab(let itemIdx):
+            guard itemIdx < tabItems.count else { break }
+            // The delegate API is tab-index-based; a split selects its representative member.
+            let rep = representativeTab(for: tabItems[itemIdx])
+            if let tabIdx = tabs.firstIndex(where: { $0.id == rep.id }) {
+                delegate?.tabSidebar(self, didSelectTabAt: tabIdx)
+            }
         case .topSpacer, .separator:
             break
         }
@@ -1985,8 +2105,22 @@ extension TabSidebarViewController: NSMenuDelegate {
             }
             tabIndex = index
             isPinned = true
-        case .normalTab(let index):
-            tabIndex = index
+        case .normalTab(let itemIdx):
+            guard itemIdx < tabItems.count else {
+                buildSpaceContextMenu(menu)
+                return
+            }
+            // A split row gets its own menu; a single resolves to its tab index.
+            if case .split(let groupID, let members) = tabItems[itemIdx] {
+                buildSplitContextMenu(menu, groupID: groupID, members: members)
+                return
+            }
+            guard case .single(let singleTab) = tabItems[itemIdx],
+                  let resolvedIndex = tabs.firstIndex(where: { $0.id == singleTab.id }) else {
+                buildSpaceContextMenu(menu)
+                return
+            }
+            tabIndex = resolvedIndex
             isPinned = false
         default:
             buildSpaceContextMenu(menu)
@@ -1995,6 +2129,7 @@ extension TabSidebarViewController: NSMenuDelegate {
 
         contextMenuTabIsPinned = isPinned
         contextMenuFolderID = nil
+        contextMenuSplitGroupID = nil
 
         let tab: BrowserTab?
         let entry: PinnedEntry?
@@ -2096,6 +2231,54 @@ extension TabSidebarViewController: NSMenuDelegate {
                 menu.addItem(archiveBelowItem)
             }
         }
+
+        // Split with Next Tab: temporary creation path (real DnD lands in a later
+        // phase). Only for a single normal tab with an ungrouped next tab.
+        if !isPinned, tabIndex + 1 < tabs.count,
+           tabs[tabIndex].splitGroupID == nil, tabs[tabIndex + 1].splitGroupID == nil {
+            menu.addItem(.separator())
+            let splitItem = NSMenuItem(title: "Split with Next Tab", action: #selector(contextMenuSplitWithNext(_:)), keyEquivalent: "")
+            splitItem.target = self
+            menu.addItem(splitItem)
+        }
+    }
+
+    private func buildSplitContextMenu(_ menu: NSMenu, groupID: UUID, members: [BrowserTab]) {
+        contextMenuTabIsPinned = false
+        contextMenuFolderID = nil
+        contextMenuSplitGroupID = groupID
+        let rep = representativeTab(for: .split(groupID: groupID, members: members))
+        contextMenuTabID = rep.id
+
+        if rep.url != nil {
+            let copyItem = NSMenuItem(title: "Copy URL", action: #selector(contextMenuCopyURL(_:)), keyEquivalent: "")
+            copyItem.target = self
+            menu.addItem(copyItem)
+            menu.addItem(.separator())
+        }
+
+        let separateItem = NSMenuItem(title: "Separate Tabs", action: #selector(contextMenuSeparateSplit(_:)), keyEquivalent: "")
+        separateItem.target = self
+        menu.addItem(separateItem)
+
+        let closeItem = NSMenuItem(title: "Close Split", action: #selector(contextMenuCloseSplit(_:)), keyEquivalent: "")
+        closeItem.target = self
+        menu.addItem(closeItem)
+    }
+
+    @objc private func contextMenuSeparateSplit(_ sender: NSMenuItem) {
+        guard let groupID = contextMenuSplitGroupID else { return }
+        delegate?.tabSidebar(self, didRequestSeparateSplit: groupID)
+    }
+
+    @objc private func contextMenuCloseSplit(_ sender: NSMenuItem) {
+        guard let groupID = contextMenuSplitGroupID else { return }
+        delegate?.tabSidebar(self, didRequestCloseSplitGroup: groupID)
+    }
+
+    @objc private func contextMenuSplitWithNext(_ sender: NSMenuItem) {
+        guard let tab = contextMenuTab else { return }
+        delegate?.tabSidebar(self, didRequestSplitWithNextTab: tab.id)
     }
 
     @objc private func contextMenuCopyURL(_ sender: NSMenuItem) {
@@ -2231,12 +2414,13 @@ extension TabSidebarViewController: FavoritesBarDelegate {
         let isPinned: Bool
         switch payload.kind {
         case .normalTab:
-            sourceRow = tabs.firstIndex { $0.id == payload.itemID }.map(rowForNormalTab)
+            sourceRow = itemIndex(containingTabID: payload.itemID, in: tabItems).map { rowForNormalTab(at: $0) }
             isPinned = false
         case .pinnedEntry:
             sourceRow = flattenedPinnedItems.firstIndex { pinnedItemID($0) == payload.itemID }.map(rowForPinnedItem)
             isPinned = true
-        case .pinnedFolder:
+        case .pinnedFolder, .splitGroup:
+            // FavoritesBarView already rejects these at the drop gate; defense here too.
             return
         }
 

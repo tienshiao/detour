@@ -80,12 +80,10 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didMoveTab tabID: UUID, toGapIndex gapIndex: Int) {
-        guard let space = activeSpace,
-              let sourceIndex = space.tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        // gapIndex is an insertion gap (0...count); convert to a post-removal index
-        let destination = sourceIndex < gapIndex ? gapIndex - 1 : gapIndex
-        guard destination != sourceIndex else { return }
-        store.moveTab(from: sourceIndex, to: destination, in: space)
+        guard let space = activeSpace else { return }
+        // The gap→destination conversion lives in TabStore: only the store knows
+        // the moved block's width (a split row moves 2 tabs, not 1).
+        store.moveTab(id: tabID, toGapIndex: gapIndex, in: space)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToPin tabID: UUID) {
@@ -277,6 +275,48 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.spaces.filter { !$0.isIncognito }.map {
             (id: $0.id, name: $0.name, emoji: $0.emoji, isCurrent: $0.id == activeSpaceID)
         }
+    }
+
+    // MARK: - Splits
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparateSplit groupID: UUID) {
+        guard let space = activeSpace else { return }
+        store.separateSplit(groupID: groupID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseSplitGroup groupID: UUID) {
+        guard let space = activeSpace else { return }
+        let memberIDs = space.tabs.filter { $0.splitGroupID == groupID }.map(\.id)
+        guard !memberIDs.isEmpty else { return }
+
+        // Settle selection off the split BEFORE the close, mirroring
+        // closeTab(at:wasSelected:) — never select a member the same gesture closes.
+        if let selectedTabID, memberIDs.contains(selectedTabID) {
+            let remaining = space.tabs.filter { !memberIDs.contains($0.id) }
+            let firstMemberIndex = space.tabs.firstIndex { $0.id == memberIDs[0] } ?? 0
+            if !remaining.isEmpty {
+                selectTab(id: remaining[min(firstMemberIndex, remaining.count - 1)].id)
+            } else if let firstLiveEntry = space.pinnedEntries.first(where: { $0.tab != nil }),
+                      let tab = firstLiveEntry.tab {
+                selectTab(id: tab.id)
+            } else if let firstDormantEntry = space.pinnedEntries.first {
+                store.activatePinnedEntry(id: firstDormantEntry.id, in: space)
+                if let tab = firstDormantEntry.tab { selectTab(id: tab.id) }
+                else { deselectAllTabs() }
+            } else {
+                deselectAllTabs()
+            }
+        }
+
+        store.closeSplitGroup(groupID: groupID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID) {
+        guard let space = activeSpace,
+              let index = space.tabs.firstIndex(where: { $0.id == tabID }),
+              index + 1 < space.tabs.count else { return }
+        let nextTab = space.tabs[index + 1]
+        store.createSplit(draggedTabID: nextTab.id, targetTabID: tabID, edge: .right, in: space)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID) {

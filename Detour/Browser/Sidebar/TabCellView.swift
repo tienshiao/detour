@@ -35,12 +35,18 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private let closeButton: HoverButton
     private let speakerButton: NSButton
     private let peekFaviconImageView = NSImageView()
+    // Second favicon shown for a collapsed split row (right pane). Distinct from
+    // the peek slot so split rendering never touches peek state.
+    private let splitFaviconImageView = NSImageView()
+    private let splitDivider = NSView()
     private var trackingArea: NSTrackingArea?
     private var titleLeadingConstraint: NSLayoutConstraint!
     private var faviconLeadingConstraint: NSLayoutConstraint!
     private var closeButtonWidthConstraint: NSLayoutConstraint!
     private var closeButtonTrailingConstraint: NSLayoutConstraint!
     private var peekFaviconWidthConstraint: NSLayoutConstraint!
+    private var splitFaviconWidthConstraint: NSLayoutConstraint!
+    private var splitTrailingConstraint: NSLayoutConstraint!
     private let hoverBackground = NSView()
     var onClose: (() -> Void)?
     var onToggleMute: (() -> Void)?
@@ -55,6 +61,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private var audioPlaying = false
     private var isHovered = false
     private var hasPeek = false
+    private var hasSplit = false
 
     // Option A: Ring spinner layer
     private var ringLayer: CAShapeLayer?
@@ -122,17 +129,32 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         peekFaviconImageView.translatesAutoresizingMaskIntoConstraints = false
         peekFaviconImageView.isHidden = true
 
+        splitFaviconImageView.wantsLayer = true
+        splitFaviconImageView.imageScaling = .scaleProportionallyUpOrDown
+        splitFaviconImageView.translatesAutoresizingMaskIntoConstraints = false
+        splitFaviconImageView.isHidden = true
+
+        splitDivider.wantsLayer = true
+        splitDivider.translatesAutoresizingMaskIntoConstraints = false
+        splitDivider.isHidden = true
+        updateSplitDividerColor()
+
         addSubview(faviconImageView)
         addSubview(sleepBadge)
         addSubview(speakerButton)
         addSubview(titleLabel)
         addSubview(closeButton)
+        addSubview(splitDivider)
+        addSubview(splitFaviconImageView)
         addSubview(peekFaviconImageView)
 
         titleLeadingConstraint = titleLabel.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
         faviconLeadingConstraint = faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
         closeButtonWidthConstraint = closeButton.widthAnchor.constraint(equalToConstant: 0)
-        closeButtonTrailingConstraint = closeButton.trailingAnchor.constraint(equalTo: peekFaviconImageView.leadingAnchor, constant: 0)
+        // Trailing chain: title → closeButton → splitFavicon → peekFavicon → trailing
+        closeButtonTrailingConstraint = closeButton.trailingAnchor.constraint(equalTo: splitFaviconImageView.leadingAnchor, constant: 0)
+        splitTrailingConstraint = splitFaviconImageView.trailingAnchor.constraint(equalTo: peekFaviconImageView.leadingAnchor, constant: 0)
+        splitFaviconWidthConstraint = splitFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
         peekFaviconWidthConstraint = peekFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
@@ -161,6 +183,16 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             closeButtonWidthConstraint,
             closeButton.heightAnchor.constraint(equalToConstant: 16),
 
+            splitTrailingConstraint,
+            splitFaviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            splitFaviconWidthConstraint,
+            splitFaviconImageView.heightAnchor.constraint(equalToConstant: 16),
+
+            splitDivider.trailingAnchor.constraint(equalTo: splitFaviconImageView.leadingAnchor, constant: -3),
+            splitDivider.centerYAnchor.constraint(equalTo: centerYAnchor),
+            splitDivider.widthAnchor.constraint(equalToConstant: 1),
+            splitDivider.heightAnchor.constraint(equalToConstant: 14),
+
             peekFaviconImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             peekFaviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             peekFaviconWidthConstraint,
@@ -174,9 +206,13 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         super.prepareForReuse()
         isHovered = false
         hasPeek = false
+        hasSplit = false
         closeButton.isHidden = true
         peekFaviconImageView.isHidden = true
         peekFaviconImageView.image = nil
+        splitFaviconImageView.isHidden = true
+        splitFaviconImageView.image = nil
+        splitDivider.isHidden = true
         hoverBackground.isHidden = true
         indentLevel = 0
         onRename = nil
@@ -293,7 +329,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private func updateLayoutState() {
         titleLeadingConstraint.constant = audioPlaying ? 24 : 8
         closeButtonWidthConstraint.constant = isHovered ? 16 : 0
-        closeButtonTrailingConstraint.constant = hasPeek ? -4 : 0
+        closeButtonTrailingConstraint.constant = (hasSplit || hasPeek) ? -4 : 0
+        splitTrailingConstraint.constant = hasSplit ? -4 : 0
+        splitFaviconWidthConstraint.constant = hasSplit ? 16 : 0
         peekFaviconWidthConstraint.constant = hasPeek ? 16 : 0
     }
 
@@ -310,6 +348,28 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         peekFaviconImageView.image = image
         peekFaviconImageView.isHidden = !hasPeek
         updateLayoutState()
+    }
+
+    /// Sets the second (right-pane) favicon of a collapsed split row. Pass nil to
+    /// clear split rendering when the cell is reused for a single/pinned tab.
+    func updateSplitSecondFavicon(_ image: NSImage?) {
+        hasSplit = image != nil
+        splitFaviconImageView.image = image
+        splitFaviconImageView.isHidden = !hasSplit
+        splitDivider.isHidden = !hasSplit
+        updateLayoutState()
+    }
+
+    /// CGColor doesn't track appearance changes — re-resolve on theme switches.
+    private func updateSplitDividerColor() {
+        splitDivider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            updateSplitDividerColor()
+        }
     }
 
     func updateSleeping(_ isSleeping: Bool) {

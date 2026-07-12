@@ -16,4 +16,6 @@ struct TabRecord: Codable, FetchableRecord, PersistableRecord {
     var peekURL: String?
     var peekInteractionState: Data?
     var peekFaviconURL: String?
+    var splitGroupID: String?
+    var splitFraction: Double?
 }

@@ -16,6 +16,8 @@ struct SidebarDragPayload: Codable, Equatable {
         case normalTab
         case pinnedEntry
         case pinnedFolder
+        /// A whole split row; `itemID` is the group's FIRST member tab ID.
+        case splitGroup
     }
 
     let kind: Kind
@@ -64,12 +66,14 @@ enum SidebarDragKind: Equatable {
     case pinnedEntry
     case pinnedFolder
     case favorite
+    case splitGroup
 
     init(_ kind: SidebarDragPayload.Kind) {
         switch kind {
         case .normalTab: self = .normalTab
         case .pinnedEntry: self = .pinnedEntry
         case .pinnedFolder: self = .pinnedFolder
+        case .splitGroup: self = .splitGroup
         }
     }
 }
@@ -85,6 +89,8 @@ enum SidebarDragSource: Equatable {
     case normalTab(index: Int, tabID: UUID)
     case pinnedEntry(entryID: UUID)
     case pinnedFolder(folderID: UUID)
+    /// A whole split row. `index` is the ITEM index; `firstTabID` its left member.
+    case splitGroup(index: Int, firstTabID: UUID)
 }
 
 /// A drop position normalized so that spacer/separator/new-tab rows map to the
@@ -128,8 +134,10 @@ func validateSidebarDrop(
 ) -> SidebarDropValidation {
     switch operation {
     case .on:
-        // Only folder rows accept .on drops (placing the item inside the folder)
-        guard case .pinnedItem(let idx) = row, idx < items.count,
+        // Only folder rows accept .on drops (placing the item inside the folder).
+        // A split row travels as a unit — it can't enter a folder.
+        guard kind != .splitGroup,
+              case .pinnedItem(let idx) = row, idx < items.count,
               case .folder(let folder, _) = items[idx] else { return .reject }
         if kind == .pinnedFolder, sourceItemID == folder.id { return .reject }
         return .accept
@@ -137,15 +145,16 @@ func validateSidebarDrop(
     case .above:
         switch row {
         case .topSpacer:
-            return .retargetToPinnedGap(index: 0)
+            // Split rows can only reorder within the normal section.
+            return kind == .splitGroup ? .reject : .retargetToPinnedGap(index: 0)
         case .separator:
-            return .retargetToPinnedGap(index: items.count)
+            return kind == .splitGroup ? .reject : .retargetToPinnedGap(index: items.count)
         case .newTab:
             return kind == .pinnedFolder ? .reject : .retargetToNormalTabGap(index: 0)
         case .normalTab:
             return kind == .pinnedFolder ? .reject : .accept
         case .pinnedItem:
-            return .accept
+            return kind == .splitGroup ? .reject : .accept
         }
     }
 }
@@ -229,6 +238,15 @@ func resolveSidebarDrop(
         return .movePinnedFolder(folderID: folderID, parentFolderID: destFolderID, beforeItemID: nil)
 
     case (.pinnedFolder, .beforeNormalTab):
+        return nil
+
+    // A split row only reorders within the normal section; pin/folder targets
+    // were rejected in validation (a partial pin would scatter the group).
+    case (.splitGroup(let fromIndex, let firstTabID), .beforeNormalTab(let gap)):
+        guard gap != fromIndex, gap != fromIndex + 1 else { return nil }
+        return .reorderNormalTab(tabID: firstTabID, fromIndex: fromIndex, toGapIndex: gap)
+
+    case (.splitGroup, .beforePinnedItem), (.splitGroup, .intoFolder):
         return nil
     }
 }

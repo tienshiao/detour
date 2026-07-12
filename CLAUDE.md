@@ -80,7 +80,11 @@ Sidebar actions flow through `TabSidebarDelegate` → `BrowserWindowController` 
 
 ### Sidebar Row Layout
 
-Sidebar table rows are: top spacer (row 0), flattened pinned items (entries + folders), separator, "New Tab" cell, then normal tabs. Never do row math inline — all conversions between table rows and section indices go through the pure functions in `Sidebar/SidebarLayout.swift` (`sidebarRow(for:)`, `rowForNormalTab`, `rowForPinnedItem`), which are unit-tested in `SidebarLayoutTests`.
+Sidebar table rows are: top spacer (row 0), flattened pinned items (entries + folders), separator, "New Tab" cell, then normal-tab **items**. An item is a lone tab or a split group (two adjacent tabs in `space.tabs` sharing a `splitGroupID`, rendered as one row) — `SidebarRow.normalTab(index:)` is an item index, never a tab index. Never do row math inline — conversions between table rows, item indices, and tab indices go through the pure functions in `Sidebar/SidebarLayout.swift` (`sidebarRow(for:)`, `rowForNormalTab`, `rowForPinnedItem`) and `Sidebar/TabListItems.swift` (`tabListItems(from:)`, `itemIndex(forTabIndex:)`, `tabGapIndex(forItemGap:)`), unit-tested in `SidebarLayoutTests` / `SplitTabTests`.
+
+### Split Tabs
+
+A split is two adjacent normal tabs sharing `splitGroupID` (one split per tab, 2 panes max — product decision). TabStore enforces member contiguity in every mutation: insertion indices snap out of group interiors (`snappedToSplitGroupBoundary`), `moveTab` moves the whole block, `closeTab`/`pinTab`/`detachTab` dissolve undersized groups. Design + phasing: `docs/split-tabs-design.md`.
 
 ### Sidebar Drag & Drop
 

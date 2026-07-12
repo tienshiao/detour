@@ -5,6 +5,8 @@ enum SidebarRow: Equatable {
     case pinnedItem(index: Int)
     case separator
     case newTab
+    /// Index into the space's `[TabListItem]` list (a split group is one item),
+    /// NOT into `space.tabs`. Convert via `TabListItems.swift` helpers.
     case normalTab(index: Int)
 }
 
@@ -24,16 +26,17 @@ func sidebarRow(for row: Int, pinnedItemCount: Int) -> SidebarRow {
     return .normalTab(index: afterSeparator - 1)
 }
 
-func rowForNormalTab(at tabIndex: Int, pinnedItemCount: Int) -> Int {
-    return 1 + pinnedItemCount + 1 + 1 + tabIndex
+/// `itemIndex` indexes the space's `[TabListItem]` list (splits are one item each).
+func rowForNormalTab(at itemIndex: Int, pinnedItemCount: Int) -> Int {
+    return 1 + pinnedItemCount + 1 + 1 + itemIndex
 }
 
 func rowForPinnedItem(at index: Int) -> Int {
     return 1 + index
 }
 
-func totalSidebarRowCount(pinnedItemCount: Int, tabCount: Int) -> Int {
-    return 1 + pinnedItemCount + 1 + 1 + tabCount
+func totalSidebarRowCount(pinnedItemCount: Int, itemCount: Int) -> Int {
+    return 1 + pinnedItemCount + 1 + 1 + itemCount
 }
 
 // MARK: - Sidebar Diff
@@ -47,12 +50,12 @@ struct SidebarDiff {
 
 func diffSidebarState(
     oldPinnedItems: [PinnedItem], newPinnedItems: [PinnedItem],
-    oldTabs: [BrowserTab], newTabs: [BrowserTab]
+    oldTabs: [TabListItem], newTabs: [TabListItem]
 ) -> SidebarDiff {
     let oldPinnedIDs = oldPinnedItems.map { pinnedItemID($0) }
     let newPinnedIDs = newPinnedItems.map { pinnedItemID($0) }
-    let oldTabIDs = oldTabs.map(\.id)
-    let newTabIDs = newTabs.map(\.id)
+    let oldTabIDs = oldTabs.map(\.itemID)
+    let newTabIDs = newTabs.map(\.itemID)
 
     let oldPinnedSet = Set(oldPinnedIDs)
     let newPinnedSet = Set(newPinnedIDs)

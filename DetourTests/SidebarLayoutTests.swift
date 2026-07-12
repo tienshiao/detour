@@ -62,10 +62,10 @@ final class SidebarLayoutTests: XCTestCase {
     // MARK: - totalSidebarRowCount
 
     func testTotalSidebarRowCount() {
-        // 1 (topSpacer) + pinnedItemCount + 1 (separator) + 1 (newTab) + tabCount
-        XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 3, tabCount: 5), 11)
-        XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 0, tabCount: 2), 5)
-        XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 0, tabCount: 0), 3)
+        // 1 (topSpacer) + pinnedItemCount + 1 (separator) + 1 (newTab) + itemCount
+        XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 3, itemCount: 5), 11)
+        XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 0, itemCount: 2), 5)
+        XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 0, itemCount: 0), 3)
     }
 
     // MARK: - Round-trip
@@ -99,6 +99,11 @@ final class SidebarLayoutTests: XCTestCase {
         BrowserTab(id: id, title: "Tab", url: URL(string: "https://example.com"), faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
     }
 
+
+    private func singles(_ tabs: BrowserTab...) -> [TabListItem] {
+        tabs.map { .single($0) }
+    }
+
     private func makeFolder(id: UUID = UUID(), name: String = "Folder", parentID: UUID? = nil, isCollapsed: Bool = false, sortOrder: Int = 0) -> PinnedFolder {
         PinnedFolder(id: id, name: name, parentFolderID: parentID, isCollapsed: isCollapsed, sortOrder: sortOrder)
     }
@@ -114,7 +119,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t1 = makeTab()
         let items = flatItems([e1, e2])
         let diff = diffSidebarState(oldPinnedItems: items, newPinnedItems: items,
-                                     oldTabs: [t1], newTabs: [t1])
+                                     oldTabs: singles(t1), newTabs: singles(t1))
         XCTAssertFalse(diff.hasChanges)
     }
 
@@ -122,7 +127,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t1 = makeTab()
         let t2 = makeTab()
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
-                                     oldTabs: [t1], newTabs: [t1, t2])
+                                     oldTabs: singles(t1), newTabs: singles(t1, t2))
         XCTAssertTrue(diff.removedRows.isEmpty)
         // t2 inserted at normal tab index 1 with 0 pinned items → row 4
         XCTAssertEqual(diff.insertedRows, IndexSet(integer: rowForNormalTab(at: 1, pinnedItemCount: 0)))
@@ -132,7 +137,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t1 = makeTab()
         let t2 = makeTab()
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
-                                     oldTabs: [t1, t2], newTabs: [t1])
+                                     oldTabs: singles(t1, t2), newTabs: singles(t1))
         XCTAssertTrue(diff.insertedRows.isEmpty)
         // t2 was at normal tab index 1 with 0 pinned items
         XCTAssertEqual(diff.removedRows, IndexSet(integer: rowForNormalTab(at: 1, pinnedItemCount: 0)))
@@ -195,7 +200,7 @@ final class SidebarLayoutTests: XCTestCase {
         let pinnedItem: [PinnedItem] = [.entry(entry, depth: 0)]
 
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: pinnedItem,
-                                     oldTabs: [tab], newTabs: [])
+                                     oldTabs: singles(tab), newTabs: [])
         // entry inserted, tab removed (different IDs, so not a move)
         XCTAssertEqual(diff.removedRows.count, 1)
         XCTAssertEqual(diff.insertedRows.count, 1)
@@ -207,7 +212,7 @@ final class SidebarLayoutTests: XCTestCase {
         let pinnedItem: [PinnedItem] = [.entry(entry, depth: 0)]
 
         let diff = diffSidebarState(oldPinnedItems: pinnedItem, newPinnedItems: [],
-                                     oldTabs: [], newTabs: [tab])
+                                     oldTabs: [], newTabs: singles(tab))
         // entry removed, tab inserted (different IDs)
         XCTAssertEqual(diff.removedRows.count, 1)
         XCTAssertEqual(diff.insertedRows.count, 1)
@@ -218,7 +223,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t2 = makeTab()
         // Same IDs, different order → move (not insert/remove)
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
-                                     oldTabs: [t1, t2], newTabs: [t2, t1])
+                                     oldTabs: singles(t1, t2), newTabs: singles(t2, t1))
         XCTAssertTrue(diff.removedRows.isEmpty)
         XCTAssertTrue(diff.insertedRows.isEmpty)
         XCTAssertEqual(diff.movedRows.count, 1, "Swapping 2 items requires 1 move (LIS keeps 1 item stable)")
@@ -248,7 +253,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t2 = makeTab()
 
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
-                                     oldTabs: [t1, t2], newTabs: [t2, t1])
+                                     oldTabs: singles(t1, t2), newTabs: singles(t2, t1))
         XCTAssertEqual(diff.movedRows.count, 1)
         // t2 (old index 1) moves to new index 0 — upward move
         let move = diff.movedRows[0]
@@ -308,7 +313,7 @@ final class SidebarLayoutTests: XCTestCase {
 
         // Reverse the order: [D, C, B, A]
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
-                                     oldTabs: [t1, t2, t3, t4], newTabs: [t4, t3, t2, t1])
+                                     oldTabs: singles(t1, t2, t3, t4), newTabs: singles(t4, t3, t2, t1))
         // Whatever moves are generated, they must be sorted by destination
         for i in 1..<diff.movedRows.count {
             XCTAssertLessThanOrEqual(diff.movedRows[i - 1].to, diff.movedRows[i].to,
@@ -323,7 +328,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t4 = makeTab()
 
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
-                                     oldTabs: [t1, t2, t3, t4], newTabs: [t3, t4, t1, t2])
+                                     oldTabs: singles(t1, t2, t3, t4), newTabs: singles(t3, t4, t1, t2))
 
         // Simulate sequential move processing
         var rows = [t1.id, t2.id, t3.id, t4.id]
@@ -346,7 +351,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t1 = makeTab()
         let items = flatItems([e1, e2])
         let diff = diffSidebarState(oldPinnedItems: items, newPinnedItems: items,
-                                     oldTabs: [t1], newTabs: [t1])
+                                     oldTabs: singles(t1), newTabs: singles(t1))
         XCTAssertFalse(diff.hasChanges)
         XCTAssertTrue(diff.movedRows.isEmpty)
     }
@@ -357,7 +362,7 @@ final class SidebarLayoutTests: XCTestCase {
         let t3 = makeTab()
         // Insert t3 between t1 and t2 — t2 shifts but should NOT produce a move
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
-                                     oldTabs: [t1, t2], newTabs: [t1, t3, t2])
+                                     oldTabs: singles(t1, t2), newTabs: singles(t1, t3, t2))
         XCTAssertEqual(diff.insertedRows.count, 1)
         XCTAssertTrue(diff.removedRows.isEmpty)
         XCTAssertTrue(diff.movedRows.isEmpty, "Shift from insert should not produce moves")
@@ -369,7 +374,7 @@ final class SidebarLayoutTests: XCTestCase {
         let pinnedItem: [PinnedItem] = [.entry(e1, depth: 0)]
 
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: pinnedItem,
-                                     oldTabs: [], newTabs: [t2])
+                                     oldTabs: [], newTabs: singles(t2))
         XCTAssertTrue(diff.removedRows.isEmpty)
         XCTAssertEqual(diff.insertedRows.count, 2) // 1 pinned + 1 normal
     }
@@ -380,7 +385,7 @@ final class SidebarLayoutTests: XCTestCase {
         let pinnedItem: [PinnedItem] = [.entry(e1, depth: 0)]
 
         let diff = diffSidebarState(oldPinnedItems: pinnedItem, newPinnedItems: [],
-                                     oldTabs: [t2], newTabs: [])
+                                     oldTabs: singles(t2), newTabs: [])
         XCTAssertEqual(diff.removedRows.count, 2) // 1 pinned + 1 normal
         XCTAssertTrue(diff.insertedRows.isEmpty)
     }
@@ -395,7 +400,7 @@ final class SidebarLayoutTests: XCTestCase {
 
         // e1 pinned→removed, t2 normal→removed, e3 inserted as pinned, t4 inserted as normal
         let diff = diffSidebarState(oldPinnedItems: pinned1, newPinnedItems: pinned2,
-                                     oldTabs: [t2], newTabs: [t4])
+                                     oldTabs: singles(t2), newTabs: singles(t4))
         XCTAssertEqual(diff.removedRows.count, 2)  // e1 from pinned, t2 from normal
         XCTAssertEqual(diff.insertedRows.count, 2)  // e3 to pinned, t4 to normal
     }
@@ -453,7 +458,7 @@ final class SidebarLayoutTests: XCTestCase {
         let newPinned = flatItems([existingChild, newChild], folders: [folder])  // [folder, existingChild, newChild]
 
         let diff = diffSidebarState(oldPinnedItems: oldPinned, newPinnedItems: newPinned,
-                                     oldTabs: [draggedTab], newTabs: [])
+                                     oldTabs: singles(draggedTab), newTabs: [])
 
         // draggedTab moved from normal to pinned (cross-section move)
         XCTAssertEqual(diff.movedRows.count, 1)
@@ -475,7 +480,7 @@ final class SidebarLayoutTests: XCTestCase {
         let newPinned = flatItems([existingChild, newChild], folders: [folder], collapsed: [folderID])  // [folder]
 
         let diff = diffSidebarState(oldPinnedItems: oldPinned, newPinnedItems: newPinned,
-                                     oldTabs: [draggedTab], newTabs: [])
+                                     oldTabs: singles(draggedTab), newTabs: [])
 
         // Tab removed from normal, but NOT inserted in pinned (collapsed)
         XCTAssertEqual(diff.removedRows.count, 1)

@@ -16,6 +16,9 @@ protocol TabStoreObserver: AnyObject {
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space)
     func tabStoreDidReorderTabs(in space: Space)
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space)
+    /// Split divider fraction changed — no structural change (structural split
+    /// create/dissolve arrives as insert/remove/reorder callbacks).
+    func tabStoreDidUpdateSplitLayout(in space: Space)
     func tabStoreDidUpdateSpaces()
 
     // Pinned entry observer methods
@@ -40,6 +43,7 @@ extension TabStoreObserver {
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
     func tabStoreDidReorderTabs(in space: Space) {}
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
+    func tabStoreDidUpdateSplitLayout(in space: Space) {}
     func tabStoreDidUpdateSpaces() {}
     func tabStoreDidInsertPinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {}
     func tabStoreDidRemovePinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {}
@@ -426,7 +430,9 @@ class TabStore {
                     parentID: tab.parentID?.uuidString,
                     peekURL: tab.peekURL?.absoluteString,
                     peekInteractionState: tab.peekInteractionState,
-                    peekFaviconURL: tab.peekFaviconURL?.absoluteString
+                    peekFaviconURL: tab.peekFaviconURL?.absoluteString,
+                    splitGroupID: tab.splitGroupID?.uuidString,
+                    splitFraction: tab.splitFraction
                 ))
             }
 
@@ -609,10 +615,13 @@ class TabStore {
                 tab.peekURL = tabRecord.peekURL.flatMap { URL(string: $0) }
                 tab.peekInteractionState = tabRecord.peekInteractionState
                 tab.peekFaviconURL = tabRecord.peekFaviconURL.flatMap { URL(string: $0) }
+                tab.splitGroupID = tabRecord.splitGroupID.flatMap { UUID(uuidString: $0) }
+                tab.splitFraction = tabRecord.splitFraction
                 tab.downloadPeekFavicon()
                 space.tabs.append(tab)
                 self.subscribeToTab(tab, spaceID: spaceID)
             }
+            sanitizeSplitGroups(space.tabs)
 
             // Load pinned folders first
             let folderRecords = appDB.loadPinnedFolders(spaceID: spaceRecord.id)
@@ -856,7 +865,10 @@ class TabStore {
             subscribeToTab(tab, spaceID: space.id)
         }
 
-        let insertAt = min(tabIndex, space.tabs.count)
+        let insertAt = snappedToSplitGroupBoundary(
+            min(tabIndex, space.tabs.count),
+            groupIDs: space.tabs.map(\.splitGroupID)
+        )
         space.tabs.insert(tab, at: insertAt)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertAt, in: space) }
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
@@ -1009,6 +1021,8 @@ class TabStore {
             let peekURL: URL?
             let peekInteractionState: Data?
             let peekFaviconURL: URL?
+            let splitGroupID: UUID?
+            let splitFraction: Double?
             let isSelected: Bool
         }
         struct EntrySnapshot {
@@ -1041,6 +1055,8 @@ class TabStore {
                 peekURL: tab.peekURL,
                 peekInteractionState: tab.peekInteractionState,
                 peekFaviconURL: tab.peekFaviconURL,
+                splitGroupID: tab.splitGroupID,
+                splitFraction: tab.splitFraction,
                 isSelected: space.selectedTabID == tab.id
             )
         }
@@ -1121,6 +1137,8 @@ class TabStore {
                 tab.peekURL = s.peekURL
                 tab.peekInteractionState = s.peekInteractionState
                 tab.peekFaviconURL = s.peekFaviconURL
+                tab.splitGroupID = s.splitGroupID
+                tab.splitFraction = s.splitFraction
                 tab.downloadPeekFavicon()
                 self.subscribeToTab(tab, spaceID: restored.id)
                 return tab
@@ -1343,10 +1361,13 @@ class TabStore {
 
         let existingTabs = space.tabs.map { (id: $0.id, parentID: $0.parentID) }
         let pinnedTabIDs = Set(space.pinnedEntries.compactMap { $0.tab?.id })
-        let insertionIndex = tabInsertionIndex(
-            parentID: parentID,
-            existingTabs: existingTabs,
-            pinnedTabIDs: pinnedTabIDs
+        let insertionIndex = snappedToSplitGroupBoundary(
+            tabInsertionIndex(
+                parentID: parentID,
+                existingTabs: existingTabs,
+                pinnedTabIDs: pinnedTabIDs
+            ),
+            groupIDs: space.tabs.map(\.splitGroupID)
         )
 
         space.tabs.insert(tab, at: insertionIndex)
@@ -1385,6 +1406,7 @@ class TabStore {
     func detachTab(id: UUID, from space: Space) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs.remove(at: index)
+        leaveSplitGroup(tab, in: space)
         notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: space) }
         scheduleSave()
     }
@@ -1409,6 +1431,11 @@ class TabStore {
         let tabTitle = tab.title
         let tabFaviconURL = tab.faviconURL?.absoluteString
         let tabParentID = tab.parentID
+        let tabSplitFraction = tab.splitFraction
+        let closedSplitGroup = splitGroup(containing: tab.id, in: space)
+        let splitPartnerID = closedSplitGroup?.members.first { $0.id != tab.id }?.id
+        // Partner sits left of the closing tab iff the closing tab wasn't the first member.
+        let splitPartnerWasLeft = splitPartnerID != nil && closedSplitGroup?.members.first?.id != tab.id
 
         // Archive to closed tab stack (skip incognito)
         if !space.isIncognito {
@@ -1434,6 +1461,7 @@ class TabStore {
         tabSubscriptions.removeValue(forKey: tab.id)
         space.tabs.remove(at: index)
         tab.teardown()
+        leaveSplitGroup(tab, in: space)
 
         // Register undo (skip for automated archival)
         if archivedAt == nil {
@@ -1449,7 +1477,24 @@ class TabStore {
                 )
                 restored.spaceID = space.id
                 restored.parentID = tabParentID
-                let insertAt = min(index, space.tabs.count)
+                let insertAt: Int
+                // Rejoin the split if the partner is still an ungrouped normal tab.
+                if let partnerID = splitPartnerID,
+                   let partnerIndex = space.tabs.firstIndex(where: { $0.id == partnerID }),
+                   space.tabs[partnerIndex].splitGroupID == nil {
+                    let partner = space.tabs[partnerIndex]
+                    insertAt = splitPartnerWasLeft ? partnerIndex + 1 : partnerIndex
+                    let groupID = UUID()
+                    partner.splitGroupID = groupID
+                    partner.splitFraction = tabSplitFraction
+                    restored.splitGroupID = groupID
+                    restored.splitFraction = tabSplitFraction
+                } else {
+                    insertAt = snappedToSplitGroupBoundary(
+                        min(index, space.tabs.count),
+                        groupIDs: space.tabs.map(\.splitGroupID)
+                    )
+                }
                 space.tabs.insert(restored, at: insertAt)
                 self.subscribeToTab(restored, spaceID: space.id)
                 // Remove the corresponding closed-tab-stack entry from both the
@@ -1473,15 +1518,337 @@ class TabStore {
     }
 
     func moveTab(from sourceIndex: Int, to destinationIndex: Int, in space: Space) {
-        guard sourceIndex != destinationIndex,
-              sourceIndex >= 0, sourceIndex < space.tabs.count,
-              destinationIndex >= 0, destinationIndex < space.tabs.count else { return }
-        let tab = space.tabs.remove(at: sourceIndex)
-        space.tabs.insert(tab, at: destinationIndex)
+        // No source==destination shortcut here: source is pre-removal, destination
+        // post-removal — for a non-first split member the spaces differ and equal
+        // numbers can still be a real move. resolveTabMove owns the no-op check.
+        guard destinationIndex >= 0, destinationIndex < space.tabs.count,
+              let move = resolveTabMove(
+                  sourceIndex: sourceIndex,
+                  destinationIndex: destinationIndex,
+                  groupIDs: space.tabs.map(\.splitGroupID)
+              ) else { return }
+        performTabMove(move, in: space)
+    }
+
+    /// Drop-handling entry point: `gapIndex` is a pre-removal insertion gap
+    /// (0...count). The gap→destination conversion happens in resolveTabMove,
+    /// which knows the moved block's width — callers cannot (a split row is 2).
+    func moveTab(id: UUID, toGapIndex gapIndex: Int, in space: Space) {
+        guard let sourceIndex = space.tabs.firstIndex(where: { $0.id == id }),
+              let move = resolveTabMove(
+                  sourceIndex: sourceIndex,
+                  toGapIndex: gapIndex,
+                  groupIDs: space.tabs.map(\.splitGroupID)
+              ) else { return }
+        performTabMove(move, in: space)
+    }
+
+    /// Moving a split member moves the whole contiguous block; destinations
+    /// inside another group snap past it (resolveTabMove, TabInsertion.swift).
+    private func performTabMove(_ move: (blockRange: Range<Int>, insertAt: Int), in space: Space) {
+        let block = Array(space.tabs[move.blockRange])
+        space.tabs.removeSubrange(move.blockRange)
+        space.tabs.insert(contentsOf: block, at: move.insertAt)
+        let originalBlockStart = move.blockRange.lowerBound
         registerUndo(actionName: "Move Tab") { [weak self] in
-            self?.moveTab(from: destinationIndex, to: sourceIndex, in: space)
+            self?.moveTab(from: move.insertAt, to: originalBlockStart, in: space)
         }
         notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
+        scheduleSave()
+    }
+
+    // MARK: - Split Tab Mutations
+
+    /// The split group containing `tabID`, if any.
+    func splitGroup(containing tabID: UUID, in space: Space) -> (groupID: UUID, members: [BrowserTab])? {
+        guard let tab = space.tabs.first(where: { $0.id == tabID }),
+              let groupID = tab.splitGroupID else { return nil }
+        return (groupID, space.tabs.filter { $0.splitGroupID == groupID })
+    }
+
+    /// Clears group membership when a group has fewer than two members left.
+    private func dissolveUndersizedSplitGroup(_ groupID: UUID?, in space: Space) {
+        guard let groupID else { return }
+        let members = space.tabs.filter { $0.splitGroupID == groupID }
+        guard members.count < 2 else { return }
+        for member in members {
+            member.splitGroupID = nil
+            member.splitFraction = nil
+        }
+    }
+
+    /// A tab exits its split group: clears its membership and dissolves the
+    /// group its departure leaves undersized. Every exit path (close, pin,
+    /// detach, drag-out) must run through here.
+    private func leaveSplitGroup(_ tab: BrowserTab, in space: Space) {
+        guard let groupID = tab.splitGroupID else { return }
+        tab.splitGroupID = nil
+        tab.splitFraction = nil
+        dissolveUndersizedSplitGroup(groupID, in: space)
+    }
+
+    /// Forms a split from two existing ungrouped normal tabs: `draggedTabID`
+    /// moves adjacent to `targetTabID` (left edge → before, right → after) and
+    /// both join a fresh group. One split per tab: grouped participants reject.
+    func createSplit(draggedTabID: UUID, targetTabID: UUID, edge: SplitEdge,
+                     fraction: Double = 0.5, in space: Space) {
+        guard draggedTabID != targetTabID,
+              let sourceIndex = space.tabs.firstIndex(where: { $0.id == draggedTabID }),
+              let target = space.tabs.first(where: { $0.id == targetTabID }),
+              space.tabs[sourceIndex].splitGroupID == nil,
+              target.splitGroupID == nil else { return }
+
+        let dragged = space.tabs.remove(at: sourceIndex)
+        guard let targetIndex = space.tabs.firstIndex(where: { $0.id == targetTabID }) else {
+            space.tabs.insert(dragged, at: sourceIndex)
+            return
+        }
+        let insertAt = edge == .left ? targetIndex : targetIndex + 1
+        space.tabs.insert(dragged, at: insertAt)
+
+        let groupID = UUID()
+        for member in [dragged, target] {
+            member.splitGroupID = groupID
+            member.splitFraction = fraction
+        }
+
+        registerUndo(actionName: "Split Tabs") { [weak self] in
+            self?.removeTabFromSplit(tabID: draggedTabID, toGapIndex: sourceIndex, in: space)
+        }
+        notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
+        scheduleSave()
+    }
+
+    /// Option-click path: opens `url` as a new right pane split with `tabID`.
+    /// Returns nil (caller falls back) if `tabID` is not an ungrouped normal tab.
+    @discardableResult
+    func addTabInSplit(with tabID: UUID, url: URL, in space: Space) -> BrowserTab? {
+        guard let anchorIndex = space.tabs.firstIndex(where: { $0.id == tabID }),
+              space.tabs[anchorIndex].splitGroupID == nil else { return nil }
+
+        let anchor = space.tabs[anchorIndex]
+        let tab = BrowserTab(configuration: space.makeWebViewConfiguration())
+        tab.spaceID = space.id
+        tab.parentID = tabID
+        let insertAt = anchorIndex + 1
+        space.tabs.insert(tab, at: insertAt)
+        subscribeToTab(tab, spaceID: space.id)
+
+        let groupID = UUID()
+        for member in [anchor, tab] {
+            member.splitGroupID = groupID
+            member.splitFraction = 0.5
+        }
+
+        // Undo is a non-archiving removal: the pane never existed as a lone tab,
+        // so it must not land in the Cmd+Shift+T closed-tab stack the way
+        // closeTab's undo path would put it there.
+        registerUndo(actionName: "Open in Split") { [weak self] in
+            guard let self,
+                  let index = space.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+            self.tabSubscriptions.removeValue(forKey: tab.id)
+            let removed = space.tabs.remove(at: index)
+            removed.teardown()
+            self.leaveSplitGroup(removed, in: space)
+            self.notifyObservers { $0.tabStoreDidRemoveTab(removed, at: index, in: space) }
+            self.scheduleSave()
+        }
+        notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertAt, in: space) }
+        scheduleSave()
+        tab.load(url)
+        return tab
+    }
+
+    /// "Separate Tabs": dissolves the group; members stay adjacent as two rows.
+    func separateSplit(groupID: UUID, in space: Space) {
+        let members = space.tabs.filter { $0.splitGroupID == groupID }
+        guard !members.isEmpty else { return }
+        let fraction = members.first?.splitFraction
+        let memberIDs = members.map(\.id)
+        for member in members {
+            member.splitGroupID = nil
+            member.splitFraction = nil
+        }
+
+        registerUndo(actionName: "Separate Tabs") { [weak self] in
+            guard let self else { return }
+            // Rejoin only if the members are still adjacent ungrouped normal tabs.
+            let indices = memberIDs.compactMap { id in space.tabs.firstIndex { $0.id == id } }.sorted()
+            guard indices.count == memberIDs.count,
+                  indices == Array(indices.first!...(indices.first! + indices.count - 1)),
+                  indices.allSatisfy({ space.tabs[$0].splitGroupID == nil }) else { return }
+            let rejoinedID = UUID()
+            for i in indices {
+                space.tabs[i].splitGroupID = rejoinedID
+                space.tabs[i].splitFraction = fraction
+            }
+            self.registerUndo(actionName: "Separate Tabs") { [weak self] in
+                self?.separateSplit(groupID: rejoinedID, in: space)
+            }
+            self.notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
+            self.scheduleSave()
+        }
+        notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
+        scheduleSave()
+    }
+
+    /// Drag-out path: removes one member from its group (dissolving it) and
+    /// moves the tab to `toGapIndex`, a gap in the post-removal tabs array.
+    func removeTabFromSplit(tabID: UUID, toGapIndex: Int, in space: Space) {
+        guard let sourceIndex = space.tabs.firstIndex(where: { $0.id == tabID }),
+              let group = splitGroup(containing: tabID, in: space) else { return }
+
+        let tab = space.tabs[sourceIndex]
+        let partnerID = group.members.first { $0.id != tabID }?.id
+        let fraction = tab.splitFraction ?? 0.5
+        let wasLeftPane = group.members.first?.id == tabID
+
+        leaveSplitGroup(tab, in: space)
+
+        space.tabs.remove(at: sourceIndex)
+        let insertAt = snappedToSplitGroupBoundary(
+            max(0, min(toGapIndex, space.tabs.count)),
+            groupIDs: space.tabs.map(\.splitGroupID)
+        )
+        space.tabs.insert(tab, at: insertAt)
+
+        registerUndo(actionName: "Move Tab Out of Split") { [weak self] in
+            guard let self, let partnerID else { return }
+            self.createSplit(
+                draggedTabID: tabID,
+                targetTabID: partnerID,
+                edge: wasLeftPane ? .left : .right,
+                fraction: fraction,
+                in: space
+            )
+        }
+        notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
+        scheduleSave()
+    }
+
+    /// Closes both members of a split as ONE gesture: single undo restores the
+    /// whole split. (Two sequential closeTab calls would need two undos, and
+    /// their rejoin logic cannot pair up because each undo mints fresh tab IDs.)
+    func closeSplitGroup(groupID: UUID, in space: Space) {
+        let members = space.tabs.filter { $0.splitGroupID == groupID }
+        guard !members.isEmpty else { return }
+        let fraction = members.first?.splitFraction ?? 0.5
+
+        struct MemberSnapshot {
+            let index: Int
+            let tabID: String
+            let title: String
+            let url: String?
+            let faviconURL: String?
+            let interactionState: Data?
+            let parentID: UUID?
+        }
+
+        var snapshots: [MemberSnapshot] = []
+        for member in members {
+            guard let index = space.tabs.firstIndex(where: { $0.id == member.id }) else { continue }
+            let snapshot = MemberSnapshot(
+                index: index,
+                tabID: member.id.uuidString,
+                title: member.title,
+                url: member.url?.absoluteString,
+                faviconURL: member.faviconURL?.absoluteString,
+                interactionState: member.currentInteractionStateData(),
+                parentID: member.parentID
+            )
+            snapshots.append(snapshot)
+            if !space.isIncognito {
+                let record = ClosedTabRecord(
+                    id: nil,
+                    tabID: snapshot.tabID,
+                    spaceID: space.id.uuidString,
+                    url: snapshot.url,
+                    title: snapshot.title,
+                    faviconURL: snapshot.faviconURL,
+                    interactionState: snapshot.interactionState,
+                    sortOrder: index,
+                    archivedAt: nil
+                )
+                appDB.pushClosedTab(record)
+                closedTabStack.insert(record, at: 0)
+            }
+        }
+        if closedTabStack.count > 100 {
+            closedTabStack = Array(closedTabStack.prefix(100))
+        }
+
+        // Remove highest index first so the captured lower index stays valid.
+        for snapshot in snapshots.sorted(by: { $0.index > $1.index }) {
+            let member = space.tabs.remove(at: snapshot.index)
+            tabSubscriptions.removeValue(forKey: member.id)
+            member.teardown()
+        }
+
+        registerUndo(actionName: "Close Split") { [weak self] in
+            guard let self else { return }
+            let newGroupID = UUID()
+            var restoredFirst: BrowserTab?
+            for snapshot in snapshots.sorted(by: { $0.index < $1.index }) {
+                let restored = BrowserTab(
+                    id: UUID(),
+                    title: snapshot.title,
+                    archivedInteractionState: snapshot.interactionState,
+                    fallbackURL: snapshot.url.flatMap { URL(string: $0) },
+                    faviconURL: snapshot.faviconURL.flatMap { URL(string: $0) },
+                    configuration: space.makeWebViewConfiguration()
+                )
+                restored.spaceID = space.id
+                restored.parentID = snapshot.parentID
+                restored.splitGroupID = newGroupID
+                restored.splitFraction = fraction
+                let insertAt: Int
+                if let first = restoredFirst,
+                   let firstIndex = space.tabs.firstIndex(where: { $0.id == first.id }) {
+                    insertAt = firstIndex + 1  // right pane lands beside the left
+                } else {
+                    insertAt = snappedToSplitGroupBoundary(
+                        min(snapshot.index, space.tabs.count),
+                        groupIDs: space.tabs.map(\.splitGroupID)
+                    )
+                    restoredFirst = restored
+                }
+                space.tabs.insert(restored, at: insertAt)
+                self.subscribeToTab(restored, spaceID: space.id)
+                if let stackIdx = self.closedTabStack.firstIndex(where: { $0.tabID == snapshot.tabID }) {
+                    self.closedTabStack.remove(at: stackIdx)
+                }
+                self.appDB.deleteClosedTab(tabID: snapshot.tabID)
+                self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
+            }
+            self.registerUndo(actionName: "Close Split") { [weak self] in
+                self?.closeSplitGroup(groupID: newGroupID, in: space)
+            }
+            if let restoredFirst {
+                NotificationCenter.default.post(name: .tabRestoredByUndo, object: nil,
+                                                userInfo: ["tabID": restoredFirst.id, "spaceID": space.id])
+            }
+            self.scheduleSave()
+        }
+
+        for snapshot in snapshots {
+            notifyObservers { observer in
+                if let member = members.first(where: { $0.id.uuidString == snapshot.tabID }) {
+                    observer.tabStoreDidRemoveTab(member, at: snapshot.index, in: space)
+                }
+            }
+        }
+        scheduleSave()
+    }
+
+    /// Divider position persistence — no undo, no structural change.
+    func setSplitFraction(groupID: UUID, fraction: Double, in space: Space) {
+        let clamped = max(0.2, min(0.8, fraction))
+        let members = space.tabs.filter { $0.splitGroupID == groupID }
+        guard !members.isEmpty else { return }
+        for member in members {
+            member.splitFraction = clamped
+        }
+        notifyObservers { $0.tabStoreDidUpdateSplitLayout(in: space) }
         scheduleSave()
     }
 
@@ -1490,6 +1857,8 @@ class TabStore {
     func pinTab(id: UUID, in space: Space, at destinationIndex: Int? = nil) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs.remove(at: index)
+        // Pinned tabs can't be split members — leaving the group is implicit.
+        leaveSplitGroup(tab, in: space)
         let maxEntryOrder = space.pinnedEntries.map(\.sortOrder).max() ?? -1
         let maxFolderOrder = space.pinnedFolders.map(\.sortOrder).max() ?? -1
         let entry = PinnedEntry(
@@ -1559,7 +1928,10 @@ class TabStore {
             tab.spaceID = space.id
             subscribeToTab(tab, spaceID: space.id)
         }
-        let insertAt = min(destinationIndex ?? 0, space.tabs.count)
+        let insertAt = snappedToSplitGroupBoundary(
+            min(destinationIndex ?? 0, space.tabs.count),
+            groupIDs: space.tabs.map(\.splitGroupID)
+        )
         space.tabs.insert(tab, at: insertAt)
         registerUndo(actionName: "Unpin Tab") { [weak self] in
             guard let self else { return }
@@ -1960,7 +2332,10 @@ class TabStore {
         )
         tab.spaceID = space.id
 
-        let insertionIndex = min(record.sortOrder, space.tabs.count)
+        let insertionIndex = snappedToSplitGroupBoundary(
+            min(record.sortOrder, space.tabs.count),
+            groupIDs: space.tabs.map(\.splitGroupID)
+        )
         space.tabs.insert(tab, at: insertionIndex)
         subscribeToTab(tab, spaceID: space.id)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
@@ -1986,10 +2361,21 @@ class TabStore {
             guard threshold != .never else { continue }
             let cutoff = Date().addingTimeInterval(-threshold.rawValue)
             let pinnedTabIDs = Set(space.pinnedEntries.compactMap { $0.tab?.id })
+
+            func isStale(_ tab: BrowserTab) -> Bool {
+                guard !pinnedTabIDs.contains(tab.id), !tab.isPlayingAudio,
+                      let lastDeselected = tab.lastDeselectedAt else { return false }
+                return lastDeselected < cutoff
+            }
+
             for tab in space.tabs {
-                guard !tab.isSleeping, !pinnedTabIDs.contains(tab.id), !tab.isPlayingAudio,
-                      let lastDeselected = tab.lastDeselectedAt,
-                      lastDeselected < cutoff else { continue }
+                guard !tab.isSleeping, isStale(tab) else { continue }
+                // A split renders both members at once — never sleep one while
+                // its partner is fresh, or a visible pane goes blank.
+                if let groupID = tab.splitGroupID {
+                    let partners = space.tabs.filter { $0.splitGroupID == groupID && $0.id != tab.id }
+                    guard partners.allSatisfy({ $0.isSleeping || isStale($0) }) else { continue }
+                }
                 tab.sleep()
             }
         }
@@ -2004,8 +2390,19 @@ class TabStore {
             guard threshold != .never else { continue }
             let cutoff = Date().addingTimeInterval(-threshold.rawValue)
 
+            func isStale(_ tab: BrowserTab) -> Bool {
+                guard let lastDeselected = tab.lastDeselectedAt else { return false }
+                return lastDeselected < cutoff
+            }
+
             let staleTabIDs = space.tabs.compactMap { tab -> UUID? in
-                guard let lastDeselected = tab.lastDeselectedAt, lastDeselected < cutoff else { return nil }
+                guard isStale(tab) else { return nil }
+                // Archive a split member only when the whole group is stale —
+                // a split is one visual unit and half of it may be on screen.
+                if let groupID = tab.splitGroupID {
+                    let partners = space.tabs.filter { $0.splitGroupID == groupID && $0.id != tab.id }
+                    guard partners.allSatisfy(isStale) else { return nil }
+                }
                 return tab.id
             }
 

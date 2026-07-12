@@ -46,6 +46,14 @@ class BrowserTab: NSObject {
     private(set) var faviconURL: URL?
     var spaceID: UUID?
     var parentID: UUID?
+    /// Non-nil when this tab is a member of a split group (two adjacent tabs
+    /// rendered side by side as one sidebar item). Members of a group are always
+    /// contiguous in `space.tabs`, in visual order (left pane first) — TabStore
+    /// enforces this in every mutation.
+    var splitGroupID: UUID?
+    /// Width fraction of the split's left pane. Stored on every member; readers
+    /// take the first member's value.
+    var splitFraction: Double?
     /// Set by `load(_:typed:)` when the next load was deliberately submitted by
     /// the user (command palette URL/suggestion), so its history visit records as
     /// typed. Consumed via `consumeNextVisitIsTyped()`.
