@@ -500,6 +500,13 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v7") { db in
+            try db.alter(table: "pinnedTab") { t in
+                t.add(column: "splitGroupID", .text)
+                t.add(column: "splitFraction", .double)
+            }
+        }
+
         return migrator
     }
 

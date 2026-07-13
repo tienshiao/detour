@@ -38,6 +38,7 @@ final class PinnedTabMoveTests: XCTestCase {
             switch $0 {
             case .entry(let e, _): return e.id
             case .folder(let f, _): return f.id
+            case .split(let groupID, _, _): return groupID
             }
         }
     }

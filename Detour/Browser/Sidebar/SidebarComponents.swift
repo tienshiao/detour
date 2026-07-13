@@ -3,6 +3,34 @@ import AppKit
 class DraggableTableView: NSTableView {
     override var mouseDownCanMoveWindow: Bool { false }
 
+    /// Last mouse-down location in table coordinates. `pasteboardWriterForRow`
+    /// reads it to decide which part of a split row a drag grabbed (the drag
+    /// APIs don't hand the originating event to the data source).
+    private(set) var lastMouseDownPoint: NSPoint?
+
+    /// Fired from `draggingExited`/`draggingEnded` so the sidebar can clear
+    /// drop affordances the table-view delegate is never told about.
+    var onDragTargetingEnded: (() -> Void)?
+
+    // NSDraggingDestination methods are declared on NSView's interface (so the
+    // overrides compile) but not necessarily implemented — an unguarded super
+    // call raises unrecognized-selector mid-drag-teardown, which aborts the
+    // session before the source's endedAt callback. Only call super when the
+    // superclass really implements the method.
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        onDragTargetingEnded?()
+        if NSTableView.instancesRespond(to: #selector(NSView.draggingExited(_:))) {
+            super.draggingExited(sender)
+        }
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        onDragTargetingEnded?()
+        if NSTableView.instancesRespond(to: #selector(NSView.draggingEnded(_:))) {
+            super.draggingEnded(sender)
+        }
+    }
+
     override func dragImageForRows(with dragRows: IndexSet, tableColumns: [NSTableColumn], event: NSEvent, offset dragImageOffset: NSPointPointer) -> NSImage {
         let image = super.dragImageForRows(with: dragRows, tableColumns: tableColumns, event: event, offset: dragImageOffset)
         guard let row = dragRows.first else { return image }
@@ -17,6 +45,7 @@ class DraggableTableView: NSTableView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        lastMouseDownPoint = point
         let clickedRow = row(at: point)
         if clickedRow >= 0 {
             super.mouseDown(with: event)

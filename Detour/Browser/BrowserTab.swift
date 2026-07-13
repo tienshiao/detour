@@ -15,7 +15,18 @@ class BrowserTab: NSObject {
     private(set) var webViewContainer: NSView?
 
     func ensureWebViewContainer() {
-        guard webViewContainer == nil, let webView else { return }
+        guard let webView else { return }
+        if let container = webViewContainer {
+            // Self-heal: a container that lost its webView would host as an
+            // empty (white, unresponsive) pane — re-wrap the live webView.
+            if webView.superview !== container {
+                webView.translatesAutoresizingMaskIntoConstraints = true
+                webView.autoresizingMask = [.width, .height]
+                webView.frame = container.bounds
+                container.addSubview(webView)
+            }
+            return
+        }
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = true
         container.autoresizingMask = [.width, .height]
@@ -101,6 +112,8 @@ class BrowserTab: NSObject {
 
     private var faviconCancellables = Set<AnyCancellable>()
     private var lastAttemptedURL: URL?
+    private var processTerminationCount = 0
+    private var lastProcessTerminationAt: Date?
     private var navigationPending = false
     private var previousHost: String?
     private var faviconGeneration: Int = 0
@@ -454,6 +467,22 @@ class BrowserTab: NSObject {
                 context.didOpenTab(self)
             }
         }
+    }
+
+    /// Records a web content process termination and returns how many have hit
+    /// this tab in quick succession. Terminations more than 30s apart count as
+    /// fresh incidents (an occasional crash always earns an auto-reload); a
+    /// rapid streak means the page itself kills its process, and the caller
+    /// should stop reload-looping it.
+    func noteProcessTermination() -> Int {
+        let now = Date()
+        if let last = lastProcessTerminationAt, now.timeIntervalSince(last) < 30 {
+            processTerminationCount += 1
+        } else {
+            processTerminationCount = 1
+        }
+        lastProcessTerminationAt = now
+        return processTerminationCount
     }
 
     /// Returns whether the pending navigation was user-typed, resetting the flag.

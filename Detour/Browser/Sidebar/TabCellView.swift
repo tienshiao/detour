@@ -582,9 +582,11 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
     func updatePinnedMode(entry: PinnedEntry?) {
         guard let entry else {
-            // Normal tab: use xmark
+            // Normal tab: use xmark. Also reset the left-pane button (a reused
+            // cell may have shown a pinned split's minus glyph).
             let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
             closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?.withSymbolConfiguration(boldConfig)
+            splitCloseButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Left Pane")?.withSymbolConfiguration(boldConfig)
             return
         }
         if entry.isLive {
@@ -596,6 +598,20 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
             closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Remove Pin")?.withSymbolConfiguration(boldConfig)
         }
+    }
+
+    /// Per-half close glyphs for a pinned split row: minus = live (close makes
+    /// the entry dormant), xmark = dormant (close deletes the entry).
+    func updateSplitPinnedMode(left: PinnedEntry, right: PinnedEntry) {
+        let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
+        splitCloseButton.image = NSImage(
+            systemSymbolName: left.isLive ? "minus" : "xmark",
+            accessibilityDescription: left.isLive ? "Close Left Pane" : "Remove Pin"
+        )?.withSymbolConfiguration(boldConfig)
+        closeButton.image = NSImage(
+            systemSymbolName: right.isLive ? "minus" : "xmark",
+            accessibilityDescription: right.isLive ? "Close Right Pane" : "Remove Pin"
+        )?.withSymbolConfiguration(boldConfig)
     }
 
     @objc private func closeTapped() {

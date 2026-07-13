@@ -91,11 +91,6 @@ func resolveTabMove(
 /// group, or just itself when ungrouped. Nil when out of range.
 private func splitBlockRange(containing index: Int, groupIDs: [UUID?]) -> Range<Int>? {
     guard index >= 0, index < groupIDs.count else { return nil }
-    var start = index
-    var end = index + 1
-    if let group = groupIDs[index] {
-        while start > 0, groupIDs[start - 1] == group { start -= 1 }
-        while end < groupIDs.count, groupIDs[end] == group { end += 1 }
-    }
-    return start..<end
+    // Every index falls in exactly one run (ungrouped tabs are singleton runs).
+    return splitRuns(of: groupIDs, groupID: { $0 }).first { $0.range.contains(index) }?.range
 }

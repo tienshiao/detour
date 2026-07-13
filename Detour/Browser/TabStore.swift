@@ -522,7 +522,9 @@ class TabStore {
                     faviconURL: entry.faviconURL?.absoluteString,
                     sortOrder: entry.sortOrder,
                     folderID: entry.folderID?.uuidString,
-                    tabID: entry.tab?.id.uuidString
+                    tabID: entry.tab?.id.uuidString,
+                    splitGroupID: entry.splitGroupID?.uuidString,
+                    splitFraction: entry.splitFraction
                 ))
             }
 
@@ -685,6 +687,8 @@ class TabStore {
                     sortOrder: pinnedRecord.sortOrder,
                     tab: backingTab
                 )
+                entry.splitGroupID = pinnedRecord.splitGroupID.flatMap { UUID(uuidString: $0) }
+                entry.splitFraction = pinnedRecord.splitFraction
                 if backingTab == nil {
                     entry.onFaviconDownloaded = { [weak self, weak entry] in
                         guard let self, let entry else { return }
@@ -698,6 +702,7 @@ class TabStore {
                 }
                 space.pinnedEntries.append(entry)
             }
+            sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
 
             self.spaces.append(space)
         }
@@ -1034,6 +1039,10 @@ class TabStore {
             let folderID: UUID?
             let sortOrder: Int
             let backingTab: TabSnapshot?
+            // Pinned split membership lives ONLY on the entry (design §12), so it
+            // must be snapshotted here — the backing tab's splitGroupID is nil.
+            let splitGroupID: UUID?
+            let splitFraction: Double?
         }
         struct FolderSnapshot {
             let id: UUID
@@ -1071,7 +1080,9 @@ class TabStore {
                 favicon: entry.favicon,
                 folderID: entry.folderID,
                 sortOrder: entry.sortOrder,
-                backingTab: entry.tab.map(snapshot)
+                backingTab: entry.tab.map(snapshot),
+                splitGroupID: entry.splitGroupID,
+                splitFraction: entry.splitFraction
             )
         }
         let savedFolders: [FolderSnapshot] = space.pinnedFolders.map { folder in
@@ -1165,6 +1176,12 @@ class TabStore {
                     sortOrder: e.sortOrder,
                     tab: backing
                 )
+                // Pinned split membership lives ONLY on the entry (design §12) —
+                // the backing tab's splitGroupID stays nil, so nothing re-derives
+                // it. Restore it explicitly. savedEntries preserve original sort
+                // order/adjacency, so the restored pair survives sanitizePinnedSplitGroups.
+                entry.splitGroupID = e.splitGroupID
+                entry.splitFraction = e.splitFraction
                 if backing == nil {
                     entry.onFaviconDownloaded = { [weak self, weak entry] in
                         guard let self, let entry else { return }
@@ -1416,6 +1433,11 @@ class TabStore {
     func detachPinnedEntry(id: UUID, from space: Space) -> BrowserTab? {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return nil }
         let entry = space.pinnedEntries.remove(at: index)
+        // Favorites can't be split members — leaving dissolves the pinned split.
+        let groupID = entry.splitGroupID
+        entry.splitGroupID = nil
+        entry.splitFraction = nil
+        dissolvePinnedSplit(around: id, groupID: groupID, in: space)
         notifyObservers { $0.tabStoreDidRemovePinnedEntry(entry, at: index, in: space) }
         scheduleSave()
         return entry.tab
@@ -1559,11 +1581,39 @@ class TabStore {
 
     // MARK: - Split Tab Mutations
 
-    /// The split group containing `tabID`, if any.
+    /// The split group containing `tabID`, if any — normal-tab groups, or a
+    /// pinned split when `tabID` backs a grouped pinned entry (§12). For a
+    /// pinned split the members are the group's LIVE tabs in visual order; a
+    /// dormant partner is absent until selection wakes it, so hosting sees a
+    /// single pane until then.
     func splitGroup(containing tabID: UUID, in space: Space) -> (groupID: UUID, members: [BrowserTab])? {
-        guard let tab = space.tabs.first(where: { $0.id == tabID }),
-              let groupID = tab.splitGroupID else { return nil }
-        return (groupID, space.tabs.filter { $0.splitGroupID == groupID })
+        if let tab = space.tabs.first(where: { $0.id == tabID }),
+           let groupID = tab.splitGroupID {
+            return (groupID, space.tabs.filter { $0.splitGroupID == groupID })
+        }
+        if let entry = space.pinnedEntries.first(where: { $0.tab?.id == tabID }),
+           let groupID = entry.splitGroupID {
+            return (groupID, pinnedSplitEntries(groupID: groupID, in: space).compactMap(\.tab))
+        }
+        return nil
+    }
+
+    /// The pinned split's entries in visual order (left pane first).
+    func pinnedSplitEntries(groupID: UUID, in space: Space) -> [PinnedEntry] {
+        space.pinnedEntries.filter { $0.splitGroupID == groupID }.sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    /// The left pane's stored divider fraction for the group containing `tabID`,
+    /// wherever the group lives (tab members or pinned entries).
+    func splitFraction(containing tabID: UUID, in space: Space) -> Double? {
+        if let tab = space.tabs.first(where: { $0.id == tabID }), tab.splitGroupID != nil {
+            return tab.splitFraction
+        }
+        if let entry = space.pinnedEntries.first(where: { $0.tab?.id == tabID }),
+           let groupID = entry.splitGroupID {
+            return pinnedSplitEntries(groupID: groupID, in: space).first?.splitFraction
+        }
+        return nil
     }
 
     /// Clears group membership when a group has fewer than two members left.
@@ -1613,7 +1663,12 @@ class TabStore {
         }
 
         registerUndo(actionName: "Split Tabs") { [weak self] in
-            self?.removeTabFromSplit(tabID: draggedTabID, toGapIndex: sourceIndex, in: space)
+            guard let self,
+                  let currentIndex = space.tabs.firstIndex(where: { $0.id == draggedTabID }) else { return }
+            // removeTabFromSplit takes a PRE-removal gap: when the dragged tab now
+            // sits before its old position, the gap that restores it shifts by one.
+            let gap = currentIndex < sourceIndex ? sourceIndex + 1 : sourceIndex
+            self.removeTabFromSplit(tabID: draggedTabID, toGapIndex: gap, in: space)
         }
         notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
         scheduleSave()
@@ -1693,7 +1748,8 @@ class TabStore {
     }
 
     /// Drag-out path: removes one member from its group (dissolving it) and
-    /// moves the tab to `toGapIndex`, a gap in the post-removal tabs array.
+    /// moves the tab to `toGapIndex`, a pre-removal insertion gap (0...count) —
+    /// the same contract as `moveTab(id:toGapIndex:)`.
     func removeTabFromSplit(tabID: UUID, toGapIndex: Int, in space: Space) {
         guard let sourceIndex = space.tabs.firstIndex(where: { $0.id == tabID }),
               let group = splitGroup(containing: tabID, in: space) else { return }
@@ -1706,8 +1762,9 @@ class TabStore {
         leaveSplitGroup(tab, in: space)
 
         space.tabs.remove(at: sourceIndex)
+        let clampedGap = max(0, min(toGapIndex, space.tabs.count + 1))
         let insertAt = snappedToSplitGroupBoundary(
-            max(0, min(toGapIndex, space.tabs.count)),
+            clampedGap > sourceIndex ? clampedGap - 1 : clampedGap,
             groupIDs: space.tabs.map(\.splitGroupID)
         )
         space.tabs.insert(tab, at: insertAt)
@@ -1840,19 +1897,336 @@ class TabStore {
         scheduleSave()
     }
 
-    /// Divider position persistence — no undo, no structural change.
+    /// Divider position persistence — no undo, no structural change. Writes to
+    /// whichever side owns the group: tab members, or pinned entries (§12).
     func setSplitFraction(groupID: UUID, fraction: Double, in space: Space) {
         let clamped = max(0.2, min(0.8, fraction))
         let members = space.tabs.filter { $0.splitGroupID == groupID }
-        guard !members.isEmpty else { return }
-        for member in members {
-            member.splitFraction = clamped
+        if !members.isEmpty {
+            for member in members {
+                member.splitFraction = clamped
+            }
+        } else {
+            let entries = pinnedSplitEntries(groupID: groupID, in: space)
+            guard !entries.isEmpty else { return }
+            for entry in entries {
+                entry.splitFraction = clamped
+            }
         }
         notifyObservers { $0.tabStoreDidUpdateSplitLayout(in: space) }
         scheduleSave()
     }
 
+    // MARK: - Pinned Split Mutations (§12)
+
+    /// An entry exits its pinned split: clears its membership and dissolves the
+    /// group its departure leaves undersized. Every pinned exit path (unpin,
+    /// delete, detach-to-favorite) must run through here. `closePinnedTab` does
+    /// NOT — a dormant member stays in its group.
+    private func dissolvePinnedSplit(around entryID: UUID, groupID: UUID?, in space: Space) {
+        guard let groupID else { return }
+        for e in space.pinnedEntries where e.splitGroupID == groupID || e.id == entryID {
+            e.splitGroupID = nil
+            e.splitFraction = nil
+        }
+    }
+
+    /// Pins both members of a normal-tab split as two adjacent entries that KEEP
+    /// the group — a pinned split. Appended at the end of the pinned section;
+    /// drops anchor it afterwards via `movePinnedTabToFolder` (block move).
+    func pinSplitGroup(groupID: UUID, in space: Space) {
+        let members = space.tabs.filter { $0.splitGroupID == groupID }
+        guard members.count == 2,
+              let firstIndex = space.tabs.firstIndex(where: { $0.id == members[0].id }) else { return }
+        let fraction = members[0].splitFraction
+
+        space.tabs.removeAll { $0.splitGroupID == groupID }
+        var order = max(space.pinnedEntries.map(\.sortOrder).max() ?? -1,
+                        space.pinnedFolders.map(\.sortOrder).max() ?? -1)
+        for tab in members {
+            tab.splitGroupID = nil
+            tab.splitFraction = nil
+            order += 1
+            let entry = PinnedEntry(
+                id: tab.id,
+                pinnedURL: tab.url ?? URL(string: "about:blank")!,
+                pinnedTitle: tab.title,
+                faviconURL: tab.faviconURL,
+                sortOrder: order,
+                tab: tab
+            )
+            entry.splitGroupID = groupID
+            entry.splitFraction = fraction
+            space.pinnedEntries.append(entry)
+        }
+
+        registerUndo(actionName: "Pin Split") { [weak self] in
+            self?.unpinSplitGroup(groupID: groupID, toGapIndex: firstIndex, in: space)
+        }
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    /// Unpins a pinned split back into the tab list as a normal split: both
+    /// entries leave the pinned section and their tabs land adjacent at the
+    /// (snapped) gap with the group restored. A dormant member materializes a
+    /// tab exactly like `unpinTab`.
+    func unpinSplitGroup(groupID: UUID, toGapIndex: Int? = nil, in space: Space) {
+        let entries = pinnedSplitEntries(groupID: groupID, in: space)
+        guard entries.count == 2 else { return }
+        let fraction = entries.first?.splitFraction ?? 0.5
+        let savedFolderID = entries[0].folderID
+        // The sibling that follows the pair at its level: the undo re-places
+        // the block positionally. Restoring raw sortOrders instead can collide
+        // with items pinned after the unpin (their orders come from a global
+        // max), interleave the pair, and the sanitizer would then dissolve the
+        // very group the undo is restoring.
+        let pairMaxOrder = entries.map(\.sortOrder).max() ?? Int.min
+        let savedAnchorID = pinnedLevelSiblings(folderID: savedFolderID,
+                                                excluding: Set(entries.map(\.id)), in: space)
+            .first { $0.sortOrder > pairMaxOrder }?.id
+
+        var tabs: [BrowserTab] = []
+        for entry in entries {
+            space.pinnedEntries.removeAll { $0.id == entry.id }
+            entry.splitGroupID = nil
+            entry.splitFraction = nil
+            tabs.append(entry.tab ?? materializeDormantEntry(entry, in: space))
+        }
+
+        let insertAt = snappedToSplitGroupBoundary(
+            min(toGapIndex ?? 0, space.tabs.count),
+            groupIDs: space.tabs.map(\.splitGroupID)
+        )
+        space.tabs.insert(contentsOf: tabs, at: insertAt)
+        for tab in tabs {
+            tab.splitGroupID = groupID
+            tab.splitFraction = fraction
+        }
+
+        registerUndo(actionName: "Unpin Split") { [weak self] in
+            guard let self else { return }
+            self.pinSplitGroup(groupID: groupID, in: space)
+            // Restore the original pinned placement (pinSplitGroup appends):
+            // positional, so items pinned since the unpin can't collide.
+            let restored = self.pinnedSplitEntries(groupID: groupID, in: space)
+            guard restored.count == 2 else { return }
+            self.placePinnedBlock(restored, folderID: savedFolderID, beforeItemID: savedAnchorID, in: space)
+            sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
+            self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+            self.scheduleSave()
+        }
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    /// "Separate Tabs" on a pinned split: dissolves the group; the entries stay
+    /// adjacent as two pinned rows.
+    func separatePinnedSplit(groupID: UUID, in space: Space) {
+        let entries = pinnedSplitEntries(groupID: groupID, in: space)
+        guard !entries.isEmpty else { return }
+        let fraction = entries.first?.splitFraction
+        let entryIDs = entries.map(\.id)
+        for entry in entries {
+            entry.splitGroupID = nil
+            entry.splitFraction = nil
+        }
+
+        registerUndo(actionName: "Separate Tabs") { [weak self] in
+            guard let self else { return }
+            let members = entryIDs.compactMap { id in space.pinnedEntries.first { $0.id == id } }
+            guard members.count == entryIDs.count,
+                  members.allSatisfy({ $0.splitGroupID == nil }) else { return }
+            let rejoinedID = UUID()
+            for member in members {
+                member.splitGroupID = rejoinedID
+                member.splitFraction = fraction
+            }
+            // Rejoin only if they're still a valid group (same folder, adjacent).
+            sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
+            self.registerUndo(actionName: "Separate Tabs") { [weak self] in
+                self?.separatePinnedSplit(groupID: rejoinedID, in: space)
+            }
+            self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+            self.scheduleSave()
+        }
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    /// Member-segment drag to a pinned gap: the member breaks out of its pinned
+    /// split (dissolving it) into its own pinned row at the anchor. One
+    /// mutation, one undo — the pinned analog of `removeTabFromSplit`.
+    func removePinnedEntryFromSplit(entryID: UUID, folderID: UUID?, beforeItemID: UUID?, in space: Space) {
+        guard let entry = space.pinnedEntries.first(where: { $0.id == entryID }),
+              let groupID = entry.splitGroupID else { return }
+        let snapshot = capturePinnedOrder(in: space)
+        dissolvePinnedSplit(around: entryID, groupID: groupID, in: space)
+        placePinnedBlock([entry], folderID: folderID, beforeItemID: beforeItemID, in: space)
+        registerUndo(actionName: "Move Tab Out of Split") { [weak self] in
+            guard let self else { return }
+            self.restorePinnedOrder(snapshot, in: space)
+            self.registerUndo(actionName: "Move Tab Out of Split") { [weak self] in
+                self?.removePinnedEntryFromSplit(entryID: entryID, folderID: folderID, beforeItemID: beforeItemID, in: space)
+            }
+            self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+            self.scheduleSave()
+        }
+        notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
+        scheduleSave()
+    }
+
+    /// Full pinned-section order/grouping snapshot for undo.
+    private struct PinnedOrderSnapshot {
+        let entries: [(id: UUID, folderID: UUID?, sortOrder: Int, splitGroupID: UUID?, splitFraction: Double?)]
+        let folders: [(id: UUID, parentFolderID: UUID?, sortOrder: Int)]
+    }
+
+    private func capturePinnedOrder(in space: Space) -> PinnedOrderSnapshot {
+        PinnedOrderSnapshot(
+            entries: space.pinnedEntries.map { ($0.id, $0.folderID, $0.sortOrder, $0.splitGroupID, $0.splitFraction) },
+            folders: space.pinnedFolders.map { ($0.id, $0.parentFolderID, $0.sortOrder) }
+        )
+    }
+
+    private func restorePinnedOrder(_ snapshot: PinnedOrderSnapshot, in space: Space) {
+        for saved in snapshot.entries {
+            if let e = space.pinnedEntries.first(where: { $0.id == saved.id }) {
+                e.folderID = saved.folderID
+                e.sortOrder = saved.sortOrder
+                e.splitGroupID = saved.splitGroupID
+                e.splitFraction = saved.splitFraction
+            }
+        }
+        for saved in snapshot.folders {
+            if let f = space.pinnedFolders.first(where: { $0.id == saved.id }) {
+                f.parentFolderID = saved.parentFolderID
+                f.sortOrder = saved.sortOrder
+            }
+        }
+        // Entries removed since the snapshot can leave a restored group
+        // undersized — never trust a snapshot over the invariant.
+        sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
+    }
+
+    /// Resolves a drop anchor so nothing can land inside a pinned split: an
+    /// anchor naming a non-first member of a group retargets to the group's
+    /// first member. `excluded` (the moved block) is invisible to the scan.
+    private func snappedPinnedAnchor(_ beforeItemID: UUID?, excluding excluded: Set<UUID> = [], in space: Space) -> UUID? {
+        guard let beforeItemID,
+              let target = space.pinnedEntries.first(where: { $0.id == beforeItemID }),
+              let groupID = target.splitGroupID else { return beforeItemID }
+        let group = pinnedSplitEntries(groupID: groupID, in: space).filter { !excluded.contains($0.id) }
+        return group.first?.id ?? beforeItemID
+    }
+
+    /// A sibling (entry or folder) of one pinned level, in visual order.
+    private struct PinnedSiblingItem {
+        let id: UUID
+        let sortOrder: Int
+        enum Kind { case entry(PinnedEntry), folder(PinnedFolder) }
+        let kind: Kind
+    }
+
+    /// The sorted siblings of one pinned level, minus `excluded` ids.
+    private func pinnedLevelSiblings(folderID: UUID?, excluding excluded: Set<UUID> = [], in space: Space) -> [PinnedSiblingItem] {
+        var siblings: [PinnedSiblingItem] = []
+        for e in space.pinnedEntries where e.folderID == folderID && !excluded.contains(e.id) {
+            siblings.append(PinnedSiblingItem(id: e.id, sortOrder: e.sortOrder, kind: .entry(e)))
+        }
+        for f in space.pinnedFolders where f.parentFolderID == folderID && !excluded.contains(f.id) {
+            siblings.append(PinnedSiblingItem(id: f.id, sortOrder: f.sortOrder, kind: .folder(f)))
+        }
+        return siblings.sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    /// Renumbers a level's siblings 0..n-1 in the given order.
+    private func renumberPinnedLevel(_ siblings: [PinnedSiblingItem]) {
+        for (i, sibling) in siblings.enumerated() {
+            switch sibling.kind {
+            case .entry(let e): e.sortOrder = i
+            case .folder(let f): f.sortOrder = i
+            }
+        }
+    }
+
+    /// Moves `block` (a lone entry or a pinned split's pair, in visual order)
+    /// to `folderID`, anchored before `beforeItemID` (nil → end of level), and
+    /// renumbers the level's siblings.
+    private func placePinnedBlock(_ block: [PinnedEntry], folderID: UUID?, beforeItemID: UUID?, in space: Space) {
+        let blockIDs = Set(block.map(\.id))
+        for entry in block {
+            entry.folderID = folderID
+        }
+        var siblings = pinnedLevelSiblings(folderID: folderID, excluding: blockIDs, in: space)
+        let anchor = snappedPinnedAnchor(beforeItemID, excluding: blockIDs, in: space)
+        let insertionPoint = anchor.flatMap { a in siblings.firstIndex { $0.id == a } } ?? siblings.count
+        siblings.insert(contentsOf: block.map { PinnedSiblingItem(id: $0.id, sortOrder: 0, kind: .entry($0)) },
+                        at: insertionPoint)
+        renumberPinnedLevel(siblings)
+    }
+
+    /// Folder analog of `placePinnedBlock`: reparents `folder` to
+    /// `parentFolderID`, anchored before `beforeItemID`, renumbering the level.
+    private func placePinnedFolder(_ folder: PinnedFolder, parentFolderID: UUID?, beforeItemID: UUID?, in space: Space) {
+        folder.parentFolderID = parentFolderID
+        var siblings = pinnedLevelSiblings(folderID: parentFolderID, excluding: [folder.id], in: space)
+        // Snap anchors out of pinned split interiors — a folder must not land
+        // between a group's members.
+        let anchor = snappedPinnedAnchor(beforeItemID, in: space)
+        let insertionPoint = anchor.flatMap { a in siblings.firstIndex { $0.id == a } } ?? siblings.count
+        siblings.insert(PinnedSiblingItem(id: folder.id, sortOrder: 0, kind: .folder(folder)), at: insertionPoint)
+        renumberPinnedLevel(siblings)
+    }
+
     // MARK: - Pinned Tab Mutations
+
+    /// Materializes a dormant pinned entry into a live, subscribed tab loading
+    /// the pinned URL. The caller decides the entry's fate: keep it live
+    /// (`entry.tab = tab`) or remove it (the unpin paths).
+    private func materializeDormantEntry(_ entry: PinnedEntry, in space: Space) -> BrowserTab {
+        let tab = BrowserTab(
+            id: UUID(),
+            title: entry.pinnedTitle,
+            archivedInteractionState: nil,
+            fallbackURL: entry.pinnedURL,
+            faviconURL: entry.faviconURL,
+            configuration: space.makeWebViewConfiguration()
+        )
+        tab.spaceID = space.id
+        subscribeToTab(tab, spaceID: space.id)
+        return tab
+    }
+
+    /// What an exiting member's undo needs to rejoin its pinned split.
+    private struct PinnedSplitMembership {
+        let groupID: UUID
+        let fraction: Double?
+        let partnerEntryID: UUID
+    }
+
+    /// Captures `entry`'s pinned-split membership for an exit path's undo.
+    /// Safe to call before or after the entry leaves `pinnedEntries`.
+    private func capturePinnedSplitMembership(of entry: PinnedEntry, in space: Space) -> PinnedSplitMembership? {
+        guard let groupID = entry.splitGroupID,
+              let partner = space.pinnedEntries.first(where: { $0.splitGroupID == groupID && $0.id != entry.id })
+        else { return nil }
+        return PinnedSplitMembership(groupID: groupID, fraction: entry.splitFraction, partnerEntryID: partner.id)
+    }
+
+    /// Undo-time rejoin: restores the group on `entry` and its partner if the
+    /// partner is still an ungrouped sibling — the sanitizer clears an invalid
+    /// rejoin (wrong folder, non-adjacent).
+    private func rejoinPinnedSplit(_ entry: PinnedEntry, membership: PinnedSplitMembership?, in space: Space) {
+        guard let membership,
+              let partner = space.pinnedEntries.first(where: { $0.id == membership.partnerEntryID }),
+              partner.splitGroupID == nil else { return }
+        entry.splitGroupID = membership.groupID
+        entry.splitFraction = membership.fraction
+        partner.splitGroupID = membership.groupID
+        partner.splitFraction = membership.fraction
+        sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
+    }
 
     func pinTab(id: UUID, in space: Space, at destinationIndex: Int? = nil) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
@@ -1912,22 +2286,13 @@ class TabStore {
         let savedFolderID = entry.folderID
         let savedSortOrder = entry.sortOrder
         let savedPinnedIndex = index
-        let tab: BrowserTab
-        if let liveTab = entry.tab {
-            tab = liveTab
-        } else {
-            // Dormant — create a new tab loading the pinned URL
-            tab = BrowserTab(
-                id: UUID(),
-                title: entry.pinnedTitle,
-                archivedInteractionState: nil,
-                fallbackURL: entry.pinnedURL,
-                faviconURL: entry.faviconURL,
-                configuration: space.makeWebViewConfiguration()
-            )
-            tab.spaceID = space.id
-            subscribeToTab(tab, spaceID: space.id)
-        }
+        // A lone member leaving dissolves its pinned split (whole-group unpin
+        // goes through unpinSplitGroup instead). Captured for undo rejoin.
+        let membership = capturePinnedSplitMembership(of: entry, in: space)
+        entry.splitGroupID = nil
+        entry.splitFraction = nil
+        dissolvePinnedSplit(around: id, groupID: membership?.groupID, in: space)
+        let tab = entry.tab ?? materializeDormantEntry(entry, in: space)
         let insertAt = snappedToSplitGroupBoundary(
             min(destinationIndex ?? 0, space.tabs.count),
             groupIDs: space.tabs.map(\.splitGroupID)
@@ -1949,6 +2314,7 @@ class TabStore {
             )
             let reInsertAt = min(savedPinnedIndex, space.pinnedEntries.count)
             space.pinnedEntries.insert(reEntry, at: reInsertAt)
+            self.rejoinPinnedSplit(reEntry, membership: membership, in: space)
             self.registerUndo(actionName: "Unpin Tab") { [weak self] in
                 self?.unpinTab(id: reEntry.id, in: space, at: tabIndex)
             }
@@ -2027,12 +2393,15 @@ class TabStore {
         let savedFavicon = entry.favicon
         let savedFolderID = entry.folderID
         let savedSortOrder = entry.sortOrder
+        // Deleting a member dissolves its pinned split (the partner entry stays).
+        let membership = capturePinnedSplitMembership(of: entry, in: space)
 
         if let tab = entry.tab {
             tabSubscriptions.removeValue(forKey: tab.id)
             tab.teardown()
         }
         space.pinnedEntries.remove(at: index)
+        dissolvePinnedSplit(around: id, groupID: membership?.groupID, in: space)
 
         registerUndo(actionName: "Delete Tab") { [weak self] in
             guard let self else { return }
@@ -2047,6 +2416,7 @@ class TabStore {
             )
             let insertAt = min(index, space.pinnedEntries.count)
             space.pinnedEntries.insert(restored, at: insertAt)
+            self.rejoinPinnedSplit(restored, membership: membership, in: space)
             self.registerUndo(actionName: "Delete Tab") { [weak self] in
                 self?.deletePinnedEntry(id: id, in: space)
             }
@@ -2062,17 +2432,7 @@ class TabStore {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
         let entry = space.pinnedEntries[index]
         guard entry.tab == nil else { return }  // Already live
-        let tab = BrowserTab(
-            id: UUID(),
-            title: entry.pinnedTitle,
-            archivedInteractionState: nil,
-            fallbackURL: entry.pinnedURL,
-            faviconURL: entry.faviconURL,
-            configuration: space.makeWebViewConfiguration()
-        )
-        tab.spaceID = space.id
-        entry.tab = tab
-        subscribeToTab(tab, spaceID: space.id)
+        entry.tab = materializeDormantEntry(entry, in: space)
         notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
         scheduleSave()
     }
@@ -2104,6 +2464,17 @@ class TabStore {
         let reparentedEntryIDs = space.pinnedEntries.filter { $0.folderID == id }.map(\.id)
         let reparentedFolderIDs = space.pinnedFolders.filter { $0.parentFolderID == id }.map(\.id)
 
+        // Children take the deleted folder's place in the parent level, in
+        // their existing order, and the level renumbers. Reparenting them with
+        // their per-level sortOrders intact would collide with the parent
+        // level's numbering — a tie interleaving into a pinned split pair
+        // renders the pair broken while the group survives in the model.
+        let children = pinnedLevelSiblings(folderID: id, in: space)
+        var parentLevel = pinnedLevelSiblings(folderID: parentID, in: space)
+        let folderPosition = parentLevel.firstIndex { $0.id == id } ?? parentLevel.count
+        parentLevel.removeAll { $0.id == id }
+        parentLevel.insert(contentsOf: children, at: min(folderPosition, parentLevel.count))
+
         // Reparent direct children (entries and folders) to the deleted folder's parent
         for entry in space.pinnedEntries where entry.folderID == id {
             entry.folderID = parentID
@@ -2111,6 +2482,10 @@ class TabStore {
         for child in space.pinnedFolders where child.parentFolderID == id {
             child.parentFolderID = parentID
         }
+        renumberPinnedLevel(parentLevel)
+        // A folder can't sit inside a pair, so the block insert keeps existing
+        // groups intact — sanitize anyway, matching every other pinned mutation.
+        sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
 
         space.pinnedFolders.removeAll { $0.id == id }
 
@@ -2126,6 +2501,9 @@ class TabStore {
             for child in space.pinnedFolders where reparentedFolderIDs.contains(child.id) {
                 child.parentFolderID = id
             }
+            // The restored folder's saved sortOrder lands in a level that was
+            // renumbered by the delete — a tie could sort it into a split pair.
+            sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
             self.registerUndo(actionName: "Delete Folder") { [weak self] in
                 self?.deletePinnedFolder(id: id, in: space)
             }
@@ -2168,62 +2546,22 @@ class TabStore {
 
     func movePinnedTabToFolder(tabID: UUID, folderID: UUID?, beforeItemID: UUID? = nil, in space: Space) {
         guard let entry = space.pinnedEntries.first(where: { $0.id == tabID }) else { return }
-        let oldFolderID = entry.folderID
-        let oldSortOrder = entry.sortOrder
-        // Capture sort orders of all entries and folders for undo
-        let savedEntrySortOrders = space.pinnedEntries.map { (id: $0.id, folderID: $0.folderID, sortOrder: $0.sortOrder) }
-        let savedFolderSortOrders = space.pinnedFolders.map { (id: $0.id, parentFolderID: $0.parentFolderID, sortOrder: $0.sortOrder) }
-
-        entry.folderID = folderID
-
-        // Collect all sibling items (entries + folders) at the target level, excluding the moved entry
-        struct SiblingItem {
-            let id: UUID
-            let sortOrder: Int
-            enum Kind { case entry(PinnedEntry), folder(PinnedFolder) }
-            let kind: Kind
-        }
-
-        var siblings: [SiblingItem] = []
-        for e in space.pinnedEntries where e.folderID == folderID && e.id != tabID {
-            siblings.append(SiblingItem(id: e.id, sortOrder: e.sortOrder, kind: .entry(e)))
-        }
-        for f in space.pinnedFolders where f.parentFolderID == folderID {
-            siblings.append(SiblingItem(id: f.id, sortOrder: f.sortOrder, kind: .folder(f)))
-        }
-        siblings.sort { $0.sortOrder < $1.sortOrder }
-
-        // Insert the moved entry at the right position
-        let movedItem = SiblingItem(id: entry.id, sortOrder: 0, kind: .entry(entry))
-        if let beforeItemID, let insertionPoint = siblings.firstIndex(where: { $0.id == beforeItemID }) {
-            siblings.insert(movedItem, at: insertionPoint)
+        // A grouped entry moves as its whole pair, in visual order — the pinned
+        // analog of moveTab's block move. Member-level moves go through
+        // removePinnedEntryFromSplit instead.
+        let block: [PinnedEntry]
+        if let groupID = entry.splitGroupID {
+            block = pinnedSplitEntries(groupID: groupID, in: space)
         } else {
-            siblings.append(movedItem)
+            block = [entry]
         }
 
-        // Renumber all siblings
-        for (i, sibling) in siblings.enumerated() {
-            switch sibling.kind {
-            case .entry(let e): e.sortOrder = i
-            case .folder(let f): f.sortOrder = i
-            }
-        }
+        let snapshot = capturePinnedOrder(in: space)
+        placePinnedBlock(block, folderID: folderID, beforeItemID: beforeItemID, in: space)
 
         registerUndo(actionName: "Move Tab") { [weak self] in
             guard let self else { return }
-            // Restore all sort orders and folder assignments
-            for saved in savedEntrySortOrders {
-                if let e = space.pinnedEntries.first(where: { $0.id == saved.id }) {
-                    e.folderID = saved.folderID
-                    e.sortOrder = saved.sortOrder
-                }
-            }
-            for saved in savedFolderSortOrders {
-                if let f = space.pinnedFolders.first(where: { $0.id == saved.id }) {
-                    f.parentFolderID = saved.parentFolderID
-                    f.sortOrder = saved.sortOrder
-                }
-            }
+            self.restorePinnedOrder(snapshot, in: space)
             self.registerUndo(actionName: "Move Tab") { [weak self] in
                 self?.movePinnedTabToFolder(tabID: tabID, folderID: folderID, beforeItemID: beforeItemID, in: space)
             }
@@ -2244,57 +2582,12 @@ class TabStore {
             if currentID == folderID { return }
             ancestorID = space.pinnedFolders.first(where: { $0.id == currentID })?.parentFolderID
         }
-        // Capture state for undo
-        let savedEntrySortOrders = space.pinnedEntries.map { (id: $0.id, folderID: $0.folderID, sortOrder: $0.sortOrder) }
-        let savedFolderSortOrders = space.pinnedFolders.map { (id: $0.id, parentFolderID: $0.parentFolderID, sortOrder: $0.sortOrder) }
-
-        folder.parentFolderID = parentFolderID
-
-        // Collect all sibling items at the target level, excluding the moved folder
-        struct SiblingItem {
-            let id: UUID
-            let sortOrder: Int
-            enum Kind { case entry(PinnedEntry), folder(PinnedFolder) }
-            let kind: Kind
-        }
-
-        var siblings: [SiblingItem] = []
-        for e in space.pinnedEntries where e.folderID == parentFolderID {
-            siblings.append(SiblingItem(id: e.id, sortOrder: e.sortOrder, kind: .entry(e)))
-        }
-        for f in space.pinnedFolders where f.parentFolderID == parentFolderID && f.id != folderID {
-            siblings.append(SiblingItem(id: f.id, sortOrder: f.sortOrder, kind: .folder(f)))
-        }
-        siblings.sort { $0.sortOrder < $1.sortOrder }
-
-        let movedItem = SiblingItem(id: folder.id, sortOrder: 0, kind: .folder(folder))
-        if let beforeItemID, let insertionPoint = siblings.firstIndex(where: { $0.id == beforeItemID }) {
-            siblings.insert(movedItem, at: insertionPoint)
-        } else {
-            siblings.append(movedItem)
-        }
-
-        for (i, sibling) in siblings.enumerated() {
-            switch sibling.kind {
-            case .entry(let e): e.sortOrder = i
-            case .folder(let f): f.sortOrder = i
-            }
-        }
+        let snapshot = capturePinnedOrder(in: space)
+        placePinnedFolder(folder, parentFolderID: parentFolderID, beforeItemID: beforeItemID, in: space)
 
         registerUndo(actionName: "Move Folder") { [weak self] in
             guard let self else { return }
-            for saved in savedEntrySortOrders {
-                if let e = space.pinnedEntries.first(where: { $0.id == saved.id }) {
-                    e.folderID = saved.folderID
-                    e.sortOrder = saved.sortOrder
-                }
-            }
-            for saved in savedFolderSortOrders {
-                if let f = space.pinnedFolders.first(where: { $0.id == saved.id }) {
-                    f.parentFolderID = saved.parentFolderID
-                    f.sortOrder = saved.sortOrder
-                }
-            }
+            self.restorePinnedOrder(snapshot, in: space)
             self.registerUndo(actionName: "Move Folder") { [weak self] in
                 self?.movePinnedFolder(folderID: folderID, parentFolderID: parentFolderID, beforeItemID: beforeItemID, in: space)
             }

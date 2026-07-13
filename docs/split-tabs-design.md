@@ -324,8 +324,8 @@ Behavior:
   - One peek at a time (existing `peekOverlayView == nil` guard). A saved peek
     on the unfocused pane stays dormant until that pane is focused —
     `restorePeekOverlayIfNeeded()` keys off `selectedTab` and needs no change.
-  - The pinned-tab cross-host peek intercept is unaffected (pinned tabs can't
-    be split members).
+  - The pinned-tab cross-host peek intercept also covers pinned split
+    members (§12).
 
   **Follow-up (separate effort): extensions in peek views.** Split panes are
   extension-visible *because* they're real tabs in `space.tabs`; peek tabs are
@@ -367,8 +367,13 @@ Behavior:
 3. Sidebar split row: **each half's close button closes its own pane**; the
    context menu's **Close Both Splits** closes both (one transaction); **Cmd+W closes
    the focused pane**.
-4. **Only normal tabs** can form splits — not pinned entries, favorites, or
-   peek tabs. Pinning a member separates it first.
+4. **Splits form between normal tabs, but survive pinning.** Dragging a whole
+   split row into the pinned section pins both members as two adjacent entries
+   that keep the group — a **pinned split** (§12). Pinning a *single* member
+   (favicon-segment drag, Pin menu item) still separates it first; favorites
+   and peek tabs still can't be split members. Splits are never *created*
+   inside the pinned section in v1 — they only arrive there by pinning an
+   existing split.
 5. Splits are **per-space, same-space only** (cross-space edge drops rejected,
    consistent with existing DnD rules).
 6. Reopened closed tabs come back **unsplit**; interactive-close *undo* rejoins.
@@ -400,8 +405,123 @@ reliably fire `becomeFirstResponder` on the WKWebView subclass.
    split may focus different members; structural changes that bypass
    `selectTab` (pane closed, Separate Tabs, split formed around the selection)
    converge through `refreshSplitHostingIfNeeded()` from the store observers.
-3. **Sidebar DnD:** payload kinds, resolver cases + tests, edge-drop validate
+3. **DONE (Jul 12, 2026). Sidebar DnD:** payload kinds, resolver cases + tests, edge-drop validate
    geometry + half-row highlight, member drag-out, split-row unit reorder,
-   `performDropTransaction` wiring.
+   `performDropTransaction` wiring. Implementation notes:
+   - Geometry stays in the pure layer: `rowDropZone(forX:y:rowSize:)` maps an
+     `.on` proposal to `.splitEdge(left/right)` (outer 40% bands) or
+     `.reorderGap(offset:)` (middle band → nearest gap by vertical half);
+     `splitRowDragKind(forX:rowWidth:)` gives each half's leading 34pt (the
+     favicon segment) to a `.splitMember` drag, the rest to `.splitGroup`.
+     `DraggableTableView` stashes the mouse-down point for the pasteboard writer.
+   - `validateSidebarDrop`/`sidebarDropDestination` take `tabItems` + `dropZone`;
+     a new `.acceptIntoSplit(edge:)` validation drives a half-row accent overlay
+     (added to the table during validate, cleared via `draggingExited`/`Ended`
+     hooks — the delegate is never told a drag left the table).
+   - `removeTabFromSplit` now takes a PRE-removal gap, matching
+     `moveTab(id:toGapIndex:)`; `createSplit`'s undo converts its stored index
+     at fire time (the dragged tab may sit before or after the restore gap).
+   - `createSplit`/`removeFromSplit` drops wrap in `performDropTransaction`
+     even though they're single store mutations: they diff as remove+insert
+     (row merge/split), and NSTableView does not survive structural batch
+     updates issued while the drag session is still live — the transaction
+     defers the table update past the session's end. Selection is captured
+     before the drop and re-selected after (remove+insert loses it; moveRow
+     wouldn't).
+   - Dragging a whole split row into the pinned section (or onto a folder)
+     pins BOTH members in visual order (`.pinSplitGroup`, one transaction).
+     Originally this dissolved the split; superseded by §12 — the group is
+     preserved as a pinned split.
+   - v1 rejections enforced in validation + resolver: split MEMBERS can't
+     pin, enter folders, or become favorites by drag; split rows can't become
+     favorites; grouped sources and split rows can't be edge-drop targets;
+     member-onto-edge (leave-and-rejoin) is v2.
+   - `DraggableTableView`'s `draggingExited`/`draggingEnded` overrides (overlay
+     cleanup) must NOT call super unguarded: NSView declares the
+     NSDraggingDestination methods (so overrides compile) but NSTableView does
+     not implement them all — an unrecognized-selector exception during drag
+     teardown kills the session-end callbacks and strands the favorites drop
+     zone. Guard with `instancesRespond(to:)`.
 4. **Content-area DnD:** `SplitDropZoneView`, session-active plumbing through the
    delegate, zone preview, drop → `createSplit`.
+5. **Pinned splits (§12):** entry-level groups, pin/unpin preserving the split,
+   pinned split row rendering, group-aware pinned reorder + DnD matrix.
+
+## 12. Pinned splits
+
+Pinning a split keeps it a split. The group concept extends to the pinned
+section as a mirror of the normal-tab model:
+
+**Model.** A pinned split is **two `PinnedEntry`s sharing
+`PinnedEntry.splitGroupID`** (+ `splitFraction`, both store it, first wins).
+Invariant: exactly 2 entries, **same `folderID`, consecutive in sibling sort
+order** (nothing — entry or folder — sorts between them at their level).
+While pinned, group membership lives ONLY on the entries; the backing
+`BrowserTab.splitGroupID` stays nil (`space.tabs` invariants never see pinned
+groups). The groupID value is carried across pin/unpin so undo/redo and the
+sidebar diff (item ID = groupID in both sections) treat it as the same row
+moving between sections.
+
+**TabStore.**
+
+```swift
+func pinSplitGroup(groupID: UUID, in: Space)            // both tabs → 2 entries, group + fraction kept
+func unpinSplitGroup(groupID: UUID, toGapIndex: Int, in: Space)  // both entries → adjacent tabs, group restored
+func separatePinnedSplit(groupID: UUID, in: Space)      // context-menu Separate: clears both entries' group
+func removePinnedEntryFromSplit(entryID: UUID, folderID: UUID?, beforeItemID: UUID?, in: Space)
+    // member-segment drag to a pinned gap: dissolve + move the lone entry
+```
+
+- `splitGroup(containing:in:)` generalizes: a tab backing a grouped pinned
+  entry resolves to the group with members = the entries' **live** tabs. All
+  window hosting (claim/snapshot/refresh/Option-click send-to-other-pane)
+  keys off this one function and needs no per-call-site changes.
+- `setSplitFraction` writes to whichever side owns the group (tab members or
+  pinned entries); the window reads the fraction through a store helper
+  instead of `members[0].splitFraction`.
+- Member-exit dissolution mirrors `leaveSplitGroup`: `unpinTab` (single
+  member), `deletePinnedEntry`, `detachPinnedEntry` (→ favorite) clear the
+  partner's group. `closePinnedTab` does NOT dissolve — a dormant member
+  stays in the group and re-wakes on selection.
+- `movePinnedTabToFolder` moves a grouped entry's **whole pair** as a block
+  (the pinned analog of `moveTab`'s block move), and snaps a `beforeItemID`
+  anchor that names the RIGHT member of a group to the LEFT member so nothing
+  can land inside a group. `movePinnedFolder` gets the same anchor snap.
+- Dormant entries participate: `unpinSplitGroup` materializes a tab for a
+  dormant member exactly like `unpinTab` does.
+
+**Persistence.** Migration v7 adds `splitGroupID TEXT` / `splitFraction
+DOUBLE` to `pinnedTab`. Load-time `sanitizePinnedSplitGroups` clears groups
+that aren't exactly 2 same-folder, sort-adjacent entries.
+
+**Selection & hosting.** Selecting a pinned split wakes BOTH sides:
+`selectTab` activates dormant partner entries (the pinned analog of the
+sleeping-member wake), then the generalized `splitGroup` makes
+`claimSplitWebViews` host both panes. `lastFocusedSplitMember` works
+unchanged (keyed by groupID). Focused-pane Cmd+W / per-half close = the
+existing pinned close semantics (live → dormant, dormant → delete entry;
+delete dissolves, dormant doesn't). The pinned cross-host peek intercept now
+also applies to split members.
+
+**Sidebar.** `PinnedItem` gains `.split(groupID:entries:depth:)`; grouping
+happens per sibling level inside `flattenPinnedTree` (adjacent sorted entries
+sharing a groupID merge; a run of 1 renders as a plain entry — same defensive
+rule as `tabListItems`). The selected-entry exposure for collapsed folders
+exposes the whole `.split` item when the selected entry is a split member with
+a valid adjacent partner (single-row exposure hid the partner from drag
+semantics); partnerless/invalid groups fall back to the single row. `itemIDAtDropIndex` returns the group's FIRST entry ID so
+drop anchors resolve to real sibling entries and naturally snap before the
+group; `pinnedItemID` returns the groupID (diff identity).
+
+**DnD matrix (v1).** Payload kinds `.pinnedSplitGroup` (row) /
+`.pinnedSplitMember` (favicon segment), mirroring the normal-split kinds:
+
+- split row → pinned gap / folder: `.pinSplitGroup` now preserves the group
+  (one store call + one anchor move, single transaction).
+- pinned split row → pinned gap / folder: reorder as a unit.
+- pinned split row → normal-tab gap: `.unpinSplitGroup` — the split comes
+  back as a normal split row.
+- pinned split member → normal-tab gap: unpin that member alone (dissolves).
+- pinned split member → pinned gap: `.removeFromPinnedSplit` (own pinned row).
+- Rejected: pinned splits/members → favorites; anything → pinned-row split
+  edges (no split creation in the pinned section); member → folder `.on`.

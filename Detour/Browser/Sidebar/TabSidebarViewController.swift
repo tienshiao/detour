@@ -34,6 +34,14 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparateSplit groupID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseSplitGroup groupID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCreateSplit draggedTabID: UUID, withTabID targetTabID: UUID, edge: SplitEdge)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveTabFromSplit tabID: UUID, toGapIndex gapIndex: Int)
+
+    // Pinned split operations (§12)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestPinSplitGroup groupID: UUID)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinSplitGroup groupID: UUID, toGapIndex gapIndex: Int)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparatePinnedSplit groupID: UUID)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemovePinnedEntryFromSplit entryID: UUID, folderID: UUID?, beforeItemID: UUID?)
 
     // Pinned entry operations
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String)
@@ -74,6 +82,12 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparateSplit groupID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseSplitGroup groupID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCreateSplit draggedTabID: UUID, withTabID targetTabID: UUID, edge: SplitEdge) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveTabFromSplit tabID: UUID, toGapIndex gapIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestPinSplitGroup groupID: UUID) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinSplitGroup groupID: UUID, toGapIndex gapIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparatePinnedSplit groupID: UUID) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemovePinnedEntryFromSplit entryID: UUID, folderID: UUID?, beforeItemID: UUID?) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedTab entryID: UUID, newName: String) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavorite tabID: UUID, isPinned: Bool, at index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int) {}
@@ -165,6 +179,11 @@ class TabSidebarViewController: NSViewController {
     }()
 
     private var isDragging = false
+
+    /// Rounded highlight over the half of a tab row where an edge drop would
+    /// place the dragged tab as a split pane. NSTableView's `.sourceList`
+    /// feedback can only mark the whole row, so this draws the half itself.
+    private var splitDropOverlay: NSView?
     private var pendingInsertionOrigin: NSPoint?
     private var bottomBar = DraggableBarView()
     private let spaceClipView = NSView()
@@ -225,11 +244,27 @@ class TabSidebarViewController: NSViewController {
         case .single(let tab):
             return tab
         case .split(_, let members):
-            if let selectedNormalTabID, let match = members.first(where: { $0.id == selectedNormalTabID }) {
-                return match
-            }
-            return members[0]
+            return representativeMember(members, selectedID: selectedNormalTabID, id: \.id)
         }
+    }
+
+    /// The selected pinned entry's ID, tracked so a pinned split row can pick
+    /// its representative member (the selected pane, else the left pane). Set
+    /// by the window through `selectedPinnedTabIndex`.
+    private var selectedPinnedEntryID: UUID?
+
+    /// The member whose title/state a collapsed pinned split row emphasizes.
+    private func representativePinnedEntry(of entries: [PinnedEntry]) -> PinnedEntry {
+        representativeMember(entries, selectedID: selectedPinnedEntryID, id: \.id)
+    }
+
+    /// Picks a split group's representative member: the one matching the
+    /// selected-pane ID if present, else the first (left) member.
+    private func representativeMember<Member>(_ members: [Member], selectedID: UUID?, id: (Member) -> UUID) -> Member {
+        if let selectedID, let match = members.first(where: { id($0) == selectedID }) {
+            return match
+        }
+        return members[0]
     }
 
     /// Pending state deferred during drag. The last applyState call during isDragging
@@ -245,9 +280,15 @@ class TabSidebarViewController: NSViewController {
         if let explicit { return explicit }
         let row = tableView.selectedRow
         if row >= 0, case .pinnedItem(let idx) = sidebarRow(for: row),
-           idx < flattenedPinnedItems.count,
-           case .entry(let entry, _) = flattenedPinnedItems[idx] {
-            return entry.tab?.id
+           idx < flattenedPinnedItems.count {
+            switch flattenedPinnedItems[idx] {
+            case .entry(let entry, _):
+                return entry.tab?.id
+            case .split(_, let entries, _):
+                return representativePinnedEntry(of: entries).tab?.id
+            case .folder:
+                return nil
+            }
         }
         return nil
     }
@@ -355,6 +396,10 @@ class TabSidebarViewController: NSViewController {
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FolderCellView {
                     cell.configure(name: folder.name, isCollapsed: folder.isCollapsed, depth: depth, color: safeTintColor)
                 }
+            case .split(_, let entries, let depth):
+                if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
+                    configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: true)
+                }
             }
         }
 
@@ -415,10 +460,10 @@ class TabSidebarViewController: NSViewController {
                            tabs: pending.tabs, selectedTabID: pending.selectedTabID)
             }
             if let selectTabID {
-                // Select in pinned section
+                // Select in pinned section (a pinned split row matches when it
+                // contains the entry — entry IDs equal their tabs' IDs at pin time)
                 if let flatIdx = flattenedPinnedItems.firstIndex(where: {
-                    if case .entry(let e, _) = $0 { return e.id == selectTabID }
-                    return false
+                    $0.contains(entryID: selectTabID) || $0.entries.contains { $0.tab?.id == selectTabID }
                 }) {
                     tableView.selectRowIndexes(IndexSet(integer: rowForPinnedItem(at: flatIdx)), byExtendingSelection: false)
                 }
@@ -527,10 +572,8 @@ class TabSidebarViewController: NSViewController {
         set {
             guard newValue >= 0, newValue < pinnedEntries.count else { return }
             let entryID = pinnedEntries[newValue].id
-            guard let flatIdx = flattenedPinnedItems.firstIndex(where: {
-                if case .entry(let e, _) = $0 { return e.id == entryID }
-                return false
-            }) else { return }
+            selectedPinnedEntryID = entryID
+            guard let flatIdx = flattenedPinnedItems.firstIndex(where: { $0.contains(entryID: entryID) }) else { return }
             tableView.selectRowIndexes(IndexSet(integer: rowForPinnedItem(at: flatIdx)), byExtendingSelection: false)
         }
     }
@@ -766,6 +809,9 @@ class TabSidebarViewController: NSViewController {
             page.favoritesBar.delegate = self
             page.favoritesBar.sidebarID = sidebarID
             page.favoritesBar.selectionColor = safeTintColor
+            // The delegate hears nothing when a drag leaves the table — clear
+            // the split-edge highlight from the view's own exit notifications.
+            page.tableView.onDragTargetingEnded = { [weak self] in self?.hideSplitDropOverlay() }
 
             // Update favorites from profile
             if let profile = space.profile {
@@ -1521,11 +1567,17 @@ class TabSidebarViewController: NSViewController {
     func reloadPinnedEntry(at index: Int) {
         guard index >= 0, index < pinnedEntries.count else { return }
         let entryID = pinnedEntries[index].id
-        guard let flatIdx = flattenedPinnedItems.firstIndex(where: {
-            if case .entry(let e, _) = $0 { return e.id == entryID }
-            return false
-        }) else { return }
+        guard let flatIdx = flattenedPinnedItems.firstIndex(where: { $0.contains(entryID: entryID) }) else { return }
         let row = rowForPinnedItem(at: flatIdx)
+        // A pinned split row's state is a fold over both members — reconfigure it whole.
+        if case .split(_, let entries, let depth) = flattenedPinnedItems[flatIdx] {
+            if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
+                configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: true)
+            } else {
+                tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+            }
+            return
+        }
         // Update existing cell in-place if visible (preserves hover state, enables smooth animation)
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
             let entry = pinnedEntries[index]
@@ -1583,16 +1635,40 @@ extension TabSidebarViewController: NSTableViewDataSource {
                 payload = SidebarDragPayload(kind: .pinnedEntry, itemID: entry.id, spaceID: spaceID, sidebarID: sidebarID)
             case .folder(let folder, _):
                 payload = SidebarDragPayload(kind: .pinnedFolder, itemID: folder.id, spaceID: spaceID, sidebarID: sidebarID)
+            case .split(_, let entries, let depth):
+                // Same grab semantics as a normal split row: a pane's favicon
+                // segment drags that member; anywhere else drags the whole row.
+                // Folder depth shifts the left favicon (TabCellView indents by
+                // 16pt per level) — pass it so the grab band tracks the icon.
+                let rowRect = self.tableView.rect(ofRow: row)
+                let downX = (self.tableView.lastMouseDownPoint?.x ?? rowRect.midX) - rowRect.minX
+                switch splitRowDragKind(forX: downX, rowWidth: rowRect.width, indent: CGFloat(depth) * 16) {
+                case .member(let edge):
+                    let member = (edge == .left ? entries.first : entries.last) ?? entries[0]
+                    payload = SidebarDragPayload(kind: .pinnedSplitMember, itemID: member.id, spaceID: spaceID, sidebarID: sidebarID)
+                case .group:
+                    payload = SidebarDragPayload(kind: .pinnedSplitGroup, itemID: entries[0].id, spaceID: spaceID, sidebarID: sidebarID)
+                }
             }
         case .normalTab(let index):
             guard index < tabItems.count, let first = tabItems[index].tabs.first else { return nil }
-            // A split row travels as a unit: the .splitGroup kind lets the drop
-            // resolver reject pin/folder/favorite targets that would scatter it.
             switch tabItems[index] {
             case .single:
                 payload = SidebarDragPayload(kind: .normalTab, itemID: first.id, spaceID: spaceID, sidebarID: sidebarID)
-            case .split:
-                payload = SidebarDragPayload(kind: .splitGroup, itemID: first.id, spaceID: spaceID, sidebarID: sidebarID)
+            case .split(_, let members):
+                // Grabbing a pane's favicon segment drags that member out on its
+                // own; anywhere else the row travels as a unit — the .splitGroup
+                // kind lets the drop resolver reject pin/folder/favorite targets
+                // that would scatter it.
+                let rowRect = self.tableView.rect(ofRow: row)
+                let downX = (self.tableView.lastMouseDownPoint?.x ?? rowRect.midX) - rowRect.minX
+                switch splitRowDragKind(forX: downX, rowWidth: rowRect.width) {
+                case .member(let edge):
+                    let member = (edge == .left ? members.first : members.last) ?? first
+                    payload = SidebarDragPayload(kind: .splitMember, itemID: member.id, spaceID: spaceID, sidebarID: sidebarID)
+                case .group:
+                    payload = SidebarDragPayload(kind: .splitGroup, itemID: first.id, spaceID: spaceID, sidebarID: sidebarID)
+                }
             }
         default:
             return nil
@@ -1641,10 +1717,28 @@ extension TabSidebarViewController: NSTableViewDataSource {
             // Re-resolve as a split only if the group survived mid-drag mutations;
             // a dissolved group degrades to a plain tab drag.
             guard let index = itemIndex(containingTabID: payload.itemID, in: tabItems) else { return nil }
-            if case .split = tabItems[index] {
-                return .splitGroup(index: index, firstTabID: payload.itemID)
+            if case .split(let groupID, let members) = tabItems[index] {
+                return .splitGroup(index: index, groupID: groupID, memberTabIDs: members.map(\.id))
             }
             return .normalTab(index: index, tabID: payload.itemID)
+        case .splitMember:
+            // Same degradation rule: if the group dissolved mid-drag the pane is
+            // just a normal tab now.
+            guard let index = itemIndex(containingTabID: payload.itemID, in: tabItems) else { return nil }
+            if case .split(let groupID, _) = tabItems[index] {
+                return .splitMember(tabID: payload.itemID, groupID: groupID)
+            }
+            return .normalTab(index: index, tabID: payload.itemID)
+        case .pinnedSplitGroup, .pinnedSplitMember:
+            // A pinned split dissolved mid-drag degrades to a plain entry drag.
+            guard let entry = pinnedEntries.first(where: { $0.id == payload.itemID }) else { return nil }
+            guard let groupID = entry.splitGroupID else { return .pinnedEntry(entryID: entry.id) }
+            if payload.kind == .pinnedSplitMember {
+                return .pinnedSplitMember(entryID: entry.id, groupID: groupID)
+            }
+            let members = pinnedEntries.filter { $0.splitGroupID == groupID }
+                .sorted { $0.sortOrder < $1.sortOrder }
+            return .pinnedSplitGroup(groupID: groupID, memberEntryIDs: members.map(\.id))
         }
     }
 
@@ -1700,6 +1794,16 @@ extension TabSidebarViewController: NSTableViewDataSource {
         recheckHoverForVisibleCells(afterDelay: 0.35)
     }
 
+    /// The pointer's position within the proposed row, for `.on` proposals on
+    /// normal-tab rows — decides split-edge drops vs middle-band reorders.
+    private func dropZone(for info: any NSDraggingInfo, tableView: NSTableView,
+                          row: Int, dropOperation: NSTableView.DropOperation) -> RowDropZone? {
+        guard dropOperation == .on, case .normalTab = sidebarRow(for: row) else { return nil }
+        let rowRect = tableView.rect(ofRow: row)
+        let point = tableView.convert(info.draggingLocation, from: nil)
+        return rowDropZone(forX: point.x - rowRect.minX, y: point.y - rowRect.minY, rowSize: rowRect.size)
+    }
+
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         let kind: SidebarDragKind
         let sourceItemID: UUID?
@@ -1717,12 +1821,18 @@ extension TabSidebarViewController: NSTableViewDataSource {
             kind: kind, sourceItemID: sourceItemID,
             row: sidebarRow(for: row),
             operation: dropOperation == .on ? .on : .above,
-            items: flattenedPinnedItems
+            items: flattenedPinnedItems,
+            tabItems: tabItems,
+            dropZone: dropZone(for: info, tableView: tableView, row: row, dropOperation: dropOperation)
         )
+        if case .acceptIntoSplit = validation {} else { hideSplitDropOverlay() }
         switch validation {
         case .reject:
             return []
         case .accept:
+            return .move
+        case .acceptIntoSplit(let edge):
+            showSplitDropOverlay(forRow: row, edge: edge)
             return .move
         case .retargetToPinnedGap(let index):
             tableView.setDropRow(rowForPinnedItem(at: index), dropOperation: .above)
@@ -1734,6 +1844,7 @@ extension TabSidebarViewController: NSTableViewDataSource {
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+        hideSplitDropOverlay()
         let destRow = sidebarRow(for: row)
         let operation: SidebarDropOperation = dropOperation == .on ? .on : .above
 
@@ -1743,7 +1854,11 @@ extension TabSidebarViewController: NSTableViewDataSource {
 
         guard let payload = localDragPayload(from: info),
               let source = resolveDragSource(payload),
-              let destination = sidebarDropDestination(row: destRow, operation: operation, items: flattenedPinnedItems),
+              let destination = sidebarDropDestination(
+                  row: destRow, operation: operation, items: flattenedPinnedItems,
+                  tabItems: tabItems,
+                  dropZone: dropZone(for: info, tableView: tableView, row: row, dropOperation: dropOperation)
+              ),
               let command = resolveSidebarDrop(source: source, destination: destination, items: flattenedPinnedItems)
         else { return false }
 
@@ -1761,16 +1876,117 @@ extension TabSidebarViewController: NSTableViewDataSource {
         case .movePinnedFolder(let folderID, let parentFolderID, let beforeItemID):
             delegate?.tabSidebar(self, didRequestMovePinnedFolder: folderID,
                                  parentFolderID: parentFolderID, beforeItemID: beforeItemID)
+        // Split create/break rewrite rows structurally (remove + insert, not just
+        // moves). Issued synchronously they run while the drag session is still
+        // live, which NSTableView does not survive (see applyPendingState) — the
+        // aborted drop then strands the whole session mid-drag. The transaction
+        // defers the table update past the session's end.
+        case .createSplit(let draggedTabID, let targetTabID, let edge):
+            performDropTransaction(selectTabID: selectedTabIDForCurrentRow()) {
+                delegate?.tabSidebar(self, didRequestCreateSplit: draggedTabID, withTabID: targetTabID, edge: edge)
+            }
+        case .removeFromSplit(let tabID, let gapIndex):
+            let tabGap = tabGapIndex(forItemGap: gapIndex, in: tabItems)
+            performDropTransaction(selectTabID: selectedTabIDForCurrentRow()) {
+                delegate?.tabSidebar(self, didRemoveTabFromSplit: tabID, toGapIndex: tabGap)
+            }
 
-        // Multi-delegate case: defer intermediate updates, animate at the end
+        // Multi-delegate cases: defer intermediate updates, animate at the end
         case .pinTab(let tabID, let folderID, let beforeItemID):
             performDropTransaction(selectTabID: tabID) {
                 delegate?.tabSidebar(self, didDragTabToPin: tabID)
                 delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: tabID,
                                      folderID: folderID, beforeItemID: beforeItemID)
             }
+        case .pinSplitGroup(let groupID, let firstMemberTabID, let folderID, let beforeItemID):
+            // Pin the whole split, keeping the group (§12); the anchor move
+            // then places the pair as a block (the store moves grouped entries
+            // together).
+            performDropTransaction(selectTabID: selectedTabIDForCurrentRow()) {
+                delegate?.tabSidebar(self, didRequestPinSplitGroup: groupID)
+                delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: firstMemberTabID,
+                                     folderID: folderID, beforeItemID: beforeItemID)
+            }
+        case .movePinnedSplitGroup(_, let firstMemberEntryID, let folderID, let beforeItemID):
+            // A pure row move (the split item's identity is its groupID) — the
+            // store moves the pair as a block.
+            delegate?.tabSidebar(self, didRequestMovePinnedTabToFolder: firstMemberEntryID,
+                                 folderID: folderID, beforeItemID: beforeItemID)
+        case .unpinSplitGroup(let groupID, let gapIndex):
+            let tabGap = tabGapIndex(forItemGap: gapIndex, in: tabItems)
+            performDropTransaction(selectTabID: selectedTabIDForCurrentRow()) {
+                delegate?.tabSidebar(self, didRequestUnpinSplitGroup: groupID, toGapIndex: tabGap)
+            }
+        // Member break-outs rewrite the pinned split row structurally
+        // (remove + insert) — defer past the drag session like the other
+        // split create/break drops above.
+        case .unpinSplitMember(let entryID, let gapIndex):
+            let tabGap = tabGapIndex(forItemGap: gapIndex, in: tabItems)
+            performDropTransaction(selectTabID: selectedTabIDForCurrentRow()) {
+                delegate?.tabSidebar(self, didDragPinnedTabToUnpin: entryID, toGapIndex: tabGap)
+            }
+        case .removeFromPinnedSplit(let entryID, let folderID, let beforeItemID):
+            performDropTransaction(selectTabID: selectedTabIDForCurrentRow()) {
+                delegate?.tabSidebar(self, didRemovePinnedEntryFromSplit: entryID,
+                                     folderID: folderID, beforeItemID: beforeItemID)
+            }
         }
         return true
+    }
+
+    /// The tab whose row is currently selected, captured before a structural
+    /// drop. Unlike moveRow, the remove+insert batch a split create/break
+    /// produces does not carry row selection across, so the transaction
+    /// re-selects this tab's (possibly merged or newly single) row afterwards.
+    private func selectedTabIDForCurrentRow() -> UUID? {
+        let row = tableView.selectedRow
+        guard row >= 0 else { return nil }
+        switch sidebarRow(for: row) {
+        case .normalTab(let idx) where idx < tabItems.count:
+            return representativeTab(for: tabItems[idx]).id
+        case .pinnedItem(let idx) where idx < flattenedPinnedItems.count:
+            let entries = flattenedPinnedItems[idx].entries
+            guard !entries.isEmpty else { return nil }
+            let rep = entries.count > 1 ? representativePinnedEntry(of: entries) : entries[0]
+            return rep.tab?.id ?? rep.id
+        default:
+            return nil
+        }
+    }
+
+    /// Highlights the half of `row` the split-edge drop targets. Geometry
+    /// mirrors `TabCellView.hoverBackgroundFrame`: the visual row extends 6pt
+    /// beyond the cell and each half stops 4pt short of the centered divider.
+    private func showSplitDropOverlay(forRow row: Int, edge: SplitEdge) {
+        guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) else {
+            hideSplitDropOverlay()
+            return
+        }
+        let visual = tableView.convert(cell.bounds.insetBy(dx: -6, dy: 1), from: cell)
+        let frame = edge == .left
+            ? NSRect(x: visual.minX, y: visual.minY, width: visual.midX - 4 - visual.minX, height: visual.height)
+            : NSRect(x: visual.midX + 4, y: visual.minY, width: visual.maxX - (visual.midX + 4), height: visual.height)
+
+        let overlay: NSView
+        if let existing = splitDropOverlay {
+            overlay = existing
+        } else {
+            overlay = NSView()
+            overlay.wantsLayer = true
+            overlay.layer?.cornerRadius = 6
+            overlay.layer?.borderWidth = 1.5
+            splitDropOverlay = overlay
+        }
+        overlay.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+        overlay.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.6).cgColor
+        overlay.frame = frame
+        if overlay.superview !== tableView {
+            tableView.addSubview(overlay)
+        }
+    }
+
+    private func hideSplitDropOverlay() {
+        splitDropOverlay?.removeFromSuperview()
     }
 
     /// Handles a favorite tile dropped into the table (restore as tab or pinned entry).
@@ -1798,6 +2014,10 @@ extension TabSidebarViewController: NSTableViewDataSource {
         case .intoFolder(let folderID):
             dropFavoriteIntoPinned(favoriteID: payload.favoriteID, folderID: folderID,
                                    beforeItemID: nil, insertionOrigin: animOrigin)
+        case .intoSplit:
+            // Favorites never validate as split sources (and this path passes no
+            // drop geometry, so the destination can't produce .intoSplit anyway).
+            return false
         }
         return true
     }
@@ -1893,6 +2113,10 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 let cell = makeFolderCell(tableView)
                 configureFolderCell(cell, folder: folder, depth: depth, isActive: isActive)
                 return cell
+            case .split(_, let entries, let depth):
+                let cell = makeTabCell(tableView)
+                configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: isActive)
+                return cell
             }
 
         case .normalTab(let itemIndex):
@@ -1928,42 +2152,134 @@ extension TabSidebarViewController: NSTableViewDelegate {
         }
     }
 
+    /// One half of a split row: favicon (globe fallback applied at render),
+    /// title, and whether its title is emphasized (the focused/representative
+    /// pane). Section-agnostic — normal and pinned adapters fill it from a
+    /// `BrowserTab` or a `PinnedEntry` respectively.
+    private struct SplitCellHalf {
+        let favicon: NSImage?
+        let title: String
+        let emphasized: Bool
+    }
+
+    /// Section-agnostic description of a split row. The two-half rendering is
+    /// shared; the section-specific semantics (title source, sleeping rule,
+    /// pinned-mode close glyphs, indent, close handlers) are resolved by the
+    /// adapters and passed in here.
+    private struct SplitCellDescriptor {
+        let left: SplitCellHalf
+        let right: SplitCellHalf
+        let tooltip: String
+        let isSleeping: Bool
+        let isLoading: Bool
+        let progress: Double
+        let audioIsPlaying: Bool
+        let audioIsMuted: Bool
+        let indentLevel: Int
+        /// Applies the per-half close glyphs (normal xmark vs pinned live/dormant).
+        let applyCloseGlyphs: (TabCellView) -> Void
+        /// Closes the pane on `side` (0 = left, 1 = right) of the row hosting the cell.
+        let closeMember: (TabCellView, Int) -> Void
+        let onToggleMute: () -> Void
+    }
+
     /// Renders a split group as one row of two equal halves — each member gets
     /// favicon + title on its side of a centered divider, in visual pane order,
     /// with the focused (representative) member's title emphasized. Loading/audio
-    /// reflect any member; the row dims only when every member is sleeping; each
-    /// half's close button closes its own pane.
-    private func configureSplitCell(_ cell: TabCellView, item: TabListItem, members: [BrowserTab], isActive: Bool) {
-        let left = members[0]
-        let right = members.count > 1 ? members[1] : members[0]
-        let rep = representativeTab(for: item)
-        let audioMember = members.first { $0.isPlayingAudio || $0.isMuted }
-
-        cell.titleLabel.stringValue = left.title
-        cell.titleLabel.textColor = rep === left ? .labelColor : .secondaryLabelColor
-        cell.toolTip = "\(left.title) — \(right.title)"
-        cell.updateFavicon(left.favicon)
+    /// reflect any member; the row dims per the descriptor's sleeping rule; each
+    /// half's close button closes its own pane. Shared by the normal and pinned
+    /// split adapters below.
+    private func configureSplitCell(_ cell: TabCellView, descriptor: SplitCellDescriptor, isActive: Bool) {
+        cell.titleLabel.stringValue = descriptor.left.title
+        cell.titleLabel.textColor = descriptor.left.emphasized ? .labelColor : .secondaryLabelColor
+        cell.toolTip = descriptor.tooltip
+        cell.updateFavicon(descriptor.left.favicon)
         cell.updatePeekFavicon(nil)
-        cell.updateSplitPane(favicon: right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"),
-                             title: right.title,
-                             emphasized: rep === right)
-        cell.updateSleeping(members.allSatisfy { $0.isSleeping })
-        cell.updateLoading(members.contains { $0.isLoading })
-        cell.updateProgress(members.map(\.estimatedProgress).max() ?? 0)
-        cell.updateAudio(isPlaying: audioMember?.isPlayingAudio ?? false, isMuted: audioMember?.isMuted ?? false)
-        cell.updatePinnedMode(entry: nil)
-        cell.indentLevel = 0
+        cell.updateSplitPane(favicon: descriptor.right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"),
+                             title: descriptor.right.title,
+                             emphasized: descriptor.right.emphasized)
+        cell.updateSleeping(descriptor.isSleeping)
+        cell.updateLoading(descriptor.isLoading)
+        cell.updateProgress(descriptor.progress)
+        cell.updateAudio(isPlaying: descriptor.audioIsPlaying, isMuted: descriptor.audioIsMuted)
+        descriptor.applyCloseGlyphs(cell)
+        cell.indentLevel = descriptor.indentLevel
         if isActive {
             // Each half's close button closes its own pane (the group dissolves
             // in the store); the context menu's "Close Both Splits" covers the whole row.
-            cell.onCloseLeft = { [weak self] in self?.closeSplitMember(of: cell, side: 0) }
-            cell.onClose = { [weak self] in self?.closeSplitMember(of: cell, side: 1) }
-            cell.onToggleMute = { audioMember?.toggleMute() }
+            let closeMember = descriptor.closeMember
+            cell.onCloseLeft = { closeMember(cell, 0) }
+            cell.onClose = { closeMember(cell, 1) }
+            cell.onToggleMute = descriptor.onToggleMute
         } else {
             cell.onClose = nil
             cell.onCloseLeft = nil
             cell.onToggleMute = nil
         }
+    }
+
+    /// Normal-section adapter: builds a split descriptor from live `BrowserTab`
+    /// members. Titles and sleeping mirror the single normal-tab cell
+    /// (`tab.title`, `tab.isSleeping`); close glyphs are plain xmarks.
+    private func configureSplitCell(_ cell: TabCellView, item: TabListItem, members: [BrowserTab], isActive: Bool) {
+        let left = members[0]
+        let right = members.count > 1 ? members[1] : members[0]
+        let rep = representativeTab(for: item)
+        let audioMember = members.first { $0.isPlayingAudio || $0.isMuted }
+        let descriptor = SplitCellDescriptor(
+            left: SplitCellHalf(favicon: left.favicon, title: left.title, emphasized: rep === left),
+            right: SplitCellHalf(favicon: right.favicon, title: right.title, emphasized: rep === right),
+            tooltip: "\(left.title) — \(right.title)",
+            isSleeping: members.allSatisfy { $0.isSleeping },
+            isLoading: members.contains { $0.isLoading },
+            progress: members.map(\.estimatedProgress).max() ?? 0,
+            audioIsPlaying: audioMember?.isPlayingAudio ?? false,
+            audioIsMuted: audioMember?.isMuted ?? false,
+            indentLevel: 0,
+            applyCloseGlyphs: { $0.updatePinnedMode(entry: nil) },
+            closeMember: { [weak self] cell, side in self?.closeSplitMember(of: cell, side: side) },
+            onToggleMute: { audioMember?.toggleMute() }
+        )
+        configureSplitCell(cell, descriptor: descriptor, isActive: isActive)
+    }
+
+    /// Pinned-section adapter: builds a split descriptor from `PinnedEntry`
+    /// members. Titles and sleeping mirror the single pinned-entry cell
+    /// (`entry.displayTitle`, dormant when not live); close glyphs carry the
+    /// pinned per-half semantics (live → dormant, dormant → delete entry).
+    private func configurePinnedSplitCell(_ cell: TabCellView, entries: [PinnedEntry], depth: Int, isActive: Bool) {
+        let left = entries[0]
+        let right = entries.count > 1 ? entries[1] : entries[0]
+        let rep = representativePinnedEntry(of: entries)
+        let audioTab = entries.compactMap(\.tab).first { $0.isPlayingAudio || $0.isMuted }
+        let descriptor = SplitCellDescriptor(
+            left: SplitCellHalf(favicon: left.displayFavicon, title: left.displayTitle, emphasized: rep === left),
+            right: SplitCellHalf(favicon: right.displayFavicon, title: right.displayTitle, emphasized: rep === right),
+            tooltip: "\(left.displayTitle) — \(right.displayTitle)",
+            isSleeping: entries.allSatisfy { !$0.isLive || $0.tab?.isSleeping == true },
+            isLoading: entries.contains { $0.tab?.isLoading == true },
+            progress: entries.compactMap { $0.tab?.estimatedProgress }.max() ?? 0,
+            audioIsPlaying: audioTab?.isPlayingAudio ?? false,
+            audioIsMuted: audioTab?.isMuted ?? false,
+            indentLevel: depth,
+            applyCloseGlyphs: { $0.updateSplitPinnedMode(left: left, right: right) },
+            closeMember: { [weak self] cell, side in self?.closePinnedSplitMember(of: cell, side: side) },
+            onToggleMute: { audioTab?.toggleMute() }
+        )
+        configureSplitCell(cell, descriptor: descriptor, isActive: isActive)
+    }
+
+    /// Closes one pane of the pinned split row hosting `cell`, through the
+    /// ordinary per-entry pinned close path (live → dormant keeps the group;
+    /// dormant → delete dissolves it).
+    private func closePinnedSplitMember(of cell: TabCellView, side: Int) {
+        let row = tableView.row(for: cell)
+        guard row >= 0, case .pinnedItem(let idx) = sidebarRow(for: row),
+              idx < flattenedPinnedItems.count,
+              case .split(_, let entries, _) = flattenedPinnedItems[idx],
+              side < entries.count,
+              let pinnedIdx = pinnedEntries.firstIndex(where: { $0.id == entries[side].id }) else { return }
+        delegate?.tabSidebar(self, didRequestClosePinnedTabAt: pinnedIdx)
     }
 
     /// Closes one pane of the split row hosting `cell`. Resolves the member at
@@ -2073,6 +2389,13 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 if let pinnedIdx = pinnedEntries.firstIndex(where: { $0.id == entry.id }) {
                     delegate?.tabSidebar(self, didSelectPinnedTabAt: pinnedIdx)
                 }
+            case .split(_, let entries, _):
+                // Selecting a pinned split row selects its representative
+                // member; the window applies its own focus memory on top.
+                let rep = representativePinnedEntry(of: entries)
+                if let pinnedIdx = pinnedEntries.firstIndex(where: { $0.id == rep.id }) {
+                    delegate?.tabSidebar(self, didSelectPinnedTabAt: pinnedIdx)
+                }
             case .folder(let folder, _):
                 tableView.deselectRow(row)
                 delegate?.tabSidebar(self, didTogglePinnedFolder: folder.id)
@@ -2115,6 +2438,11 @@ extension TabSidebarViewController: NSMenuDelegate {
             // Check if folder
             if case .folder(let folder, _) = flattenedPinnedItems[index] {
                 buildFolderContextMenu(menu, folder: folder)
+                return
+            }
+            // A pinned split row gets its own menu.
+            if case .split(let groupID, let entries, _) = flattenedPinnedItems[index] {
+                buildPinnedSplitContextMenu(menu, groupID: groupID, entries: entries)
                 return
             }
             tabIndex = index
@@ -2280,6 +2608,31 @@ extension TabSidebarViewController: NSMenuDelegate {
         menu.addItem(closeItem)
     }
 
+    /// Context menu for a pinned split row: Copy URL (representative member) and
+    /// Separate Tabs (the entries stay adjacent as two pinned rows). Per-half
+    /// close lives on the row's hover buttons; unpin happens by drag.
+    private func buildPinnedSplitContextMenu(_ menu: NSMenu, groupID: UUID, entries: [PinnedEntry]) {
+        contextMenuTabIsPinned = true
+        contextMenuFolderID = nil
+        contextMenuSplitGroupID = groupID
+        let rep = representativePinnedEntry(of: entries)
+        contextMenuTabID = rep.id
+
+        let copyItem = NSMenuItem(title: "Copy URL", action: #selector(contextMenuCopyURL(_:)), keyEquivalent: "")
+        copyItem.target = self
+        menu.addItem(copyItem)
+        menu.addItem(.separator())
+
+        let separateItem = NSMenuItem(title: "Separate Tabs", action: #selector(contextMenuSeparatePinnedSplit(_:)), keyEquivalent: "")
+        separateItem.target = self
+        menu.addItem(separateItem)
+    }
+
+    @objc private func contextMenuSeparatePinnedSplit(_ sender: NSMenuItem) {
+        guard let groupID = contextMenuSplitGroupID else { return }
+        delegate?.tabSidebar(self, didRequestSeparatePinnedSplit: groupID)
+    }
+
     @objc private func contextMenuSeparateSplit(_ sender: NSMenuItem) {
         guard let groupID = contextMenuSplitGroupID else { return }
         delegate?.tabSidebar(self, didRequestSeparateSplit: groupID)
@@ -2433,7 +2786,7 @@ extension TabSidebarViewController: FavoritesBarDelegate {
         case .pinnedEntry:
             sourceRow = flattenedPinnedItems.firstIndex { pinnedItemID($0) == payload.itemID }.map(rowForPinnedItem)
             isPinned = true
-        case .pinnedFolder, .splitGroup:
+        case .pinnedFolder, .splitGroup, .splitMember, .pinnedSplitGroup, .pinnedSplitMember:
             // FavoritesBarView already rejects these at the drop gate; defense here too.
             return
         }

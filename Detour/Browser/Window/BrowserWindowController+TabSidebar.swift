@@ -56,7 +56,15 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didSelectPinnedTabAt index: Int) {
         guard let space = activeSpace, index >= 0, index < space.pinnedEntries.count else { return }
-        let entry = space.pinnedEntries[index]
+        var entry = space.pinnedEntries[index]
+        // Selecting a pinned split row focuses the group's remembered pane,
+        // mirroring didSelectTabAt for normal split rows.
+        if let groupID = entry.splitGroupID,
+           let rememberedTabID = lastFocusedSplitMember[groupID],
+           let remembered = store.pinnedSplitEntries(groupID: groupID, in: space)
+               .first(where: { $0.tab?.id == rememberedTabID }) {
+            entry = remembered
+        }
         if let tab = entry.tab {
             selectTab(id: tab.id)
         } else {
@@ -321,12 +329,49 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.closeSplitGroup(groupID: groupID, in: space)
     }
 
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCreateSplit draggedTabID: UUID, withTabID targetTabID: UUID, edge: SplitEdge) {
+        guard let space = activeSpace else { return }
+        store.createSplit(draggedTabID: draggedTabID, targetTabID: targetTabID, edge: edge, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveTabFromSplit tabID: UUID, toGapIndex gapIndex: Int) {
+        guard let space = activeSpace else { return }
+        store.removeTabFromSplit(tabID: tabID, toGapIndex: gapIndex, in: space)
+    }
+
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID) {
         guard let space = activeSpace,
               let index = space.tabs.firstIndex(where: { $0.id == tabID }),
               index + 1 < space.tabs.count else { return }
         let nextTab = space.tabs[index + 1]
         store.createSplit(draggedTabID: nextTab.id, targetTabID: tabID, edge: .right, in: space)
+    }
+
+    // MARK: - Pinned Splits (§12)
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestPinSplitGroup groupID: UUID) {
+        guard let space = activeSpace else { return }
+        // Every member must have a real URL — matching didDragTabToPin's guard.
+        // pinSplitGroup coerces a nil URL to about:blank, which would pin (and
+        // later restore) a URL-less pane as a dead about:blank entry.
+        let members = space.tabs.filter { $0.splitGroupID == groupID }
+        guard !members.isEmpty, members.allSatisfy({ $0.url != nil }) else { return }
+        store.pinSplitGroup(groupID: groupID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinSplitGroup groupID: UUID, toGapIndex gapIndex: Int) {
+        guard let space = activeSpace else { return }
+        store.unpinSplitGroup(groupID: groupID, toGapIndex: gapIndex, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparatePinnedSplit groupID: UUID) {
+        guard let space = activeSpace else { return }
+        store.separatePinnedSplit(groupID: groupID, in: space)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRemovePinnedEntryFromSplit entryID: UUID, folderID: UUID?, beforeItemID: UUID?) {
+        guard let space = activeSpace else { return }
+        store.removePinnedEntryFromSplit(entryID: entryID, folderID: folderID, beforeItemID: beforeItemID, in: space)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID) {

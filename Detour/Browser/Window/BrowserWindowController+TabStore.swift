@@ -47,8 +47,13 @@ extension BrowserWindowController: TabStoreObserver {
         guard space.id == activeSpaceID else { return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
+        // Suppressed: a re-entrant tableViewSelectionDidChange → selectTab here
+        // would run selection side effects (dormant-partner activation, focus
+        // retarget) for a purely programmatic highlight restore.
         if let selectedTabID, let index = currentTabs.firstIndex(where: { $0.id == selectedTabID }) {
-            tabSidebar.selectedTabIndex = index
+            tabSidebar.suppressingSelectionCallbacks {
+                tabSidebar.selectedTabIndex = index
+            }
         }
         // Split create/separate around the selected tab lands here (group
         // membership changes coincide with reorders); match hosting to it.
@@ -75,18 +80,27 @@ extension BrowserWindowController: TabStoreObserver {
         }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
+        // Deleting a pinned split member dissolves its group; collapse hosting.
+        refreshSplitHostingIfNeeded()
     }
 
     func tabStoreDidPinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {
         guard space.id == activeSpaceID else { return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
+        // pinTab leaves the split silently; undo-of-unpin rejoins a pinned
+        // split. Either way the selected group's pane count may have changed —
+        // converge hosting to it.
+        refreshSplitHostingIfNeeded()
     }
 
     func tabStoreDidUnpinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {
         guard space.id == activeSpaceID else { return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
+        // unpinTab silently dissolves a pinned split — collapse a now-stale
+        // two-pane hosting to match.
+        refreshSplitHostingIfNeeded()
     }
 
     func tabStoreDidReorderPinnedEntries(in space: Space) {
@@ -94,7 +108,9 @@ extension BrowserWindowController: TabStoreObserver {
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
         if let selectedTabID, let index = space.pinnedEntries.firstIndex(where: { $0.tab?.id == selectedTabID }) {
-            tabSidebar.selectedPinnedTabIndex = index
+            tabSidebar.suppressingSelectionCallbacks {
+                tabSidebar.selectedPinnedTabIndex = index
+            }
         }
     }
 
@@ -103,21 +119,41 @@ extension BrowserWindowController: TabStoreObserver {
         // Pinned tab close fires Update (not Remove) — entries stay as dormant
         // slots. Key window handles deselect itself; background windows don't.
         if entry.tab == nil, selectedTabID != nil, selectedTab == nil, window?.isKeyWindow == false {
-            deselectAllTabs()
+            // A closed pinned-split pane leaves a live partner on screen —
+            // follow it like the closing window does instead of blanking this
+            // one (and clobbering the space's selectedTabID it just set).
+            if let groupID = entry.splitGroupID,
+               let partnerTab = store.pinnedSplitEntries(groupID: groupID, in: space)
+                   .first(where: { $0.id != entry.id })?.tab {
+                selectTab(id: partnerTab.id)
+            } else {
+                deselectAllTabs()
+            }
         }
         tabSidebar.reloadPinnedEntry(at: index)
+        // A pinned split member going dormant (or waking) changes how many
+        // panes the selected group hosts — converge the content view.
+        refreshSplitHostingIfNeeded()
     }
 
     func tabStoreDidUpdatePinnedFolders(in space: Space) {
         guard space.id == activeSpaceID else { return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
-        // Restore selection after animation
-        if let selectedTabID, let index = space.pinnedEntries.firstIndex(where: { $0.tab?.id == selectedTabID }) {
-            tabSidebar.selectedPinnedTabIndex = index
-        } else if let selectedTabID, let index = currentTabs.firstIndex(where: { $0.id == selectedTabID }) {
-            tabSidebar.selectedTabIndex = index
+        // Restore selection after animation. Suppressed: an unguarded
+        // selectRowIndexes fires tableViewSelectionDidChange → selectTab,
+        // whose §12 wake block would resurrect a deliberately-closed dormant
+        // split partner on any folder mutation.
+        tabSidebar.suppressingSelectionCallbacks {
+            if let selectedTabID, let index = space.pinnedEntries.firstIndex(where: { $0.tab?.id == selectedTabID }) {
+                tabSidebar.selectedPinnedTabIndex = index
+            } else if let selectedTabID, let index = currentTabs.firstIndex(where: { $0.id == selectedTabID }) {
+                tabSidebar.selectedTabIndex = index
+            }
         }
+        // Pin/unpin/separate of a split around the selection lands here —
+        // match hosting to the selected tab's (possibly pinned) group state.
+        refreshSplitHostingIfNeeded()
     }
 
     func tabStoreDidUpdateFavorites(for profile: Profile) {

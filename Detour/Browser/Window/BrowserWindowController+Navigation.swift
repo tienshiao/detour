@@ -263,6 +263,22 @@ extension BrowserWindowController: WKNavigationDelegate {
         tab(owning: webView)?.didFailNavigation(error: error)
     }
 
+    /// A dead web content process leaves the view white and unresponsive with
+    /// no callback ever following. This delegate is only wired on webviews
+    /// this window owns (on-screen content), so reload — but cap rapid
+    /// consecutive terminations: a page that kills its process on every load
+    /// would otherwise drive an endless crash/reload cycle. Past the cap the
+    /// pane stays blank; manual reloads still work, and 30s of quiet resets
+    /// the streak (see noteProcessTermination).
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard let tab = tab(owning: webView) else {
+            webView.reload()
+            return
+        }
+        guard tab.noteProcessTermination() <= 2 else { return }
+        tab.reload()
+    }
+
     /// Resolve the tab (or peek tab) that owns the web view firing a navigation
     /// callback. Callbacks must act on the owning tab, not `selectedTab`: a peek
     /// web view or a navigation still in flight after a tab switch would

@@ -49,6 +49,13 @@ final class SidebarDragDropTests: XCTestCase {
         XCTAssertNil(FavoriteDragPayload(pasteboardString: "{\"nope\":true}"))
     }
 
+    func testSplitMemberPayloadRoundTrip() {
+        let payload = SidebarDragPayload(kind: .splitMember, itemID: UUID(), spaceID: UUID(), sidebarID: UUID())
+        let string = payload.pasteboardString
+        XCTAssertNotNil(string)
+        XCTAssertEqual(SidebarDragPayload(pasteboardString: string!), payload)
+    }
+
     // MARK: - validateSidebarDrop
 
     func testValidateOnDropOntoFolderAccepted() {
@@ -248,5 +255,327 @@ final class SidebarDragDropTests: XCTestCase {
         XCTAssertEqual(resolveSidebarDrop(source: .pinnedFolder(folderID: folderB.id),
                                           destination: .intoFolder(folderID: folderA.id), items: items),
                        .movePinnedFolder(folderID: folderB.id, parentFolderID: folderA.id, beforeItemID: nil))
+    }
+
+    // MARK: - Split fixtures
+
+    private func makeTab() -> BrowserTab {
+        BrowserTab(id: UUID(), title: "Tab", url: URL(string: "https://example.com"),
+                   faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
+    }
+
+    /// Tabs 0–3 where 1+2 form a split → items [single(0), split(1,2), single(3)].
+    private func splitTabItems() -> (items: [TabListItem], tabs: [BrowserTab], groupID: UUID) {
+        let tabs = (0..<4).map { _ in makeTab() }
+        let groupID = UUID()
+        tabs[1].splitGroupID = groupID
+        tabs[2].splitGroupID = groupID
+        return (tabListItems(from: tabs), tabs, groupID)
+    }
+
+    // MARK: - Drop geometry
+
+    func testRowDropZoneEdgesAndMiddleBand() {
+        let size = CGSize(width: 100, height: 36)
+        XCTAssertEqual(rowDropZone(forX: 10, y: 18, rowSize: size), .splitEdge(.left))
+        XCTAssertEqual(rowDropZone(forX: 39, y: 18, rowSize: size), .splitEdge(.left))
+        XCTAssertEqual(rowDropZone(forX: 61, y: 18, rowSize: size), .splitEdge(.right))
+        XCTAssertEqual(rowDropZone(forX: 90, y: 18, rowSize: size), .splitEdge(.right))
+        // Middle band → nearest reorder gap by vertical half (flipped coords: y from row top)
+        XCTAssertEqual(rowDropZone(forX: 50, y: 10, rowSize: size), .reorderGap(offset: 0))
+        XCTAssertEqual(rowDropZone(forX: 50, y: 30, rowSize: size), .reorderGap(offset: 1))
+        // Degenerate row falls back to reorder rather than a phantom edge
+        XCTAssertEqual(rowDropZone(forX: 0, y: 0, rowSize: .zero), .reorderGap(offset: 0))
+    }
+
+    func testSplitRowDragKindGrabZones() {
+        // Each half's leading 34pt (the favicon segment) grabs that member.
+        XCTAssertEqual(splitRowDragKind(forX: 0, rowWidth: 200), .member(.left))
+        XCTAssertEqual(splitRowDragKind(forX: 33, rowWidth: 200), .member(.left))
+        XCTAssertEqual(splitRowDragKind(forX: 34, rowWidth: 200), .group)
+        XCTAssertEqual(splitRowDragKind(forX: 99, rowWidth: 200), .group)
+        XCTAssertEqual(splitRowDragKind(forX: 100, rowWidth: 200), .member(.right))
+        XCTAssertEqual(splitRowDragKind(forX: 133, rowWidth: 200), .member(.right))
+        XCTAssertEqual(splitRowDragKind(forX: 134, rowWidth: 200), .group)
+        XCTAssertEqual(splitRowDragKind(forX: 199, rowWidth: 200), .group)
+        // Out-of-row points (drag begun outside the row rect) fall back to group
+        XCTAssertEqual(splitRowDragKind(forX: -5, rowWidth: 200), .group)
+        XCTAssertEqual(splitRowDragKind(forX: 205, rowWidth: 200), .group)
+    }
+
+    func testSplitRowDragKindIndentedRow() {
+        // A pinned split row at folder depth 1 is indented 16pt: the left
+        // grab band follows the favicon; the indent gutter drags the group.
+        XCTAssertEqual(splitRowDragKind(forX: 8, rowWidth: 200, indent: 16), .group)
+        XCTAssertEqual(splitRowDragKind(forX: 15, rowWidth: 200, indent: 16), .group)
+        XCTAssertEqual(splitRowDragKind(forX: 16, rowWidth: 200, indent: 16), .member(.left))
+        XCTAssertEqual(splitRowDragKind(forX: 49, rowWidth: 200, indent: 16), .member(.left))
+        XCTAssertEqual(splitRowDragKind(forX: 50, rowWidth: 200, indent: 16), .group)
+        // The right band is centered in the row and ignores indentation.
+        XCTAssertEqual(splitRowDragKind(forX: 100, rowWidth: 200, indent: 16), .member(.right))
+        XCTAssertEqual(splitRowDragKind(forX: 134, rowWidth: 200, indent: 16), .group)
+        // Depth 2 in a narrow sidebar: the band still stops at the midline.
+        XCTAssertEqual(splitRowDragKind(forX: 45, rowWidth: 100, indent: 32), .member(.left))
+        XCTAssertEqual(splitRowDragKind(forX: 50, rowWidth: 100, indent: 32), .member(.right))
+    }
+
+    // MARK: - validateSidebarDrop: split edges
+
+    func testValidateEdgeDropOntoSingleTab() {
+        let (tabItems, tabs, _) = splitTabItems()
+        XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: tabs[3].id,
+                                           row: .normalTab(index: 0), operation: .on, items: [],
+                                           tabItems: tabItems, dropZone: .splitEdge(.left)),
+                       .acceptIntoSplit(edge: .left))
+        XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: tabs[3].id,
+                                           row: .normalTab(index: 0), operation: .on, items: [],
+                                           tabItems: tabItems, dropZone: .splitEdge(.right)),
+                       .acceptIntoSplit(edge: .right))
+        // Middle band → plain reorder retarget at the pointer's nearest gap
+        XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: tabs[3].id,
+                                           row: .normalTab(index: 0), operation: .on, items: [],
+                                           tabItems: tabItems, dropZone: .reorderGap(offset: 1)),
+                       .retargetToNormalTabGap(index: 1))
+        // Tab onto its own row's edge
+        XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: tabs[0].id,
+                                           row: .normalTab(index: 0), operation: .on, items: [],
+                                           tabItems: tabItems, dropZone: .splitEdge(.left)),
+                       .reject)
+        // Split rows are not split targets (2 panes max)
+        XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: tabs[3].id,
+                                           row: .normalTab(index: 1), operation: .on, items: [],
+                                           tabItems: tabItems, dropZone: .splitEdge(.left)),
+                       .reject)
+        // No pointer geometry → nothing to accept
+        XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: tabs[3].id,
+                                           row: .normalTab(index: 0), operation: .on, items: [],
+                                           tabItems: tabItems, dropZone: nil),
+                       .reject)
+    }
+
+    func testValidateEdgeDropRejectsNonNormalTabSources() {
+        let (tabItems, tabs, _) = splitTabItems()
+        for kind: SidebarDragKind in [.pinnedEntry, .pinnedFolder, .favorite, .splitGroup, .splitMember] {
+            XCTAssertEqual(validateSidebarDrop(kind: kind, sourceItemID: UUID(),
+                                               row: .normalTab(index: 0), operation: .on, items: [],
+                                               tabItems: tabItems, dropZone: .splitEdge(.left)),
+                           .reject, "\(kind) must not become a split pane by edge drop")
+        }
+        _ = tabs
+    }
+
+    func testValidateSplitMemberSectionRules() {
+        let (items, folderA, _, _) = standardTree()
+        // Members can only land in the normal section (v1: no pin/favorite by drag)
+        XCTAssertEqual(validateSidebarDrop(kind: .splitMember, sourceItemID: UUID(),
+                                           row: .topSpacer, operation: .above, items: items), .reject)
+        XCTAssertEqual(validateSidebarDrop(kind: .splitMember, sourceItemID: UUID(),
+                                           row: .separator, operation: .above, items: items), .reject)
+        XCTAssertEqual(validateSidebarDrop(kind: .splitMember, sourceItemID: UUID(),
+                                           row: .pinnedItem(index: 0), operation: .above, items: items), .reject)
+        XCTAssertEqual(validateSidebarDrop(kind: .splitMember, sourceItemID: UUID(),
+                                           row: .pinnedItem(index: 0), operation: .on, items: items),
+                       .reject, "a lone pane can't be dropped into folder \(folderA.name)")
+        XCTAssertEqual(validateSidebarDrop(kind: .splitMember, sourceItemID: UUID(),
+                                           row: .normalTab(index: 1), operation: .above, items: items), .accept)
+        XCTAssertEqual(validateSidebarDrop(kind: .splitMember, sourceItemID: UUID(),
+                                           row: .newTab, operation: .above, items: items),
+                       .retargetToNormalTabGap(index: 0))
+    }
+
+    // MARK: - sidebarDropDestination: split edges
+
+    func testDestinationIntoSplit() {
+        let (tabItems, tabs, _) = splitTabItems()
+        XCTAssertEqual(sidebarDropDestination(row: .normalTab(index: 0), operation: .on, items: [],
+                                              tabItems: tabItems, dropZone: .splitEdge(.right)),
+                       .intoSplit(targetTabID: tabs[0].id, edge: .right))
+        // A split row is not a target
+        XCTAssertNil(sidebarDropDestination(row: .normalTab(index: 1), operation: .on, items: [],
+                                            tabItems: tabItems, dropZone: .splitEdge(.left)))
+        // Middle band resolves to the reorder gap even if the drop lands before
+        // the retargeted proposal arrives
+        XCTAssertEqual(sidebarDropDestination(row: .normalTab(index: 2), operation: .on, items: [],
+                                              tabItems: tabItems, dropZone: .reorderGap(offset: 1)),
+                       .beforeNormalTab(gapIndex: 3))
+        // No geometry → no destination
+        XCTAssertNil(sidebarDropDestination(row: .normalTab(index: 0), operation: .on, items: [],
+                                            tabItems: tabItems, dropZone: nil))
+    }
+
+    // MARK: - resolveSidebarDrop: split commands
+
+    func testResolveCreateSplit() {
+        let dragged = UUID()
+        let target = UUID()
+        XCTAssertEqual(resolveSidebarDrop(source: .normalTab(index: 3, tabID: dragged),
+                                          destination: .intoSplit(targetTabID: target, edge: .left), items: []),
+                       .createSplit(draggedTabID: dragged, targetTabID: target, edge: .left))
+        XCTAssertNil(resolveSidebarDrop(source: .normalTab(index: 0, tabID: dragged),
+                                        destination: .intoSplit(targetTabID: dragged, edge: .left), items: []),
+                     "tab onto its own edge is a no-op")
+        XCTAssertNil(resolveSidebarDrop(source: .splitGroup(index: 0, groupID: UUID(), memberTabIDs: [dragged, UUID()]),
+                                        destination: .intoSplit(targetTabID: target, edge: .right), items: []))
+        XCTAssertNil(resolveSidebarDrop(source: .splitMember(tabID: dragged, groupID: UUID()),
+                                        destination: .intoSplit(targetTabID: target, edge: .right), items: []),
+                     "leave-and-rejoin is v2")
+        XCTAssertNil(resolveSidebarDrop(source: .pinnedEntry(entryID: dragged),
+                                        destination: .intoSplit(targetTabID: target, edge: .left), items: []))
+        XCTAssertNil(resolveSidebarDrop(source: .pinnedFolder(folderID: dragged),
+                                        destination: .intoSplit(targetTabID: target, edge: .left), items: []))
+    }
+
+    func testResolveRemoveFromSplit() {
+        let (items, _, _, _) = standardTree()
+        let tabID = UUID()
+        let groupID = UUID()
+        XCTAssertEqual(resolveSidebarDrop(source: .splitMember(tabID: tabID, groupID: groupID),
+                                          destination: .beforeNormalTab(gapIndex: 0), items: items),
+                       .removeFromSplit(tabID: tabID, toGapIndex: 0))
+        // Gaps adjacent to the member's own group are real changes (the group
+        // dissolves), unlike plain reorders — no no-op suppression.
+        XCTAssertEqual(resolveSidebarDrop(source: .splitMember(tabID: tabID, groupID: groupID),
+                                          destination: .beforeNormalTab(gapIndex: 2), items: items),
+                       .removeFromSplit(tabID: tabID, toGapIndex: 2))
+        XCTAssertNil(resolveSidebarDrop(source: .splitMember(tabID: tabID, groupID: groupID),
+                                        destination: .beforePinnedItem(flatIndex: 0), items: items))
+        XCTAssertNil(resolveSidebarDrop(source: .splitMember(tabID: tabID, groupID: groupID),
+                                        destination: .intoFolder(folderID: UUID()), items: items))
+    }
+
+    // MARK: - Pinned splits (§12)
+
+    /// A pinned split pair (left, right) followed by a lone entry, all top-level.
+    private func pinnedSplitTree() -> (items: [PinnedItem], groupID: UUID,
+                                       left: PinnedEntry, right: PinnedEntry, lone: PinnedEntry) {
+        let groupID = UUID()
+        let left = makeEntry(title: "left", sortOrder: 0)
+        let right = makeEntry(title: "right", sortOrder: 1)
+        left.splitGroupID = groupID
+        right.splitGroupID = groupID
+        let lone = makeEntry(title: "lone", sortOrder: 2)
+        let items = flatItems([left, right, lone])
+        return (items, groupID, left, right, lone)
+    }
+
+    func testFlattenerHelpersOnPinnedSplitItems() {
+        let (items, groupID, left, _, lone) = pinnedSplitTree()
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(pinnedItemID(items[0]), groupID)
+        XCTAssertEqual(itemIDAtDropIndex(0, in: items), left.id,
+                       "anchors name the FIRST member so drops land before the group")
+        XCTAssertEqual(itemIDAtDropIndex(1, in: items), lone.id)
+        XCTAssertNil(folderIDForDropIndex(0, in: items), "top-level split inherits no folder")
+    }
+
+    func testValidatePinnedSplitGroupTargets() {
+        let (items, _, left, _, _) = pinnedSplitTree()
+        let folder = makeFolder(name: "F", sortOrder: 3)
+        let withFolder = flatItems([left], folders: [folder])
+
+        // Whole pinned split rows reorder in the pinned section, enter folders,
+        // and unpin to the tab section.
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitGroup, sourceItemID: left.id,
+                                           row: .pinnedItem(index: 1), operation: .above, items: items), .accept)
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitGroup, sourceItemID: left.id,
+                                           row: .pinnedItem(index: 1), operation: .on, items: withFolder), .accept)
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitGroup, sourceItemID: left.id,
+                                           row: .normalTab(index: 0), operation: .above, items: items), .accept)
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitGroup, sourceItemID: left.id,
+                                           row: .topSpacer, operation: .above, items: items),
+                       .retargetToPinnedGap(index: 0))
+        // No split creation from pinned rows: edge drops don't validate for them.
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitGroup, sourceItemID: left.id,
+                                           row: .normalTab(index: 0), operation: .on, items: items,
+                                           tabItems: [], dropZone: .splitEdge(.left)), .reject)
+    }
+
+    func testValidatePinnedSplitMemberTargets() {
+        let (items, _, left, _, _) = pinnedSplitTree()
+        let folder = makeFolder(name: "F", sortOrder: 3)
+        let withFolder = flatItems([left], folders: [folder])
+
+        // A lone pane may break out to pinned gaps and unpin to tab gaps…
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitMember, sourceItemID: left.id,
+                                           row: .pinnedItem(index: 1), operation: .above, items: items), .accept)
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitMember, sourceItemID: left.id,
+                                           row: .topSpacer, operation: .above, items: items),
+                       .retargetToPinnedGap(index: 0))
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitMember, sourceItemID: left.id,
+                                           row: .normalTab(index: 0), operation: .above, items: items), .accept)
+        // …but can't enter folders in v1.
+        XCTAssertEqual(validateSidebarDrop(kind: .pinnedSplitMember, sourceItemID: left.id,
+                                           row: .pinnedItem(index: 1), operation: .on, items: withFolder), .reject)
+    }
+
+    func testResolvePinnedSplitGroupMoves() {
+        let (items, groupID, left, right, lone) = pinnedSplitTree()
+        let memberIDs = [left.id, right.id]
+
+        // Reorder after the lone entry (end of section).
+        XCTAssertEqual(
+            resolveSidebarDrop(source: .pinnedSplitGroup(groupID: groupID, memberEntryIDs: memberIDs),
+                               destination: .beforePinnedItem(flatIndex: 2), items: items),
+            .movePinnedSplitGroup(groupID: groupID, firstMemberEntryID: left.id, folderID: nil, beforeItemID: nil)
+        )
+        XCTAssertEqual(
+            resolveSidebarDrop(source: .pinnedSplitGroup(groupID: groupID, memberEntryIDs: memberIDs),
+                               destination: .beforePinnedItem(flatIndex: 1), items: items),
+            .movePinnedSplitGroup(groupID: groupID, firstMemberEntryID: left.id, folderID: nil, beforeItemID: lone.id)
+        )
+        // Dropping back before itself is a no-op (anchor = own first member).
+        XCTAssertNil(resolveSidebarDrop(source: .pinnedSplitGroup(groupID: groupID, memberEntryIDs: memberIDs),
+                                        destination: .beforePinnedItem(flatIndex: 0), items: items))
+        // Into a folder.
+        let folderID = UUID()
+        XCTAssertEqual(
+            resolveSidebarDrop(source: .pinnedSplitGroup(groupID: groupID, memberEntryIDs: memberIDs),
+                               destination: .intoFolder(folderID: folderID), items: items),
+            .movePinnedSplitGroup(groupID: groupID, firstMemberEntryID: left.id, folderID: folderID, beforeItemID: nil)
+        )
+        // Unpin restores the split in the tab section.
+        XCTAssertEqual(
+            resolveSidebarDrop(source: .pinnedSplitGroup(groupID: groupID, memberEntryIDs: memberIDs),
+                               destination: .beforeNormalTab(gapIndex: 3), items: items),
+            .unpinSplitGroup(groupID: groupID, toGapIndex: 3)
+        )
+        // Never a split-edge target source.
+        XCTAssertNil(resolveSidebarDrop(source: .pinnedSplitGroup(groupID: groupID, memberEntryIDs: memberIDs),
+                                        destination: .intoSplit(targetTabID: UUID(), edge: .left), items: items))
+    }
+
+    func testResolvePinnedSplitMemberBreakouts() {
+        let (items, groupID, left, right, lone) = pinnedSplitTree()
+
+        // Member → tab gap: unpin alone (the pinned split dissolves).
+        XCTAssertEqual(
+            resolveSidebarDrop(source: .pinnedSplitMember(entryID: right.id, groupID: groupID),
+                               destination: .beforeNormalTab(gapIndex: 0), items: items),
+            .unpinSplitMember(entryID: right.id, toGapIndex: 0)
+        )
+        // Member → pinned gap: break out into its own pinned row.
+        XCTAssertEqual(
+            resolveSidebarDrop(source: .pinnedSplitMember(entryID: right.id, groupID: groupID),
+                               destination: .beforePinnedItem(flatIndex: 1), items: items),
+            .removeFromPinnedSplit(entryID: right.id, folderID: nil, beforeItemID: lone.id)
+        )
+        // Left pane dropped above its own row: anchor retargets to the partner.
+        XCTAssertEqual(
+            resolveSidebarDrop(source: .pinnedSplitMember(entryID: left.id, groupID: groupID),
+                               destination: .beforePinnedItem(flatIndex: 0), items: items),
+            .removeFromPinnedSplit(entryID: left.id, folderID: nil, beforeItemID: right.id)
+        )
+        // Folders rejected in v1.
+        XCTAssertNil(resolveSidebarDrop(source: .pinnedSplitMember(entryID: left.id, groupID: groupID),
+                                        destination: .intoFolder(folderID: UUID()), items: items))
+    }
+
+    func testPinnedSplitPayloadRoundTrip() {
+        for kind: SidebarDragPayload.Kind in [.pinnedSplitGroup, .pinnedSplitMember] {
+            let payload = SidebarDragPayload(kind: kind, itemID: UUID(), spaceID: UUID(), sidebarID: UUID())
+            let string = payload.pasteboardString
+            XCTAssertNotNil(string)
+            XCTAssertEqual(SidebarDragPayload(pasteboardString: string!), payload)
+        }
     }
 }

@@ -468,10 +468,12 @@ class FavoritesBarView: NSView, NSDraggingSource {
         // Tab drop → add favorite
         if let data = pasteboard.string(forType: tabReorderPasteboardType),
            let payload = SidebarDragPayload(pasteboardString: data) {
-            // Folders and split rows can't become favorites (a split row is two
-            // tabs — favoriting only one would silently scatter the group).
+            // Only lone tabs and lone pinned entries can become favorites —
+            // folders and split rows/members (normal or pinned) can't (a split
+            // row is two tabs; favoriting only one would silently scatter the
+            // group). Allow-list, so new payload kinds default to rejected.
             guard payload.sidebarID == sidebarID,
-                  payload.kind != .pinnedFolder, payload.kind != .splitGroup else { return false }
+                  payload.kind == .normalTab || payload.kind == .pinnedEntry else { return false }
             let destIdx = dragInsertionIndex ?? favorites.count
             delegate?.favoritesBar(self, didReceiveDropOfTab: payload, at: destIdx)
             return true

@@ -12,4 +12,6 @@ struct PinnedTabRecord: Codable, FetchableRecord, PersistableRecord {
     var sortOrder: Int
     var folderID: String?
     var tabID: String?
+    var splitGroupID: String?
+    var splitFraction: Double?
 }

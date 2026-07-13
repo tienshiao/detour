@@ -11,6 +11,11 @@ class PinnedEntry {
     var folderID: UUID?
     var sortOrder: Int
     var tab: BrowserTab?       // nil = dormant
+    /// Pinned split membership (see split-tabs-design.md §12). While pinned,
+    /// the group lives ONLY here — the backing tab's `splitGroupID` stays nil.
+    var splitGroupID: UUID?
+    /// Left pane's width fraction; both members store it, first wins.
+    var splitFraction: Double?
 
     var isLive: Bool { tab != nil }
 

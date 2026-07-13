@@ -775,6 +775,16 @@ class BrowserWindowController: NSWindowController {
         }
 
         guard let tab = selectedTab else { return }
+        // A pinned split wakes BOTH sides: activate a dormant partner entry
+        // (the pinned analog of the sleeping-member wake below) so the group
+        // resolves to two live panes before hosting.
+        if let space = activeSpace,
+           let entry = space.pinnedEntries.first(where: { $0.tab?.id == id }),
+           let groupID = entry.splitGroupID {
+            for member in store.pinnedSplitEntries(groupID: groupID, in: space) where member.tab == nil {
+                store.activatePinnedEntry(id: member.id, in: space)
+            }
+        }
         // Both panes of a split are on screen together: wake and un-stamp the
         // partner too, or it would sleep (or stay asleep) behind a live pane.
         let members = splitMembers(of: tab)
@@ -834,9 +844,12 @@ class BrowserWindowController: NSWindowController {
 
     /// Wake a sleeping split member alongside the focused pane, mirroring the
     /// wake path in `selectTab` (including the extension open/activate notify
-    /// that `notifyExistingTabs` skipped while the tab slept).
+    /// that `notifyExistingTabs` skipped while the tab slept). Guards on the
+    /// missing webView rather than `isSleeping` so a tab that lost its webView
+    /// without being flagged asleep is also rebuilt instead of hosting as an
+    /// empty pane (`wake()` re-guards, so a live webView is never replaced).
     private func wakeIfNeeded(_ tab: BrowserTab) {
-        guard tab.isSleeping else { return }
+        guard tab.webView == nil else { return }
         tab.wake()
         if let space = activeSpace, let profile = space.profile {
             for context in profile.extensionContexts.values {
@@ -848,10 +861,25 @@ class BrowserWindowController: NSWindowController {
 
     private func claimWebView(for tab: BrowserTab) {
         let members = splitMembers(of: tab)
+        // Rebuild any missing webView before hosting — selectTab wakes members
+        // itself, but the refreshSplitHostingIfNeeded path arrives here without
+        // that pass.
+        for member in members {
+            wakeIfNeeded(member)
+        }
         if members.count == 2 {
             claimSplitWebViews(members: members, focused: tab)
         } else {
             claimSingleWebView(for: tab)
+        }
+        // Safety net: a claimed webview with no content — its load never
+        // started, or its web content process died while unparented — hosts
+        // as a dead white pane. Kick a load of the tab's last known URL.
+        for member in members {
+            if let webView = member.webView, webView.url == nil, !webView.isLoading,
+               let url = member.url {
+                member.load(url)
+            }
         }
     }
 
@@ -917,7 +945,6 @@ class BrowserWindowController: NSWindowController {
     /// Inspector working.
     private func claimSplitWebViews(members: [BrowserTab], focused: BrowserTab) {
         for member in members {
-            wakeIfNeeded(member)
             member.ensureWebViewContainer()
         }
         let containers = members.compactMap(\.webViewContainer)
@@ -925,7 +952,9 @@ class BrowserWindowController: NSWindowController {
             claimSingleWebView(for: focused)
             return
         }
-        let fraction = members[0].splitFraction ?? 0.5
+        // The stored fraction lives on the tabs for a normal split and on the
+        // entries for a pinned split — the store helper reads either.
+        let fraction = activeSpace.flatMap { store.splitFraction(containing: members[0].id, in: $0) } ?? 0.5
 
         // Already hosting exactly these panes — just refresh.
         if hostedSplitMatches(members), let split = hostedSplitView {
@@ -980,7 +1009,21 @@ class BrowserWindowController: NSWindowController {
         }
         pendingSplitFraction = nil
         isApplyingSplitLayout = true
-        split.setPosition(round(available * fraction), ofDividerAt: 0)
+        // Tile both panes explicitly before setPosition. setPosition resizes
+        // the divider's neighbors from their CURRENT frames, preserving far
+        // edges — a container carrying a stale frame from an earlier hosting
+        // (e.g. it was the left pane before the group re-formed with it on
+        // the right) collapses to zero width and shows as a dead white half,
+        // and nothing retiles it until the window resizes.
+        let position = round(available * fraction)
+        let panes = split.arrangedSubviews
+        if panes.count == 2 {
+            panes[0].frame = NSRect(x: 0, y: 0, width: position, height: split.bounds.height)
+            panes[1].frame = NSRect(x: position + split.dividerThickness, y: 0,
+                                    width: split.bounds.width - position - split.dividerThickness,
+                                    height: split.bounds.height)
+        }
+        split.setPosition(position, ofDividerAt: 0)
         split.layoutSubtreeIfNeeded()
         isApplyingSplitLayout = false
     }
@@ -1230,10 +1273,16 @@ class BrowserWindowController: NSWindowController {
         updateSplitPaneFocus()
 
         // Same sidebar row stays selected; retarget its representative member
-        // so the row shows the focused pane's title.
+        // so the row shows the focused pane's title. A pinned split member
+        // isn't in currentTabs (pinTab removes the backing tab from space.tabs),
+        // so update the pinned selection instead — mirroring the selectTab path.
         if let index = currentTabs.firstIndex(where: { $0.id == member.id }) {
             tabSidebar.suppressingSelectionCallbacks {
                 tabSidebar.selectedTabIndex = index
+            }
+        } else if let pinnedIndex = activeSpace?.pinnedEntries.firstIndex(where: { $0.tab?.id == member.id }) {
+            tabSidebar.suppressingSelectionCallbacks {
+                tabSidebar.selectedPinnedTabIndex = pinnedIndex
             }
         }
         reloadSelectedTabSidebarCell()
@@ -1600,9 +1649,20 @@ class BrowserWindowController: NSWindowController {
     func closePinnedTab(at index: Int) {
         guard let space = activeSpace, index < space.pinnedEntries.count else { return }
         let entry = space.pinnedEntries[index]
-        // Always make dormant (discard backing tab), then deselect
+        // Settle selection BEFORE discarding the backing tab, mirroring
+        // closeTab(at:wasSelected:). Closing the focused pane of a pinned split
+        // leaves its still-live partner on screen, so select the partner rather
+        // than blanking the window — closePinnedTab keeps the group intact (the
+        // closed member just goes dormant). Otherwise deselect.
+        if let groupID = entry.splitGroupID,
+           let partnerTab = store.pinnedSplitEntries(groupID: groupID, in: space)
+               .first(where: { $0.id != entry.id })?.tab {
+            selectTab(id: partnerTab.id)
+        } else {
+            deselectAllTabs()
+        }
+        // Always make dormant (discard backing tab)
         store.closePinnedTab(id: entry.id, in: space)
-        deselectAllTabs()
     }
 
     func closeTab(at index: Int, wasSelected: Bool) {
@@ -2043,7 +2103,30 @@ extension BrowserWindowController: NSSplitViewDelegate {
             applySplitFraction(pending, to: split)
             return
         }
+        // Self-repair: the panes must tile the split's bounds. If a frame-
+        // history bug ever leaves a pane collapsed or the pair short of the
+        // full width (a dead white region), re-apply the stored fraction —
+        // applySplitFraction frames both panes explicitly — instead of
+        // committing the broken geometry as the new fraction.
+        if panesAreMistiled(in: split) {
+            let fraction = activeSpace.flatMap { space in
+                selectedTab.flatMap { store.splitFraction(containing: $0.id, in: space) }
+            } ?? 0.5
+            applySplitFraction(fraction, to: split)
+            return
+        }
         scheduleSplitFractionCommit(for: split)
+    }
+
+    /// Whether the two panes fail to tile the split view: a collapsed pane or
+    /// uncovered width. The 1pt tolerance keeps ordinary resize rounding from
+    /// ever triggering a repair.
+    private func panesAreMistiled(in split: NSSplitView) -> Bool {
+        let panes = split.arrangedSubviews
+        guard panes.count == 2 else { return false }
+        let covered = panes[0].frame.width + panes[1].frame.width + split.dividerThickness
+        return abs(covered - split.bounds.width) > 1
+            || panes[0].frame.width < 1 || panes[1].frame.width < 1
     }
 
     /// Debounced divider→model write: no undo, save-only (via setSplitFraction).
@@ -2053,7 +2136,13 @@ extension BrowserWindowController: NSSplitViewDelegate {
     /// already have moved) still writes to the right group.
     private func scheduleSplitFractionCommit(for split: NSSplitView) {
         let available = split.bounds.width - split.dividerThickness
-        guard available > 0, let leftPane = split.arrangedSubviews.first,
+        // Two live panes required: a mid-teardown split (a pinned member going
+        // dormant pulls its container out, stretching the survivor to full
+        // width) would otherwise commit that stretch as the group's fraction —
+        // the pinned group outlives the dormant member, so splitGroup still
+        // resolves here.
+        guard available > 0, split.arrangedSubviews.count == 2,
+              let leftPane = split.arrangedSubviews.first,
               let space = activeSpace, let tab = selectedTab,
               let group = store.splitGroup(containing: tab.id, in: space) else { return }
         // Cancel before the unchanged-guard: dragging away and back to the
@@ -2062,12 +2151,18 @@ extension BrowserWindowController: NSSplitViewDelegate {
         splitFractionCommit = nil
 
         let fraction = Double(leftPane.frame.width / available)
-        let stored = group.members.first?.splitFraction ?? 0.5
+        let stored = store.splitFraction(containing: tab.id, in: space) ?? 0.5
         guard abs(stored - fraction) > 0.001 else { return }
 
         let groupID = group.groupID
+        // Clear the slot as we fire so a later flush/close doesn't re-perform()
+        // this already-committed fraction over a newer value. Unconditional is
+        // safe: on the serial main queue a superseded item is cancelled before
+        // it can run, and the flush path nils the slot before perform().
         let work = DispatchWorkItem { [weak self] in
-            self?.store.setSplitFraction(groupID: groupID, fraction: fraction, in: space)
+            guard let self else { return }
+            self.splitFractionCommit = nil
+            self.store.setSplitFraction(groupID: groupID, fraction: fraction, in: space)
         }
         splitFractionCommit = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
