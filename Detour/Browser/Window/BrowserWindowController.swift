@@ -67,6 +67,9 @@ class BrowserWindowController: NSWindowController {
     var commandPaletteNavigatesInPlace = false
     private var splitScrimView: NSView?
     private var contentScrimView: NSView?
+    /// Transparent content-area overlay for split edge drops, present only while a
+    /// local sidebar tab drag session is active (see SplitDropZoneView).
+    private var splitDropZoneView: SplitDropZoneView?
 
     private(set) var isIncognito = false
     private var incognitoSpaceID: UUID?
@@ -906,6 +909,47 @@ class BrowserWindowController: NSWindowController {
         )
     }
 
+    // MARK: - Content-area split drop zone
+
+    /// The tab a content-area edge drop would split with: the selected tab, only
+    /// while it is an ungrouped normal tab (pinned/favorite backing tabs are not
+    /// in space.tabs; grouped tabs reject — one split per tab).
+    var splitDropTargetTabID: UUID? {
+        guard let space = activeSpace, let id = selectedTabID,
+              let tab = space.tabs.first(where: { $0.id == id }),
+              tab.splitGroupID == nil else { return nil }
+        return id
+    }
+
+    func installSplitDropZone() {
+        guard splitDropZoneView == nil, splitDropTargetTabID != nil else { return }
+        let zone = SplitDropZoneView(frame: contentContainerView.bounds)
+        zone.autoresizingMask = [.width, .height]
+        zone.payloadValidator = { [weak self] payload in
+            guard let self else { return false }
+            return validateContentSplitDrop(payload: payload, sidebarID: self.tabSidebar.sidebarID,
+                                            activeSpaceID: self.activeSpaceID, targetTabID: self.splitDropTargetTabID)
+        }
+        zone.onDrop = { [weak self] payload, edge in
+            // The payload was validated in the same stack (performDragOperation runs
+            // payloadValidator first); what can have gone stale since the drag began
+            // is the DRAGGED tab — another window sharing the space may have closed,
+            // pinned, or split it. Re-resolve it like the sidebar's resolveDragSource
+            // does, so acceptance feedback matches whether createSplit will act.
+            guard let self, let space = self.activeSpace, let targetID = self.splitDropTargetTabID,
+                  space.tabs.contains(where: { $0.id == payload.itemID && $0.splitGroupID == nil }) else { return false }
+            self.tabSidebar.performContentAreaSplitDrop(draggedTabID: payload.itemID, targetTabID: targetID, edge: edge)
+            return true
+        }
+        contentContainerView.addSubview(zone, positioned: .below, relativeTo: dragHandle)
+        splitDropZoneView = zone
+    }
+
+    func removeSplitDropZone() {
+        splitDropZoneView?.removeFromSuperview()
+        splitDropZoneView = nil
+    }
+
     private func claimSingleWebView(for tab: BrowserTab) {
         guard let webView = tab.webView else { return }
         tab.ensureWebViewContainer()
@@ -1167,7 +1211,7 @@ class BrowserWindowController: NSWindowController {
         }
         flushPendingSplitFractionCommit()
         let currentPeekWebView = selectedTab?.peekTab?.webView
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView {
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView {
             for webView in webViews(in: subview) {
                 for name in Self.ownedScriptHandlerNames {
                     webView.configuration.userContentController.removeScriptMessageHandler(forName: name)

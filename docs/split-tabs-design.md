@@ -442,8 +442,39 @@ reliably fire `becomeFirstResponder` on the WKWebView subclass.
      not implement them all — an unrecognized-selector exception during drag
      teardown kills the session-end callbacks and strands the favorites drop
      zone. Guard with `instancesRespond(to:)`.
-4. **Content-area DnD:** `SplitDropZoneView`, session-active plumbing through the
-   delegate, zone preview, drop → `createSplit`.
+4. **DONE (Jul 13, 2026). Content-area DnD:** `SplitDropZoneView`, session-active plumbing through the
+   delegate, zone preview, drop → `createSplit`. Implementation notes:
+   - The sidebar's drag-session begin/end callbacks
+     (`draggingSession(_:willBeginAt:)` / `endedAt`) now also fire a new
+     `dragSessionDidChangeActive` delegate signal (ungated on activePageIndex so
+     the begin/end pair always balances); the window controller installs the
+     overlay on start and removes it on end, so it exists ONLY during our own
+     local drag and never shadows WKWebView's native drop handling.
+   - The overlay installs only when `splitDropTargetTabID` is non-nil — the
+     selected tab must be an ungrouped normal tab (pinned/favorite backing tabs
+     aren't in `space.tabs`; a grouped selection rejects, one split per tab).
+   - Zone + validation are pure functions in `SplitDropZoneView.swift`
+     (`splitContentDropEdge(forX:width:)` — outer 30% bands, strict boundaries;
+     `validateContentSplitDrop` — mirrors `localDragPayload`: lone normal tab,
+     same sidebarID + active space, not onto itself), unit-tested in
+     `SplitDropZoneTests`. The view decodes the payload once on
+     `draggingEntered` and reuses a single layer-backed accent preview (styling
+     shared with the sidebar overlay via `UIConstants.splitDropAccent*`). No
+     `hitTest` override: the overlay only exists while the mouse is captured by
+     the drag (no clicks to pass through), and a nil-returning `hitTest` risks
+     excluding the view from AppKit's undocumented drag-destination discovery.
+   - Review fixes: `removeContentViews()`'s keep-list includes the zone (a
+     shared-space mutation from another window mid-drag would otherwise detach
+     it, and the stale property blocks reinstall for the rest of the drag);
+     `onDrop` re-resolves the dragged tab in `space.tabs` before accepting
+     (mirrors `resolveDragSource` — acceptance feedback must match whether
+     `createSplit` will act, e.g. when another window closed the dragged tab
+     mid-drag); the session-begin delegate signal fires before `willBeginAt`'s
+     drag-image guard so it can't be skipped while `endedAt`'s is unconditional.
+   - The drop routes through the sidebar's `performContentAreaSplitDrop`, which
+     wraps the `createSplit` in `performDropTransaction` — same row-merge diff
+     hazard as the sidebar's own `.createSplit` drop, deferred past the live drag
+     session; selection is re-applied via `selectedTabIDForCurrentRow()`.
 5. **Pinned splits (§12):** entry-level groups, pin/unpin preserving the split,
    pinned split row rendering, group-aware pinned reorder + DnD matrix.
 

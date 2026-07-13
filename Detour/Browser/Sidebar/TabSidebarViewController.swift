@@ -36,6 +36,9 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCreateSplit draggedTabID: UUID, withTabID targetTabID: UUID, edge: SplitEdge)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveTabFromSplit tabID: UUID, toGapIndex gapIndex: Int)
+    /// A local sidebar tab drag session started (true) or ended (false); drives
+    /// the content-area split drop overlay in the window controller.
+    func tabSidebar(_ sidebar: TabSidebarViewController, dragSessionDidChangeActive active: Bool)
 
     // Pinned split operations (§12)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestPinSplitGroup groupID: UUID)
@@ -84,6 +87,7 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCreateSplit draggedTabID: UUID, withTabID targetTabID: UUID, edge: SplitEdge) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveTabFromSplit tabID: UUID, toGapIndex gapIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, dragSessionDidChangeActive active: Bool) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestPinSplitGroup groupID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinSplitGroup groupID: UUID, toGapIndex gapIndex: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparatePinnedSplit groupID: UUID) {}
@@ -487,6 +491,15 @@ class TabSidebarViewController: NSViewController {
         mutations()
         isDragging = false
         applyPendingState(selectTabID: selectTabID, insertionOrigin: insertionOrigin)
+    }
+
+    /// Content-area edge drop (SplitDropZoneView). Same transaction treatment as
+    /// the table's own .createSplit drop: the mutation diffs as a row merge, which
+    /// the table cannot batch-update while the source drag session is still live.
+    func performContentAreaSplitDrop(draggedTabID: UUID, targetTabID: UUID, edge: SplitEdge) {
+        performDropTransaction(selectTabID: selectedTabIDForCurrentRow()) {
+            delegate?.tabSidebar(self, didRequestCreateSplit: draggedTabID, withTabID: targetTabID, edge: edge)
+        }
     }
 
     // MARK: - Row Layout
@@ -1743,6 +1756,10 @@ extension TabSidebarViewController: NSTableViewDataSource {
     }
 
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        // Before the drag-image guard below: its early return must not skip the
+        // begin signal, since the end signal in endedAt fires unconditionally.
+        delegate?.tabSidebar(self, dragSessionDidChangeActive: true)
+
         guard let row = rowIndexes.first,
               let rowView = tableView.rowView(atRow: row, makeIfNecessary: false),
               let cellView = rowView.view(atColumn: 0) as? NSView else { return }
@@ -1785,6 +1802,8 @@ extension TabSidebarViewController: NSTableViewDataSource {
         if activePageIndex < spacePages.count {
             spacePages[activePageIndex].setDragSessionActive(false)
         }
+        // Not gated on activePageIndex — the begin/end pair must always balance.
+        delegate?.tabSidebar(self, dragSessionDidChangeActive: false)
         // mouseExited isn't delivered while a drag session is active, and rows shift
         // under the cursor to open the drop gap, so cells can be left with a stale
         // hover background — including on cancelled and no-op drops, where no model
@@ -1974,11 +1993,11 @@ extension TabSidebarViewController: NSTableViewDataSource {
             overlay = NSView()
             overlay.wantsLayer = true
             overlay.layer?.cornerRadius = 6
-            overlay.layer?.borderWidth = 1.5
+            overlay.layer?.borderWidth = UIConstants.splitDropAccentBorderWidth
             splitDropOverlay = overlay
         }
-        overlay.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
-        overlay.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.6).cgColor
+        overlay.layer?.backgroundColor = UIConstants.splitDropAccentFillColor.cgColor
+        overlay.layer?.borderColor = UIConstants.splitDropAccentBorderColor.cgColor
         overlay.frame = frame
         if overlay.superview !== tableView {
             tableView.addSubview(overlay)

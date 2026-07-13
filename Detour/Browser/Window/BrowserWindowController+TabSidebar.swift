@@ -339,6 +339,10 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.removeTabFromSplit(tabID: tabID, toGapIndex: gapIndex, in: space)
     }
 
+    func tabSidebar(_ sidebar: TabSidebarViewController, dragSessionDidChangeActive active: Bool) {
+        if active { installSplitDropZone() } else { removeSplitDropZone() }
+    }
+
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSplitWithNextTab tabID: UUID) {
         guard let space = activeSpace,
               let index = space.tabs.firstIndex(where: { $0.id == tabID }),
