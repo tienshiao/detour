@@ -116,12 +116,8 @@ class NativeMessagingHost {
         proc.terminationHandler = { [weak self] process in
             log.notice("[1PW-DEBUG] NM EXIT [\(hostNameCopy, privacy: .public)] status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)")
             stderr.fileHandleForReading.readabilityHandler = nil
-            DispatchQueue.main.async {
-                guard let self, self.isConnected else { return }
-                self.isConnected = false
-                let msg = process.terminationStatus == 0 ? nil : "Native host exited with status \(process.terminationStatus)"
-                self.onDisconnect?(msg)
-            }
+            let msg = process.terminationStatus == 0 ? nil : "Native host exited with status \(process.terminationStatus)"
+            self?.handleDisconnect(msg)
         }
 
         try proc.run()
@@ -134,7 +130,7 @@ class NativeMessagingHost {
 
     /// Send a JSON message to the native host using the length-prefixed protocol.
     func sendMessage(_ message: [String: Any]) throws {
-        guard isConnected, let stdinPipe else {
+        guard isConnected, let stdinPipe, process?.isRunning == true else {
             throw NativeMessagingError.notConnected
         }
 
@@ -151,15 +147,36 @@ class NativeMessagingHost {
             log.notice("[1PW-DEBUG] → NM SEND [\(self.hostName, privacy: .public)] (\(data.count) bytes): \(preview, privacy: .public)")
         }
 
-        stdinPipe.fileHandleForWriting.write(Self.encodeMessage(data))
+        do {
+            try stdinPipe.fileHandleForWriting.write(contentsOf: Self.encodeMessage(data))
+        } catch {
+            // Read end closed (native host exited): treat as a disconnect rather
+            // than crashing. SIGPIPE is ignored process-wide, so this surfaces as
+            // an EPIPE error here instead of terminating the app. Tear down the
+            // process here: handleDisconnect flips isConnected, which turns the
+            // port's follow-up disconnect() into a no-op — without this the host
+            // process and pipes would outlive the port.
+            log.notice("[1PW-DEBUG] NM WRITE FAILED [\(self.hostName, privacy: .public)]: \(error.localizedDescription, privacy: .public)")
+            teardownProcess()
+            handleDisconnect("Native host write failed: \(error.localizedDescription)")
+            throw NativeMessagingError.notConnected
+        }
     }
 
-    /// Disconnect the native host (terminates the process).
+    /// Disconnect the native host (terminates the process). Deliberately does
+    /// NOT fire onDisconnect: this is the port telling the host to go away,
+    /// not the host going away.
     func disconnect() {
         guard isConnected else { return }
         log.info("Disconnecting native host \(self.hostName, privacy: .public) for extension \(self.extensionID, privacy: .public)")
         isConnected = false
+        teardownProcess()
+    }
 
+    /// Releases the host process and pipes. Every disconnect path must reach
+    /// this exactly once or the host process outlives the port; the nil-outs
+    /// make a second call harmless.
+    private func teardownProcess() {
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
         stdinPipe?.fileHandleForWriting.closeFile()
         process?.terminate()
@@ -167,6 +184,17 @@ class NativeMessagingHost {
         stdinPipe = nil
         stdoutPipe = nil
         stderrPipe = nil
+    }
+
+    /// Central disconnect bookkeeping: flips isConnected and notifies exactly
+    /// once, on the main queue. Safe to call from any queue and from multiple
+    /// failure paths racing each other — the first reason to arrive wins.
+    private func handleDisconnect(_ message: String?) {
+        DispatchQueue.main.async {
+            guard self.isConnected else { return }
+            self.isConnected = false
+            self.onDisconnect?(message)
+        }
     }
 
     // MARK: - Private
@@ -215,30 +243,20 @@ class NativeMessagingHost {
                 guard lengthData.count == 4 else {
                     // EOF or error — native host disconnected
                     log.notice("[1PW-DEBUG] ← NM EOF [\(self.hostName, privacy: .public)] (read \(lengthData.count) bytes instead of 4)")
-                    DispatchQueue.main.async {
-                        guard self.isConnected else { return }
-                        self.isConnected = false
-                        self.onDisconnect?(nil)
-                    }
+                    self.handleDisconnect(nil)
                     return
                 }
 
                 let length = lengthData.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
                 guard length > 0, length <= Self.maxMessageSize else {
-                    DispatchQueue.main.async {
-                        self.isConnected = false
-                        self.onDisconnect?("Invalid message length: \(length)")
-                    }
+                    self.handleDisconnect("Invalid message length: \(length)")
                     return
                 }
 
                 // Read the message body
                 let messageData = stdout.readData(ofLength: Int(length))
                 guard messageData.count == Int(length) else {
-                    DispatchQueue.main.async {
-                        self.isConnected = false
-                        self.onDisconnect?("Incomplete message read")
-                    }
+                    self.handleDisconnect("Incomplete message read")
                     return
                 }
 
