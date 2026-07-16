@@ -458,9 +458,6 @@ class BrowserWindowController: NSWindowController {
             } else {
                 self.setTrafficLightsHidden(false, animated: true)
             }
-            // The left split pane meets the window's rounded left corners only
-            // while the sidebar is collapsed — re-derive its border rounding.
-            self.updateSplitPaneFocus()
         }
 
         splitViewController.view.frame = window?.contentView?.bounds ?? .zero
@@ -966,12 +963,12 @@ class BrowserWindowController: NSWindowController {
         // whole split view when the pane was hosted in one (both panes, one
         // image), otherwise the container (webView + any docked inspector).
         let snapshotTarget = (container.superview as? NSSplitView) ?? container
-        let priorSnapshot = snapshotImage(of: snapshotTarget)
+        let priorSnapshot = snapshotWithinSuperview(of: snapshotTarget)
 
         removeContentViews()
 
         container.removeFromSuperview()
-        container.layer?.borderWidth = 0
+        resetSplitPaneChrome(container)
         wireOwnedWebView(webView)
 
         // Use frame-based layout (not constraints) for WKWebView — Auto Layout breaks Web Inspector.
@@ -1003,7 +1000,7 @@ class BrowserWindowController: NSWindowController {
         // Already hosting exactly these panes — just refresh.
         if hostedSplitMatches(members), let split = hostedSplitView {
             split.isHidden = false
-            split.frame = contentContainerView.bounds
+            split.frame = hostedSplitFrame
             applySplitFraction(fraction, to: split)
             updateSplitPaneFocus()
             anchorLinkStatusBar(to: focusedWebView)
@@ -1013,7 +1010,7 @@ class BrowserWindowController: NSWindowController {
         // Snapshot what the previous owner displayed (see claimSingleWebView).
         let snapshotTarget = containers.compactMap { $0.superview as? NSSplitView }.first
             ?? containers.first { $0.superview != nil }
-        let priorSnapshot = snapshotTarget.flatMap { snapshotImage(of: $0) }
+        let priorSnapshot = snapshotTarget.flatMap { snapshotWithinSuperview(of: $0) }
 
         removeContentViews()
 
@@ -1024,13 +1021,13 @@ class BrowserWindowController: NSWindowController {
             }
         }
 
-        let split = NSSplitView()
+        let split = HostedSplitView()
         split.isVertical = true
-        split.dividerStyle = .thin
         split.delegate = self
+        split.onEffectiveAppearanceChange = { [weak self] in self?.updateSplitPaneFocus() }
         split.translatesAutoresizingMaskIntoConstraints = true
         split.autoresizingMask = [.width, .height]
-        split.frame = contentContainerView.bounds
+        split.frame = hostedSplitFrame
         for container in containers {
             container.isHidden = false
             split.addArrangedSubview(container)
@@ -1059,15 +1056,14 @@ class BrowserWindowController: NSWindowController {
         // (e.g. it was the left pane before the group re-formed with it on
         // the right) collapses to zero width and shows as a dead white half,
         // and nothing retiles it until the window resizes.
-        let position = round(available * fraction)
+        let rects = splitPaneRects(in: split.bounds, inset: 0,
+                                   gap: split.dividerThickness, fraction: fraction)
         let panes = split.arrangedSubviews
         if panes.count == 2 {
-            panes[0].frame = NSRect(x: 0, y: 0, width: position, height: split.bounds.height)
-            panes[1].frame = NSRect(x: position + split.dividerThickness, y: 0,
-                                    width: split.bounds.width - position - split.dividerThickness,
-                                    height: split.bounds.height)
+            panes[0].frame = rects.left
+            panes[1].frame = rects.right
         }
-        split.setPosition(position, ofDividerAt: 0)
+        split.setPosition(rects.left.width, ofDividerAt: 0)
         split.layoutSubtreeIfNeeded()
         isApplyingSplitLayout = false
     }
@@ -1082,55 +1078,67 @@ class BrowserWindowController: NSWindowController {
         commit.cancel()
     }
 
-    /// Hairline accent border marking the focused pane of a hosted split. The
-    /// border rounds off at the corners where the pane meets the window's
-    /// rounded corners, so it follows the window shape instead of getting
-    /// clipped by the window mask. Fullscreen windows have square corners, so
-    /// no rounding there (re-derived from the fullscreen delegate callbacks).
+    /// The hosted split's frame: inset from the content area so the panes read
+    /// as rounded cards (matching the drop-zone previews) instead of running
+    /// into the window edges.
+    private var hostedSplitFrame: NSRect {
+        contentContainerView.bounds.insetBy(dx: UIConstants.splitPaneInset,
+                                            dy: UIConstants.splitPaneInset)
+    }
+
+    /// Pane chrome for a hosted split: each pane is a rounded, shadowed card,
+    /// the focused one marked by a hairline border. The shadow requires the
+    /// pane layer NOT to clip (masksToBounds kills the shadow), so content is
+    /// clipped one level down by WebViewContainerView, which also covers
+    /// subviews WebKit attaches later (the docked inspector).
     private func updateSplitPaneFocus() {
         guard let split = hostedSplitView else { return }
         let focusedContainer = selectedTab?.webViewContainer
-        let isFullscreen = window?.styleMask.contains(.fullScreen) == true
-        let radius = isFullscreen ? 0 : windowCornerRadius
+        // Resolve the dynamic border color under the split's own appearance;
+        // HostedSplitView re-runs this pass when that appearance changes.
+        var focusBorderColor = UIConstants.splitPaneFocusBorderColor.cgColor
+        split.effectiveAppearance.performAsCurrentDrawingAppearance {
+            focusBorderColor = UIConstants.splitPaneFocusBorderColor.cgColor
+        }
         for pane in split.arrangedSubviews {
             pane.wantsLayer = true
             let isFocused = pane === focusedContainer
             pane.layer?.borderWidth = isFocused ? 2 : 0
-            pane.layer?.borderColor = isFocused
-                ? NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor : nil
-            pane.layer?.cornerRadius = radius
+            pane.layer?.borderColor = isFocused ? focusBorderColor : nil
+            pane.layer?.cornerRadius = UIConstants.splitPaneCornerRadius
             pane.layer?.cornerCurve = .continuous
-            pane.layer?.maskedCorners = isFullscreen ? [] : windowEdgeCorners(of: pane)
+            pane.layer?.masksToBounds = false
+            pane.layer?.shadowColor = NSColor.black.cgColor
+            pane.layer?.shadowOpacity = UIConstants.splitPaneShadowOpacity
+            pane.layer?.shadowRadius = UIConstants.splitPaneShadowRadius
+            pane.layer?.shadowOffset = UIConstants.splitPaneShadowOffset
+            (pane as? WebViewContainerView)?.contentCornerRadius = UIConstants.splitPaneCornerRadius
+        }
+        updateSplitPaneShadowPaths()
+    }
+
+    /// Keeps each pane's shadow shape in sync with its frame: shadowPath does
+    /// not track bounds changes, and without an explicit path CA re-derives
+    /// the shadow from the composited web content on every frame.
+    private func updateSplitPaneShadowPaths() {
+        guard let split = hostedSplitView else { return }
+        for pane in split.arrangedSubviews {
+            pane.layer?.shadowPath = CGPath(roundedRect: pane.bounds,
+                                            cornerWidth: UIConstants.splitPaneCornerRadius,
+                                            cornerHeight: UIConstants.splitPaneCornerRadius,
+                                            transform: nil)
         }
     }
 
-    /// The window frame's corner radius, read via KVC from the theme frame
-    /// (no public API); falls back to a sane constant if the key disappears.
-    private var windowCornerRadius: CGFloat {
-        guard let frameView = window?.contentView?.superview,
-              frameView.responds(to: Selector(("cornerRadius"))),
-              let radius = frameView.value(forKey: "cornerRadius") as? CGFloat,
-              radius > 0 else { return 12 }
-        return radius
-    }
-
-    /// The corners of `pane` that coincide with the window's rounded corners.
-    /// Panes span the content area's full height, and the content area always
-    /// reaches the window's right edge — the left edge only when the sidebar
-    /// is collapsed. Derived from sidebar state, not geometry: during the
-    /// collapse animation frames are mid-flight, but `isCollapsed` is final.
-    private func windowEdgeCorners(of pane: NSView) -> CACornerMask {
-        guard let split = hostedSplitView else { return [] }
-        var corners: CACornerMask = []
-        if pane === split.arrangedSubviews.first, sidebarItem.isCollapsed {
-            corners.insert(.layerMinXMinYCorner)
-            corners.insert(.layerMinXMaxYCorner)
-        }
-        if pane === split.arrangedSubviews.last {
-            corners.insert(.layerMaxXMinYCorner)
-            corners.insert(.layerMaxXMaxYCorner)
-        }
-        return corners
+    /// Strips split-pane chrome from a container returning to full-bleed
+    /// single hosting, where a leftover radius or shadow would show against
+    /// the window edges.
+    private func resetSplitPaneChrome(_ pane: NSView) {
+        pane.layer?.borderWidth = 0
+        pane.layer?.cornerRadius = 0
+        pane.layer?.shadowOpacity = 0
+        pane.layer?.shadowPath = nil
+        (pane as? WebViewContainerView)?.contentCornerRadius = 0
     }
 
     /// Whether the hosted split view is parented in this window's content area
@@ -1166,6 +1174,22 @@ class BrowserWindowController: NSWindowController {
         return image
     }
 
+    /// Snapshot of `view` composed at its frame within its superview's bounds.
+    /// A hosted split is inset from the content area; snapshotting just the
+    /// split and displaying it full-bleed would shift and rescale the stand-in
+    /// relative to what was live. Composing keeps the gutters, so the image
+    /// maps 1:1 onto the content area. Full-bleed views pass through unchanged.
+    private func snapshotWithinSuperview(of view: NSView) -> NSImage? {
+        guard let image = snapshotImage(of: view) else { return nil }
+        guard let superview = view.superview, view.frame != superview.bounds,
+              superview.bounds.width > 0, superview.bounds.height > 0 else { return image }
+        let frame = view.frame
+        return NSImage(size: superview.bounds.size, flipped: false) { _ in
+            image.draw(in: frame)
+            return true
+        }
+    }
+
     private func showSnapshot(for tab: BrowserTab) {
         removeContentViews()
 
@@ -1198,7 +1222,7 @@ class BrowserWindowController: NSWindowController {
         let members = splitMembers(of: tab)
         if members.count == 2,
            let split = members[0].webViewContainer?.superview as? NSSplitView {
-            return snapshotImage(of: split)
+            return snapshotWithinSuperview(of: split)
         }
         return tab.webView.flatMap { snapshotImage(of: $0) }
     }
@@ -1228,7 +1252,7 @@ class BrowserWindowController: NSWindowController {
                 for pane in split.arrangedSubviews {
                     let frameInContent = split.convert(pane.frame, to: contentContainerView)
                     pane.removeFromSuperview()
-                    pane.layer?.borderWidth = 0
+                    resetSplitPaneChrome(pane)
                     if pane === pipContentView {
                         pane.frame = frameInContent
                         contentContainerView.addSubview(pane, positioned: .below, relativeTo: dragHandle)
@@ -2120,6 +2144,23 @@ extension BrowserWindowController: NSMenuItemValidation {
     }
 }
 
+/// Split view hosting a split tab pair. The divider is an invisible
+/// `splitPaneGap`-thick strip so the rounded pane cards sit visually apart;
+/// it also gives the resize cursor a wider grab area than a thin divider.
+private final class HostedSplitView: NSSplitView {
+    /// The focused-pane border color is appearance-dependent (black/white) and
+    /// baked into the layer as a CGColor — re-derive it on light/dark switches.
+    var onEffectiveAppearanceChange: (() -> Void)?
+
+    override var dividerThickness: CGFloat { UIConstants.splitPaneGap }
+    override func drawDivider(in rect: NSRect) {}
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onEffectiveAppearanceChange?()
+    }
+}
+
 // MARK: - NSSplitViewDelegate (hosted split tabs)
 
 // Delegate for `hostedSplitView` only — the window's sidebar/content split is
@@ -2139,8 +2180,9 @@ extension BrowserWindowController: NSSplitViewDelegate {
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let split = notification.object as? NSSplitView,
-              split === hostedSplitView,
-              !isApplyingSplitLayout else { return }
+              split === hostedSplitView else { return }
+        updateSplitPaneShadowPaths()
+        guard !isApplyingSplitLayout else { return }
         // A fraction claimed before the split had geometry gets applied on the
         // first real layout — committing here would persist the 50/50 default.
         if let pending = pendingSplitFraction {
@@ -2230,15 +2272,6 @@ extension BrowserWindowController: NSWindowDelegate {
             // than destroyed and recreated at its opening URL.
             restorePeekOverlayIfNeeded()
         }
-    }
-
-    func windowDidEnterFullScreen(_ notification: Notification) {
-        // Square window corners — drop the focused pane border's rounding.
-        updateSplitPaneFocus()
-    }
-
-    func windowDidExitFullScreen(_ notification: Notification) {
-        updateSplitPaneFocus()
     }
 
     func windowWillClose(_ notification: Notification) {

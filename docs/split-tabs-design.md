@@ -400,6 +400,9 @@ reliably fire `becomeFirstResponder` on the WKWebView subclass.
    first end-to-end creation path, ahead of any DnD. Peek-in-split rules
    verified here (mostly free). Implementation notes: focused-pane affordance is
    a hairline accent border on the focused container (`updateSplitPaneFocus`);
+   panes render as rounded cards inset from the content area with an invisible
+   gap divider (`HostedSplitView`), matching the content-area drop-zone preview
+   geometry (`UIConstants.splitPaneInset`/`splitPaneGap`/`splitPaneCornerRadius`);
    the ownership notification now carries `tabIDs` (all claimed panes) and
    windows match on group intersection, since two windows showing the same
    split may focus different members; structural changes that bypass

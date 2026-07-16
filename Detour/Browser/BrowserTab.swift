@@ -6,13 +6,41 @@ import Combine
 @_silgen_name("WKPreferencesSetAllowsPictureInPictureMediaPlayback")
 private func WKPreferencesSetAllowsPictureInPictureMediaPlayback(_ preferences: AnyObject, _ allowed: Bool)
 
+/// Container for a tab's webView plus whatever WebKit docks next to it (the
+/// Web Inspector attaches as a sibling of the webView at any time). When the
+/// container is hosted as a split pane its content must clip to the card's
+/// rounded corners — the clipping lives here, on didAddSubview, so views that
+/// attach AFTER the pane chrome was applied are clipped too. The container's
+/// own layer must not clip (masksToBounds kills the pane's shadow).
+final class WebViewContainerView: NSView {
+    /// Rounded-card clipping applied to every subview; 0 restores defaults.
+    var contentCornerRadius: CGFloat = 0 {
+        didSet {
+            guard contentCornerRadius != oldValue else { return }
+            subviews.forEach(applyContentClipping)
+        }
+    }
+
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        applyContentClipping(subview)
+    }
+
+    private func applyContentClipping(_ view: NSView) {
+        view.wantsLayer = true
+        view.layer?.cornerRadius = contentCornerRadius
+        view.layer?.cornerCurve = .continuous
+        view.layer?.masksToBounds = contentCornerRadius > 0
+    }
+}
+
 class BrowserTab: NSObject {
     let id: UUID
     private(set) var webView: WKWebView?
 
     /// Wraps `webView` so WebKit's docked Web Inspector (a sibling view)
     /// travels with the webView across detach/reattach.
-    private(set) var webViewContainer: NSView?
+    private(set) var webViewContainer: WebViewContainerView?
 
     func ensureWebViewContainer() {
         guard let webView else { return }
@@ -27,7 +55,7 @@ class BrowserTab: NSObject {
             }
             return
         }
-        let container = NSView()
+        let container = WebViewContainerView()
         container.translatesAutoresizingMaskIntoConstraints = true
         container.autoresizingMask = [.width, .height]
         webView.translatesAutoresizingMaskIntoConstraints = true

@@ -1,5 +1,23 @@
 import AppKit
 
+/// The two pane rects of a hosted split laid out in `bounds`: an `inset`
+/// margin on all sides, an invisible `gap` divider, and the remaining width
+/// split at `fraction`. Single source of truth for the hosted split's tiling
+/// (BrowserWindowController.applySplitFraction, inset 0 within the split's own
+/// bounds) and the drop-zone preview (full content bounds at 50/50), so the
+/// preview always shows exactly where a pane will land.
+func splitPaneRects(in bounds: NSRect, inset: CGFloat, gap: CGFloat,
+                    fraction: Double) -> (left: NSRect, right: NSRect) {
+    let content = bounds.insetBy(dx: inset, dy: inset)
+    let available = max(0, content.width - gap)
+    let leftWidth = (available * CGFloat(fraction)).rounded()
+    let left = NSRect(x: content.minX, y: content.minY,
+                      width: leftWidth, height: content.height)
+    let right = NSRect(x: content.minX + leftWidth + gap, y: content.minY,
+                       width: available - leftWidth, height: content.height)
+    return (left, right)
+}
+
 /// Maps a pointer x within the content area to a split-edge drop zone:
 /// outer 30% bands target an edge, the middle band rejects.
 func splitContentDropEdge(forX x: CGFloat, width: CGFloat) -> SplitEdge? {
@@ -94,18 +112,12 @@ final class SplitDropZoneView: NSView {
 
     // MARK: - Preview
 
-    /// The targeted half of `bounds`, inset 8pt from the outer edges and stopping
-    /// 4pt short of the midline (matches the sidebar's split drop overlay).
+    /// The targeted half of `bounds`: exactly where the hosted split's pane
+    /// will land at the initial 50/50 split (same geometry function).
     private func previewFrame(for edge: SplitEdge) -> NSRect {
-        let mid = bounds.midX
-        let y = bounds.minY + 8
-        let height = bounds.height - 16
-        switch edge {
-        case .left:
-            return NSRect(x: 8, y: y, width: mid - 4 - 8, height: height)
-        case .right:
-            return NSRect(x: mid + 4, y: y, width: bounds.maxX - 8 - (mid + 4), height: height)
-        }
+        let rects = splitPaneRects(in: bounds, inset: UIConstants.splitPaneInset,
+                                   gap: UIConstants.splitPaneGap, fraction: 0.5)
+        return edge == .left ? rects.left : rects.right
     }
 
     private func showPreview(for edge: SplitEdge) {
@@ -115,7 +127,7 @@ final class SplitDropZoneView: NSView {
         } else {
             preview = NSView()
             preview.wantsLayer = true
-            preview.layer?.cornerRadius = 8
+            preview.layer?.cornerRadius = UIConstants.splitPaneCornerRadius
             preview.layer?.borderWidth = UIConstants.splitDropAccentBorderWidth
             preview.layer?.backgroundColor = UIConstants.splitDropAccentFillColor.cgColor
             preview.layer?.borderColor = UIConstants.splitDropAccentBorderColor.cgColor

@@ -35,6 +35,54 @@ final class SplitDropZoneTests: XCTestCase {
         XCTAssertNil(splitContentDropEdge(forX: 101, width: 100))
     }
 
+    // MARK: - splitPaneRects
+
+    func testSplitPaneRectsTileTheInsetBounds() {
+        let bounds = NSRect(x: 0, y: 0, width: 1000, height: 600)
+        let rects = splitPaneRects(in: bounds, inset: 10, gap: 8, fraction: 0.5)
+        // Panes span the inset content rect with exactly the gap between them.
+        XCTAssertEqual(rects.left.minX, 10)
+        XCTAssertEqual(rects.right.maxX, 990)
+        XCTAssertEqual(rects.left.minY, 10)
+        XCTAssertEqual(rects.left.height, 580)
+        XCTAssertEqual(rects.right.height, 580)
+        XCTAssertEqual(rects.right.minX - rects.left.maxX, 8)
+        // 50/50: both panes equal width.
+        XCTAssertEqual(rects.left.width, rects.right.width)
+    }
+
+    func testSplitPaneRectsHonorFraction() {
+        let bounds = NSRect(x: 0, y: 0, width: 1008, height: 100)
+        let rects = splitPaneRects(in: bounds, inset: 0, gap: 8, fraction: 0.25)
+        // available = 1000; left = 250, right = 750, gap between.
+        XCTAssertEqual(rects.left.width, 250)
+        XCTAssertEqual(rects.right.width, 750)
+        XCTAssertEqual(rects.right.minX, 258)
+    }
+
+    func testSplitPaneRectsInsetZeroMatchesSplitViewTiling() {
+        // applySplitFraction uses inset 0 within the split view's own bounds:
+        // left.width is the divider position, right fills the remainder.
+        let bounds = NSRect(x: 0, y: 0, width: 500, height: 300)
+        let rects = splitPaneRects(in: bounds, inset: 0, gap: 8, fraction: 0.5)
+        XCTAssertEqual(rects.left, NSRect(x: 0, y: 0, width: 246, height: 300))
+        XCTAssertEqual(rects.right, NSRect(x: 254, y: 0, width: 246, height: 300))
+    }
+
+    func testSplitPaneRectsRoundOddWidths() {
+        let bounds = NSRect(x: 0, y: 0, width: 109, height: 100)
+        let rects = splitPaneRects(in: bounds, inset: 0, gap: 8, fraction: 0.5)
+        // available = 101 → left rounds to 51, right gets 50; still tiles.
+        XCTAssertEqual(rects.left.width + rects.right.width + 8, 109)
+        XCTAssertEqual(rects.left.width, (101.0 / 2).rounded())
+    }
+
+    func testSplitPaneRectsDegenerateBoundsDoNotGoNegative() {
+        let rects = splitPaneRects(in: .zero, inset: 8, gap: 8, fraction: 0.5)
+        XCTAssertEqual(rects.left.width, 0)
+        XCTAssertEqual(rects.right.width, 0)
+    }
+
     // MARK: - validateContentSplitDrop
 
     private func makePayload(kind: SidebarDragPayload.Kind, itemID: UUID,
