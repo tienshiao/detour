@@ -152,10 +152,10 @@ class NativeMessagingHost {
         } catch {
             // Read end closed (native host exited): treat as a disconnect rather
             // than crashing. SIGPIPE is ignored process-wide, so this surfaces as
-            // an EPIPE error here instead of terminating the app. Tear down the
-            // process here: handleDisconnect flips isConnected, which turns the
-            // port's follow-up disconnect() into a no-op — without this the host
-            // process and pipes would outlive the port.
+            // an EPIPE error here instead of terminating the app. Tear down
+            // eagerly so the caller sees closed pipes as soon as it catches
+            // notConnected; handleDisconnect repeats the (idempotent) teardown
+            // for the paths that don't do it inline.
             log.notice("[1PW-DEBUG] NM WRITE FAILED [\(self.hostName, privacy: .public)]: \(error.localizedDescription, privacy: .public)")
             teardownProcess()
             handleDisconnect("Native host write failed: \(error.localizedDescription)")
@@ -186,13 +186,16 @@ class NativeMessagingHost {
         stderrPipe = nil
     }
 
-    /// Central disconnect bookkeeping: flips isConnected and notifies exactly
-    /// once, on the main queue. Safe to call from any queue and from multiple
-    /// failure paths racing each other — the first reason to arrive wins.
+    /// Central disconnect bookkeeping: tears down the host process, flips
+    /// isConnected and notifies exactly once, on the main queue. Safe to call
+    /// from any queue and from multiple failure paths racing each other — the
+    /// first reason to arrive wins. Paths that already tore down (write
+    /// failure, disconnect()) are fine: teardownProcess is idempotent.
     private func handleDisconnect(_ message: String?) {
         DispatchQueue.main.async {
             guard self.isConnected else { return }
             self.isConnected = false
+            self.teardownProcess()
             self.onDisconnect?(message)
         }
     }
