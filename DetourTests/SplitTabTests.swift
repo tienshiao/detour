@@ -1098,7 +1098,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - Sidebar diff with split items
 
-    func testDiffTreatsSplitMergeAsRemoveAndInsert() throws {
+    func testDiffTreatsSplitMergeAsTargetRowContinuation() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -1112,8 +1112,10 @@ final class SplitTabTests: XCTestCase {
             oldTabs: oldItems, newTabs: newItems
         )
         XCTAssertTrue(diff.hasChanges)
-        // tabs[0] and tabs[2] rows disappear; the new group row appears.
-        XCTAssertEqual(diff.removedRows.count, 2)
-        XCTAssertEqual(diff.insertedRows.count, 1)
+        // The group row continues the drop target's (tabs[2]) row — only the
+        // dragged tab's row leaves, and nothing is inserted.
+        XCTAssertEqual(diff.removedRows, IndexSet(integer: rowForNormalTab(at: 0, pinnedItemCount: 0)))
+        XCTAssertTrue(diff.insertedRows.isEmpty)
+        XCTAssertTrue(diff.movedRows.isEmpty)
     }
 }

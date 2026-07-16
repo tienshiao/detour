@@ -27,15 +27,15 @@ func splitContentDropEdge(forX x: CGFloat, width: CGFloat) -> SplitEdge? {
     return nil
 }
 
-/// Whether a content-area edge drop may form a split. Mirrors the sidebar's
-/// `localDragPayload` rules: only a lone normal tab from THIS window's sidebar
-/// and the active space qualifies, and never onto itself.
+/// Whether a content-area edge drop may form a split. Shares the sidebar's
+/// local-drag gate (`SidebarDragPayload.isLocal`, also used by `localDragPayload`):
+/// only a lone normal tab from THIS window's sidebar and the active space
+/// qualifies, and never onto itself.
 func validateContentSplitDrop(payload: SidebarDragPayload, sidebarID: UUID,
                               activeSpaceID: UUID?, targetTabID: UUID?) -> Bool {
     guard let activeSpaceID, let targetTabID else { return false }
-    return payload.kind == .normalTab
-        && payload.sidebarID == sidebarID
-        && payload.spaceID == activeSpaceID
+    return payload.isLocal(sidebarID: sidebarID, spaceID: activeSpaceID)
+        && payload.kind == .normalTab
         && payload.itemID != targetTabID
 }
 

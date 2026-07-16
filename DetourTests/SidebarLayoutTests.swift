@@ -405,6 +405,87 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.insertedRows.count, 2)  // e3 to pinned, t4 to normal
     }
 
+    // MARK: - Split formation/dissolution continuations
+
+    func testDiffSplitFormationKeepsTargetRowAndRemovesDraggedRow() {
+        let a = makeTab(), b = makeTab(), c = makeTab(), d = makeTab()
+        // [A, B, C, D] — drag D onto B → [A, split(B,D), C]
+        let new: [TabListItem] = [.single(a), .split(groupID: UUID(), members: [b, d]), .single(c)]
+        let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
+                                    oldTabs: singles(a, b, c, d), newTabs: new)
+        XCTAssertEqual(diff.removedRows, IndexSet(integer: rowForNormalTab(at: 3, pinnedItemCount: 0)),
+                       "Only the dragged tab's row leaves")
+        XCTAssertTrue(diff.insertedRows.isEmpty, "The split row continues the target's row — no insert")
+        XCTAssertTrue(diff.movedRows.isEmpty)
+    }
+
+    func testDiffAdjacentSplitFormationKeepsStationaryRow() {
+        let x = makeTab(), a = makeTab(), b = makeTab()
+        // [X, A, B] — A and B merge in place → [X, split(A,B)] at A's old row
+        let new: [TabListItem] = [.single(x), .split(groupID: UUID(), members: [a, b])]
+        let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
+                                    oldTabs: singles(x, a, b), newTabs: new)
+        XCTAssertEqual(diff.removedRows, IndexSet(integer: rowForNormalTab(at: 2, pinnedItemCount: 0)),
+                       "The split lands at A's row, so B's row is the one removed")
+        XCTAssertTrue(diff.insertedRows.isEmpty)
+        XCTAssertTrue(diff.movedRows.isEmpty)
+    }
+
+    func testDiffSplitDissolveByMemberCloseIsNoChange() {
+        let x = makeTab(), a = makeTab(), b = makeTab()
+        // [X, split(A,B)] — B closes, group dissolves → [X, A]: the row morphs in place
+        let old: [TabListItem] = [.single(x), .split(groupID: UUID(), members: [a, b])]
+        let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
+                                    oldTabs: old, newTabs: singles(x, a))
+        XCTAssertFalse(diff.hasChanges)
+    }
+
+    func testDiffRemoveFromSplitInsertsOnlyDepartingMember() {
+        let x = makeTab(), a = makeTab(), b = makeTab(), y = makeTab()
+        // [X, split(A,B), Y] — drag B out to the end → [X, A, Y, B]
+        let old: [TabListItem] = [.single(x), .split(groupID: UUID(), members: [a, b]), .single(y)]
+        let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
+                                    oldTabs: old, newTabs: singles(x, a, y, b))
+        XCTAssertTrue(diff.removedRows.isEmpty, "The split row continues as A's row")
+        XCTAssertEqual(diff.insertedRows, IndexSet(integer: rowForNormalTab(at: 3, pinnedItemCount: 0)))
+        XCTAssertTrue(diff.movedRows.isEmpty)
+    }
+
+    func testDiffPinnedSplitMemberBreakoutContinuesPinnedRow() {
+        let groupID = UUID()
+        let e1 = makeEntry(title: "A", sortOrder: 0)
+        let e2 = makeEntry(title: "B", sortOrder: 1)
+        let t2 = makeTab(id: e2.id)
+        // Pinned split(E1,E2) — E2 unpins out of the group → pinned single E1 + normal tab T2
+        let diff = diffSidebarState(
+            oldPinnedItems: [.split(groupID: groupID, entries: [e1, e2], depth: 0)],
+            newPinnedItems: [.entry(e1, depth: 0)],
+            oldTabs: [], newTabs: singles(t2)
+        )
+        XCTAssertTrue(diff.removedRows.isEmpty, "The pinned split row continues as E1's row")
+        XCTAssertEqual(diff.insertedRows, IndexSet(integer: rowForNormalTab(at: 0, pinnedItemCount: 1)))
+        XCTAssertTrue(diff.movedRows.isEmpty)
+    }
+
+    func testDiffPinWholeSplitGroupStillMovesAcrossSections() {
+        let groupID = UUID()
+        let a = makeTab(), b = makeTab(), x = makeTab()
+        let e1 = makeEntry(id: a.id, title: "A", sortOrder: 0)
+        let e2 = makeEntry(id: b.id, title: "B", sortOrder: 1)
+        // Whole group pinned: same groupID identity in both sections → one cross-section move
+        let diff = diffSidebarState(
+            oldPinnedItems: [],
+            newPinnedItems: [.split(groupID: groupID, entries: [e1, e2], depth: 0)],
+            oldTabs: [.split(groupID: groupID, members: [a, b]), .single(x)],
+            newTabs: singles(x)
+        )
+        XCTAssertTrue(diff.removedRows.isEmpty)
+        XCTAssertTrue(diff.insertedRows.isEmpty)
+        XCTAssertEqual(diff.movedRows.count, 1)
+        XCTAssertEqual(diff.movedRows[0].from, rowForNormalTab(at: 0, pinnedItemCount: 0))
+        XCTAssertEqual(diff.movedRows[0].to, rowForPinnedItem(at: 0))
+    }
+
     // MARK: - Folder collapse/expand preserves folder row (chevron update scenario)
 
     func testDiffCollapseFolderKeepsFolderRow() {

@@ -331,6 +331,11 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCreateSplit draggedTabID: UUID, withTabID targetTabID: UUID, edge: SplitEdge) {
         guard let space = activeSpace else { return }
+        // The store's observers re-claim this window's content synchronously
+        // inside createSplit; the defer covers drops that never claim (the
+        // formed group doesn't involve the selected tab).
+        animateNextSplitClaim = true
+        defer { animateNextSplitClaim = false }
         store.createSplit(draggedTabID: draggedTabID, targetTabID: targetTabID, edge: edge, in: space)
     }
 
@@ -348,6 +353,8 @@ extension BrowserWindowController: TabSidebarDelegate {
               let index = space.tabs.firstIndex(where: { $0.id == tabID }),
               index + 1 < space.tabs.count else { return }
         let nextTab = space.tabs[index + 1]
+        animateNextSplitClaim = true
+        defer { animateNextSplitClaim = false }
         store.createSplit(draggedTabID: nextTab.id, targetTabID: tabID, edge: .right, in: space)
     }
 

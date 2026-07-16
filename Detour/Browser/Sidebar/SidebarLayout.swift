@@ -52,10 +52,24 @@ func diffSidebarState(
     oldPinnedItems: [PinnedItem], newPinnedItems: [PinnedItem],
     oldTabs: [TabListItem], newTabs: [TabListItem]
 ) -> SidebarDiff {
-    let oldPinnedIDs = oldPinnedItems.map { pinnedItemID($0) }
-    let newPinnedIDs = newPinnedItems.map { pinnedItemID($0) }
-    let oldTabIDs = oldTabs.map(\.itemID)
-    let newTabIDs = newTabs.map(\.itemID)
+    // A split forming or dissolving within one update is a row CONTINUATION,
+    // not remove+insert: alias the group's ID to the member single it morphs
+    // from/into, so the row stays put (or moves) and only the other member's
+    // row enters/leaves. Aliases are section-scoped — pin/unpin of a whole
+    // group keeps its groupID in both sections and diffs as a move unchanged.
+    let pinnedAliases = splitContinuationAliases(
+        old: oldPinnedItems.map { (id: pinnedItemID($0), memberIDs: $0.entries.map(\.id)) },
+        new: newPinnedItems.map { (id: pinnedItemID($0), memberIDs: $0.entries.map(\.id)) }
+    )
+    let tabAliases = splitContinuationAliases(
+        old: oldTabs.map { (id: $0.itemID, memberIDs: $0.tabs.map(\.id)) },
+        new: newTabs.map { (id: $0.itemID, memberIDs: $0.tabs.map(\.id)) }
+    )
+
+    let oldPinnedIDs = oldPinnedItems.map { pinnedAliases[pinnedItemID($0)] ?? pinnedItemID($0) }
+    let newPinnedIDs = newPinnedItems.map { pinnedAliases[pinnedItemID($0)] ?? pinnedItemID($0) }
+    let oldTabIDs = oldTabs.map { tabAliases[$0.itemID] ?? $0.itemID }
+    let newTabIDs = newTabs.map { tabAliases[$0.itemID] ?? $0.itemID }
 
     let oldPinnedSet = Set(oldPinnedIDs)
     let newPinnedSet = Set(newPinnedIDs)
@@ -114,6 +128,57 @@ func diffSidebarState(
     )
 
     return SidebarDiff(removedRows: removed, insertedRows: inserted, movedRows: movedRows)
+}
+
+/// Identity aliases for split groups that form or dissolve between two item
+/// lists of one section. A forming group (in `new` only) is a continuation of
+/// the member single row it replaced; a dissolving group (in `old` only)
+/// continues as the member single row that takes its place. In both cases the
+/// chosen member is the one whose single row sits nearest the group's item
+/// index — in practice the drop target (merge) or the member left in place
+/// (dissolve) — so the row morphs in place while only the OTHER member's row
+/// is inserted/removed. Returns groupID → member ID, to be applied to both
+/// lists' identities. Groups with no vanished/appeared member single (e.g. a
+/// whole group pinned across sections) get no alias and diff as before.
+func splitContinuationAliases(
+    old: [(id: UUID, memberIDs: [UUID])],
+    new: [(id: UUID, memberIDs: [UUID])]
+) -> [UUID: UUID] {
+    let oldIDs = Set(old.map(\.id))
+    let newIDs = Set(new.map(\.id))
+    var aliases: [UUID: UUID] = [:]
+
+    func continuation(of group: (id: UUID, memberIDs: [UUID]), at index: Int,
+                      among singles: [(id: UUID, memberIDs: [UUID])],
+                      absentFrom otherSideIDs: Set<UUID>) -> UUID? {
+        let members = Set(group.memberIDs)
+        let candidates = singles.enumerated().filter { _, item in
+            item.memberIDs.count == 1 && members.contains(item.id) && !otherSideIDs.contains(item.id)
+        }
+        // Nearest single row wins. Ties break to the LATER row: a merge ties
+        // only when the drag came from above, where the later candidate is the
+        // drop target; a dissolve ties when the departed member re-landed just
+        // above the group, where the later candidate is the member that held
+        // the group's position.
+        return candidates.min { a, b in
+            let (da, db) = (abs(a.offset - index), abs(b.offset - index))
+            return da != db ? da < db : a.offset > b.offset
+        }?.element.id
+    }
+
+    // Both directions are the same rule with the sides swapped: a group present
+    // on only one side (`side`) continues the lone member on the OTHER side that
+    // vanished/appeared. First tuple = merges (group new, continues an old single
+    // that vanished); second = dissolves (group old, continues a new single that
+    // appeared).
+    for (side, sideIDs, other, otherIDs) in [(new, newIDs, old, oldIDs), (old, oldIDs, new, newIDs)] {
+        for (index, item) in side.enumerated() where item.memberIDs.count > 1 && !otherIDs.contains(item.id) {
+            if let member = continuation(of: item, at: index, among: other, absentFrom: sideIDs) {
+                aliases[item.id] = member
+            }
+        }
+    }
+    return aliases
 }
 
 /// Computes the minimal set of moves for items that exist in both old and new

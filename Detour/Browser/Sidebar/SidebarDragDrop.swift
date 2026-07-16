@@ -44,6 +44,14 @@ extension SidebarDragPayload {
         guard let payload: Self = pasteboardDecode(pasteboardString) else { return nil }
         self = payload
     }
+
+    /// THE definition of "a drag from this window's sidebar in the active space",
+    /// shared by the sidebar table's local-drag gate (`localDragPayload`) and the
+    /// content-area split drop zone (`validateContentSplitDrop`). Surface-specific
+    /// checks (item kind, self-drop) stay at each call site.
+    func isLocal(sidebarID: UUID, spaceID: UUID) -> Bool {
+        self.sidebarID == sidebarID && self.spaceID == spaceID
+    }
 }
 
 extension FavoriteDragPayload {

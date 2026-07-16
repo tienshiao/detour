@@ -384,6 +384,10 @@ class TabSidebarViewController: NSViewController {
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
                     cell.indentLevel = depth
                     cell.updatePinnedMode(entry: entry)
+                    // A dissolved pinned split continues as this row (the diff
+                    // aliases it, so no fresh cell from viewFor), so the reused
+                    // cell must drop the vanished split's right segment.
+                    cell.updateSplitPane(favicon: nil, title: nil)
                     cell.onClose = { [weak self] in
                         guard let self else { return }
                         let row = self.tableView.row(for: cell)
@@ -402,7 +406,11 @@ class TabSidebarViewController: NSViewController {
                 }
             case .split(_, let entries, let depth):
                 if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
-                    configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: true)
+                    // A visible cell going single→split here is a group forming
+                    // around its row (the diff renders formation as a row
+                    // continuation) — reveal the new segment in place.
+                    configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: true,
+                                             animatedReveal: true)
                 }
             }
         }
@@ -413,7 +421,9 @@ class TabSidebarViewController: NSViewController {
         for (i, item) in tabItems.enumerated() {
             let row = rowForNormalTab(at: i)
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
-                configureItemCell(cell, item: item, isActive: true)
+                // animatedReveal: a visible single cell reconfigured as a split
+                // is a group forming around its row — see the pinned loop above.
+                configureItemCell(cell, item: item, isActive: true, animatedReveal: true)
             }
         }
 
@@ -1698,8 +1708,8 @@ extension TabSidebarViewController: NSTableViewDataSource {
     private func localDragPayload(from info: any NSDraggingInfo) -> SidebarDragPayload? {
         guard let string = info.draggingPasteboard.pasteboardItems?.first?.string(forType: tabReorderPasteboardType),
               let payload = SidebarDragPayload(pasteboardString: string),
-              payload.sidebarID == sidebarID,
-              payload.spaceID == activeSpaceID else { return nil }
+              let activeSpaceID,
+              payload.isLocal(sidebarID: sidebarID, spaceID: activeSpaceID) else { return nil }
         return payload
     }
 
@@ -1992,7 +2002,7 @@ extension TabSidebarViewController: NSTableViewDataSource {
         } else {
             overlay = NSView()
             overlay.wantsLayer = true
-            overlay.layer?.cornerRadius = 6
+            overlay.layer?.cornerRadius = UIConstants.defaultCornerRadius
             overlay.layer?.borderWidth = UIConstants.splitDropAccentBorderWidth
             splitDropOverlay = overlay
         }
@@ -2158,7 +2168,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
     }
 
     /// Configures a tab-section cell for a `TabListItem` (single tab or split row).
-    private func configureItemCell(_ cell: TabCellView, item: TabListItem, isActive: Bool) {
+    private func configureItemCell(_ cell: TabCellView, item: TabListItem, isActive: Bool,
+                                   animatedReveal: Bool = false) {
         switch item {
         case .single(let tab):
             configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive) { [weak self] row in
@@ -2167,7 +2178,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 self.delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
             }
         case .split(_, let members):
-            configureSplitCell(cell, item: item, members: members, isActive: isActive)
+            configureSplitCell(cell, item: item, members: members, isActive: isActive,
+                               animatedReveal: animatedReveal)
         }
     }
 
@@ -2208,7 +2220,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
     /// reflect any member; the row dims per the descriptor's sleeping rule; each
     /// half's close button closes its own pane. Shared by the normal and pinned
     /// split adapters below.
-    private func configureSplitCell(_ cell: TabCellView, descriptor: SplitCellDescriptor, isActive: Bool) {
+    private func configureSplitCell(_ cell: TabCellView, descriptor: SplitCellDescriptor, isActive: Bool,
+                                    animatedReveal: Bool = false) {
         cell.titleLabel.stringValue = descriptor.left.title
         cell.titleLabel.textColor = descriptor.left.emphasized ? .labelColor : .secondaryLabelColor
         cell.toolTip = descriptor.tooltip
@@ -2216,7 +2229,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.updatePeekFavicon(nil)
         cell.updateSplitPane(favicon: descriptor.right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"),
                              title: descriptor.right.title,
-                             emphasized: descriptor.right.emphasized)
+                             emphasized: descriptor.right.emphasized,
+                             animatedReveal: animatedReveal)
         cell.updateSleeping(descriptor.isSleeping)
         cell.updateLoading(descriptor.isLoading)
         cell.updateProgress(descriptor.progress)
@@ -2240,7 +2254,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
     /// Normal-section adapter: builds a split descriptor from live `BrowserTab`
     /// members. Titles and sleeping mirror the single normal-tab cell
     /// (`tab.title`, `tab.isSleeping`); close glyphs are plain xmarks.
-    private func configureSplitCell(_ cell: TabCellView, item: TabListItem, members: [BrowserTab], isActive: Bool) {
+    private func configureSplitCell(_ cell: TabCellView, item: TabListItem, members: [BrowserTab], isActive: Bool,
+                                    animatedReveal: Bool = false) {
         let left = members[0]
         let right = members.count > 1 ? members[1] : members[0]
         let rep = representativeTab(for: item)
@@ -2259,14 +2274,15 @@ extension TabSidebarViewController: NSTableViewDelegate {
             closeMember: { [weak self] cell, side in self?.closeSplitMember(of: cell, side: side) },
             onToggleMute: { audioMember?.toggleMute() }
         )
-        configureSplitCell(cell, descriptor: descriptor, isActive: isActive)
+        configureSplitCell(cell, descriptor: descriptor, isActive: isActive, animatedReveal: animatedReveal)
     }
 
     /// Pinned-section adapter: builds a split descriptor from `PinnedEntry`
     /// members. Titles and sleeping mirror the single pinned-entry cell
     /// (`entry.displayTitle`, dormant when not live); close glyphs carry the
     /// pinned per-half semantics (live → dormant, dormant → delete entry).
-    private func configurePinnedSplitCell(_ cell: TabCellView, entries: [PinnedEntry], depth: Int, isActive: Bool) {
+    private func configurePinnedSplitCell(_ cell: TabCellView, entries: [PinnedEntry], depth: Int, isActive: Bool,
+                                          animatedReveal: Bool = false) {
         let left = entries[0]
         let right = entries.count > 1 ? entries[1] : entries[0]
         let rep = representativePinnedEntry(of: entries)
@@ -2285,7 +2301,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             closeMember: { [weak self] cell, side in self?.closePinnedSplitMember(of: cell, side: side) },
             onToggleMute: { audioTab?.toggleMute() }
         )
-        configureSplitCell(cell, descriptor: descriptor, isActive: isActive)
+        configureSplitCell(cell, descriptor: descriptor, isActive: isActive, animatedReveal: animatedReveal)
     }
 
     /// Closes one pane of the pinned split row hosting `cell`, through the

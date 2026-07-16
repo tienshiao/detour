@@ -44,6 +44,20 @@ class BrowserWindowController: NSWindowController {
     private var pendingSplitFraction: Double?
     private var localSnapshot: NSImage?
     private weak var pipContentView: NSView?
+    /// One-shot: the next split-hosting claim animates the panes into place.
+    /// Set by the split-creation gestures (drop or menu — the sidebar-delegate
+    /// extension, hence not private) right before the store mutation whose
+    /// observers re-claim this window's content, so only user-witnessed
+    /// formation animates — never focus-transfer or convergence re-claims.
+    var animateNextSplitClaim = false
+    /// Cosmetic veneer that plays the split-formation animation ABOVE the
+    /// real (already final) pane layout. The claim path re-runs within a tick
+    /// of a split drop (deferred sidebar selection restore → selectTab), so
+    /// animating the live views is impossible — the veneer survives those
+    /// idempotent re-claims and is removed on completion or when hosting
+    /// moves to different content.
+    private var splitRevealOverlay: NSView?
+    private var splitRevealOverlayMemberIDs: [UUID] = []
 
     private let findBar = FindBarView()
     private let dragHandle = WindowDragView()
@@ -948,6 +962,8 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func claimSingleWebView(for tab: BrowserTab) {
+        // Single hosting means the split a reveal was playing for is gone.
+        removeSplitRevealOverlay()
         guard let webView = tab.webView else { return }
         tab.ensureWebViewContainer()
         guard let container = tab.webViewContainer else { return }
@@ -985,6 +1001,15 @@ class BrowserWindowController: NSWindowController {
     /// preserves the frame-based-layout requirement that keeps the docked Web
     /// Inspector working.
     private func claimSplitWebViews(members: [BrowserTab], focused: BrowserTab) {
+        // A running reveal for these same members keeps playing over the
+        // idempotent re-claim; any other content change makes it stale.
+        if splitRevealOverlay != nil, splitRevealOverlayMemberIDs != members.map(\.id) {
+            removeSplitRevealOverlay()
+        }
+        // Consume the one-shot BEFORE the teardown below, while the pane the
+        // user was looking at is still on screen to snapshot.
+        let reveal = takeSplitRevealContext(members: members)
+
         for member in members {
             member.ensureWebViewContainer()
         }
@@ -1040,6 +1065,19 @@ class BrowserWindowController: NSWindowController {
         anchorLinkStatusBar(to: focusedWebView)
 
         postOwnershipChanged(tabIDs: members.map(\.id), focusedID: focused.id, snapshot: priorSnapshot)
+
+        // A same-members re-claim (a left-edge drop's selection restore lands
+        // on the dragged member → selectTab → full rebuild) re-adds the split
+        // as the highest content subview, covering a still-playing veneer —
+        // lift it back on top or the rest of the animation plays hidden.
+        if let overlay = splitRevealOverlay {
+            overlay.removeFromSuperview()
+            contentContainerView.addSubview(overlay, positioned: .below, relativeTo: dragHandle)
+        }
+
+        if let reveal {
+            installSplitRevealOverlay(reveal, split: split, members: members)
+        }
     }
 
     private func applySplitFraction(_ fraction: Double, to split: NSSplitView) {
@@ -1078,12 +1116,142 @@ class BrowserWindowController: NSWindowController {
         commit.cancel()
     }
 
+    /// Fullscreen drops the card look: a gutter and rounded corners against
+    /// the bare screen edge waste space without the window chrome that
+    /// motivated them, so the panes go full bleed and square.
+    private var hostedSplitIsFullBleed: Bool {
+        window?.styleMask.contains(.fullScreen) == true
+    }
+
+    private var hostedSplitCornerRadius: CGFloat {
+        hostedSplitIsFullBleed ? 0 : UIConstants.splitPaneCornerRadius
+    }
+
     /// The hosted split's frame: inset from the content area so the panes read
     /// as rounded cards (matching the drop-zone previews) instead of running
-    /// into the window edges.
+    /// into the window edges. Full bleed in fullscreen.
     private var hostedSplitFrame: NSRect {
-        contentContainerView.bounds.insetBy(dx: UIConstants.splitPaneInset,
-                                            dy: UIConstants.splitPaneInset)
+        let inset = hostedSplitIsFullBleed ? 0 : UIConstants.splitPaneInset
+        return contentContainerView.bounds.insetBy(dx: inset, dy: inset)
+    }
+
+    // MARK: - Split formation reveal
+
+    /// What the formation animation needs from the moment before the claim
+    /// tears the single hosting down: which pane the user was already looking
+    /// at, and its full-bleed pixels.
+    private struct SplitRevealContext {
+        let existingIndex: Int
+        let snapshot: NSImage?
+    }
+
+    /// Consumes the one-shot `animateNextSplitClaim`. Returns a context only
+    /// for the transition the user actually watched: this window hosting one
+    /// of `members` full-bleed (not a snapshot stand-in, not already a split).
+    private func takeSplitRevealContext(members: [BrowserTab]) -> SplitRevealContext? {
+        guard animateNextSplitClaim else { return nil }
+        animateNextSplitClaim = false
+        guard hostedSplitView == nil,
+              contentContainerView.bounds.width > 0,
+              let index = members.firstIndex(where: { $0.webViewContainer?.superview === contentContainerView }),
+              let container = members[index].webViewContainer
+        else { return nil }
+        return SplitRevealContext(existingIndex: index, snapshot: snapshotImage(of: container))
+    }
+
+    /// Plays the formation animation over the freshly installed (already
+    /// final) split: a card with the pre-drop content shrinks from full bleed
+    /// into its pane while the incoming pane's card slides in from its edge,
+    /// then the veneer fades to reveal the live panes. Purely cosmetic — the
+    /// re-claims that follow a split drop (deferred sidebar selection restore
+    /// → selectTab) rebuild identical content beneath it, so it never has to
+    /// survive state it didn't expect.
+    private func installSplitRevealOverlay(_ reveal: SplitRevealContext, split: NSSplitView,
+                                           members: [BrowserTab]) {
+        removeSplitRevealOverlay()
+        let panes = split.arrangedSubviews
+        guard panes.count == 2 else { return }
+        let finalFrames = panes.map { split.convert($0.frame, to: contentContainerView) }
+        let incomingIndex = 1 - reveal.existingIndex
+
+        let overlay = ClickThroughView(frame: contentContainerView.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        // The incoming card starts beyond the content area's edge; without
+        // clipping, a left-edge start would draw over the sidebar.
+        overlay.clipsToBounds = true
+
+        let existingCard = makeSplitRevealCard(snapshot: reveal.snapshot)
+        existingCard.frame = contentContainerView.bounds
+        existingCard.layer?.cornerRadius = 0
+
+        // The incoming pane may never have rendered (fresh wake) — its card
+        // falls back to the window background and the live pane appears at
+        // the fade.
+        let incomingCard = makeSplitRevealCard(
+            snapshot: members[incomingIndex].webView.flatMap { snapshotImage(of: $0) })
+        let incomingFinal = finalFrames[incomingIndex]
+        let startX = incomingIndex == 0
+            ? contentContainerView.bounds.minX - incomingFinal.width
+            : contentContainerView.bounds.maxX
+        incomingCard.frame = NSRect(x: startX, y: incomingFinal.minY,
+                                    width: incomingFinal.width, height: incomingFinal.height)
+
+        overlay.addSubview(existingCard)
+        overlay.addSubview(incomingCard)
+        contentContainerView.addSubview(overlay, positioned: .below, relativeTo: dragHandle)
+        splitRevealOverlay = overlay
+        splitRevealOverlayMemberIDs = members.map(\.id)
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.22
+            ctx.allowsImplicitAnimation = true
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            existingCard.animator().frame = finalFrames[reveal.existingIndex]
+            existingCard.layer?.cornerRadius = self.hostedSplitCornerRadius
+            incomingCard.animator().frame = incomingFinal
+        }, completionHandler: { [weak overlay] in
+            guard let overlay else { return }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.12
+                overlay.animator().alphaValue = 0
+            }, completionHandler: { [weak self, weak overlay] in
+                guard let overlay else { return }
+                overlay.removeFromSuperview()
+                if let self, self.splitRevealOverlay === overlay {
+                    self.splitRevealOverlay = nil
+                    self.splitRevealOverlayMemberIDs = []
+                }
+            })
+        })
+    }
+
+    private func removeSplitRevealOverlay() {
+        splitRevealOverlay?.removeFromSuperview()
+        splitRevealOverlay = nil
+        splitRevealOverlayMemberIDs = []
+    }
+
+    /// A pane stand-in for the reveal veneer: a rounded card showing a static
+    /// snapshot anchored at its top-left (cropping, not squishing, as the card
+    /// resizes — the closest match to how live web content reflows) over the
+    /// window background color.
+    private func makeSplitRevealCard(snapshot: NSImage?) -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        guard let layer = card.layer else { return card }
+        layer.masksToBounds = true
+        layer.cornerRadius = hostedSplitCornerRadius
+        layer.cornerCurve = .continuous
+        layer.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        if let snapshot {
+            var rect = NSRect(origin: .zero, size: snapshot.size)
+            if let cgImage = snapshot.cgImage(forProposedRect: &rect, context: nil, hints: nil) {
+                layer.contents = cgImage
+                layer.contentsGravity = .topLeft
+                layer.contentsScale = window?.backingScaleFactor ?? 2
+            }
+        }
+        return card
     }
 
     /// Pane chrome for a hosted split: each pane is a rounded, shadowed card,
@@ -1096,23 +1264,24 @@ class BrowserWindowController: NSWindowController {
         let focusedContainer = selectedTab?.webViewContainer
         // Resolve the dynamic border color under the split's own appearance;
         // HostedSplitView re-runs this pass when that appearance changes.
-        var focusBorderColor = UIConstants.splitPaneFocusBorderColor.cgColor
+        var focusBorderColor: CGColor?
         split.effectiveAppearance.performAsCurrentDrawingAppearance {
             focusBorderColor = UIConstants.splitPaneFocusBorderColor.cgColor
         }
+        let radius = hostedSplitCornerRadius
         for pane in split.arrangedSubviews {
             pane.wantsLayer = true
             let isFocused = pane === focusedContainer
             pane.layer?.borderWidth = isFocused ? 2 : 0
             pane.layer?.borderColor = isFocused ? focusBorderColor : nil
-            pane.layer?.cornerRadius = UIConstants.splitPaneCornerRadius
+            pane.layer?.cornerRadius = radius
             pane.layer?.cornerCurve = .continuous
             pane.layer?.masksToBounds = false
             pane.layer?.shadowColor = NSColor.black.cgColor
-            pane.layer?.shadowOpacity = UIConstants.splitPaneShadowOpacity
+            pane.layer?.shadowOpacity = hostedSplitIsFullBleed ? 0 : UIConstants.splitPaneShadowOpacity
             pane.layer?.shadowRadius = UIConstants.splitPaneShadowRadius
             pane.layer?.shadowOffset = UIConstants.splitPaneShadowOffset
-            (pane as? WebViewContainerView)?.contentCornerRadius = UIConstants.splitPaneCornerRadius
+            (pane as? WebViewContainerView)?.contentCornerRadius = radius
         }
         updateSplitPaneShadowPaths()
     }
@@ -1122,10 +1291,11 @@ class BrowserWindowController: NSWindowController {
     /// the shadow from the composited web content on every frame.
     private func updateSplitPaneShadowPaths() {
         guard let split = hostedSplitView else { return }
+        let radius = hostedSplitCornerRadius
         for pane in split.arrangedSubviews {
             pane.layer?.shadowPath = CGPath(roundedRect: pane.bounds,
-                                            cornerWidth: UIConstants.splitPaneCornerRadius,
-                                            cornerHeight: UIConstants.splitPaneCornerRadius,
+                                            cornerWidth: radius,
+                                            cornerHeight: radius,
                                             transform: nil)
         }
     }
@@ -1191,6 +1361,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func showSnapshot(for tab: BrowserTab) {
+        removeSplitRevealOverlay()
         removeContentViews()
 
         let imageView = NSImageView()
@@ -1235,7 +1406,11 @@ class BrowserWindowController: NSWindowController {
         }
         flushPendingSplitFractionCommit()
         let currentPeekWebView = selectedTab?.peekTab?.webView
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView {
+        // The split-reveal veneer is NOT removed here: the claim that follows a
+        // split drop re-runs within a tick (deferred sidebar selection restore
+        // → selectTab) and must not cut the animation short. The claim paths
+        // remove it themselves when hosting moves to different content.
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay {
             for webView in webViews(in: subview) {
                 for name in Self.ownedScriptHandlerNames {
                     webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
@@ -1660,6 +1835,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     func deselectAllTabs() {
+        removeSplitRevealOverlay()
         selectedTabID = nil
         activeSpace?.selectedTabID = nil
         activeTabSubscriptions.removeAll()
@@ -2144,6 +2320,12 @@ extension BrowserWindowController: NSMenuItemValidation {
     }
 }
 
+/// Click-through container for the split-formation veneer — purely visual, it
+/// must never intercept events destined for the live panes beneath it.
+private final class ClickThroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// Split view hosting a split tab pair. The divider is an invisible
 /// `splitPaneGap`-thick strip so the rounded pane cards sit visually apart;
 /// it also gives the resize cursor a wider grab area than a thin divider.
@@ -2272,6 +2454,29 @@ extension BrowserWindowController: NSWindowDelegate {
             // than destroyed and recreated at its opening URL.
             restorePeekOverlayIfNeeded()
         }
+    }
+
+    /// The reveal veneer's cards animate toward pane frames captured at
+    /// install; a resize mid-animation would leave them misaligned over the
+    /// retiled panes, so drop the (purely cosmetic) veneer instead.
+    func windowDidResize(_ notification: Notification) {
+        removeSplitRevealOverlay()
+    }
+
+    // The hosted split's chrome differs between windowed (inset rounded
+    // cards) and fullscreen (full bleed, square) — re-derive on transitions.
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        refreshHostedSplitChromeForFullScreenChange()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        refreshHostedSplitChromeForFullScreenChange()
+    }
+
+    private func refreshHostedSplitChromeForFullScreenChange() {
+        guard let split = hostedSplitView else { return }
+        split.frame = hostedSplitFrame
+        updateSplitPaneFocus()
     }
 
     func windowWillClose(_ notification: Notification) {
