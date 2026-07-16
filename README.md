@@ -11,8 +11,9 @@ A native macOS web browser built with Swift and WebKit.
 - **Tab Pinning** — Pin frequently used tabs to the top of the sidebar. Pinned tabs reset to their home URL instead of closing.
 - **Pinned Folders** — Organize pinned tabs into folders for better grouping.
 - **Tab Archiving** — Automatically archive inactive tabs to keep the sidebar tidy.
+- **Split Tabs** — View two tabs side by side as a single sidebar row. Create by dragging a tab onto the edge of another tab or of the content area, or by Option-clicking a link. Resizable panes, animated formation/separation, and splits survive pinning.
 - **Favorites** — Bookmark pages for quick access.
-- **Command Palette** — Cmd+T for new tab, Cmd+L to navigate. Searches open tabs, browsing history (FTS5), and web suggestions in one unified input.
+- **Command Palette** — Cmd+T for new tab, Cmd+L to navigate. Searches open tabs, browsing history (FTS5), and web suggestions in one unified input, with frecency-based autocomplete and a top-hit row.
 - **Downloads** — Built-in download manager with progress tracking, cancel, reveal in Finder, and persistence across sessions.
 - **Content Blocker** — Built-in ad and tracker blocking with EasyList support and per-site whitelist management.
 - **Peek Preview** — Long-click links to preview them in an overlay without leaving the current page. Expand to open in a new tab.
