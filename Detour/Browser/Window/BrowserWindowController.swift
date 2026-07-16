@@ -50,12 +50,18 @@ class BrowserWindowController: NSWindowController {
     /// observers re-claim this window's content, so only user-witnessed
     /// formation animates — never focus-transfer or convergence re-claims.
     var animateNextSplitClaim = false
-    /// Cosmetic veneer that plays the split-formation animation ABOVE the
-    /// real (already final) pane layout. The claim path re-runs within a tick
-    /// of a split drop (deferred sidebar selection restore → selectTab), so
-    /// animating the live views is impossible — the veneer survives those
-    /// idempotent re-claims and is removed on completion or when hosting
-    /// moves to different content.
+    /// One-shot mirror of `animateNextSplitClaim` for the dissolve direction:
+    /// the next single-hosting claim that collapses a hosted split animates.
+    /// Set by the separation gestures (context menu or member drag-out).
+    var animateNextSplitSeparation = false
+    /// Cosmetic veneer that plays the split formation OR separation animation
+    /// ABOVE the real (already final) content layout. The claim path re-runs
+    /// within a tick of a split drop (deferred sidebar selection restore →
+    /// selectTab), so animating the live views is impossible — the veneer
+    /// survives those idempotent re-claims and is removed on completion or
+    /// when hosting moves to different content. `memberIDs` identifies what
+    /// the veneer plays for: the member pair for formation, `[continuingID]`
+    /// for separation.
     private var splitRevealOverlay: NSView?
     private var splitRevealOverlayMemberIDs: [UUID] = []
 
@@ -333,6 +339,10 @@ class BrowserWindowController: NSWindowController {
         updatePinnedExtensionIcons()
     }
 
+    @objc private func contentContainerFrameDidChange() {
+        removeSplitRevealOverlay()
+    }
+
     deinit {
         store.removeObserver(self)
         DownloadManager.shared.removeObserver(self)
@@ -453,6 +463,17 @@ class BrowserWindowController: NSWindowController {
         let contentVC = NSViewController()
         contentVC.view = contentContainerView
         contentContainerView.wantsLayer = true
+        // The split veneer's cards animate toward frames captured at install;
+        // ANY content-area resize (window resize, sidebar toggle/auto-hide)
+        // would leave them misaligned over the retiled content — and the
+        // separation veneer is opaque, so it would hide the live page — so
+        // drop the cosmetic veneer on frame changes. A window-resize hook
+        // alone misses the sidebar paths: collapsing the sidebar resizes this
+        // view without touching the window frame.
+        contentContainerView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(contentContainerFrameDidChange),
+                                               name: NSView.frameDidChangeNotification,
+                                               object: contentContainerView)
         contentContainerView.addSubview(emptyStateLabel)
         NSLayoutConstraint.activate([
             emptyStateLabel.centerXAnchor.constraint(equalTo: contentContainerView.centerXAnchor),
@@ -962,11 +983,19 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func claimSingleWebView(for tab: BrowserTab) {
-        // Single hosting means the split a reveal was playing for is gone.
-        removeSplitRevealOverlay()
+        // A running separation veneer for this same tab keeps playing over
+        // idempotent re-claims; any other veneer is stale once single hosting
+        // takes over (a formation veneer's pair never equals [tab.id]).
+        if splitRevealOverlay != nil, splitRevealOverlayMemberIDs != [tab.id] {
+            removeSplitRevealOverlay()
+        }
         guard let webView = tab.webView else { return }
         tab.ensureWebViewContainer()
         guard let container = tab.webViewContainer else { return }
+
+        // Consume the one-shot BEFORE the teardown below, while both panes
+        // are still on screen to snapshot.
+        let separation = takeSplitSeparationContext(for: tab)
 
         if container.superview === contentContainerView {
             container.isHidden = false
@@ -994,6 +1023,17 @@ class BrowserWindowController: NSWindowController {
         anchorLinkStatusBar(to: webView)
 
         postOwnershipChanged(tabIDs: [tab.id], focusedID: tab.id, snapshot: priorSnapshot)
+
+        // The container was re-added above a still-playing same-tab veneer —
+        // lift it back on top or the rest of the animation plays hidden.
+        if let overlay = splitRevealOverlay {
+            overlay.removeFromSuperview()
+            contentContainerView.addSubview(overlay, positioned: .below, relativeTo: dragHandle)
+        }
+
+        if let separation {
+            installSplitSeparationOverlay(separation, for: tab)
+        }
     }
 
     /// Hosts both panes of the focused tab's split group in an NSSplitView.
@@ -1159,6 +1199,38 @@ class BrowserWindowController: NSWindowController {
         return SplitRevealContext(existingIndex: index, snapshot: snapshotImage(of: container))
     }
 
+    /// What the separation animation needs from the moment before the claim
+    /// tears the split down: both panes' pixels and frames, and which pane
+    /// continues as the full-bleed single hosting.
+    private struct SplitSeparationContext {
+        let continuingIndex: Int
+        let paneFrames: [NSRect]
+        let paneSnapshots: [NSImage?]
+    }
+
+    /// Consumes the one-shot `animateNextSplitSeparation`. Returns a context
+    /// only for the transition the user actually watched: this window hosting
+    /// `tab` as one pane of the split that just dissolved.
+    private func takeSplitSeparationContext(for tab: BrowserTab) -> SplitSeparationContext? {
+        guard animateNextSplitSeparation else { return nil }
+        animateNextSplitSeparation = false
+        guard let split = hostedSplitView, split.superview === contentContainerView,
+              contentContainerView.bounds.width > 0 else { return nil }
+        let panes = split.arrangedSubviews
+        guard panes.count == 2,
+              let index = panes.firstIndex(where: { $0 === tab.webViewContainer })
+        else { return nil }
+        let frames = panes.map { split.convert($0.frame, to: contentContainerView) }
+        // Snapshot each pane's web view, not the container: the focused
+        // container's layer carries the focus border, which would bake into
+        // the continuing card and stretch during the expand.
+        let snapshots = panes.map { pane in
+            webViews(in: pane).first.flatMap { snapshotImage(of: $0) } ?? snapshotImage(of: pane)
+        }
+        return SplitSeparationContext(continuingIndex: index, paneFrames: frames,
+                                      paneSnapshots: snapshots)
+    }
+
     /// Plays the formation animation over the freshly installed (already
     /// final) split: a card with the pre-drop content shrinks from full bleed
     /// into its pane while the incoming pane's card slides in from its edge,
@@ -1174,11 +1246,7 @@ class BrowserWindowController: NSWindowController {
         let finalFrames = panes.map { split.convert($0.frame, to: contentContainerView) }
         let incomingIndex = 1 - reveal.existingIndex
 
-        let overlay = ClickThroughView(frame: contentContainerView.bounds)
-        overlay.autoresizingMask = [.width, .height]
-        // The incoming card starts beyond the content area's edge; without
-        // clipping, a left-edge start would draw over the sidebar.
-        overlay.clipsToBounds = true
+        let overlay = makeSplitVeneerOverlay()
 
         let existingCard = makeSplitRevealCard(snapshot: reveal.snapshot)
         existingCard.frame = contentContainerView.bounds
@@ -1190,38 +1258,106 @@ class BrowserWindowController: NSWindowController {
         let incomingCard = makeSplitRevealCard(
             snapshot: members[incomingIndex].webView.flatMap { snapshotImage(of: $0) })
         let incomingFinal = finalFrames[incomingIndex]
-        let startX = incomingIndex == 0
-            ? contentContainerView.bounds.minX - incomingFinal.width
-            : contentContainerView.bounds.maxX
-        incomingCard.frame = NSRect(x: startX, y: incomingFinal.minY,
-                                    width: incomingFinal.width, height: incomingFinal.height)
+        incomingCard.frame = offscreenPaneFrame(for: incomingFinal, paneIndex: incomingIndex)
 
         overlay.addSubview(existingCard)
         overlay.addSubview(incomingCard)
+        beginSplitVeneer(overlay, memberIDs: members.map(\.id)) {
+            existingCard.animator().frame = finalFrames[reveal.existingIndex]
+            existingCard.layer?.cornerRadius = self.hostedSplitCornerRadius
+            incomingCard.animator().frame = incomingFinal
+        }
+    }
+
+    /// Shared veneer scaffold, part 1: the click-through overlay both
+    /// installers decorate. Cards travel beyond the content area's edge, so
+    /// without clipping a left-edge start/exit would draw over the sidebar.
+    private func makeSplitVeneerOverlay() -> ClickThroughView {
+        let overlay = ClickThroughView(frame: contentContainerView.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.clipsToBounds = true
+        return overlay
+    }
+
+    /// Shared veneer scaffold, part 2: installs the overlay below the drag
+    /// handle, records its identity, and runs phase 1 (the 0.22s ease-out both
+    /// directions time-mirror) into the shared fade.
+    private func beginSplitVeneer(_ overlay: NSView, memberIDs: [UUID],
+                                  animations: () -> Void) {
         contentContainerView.addSubview(overlay, positioned: .below, relativeTo: dragHandle)
         splitRevealOverlay = overlay
-        splitRevealOverlayMemberIDs = members.map(\.id)
-
+        splitRevealOverlayMemberIDs = memberIDs
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.allowsImplicitAnimation = true
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            existingCard.animator().frame = finalFrames[reveal.existingIndex]
-            existingCard.layer?.cornerRadius = self.hostedSplitCornerRadius
-            incomingCard.animator().frame = incomingFinal
-        }, completionHandler: { [weak overlay] in
+            animations()
+        }, completionHandler: { [weak self, weak overlay] in
+            guard let self, let overlay else { return }
+            self.fadeOutSplitRevealOverlay(overlay)
+        })
+    }
+
+    /// The offscreen rect a pane card slides in from (formation) or out to
+    /// (separation) at its own edge: left pane beyond the left edge, right
+    /// pane beyond the right.
+    private func offscreenPaneFrame(for frame: NSRect, paneIndex: Int) -> NSRect {
+        NSRect(x: paneIndex == 0 ? contentContainerView.bounds.minX - frame.width
+                                 : contentContainerView.bounds.maxX,
+               y: frame.minY, width: frame.width, height: frame.height)
+    }
+
+    /// Plays the separation animation over the freshly installed (already
+    /// final) single hosting: the continuing pane's card expands from its
+    /// pane frame to full bleed while the departing pane's card slides out
+    /// toward its own edge, then the veneer fades to the live view. Exact
+    /// time-mirror of `installSplitRevealOverlay`.
+    private func installSplitSeparationOverlay(_ separation: SplitSeparationContext,
+                                               for tab: BrowserTab) {
+        removeSplitRevealOverlay()
+        let departingIndex = 1 - separation.continuingIndex
+
+        let overlay = makeSplitVeneerOverlay()
+        // Unlike formation (whose frame-0 card is full bleed), two pane-sized
+        // cards leave the gutters and divider gap uncovered — the live
+        // full-bleed page would peek through. Back the veneer with what the
+        // user saw there: the window background.
+        overlay.wantsLayer = true
+        overlay.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        let continuingCard = makeSplitRevealCard(
+            snapshot: separation.paneSnapshots[separation.continuingIndex])
+        continuingCard.frame = separation.paneFrames[separation.continuingIndex]
+
+        let departingCard = makeSplitRevealCard(snapshot: separation.paneSnapshots[departingIndex])
+        let departingStart = separation.paneFrames[departingIndex]
+        departingCard.frame = departingStart
+        let departingEnd = offscreenPaneFrame(for: departingStart, paneIndex: departingIndex)
+
+        // Departing above continuing: the exit card slides out OVER the
+        // expanding card, mirroring the incoming card arriving on top.
+        overlay.addSubview(continuingCard)
+        overlay.addSubview(departingCard)
+        beginSplitVeneer(overlay, memberIDs: [tab.id]) {
+            continuingCard.animator().frame = contentContainerView.bounds
+            continuingCard.layer?.cornerRadius = 0
+            departingCard.animator().frame = departingEnd
+        }
+    }
+
+    /// Phase 2 of either veneer: fade to the live content beneath, then
+    /// remove. Identity-guarded so a newer overlay is never clobbered.
+    private func fadeOutSplitRevealOverlay(_ overlay: NSView) {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            overlay.animator().alphaValue = 0
+        }, completionHandler: { [weak self, weak overlay] in
             guard let overlay else { return }
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.12
-                overlay.animator().alphaValue = 0
-            }, completionHandler: { [weak self, weak overlay] in
-                guard let overlay else { return }
-                overlay.removeFromSuperview()
-                if let self, self.splitRevealOverlay === overlay {
-                    self.splitRevealOverlay = nil
-                    self.splitRevealOverlayMemberIDs = []
-                }
-            })
+            overlay.removeFromSuperview()
+            if let self, self.splitRevealOverlay === overlay {
+                self.splitRevealOverlay = nil
+                self.splitRevealOverlayMemberIDs = []
+            }
         })
     }
 
@@ -2454,13 +2590,6 @@ extension BrowserWindowController: NSWindowDelegate {
             // than destroyed and recreated at its opening URL.
             restorePeekOverlayIfNeeded()
         }
-    }
-
-    /// The reveal veneer's cards animate toward pane frames captured at
-    /// install; a resize mid-animation would leave them misaligned over the
-    /// retiled panes, so drop the (purely cosmetic) veneer instead.
-    func windowDidResize(_ notification: Notification) {
-        removeSplitRevealOverlay()
     }
 
     // The hosted split's chrome differs between windowed (inset rounded

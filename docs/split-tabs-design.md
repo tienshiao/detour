@@ -559,3 +559,68 @@ group; `pinnedItemID` returns the groupID (diff identity).
 - pinned split member → pinned gap: `.removeFromPinnedSplit` (own pinned row).
 - Rejected: pinned splits/members → favorites; anything → pinned-row split
   edges (no split creation in the pinned section); member → folder `.on`.
+
+## 13. Formation & separation reveal animations
+
+Both transitions play a cosmetic **veneer** of snapshot cards ABOVE the real,
+already-final content layout — live views are never animated. The claim paths
+re-run within a tick of a split drop (deferred sidebar selection restore →
+`selectTab`), and formation/separation both tear content down and rebuild it,
+so animating the live hierarchy is impossible; the veneer survives idempotent
+re-claims and any interruption degrades to an instant snap over correct
+content, never a wrong state.
+
+**One-shot flags.** `animateNextSplitClaim` (formation) and
+`animateNextSplitSeparation` (separation) on `BrowserWindowController`, armed
+with `flag = true; defer { flag = false }` around the store mutation in the
+gesture's sidebar-delegate method. Store observers run synchronously inside
+the mutation, so the claim consumes the flag in the same stack frame; the
+defer covers gestures that never claim, and only the gesture window animates.
+Undo intentionally snaps in both directions — only user-witnessed gestures
+animate.
+
+**Shared overlay slot.** `splitRevealOverlay` / `splitRevealOverlayMemberIDs`
+serve both directions: memberIDs is the member pair for formation,
+`[continuingTabID]` for separation. Stale-veneer guards compare memberIDs
+(`claimSplitWebViews` for the pair, `claimSingleWebView` for the single), so
+a same-content re-claim keeps the animation playing (re-lifting the overlay
+above the re-added content) while any other claim removes it.
+`removeContentViews` deliberately spares the overlay for the same reason.
+A frame-change observer on the content container (covering window resizes
+AND sidebar toggle/auto-hide, which resize the content without touching the
+window frame), `showSnapshot`, and `deselectAllTabs` remove it — the cards
+animate toward frames captured at install and would misalign, and the
+separation veneer's opaque backing would hide the live page.
+
+**Formation** (`installSplitRevealOverlay`): the watched pane's card shrinks
+from full bleed into its pane (radius 0 → card radius) while the incoming
+pane's card slides in from its own edge; 0.22s ease-out, then a 0.12s fade
+(`fadeOutSplitRevealOverlay`, shared) to the live panes.
+
+**Separation** (`installSplitSeparationOverlay`): exact time-mirror — the
+continuing pane's card expands to full bleed (radius → 0) while the departing
+pane's card slides out toward its own edge, then the fade. Context is captured
+in `claimSingleWebView` BEFORE teardown (`takeSplitSeparationContext`): both
+pane frames and snapshots, taken from each pane's web view rather than its
+container so the focus border doesn't bake into the expanding card. The
+overlay carries an opaque window-background layer: unlike formation's
+full-bleed frame-0 card, two pane-sized cards would let the live full-bleed
+page peek through the gutters and divider gap.
+
+**Sidebar row.** The diff's continuation aliasing (§6) makes both directions
+a row morph. Formation reveals the right segment (`revealSplitSegment`: fade
+in + 24pt slide from the divider, title retracts, 0.2s); separation collapses
+it (`collapseSplitSegment`: fade out + slide toward the divider, title
+expands back). The collapse is requested by passing `animatedReveal: true`
+into the split→single reconfigure, so close-dissolves animate too; off-screen
+or windowless cells snap instantly. The collapse ghost shows the DEPARTED
+member, not whatever the right segment held: when the LEFT pane leaves, the
+old right-segment content is the survivor itself, so `applyState` looks the
+departed member up in the pre-mutation items and hands its favicon/title to
+the collapse (`departingFavicon`/`departingTitle`). Interruption rules: a
+clear arriving mid-collapse (progress ticks on the surviving tab, the drop's
+selection-restore re-reconfigure) converges to the collapse's own end state
+and is ignored so the animation finishes; a reveal starting mid-collapse
+disarms the pending collapse completion (`resetSplitRevealState` at reveal
+start), and overlapping collapses are told apart by a generation counter so
+a superseded completion can't blank a live segment.

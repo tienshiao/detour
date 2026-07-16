@@ -41,10 +41,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     // Each half has its own close button: `splitCloseButton` (left pane, before
     // the divider) fires `onCloseLeft`; the shared trailing `closeButton` fires
     // `onClose`, which a split row wires to the right pane.
-    private let splitFaviconImageView = NSImageView()
-    private let splitTitleLabel = NSTextField(labelWithString: "")
+    // Exposed (internal) so sidebar-collapse tests can observe cleared/hidden
+    // state headlessly — mirrors titleLabel/faviconImageView being non-private.
+    let splitFaviconImageView = NSImageView()
+    let splitTitleLabel = NSTextField(labelWithString: "")
     private let splitCloseButton: HoverButton
-    private let splitDivider = NSView()
+    let splitDivider = NSView()
     private var trackingArea: NSTrackingArea?
     private var titleLeadingConstraint: NSLayoutConstraint!
     private var faviconLeadingConstraint: NSLayoutConstraint!
@@ -414,7 +416,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         titleLeadingConstraint.constant = audioPlaying ? 24 : 8
         closeButtonWidthConstraint.constant = (isHovered && (!hasSplit || hoveredSplitSide == 1)) ? 16 : 0
         closeButtonTrailingConstraint.constant = hasPeek ? -4 : 0
-        splitFaviconWidthConstraint.constant = hasSplit ? 16 : 0
+        splitFaviconWidthConstraint.constant = (hasSplit || isCollapsingSplitSegment) ? 16 : 0
         splitCloseButtonWidthConstraint.constant = (isHovered && hasSplit && hoveredSplitSide == 0) ? 16 : 0
         peekFaviconWidthConstraint.constant = hasPeek ? 16 : 0
         // Deactivate before activating so both trailing rules never coexist.
@@ -446,23 +448,47 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// the centered divider); the left segment is the regular favicon + title.
     /// `emphasized` marks the focused pane's title. Pass nil to clear split
     /// rendering when the cell is reused for a single/pinned tab.
-    /// `animatedReveal` animates the single→split transition in place (the row
-    /// continues the drop target's row): the left title retracts to its half
-    /// while the right segment slides in from the divider. It only takes
-    /// effect on that transition — reconfigures that are already split, or
-    /// clears back to single, apply instantly.
+    /// `animatedReveal` animates the single↔split transition in place (the row
+    /// continues the drop target's / surviving member's row): revealing, the
+    /// left title retracts to its half while the right segment slides in from
+    /// the divider; collapsing, the right segment fades and slides back toward
+    /// the divider while the left title expands to full width. It only takes
+    /// effect on those transitions — reconfigures that stay split apply
+    /// instantly. `departingFavicon`/`departingTitle` name the member that
+    /// actually left the group: the right segment holds the old RIGHT pane's
+    /// content, which is the survivor (not the departed member) when the left
+    /// pane departed — the collapse swaps the ghost to the departed content.
     func updateSplitPane(favicon: NSImage?, title: String?, emphasized: Bool = false,
-                         animatedReveal: Bool = false) {
+                         animatedReveal: Bool = false,
+                         departingFavicon: NSImage? = nil, departingTitle: String? = nil) {
+        // A clear arriving mid-collapse (progress ticks on the surviving tab,
+        // the drop's selection-restore re-reconfigure) converges to the
+        // collapse's own end state — let the animation finish, don't snap it.
+        if isCollapsingSplitSegment, favicon == nil, title == nil { return }
         let wasSplit = hasSplit
         hasSplit = favicon != nil || title != nil
-        splitFaviconImageView.image = favicon
-        splitTitleLabel.stringValue = title ?? ""
-        splitTitleLabel.textColor = emphasized ? .labelColor : .secondaryLabelColor
-        splitFaviconImageView.isHidden = !hasSplit
-        splitTitleLabel.isHidden = !hasSplit
-        splitDivider.isHidden = !hasSplit
-        if animatedReveal, hasSplit, !wasSplit, window != nil, bounds.width > 0 {
+        let canAnimate = animatedReveal && window != nil && bounds.width > 0
+        let animateCollapse = canAnimate && wasSplit && !hasSplit
+        // A collapse must keep the outgoing favicon/title visible while it
+        // fades, so leave the segment content and visibility untouched here and
+        // let the completion handler clear it.
+        if !animateCollapse {
+            splitFaviconImageView.image = favicon
+            splitTitleLabel.stringValue = title ?? ""
+            splitTitleLabel.textColor = emphasized ? .labelColor : .secondaryLabelColor
+            splitFaviconImageView.isHidden = !hasSplit
+            splitTitleLabel.isHidden = !hasSplit
+            splitDivider.isHidden = !hasSplit
+        }
+        if canAnimate, hasSplit, !wasSplit {
             revealSplitSegment()
+        } else if animateCollapse {
+            if departingFavicon != nil || departingTitle != nil {
+                splitFaviconImageView.image = departingFavicon
+                splitTitleLabel.stringValue = departingTitle ?? ""
+                splitTitleLabel.textColor = .secondaryLabelColor
+            }
+            collapseSplitSegment()
         } else {
             resetSplitRevealState()
         }
@@ -472,10 +498,23 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         updateLayoutState()
     }
 
+    /// True only for the duration of a collapse animation, so `updateLayoutState`
+    /// keeps the right segment at full width while it fades instead of snapping
+    /// it to zero.
+    private var isCollapsingSplitSegment = false
+    /// Ties each collapse completion to the collapse that scheduled it: a newer
+    /// collapse re-arms `isCollapsingSplitSegment`, so the flag alone can't tell
+    /// a stale completion from the live one.
+    private var splitCollapseGeneration = 0
+
     /// Animates a single→split reconfigure: the right segment's views fade and
     /// slide in from beyond the divider while the left title's trailing edge
     /// animates from its pre-split position to the half-row layout.
     private func revealSplitSegment() {
+        // Cancel any collapse still in flight — its pending completion would
+        // otherwise fire mid-reveal and blank the freshly shown segment.
+        resetSplitRevealState()
+
         let oldTitleMaxX = titleLabel.frame.maxX
 
         // Land the whole split layout without animation first, so the right
@@ -495,13 +534,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             layoutSubtreeIfNeeded()
         }
 
-        let slide = CABasicAnimation(keyPath: "transform.translation.x")
-        slide.fromValue = 24
-        slide.toValue = 0
-        slide.duration = Self.splitRevealDuration
-        slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        splitFaviconImageView.layer?.add(slide, forKey: Self.splitRevealAnimationKey)
-        splitTitleLabel.layer?.add(slide, forKey: Self.splitRevealAnimationKey)
+        addSplitSegmentSlide(from: 24, to: 0)
 
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = Self.splitRevealDuration
@@ -514,15 +547,80 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         }
     }
 
-    /// Restores the resting state a reveal animates through, so a cell reused
-    /// (or reconfigured) mid-reveal doesn't keep ghost alphas or a stale
-    /// trailing overshoot.
+    /// The horizontal slide both reveal and collapse run on the right
+    /// segment's layers — one builder so the two directions can't drift.
+    private func addSplitSegmentSlide(from: CGFloat, to: CGFloat) {
+        let slide = CABasicAnimation(keyPath: "transform.translation.x")
+        slide.fromValue = from
+        slide.toValue = to
+        slide.duration = Self.splitRevealDuration
+        slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        splitFaviconImageView.layer?.add(slide, forKey: Self.splitRevealAnimationKey)
+        splitTitleLabel.layer?.add(slide, forKey: Self.splitRevealAnimationKey)
+    }
+
+    /// Time-mirror of `revealSplitSegment` for a split→single reconfigure: the
+    /// right segment's views fade and slide back toward the divider while the
+    /// left title's trailing edge animates from its half-row position out to
+    /// full width. The row continues the surviving member.
+    private func collapseSplitSegment() {
+        // Cancel any reveal still in flight so the two animations don't fight.
+        resetSplitRevealState()
+        isCollapsingSplitSegment = true
+        splitCollapseGeneration += 1
+        let generation = splitCollapseGeneration
+
+        let oldTitleMaxX = titleLabel.frame.maxX
+
+        // Land the single layout first (activating titleSingleTrailingConstraint)
+        // so the title's full-width frame is known, then measure how far it grew.
+        updateLayoutState()
+        layoutSubtreeIfNeeded()
+        let expansion = titleLabel.frame.maxX - oldTitleMaxX
+        if expansion > 0 {
+            // Hold the title at its pre-collapse (split) width, then animate the
+            // constant out to its resting value.
+            titleSingleTrailingConstraint.constant = Self.splitTitleTrailingGap - expansion
+            layoutSubtreeIfNeeded()
+        }
+
+        addSplitSegmentSlide(from: 0, to: -24)
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = Self.splitRevealDuration
+            ctx.allowsImplicitAnimation = true
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            titleSingleTrailingConstraint.animator().constant = Self.splitTitleTrailingGap
+            splitFaviconImageView.animator().alphaValue = 0
+            splitTitleLabel.animator().alphaValue = 0
+            splitDivider.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            // The generation check kills completions from superseded collapses
+            // (a newer collapse re-armed the flag, so the flag alone lies).
+            guard let self, self.isCollapsingSplitSegment,
+                  generation == self.splitCollapseGeneration else { return }
+            self.splitFaviconImageView.image = nil
+            self.splitTitleLabel.stringValue = ""
+            self.splitFaviconImageView.isHidden = true
+            self.splitTitleLabel.isHidden = true
+            self.splitDivider.isHidden = true
+            self.resetSplitRevealState()
+            self.updateLayoutState()
+        })
+    }
+
+    /// Restores the resting state a reveal/collapse animates through, so a cell
+    /// reused (or reconfigured) mid-animation doesn't keep ghost alphas or a
+    /// stale trailing overshoot. Clearing `isCollapsingSplitSegment` also makes
+    /// any pending collapse completion a no-op via its flag guard.
     private func resetSplitRevealState() {
         for view in [splitFaviconImageView, splitTitleLabel, splitDivider] {
             view.layer?.removeAnimation(forKey: Self.splitRevealAnimationKey)
             view.alphaValue = 1
         }
         titleSplitTrailingConstraint.constant = Self.splitTitleTrailingGap
+        titleSingleTrailingConstraint.constant = Self.splitTitleTrailingGap
+        isCollapsingSplitSegment = false
     }
 
     private static let splitRevealDuration: TimeInterval = 0.2

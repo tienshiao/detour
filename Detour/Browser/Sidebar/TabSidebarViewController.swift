@@ -317,6 +317,12 @@ class TabSidebarViewController: NSViewController {
             return
         }
 
+        // Captured for the collapse animation's ghost content: a dissolved
+        // split's continuation row needs the DEPARTED member's favicon/title,
+        // which only the pre-mutation items still know.
+        let oldTabItems = tabItems
+        let oldPinnedItems = flattenedPinnedItems
+
         // Compute new flattened items from the incoming state (model not yet updated)
         let collapsedIDs = Set(newFolders.filter(\.isCollapsed).map(\.id))
         let resolvedID = resolveSelectedTabID(selectedTabID)
@@ -386,8 +392,14 @@ class TabSidebarViewController: NSViewController {
                     cell.updatePinnedMode(entry: entry)
                     // A dissolved pinned split continues as this row (the diff
                     // aliases it, so no fresh cell from viewFor), so the reused
-                    // cell must drop the vanished split's right segment.
-                    cell.updateSplitPane(favicon: nil, title: nil)
+                    // cell must drop the vanished split's right segment — animated,
+                    // so the vanishing pane collapses instead of blinking out.
+                    // The ghost shows the DEPARTED entry, not whatever the right
+                    // segment held (the survivor itself when the left one left).
+                    let departed = departedPinnedSplitEntry(survivorID: entry.id, in: oldPinnedItems)
+                    cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: true,
+                                         departingFavicon: departed?.displayFavicon,
+                                         departingTitle: departed?.displayTitle)
                     cell.onClose = { [weak self] in
                         guard let self else { return }
                         let row = self.tableView.row(for: cell)
@@ -423,7 +435,16 @@ class TabSidebarViewController: NSViewController {
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
                 // animatedReveal: a visible single cell reconfigured as a split
                 // is a group forming around its row — see the pinned loop above.
-                configureItemCell(cell, item: item, isActive: true, animatedReveal: true)
+                // A single that was a split member in the old items is a
+                // dissolve continuation: hand the departed member's content to
+                // the collapse so the ghost shows the tab that actually left.
+                let departed: BrowserTab? = {
+                    guard case .single(let tab) = item else { return nil }
+                    return departedSplitMember(survivorID: tab.id, in: oldTabItems)
+                }()
+                configureItemCell(cell, item: item, isActive: true, animatedReveal: true,
+                                  departingFavicon: departed?.favicon,
+                                  departingTitle: departed?.title)
             }
         }
 
@@ -2169,10 +2190,14 @@ extension TabSidebarViewController: NSTableViewDelegate {
 
     /// Configures a tab-section cell for a `TabListItem` (single tab or split row).
     private func configureItemCell(_ cell: TabCellView, item: TabListItem, isActive: Bool,
-                                   animatedReveal: Bool = false) {
+                                   animatedReveal: Bool = false,
+                                   departingFavicon: NSImage? = nil, departingTitle: String? = nil) {
         switch item {
         case .single(let tab):
-            configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive) { [weak self] row in
+            configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive,
+                             animatedReveal: animatedReveal,
+                             departingFavicon: departingFavicon,
+                             departingTitle: departingTitle) { [weak self] row in
                 guard let self, case .normalTab(let idx) = self.sidebarRow(for: row),
                       let tabIdx = firstTabIndex(forItemIndex: idx, in: self.tabItems) else { return }
                 self.delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
@@ -2304,6 +2329,26 @@ extension TabSidebarViewController: NSTableViewDelegate {
         configureSplitCell(cell, descriptor: descriptor, isActive: isActive, animatedReveal: animatedReveal)
     }
 
+    /// The member that left a split whose row now continues as the survivor's
+    /// single row (nil when the survivor wasn't in a split before). The
+    /// collapse ghost must show this member — the right segment otherwise
+    /// holds the old right pane's content, which is the survivor itself
+    /// whenever the LEFT pane departed.
+    private func departedSplitMember(survivorID: UUID, in oldItems: [TabListItem]) -> BrowserTab? {
+        for case .split(_, let members) in oldItems where members.contains(where: { $0.id == survivorID }) {
+            return members.first { $0.id != survivorID }
+        }
+        return nil
+    }
+
+    /// Pinned-section analog of `departedSplitMember`.
+    private func departedPinnedSplitEntry(survivorID: UUID, in oldItems: [PinnedItem]) -> PinnedEntry? {
+        for case .split(_, let entries, _) in oldItems where entries.contains(where: { $0.id == survivorID }) {
+            return entries.first { $0.id != survivorID }
+        }
+        return nil
+    }
+
     /// Closes one pane of the pinned split row hosting `cell`, through the
     /// ordinary per-entry pinned close path (live → dormant keeps the group;
     /// dormant → delete dissolves it).
@@ -2329,12 +2374,13 @@ extension TabSidebarViewController: NSTableViewDelegate {
         delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
     }
 
-    private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, indentLevel: Int = 0, onClose: @escaping (Int) -> Void) {
+    private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, indentLevel: Int = 0, animatedReveal: Bool = false, departingFavicon: NSImage? = nil, departingTitle: String? = nil, onClose: @escaping (Int) -> Void) {
         cell.titleLabel.stringValue = title
         cell.toolTip = tab.title
         cell.updateFavicon(tab.favicon)
         cell.updatePeekFavicon(tab.displayPeekFavicon)
-        cell.updateSplitPane(favicon: nil, title: nil)
+        cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: animatedReveal,
+                             departingFavicon: departingFavicon, departingTitle: departingTitle)
         cell.updateSleeping(tab.isSleeping)
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.estimatedProgress)

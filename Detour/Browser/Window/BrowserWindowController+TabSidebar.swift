@@ -113,6 +113,10 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpin entryID: UUID, toGapIndex gapIndex: Int) {
         guard let space = activeSpace else { return }
+        // Harmless for non-split unpins: the separation-context guards fail
+        // and the defer clears the flag.
+        animateNextSplitSeparation = true
+        defer { animateNextSplitSeparation = false }
         store.unpinTab(id: entryID, in: space, at: gapIndex)
     }
 
@@ -299,6 +303,12 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparateSplit groupID: UUID) {
         guard let space = activeSpace else { return }
+        // Same one-shot idiom as didRequestCreateSplit: observers re-claim
+        // synchronously inside the mutation, the defer covers gestures that
+        // never claim. Undo intentionally stays unanimated in both directions
+        // — only user-witnessed gestures animate.
+        animateNextSplitSeparation = true
+        defer { animateNextSplitSeparation = false }
         store.separateSplit(groupID: groupID, in: space)
     }
 
@@ -341,6 +351,8 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveTabFromSplit tabID: UUID, toGapIndex gapIndex: Int) {
         guard let space = activeSpace else { return }
+        animateNextSplitSeparation = true
+        defer { animateNextSplitSeparation = false }
         store.removeTabFromSplit(tabID: tabID, toGapIndex: gapIndex, in: space)
     }
 
@@ -377,11 +389,15 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparatePinnedSplit groupID: UUID) {
         guard let space = activeSpace else { return }
+        animateNextSplitSeparation = true
+        defer { animateNextSplitSeparation = false }
         store.separatePinnedSplit(groupID: groupID, in: space)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemovePinnedEntryFromSplit entryID: UUID, folderID: UUID?, beforeItemID: UUID?) {
         guard let space = activeSpace else { return }
+        animateNextSplitSeparation = true
+        defer { animateNextSplitSeparation = false }
         store.removePinnedEntryFromSplit(entryID: entryID, folderID: folderID, beforeItemID: beforeItemID, in: space)
     }
 
