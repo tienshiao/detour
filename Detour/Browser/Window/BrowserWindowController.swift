@@ -1000,6 +1000,9 @@ class BrowserWindowController: NSWindowController {
         if container.superview === contentContainerView {
             container.isHidden = false
             container.frame = contentContainerView.bounds
+            // The container may arrive here still pinned from the PiP capture
+            // hold (a split pane re-selected within the cleanup delay).
+            container.autoresizingMask = [.width, .height]
             anchorLinkStatusBar(to: webView)
             return
         }
@@ -1438,13 +1441,17 @@ class BrowserWindowController: NSWindowController {
 
     /// Strips split-pane chrome from a container returning to full-bleed
     /// single hosting, where a leftover radius or shadow would show against
-    /// the window edges.
+    /// the window edges. Also restores the autoresizing mask: NSSplitView's
+    /// tiling overwrites pane masks (repurposing them as divider-relative
+    /// springs), and a container re-hosted with that leftover mask keeps a
+    /// fixed size instead of tracking window resizes.
     private func resetSplitPaneChrome(_ pane: NSView) {
         pane.layer?.borderWidth = 0
         pane.layer?.cornerRadius = 0
         pane.layer?.shadowOpacity = 0
         pane.layer?.shadowPath = nil
         (pane as? WebViewContainerView)?.contentCornerRadius = 0
+        pane.autoresizingMask = [.width, .height]
     }
 
     /// Whether the hosted split view is parented in this window's content area
@@ -1566,6 +1573,11 @@ class BrowserWindowController: NSWindowController {
                     resetSplitPaneChrome(pane)
                     if pane === pipContentView {
                         pane.frame = frameInContent
+                        // Pin the pane for the capture hold: the resize-tracking
+                        // mask restored above would stretch it away from the
+                        // captured video frame if the window resized within the
+                        // delay. The next claim restores the mask.
+                        pane.autoresizingMask = []
                         contentContainerView.addSubview(pane, positioned: .below, relativeTo: dragHandle)
                     }
                 }
