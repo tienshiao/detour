@@ -4,6 +4,11 @@ A native macOS web browser built with Swift and WebKit.
 
 ![Detour Screenshot](images/detour-screenshot.png)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/detour-split-dark.png">
+  <img alt="Two tabs side by side in a split, shown as a single sidebar row" src="images/detour-split-light.png">
+</picture>
+
 ## Features
 
 - **Spaces** — Organize tabs into color-coded workspaces, each with isolated cookies and storage. Each space has a name, emoji, and color.
