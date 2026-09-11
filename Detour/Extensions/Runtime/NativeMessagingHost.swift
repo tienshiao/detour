@@ -83,7 +83,7 @@ class NativeMessagingHost {
         // Validate the host binary exists
         let hostPath = manifest.path
         guard FileManager.default.isExecutableFile(atPath: hostPath) else {
-            log.error("Native host binary not found at \(hostPath) for \(self.hostName, privacy: .public)")
+            log.error("Native host binary not found at \(hostPath, privacy: .public) for \(self.hostName, privacy: .public)")
             throw NativeMessagingError.hostNotFound(hostPath)
         }
 
@@ -103,8 +103,22 @@ class NativeMessagingHost {
         let stderrHostName = hostName
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            log.notice("[1PW-DEBUG] NM STDERR [\(stderrHostName, privacy: .public)]: \(text, privacy: .public)")
+            guard !data.isEmpty else {
+                // EOF: Foundation keeps re-firing the handler with empty data
+                // until it is cleared, spinning a core if the host closes its
+                // stderr but stays alive.
+                handle.readabilityHandler = nil
+                return
+            }
+            // Host stderr is host-controlled text and may contain diagnostics
+            // with tokens, so it is kept out of the persisted log store: debug
+            // level (not persisted) and private (redacted unless private
+            // logging is enabled or a debugger is attached). The decode lives
+            // inside the interpolation so it is skipped when debug is off, and
+            // is lossy so a chunk split mid-character still logs its size.
+            // 1Password keeps its own BrowserSupport logs under
+            // ~/Library/Group Containers/2BUA8C4S2C.com.1password/…/Data/logs/BrowserSupport/.
+            log.debug("[1PW-DEBUG] NM STDERR [\(stderrHostName, privacy: .public)] (\(data.count) bytes): \(String(decoding: data, as: UTF8.self), privacy: .private)")
         }
 
         self.stdinPipe = stdin
@@ -122,13 +136,18 @@ class NativeMessagingHost {
 
         try proc.run()
         isConnected = true
-        log.info("Connected to native host \(self.hostName, privacy: .public) at \(hostPath) for extension \(self.extensionID, privacy: .public)")
+        log.info("Connected to native host \(self.hostName, privacy: .public) at \(hostPath, privacy: .public) for extension \(self.extensionID, privacy: .public)")
 
         // Start reading stdout on a background queue
         startReadLoop()
     }
 
     /// Send a JSON message to the native host using the length-prefixed protocol.
+    ///
+    /// NEVER log message payloads (or any part of them, including keys) here or
+    /// in the read loop: native hosts such as 1Password exchange account secrets,
+    /// vault items and session tokens over this channel, and the unified log is
+    /// readable by anything on the machine. Byte counts and the host name only.
     func sendMessage(_ message: [String: Any]) throws {
         guard isConnected, let stdinPipe, process?.isRunning == true else {
             throw NativeMessagingError.notConnected
@@ -143,9 +162,8 @@ class NativeMessagingHost {
             throw NativeMessagingError.messageTooLarge(data.count)
         }
 
-        if let preview = String(data: data.prefix(500), encoding: .utf8) {
-            log.notice("[1PW-DEBUG] → NM SEND [\(self.hostName, privacy: .public)] (\(data.count) bytes): \(preview, privacy: .public)")
-        }
+        // Payload contents are deliberately never logged (see doc comment above).
+        log.notice("[1PW-DEBUG] → NM SEND [\(self.hostName, privacy: .public)] (\(data.count) bytes)")
 
         do {
             try stdinPipe.fileHandleForWriting.write(contentsOf: Self.encodeMessage(data))
@@ -265,9 +283,9 @@ class NativeMessagingHost {
 
                 // Parse JSON and deliver
                 if let json = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] {
-                    if let preview = String(data: messageData.prefix(500), encoding: .utf8) {
-                        log.notice("[1PW-DEBUG] ← NM RECV [\(self.hostName, privacy: .public)] (\(messageData.count) bytes): \(preview, privacy: .public)")
-                    }
+                    // Payload contents are deliberately never logged: native hosts
+                    // send secrets over this channel. Byte count only.
+                    log.notice("[1PW-DEBUG] ← NM RECV [\(self.hostName, privacy: .public)] (\(messageData.count) bytes)")
                     DispatchQueue.main.async {
                         self.onMessage?(json)
                     }

@@ -15,6 +15,38 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
 
+    /// The fixed polyfill envelope keys (see `__detourPolyfillRequest` in
+    /// ExtensionAPIPolyfill). Diagnostics log only these names: any other key
+    /// in a body is extension-authored text and stays out of the log, as do
+    /// all values.
+    private static let envelopeKeys: Set<String> = ["type", "extensionID", "params"]
+
+    /// Log-safe shape of a malformed body: which envelope keys are present,
+    /// how many foreign keys there are, and the Swift type of `type` (so a
+    /// present-but-non-String `type` is distinguishable from an absent one).
+    private static func envelopeSummary(_ body: [String: Any]) -> String {
+        let known = body.keys.filter { envelopeKeys.contains($0) }.sorted()
+        let foreign = body.count - known.count
+        let typeKind = body["type"].map { String(describing: Swift.type(of: $0)) } ?? "absent"
+        return "envelope keys \(known), \(foreign) other, type: \(typeKind)"
+    }
+
+    /// UserDefaults key that opts the extension console bridge into logging
+    /// message text publicly (persisted, visible to `log show`/`log stream`).
+    /// Off by default because extension console output can contain secrets.
+    /// Enable for one debugging session with
+    /// `defaults write com.detourbrowser.mac ExtensionConsoleLogPublic -bool YES`
+    /// and disable again with `defaults delete com.detourbrowser.mac ExtensionConsoleLogPublic`.
+    /// Read once per launch so a session is consistently one or the other.
+    static let consoleLogPublicDefaultsKey = "ExtensionConsoleLogPublic"
+    private static let consoleLogIsPublic: Bool = {
+        let enabled = UserDefaults.standard.bool(forKey: consoleLogPublicDefaultsKey)
+        if enabled {
+            log.notice("Extension console bridge is logging message text PUBLICLY (\(consoleLogPublicDefaultsKey, privacy: .public) is set); extension console output may contain secrets")
+        }
+        return enabled
+    }()
+
     // MARK: - Entry Points
 
     /// Entry point for web view contexts (popup, options) via WKScriptMessageHandlerWithReply.
@@ -65,7 +97,9 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     private func dispatch(_ body: [String: Any], verifiedExtensionID: String?, replyHandler: @escaping (Any?, String?) -> Void) {
         guard let type = body["type"] as? String else {
-            log.error("Invalid polyfill message: missing type in \(String(describing: body), privacy: .public)")
+            // Values and foreign key names are extension data (storage values,
+            // message payloads) that must not land in the log.
+            log.error("Invalid polyfill message: missing or non-string type (\(Self.envelopeSummary(body), privacy: .public))")
             replyHandler(nil, "Invalid message format: missing type")
             return
         }
@@ -80,7 +114,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             return
         }
         guard let extensionID = verifiedExtensionID ?? claimedID else {
-            log.error("Invalid polyfill message: missing extensionID in \(String(describing: body), privacy: .public)")
+            log.error("Invalid polyfill message: missing extensionID for type \(type, privacy: .public) (\(Self.envelopeSummary(body), privacy: .public))")
             replyHandler(nil, "Invalid message format: missing extensionID")
             return
         }
@@ -236,7 +270,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         // MARK: - Offscreen
         case "offscreen.createDocument":
             let url = params["url"] as? String ?? "offscreen.html"
-            log.info("offscreen.createDocument: url=\(url, privacy: .public) ext=\(extensionID, privacy: .public)")
+            log.info("offscreen.createDocument: url=\(url, privacy: .private) ext=\(extensionID, privacy: .public)")
             guard let ext = ExtensionManager.shared.extension(withID: extensionID),
                   let context = ExtensionManager.shared.context(for: extensionID) else {
                 log.error("offscreen.createDocument: extension or context not found for \(extensionID, privacy: .public)")
@@ -314,13 +348,28 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
         // MARK: - Logging Bridge
         case "log":
+            // Extension console output is arbitrary extension data (1Password
+            // logs native-messaging responses). By default it is `.private`,
+            // which keeps it out of the persisted log while Xcode still shows
+            // it with a debugger attached. For debugging sessions on a build
+            // that can't run under Xcode (1Password only trusts the signed
+            // /Applications build), the message can be logged publicly by
+            // opting in per session; see `consoleLogIsPublic`.
             let level = params["level"] as? String ?? "info"
             let message = params["message"] as? String ?? ""
             let source = params["source"] as? String ?? extensionID
-            switch level {
-            case "error": log.error("[SW \(source, privacy: .public)] \(message, privacy: .public)")
-            case "warn":  log.warning("[SW \(source, privacy: .public)] \(message, privacy: .public)")
-            default:      log.info("[SW \(source, privacy: .public)] \(message, privacy: .public)")
+            if Self.consoleLogIsPublic {
+                switch level {
+                case "error": log.error("[SW \(source, privacy: .public)] \(message, privacy: .public)")
+                case "warn":  log.warning("[SW \(source, privacy: .public)] \(message, privacy: .public)")
+                default:      log.info("[SW \(source, privacy: .public)] \(message, privacy: .public)")
+                }
+            } else {
+                switch level {
+                case "error": log.error("[SW \(source, privacy: .public)] \(message, privacy: .private)")
+                case "warn":  log.warning("[SW \(source, privacy: .public)] \(message, privacy: .private)")
+                default:      log.info("[SW \(source, privacy: .public)] \(message, privacy: .private)")
+                }
             }
             replyHandler(true, nil)
 

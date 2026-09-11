@@ -120,12 +120,12 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         if let baseURL {
             // Load via the extension's webkit-extension:// URL scheme so chrome.* APIs work
             let extensionPageURL = baseURL.appendingPathComponent(url)
-            log.info("Loading offscreen document: \(extensionPageURL.absoluteString, privacy: .public) for \(self.extensionID, privacy: .public)")
+            log.info("Loading offscreen document: \(extensionPageURL.absoluteString, privacy: .private) for \(self.extensionID, privacy: .public)")
             wv.load(URLRequest(url: extensionPageURL))
         } else {
             // Fallback: load as file URL
             let pageURL = basePath.appendingPathComponent(url)
-            log.info("Loading offscreen document (file): \(pageURL.path, privacy: .public) for \(self.extensionID, privacy: .public)")
+            log.info("Loading offscreen document (file): \(pageURL.path, privacy: .private) for \(self.extensionID, privacy: .public)")
             wv.loadFileURL(pageURL, allowingReadAccessTo: basePath)
         }
     }

@@ -57,7 +57,10 @@ echo "Done. Detour is running from $DEST"
 
 if [ "${1:-}" = "--log" ]; then
     echo ""
-    echo "==> Streaming 1PW-DEBUG logs (Ctrl+C to stop)..."
+    echo "==> Streaming 1PW-DEBUG logs and extension console output (Ctrl+C to stop)..."
+    echo "    Extension console text shows as <private> unless you opted in before launch:"
+    echo "    defaults write com.detourbrowser.mac ExtensionConsoleLogPublic -bool YES"
+    echo "    (revert with: defaults delete com.detourbrowser.mac ExtensionConsoleLogPublic)"
     echo ""
-    log stream --process Detour --predicate 'composedMessage CONTAINS "1PW-DEBUG"'
+    log stream --process Detour --predicate 'composedMessage CONTAINS "1PW-DEBUG" OR category == "extension-polyfill" OR category == "EXT-LOAD"'
 fi

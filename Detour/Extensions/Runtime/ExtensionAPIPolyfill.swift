@@ -264,7 +264,8 @@ struct ExtensionAPIPolyfill {
     // MARK: - Console bridge
 
     /// Wraps console.log/warn/error to also send messages to Swift via the
-    /// polyfill bridge. This makes service worker output visible in Xcode console.
+    /// polyfill bridge. This makes service worker output visible in Xcode
+    /// console; the native side logs it `.private` so it never persists.
     private static let consoleJS = """
     (function() {
         const g = globalThis;
