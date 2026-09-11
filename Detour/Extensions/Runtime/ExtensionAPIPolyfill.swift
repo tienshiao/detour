@@ -266,37 +266,108 @@ struct ExtensionAPIPolyfill {
     /// Wraps console.log/warn/error to also send messages to Swift via the
     /// polyfill bridge. This makes service worker output visible in Xcode
     /// console; the native side logs it `.private` so it never persists.
+    ///
+    /// Error objects (and DOMExceptions) are rendered as `name: message`, any own
+    /// enumerable props (e.g. `code`) as JSON, then the stack — rather than
+    /// `JSON.stringify`'s useless `{}`; errors nested inside plain objects are
+    /// serialized as `{...ownProps, name, message, stack}`. The bridge never
+    /// throws into extension code: each argument is formatted in isolation and
+    /// the whole send is guarded. Tests observe it by stubbing
+    /// `__detourPolyfillRequest` and calling `console.*`.
     private static let consoleJS = """
     (function() {
         const g = globalThis;
         const _origLog = console.log.bind(console);
         const _origWarn = console.warn.bind(console);
         const _origError = console.error.bind(console);
+        const MAX_MESSAGE_LENGTH = 8192;
 
-        function sendLog(level, args) {
+        function isErrorLike(v) {
+            if (v === null || typeof v !== 'object') return false;
+            try {
+                if (v instanceof Error) return true;
+                const tag = Object.prototype.toString.call(v);
+                return tag === '[object Error]' || tag === '[object DOMException]';
+            } catch (x) { return false; }
+        }
+        // Guarded reads: accessors on error-likes can throw (proxies, lazy getters).
+        function errorParts(e) {
+            const p = { name: 'Error', message: '', stack: '', extra: null };
+            try { if (typeof e.name === 'string' && e.name) p.name = e.name; } catch (x) {}
+            try { if (e.message != null) p.message = String(e.message); } catch (x) {}
+            try { if (typeof e.stack === 'string') p.stack = e.stack; } catch (x) {}
+            try {
+                for (const k of Object.keys(e)) {
+                    if (k === 'name' || k === 'message' || k === 'stack') continue;
+                    if (!p.extra) p.extra = {};
+                    p.extra[k] = e[k];
+                }
+            } catch (x) {}
+            return p;
+        }
+        function formatError(e) {
+            const p = errorParts(e);
+            const plain = p.message ? p.name + ': ' + p.message : p.name;
+            let header = plain;
+            if (p.extra) { try { header += ' ' + JSON.stringify(p.extra, jsonReplacer); } catch (x) {} }
+            // V8-style stacks already begin with the "Name: message" line; JSC stacks do not.
+            let body = p.stack;
+            if (body === plain) body = '';
+            else if (body.indexOf(plain + '\\n') === 0) body = body.slice(plain.length);
+            else if (body) body = '\\n' + body;
+            return header + body;
+        }
+        function jsonReplacer(key, value) {
+            if (!isErrorLike(value)) return value;
+            const p = errorParts(value);
+            const out = p.extra ? Object.assign({}, p.extra) : {};
+            out.name = p.name;
+            out.message = p.message;
+            if (p.stack) out.stack = p.stack;
+            return out;
+        }
+        function formatOne(a) {
+            if (a === null) return 'null';
+            if (a === undefined) return 'undefined';
+            if (isErrorLike(a)) return formatError(a);
+            if (typeof a === 'object') {
+                try {
+                    const json = JSON.stringify(a, jsonReplacer);
+                    if (json !== undefined) return json;
+                } catch (e) {}
+            }
+            return String(a);
+        }
+        function formatArgs(args) {
             const parts = [];
             for (let i = 0; i < args.length; i++) {
-                const a = args[i];
-                if (a === null) { parts.push('null'); }
-                else if (a === undefined) { parts.push('undefined'); }
-                else if (typeof a === 'object') { try { parts.push(JSON.stringify(a)); } catch(e) { parts.push(String(a)); } }
-                else { parts.push(String(a)); }
+                let s;
+                try { s = formatOne(args[i]); } catch (e) { s = '[unserializable]'; }
+                parts.push(s);
             }
-            const message = parts.join(' ');
-            // Use __detourPolyfillRequest if available (web view contexts),
-            // otherwise fall back to sendNativeMessage (service worker contexts).
-            if (typeof g.__detourPolyfillRequest === 'function') {
-                try { g.__detourPolyfillRequest('log', { level: level, message: message }); } catch(e) {}
-            } else {
-                let extID = '';
-                try { extID = chrome.runtime.id || ''; } catch(e) {}
-                try {
+            let message = parts.join(' ');
+            if (message.length > MAX_MESSAGE_LENGTH) {
+                message = message.slice(0, MAX_MESSAGE_LENGTH) + '…[truncated]';
+            }
+            return message;
+        }
+
+        function sendLog(level, args) {
+            try {
+                const message = formatArgs(args);
+                // Use __detourPolyfillRequest if available (web view contexts),
+                // otherwise fall back to sendNativeMessage (service worker contexts).
+                if (typeof g.__detourPolyfillRequest === 'function') {
+                    g.__detourPolyfillRequest('log', { level: level, message: message });
+                } else {
+                    let extID = '';
+                    try { extID = chrome.runtime.id || ''; } catch(e) {}
                     chrome.runtime.sendNativeMessage('detourPolyfill', {
                         type: 'log', extensionID: extID,
                         params: { level: level, message: message }
                     });
-                } catch(e) {}
-            }
+                }
+            } catch (e) {}
         }
 
         console.log = function() { _origLog.apply(console, arguments); sendLog('info', arguments); };

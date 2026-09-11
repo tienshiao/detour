@@ -123,8 +123,10 @@ sudo log erase --all
 - Redact native messaging payload logging (done as part of this revision).
 - Purge the unified log store.
 - Serialize `Error` objects in the polyfill console bridge as `name: message` plus stack so
-  1Password's own exception messages survive the bridge.
-- Log only newly added errors in the `errorsDidUpdate` observer.
+  1Password's own exception messages survive the bridge (done, TASK-1; errors nested in
+  objects serialize as `{name, message, stack}`).
+- Log only newly added errors in the `errorsDidUpdate` observer (done, TASK-1; the line now
+  carries `domain=` / `code=`).
 
 ### Phase 1 — Service worker restart after idle termination
 

@@ -638,4 +638,133 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertTrue(calls?.contains("idle.queryState") ?? false,
                        "Should have passed the message type, got: \(calls ?? "nil")")
     }
+
+    // MARK: - Console bridge
+
+    /// Run `console.<level>(<argsJS>)` with the polyfill bridge stubbed and return
+    /// the message the bridge would have sent to native.
+    private func bridgedConsoleMessage(level: String = "error", args: String) async throws -> String {
+        let raw = try await eval("""
+        const calls = [];
+        const orig = globalThis.__detourPolyfillRequest;
+        globalThis.__detourPolyfillRequest = function(type, params) { calls.push({ type: type, params: params }); return Promise.resolve(); };
+        try { console.\(level)(\(args)); } finally { globalThis.__detourPolyfillRequest = orig; }
+        const entry = calls.find(c => c.type === 'log');
+        return entry ? entry.params.message : null;
+        """)
+        return try XCTUnwrap(raw as? String, "console.\(level) did not reach the bridge")
+    }
+
+    func testConsoleBridgeFormatsErrorAsNameMessageAndStack() async throws {
+        let formatted = try await bridgedConsoleMessage(args: "new TypeError('boom')")
+        XCTAssertTrue(formatted.hasPrefix("TypeError: boom"),
+                      "Expected 'TypeError: boom' prefix, got: \(formatted)")
+        XCTAssertTrue(formatted.contains("\n"),
+                      "Expected a stack appended after the header, got: \(formatted)")
+    }
+
+    func testConsoleBridgeFormatsErrorWithoutStack() async throws {
+        let formatted = try await bridgedConsoleMessage(
+            args: "Object.assign(Object.create(Error.prototype), { name: 'Error', message: 'nostack' })"
+        )
+        XCTAssertEqual(formatted, "Error: nostack")
+    }
+
+    func testConsoleBridgeDoesNotDuplicateV8StyleHeader() async throws {
+        let formatted = try await bridgedConsoleMessage(args: """
+        Object.assign(Object.create(Error.prototype), {
+            name: 'RangeError',
+            message: 'bad',
+            stack: 'RangeError: bad\\n    at foo (a.js:1:1)'
+        })
+        """)
+        XCTAssertEqual(formatted, "RangeError: bad\n    at foo (a.js:1:1)")
+    }
+
+    func testConsoleBridgeKeepsHeaderWhenStackMerelyStartsWithName() async throws {
+        // JSC stacks carry no "Name: message" header line, so it must be kept
+        // even when the first frame happens to start with the error's name.
+        let formatted = try await bridgedConsoleMessage(args: """
+        Object.assign(Object.create(Error.prototype), {
+            name: 'Error',
+            message: '',
+            stack: 'ErrorReporter@app.js:3:9\\nglobal code@app.js:9:1'
+        })
+        """)
+        XCTAssertEqual(formatted, "Error\nErrorReporter@app.js:3:9\nglobal code@app.js:9:1")
+    }
+
+    func testConsoleBridgeIncludesOwnPropertiesOfErrors() async throws {
+        let formatted = try await bridgedConsoleMessage(
+            args: "Object.assign(new Error('boom'), { code: 'E_AUTH' })"
+        )
+        XCTAssertTrue(formatted.hasPrefix("Error: boom {\"code\":\"E_AUTH\"}"),
+                      "Expected own props after the header, got: \(formatted)")
+    }
+
+    func testConsoleBridgeSerializesNestedErrors() async throws {
+        let formatted = try await bridgedConsoleMessage(
+            args: "{ err: Object.assign(new Error('inner'), { code: 'E1' }), n: 1 }"
+        )
+        let data = try XCTUnwrap(formatted.data(using: .utf8))
+        let parsed = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                   "Nested-error output should be a JSON object, got: \(formatted)")
+        let err = try XCTUnwrap(parsed["err"] as? [String: Any])
+        XCTAssertEqual(err["name"] as? String, "Error")
+        XCTAssertEqual(err["message"] as? String, "inner")
+        XCTAssertEqual(err["code"] as? String, "E1")
+        XCTAssertEqual(parsed["n"] as? Int, 1)
+    }
+
+    func testConsoleBridgeFormatsDOMException() async throws {
+        let formatted = try await bridgedConsoleMessage(
+            args: "new DOMException('denied', 'NotAllowedError')"
+        )
+        XCTAssertTrue(formatted.hasPrefix("NotAllowedError: denied"),
+                      "Expected 'NotAllowedError: denied' prefix, got: \(formatted)")
+    }
+
+    func testConsoleBridgeFormatsPlainValues() async throws {
+        let formatted = try await bridgedConsoleMessage(
+            level: "log", args: "'a', 1, null, undefined, {k: 'v'}"
+        )
+        XCTAssertEqual(formatted, "a 1 null undefined {\"k\":\"v\"}")
+    }
+
+    func testConsoleBridgeSurvivesThrowingErrorAccessors() async throws {
+        let formatted = try await bridgedConsoleMessage(args: """
+        (() => {
+            const e = new Error('x');
+            Object.defineProperty(e, 'message', { get() { throw new Error('nope'); } });
+            return { ctx: 'save', err: e, id: 'abc' };
+        })()
+        """)
+        XCTAssertTrue(formatted.contains("\"ctx\":\"save\""),
+                      "Sibling keys should survive a throwing accessor, got: \(formatted)")
+        XCTAssertTrue(formatted.contains("\"id\":\"abc\""),
+                      "Sibling keys should survive a throwing accessor, got: \(formatted)")
+    }
+
+    func testConsoleBridgeIsolatesUnserializableArguments() async throws {
+        // Also proves console.* never throws: otherwise `eval` itself would reject.
+        let formatted = try await bridgedConsoleMessage(
+            args: "'before', new Proxy({}, { get() { throw new TypeError('get'); }, ownKeys() { throw new TypeError('keys'); }, getPrototypeOf() { throw new TypeError('gpo'); } }), 'after'"
+        )
+        XCTAssertEqual(formatted, "before [unserializable] after")
+    }
+
+    func testConsoleBridgeTruncatesLongMessages() async throws {
+        let formatted = try await bridgedConsoleMessage(args: "'x'.repeat(20000)")
+        XCTAssertTrue(formatted.hasSuffix("…[truncated]"),
+                      "Expected a truncation marker, got suffix: \(formatted.suffix(20))")
+        XCTAssertEqual(formatted.count, 8192 + "…[truncated]".count)
+    }
+
+    func testConsoleErrorWithErrorObjectDoesNotThrow() async throws {
+        let result = try await eval("""
+        console.error('ctx', new Error('e2'));
+        return 'ok';
+        """) as? String
+        XCTAssertEqual(result, "ok")
+    }
 }

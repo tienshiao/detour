@@ -188,6 +188,10 @@ class Profile {
     /// Extension contexts loaded in this profile's controller. ExtensionID → context.
     var extensionContexts: [String: WKWebExtensionContext] = [:]
 
+    /// errorsDidUpdate observer tokens per extension id, removed in `unloadExtension`
+    /// so a reload does not accumulate observers.
+    private var extensionErrorObservers: [String: NSObjectProtocol] = [:]
+
     private static let allURLsPattern = try? WKWebExtension.MatchPattern(string: "<all_urls>")
 
     /// Load an extension context into this profile's controller (synchronous).
@@ -260,12 +264,25 @@ class Profile {
         do {
             try extensionController.load(context)
             extensionContexts[ext.id] = context
-            // Observe extension context errors for debugging
-            NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak context] _ in
+            // Observe extension context errors for debugging. `context.errors` is
+            // cumulative but WebKit consolidates repeats and may clear it, so dedupe
+            // by error content rather than by position; the set lives with this
+            // observer (one per context) and dies with it. A shrink means WebKit
+            // cleared the array (e.g. a background reload): forget what was logged
+            // so a recurring failure is reported again rather than silenced.
+            let extID = ext.id
+            var loggedErrorKeys = Set<String>()
+            var lastErrorCount = 0
+            extensionErrorObservers[extID] = NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak context] _ in
                 guard let context else { return }
-                for error in context.errors {
+                let errors = context.errors
+                if errors.count < lastErrorCount { loggedErrorKeys.removeAll() }
+                lastErrorCount = errors.count
+                for error in errors {
                     let nsError = error as NSError
-                    log.error("Extension error [\(ext.id, privacy: .public)]: \(nsError.localizedDescription, privacy: .public)")
+                    let key = "\(nsError.domain)#\(nsError.code)#\(nsError.localizedDescription)"
+                    guard loggedErrorKeys.insert(key).inserted else { continue }
+                    log.error("Extension error [\(extID, privacy: .public)]: domain=\(nsError.domain, privacy: .public) code=\(nsError.code) \(nsError.localizedDescription, privacy: .public)")
                 }
             }
             // Cache favicon permission for the scheme handler (checked per-request on any thread)
@@ -291,6 +308,9 @@ class Profile {
     /// Unload an extension from this profile's controller.
     func unloadExtension(id: String, removeData: Bool = false) {
         guard let context = extensionContexts.removeValue(forKey: id) else { return }
+        if let token = extensionErrorObservers.removeValue(forKey: id) {
+            NotificationCenter.default.removeObserver(token)
+        }
         if let host = context.baseURL.host {
             FaviconSchemeHandler.revokeFaviconPermission(forWebKitHost: host)
         }

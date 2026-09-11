@@ -4,6 +4,7 @@ title: '1Password: fix service worker restart after idle termination (Phase 1)'
 status: To Do
 assignee: []
 created_date: '2026-09-11 22:28'
+updated_date: '2026-09-11 23:31'
 labels:
   - 1password
   - extensions
@@ -28,3 +29,9 @@ The single blocker for day-to-day 1Password use. On 2026-09-11 WebKit terminated
 - [ ] #3 The api-explorer extension service worker also survives an idle termination and restart
 - [ ] #4 Root cause and the chosen fix are recorded in docs/1password-integration-plan.md
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Data point from TASK-1 verification (2026-09-11, Debug build, isolated DETOUR_DATA_DIR=DetourVerify profile): TestExtensions/api-explorer classic worker fails at COLD START, not just after idle: WebKit fetches background.js and the imported _detour_polyfill.js successfully, creates the worker, then ~2 ms later logs ServiceWorkerContainer::jobFailedWithException 'Job 15 failed with error <private>' and terminates it; WKWebExtensionContextErrorDomain code=6 follows. A minimal probe extension (classic worker containing only console.* calls) loads and runs fine with the same injected polyfill, so the failure is in api-explorer's own background.js evaluation (some top-level API access throwing), not the polyfill. Experiment (1) in the plan should first get api-explorer loading at all; the exception text is <private> in the unified log, so read it via the console bridge or Web Inspector.
+<!-- SECTION:NOTES:END -->
