@@ -217,13 +217,19 @@ class Profile {
         // for nativeMessaging is checked after the polyfill bridge logic.
         context.setPermissionStatus(.grantedExplicitly, for: .nativeMessaging)
 
-        // Restore saved permission decisions from DB; leave unknown permissions
-        // for WebKit to prompt via the delegate.
-        let savedByKey = AppDatabase.shared.loadPermissionsByKey(extensionID: ext.id)
+        // Restore saved permission decisions from DB — API permissions, requested
+        // match patterns, <all_urls>, and the per-URL decisions taken at the
+        // site-access prompt; leave unknown permissions for WebKit to prompt via
+        // the delegate.
+        // One read, partitioned by type: a `.url` key can be the same string as
+        // a `.matchPattern` key, so the two must never share a dictionary.
+        let saved = AppDatabase.shared.loadPermissions(extensionID: ext.id)
+        let savedAPI = saved.statusByKey(type: .apiPermission)
+        let savedPatterns = saved.statusByKey(type: .matchPattern)
 
         for permission in wkExt.requestedPermissions {
             if permission == .nativeMessaging { continue }
-            if let saved = savedByKey[permission.rawValue] {
+            if let saved = savedAPI[permission.rawValue] {
                 context.setPermissionStatus(
                     saved == .granted ? .grantedExplicitly : .deniedExplicitly,
                     for: permission
@@ -232,7 +238,7 @@ class Profile {
         }
 
         for pattern in wkExt.requestedPermissionMatchPatterns {
-            if let saved = savedByKey[pattern.string] {
+            if let saved = savedPatterns[pattern.string] {
                 context.setPermissionStatus(
                     saved == .granted ? .grantedExplicitly : .deniedExplicitly,
                     for: pattern
@@ -241,9 +247,32 @@ class Profile {
         }
 
         if let allURLs = Self.allURLsPattern {
-            if let saved = savedByKey["<all_urls>"], saved == .granted {
+            if let saved = savedPatterns["<all_urls>"], saved == .granted {
                 context.setPermissionStatus(.grantedExplicitly, for: allURLs)
             }
+        }
+
+        // Site access granted or denied for specific URLs while browsing (the
+        // promptForPermissionToAccess delegate). WebKit converts each URL to an
+        // origin match pattern, so the decision is independent of the context's
+        // base URL and survives the reload in recoverFromBackgroundLoadFailure.
+        //
+        // `setPermissionStatus(_:for: URL)` is not checked against the manifest
+        // and rows are never purged on update, so a stale grant could otherwise
+        // re-appear for an origin a newer manifest no longer asks about. The URL
+        // is what the user was asked about, so it is matched against what the
+        // extension may ask for: its requested and optional host patterns
+        // (`<all_urls>` / `*://*/*` match everything).
+        let askablePatterns = wkExt.requestedPermissionMatchPatterns
+            .union(wkExt.optionalPermissionMatchPatterns)
+        for record in saved where record.permissionType == ExtensionPermissionType.url.rawValue {
+            guard let url = URL(string: record.permissionKey) else { continue }
+            guard askablePatterns.contains(where: { $0.matches(url) }) else {
+                log.debug("Skipping stale URL grant \(record.permissionKey, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
+                continue
+            }
+            let status = ExtensionPermissionStatus(rawValue: record.status) ?? .denied
+            context.setPermissionStatus(status == .granted ? .grantedExplicitly : .deniedExplicitly, for: url)
         }
 
         // Grant content script match patterns as host permissions when the extension

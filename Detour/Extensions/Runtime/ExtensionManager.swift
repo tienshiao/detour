@@ -875,7 +875,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             autoGrantsForActiveTab: true,
             autoGrantLogLabel: "URLs",
             category: "site access",
-            recordType: .matchPattern,
+            recordType: .url,
             describe: { $0.absoluteString },
             recordKey: { $0.absoluteString },
             completionHandler: completionHandler

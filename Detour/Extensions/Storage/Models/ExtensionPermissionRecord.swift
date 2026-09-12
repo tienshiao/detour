@@ -4,6 +4,13 @@ import GRDB
 enum ExtensionPermissionType: Int, Codable {
     case apiPermission = 0
     case matchPattern = 1
+    /// A decision for one specific URL, taken at the site-access prompt
+    /// (`promptForPermissionToAccess urls:`) rather than for a manifest match
+    /// pattern. The key is the URL's `absoluteString`, and the decision is
+    /// applied with `WKWebExtensionContext.setPermissionStatus(_:for: URL)`,
+    /// which converts the URL to an origin match pattern — so it survives the
+    /// context's base URL changing on every (re)load.
+    case url = 2
 }
 
 enum ExtensionPermissionStatus: Int, Codable {
@@ -34,5 +41,20 @@ struct ExtensionPermissionRecord: Codable, FetchableRecord, PersistableRecord {
         self.permissionType = type.rawValue
         self.status = status.rawValue
         self.grantedAt = Date().timeIntervalSince1970
+    }
+}
+
+extension Array where Element == ExtensionPermissionRecord {
+    /// The saved status per key for rows of one type. Keys are only unique
+    /// per (key, type): a site-access URL row may share its string with a
+    /// manifest match pattern, so callers must never merge types.
+    ///
+    /// An unrecognised status raw value reads as `.denied` (fail closed).
+    func statusByKey(type: ExtensionPermissionType) -> [String: ExtensionPermissionStatus] {
+        Dictionary(
+            lazy.filter { $0.permissionType == type.rawValue }
+                .map { ($0.permissionKey, ExtensionPermissionStatus(rawValue: $0.status) ?? .denied) },
+            uniquingKeysWith: { _, latest in latest }
+        )
     }
 }

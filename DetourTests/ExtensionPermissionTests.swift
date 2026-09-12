@@ -114,6 +114,53 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(status, .granted)
     }
 
+    // MARK: - URL-keyed decisions (TASK-11)
+
+    /// A decision recorded by the site-access prompt for one specific URL is a
+    /// third kind of row: it must not be confused with a manifest match pattern,
+    /// even when the key strings collide.
+    func testURLPermissionTypeIsDistinct() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermissions([
+            samplePermission(key: "https://example.com/", type: .url, status: .granted),
+            samplePermission(key: "https://*.example.com/*", type: .matchPattern, status: .granted),
+            samplePermission(key: "tabs", type: .apiPermission, status: .granted),
+        ])
+
+        let saved = db.loadPermissions(extensionID: "ext-1")
+
+        let urlRows = saved.filter { $0.permissionType == ExtensionPermissionType.url.rawValue }
+        XCTAssertEqual(urlRows.count, 1)
+        XCTAssertEqual(urlRows.first?.permissionKey, "https://example.com/")
+
+        let patternRows = saved.filter { $0.permissionType == ExtensionPermissionType.matchPattern.rawValue }
+        XCTAssertEqual(patternRows.count, 1)
+        XCTAssertEqual(patternRows.first?.permissionKey, "https://*.example.com/*")
+
+        // Same key string, two types: the primary key keeps them apart.
+        db.savePermission(samplePermission(key: "https://example.com/", type: .matchPattern, status: .denied))
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "https://example.com/", type: .url), .granted)
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "https://example.com/", type: .matchPattern), .denied)
+    }
+
+    /// A single fetch must be partitioned by type: merging every row into one
+    /// dictionary lets a site-access URL row shadow a manifest pattern whose
+    /// string happens to be identical.
+    func testStatusByKeyDoesNotMergeTypes() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermissions([
+            samplePermission(key: "https://example.com/", type: .url, status: .granted),
+            samplePermission(key: "https://example.com/", type: .matchPattern, status: .denied),
+        ])
+
+        let saved = db.loadPermissions(extensionID: "ext-1")
+        XCTAssertEqual(saved.statusByKey(type: .url)["https://example.com/"], .granted)
+        XCTAssertEqual(saved.statusByKey(type: .matchPattern)["https://example.com/"], .denied)
+        XCTAssertTrue(saved.statusByKey(type: .apiPermission).isEmpty)
+    }
+
     // MARK: - Native Messaging Host Gate (positive)
 
     /// Detour's own polyfill host is the transport for the polyfill bridge and the

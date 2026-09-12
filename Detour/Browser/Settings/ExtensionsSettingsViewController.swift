@@ -243,7 +243,15 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         let permsHeader = NSTextField(labelWithString: "Permissions")
         permsHeader.font = .systemFont(ofSize: 13, weight: .medium)
 
-        let savedByKey = AppDatabase.shared.loadPermissionsByKey(extensionID: ext.id)
+        // One read, partitioned by type: a `.url` row's key can be the same
+        // string as a manifest match pattern, so the sections must not share a
+        // dictionary.
+        let savedPermissions = AppDatabase.shared.loadPermissions(extensionID: ext.id)
+        let savedAPI = savedPermissions.statusByKey(type: .apiPermission)
+        let savedPatterns = savedPermissions.statusByKey(type: .matchPattern)
+        let savedURLs = savedPermissions
+            .filter { $0.permissionType == ExtensionPermissionType.url.rawValue }
+            .sorted { $0.permissionKey < $1.permissionKey }
 
         let requiredPerms = ext.manifest.permissions ?? []
         let hostPerms = ext.manifest.hostPermissions ?? []
@@ -251,7 +259,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
         var permContentViews: [NSView] = []
 
-        if requiredPerms.isEmpty && hostPerms.isEmpty && optionalPerms.isEmpty {
+        if requiredPerms.isEmpty && hostPerms.isEmpty && optionalPerms.isEmpty && savedURLs.isEmpty {
             let noneLabel = NSTextField(labelWithString: "No special permissions requested.")
             noneLabel.font = .systemFont(ofSize: 12)
             noneLabel.textColor = .secondaryLabelColor
@@ -261,7 +269,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             for perm in requiredPerms {
                 let row = makePermissionRow(
                     extensionID: ext.id, key: perm,
-                    type: .apiPermission, isGranted: savedByKey[perm] == .granted,
+                    type: .apiPermission, isGranted: savedAPI[perm] == .granted,
                     label: ExtensionPermissionDescriptions.describe(perm),
                     isRequired: true
                 )
@@ -272,7 +280,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
                 let display = pattern == "<all_urls>" ? "All websites" : pattern
                 let row = makePermissionRow(
                     extensionID: ext.id, key: pattern,
-                    type: .matchPattern, isGranted: savedByKey[pattern] == .granted,
+                    type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
                     label: display,
                     isRequired: true
                 )
@@ -287,12 +295,38 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
                 for perm in optionalPerms {
                     let row = makePermissionRow(
                         extensionID: ext.id, key: perm,
-                        type: .apiPermission, isGranted: savedByKey[perm] == .granted,
+                        type: .apiPermission, isGranted: savedAPI[perm] == .granted,
                         label: ExtensionPermissionDescriptions.describe(perm),
                         isRequired: false
                     )
                     permContentViews.append(row)
                 }
+            }
+        }
+
+        // Site access: the per-URL decisions taken at the site-access prompt
+        // while browsing. They live outside the manifest lists, so without a row
+        // here a one-click Deny would be permanent and unreversible.
+        if !savedURLs.isEmpty {
+            let siteHeader = NSTextField(labelWithString: "Site access:")
+            siteHeader.font = .systemFont(ofSize: 11, weight: .medium)
+            siteHeader.textColor = .secondaryLabelColor
+            permContentViews.append(siteHeader)
+
+            let siteCaption = NSTextField(labelWithString: "Decisions made at site-access prompts while browsing.")
+            siteCaption.font = .systemFont(ofSize: 11)
+            siteCaption.textColor = .tertiaryLabelColor
+            permContentViews.append(siteCaption)
+
+            for record in savedURLs {
+                let row = makePermissionRow(
+                    extensionID: ext.id, key: record.permissionKey,
+                    type: .url,
+                    isGranted: ExtensionPermissionStatus(rawValue: record.status) == .granted,
+                    label: record.permissionKey,
+                    isRequired: false
+                )
+                permContentViews.append(row)
             }
         }
 
@@ -436,6 +470,12 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             case .matchPattern:
                 if let pattern = try? WKWebExtension.MatchPattern(string: key) {
                     context.setPermissionStatus(wkStatus, for: pattern)
+                }
+            case .url:
+                // A site-access decision for one specific URL; WebKit converts
+                // it to an origin match pattern.
+                if let url = URL(string: key) {
+                    context.setPermissionStatus(wkStatus, for: url)
                 }
             }
         }

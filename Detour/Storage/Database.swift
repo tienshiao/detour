@@ -642,14 +642,9 @@ struct AppDatabase {
         }
     }
 
-    func loadPermissionsByKey(extensionID: String) -> [String: ExtensionPermissionStatus] {
-        let records = loadPermissions(extensionID: extensionID)
-        return Dictionary(
-            records.map { ($0.permissionKey, ExtensionPermissionStatus(rawValue: $0.status) ?? .denied) },
-            uniquingKeysWith: { _, latest in latest }
-        )
-    }
-
+    /// Every saved decision for an extension. Callers partition by type with
+    /// `statusByKey(type:)` — never merge types, since a `.url` row can share
+    /// its key string with a `.matchPattern` row.
     func loadPermissions(extensionID: String) -> [ExtensionPermissionRecord] {
         performRead("load extension permissions", default: []) { db in
             try ExtensionPermissionRecord
