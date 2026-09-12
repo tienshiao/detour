@@ -9,25 +9,25 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extensio
 /// Registered as a `WKScriptMessageHandlerWithReply` on the extension controller's
 /// web view configuration, so all extension contexts (background, popup, content)
 /// can send messages and receive async responses.
+///
+/// One handler belongs to one `Profile`: the profile builds it in
+/// `extensionController` and is the only thing that knows which extension owns
+/// which `webkit-extension://` origin, so senders are attributed through
+/// `profile.extensionID(forOriginScheme:host:)` and contexts (offscreen
+/// documents) resolved through `profile.extensionContext(for:)`. The reference
+/// is weak: the profile owns the handler. A released profile attributes
+/// nothing, so every web-view message is rejected — the body's `extensionID`
+/// is never trusted as a fallback.
 class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     static let handlerName = "detourPolyfill"
 
-    /// Maps the security origin of an extension page (scheme and host) to the
-    /// id of the loaded extension it belongs to, or nil when no loaded context
-    /// serves that origin. Installed by the owning `Profile` against its
-    /// `extensionContexts` (see `Profile.extensionID(forOriginScheme:host:)`).
-    /// Without a resolver, every web-view message is treated as unverifiable
-    /// and rejected: the body's `extensionID` is never trusted on this path.
-    var extensionOriginResolver: ((_ scheme: String, _ host: String) -> String?)?
+    /// The profile whose extension controller this handler serves.
+    private(set) weak var profile: Profile?
 
-    /// The owning profile's loaded context for an extension id, installed by
-    /// `Profile` alongside the origin resolver. Offscreen documents are hosted
-    /// per handler (i.e. per profile), so they must be built from *this*
-    /// profile's context: `ExtensionManager.context(for:)` prefers the last
-    /// active space's profile, which may be a different one. Falls back to the
-    /// manager when unset (bare handlers in tests). TASK-13 folds both
-    /// resolvers into a profile back-reference.
-    var extensionContextResolver: ((_ extensionID: String) -> WKWebExtensionContext?)?
+    init(profile: Profile) {
+        self.profile = profile
+        super.init()
+    }
 
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
@@ -104,10 +104,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// context's `baseURL` (`webkit-extension://<UUID>/`), and WebKit assigns
     /// that UUID afresh every time a context is loaded, independent of the
     /// context's `uniqueIdentifier`; only the profile that loaded the context
-    /// knows which extension currently owns the origin, hence the resolver.
-    /// Returns nil when the origin is not served by any loaded extension.
+    /// knows which extension currently owns the origin, hence the lookup
+    /// through the owning profile. Returns nil when the origin is not served by
+    /// any extension loaded in this profile, and when the profile is gone.
     private func verifiedExtensionID(for origin: WKSecurityOrigin) -> String? {
-        extensionOriginResolver?(origin.protocol, origin.host)
+        profile?.extensionID(forOriginScheme: origin.protocol, host: origin.host)
     }
 
     /// Origins already reported as unrecognized, so a page that keeps posting
@@ -288,10 +289,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
         // MARK: - Sessions
         case "sessions.restore":
-            let mgr = ExtensionManager.shared
-            guard let spaceID = mgr.lastActiveSpaceID,
-                  let space = TabStore.shared.space(withID: spaceID) else {
-                replyHandler(nil, "No active space")
+            guard let space = targetSpace() else {
+                replyHandler(nil, "No space in this profile")
                 return
             }
             guard let tab = TabStore.shared.reopenClosedTab(in: space) else {
@@ -310,11 +309,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             let query = params["query"] as? [String: Any] ?? params
             let text = query["text"] as? String ?? ""
 
-            let mgr2 = ExtensionManager.shared
-            let space: Space? = mgr2.lastActiveSpaceID.flatMap { TabStore.shared.space(withID: $0) }
-                ?? TabStore.shared.spaces.first
-            let engine = space?.profile?.searchEngine ?? .google
-            guard let searchURL = engine.searchURL(for: text), let space else {
+            guard let space = targetSpace() else {
+                replyHandler(nil, "No space in this profile")
+                return
+            }
+            let engine = profile?.searchEngine ?? .google
+            guard let searchURL = engine.searchURL(for: text) else {
                 replyHandler(nil, "Failed to build search URL")
                 return
             }
@@ -331,10 +331,15 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         case "offscreen.createDocument":
             let url = params["url"] as? String ?? "offscreen.html"
             log.info("offscreen.createDocument: url=\(url, privacy: .private) ext=\(extensionID, privacy: .public)")
-            let resolvedContext = extensionContextResolver?(extensionID) ?? ExtensionManager.shared.context(for: extensionID)
+            // Only this profile's context will do: the document is hosted per
+            // handler (i.e. per profile), so it must get this profile's data
+            // store and be torn down by this profile's `unloadExtension`.
+            // A global lookup would hand back the last-active space's profile,
+            // which can be a different one.
+            let resolvedContext = profile?.extensionContext(for: extensionID)
             guard let ext = ExtensionManager.shared.extension(withID: extensionID),
                   let context = resolvedContext else {
-                log.error("offscreen.createDocument: extension or context not found for \(extensionID, privacy: .public)")
+                log.error("offscreen.createDocument: extension not found, or its context is not loaded in this profile, for \(extensionID, privacy: .public)")
                 replyHandler(nil, "Extension not found")
                 return
             }
@@ -452,6 +457,24 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     private static let defaultFrameInfo: [[String: Any]] = [["frameId": 0, "parentFrameId": -1, "url": ""]]
 
     // MARK: - Helpers
+
+    /// The space an action that creates or restores a tab must act in. The
+    /// handler is profile-scoped, so such a tab belongs in one of *this*
+    /// profile's spaces — it gets that profile's cookies and search engine, and
+    /// its closed-tab stack is the only one this profile's extensions may
+    /// reopen from. The last-active space is preferred only when it is one of
+    /// them (it is global, and the focused window can belong to another
+    /// profile); otherwise the profile's first space. Nil when the profile is
+    /// gone, or has no space at all — never another profile's space.
+    private func targetSpace() -> Space? {
+        guard let profile else { return nil }
+        if let lastActiveID = ExtensionManager.shared.lastActiveSpaceID,
+           let lastActive = TabStore.shared.space(withID: lastActiveID),
+           lastActive.profileID == profile.id {
+            return lastActive
+        }
+        return TabStore.shared.spaces.first { $0.profileID == profile.id }
+    }
 
     /// Whether the extension declared a given manifest permission. Used to gate
     /// polyfilled APIs (history, management) that WKWebExtension doesn't itself

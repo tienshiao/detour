@@ -103,8 +103,14 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         let wkExt = try await WKWebExtension(resourceBaseURL: tempDir)
         let config = WKWebExtensionController.Configuration(identifier: UUID())
 
+        // The handler attributes senders through its profile's loaded contexts,
+        // so the profile has to exist before it. It lives for the whole suite
+        // (pinned by SharedState); a released profile would turn every test into
+        // an "Unrecognized extension origin" rejection.
+        let testProfile = TabStore.shared.addProfile(name: "Polyfill Int Profile")
+
         // Wire the polyfill handler onto the controller's webViewConfiguration
-        let polyfillHandler = ExtensionPolyfillHandler()
+        let polyfillHandler = ExtensionPolyfillHandler(profile: testProfile)
         let ucc = config.webViewConfiguration.userContentController
         ucc.addScriptMessageHandler(
             polyfillHandler, contentWorld: .page,
@@ -125,8 +131,8 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         // Mirror Profile.loadExtension. Note the uniqueIdentifier is NOT the
         // page origin: WebKit gives the context a fresh webkit-extension://<UUID>/
         // base URL, and the polyfill dispatcher attributes pages to extensions
-        // by resolving that origin against the profile's loaded contexts (wired
-        // below once the test profile exists).
+        // by resolving that origin against the profile's loaded contexts (this
+        // context is registered in the test profile below).
         context.uniqueIdentifier = Self.extensionID
 
         for permission in wkExt.requestedPermissions {
@@ -147,14 +153,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         ext.wkExtension = wkExt
         ExtensionManager.shared.extensions.append(ext)
 
-        let testProfile = TabStore.shared.addProfile(name: "Polyfill Int Profile")
         testProfile.extensionContexts[Self.extensionID] = context
-        // Strong capture on purpose: the profile lives for the whole suite (pinned
-        // by SharedState), and a weakly captured, released profile would turn every
-        // later test into an "Unrecognized extension origin" rejection.
-        polyfillHandler.extensionOriginResolver = { scheme, host in
-            testProfile.extensionID(forOriginScheme: scheme, host: host)
-        }
         let testSpace = TabStore.shared.addSpace(
             name: "Polyfill Int Space", emoji: "P", colorHex: "#000000", profileID: testProfile.id)
         ExtensionManager.shared.lastActiveSpaceID = testSpace.id
@@ -191,8 +190,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
         // Load a page from the extension's base URL (required by WKWebExtensionContext)
         let testURL = state.context.baseURL.appendingPathComponent("test.html")
-        wv.load(URLRequest(url: testURL))
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try await loadAndWait(wv, URLRequest(url: testURL))
         return wv
     }
 

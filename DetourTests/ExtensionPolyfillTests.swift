@@ -2,6 +2,20 @@ import XCTest
 import WebKit
 @testable import Detour
 
+/// A Profile whose origin attribution is driven by the test. The bare WKWebView
+/// these tests use cannot serve a `webkit-extension://` origin (that needs a
+/// loaded WKWebExtensionContext), so this stands in for a loaded context: it
+/// maps the page's real origin to an extension id the way a profile maps a
+/// context's base URL. The production wiring itself is covered end-to-end in
+/// `ExtensionPolyfillProfileWiringTests`.
+private final class OriginMappingProfile: Profile {
+    var originMap: ((_ scheme: String, _ host: String) -> String?)?
+
+    override func extensionID(forOriginScheme scheme: String, host: String) -> String? {
+        originMap?(scheme, host)
+    }
+}
+
 /// Tests for the extension API polyfill bridge.
 /// Verifies that the JS polyfills can communicate with the native
 /// `ExtensionPolyfillHandler` and receive correct responses.
@@ -10,6 +24,8 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     private var webView: WKWebView!
     private var handler: ExtensionPolyfillHandler!
+    /// The handler holds its profile weakly, so the test owns it.
+    private var profile: OriginMappingProfile!
 
     /// Extension ids registered in ExtensionManager during a test, torn down after.
     private var registeredExtensionIDs: [String] = []
@@ -17,13 +33,14 @@ final class ExtensionPolyfillTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
 
-        handler = ExtensionPolyfillHandler()
         // The bare web view loads from https://test.example.com; attribute that
         // origin to the shim's extension id the way Profile attributes a
         // context's webkit-extension:// origin to its extension.
-        handler.extensionOriginResolver = { scheme, host in
+        profile = OriginMappingProfile(name: "polyfill-test")
+        profile.originMap = { scheme, host in
             scheme == "https" && host == "test.example.com" ? "test-polyfill-extension" : nil
         }
+        handler = ExtensionPolyfillHandler(profile: profile)
 
         // The injected shim sets chrome.runtime.id = 'test-polyfill-extension'.
         // Register a matching extension declaring the permission-gated APIs
@@ -101,14 +118,15 @@ final class ExtensionPolyfillTests: XCTestCase {
         ucc.addUserScript(polyfillScript)
 
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
-        webView.loadHTMLString("<html><body>test</body></html>", baseURL: URL(string: "https://test.example.com")!)
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await loadHTMLStringAndWait(webView, html: "<html><body>test</body></html>",
+                                        baseURL: URL(string: "https://test.example.com")!)
     }
 
     override func tearDown() {
         webView?.configuration.userContentController.removeAllScriptMessageHandlers()
         webView = nil
         handler = nil
+        profile = nil
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
         }
@@ -404,7 +422,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Test the handleNativeMessage path directly — this is the path used by
     /// service workers where webkit.messageHandlers is unavailable.
     func testNativeMessageBridgeIdleQueryState() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "idle.queryState via native bridge")
 
         handler.handleNativeMessage(
@@ -421,7 +438,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     func testNativeMessageBridgeFontSettings() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "fontSettings via native bridge")
 
         handler.handleNativeMessage(
@@ -442,7 +458,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// an unregistered/unknown extension id (no manifest, no permission) the
     /// bridge must refuse and surface the "history permission not declared" error.
     func testHistorySearchDeniedWithoutPermission() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "history.search denied without permission")
 
         handler.handleNativeMessage(
@@ -459,7 +474,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     func testNativeMessageBridgeOffscreenHasDocument() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "offscreen.hasDocument via native bridge")
 
         handler.handleNativeMessage(
@@ -475,7 +489,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     func testNativeMessageBridgeInvalidType() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "unknown type via native bridge")
 
         handler.handleNativeMessage(
@@ -490,7 +503,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     func testNativeMessageBridgeMissingType() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "missing type via native bridge")
 
         handler.handleNativeMessage(
@@ -509,7 +521,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// history.search POSITIVE: an extension that declared the "history"
     /// permission is allowed through and gets a results array.
     func testHistorySearchAllowedWithPermission() throws {
-        let handler = ExtensionPolyfillHandler()
         try registerExtension(id: "histperm-ext", permissions: ["history"])
         let expectation = expectation(description: "history.search allowed with permission")
 
@@ -531,7 +542,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// history.search NEGATIVE: a registered extension that did NOT declare the
     /// "history" permission is refused, even though it exists in ExtensionManager.
     func testHistorySearchDeniedWhenPermissionMissing() throws {
-        let handler = ExtensionPolyfillHandler()
         try registerExtension(id: "nohistory-ext", permissions: ["storage"])
         let expectation = expectation(description: "history.search denied when permission missing")
 
@@ -551,7 +561,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// management.getAll POSITIVE: an extension that declared the "management"
     /// permission gets the full extension list back.
     func testManagementGetAllAllowedWithPermission() throws {
-        let handler = ExtensionPolyfillHandler()
         try registerExtension(id: "mgmtperm-ext", permissions: ["management"])
         let expectation = expectation(description: "management.getAll allowed with permission")
 
@@ -572,7 +581,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// management.getAll NEGATIVE: a registered extension without the
     /// "management" permission is refused.
     func testManagementGetAllDeniedWithoutPermission() throws {
-        let handler = ExtensionPolyfillHandler()
         try registerExtension(id: "nomgmt-ext", permissions: ["storage"])
         let expectation = expectation(description: "management.getAll denied without permission")
 
@@ -595,7 +603,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// disagrees with the self-reported body extensionID, the request is an
     /// impersonation attempt and must be rejected.
     func testIdentitySpoofingRejected() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "identity spoofing rejected")
 
         handler.handleNativeMessage(
@@ -614,7 +621,6 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// identity mismatch and the request proceeds. Uses idle.queryState since it
     /// needs no manifest permission.
     func testIdentityVerifiedHappyPath() {
-        let handler = ExtensionPolyfillHandler()
         let expectation = expectation(description: "verified identity proceeds")
 
         handler.handleNativeMessage(
@@ -637,19 +643,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// bypassing the polyfill's own `extensionID` stamping so the body can
     /// claim any id. Returns the bridge's reply or the error string.
     private func sendRawBridgeMessage(type: String, claimedID: String) async throws -> (result: Any?, error: String?) {
-        let js = """
-            try {
-                const r = await webkit.messageHandlers.detourPolyfill.postMessage({
-                    type: type, extensionID: claimedID, params: { detectionIntervalInSeconds: 60 }
-                });
-                return JSON.stringify({ result: r === undefined ? null : r });
-            } catch (e) {
-                return JSON.stringify({ error: String(e && e.message ? e.message : e) });
-            }
-        """
-        let reply = try await evalJSON(js, arguments: ["type": type, "claimedID": claimedID])
-        let dict = try XCTUnwrap(reply as? [String: Any])
-        return (dict["result"], dict["error"] as? String)
+        try await postRawPolyfillEnvelope(from: webView, type: type, claimedID: claimedID)
     }
 
     /// POSITIVE: a message from a page whose origin resolves to an extension is
@@ -682,25 +676,31 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// was unloaded, so its old UUID origin is stale); the body id is not a
     /// fallback on the web-view path, even when it names a real extension.
     func testWebViewMessageFromUnknownOriginRejected() async throws {
-        handler.extensionOriginResolver = { _, _ in nil }
+        profile.originMap = { _, _ in nil }
         let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
         XCTAssertNil(reply.result)
         XCTAssertEqual(reply.error, "Unrecognized extension origin")
     }
 
-    /// NEGATIVE: a handler with no resolver installed at all trusts nothing.
-    func testWebViewMessageWithoutResolverRejected() async throws {
-        handler.extensionOriginResolver = nil
+    /// NEGATIVE: a handler whose profile has been released trusts nothing —
+    /// there is nothing left that could attribute the origin.
+    func testWebViewMessageWithReleasedProfileRejected() async throws {
+        // The handler's reference is weak and the web view's message handler
+        // registration keeps only the handler alive, so dropping the test's
+        // reference releases the profile.
+        profile = nil
+        XCTAssertNil(handler.profile, "the profile should be gone once the test releases it")
         let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
         XCTAssertNil(reply.result)
         XCTAssertEqual(reply.error, "Unrecognized extension origin")
     }
 
-    /// The resolver is handed the frame's real scheme and host, so a resolver
-    /// keyed on both (as Profile's is) sees exactly the page's origin.
-    func testWebViewOriginResolverReceivesFrameOrigin() async throws {
+    /// The profile's origin lookup is handed the frame's real scheme and host,
+    /// so a profile keyed on both (as the real one is) sees exactly the page's
+    /// origin.
+    func testWebViewOriginLookupReceivesFrameOrigin() async throws {
         var seen: (scheme: String, host: String)?
-        handler.extensionOriginResolver = { scheme, host in
+        profile.originMap = { scheme, host in
             seen = (scheme, host)
             return "test-polyfill-extension"
         }

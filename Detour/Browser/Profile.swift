@@ -169,13 +169,7 @@ class Profile {
 
         // Inject polyfills for Chrome APIs not natively provided by WKWebExtension
         // (idle, notifications, history, management, fontSettings, sessions, search, offscreen, etc.)
-        let handler = ExtensionPolyfillHandler()
-        handler.extensionOriginResolver = { [weak self] scheme, host in
-            self?.extensionID(forOriginScheme: scheme, host: host)
-        }
-        handler.extensionContextResolver = { [weak self] extensionID in
-            self?.extensionContext(for: extensionID)
-        }
+        let handler = ExtensionPolyfillHandler(profile: self)
         self.polyfillHandler = handler
         let ucc = config.webViewConfiguration.userContentController
         ucc.addScriptMessageHandler(handler, contentWorld: .page, name: ExtensionPolyfillHandler.handlerName)

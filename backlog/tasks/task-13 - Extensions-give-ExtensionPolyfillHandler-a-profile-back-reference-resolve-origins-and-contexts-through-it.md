@@ -3,9 +3,11 @@ id: TASK-13
 title: >-
   Extensions: give ExtensionPolyfillHandler a profile back-reference; resolve
   origins and contexts through it
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-09-12 03:50'
+updated_date: '2026-09-12 07:41'
 labels:
   - extensions
   - security
@@ -22,8 +24,31 @@ ExtensionPolyfillHandler is created inside Profile.extensionController but does 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 ExtensionPolyfillHandler is constructed with its owning Profile and has no settable resolver; a message from an extension page is attributed via the profile's loaded contexts
-- [ ] #2 offscreen.createDocument/hasDocument/closeDocument operate on the context loaded in the handler's own profile, never on another profile's context; a test with the same extension loaded in two profiles shows the document is created in the sender's profile
-- [ ] #3 A test builds a real Profile, touches extensionController, loads a context, and confirms the handler attributes that context's webkit-extension origin to the extension with no test-side wiring (deleting the production wiring fails the test)
-- [ ] #4 Existing ExtensionPolyfillTests and ExtensionPolyfillIntegrationTests still pass after being ported to the new construction
+- [x] #1 ExtensionPolyfillHandler is constructed with its owning Profile and has no settable resolver; a message from an extension page is attributed via the profile's loaded contexts
+- [x] #2 offscreen.createDocument/hasDocument/closeDocument operate on the context loaded in the handler's own profile, never on another profile's context; a test with the same extension loaded in two profiles shows the document is created in the sender's profile
+- [x] #3 A test builds a real Profile, touches extensionController, loads a context, and confirms the handler attributes that context's webkit-extension origin to the extension with no test-side wiring (deleting the production wiring fails the test)
+- [x] #4 Existing ExtensionPolyfillTests and ExtensionPolyfillIntegrationTests still pass after being ported to the new construction
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. ExtensionPolyfillHandler: add init(profile:) with private(set) weak var profile; delete extensionOriginResolver and extensionContextResolver. verifiedExtensionID(for:) -> profile?.extensionID(forOriginScheme:host:); offscreen.createDocument resolves context via profile?.extensionContext(for:) only (no ExtensionManager.context(for:) fallback). Nil profile => reject, never fall back.
+2. Profile.extensionController: construct ExtensionPolyfillHandler(profile: self); remove closure wiring.
+3. ExtensionPolyfillTests (bare WKWebView at https://test.example.com): add a test-only Profile subclass overriding extensionID(forOriginScheme:host:) to map that origin to test-polyfill-extension; construct handler with it; port the resolver-based negative tests (unknown origin, no resolver) to a profile that resolves nothing / a released (nil) profile. Native-bridge tests construct with a retained throwaway Profile.
+4. ExtensionPolyfillIntegrationTests: create the test profile before the handler and construct ExtensionPolyfillHandler(profile: testProfile); drop the hand-installed resolver.
+5. New tests (TDD, write first): (a) production wiring: real Profile via TabStore.addProfile, touch extensionController, loadExtensionContext(ext) with a temp extension, load test.html in a web view built from context.webViewConfiguration, post a raw bridge message via webkit.messageHandlers.detourPolyfill, expect success with no test-side wiring. (b) two profiles, same extension loaded in both, lastActiveSpaceID pointing at profile A's space, offscreen.createDocument sent through profile B's handler => B's offscreenHosts entry web view URL host equals B's context baseURL host, and A has no offscreen host. (c) negative: handler whose profile was released rejects with Unrecognized extension origin.
+6. Run ExtensionPolyfillTests, ExtensionPolyfillIntegrationTests, ExtensionPermissionTests; then code-review, fix, commit.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented: ExtensionPolyfillHandler.init(profile:) with weak back-reference; extensionOriginResolver/extensionContextResolver removed; offscreen.createDocument resolves only via profile.extensionContext(for:). Tests ported (OriginMappingProfile seam in ExtensionPolyfillTests; integration suite constructs with its profile). New ExtensionPolyfillProfileWiringTests cover production wiring, offscreen in sender's profile, and no cross-profile fallback. First run: 123 tests green across the four extension suites. Code review (medium) raised: (1) offscreen load failure never replies, pre-existing -> filed TASK-18; (2) sessions.restore/search.query still pick the space globally -> fixing here with tests; (3) fixed sleeps in new tests -> navigation waits; (4) duplicated helpers -> shared ExtensionTestSupport; (5) makeHandler bookkeeping -> removed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+ExtensionPolyfillHandler is now constructed with a weak back-reference to its owning Profile (init(profile:)); the extensionOriginResolver and extensionContextResolver closures are gone. Sender origins are attributed via profile.extensionID(forOriginScheme:host:), and offscreen.createDocument resolves the context only via profile.extensionContext(for:), with no ExtensionManager.context(for:) fallback. Review follow-up in the same change: sessions.restore and search.query now act in one of the handler's profile's spaces (targetSpace()) instead of the global last-active space. Tests: new ExtensionPolyfillProfileWiringTests (production wiring with zero test-side resolver, offscreen document created in the sender's profile and refused when its context is not loaded there, search/restore land in the sender's profile), shared ExtensionTestSupport (navigation-completion waits replacing fixed sleeps, raw envelope poster), existing polyfill/integration suites ported. Verified: 126 tests green across ExtensionPolyfillTests, ExtensionPolyfillIntegrationTests, ExtensionPolyfillProfileWiringTests, ExtensionPermissionTests; app target builds. Pre-existing offscreen load-failure bug found in review filed as TASK-18.
+<!-- SECTION:FINAL_SUMMARY:END -->
