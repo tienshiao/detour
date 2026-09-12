@@ -177,6 +177,24 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(access, .allowed)
     }
 
+    /// The WebSocket relay host is how a service worker opens a socket at all
+    /// (TASK-8), and a worker may open one whether or not its manifest declares
+    /// `nativeMessaging` — so, like the polyfill host, it is accepted without the
+    /// manifest gate. It spawns no process: the port drives a URLSession socket.
+    func testNativeHostAccessAllowsWebSocketRelayHostWithoutPermission() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: WebSocketRelaySession.hostName, manifestPermissions: [])
+        XCTAssertEqual(access, .webSocketRelayHost)
+    }
+
+    /// Declaring the permission changes nothing: the relay is still the relay, not
+    /// a real host to spawn.
+    func testNativeHostAccessKeepsRelayHostDistinctWithNativeMessaging() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"])
+        XCTAssertEqual(access, .webSocketRelayHost)
+    }
+
     // MARK: - Negative Cases
 
     func testPermissionStatusForUnknownExtension() throws {
@@ -252,5 +270,24 @@ final class ExtensionPermissionTests: XCTestCase {
         let name = "com.example." + ExtensionPolyfillHandler.handlerName
         let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [])
         XCTAssertEqual(access, .denied)
+    }
+
+    /// Same exact-match rule for the relay host.
+    func testNativeHostAccessDeniesHostNameContainingRelayHost() {
+        let name = "com.example." + WebSocketRelaySession.hostName
+        let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [])
+        XCTAssertEqual(access, .denied)
+    }
+
+    /// NEGATIVE: the relay is a port-only host. A one-shot `sendNativeMessage` to
+    /// it must be refused rather than routed anywhere — `.webSocketRelayHost` is
+    /// not `.allowed`, so the delegate's gate rejects it with its own error.
+    func testNativeHostAccessForRelayHostIsNotAllowedForSendNativeMessage() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"])
+        XCTAssertNotEqual(access, .allowed,
+                          "sendNativeMessage only proceeds on .allowed; the relay must never be that")
+        XCTAssertNotEqual(access, .polyfillHost,
+                          "nor may it be mistaken for the polyfill bridge's envelope host")
     }
 }

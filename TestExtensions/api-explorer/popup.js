@@ -662,6 +662,18 @@ document.getElementById('btn-session-test').addEventListener('click', async () =
   } catch (e) { showResult('res-session-storage', e.message, true); }
 });
 
+// --- WebSocket relay ---
+document.getElementById('btn-ws-probe').addEventListener('click', async () => {
+  const url = document.getElementById('input-ws-url').value || 'wss://echo.websocket.org';
+  showResult('res-websocket', `Connecting to ${url}...`);
+  try {
+    const result = await sendBg({ type: 'webSocketProbe', url });
+    showResult('res-websocket', result, !!result.error || !result.opened);
+  } catch (e) {
+    showResult('res-websocket', e.message, true);
+  }
+});
+
 // Auto-load the event log on popup open
 document.getElementById('btn-refresh-log').click();
 

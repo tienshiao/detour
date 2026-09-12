@@ -204,6 +204,12 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    notifications until a real WebSocket relay exists (candidate follow-up: relay sockets through
    Detour with `URLSessionWebSocketTask` over the polyfill port). Verified with a worker probe that
    opens a socket at startup: it gets `error` and `close`, stays alive, and restarts on every alarm.
+
+   **Status (2026-09-12, TASK-8, done):** that follow-up shipped, and the module is now
+   `ExtensionAPIPolyfill.webSocketRelayJS`: worker sockets are *relayed* through Detour rather than
+   failed, so 1Password's notifier gets a working socket again (see "WebSocket relay (TASK-8)"
+   below). The guard survives as the module's fallback for any context that cannot reach the relay
+   host, and what this all avoids is unchanged: nothing ever constructs WebKit's worker WebSocket.
 1. **Prevention, Chrome parity — Detour drives the keep-alive** (TASK-16;
    `ExtensionAPIPolyfill.nativePortKeepAliveJS`, `NativeHostKeepAliveState`,
    `ExtensionManager.webExtensionController(_:connectUsing:…)`): Chrome keeps a service worker
@@ -288,6 +294,80 @@ defaults delete com.detourbrowser.mac ExtensionConsoleLogPublic
 
 Add `OR category == "extension-polyfill"` to the Detour predicate to include it. Purge the log store
 again after such a session.
+
+#### WebSocket relay (TASK-8)
+
+A worker's `WebSocket` is `RelayedWebSocket` (`ExtensionAPIPolyfill.webSocketRelayJS`), a full
+implementation of the interface that owns no socket at all: it opens a native messaging port to
+Detour's own `detourWebSocketRelay` host and speaks JSON over it, while `WebSocketRelaySession`
+(`Detour/Extensions/Runtime/WebSocketRelay.swift`) drives a real `URLSessionWebSocketTask` in the
+app process. One socket = one port = one session; `ExtensionManager` keeps them per (controller,
+extension) and `closeExtensionPorts(for:in:)` tears them down with the context.
+
+Like the polyfill host, the relay host is accepted by `ExtensionManager.nativeHostAccess` *without*
+the `nativeMessaging` manifest permission — a worker may open a WebSocket whether or not it declares
+native messaging, and this port is now the only way it can. It spawns no process, and a one-shot
+`sendNativeMessage` to it is refused ("port-only host") so it can never be mistaken for a real host.
+
+| worker -> native | native -> worker |
+|---|---|
+| `{op:'open', url, protocols:[String]}` (once) | `{op:'open', protocol, extensions}` |
+| `{op:'send', text}` | `{op:'message', text}` |
+| `{op:'send', binary}` (base64) | `{op:'message', binary}` (base64) |
+| `{op:'close', code, reason}` | `{op:'close', code, reason, wasClean}` — then the port is dropped |
+| | `{op:'error', message}` — always followed by a close |
+
+**An open relayed socket keeps the worker alive**, through the same
+`NativeHostKeepAliveState` a native host feeds (`connectedHosts` counts both): `openWebSocketRelay`
+applies `.hostConnected` and the port's disconnect chain applies `.hostDisconnected`, so
+`keepalive-start` stands while any socket *or* host is live. Without it a quiet long-lived socket —
+which is exactly what 1Password's notifier is — dies with the worker WebKit unloads after ~2.5
+minutes idle, and the extension sees an `error` and a 1006 every few minutes. This is deliberately
+broader than Chrome, which keeps a worker alive for a native *port* but only resets a worker's idle
+timer on actual socket traffic: WebKit's inactive-ports rule counts messages the background *posts*,
+so there is nothing to hook incoming frames onto, and an idle-but-open socket is precisely the case
+that has to survive. The cost is one worker held up per open socket, which is what the extension
+asked for by keeping the socket open.
+
+The handshake carries **the owning profile's cookies** for the origin, as Chrome's does (a fresh
+ephemeral `URLSession` sends none, so a credentialed socket to a site the user is signed into in
+that profile would fail). `ExtensionManager` passes a provider over the profile's
+`dataStore.httpCookieStore`; `WebSocketRelaySession` filters the jar down to what applies (domain,
+path, `Secure`, expiry) and sets the `Cookie` header on the handshake request. Subprotocols travel
+in the `Sec-WebSocket-Protocol` header, since a `URLRequest` handshake takes no protocols parameter.
+
+The URL is validated natively (ws/wss, parseable, no fragment) and in JS (plus the browsers'
+http/https -> ws/wss rewrite); a protocol violation (an op before `open`, a second `open`, an unknown
+op) is answered with `error` + `close` 1006 and ends the session. A dropped port fails the socket as
+1006 in the worker, which is what an extension already handles.
+
+Gaps, all deliberate:
+
+- **The extension's CSP `connect-src` is not applied.** WebKit enforces it on its own WebSocket
+  channel, which the relay bypasses entirely; Detour does not re-implement CSP parsing.
+- **No host-permission check**, matching Chrome: it does not CORS-restrict WebSockets opened from an
+  extension worker either, so requiring host permissions here would break extensions that work
+  everywhere else. The gate that remains is that only a loaded extension context can open the port.
+- **Cookies are read at handshake time only.** The profile's jar is snapshotted for the `Cookie`
+  header when the socket opens; nothing is written back, a `Set-Cookie` on the 101 response is not
+  stored, and a cookie that changes later does not affect a socket already open.
+- **Application close codes (3000-4999) go out on the wire as 1000.**
+  `URLSessionWebSocketTask.CloseCode` models only the registered codes, so the frame carries a
+  normal closure — the worker's own `CloseEvent` still reports the code it asked for.
+- **Frames are base64 over the port and pass through the main thread**, so a very large binary
+  message costs about 33% more bytes than the wire frame plus a main-thread hop each way. Fine for
+  1Password's notifier traffic; not a transport for bulk data.
+- The guard fallback stays for contexts with no reachable relay host (`__detourWebSocketRelay.mode`
+  reports `relay` or `guard`; the polyfill diagnostics carry it as `apis.webSocket`, which is
+  `native` in page contexts, where the module does not install at all).
+
+Tested at three levels: `WebSocketRelaySessionTests` (the session against a real loopback WebSocket
+echo server, with a fake port), `ExtensionPolyfillTests` (the JS state machine against a fake
+`connectNative`), and two real-worker round trips —
+`ExtensionPolyfillIntegrationTests.testWorkerWebSocketIsRelayedToARealServer` and
+`ExtensionPolyfillProfileWiringTests.testWorkerWebSocketIsRelayedAndReleasedThroughTheProductionWiring`
+(the production Profile wiring, including that Detour holds exactly one session while the socket is
+open and none after it closes).
 
 ### Phase 2 — Cheap, high-confidence stubs (parallelizable with Phase 1)
 

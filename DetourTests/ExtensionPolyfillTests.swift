@@ -101,10 +101,10 @@ final class ExtensionPolyfillTests: XCTestCase {
 
             globalThis.__detourKeepAlivePingIntervalMs = 50;
             globalThis.__detourKeepAliveReconnectBaseMs = 100;
-            // Install the service-worker-only WebSocket guard and native port
+            // Install the service-worker-only WebSocket relay and native port
             // keep-alive in this page context so they can be exercised without a
             // real service worker.
-            globalThis.__detourForceWebSocketGuard = true;
+            globalThis.__detourForceWebSocketRelay = true;
             globalThis.__detourForceNativePortKeepAlive = true;
             globalThis.__fakeNativePorts = [];
             globalThis.chrome.runtime.connectNative = function(application) {
@@ -1608,48 +1608,602 @@ final class ExtensionPolyfillTests: XCTestCase {
         withExtendedLifetime(wv) {}
     }
 
-    // MARK: - WebSocket guard
+    // MARK: - WebSocket relay (TASK-8)
 
-    /// The guard normally installs only in service worker contexts; the test shim
-    /// sets `__detourForceWebSocketGuard` before the polyfill loads so these run
-    /// against the page context.
+    /// The relay normally installs only in service worker contexts; the test shim
+    /// sets `__detourForceWebSocketRelay` before the polyfill loads so these run
+    /// against the page context, with the shim's fake `connectNative` standing in
+    /// for Detour's relay host.
 
-    func testWebSocketGuardInstalls() async throws {
-        let result = try await evalDictionary("""
-        const instance = new WebSocket('wss://example.invalid/');
+    /// JS prelude for the relay tests: the fake native ports opened for the relay
+    /// host (the keep-alive holds one to `detourPolyfill`, which these must skip).
+    private static let relayHelpersJS = """
+    const relayPorts = () => globalThis.__fakeNativePorts.filter(p => p.application === 'detourWebSocketRelay');
+    const relayPort = (i) => relayPorts()[i === undefined ? relayPorts().length - 1 : i];
+
+    """
+
+    private func evalRelay(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
+        try await evalDictionary(Self.relayHelpersJS + js, on: target)
+    }
+
+    /// A context whose `connectNative` is missing, so every socket takes the
+    /// guard fallback (the TASK-2 behaviour: fail asynchronously, never deadlock).
+    private func makeGuardFallbackWebView() async throws -> WKWebView {
+        try await makeWebView(
+            manifestPermissions: ["history", "nativeMessaging"],
+            // Runs after the shim installed the fake connectNative and before the
+            // polyfill reads it.
+            shimExtras: "delete globalThis.chrome.runtime.connectNative;")
+    }
+
+    func testWebSocketRelayInstallsAndOpensARelayPort() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/notify', ['p1', 'p2']);
+        const port = relayPort();
         return JSON.stringify({
-            guarded: WebSocket.__detourGuard === true,
+            relayed: WebSocket.__detourRelay === true,
             nativeType: typeof globalThis.__detourNativeWebSocket,
             nativeIsReplaced: globalThis.__detourNativeWebSocket !== WebSocket,
             statics: [WebSocket.CONNECTING, WebSocket.OPEN, WebSocket.CLOSING, WebSocket.CLOSED],
-            onInstance: [instance.CONNECTING, instance.OPEN, instance.CLOSING, instance.CLOSED]
+            onInstance: [socket.CONNECTING, socket.OPEN, socket.CLOSING, socket.CLOSED],
+            mode: globalThis.__detourWebSocketRelay.mode,
+            openSockets: globalThis.__detourWebSocketRelay.openSockets,
+            portCount: relayPorts().length,
+            posted: port ? port.posted : null,
+            url: socket.url,
+            readyState: socket.readyState,
+            protocol: socket.protocol,
+            extensions: socket.extensions,
+            binaryType: socket.binaryType,
+            bufferedAmount: socket.bufferedAmount
         });
         """)
 
-        XCTAssertEqual(result["guarded"] as? Bool, true,
-                       "globalThis.WebSocket should be the guard, not the native constructor")
+        XCTAssertEqual(result["relayed"] as? Bool, true,
+                       "globalThis.WebSocket should be the relay, not the native constructor")
         XCTAssertEqual(result["nativeType"] as? String, "function",
                        "the native constructor should be kept at __detourNativeWebSocket")
         XCTAssertEqual(result["nativeIsReplaced"] as? Bool, true)
         XCTAssertEqual(result["statics"] as? [Int], [0, 1, 2, 3])
         XCTAssertEqual(result["onInstance"] as? [Int], [0, 1, 2, 3],
                        "the ready-state constants should also be on the prototype")
+        XCTAssertEqual(result["mode"] as? String, "relay")
+        XCTAssertEqual(result["openSockets"] as? Int, 1)
+        XCTAssertEqual(result["portCount"] as? Int, 1,
+                       "one socket opens exactly one port to the relay host")
+        XCTAssertEqual(result["url"] as? String, "wss://example.invalid/notify")
+        XCTAssertEqual(result["readyState"] as? Int, 0)
+        XCTAssertEqual(result["protocol"] as? String, "")
+        XCTAssertEqual(result["extensions"] as? String, "")
+        XCTAssertEqual(result["binaryType"] as? String, "blob")
+        XCTAssertEqual(result["bufferedAmount"] as? Int, 0)
+
+        let posted = try XCTUnwrap(result["posted"] as? [[String: Any]])
+        XCTAssertEqual(posted.count, 1, "constructing must post exactly one op")
+        XCTAssertEqual(posted.first?["op"] as? String, "open")
+        XCTAssertEqual(posted.first?["url"] as? String, "wss://example.invalid/notify")
+        XCTAssertEqual(posted.first?["protocols"] as? [String], ["p1", "p2"])
     }
 
-    func testWebSocketGuardFailsAsynchronously() async throws {
+    func testWebSocketRelayRejectsInvalidURLs() async throws {
+        let result = try await evalRelay("""
+        function attempt(u) {
+            try { new WebSocket(u); return { threw: false, name: null }; }
+            catch (e) { return { threw: true, name: e.name }; }
+        }
+        return JSON.stringify({
+            garbage: attempt('not a url'),
+            ftp: attempt('ftp://example.invalid/'),
+            fragment: attempt('wss://example.invalid/x#frag'),
+            ok: attempt('wss://example.invalid/x'),
+            httpRewritten: new WebSocket('http://example.invalid/y').url,
+            httpsRewritten: new WebSocket('https://example.invalid/z').url,
+            stringProtocol: relayPort().posted[0].protocols
+        });
+        """)
+
+        for key in ["garbage", "ftp", "fragment"] {
+            let attempt = try XCTUnwrap(result[key] as? [String: Any], key)
+            XCTAssertEqual(attempt["threw"] as? Bool, true, "\(key) must throw")
+            XCTAssertEqual(attempt["name"] as? String, "SyntaxError", key)
+        }
+        XCTAssertEqual((result["ok"] as? [String: Any])?["threw"] as? Bool, false)
+        XCTAssertEqual(result["httpRewritten"] as? String, "ws://example.invalid/y",
+                       "http: is rewritten to ws:, as browsers do")
+        XCTAssertEqual(result["httpsRewritten"] as? String, "wss://example.invalid/z")
+    }
+
+    func testWebSocketRelayNormalizesAStringProtocol() async throws {
+        let result = try await evalRelay("""
+        new WebSocket('wss://example.invalid/', 'chat.v1');
+        return JSON.stringify({ posted: relayPort().posted });
+        """)
+        let posted = try XCTUnwrap(result["posted"] as? [[String: Any]])
+        XCTAssertEqual(posted.first?["protocols"] as? [String], ["chat.v1"],
+                       "a single protocol string must be sent as a one-element list")
+    }
+
+    func testWebSocketRelaySendWhileConnectingThrowsInvalidState() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        let threw = false, name = null;
+        try { socket.send('x'); } catch (e) { threw = true; name = e.name; }
+        return JSON.stringify({
+            threw: threw, name: name, readyState: socket.readyState,
+            posted: relayPort().posted.length
+        });
+        """)
+
+        XCTAssertEqual(result["threw"] as? Bool, true, "send() while CONNECTING must throw")
+        XCTAssertEqual(result["name"] as? String, "InvalidStateError")
+        XCTAssertEqual(result["readyState"] as? Int, 0)
+        XCTAssertEqual(result["posted"] as? Int, 1, "only the open op should have been posted")
+    }
+
+    func testWebSocketRelayOpensOnTheNativeOpenMessage() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        let handlerCalls = 0, listenerCalls = 0;
+        socket.onopen = () => { handlerCalls += 1; };
+        socket.addEventListener('open', () => { listenerCalls += 1; });
+        relayPort().__simulateNativeMessage({ op: 'open', protocol: 'chat.v1', extensions: '' });
+        return JSON.stringify({
+            readyState: socket.readyState,
+            handlerCalls: handlerCalls,
+            listenerCalls: listenerCalls,
+            protocol: socket.protocol,
+            openSockets: globalThis.__detourWebSocketRelay.openSockets
+        });
+        """)
+
+        XCTAssertEqual(result["readyState"] as? Int, 1)
+        XCTAssertEqual(result["handlerCalls"] as? Int, 1, "onopen should be invoked once")
+        XCTAssertEqual(result["listenerCalls"] as? Int, 1)
+        XCTAssertEqual(result["protocol"] as? String, "chat.v1",
+                       "the negotiated subprotocol comes back from native")
+        XCTAssertEqual(result["openSockets"] as? Int, 1)
+    }
+
+    func testWebSocketRelayDeliversTextMessages() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        port.__simulateNativeMessage({ op: 'open', protocol: '', extensions: '' });
+        const received = [];
+        socket.onmessage = (e) => { received.push({ type: typeof e.data, data: e.data }); };
+        port.__simulateNativeMessage({ op: 'message', text: 'hello worker' });
+        port.__simulateNativeMessage({ op: 'message', text: '' });
+        return JSON.stringify({ received: received });
+        """)
+
+        let received = try XCTUnwrap(result["received"] as? [[String: Any]])
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.first?["type"] as? String, "string")
+        XCTAssertEqual(received.first?["data"] as? String, "hello worker")
+        XCTAssertEqual(received.last?["data"] as? String, "")
+    }
+
+    func testWebSocketRelayDeliversBinaryMessagesPerBinaryType() async throws {
+        let result = try await evalRelay("""
+        // 0x01 0x02 0xFA 0xFF — bytes that are not valid UTF-8 on their own.
+        const base64 = btoa(String.fromCharCode(1, 2, 250, 255));
+
+        const asBuffer = new WebSocket('wss://example.invalid/a');
+        const bufferPort = relayPort();
+        asBuffer.binaryType = 'arraybuffer';
+        bufferPort.__simulateNativeMessage({ op: 'open' });
+        let bufferData = null, bufferIsArrayBuffer = null;
+        asBuffer.onmessage = (e) => {
+            bufferIsArrayBuffer = e.data instanceof ArrayBuffer;
+            bufferData = Array.from(new Uint8Array(e.data));
+        };
+        bufferPort.__simulateNativeMessage({ op: 'message', binary: base64 });
+
+        const asBlob = new WebSocket('wss://example.invalid/b');
+        const blobPort = relayPort();
+        blobPort.__simulateNativeMessage({ op: 'open' });
+        let blobIsBlob = null, blobBytes = null;
+        const blobDelivered = new Promise((resolve) => {
+            asBlob.onmessage = async (e) => {
+                blobIsBlob = typeof Blob !== 'undefined' && e.data instanceof Blob;
+                blobBytes = Array.from(new Uint8Array(await e.data.arrayBuffer()));
+                resolve();
+            };
+        });
+        blobPort.__simulateNativeMessage({ op: 'message', binary: base64 });
+        await blobDelivered;
+
+        return JSON.stringify({
+            base64: base64,
+            bufferIsArrayBuffer: bufferIsArrayBuffer,
+            bufferData: bufferData,
+            blobIsBlob: blobIsBlob,
+            blobBytes: blobBytes,
+            defaultBinaryType: asBlob.binaryType
+        });
+        """)
+
+        XCTAssertEqual(result["bufferIsArrayBuffer"] as? Bool, true,
+                       "binaryType 'arraybuffer' must deliver an ArrayBuffer")
+        XCTAssertEqual(result["bufferData"] as? [Int], [1, 2, 250, 255],
+                       "the base64 payload must round-trip byte for byte")
+        XCTAssertEqual(result["defaultBinaryType"] as? String, "blob")
+        XCTAssertEqual(result["blobIsBlob"] as? Bool, true)
+        XCTAssertEqual(result["blobBytes"] as? [Int], [1, 2, 250, 255])
+    }
+
+    func testWebSocketRelayPostsSendOpsForEveryDataType() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        port.__simulateNativeMessage({ op: 'open' });
+        socket.send('hi');
+        socket.send(new Uint8Array([1, 2, 3]).buffer);
+        // A view with a non-zero offset: only its own bytes may be sent.
+        socket.send(new Uint8Array([9, 8, 7, 6]).subarray(1, 3));
+        const blob = new Blob([new Uint8Array([1, 2])]);
+        socket.send(blob);
+        const bufferedWhileReading = socket.bufferedAmount;
+        await new Promise((r) => setTimeout(r, 50));
+        return JSON.stringify({
+            posted: port.posted,
+            bufferedWhileReading: bufferedWhileReading,
+            bufferedAfter: socket.bufferedAmount
+        });
+        """)
+
+        let posted = try XCTUnwrap(result["posted"] as? [[String: Any]])
+        XCTAssertEqual(posted.count, 5, "open + four sends, got: \(posted)")
+        XCTAssertEqual(posted[1]["op"] as? String, "send")
+        XCTAssertEqual(posted[1]["text"] as? String, "hi")
+        XCTAssertEqual(posted[2]["binary"] as? String, "AQID", "ArrayBuffer -> base64")
+        XCTAssertEqual(posted[3]["binary"] as? String, "CAc=",
+                       "a view must send only the bytes it covers")
+        XCTAssertEqual(posted[4]["binary"] as? String, "AQI=", "Blob -> base64, asynchronously")
+        XCTAssertEqual(result["bufferedWhileReading"] as? Int, 2,
+                       "a Blob still being read counts towards bufferedAmount")
+        XCTAssertEqual(result["bufferedAfter"] as? Int, 0)
+    }
+
+    /// A Blob's bytes only arrive a microtask later, so a frame sent behind one
+    /// must not overtake it: every send goes through one FIFO and the drain loop
+    /// waits at a pending Blob.
+    func testWebSocketRelaySendQueueKeepsFrameOrderAcrossABlob() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        port.__simulateNativeMessage({ op: 'open' });
+        socket.send('first');
+        socket.send(new Blob([new Uint8Array([1, 2])]));
+        socket.send('ack');
+        socket.send(new Uint8Array([3, 4, 5]).buffer);
+        const postedImmediately = port.posted.length;
+        const bufferedWhileReading = socket.bufferedAmount;
+        await new Promise((r) => setTimeout(r, 50));
+        return JSON.stringify({
+            postedImmediately: postedImmediately,
+            bufferedWhileReading: bufferedWhileReading,
+            posted: port.posted,
+            bufferedAfter: socket.bufferedAmount
+        });
+        """)
+
+        XCTAssertEqual(result["postedImmediately"] as? Int, 2,
+                       "only open and the first text frame can post before the Blob is read")
+        XCTAssertEqual(result["bufferedWhileReading"] as? Int, 8,
+                       "the Blob (2) and the two frames queued behind it (3 + 3) are outstanding")
+
+        let posted = try XCTUnwrap(result["posted"] as? [[String: Any]])
+        XCTAssertEqual(posted.count, 5, "open + four sends, got: \(posted)")
+        XCTAssertEqual(posted[1]["text"] as? String, "first")
+        XCTAssertEqual(posted[2]["binary"] as? String, "AQI=",
+                       "the Blob must post before anything sent after it: \(posted)")
+        XCTAssertEqual(posted[3]["text"] as? String, "ack")
+        XCTAssertEqual(posted[4]["binary"] as? String, "AwQF")
+        XCTAssertEqual(result["bufferedAfter"] as? Int, 0)
+    }
+
+    /// A real socket flushes what is buffered during the closing handshake, so a
+    /// Blob still being read when `close()` runs must still be sent — and the
+    /// close must land behind it.
+    func testWebSocketRelayCloseFlushesAPendingBlob() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        port.__simulateNativeMessage({ op: 'open' });
+        socket.send(new Blob([new Uint8Array([7, 8])]));
+        socket.close(1000, 'bye');
+        const stateAfterClose = socket.readyState;
+        const postedImmediately = port.posted.length;
+        await new Promise((r) => setTimeout(r, 50));
+        return JSON.stringify({
+            stateAfterClose: stateAfterClose,
+            postedImmediately: postedImmediately,
+            posted: port.posted
+        });
+        """)
+
+        XCTAssertEqual(result["stateAfterClose"] as? Int, 2, "close() must move to CLOSING at once")
+        XCTAssertEqual(result["postedImmediately"] as? Int, 1,
+                       "only the open op: the close waits behind the Blob")
+
+        let posted = try XCTUnwrap(result["posted"] as? [[String: Any]])
+        XCTAssertEqual(posted.count, 3, "open + the flushed Blob + the close, got: \(posted)")
+        XCTAssertEqual(posted[1]["op"] as? String, "send")
+        XCTAssertEqual(posted[1]["binary"] as? String, "Bwg=",
+                       "a Blob still being read when close() ran must not be dropped")
+        XCTAssertEqual(posted[2]["op"] as? String, "close")
+        XCTAssertEqual(posted[2]["code"] as? Int, 1000)
+        XCTAssertEqual(posted[2]["reason"] as? String, "bye")
+    }
+
+    /// `close()` with no code closes with *no status*: the op must carry no code
+    /// at all (native turns that into 1005), not a 1000 the caller never chose.
+    func testWebSocketRelayCloseWithoutACodeOmitsIt() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        port.__simulateNativeMessage({ op: 'open' });
+        let closeEvent = null;
+        socket.onclose = (e) => { closeEvent = { code: e.code, reason: e.reason, wasClean: e.wasClean }; };
+        socket.close();
+        const closeOp = port.posted[port.posted.length - 1];
+        const has = (k) => Object.prototype.hasOwnProperty.call(closeOp, k);
+        port.__simulateNativeMessage({ op: 'close', code: 1005, reason: '', wasClean: true });
+        return JSON.stringify({
+            closeOp: closeOp,
+            hasCode: has('code'),
+            hasReason: has('reason'),
+            closeEvent: closeEvent
+        });
+        """)
+
+        XCTAssertEqual((result["closeOp"] as? [String: Any])?["op"] as? String, "close")
+        XCTAssertEqual(result["hasCode"] as? Bool, false,
+                       "an omitted code must stay omitted on the wire: \(result["closeOp"] ?? "-")")
+        XCTAssertEqual(result["hasReason"] as? Bool, false)
+
+        let closeEvent = try XCTUnwrap(result["closeEvent"] as? [String: Any])
+        XCTAssertEqual(closeEvent["code"] as? Int, 1005,
+                       "close() with no code reports 'no status received'")
+        XCTAssertEqual(closeEvent["reason"] as? String, "")
+    }
+
+    func testWebSocketRelayValidatesCloseArguments() async throws {
+        let result = try await evalRelay("""
+        function attempt(fn) {
+            try { fn(); return { threw: false, name: null }; }
+            catch (e) { return { threw: true, name: e.name }; }
+        }
+        const socket = () => new WebSocket('wss://example.invalid/');
+        return JSON.stringify({
+            tooLow: attempt(() => socket().close(999)),
+            reserved: attempt(() => socket().close(1006)),
+            normal: attempt(() => socket().close(1000)),
+            appRange: attempt(() => socket().close(3500)),
+            noArguments: attempt(() => socket().close()),
+            // WebIDL converts null to 0, which is not a permitted close code —
+            // only an omitted argument means "no code".
+            nullCode: attempt(() => socket().close(null)),
+            longReason: attempt(() => socket().close(1000, 'x'.repeat(124))),
+            maxReason: attempt(() => socket().close(1000, 'x'.repeat(123))),
+            multiByteReason: attempt(() => socket().close(1000, '\\u00e9'.repeat(62)))
+        });
+        """)
+
+        func check(_ key: String, throws expected: String?) throws {
+            let attempt = try XCTUnwrap(result[key] as? [String: Any], key)
+            XCTAssertEqual(attempt["threw"] as? Bool, expected != nil, key)
+            XCTAssertEqual(attempt["name"] as? String, expected, key)
+        }
+        try check("tooLow", throws: "InvalidAccessError")
+        try check("reserved", throws: "InvalidAccessError")
+        try check("normal", throws: nil)
+        try check("appRange", throws: nil)
+        try check("noArguments", throws: nil)
+        try check("nullCode", throws: "InvalidAccessError")
+        try check("longReason", throws: "SyntaxError")
+        try check("maxReason", throws: nil)
+        try check("multiByteReason", throws: "SyntaxError")
+    }
+
+    func testWebSocketRelayCloseRoundTripsThroughNative() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        port.__simulateNativeMessage({ op: 'open' });
+        const events = [];
+        let closeEvent = null;
+        socket.addEventListener('error', () => events.push('error'));
+        socket.onclose = (e) => {
+            events.push('close');
+            closeEvent = { code: e.code, reason: e.reason, wasClean: e.wasClean };
+        };
+        socket.close(1000, 'bye');
+        const stateWhileClosing = socket.readyState;
+        const postedWhileClosing = port.posted.slice();
+        const disconnectedWhileClosing = port.disconnectedLocally;
+        port.__simulateNativeMessage({ op: 'close', code: 1000, reason: 'bye', wasClean: true });
+        return JSON.stringify({
+            stateWhileClosing: stateWhileClosing,
+            postedWhileClosing: postedWhileClosing,
+            disconnectedWhileClosing: disconnectedWhileClosing,
+            finalState: socket.readyState,
+            events: events,
+            closeEvent: closeEvent,
+            disconnected: port.disconnectedLocally,
+            openSockets: globalThis.__detourWebSocketRelay.openSockets
+        });
+        """)
+
+        XCTAssertEqual(result["stateWhileClosing"] as? Int, 2,
+                       "close() must move the socket to CLOSING and wait for native")
+        let posted = try XCTUnwrap(result["postedWhileClosing"] as? [[String: Any]])
+        XCTAssertEqual(posted.count, 2)
+        XCTAssertEqual(posted[1]["op"] as? String, "close")
+        XCTAssertEqual(posted[1]["code"] as? Int, 1000)
+        XCTAssertEqual(posted[1]["reason"] as? String, "bye")
+        XCTAssertEqual(result["disconnectedWhileClosing"] as? Bool, false,
+                       "the port must stay open until native answers")
+        XCTAssertEqual(result["finalState"] as? Int, 3)
+        XCTAssertEqual(result["events"] as? [String], ["close"],
+                       "a clean close must not fire an error event")
+        let closeEvent = try XCTUnwrap(result["closeEvent"] as? [String: Any])
+        XCTAssertEqual(closeEvent["code"] as? Int, 1000)
+        XCTAssertEqual(closeEvent["reason"] as? String, "bye")
+        XCTAssertEqual(closeEvent["wasClean"] as? Bool, true)
+        XCTAssertEqual(result["disconnected"] as? Bool, true,
+                       "the relay port is released once the socket is closed")
+        XCTAssertEqual(result["openSockets"] as? Int, 0)
+    }
+
+    func testWebSocketRelayForwardsANativeError() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        const events = [];
+        let closeEvent = null;
+        socket.onerror = () => events.push('error');
+        socket.onclose = (e) => {
+            events.push('close');
+            closeEvent = { code: e.code, reason: e.reason, wasClean: e.wasClean };
+        };
+        port.__simulateNativeMessage({ op: 'error', message: 'connection refused' });
+        port.__simulateNativeMessage({ op: 'close', code: 1006, reason: 'connection refused', wasClean: false });
+        return JSON.stringify({
+            events: events, closeEvent: closeEvent, readyState: socket.readyState,
+            disconnected: port.disconnectedLocally
+        });
+        """)
+
+        XCTAssertEqual(result["events"] as? [String], ["error", "close"])
+        let closeEvent = try XCTUnwrap(result["closeEvent"] as? [String: Any])
+        XCTAssertEqual(closeEvent["code"] as? Int, 1006)
+        XCTAssertEqual(closeEvent["wasClean"] as? Bool, false)
+        XCTAssertEqual(result["readyState"] as? Int, 3)
+        XCTAssertEqual(result["disconnected"] as? Bool, true)
+    }
+
+    /// Detour dropping the port (context unload, a relay session torn down) must
+    /// look to the extension like a socket that died: error, then close 1006.
+    func testWebSocketRelayPortDisconnectFailsTheSocket() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        port.__simulateNativeMessage({ op: 'open' });
+        const events = [];
+        let closeEvent = null;
+        socket.onerror = () => events.push('error');
+        socket.onclose = (e) => {
+            events.push('close');
+            closeEvent = { code: e.code, reason: e.reason, wasClean: e.wasClean };
+        };
+        port.__simulateRemoteDisconnect();
+        return JSON.stringify({
+            events: events, closeEvent: closeEvent, readyState: socket.readyState,
+            openSockets: globalThis.__detourWebSocketRelay.openSockets
+        });
+        """)
+
+        XCTAssertEqual(result["events"] as? [String], ["error", "close"])
+        let closeEvent = try XCTUnwrap(result["closeEvent"] as? [String: Any])
+        XCTAssertEqual(closeEvent["code"] as? Int, 1006)
+        XCTAssertEqual(closeEvent["reason"] as? String, "")
+        XCTAssertEqual(closeEvent["wasClean"] as? Bool, false)
+        XCTAssertEqual(result["readyState"] as? Int, 3)
+        XCTAssertEqual(result["openSockets"] as? Int, 0)
+    }
+
+    func testWebSocketRelayDoesNotAffectEventTargetSemantics() async throws {
+        let result = try await evalRelay("""
+        const socket = new WebSocket('wss://example.invalid/');
+        const port = relayPort();
+        let removedCalls = 0, keptCalls = 0;
+        const removed = () => { removedCalls += 1; };
+        socket.addEventListener('close', removed);
+        socket.addEventListener('close', () => { keptCalls += 1; });
+        socket.removeEventListener('close', removed);
+        port.__simulateRemoteDisconnect();
+        return JSON.stringify({ removedCalls: removedCalls, keptCalls: keptCalls });
+        """)
+
+        XCTAssertEqual(result["removedCalls"] as? Int, 0,
+                       "a listener removed before the failure must not be called")
+        XCTAssertEqual(result["keptCalls"] as? Int, 1)
+    }
+
+    func testWebSocketRelayStatusIsReadOnly() async throws {
+        // The callAsyncJavaScript body is sloppy mode, so the write to the frozen
+        // status object silently no-ops rather than throwing.
+        let result = try await evalRelay("""
+        const status = globalThis.__detourWebSocketRelay;
+        status.mode = 'hijacked';
+        status.openSockets = 99;
+        return JSON.stringify({ mode: status.mode, openSockets: status.openSockets });
+        """)
+
+        XCTAssertEqual(result["mode"] as? String, "relay", "the status object must not be writable")
+        XCTAssertEqual(result["openSockets"] as? Int, 0)
+    }
+
+    /// Page contexts (popups, options pages, content scripts) run on their own
+    /// thread and never deadlocked: they keep the real WebSocket.
+    func testWebSocketRelayNotInstalledOutsideAWorker() async throws {
+        let pageView = try await makeWebView(
+            manifestPermissions: ["history"],
+            shimExtras: "globalThis.__detourForceWebSocketRelay = false;")
+
         let result = try await evalDictionary("""
+        return JSON.stringify({
+            relayed: WebSocket.__detourRelay === true,
+            isNativeConstructor: WebSocket === globalThis.__detourNativeWebSocket || globalThis.__detourNativeWebSocket === undefined,
+            statusType: typeof globalThis.__detourWebSocketRelay,
+            diag: __detourPolyfillDiag.apis.webSocket
+        });
+        """, on: pageView)
+
+        XCTAssertEqual(result["relayed"] as? Bool, false, "a page context keeps the native WebSocket")
+        XCTAssertEqual(result["isNativeConstructor"] as? Bool, true,
+                       "nothing was installed, so nothing was stashed either")
+        XCTAssertEqual(result["statusType"] as? String, "undefined")
+        XCTAssertEqual(result["diag"] as? String, "native")
+    }
+
+    func testWebSocketRelayReportsItsModeInTheDiagnostics() async throws {
+        let relayDiag = try await eval("return __detourPolyfillDiag.apis.webSocket") as? String
+        XCTAssertEqual(relayDiag, "relay")
+
+        let guardView = try await makeGuardFallbackWebView()
+        let guardDiag = try await eval("return __detourPolyfillDiag.apis.webSocket", on: guardView) as? String
+        XCTAssertEqual(guardDiag, "guard",
+                       "without a relay host the module reports the fallback it installed")
+    }
+
+    // MARK: - WebSocket guard fallback (no relay host)
+
+    /// Without `connectNative` there is no relay, and a real `WebSocket` would
+    /// deadlock the worker (TASK-2), so the socket fails asynchronously instead:
+    /// an `error` then a `close` with code 1006, the path extensions already
+    /// handle for an unreachable server.
+
+    func testWebSocketGuardFallbackFailsAsynchronously() async throws {
+        let guardView = try await makeGuardFallbackWebView()
+        let result = try await evalRelay("""
         const events = [];
         const socket = new WebSocket('wss://example.invalid/notify');
         const stateAtConstruction = socket.readyState;
         let closeCode = null, closeWasClean = null;
-        socket.addEventListener('error', e => events.push(e.type));
-        socket.addEventListener('close', e => {
+        socket.addEventListener('error', (e) => events.push(e.type));
+        socket.addEventListener('close', (e) => {
             events.push(e.type);
             closeCode = e.code;
             closeWasClean = e.wasClean;
         });
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 50));
         return JSON.stringify({
+            mode: globalThis.__detourWebSocketRelay.mode,
+            relayPortCount: relayPorts().length,
             url: socket.url,
             stateAtConstruction: stateAtConstruction,
             stateAfterWait: socket.readyState,
@@ -1657,32 +2211,34 @@ final class ExtensionPolyfillTests: XCTestCase {
             closeCode: closeCode,
             closeWasClean: closeWasClean
         });
-        """)
+        """, on: guardView)
 
+        XCTAssertEqual(result["mode"] as? String, "guard")
+        XCTAssertEqual(result["relayPortCount"] as? Int, 0, "there is no relay host to connect to")
         XCTAssertEqual(result["url"] as? String, "wss://example.invalid/notify")
-        XCTAssertEqual(result["stateAtConstruction"] as? Int, 0, "should start in CONNECTING")
-        XCTAssertEqual(result["stateAfterWait"] as? Int, 3, "should end in CLOSED")
-        XCTAssertEqual(result["events"] as? [String], ["error", "close"],
-                       "the guard should fail the connection the way an unreachable server does")
+        XCTAssertEqual(result["stateAtConstruction"] as? Int, 0)
+        XCTAssertEqual(result["stateAfterWait"] as? Int, 3)
+        XCTAssertEqual(result["events"] as? [String], ["error", "close"])
         XCTAssertEqual(result["closeCode"] as? Int, 1006)
         XCTAssertEqual(result["closeWasClean"] as? Bool, false)
     }
 
     /// The first socket in a context fails at once; each further one backs off by
     /// 250 ms so a client reconnecting straight from onclose cannot spin the worker.
-    func testWebSocketGuardBacksOffRepeatedConnections() async throws {
+    func testWebSocketGuardFallbackBacksOffRepeatedConnections() async throws {
+        let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         const first = new WebSocket('wss://example.invalid/first');
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 50));
         const firstAfter50 = first.readyState;
 
         const second = new WebSocket('wss://example.invalid/second');
         const third = new WebSocket('wss://example.invalid/third');
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 50));
         const secondAfter50 = second.readyState;
         const thirdAfter50 = third.readyState;
 
-        await new Promise(r => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, 600));
         return JSON.stringify({
             firstAfter50: firstAfter50,
             secondAfter50: secondAfter50,
@@ -1690,7 +2246,7 @@ final class ExtensionPolyfillTests: XCTestCase {
             secondAtEnd: second.readyState,
             thirdAtEnd: third.readyState
         });
-        """)
+        """, on: guardView)
 
         XCTAssertEqual(result["firstAfter50"] as? Int, 3,
                        "the first socket in a context should fail immediately")
@@ -1703,54 +2259,28 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "the backoff is a delay, not a cap: every socket still fails")
     }
 
-    func testWebSocketGuardInvokesHandlerProperties() async throws {
+    func testWebSocketGuardFallbackSendAfterCloseIsSilent() async throws {
+        let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         const socket = new WebSocket('wss://example.invalid/');
-        let errorCalls = 0, closeCalls = 0, closeCode = null;
-        socket.onerror = () => { errorCalls += 1; };
-        socket.onclose = e => { closeCalls += 1; closeCode = e.code; };
-        await new Promise(r => setTimeout(r, 50));
-        return JSON.stringify({ errorCalls: errorCalls, closeCalls: closeCalls, closeCode: closeCode });
-        """)
-
-        XCTAssertEqual(result["errorCalls"] as? Int, 1, "onerror should be invoked once")
-        XCTAssertEqual(result["closeCalls"] as? Int, 1, "onclose should be invoked once")
-        XCTAssertEqual(result["closeCode"] as? Int, 1006)
-    }
-
-    func testWebSocketGuardSendWhileConnectingThrowsInvalidState() async throws {
-        let result = try await evalDictionary("""
-        const socket = new WebSocket('wss://example.invalid/');
-        let threw = false, name = null;
-        try { socket.send('x'); } catch (e) { threw = true; name = e.name; }
-        return JSON.stringify({ threw: threw, name: name, readyState: socket.readyState });
-        """)
-
-        XCTAssertEqual(result["threw"] as? Bool, true, "send() while CONNECTING must throw")
-        XCTAssertEqual(result["name"] as? String, "InvalidStateError")
-        XCTAssertEqual(result["readyState"] as? Int, 0)
-    }
-
-    func testWebSocketGuardSendAfterCloseIsSilent() async throws {
-        let result = try await evalDictionary("""
-        const socket = new WebSocket('wss://example.invalid/');
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 50));
         let threw = false;
         try { socket.send('x'); } catch (e) { threw = true; }
         return JSON.stringify({ threw: threw, readyState: socket.readyState });
-        """)
+        """, on: guardView)
 
         XCTAssertEqual(result["readyState"] as? Int, 3)
         XCTAssertEqual(result["threw"] as? Bool, false,
                        "send() after the socket closed should be a silent no-op, as in browsers")
     }
 
-    func testWebSocketGuardExplicitCloseUsesGivenCode() async throws {
+    func testWebSocketGuardFallbackExplicitCloseUsesGivenCode() async throws {
+        let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         function watch(socket) {
             const record = { events: [], code: null, reason: null };
-            socket.addEventListener('error', e => record.events.push(e.type));
-            socket.addEventListener('close', e => {
+            socket.addEventListener('error', (e) => record.events.push(e.type));
+            socket.addEventListener('close', (e) => {
                 record.events.push(e.type);
                 record.code = e.code;
                 record.reason = e.reason;
@@ -1766,14 +2296,14 @@ final class ExtensionPolyfillTests: XCTestCase {
         const withoutCodeRecord = watch(withoutCode);
         withoutCode.close();
 
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 50));
         return JSON.stringify({
             withCode: withCodeRecord,
             withCodeReadyState: withCode.readyState,
             withoutCode: withoutCodeRecord,
             withoutCodeReadyState: withoutCode.readyState
         });
-        """)
+        """, on: guardView)
 
         let withCode = try XCTUnwrap(result["withCode"] as? [String: Any])
         XCTAssertEqual(withCode["events"] as? [String], ["close"],
@@ -1788,41 +2318,25 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["withoutCodeReadyState"] as? Int, 3)
     }
 
-    func testWebSocketGuardWarnsOnce() async throws {
+    func testWebSocketGuardFallbackWarnsOnce() async throws {
+        let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         const originalWarn = console.warn;
         let warnings = 0;
         try {
             console.warn = function(...args) {
-                if (args.some(a => typeof a === 'string' && a.includes('WebSocket is unavailable'))) warnings += 1;
+                if (args.some((a) => typeof a === 'string' && a.includes('WebSocket'))) warnings += 1;
             };
             new WebSocket('wss://example.invalid/one');
             new WebSocket('wss://example.invalid/two');
-            await new Promise(r => setTimeout(r, 50));
+            await new Promise((r) => setTimeout(r, 50));
         } finally {
             console.warn = originalWarn;
         }
         return JSON.stringify({ warnings: warnings });
-        """)
+        """, on: guardView)
 
         XCTAssertEqual(result["warnings"] as? Int, 1,
-                       "the guard should warn once per context, not once per socket")
-    }
-
-    func testWebSocketGuardDoesNotAffectEventTargetSemantics() async throws {
-        let result = try await evalDictionary("""
-        const socket = new WebSocket('wss://example.invalid/');
-        let removedCalls = 0, keptCalls = 0;
-        const removed = () => { removedCalls += 1; };
-        socket.addEventListener('close', removed);
-        socket.addEventListener('close', () => { keptCalls += 1; });
-        socket.removeEventListener('close', removed);
-        await new Promise(r => setTimeout(r, 50));
-        return JSON.stringify({ removedCalls: removedCalls, keptCalls: keptCalls });
-        """)
-
-        XCTAssertEqual(result["removedCalls"] as? Int, 0,
-                       "a listener removed before the failure must not be called")
-        XCTAssertEqual(result["keptCalls"] as? Int, 1)
+                       "the fallback should warn once per context, not once per socket")
     }
 }

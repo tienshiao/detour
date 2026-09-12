@@ -32,12 +32,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// controller (see the `connectUsing` delegate method and
     /// ExtensionAPIPolyfill.nativePortKeepAliveJS). Held so the port objects stay
     /// alive until the worker disconnects them or the context is unloaded
-    /// (`closeKeepAlivePort(for:in:)`).
+    /// (`closeExtensionPorts(for:in:)`).
     private struct KeepAlivePortKey: Hashable {
         let controller: ObjectIdentifier
         let extensionID: String
     }
     private var keepAlivePorts: [KeepAlivePortKey: WKWebExtension.MessagePort] = [:]
+
+    /// Live relayed WebSockets per extension per controller (TASK-8). A worker may
+    /// hold several at once, so each session is keyed by its own identity; entries
+    /// are dropped when the port goes away or the context unloads
+    /// (`closeExtensionPorts(for:in:)`).
+    private var webSocketRelays: [KeepAlivePortKey: [ObjectIdentifier: WebSocketRelaySession]] = [:]
 
     /// Whether each extension's worker should currently be pinging its keep-alive
     /// port, driven by real native-host connects/disconnects (TASK-16). Entries are
@@ -61,6 +67,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     enum NativeHostAccess: Equatable {
         /// Detour's own polyfill host: accepted without the manifest permission.
         case polyfillHost
+        /// Detour's WebSocket relay host (TASK-8): also accepted without the
+        /// manifest permission — a worker may open a WebSocket whether or not it
+        /// declares `nativeMessaging`, and this host is the only way it can.
+        case webSocketRelayHost
         /// A real native host the extension declared `nativeMessaging` for.
         case allowed
         /// A real native host without the manifest permission.
@@ -69,9 +79,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     /// The gate shared by `sendNativeMessage` and `connectNative`. `nativeMessaging`
     /// is auto-granted at the context level so the polyfill bridge works, so the
-    /// manifest declaration is the real gate for anything but the polyfill host.
+    /// manifest declaration is the real gate for anything but Detour's own hosts.
     static func nativeHostAccess(hostName: String, manifestPermissions: [String]) -> NativeHostAccess {
         if hostName == ExtensionPolyfillHandler.handlerName { return .polyfillHost }
+        if hostName == WebSocketRelaySession.hostName { return .webSocketRelayHost }
         return manifestPermissions.contains("nativeMessaging") ? .allowed : .denied
     }
 
@@ -214,11 +225,25 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         notifyExistingTabs(for: profile, contexts: [context])
     }
 
-    /// Drop the keep-alive port the extension's worker holds open in `controller`'s
-    /// profile, if any. Called from `Profile.unloadExtension` so a reload, disable
-    /// or uninstall does not strand the retained port.
-    func closeKeepAlivePort(for extensionID: String, in controller: WKWebExtensionController) {
+    /// Drop every port Detour holds for the extension in `controller`'s profile:
+    /// the worker's keep-alive port and any relayed WebSockets. Called from
+    /// `Profile.unloadExtension` so a reload, disable or uninstall does not strand
+    /// a retained port or leave a socket running for a context that is gone.
+    func closeExtensionPorts(for extensionID: String, in controller: WKWebExtensionController) {
         let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
+
+        // Relayed sockets first: each teardown disconnects its own port, and the
+        // registry entry is dropped as a whole so the disconnect chain finds
+        // nothing left to remove — which is also what stops each one releasing its
+        // keep-alive hold, since `contextUnloaded` below resets the whole count.
+        let relays = webSocketRelays.removeValue(forKey: key) ?? [:]
+        for relay in relays.values {
+            relay.tearDown()
+        }
+        if !relays.isEmpty {
+            log.info("Tore down \(relays.count) relayed WebSocket(s) for \(extensionID, privacy: .public) (context unloaded)")
+        }
+
         // The whole context is going away: take its hosts out of the registry and
         // reset the keep-alive bookkeeping with it (nothing is sent, so the order
         // relative to the disconnects below is moot). Dropping the registry entry
@@ -235,6 +260,57 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for host in hosts.values {
             host.disconnect()
         }
+    }
+
+    /// Start a relayed WebSocket for a worker that connected to the relay host
+    /// (TASK-8, `WebSocketRelaySession`). The session owns the socket; this owns
+    /// the session until its port goes away — for either reason, which is what the
+    /// adapter's single `onDisconnect` signal is for.
+    private func openWebSocketRelay(port: WKWebExtension.MessagePort,
+                                    controller: WKWebExtensionController,
+                                    extensionID: String) {
+        let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
+        let relayPort = MessagePortRelayPort(port)
+        // The handshake carries the owning profile's cookies (see
+        // `WebSocketRelaySession`). No profile owns this controller only in tests
+        // that build one by hand; those sockets simply send no cookies.
+        let cookieProvider: WebSocketRelaySession.CookieProvider? = profile(for: controller).map { profile in
+            { [weak profile] _, completion in
+                guard let profile else {
+                    completion([])
+                    return
+                }
+                profile.dataStore.httpCookieStore.getAllCookies(completion)
+            }
+        }
+        let session = WebSocketRelaySession(port: relayPort, extensionID: extensionID,
+                                            cookieProvider: cookieProvider)
+        let sessionKey = ObjectIdentifier(session)
+        webSocketRelays[key, default: [:]][sessionKey] = session
+
+        // An open relayed socket keeps the worker alive exactly as a native host
+        // does (TASK-16): a quiet long-lived socket — 1Password's notifier — would
+        // otherwise die with the worker WebKit unloads after ~2.5 minutes idle,
+        // and the extension would see an error and a 1006 every few minutes.
+        applyKeepAlive(.hostConnected, for: key)
+
+        // The session installed its own teardown on the adapter; keep it and drop
+        // the registry entry after it. The removal is the token that makes the
+        // release happen exactly once — a context unload takes the whole entry
+        // away first, so the teardown it triggers finds nothing left to release
+        // (and `contextUnloaded` has already reset the keep-alive anyway).
+        let sessionDisconnect = relayPort.onDisconnect
+        relayPort.onDisconnect = { [weak self] in
+            sessionDisconnect?()
+            guard let self,
+                  self.webSocketRelays[key]?.removeValue(forKey: sessionKey) != nil else { return }
+            if self.webSocketRelays[key]?.isEmpty == true {
+                self.webSocketRelays.removeValue(forKey: key)
+            }
+            self.applyKeepAlive(.hostDisconnected, for: key)
+            log.info("Relayed WebSocket port closed for \(extensionID, privacy: .public)")
+        }
+        log.info("Relayed WebSocket port opened for \(extensionID, privacy: .public)")
     }
 
     /// Feed an event to the extension's keep-alive state machine and carry out what
@@ -311,6 +387,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Tests only.
     func liveNativeHostCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
         liveNativeHosts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)]?.count ?? 0
+    }
+
+    /// Relayed WebSockets currently open for the extension (TASK-8). Tests only.
+    func webSocketRelayCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
+        webSocketRelays[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)]?.count ?? 0
     }
 
     /// Drive a real native host's connect/disconnect without spawning one, so the
@@ -1145,21 +1226,56 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         log.info("sendNativeMessage to appID: \(appID ?? "(nil)", privacy: .public)")
 
-        guard let hostName = appID,
-              let extID = extensionIDFromContext(extensionContext) else {
+        guard let hostName = appID else {
             replyHandler(nil, nil)
             return
         }
 
-        // nativeMessaging is auto-granted so the polyfill bridge works, but
-        // real native messaging hosts should only be reachable by extensions
-        // that explicitly declared the permission in their manifest. Only
-        // `.allowed` proceeds: `.polyfillHost` was consumed above.
-        let manifestPermissions = self.extension(withID: extID)?.manifest.permissions ?? []
-        guard Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) == .allowed else {
-            log.warning("Extension \(extID, privacy: .public) tried native messaging to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
+        // nativeMessaging is auto-granted so the polyfill bridge works, but real
+        // native messaging hosts should only be reachable by extensions that
+        // explicitly declared the permission in their manifest. Decided before the
+        // extension id is resolved, so Detour's own host names can never fall
+        // through to the real-host path below — where they are exempt from the
+        // manifest gate and a process named after one would be searched for and
+        // spawned.
+        let resolvedExtensionID = extensionIDFromContext(extensionContext)
+        let manifestPermissions = resolvedExtensionID
+            .flatMap { self.extension(withID: $0)?.manifest.permissions } ?? []
+        switch Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) {
+        case .polyfillHost:
+            // Unreachable: the polyfill envelope path above answers this host name
+            // and always returns. Kept so the exhaustive switch is the only place
+            // that decides what a host name means.
+            replyHandler(nil, nil)
+            return
+        case .webSocketRelayHost:
+            // The relay is a conversation, not a one-shot exchange: it only exists
+            // on a port (TASK-8).
+            log.warning("Rejecting a one-shot native message to the WebSocket relay host")
+            replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
+                                      userInfo: [NSLocalizedDescriptionKey: "\(WebSocketRelaySession.hostName) is a port-only host"]))
+            return
+        case .denied:
+            // A context the profile no longer lists (unloaded, or a message in
+            // flight across a reload) has no manifest to consult; say so rather
+            // than blaming a permission it may well have declared.
+            guard let deniedID = resolvedExtensionID else {
+                log.error("Rejecting native message to '\(hostName, privacy: .public)' from a context not loaded in any profile")
+                replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
+                                          userInfo: [NSLocalizedDescriptionKey: "Unrecognized extension context"]))
+                return
+            }
+            log.warning("Extension \(deniedID, privacy: .public) tried native messaging to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
             replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
+            return
+        case .allowed:
+            break
+        }
+
+        // Spawning a real host needs the profile-verified id.
+        guard let extID = resolvedExtensionID else {
+            replyHandler(nil, nil)
             return
         }
 
@@ -1191,15 +1307,49 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping ((any Error)?) -> Void
     ) {
-        guard let hostName = port.applicationIdentifier,
-              let extID = extensionIDFromContext(extensionContext) else {
+        guard let hostName = port.applicationIdentifier else {
             completionHandler(nil)
             return
         }
 
-        let manifestPermissions = self.extension(withID: extID)?.manifest.permissions ?? []
+        // Decided before the extension id is resolved: Detour's own hosts need no
+        // manifest permission, and the relay needs no extension record at all.
+        let resolvedExtensionID = extensionIDFromContext(extensionContext)
+        let manifestPermissions = resolvedExtensionID
+            .flatMap { self.extension(withID: $0)?.manifest.permissions } ?? []
+
+        // Every path but the relay's needs the profile-verified id.
+        func verifiedExtensionID() -> String? {
+            if let resolvedExtensionID { return resolvedExtensionID }
+            completionHandler(nil)
+            return nil
+        }
+
         switch Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) {
+        case .webSocketRelayHost:
+            // The relay only labels its session with the extension id, so it needs
+            // no extension record — but when a Profile owns this controller the id
+            // must still come from it: a context the profile no longer lists is
+            // stale (unloaded, or a connect in flight across a reload). Only a
+            // controller no Profile owns — one built by hand in the tests — falls
+            // back to the context's own identifier.
+            let relayID: String
+            if profile(for: controller) != nil {
+                guard let verified = resolvedExtensionID else {
+                    log.error("Rejecting a WebSocket relay port from a context not loaded in its profile")
+                    completionHandler(NSError(domain: "DetourExtension", code: -1,
+                                              userInfo: [NSLocalizedDescriptionKey: "Unrecognized extension context"]))
+                    return
+                }
+                relayID = verified
+            } else {
+                relayID = extensionContext.uniqueIdentifier
+            }
+            openWebSocketRelay(port: port, controller: controller, extensionID: relayID)
+            completionHandler(nil)
+            return
         case .polyfillHost:
+            guard let extID = verifiedExtensionID() else { return }
             // The polyfill's keep-alive port (see ExtensionAPIPolyfill.nativePortKeepAliveJS):
             // accept it without spawning anything and hold it until the worker closes it
             // or its context unloads. The worker opens it idle at startup and never
@@ -1238,6 +1388,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             applyKeepAlive(.portOpened, for: key)
             return
         case .denied:
+            guard let extID = verifiedExtensionID() else { return }
             log.warning("Extension \(extID, privacy: .public) tried connectNative to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
             completionHandler(NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
@@ -1246,6 +1397,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             break
         }
 
+        guard let extID = verifiedExtensionID() else { return }
         let host = NativeMessagingHost(hostName: hostName, extensionID: extID)
         let keepAliveKey = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
         let hostKey = ObjectIdentifier(host)

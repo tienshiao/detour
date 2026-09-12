@@ -94,6 +94,61 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
                           (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }));
                 return true;
             }
+            // TASK-8: a real WebSocket from inside the worker, relayed through
+            // Detour. Opens, echoes one text and one binary frame off the
+            // loopback server, then closes cleanly.
+            if (message && message.type === 'wsProbe') {
+                (async () => {
+                    const out = {
+                        opened: false, protocol: null, messages: [], closeCode: null,
+                        closeReason: null, wasClean: null, mode: null, error: null, timedOut: false
+                    };
+                    try {
+                        const socket = new WebSocket(message.url);
+                        socket.binaryType = 'arraybuffer';
+                        await new Promise((resolve) => {
+                            socket.onopen = () => {
+                                out.opened = true;
+                                out.protocol = socket.protocol;
+                                socket.send('hello');
+                                socket.send(new Uint8Array([1, 2, 3, 4]));
+                            };
+                            socket.onmessage = (e) => {
+                                if (typeof e.data === 'string') out.messages.push({ text: e.data });
+                                else out.messages.push({ bytes: Array.from(new Uint8Array(e.data)) });
+                                if (out.messages.length >= 2) socket.close(1000, 'done');
+                            };
+                            socket.onerror = () => { out.error = 'error event'; };
+                            socket.onclose = (e) => {
+                                out.closeCode = e.code;
+                                out.closeReason = e.reason;
+                                out.wasClean = e.wasClean;
+                                resolve();
+                            };
+                            setTimeout(() => { out.timedOut = true; resolve(); }, 8000);
+                        });
+                    } catch (e) {
+                        out.error = String(e && e.message ? e.message : e);
+                    }
+                    try {
+                        out.mode = globalThis.__detourWebSocketRelay
+                            ? globalThis.__detourWebSocketRelay.mode : 'missing';
+                        out.openSockets = globalThis.__detourWebSocketRelay
+                            ? globalThis.__detourWebSocketRelay.openSockets : null;
+                    } catch (e) {}
+                    return out;
+                })().then((r) => sendResponse(r), (e) => sendResponse({ fatal: String(e && e.message ? e.message : e) }));
+                return true;
+            }
+            // TASK-8 (negative): the relay host is port-only, so a one-shot
+            // sendNativeMessage to it must be refused by the delegate.
+            if (message && message.type === 'rawRelayNative') {
+                Promise.resolve()
+                    .then(() => chrome.runtime.sendNativeMessage('detourWebSocketRelay', { op: 'open', url: 'wss://example.invalid/' }))
+                    .then((r) => sendResponse({ ok: true, reply: r === undefined ? null : r }),
+                          (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }));
+                return true;
+            }
             // TASK-4: what WebKit itself provides for frame enumeration, as seen
             // from inside the worker, plus what native getAllFrames answers for a
             // real tab. Everything is wrapped so a throw or rejection comes back
@@ -791,6 +846,62 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(pong?["isTop"] as? Bool, false,
                        "the pong must come from the subframe, not the top frame: \(evidence)")
     }
+
+    // MARK: - TASK-8: WebSocket relay
+
+    /// The whole relay, end to end in a real module service worker: `new
+    /// WebSocket()` reaches a real server through Detour's port, echoes a text and
+    /// a binary frame, and closes cleanly — without touching WebKit's worker
+    /// channel, which would deadlock this worker (TASK-2).
+    func testWorkerWebSocketIsRelayedToARealServer() async throws {
+        let server = try LoopbackWebSocketServer()
+        defer { server.stop() }
+        let serverPort = try await server.start()
+
+        let wv = try await makeExtensionWebView()
+        let answer = try await askWorker(
+            from: wv, message: ["type": "wsProbe", "url": "ws://127.0.0.1:\(serverPort)/"], timeout: 20)
+        XCTAssertNil(answer["lastError"] as? String, "sendMessage to the worker reported lastError")
+        let reply = try XCTUnwrap(answer["reply"] as? [String: Any],
+                                  "the worker must answer the probe: \(answer)")
+
+        XCTAssertEqual(reply["mode"] as? String, "relay",
+                       "the worker must have taken the relay, not the guard fallback: \(reply)")
+        XCTAssertEqual(reply["timedOut"] as? Bool, false, "the probe timed out: \(reply)")
+        XCTAssertEqual(reply["opened"] as? Bool, true, "the socket never opened: \(reply)")
+        XCTAssertNil(reply["error"] as? String, "\(reply)")
+
+        let messages = try XCTUnwrap(reply["messages"] as? [[String: Any]], "\(reply)")
+        XCTAssertEqual(messages.count, 2, "expected a text and a binary echo: \(reply)")
+        XCTAssertEqual(messages.first?["text"] as? String, "hello")
+        XCTAssertEqual(messages.last?["bytes"] as? [Int], [1, 2, 3, 4],
+                       "binary frames must survive the base64 hop in both directions")
+
+        XCTAssertEqual(reply["closeCode"] as? Int, 1000, "\(reply)")
+        XCTAssertEqual(reply["wasClean"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(reply["openSockets"] as? Int, 0, "the socket must be accounted closed")
+
+        // The worker dropped its port when the socket closed, so Detour holds no
+        // session for it any more.
+        try await waitUntil("the relay session to be released") {
+            ExtensionManager.shared.webSocketRelayCountForTesting(
+                controller: self.state.controller, extensionID: Self.extensionID) == 0
+        }
+    }
+
+    /// NEGATIVE: the relay host only exists as a port. A one-shot
+    /// `sendNativeMessage` to it must be refused by the delegate rather than
+    /// falling through to the real native-host path (where its name is exempt from
+    /// the manifest gate and a host process named after it would be looked up).
+    func testOneShotMessageToTheRelayHostIsRejected() async throws {
+        let wv = try await makeExtensionWebView()
+        let answer = try await askWorker(from: wv, message: ["type": "rawRelayNative"], timeout: 10)
+        let reply = try XCTUnwrap(answer["reply"] as? [String: Any], "\(answer)")
+        XCTAssertEqual(reply["ok"] as? Bool, false, "a one-shot relay message must not be accepted: \(reply)")
+        let error = reply["error"] as? String ?? ""
+        XCTAssertTrue(error.contains("port-only host"),
+                      "expected the delegate's port-only rejection, got: \(error)")
+    }
 }
 
 // MARK: - Loopback HTTP server
@@ -894,19 +1005,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 }
 
-/// One-shot flag guarding a continuation that several callbacks can reach.
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var used = false
-
-    func claim() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if used { return false }
-        used = true
-        return true
-    }
-}
+// `LockedFlag` (shared with the loopback WebSocket server) lives in ExtensionTestSupport.
 
 // MARK: - Minimal tab/window conformances for the frame probe
 

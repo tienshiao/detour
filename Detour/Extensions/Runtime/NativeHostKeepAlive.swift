@@ -19,8 +19,11 @@ import Foundation
 /// a reconnecting port, a worker restart, a context unload) are unit-testable
 /// without a controller — see `NativeHostKeepAliveTests`.
 struct NativeHostKeepAliveState: Equatable {
-    /// Real native messaging hosts currently connected for this extension. One-shot
-    /// `sendNativeMessage` hosts never count: they exit as soon as they reply.
+    /// Live connections that should hold the worker up: real native messaging
+    /// hosts *and* relayed WebSockets (TASK-8), which are the same thing to this
+    /// state machine — a conversation the worker is party to and would lose if
+    /// WebKit unloaded it. One-shot `sendNativeMessage` hosts never count: they
+    /// exit as soon as they reply.
     private(set) var connectedHosts = 0
     /// Whether the worker's keep-alive port is currently open in Detour.
     private(set) var portOpen = false

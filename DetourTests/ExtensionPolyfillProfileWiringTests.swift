@@ -527,4 +527,243 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                        "the worker keeps its idle port after the pings stop")
         XCTAssertEqual(state()?.portOpen, true)
     }
+
+    // MARK: - TASK-8: relayed WebSockets through the production wiring
+
+    /// A background worker that opens, uses and closes one relayed WebSocket on
+    /// command, so the test can look at Detour's registry while the socket is
+    /// live. It also answers `keepAliveStatus`, so the keep-alive an open relayed
+    /// socket is supposed to hold can be read from the worker's own side.
+    ///
+    /// `permissions` defaults to none: a worker may open a socket whether or not
+    /// it declares `nativeMessaging`, and the relay host is accepted without the
+    /// manifest gate. With `nativeMessaging` the worker also holds a keep-alive
+    /// port, which is what makes the arming observable.
+    private func makeWebSocketTestExtension(permissions: [String] = []) async throws -> WebExtension {
+        let permissionsJSON = String(
+            decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+        let probeSocket = null;
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message && message.type === 'keepAliveStatus') {
+                const status = globalThis.__detourNativePortKeepAlive;
+                sendResponse(status ? {
+                    installMode: status.installMode,
+                    installDetail: status.installDetail,
+                    armed: status.armed,
+                    active: status.active
+                } : { installMode: 'missing' });
+                return true;
+            }
+            // Warm-up round trip: a message sent while the worker is still waking
+            // gets an empty reply, so the test pings until this answers.
+            if (message && message.type === 'ping') {
+                sendResponse({ type: 'pong' });
+                return true;
+            }
+            if (message && message.type === 'wsOpen') {
+                const out = { opened: false, protocol: null, mode: null, error: null };
+                try {
+                    const socket = new WebSocket(message.url);
+                    socket.binaryType = 'arraybuffer';
+                    probeSocket = socket;
+                    socket.received = [];
+                    socket.onmessage = (e) => {
+                        socket.received.push(typeof e.data === 'string'
+                            ? { text: e.data }
+                            : { bytes: Array.from(new Uint8Array(e.data)) });
+                    };
+                    socket.onopen = () => {
+                        out.opened = true;
+                        out.protocol = socket.protocol;
+                        out.mode = globalThis.__detourWebSocketRelay.mode;
+                        sendResponse(out);
+                    };
+                    socket.onclose = (e) => {
+                        socket.closeEvent = { code: e.code, reason: e.reason, wasClean: e.wasClean };
+                        if (!out.opened) {
+                            out.error = 'closed before open: ' + e.code;
+                            out.mode = globalThis.__detourWebSocketRelay.mode;
+                            sendResponse(out);
+                        }
+                    };
+                } catch (e) {
+                    out.error = String(e && e.message ? e.message : e);
+                    sendResponse(out);
+                }
+                return true;
+            }
+            if (message && message.type === 'wsEcho') {
+                probeSocket.send('hello');
+                probeSocket.send(new Uint8Array([1, 2, 3, 4]));
+                const deadline = Date.now() + 5000;
+                const poll = () => {
+                    if (probeSocket.received.length >= 2 || Date.now() > deadline) {
+                        sendResponse({ received: probeSocket.received, readyState: probeSocket.readyState });
+                        return;
+                    }
+                    setTimeout(poll, 25);
+                };
+                poll();
+                return true;
+            }
+            if (message && message.type === 'wsClose') {
+                probeSocket.close(1000, 'done');
+                const deadline = Date.now() + 5000;
+                const poll = () => {
+                    if (probeSocket.closeEvent || Date.now() > deadline) {
+                        sendResponse({
+                            closeEvent: probeSocket.closeEvent || null,
+                            readyState: probeSocket.readyState,
+                            openSockets: globalThis.__detourWebSocketRelay.openSockets
+                        });
+                        return;
+                    }
+                    setTimeout(poll, 25);
+                };
+                poll();
+                return true;
+            }
+            return false;
+        });
+        """
+        return try await makeTestExtension(
+            idPrefix: "websocket-wiring",
+            manifest: """
+            {
+                "manifest_version": 3,
+                "name": "WebSocket Relay Wiring Test",
+                "version": "1.0.0",
+                "permissions": \(permissionsJSON),
+                "background": {"service_worker": "background.js", "type": "module"}
+            }
+            """,
+            extraFiles: ["background.js": backgroundJS])
+    }
+
+    /// End to end through the production wiring (a real Profile, its own
+    /// controller, ExtensionManager as delegate): the worker's `new WebSocket()`
+    /// becomes a relay port and a real socket, Detour holds one session while it
+    /// is open, and the session is released when the socket closes.
+    func testWorkerWebSocketIsRelayedAndReleasedThroughTheProductionWiring() async throws {
+        let server = try LoopbackWebSocketServer()
+        defer { server.stop() }
+        let serverPort = try await server.start()
+
+        let ext = try await makeWebSocketTestExtension()
+        let profile = makeProfile("WebSocket Relay Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id],
+                                    "the context should be loaded in the profile's controller")
+        let webView = try await makeExtensionWebView(for: context)
+
+        let manager = ExtensionManager.shared
+        func relayCount() -> Int {
+            manager.webSocketRelayCountForTesting(controller: controller, extensionID: ext.id)
+        }
+        XCTAssertEqual(relayCount(), 0, "nothing is relayed before the worker opens a socket")
+
+        // The worker is started on demand and answers nothing until it is up.
+        try await waitUntil("the background worker to wake") {
+            let ping = try await askWorker(from: webView, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+
+        let opened = try await askWorker(
+            from: webView, message: ["type": "wsOpen", "url": "ws://127.0.0.1:\(serverPort)/"], timeout: 15)
+        XCTAssertNil(opened["lastError"] as? String)
+        let openReply = try XCTUnwrap(opened["reply"] as? [String: Any], "\(opened)")
+        XCTAssertEqual(openReply["opened"] as? Bool, true, "the socket never opened: \(openReply)")
+        XCTAssertEqual(openReply["mode"] as? String, "relay", "\(openReply)")
+        XCTAssertEqual(relayCount(), 1, "Detour must hold one relay session while the socket is open")
+
+        // The socket counts towards the keep-alive (TASK-16) even though this
+        // extension declares nothing and so has no port to be told about it: the
+        // state machine simply has nowhere to send, and sends nothing. The armed
+        // case is `testARelayedSocketKeepsTheWorkerAlive`.
+        let openState = try XCTUnwrap(manager.keepAliveStateForTesting(controller: controller,
+                                                                       extensionID: ext.id))
+        XCTAssertEqual(openState.connectedHosts, 1, "an open relayed socket is a live connection")
+        XCTAssertFalse(openState.portOpen, "no nativeMessaging permission, so no keep-alive port")
+        XCTAssertFalse(openState.armed, "nothing to arm without a port")
+        XCTAssertEqual(manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id), 0)
+
+        let echoed = try await askWorker(from: webView, message: ["type": "wsEcho"], timeout: 15)
+        let echoReply = try XCTUnwrap(echoed["reply"] as? [String: Any], "\(echoed)")
+        let received = try XCTUnwrap(echoReply["received"] as? [[String: Any]], "\(echoReply)")
+        XCTAssertEqual(received.count, 2, "expected a text and a binary echo: \(echoReply)")
+        XCTAssertEqual(received.first?["text"] as? String, "hello")
+        XCTAssertEqual(received.last?["bytes"] as? [Int], [1, 2, 3, 4])
+
+        let closed = try await askWorker(from: webView, message: ["type": "wsClose"], timeout: 15)
+        let closeReply = try XCTUnwrap(closed["reply"] as? [String: Any], "\(closed)")
+        let closeEvent = try XCTUnwrap(closeReply["closeEvent"] as? [String: Any], "\(closeReply)")
+        XCTAssertEqual(closeEvent["code"] as? Int, 1000)
+        XCTAssertEqual(closeEvent["wasClean"] as? Bool, true)
+        XCTAssertEqual(closeReply["openSockets"] as? Int, 0)
+
+        try await waitUntil("the relay session to be released") { relayCount() == 0 }
+        XCTAssertNil(manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id),
+                     "the closed socket released its keep-alive hold, so nothing is tracked")
+    }
+
+    /// An open relayed socket must hold the worker up exactly as a native host
+    /// does (TASK-16). Without this a quiet long-lived socket — 1Password's
+    /// notifier — dies with the worker WebKit unloads after ~2.5 minutes idle,
+    /// and the extension sees an error and a 1006 every few minutes.
+    func testARelayedSocketKeepsTheWorkerAlive() async throws {
+        let server = try LoopbackWebSocketServer()
+        defer { server.stop() }
+        let serverPort = try await server.start()
+
+        // `nativeMessaging` is what gives the worker a keep-alive port to be armed
+        // on; the relay itself never needed the permission.
+        let ext = try await makeWebSocketTestExtension(permissions: ["nativeMessaging"])
+        let profile = makeProfile("WebSocket Keep-alive Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let webView = try await makeExtensionWebView(for: context)
+
+        let manager = ExtensionManager.shared
+        func state() -> NativeHostKeepAliveState? {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager") {
+            state()?.portOpen == true
+        }
+        XCTAssertEqual(state()?.armed, false, "nothing is connected yet")
+
+        let opened = try await askWorker(
+            from: webView, message: ["type": "wsOpen", "url": "ws://127.0.0.1:\(serverPort)/"], timeout: 15)
+        let openReply = try XCTUnwrap(opened["reply"] as? [String: Any], "\(opened)")
+        XCTAssertEqual(openReply["opened"] as? Bool, true, "the socket never opened: \(openReply)")
+        XCTAssertEqual(state()?.armed, true, "an open relayed socket must arm the keep-alive")
+
+        var armedStatus: [String: Any]?
+        try await waitUntil("the worker to report itself armed") {
+            armedStatus = try await self.workerKeepAliveStatus(from: webView)
+            return armedStatus?["armed"] as? Bool == true
+        }
+        XCTAssertEqual(armedStatus?["active"] as? Bool, true)
+        XCTAssertGreaterThanOrEqual(
+            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id), 1,
+            "arming must produce an immediate ping on the keep-alive port")
+
+        let closed = try await askWorker(from: webView, message: ["type": "wsClose"], timeout: 15)
+        _ = try XCTUnwrap(closed["reply"] as? [String: Any], "\(closed)")
+
+        try await waitUntil("the keep-alive to disarm with the last socket") { state()?.armed == false }
+        var disarmedStatus: [String: Any]?
+        try await waitUntil("the worker to report itself disarmed") {
+            disarmedStatus = try await self.workerKeepAliveStatus(from: webView)
+            return disarmedStatus?["armed"] as? Bool == false
+        }
+        XCTAssertEqual(disarmedStatus?["installMode"] as? String, "port",
+                       "the worker keeps its idle port after the pings stop")
+        XCTAssertEqual(state()?.portOpen, true)
+    }
 }

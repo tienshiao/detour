@@ -1,10 +1,11 @@
 ---
 id: TASK-8
 title: 'Extensions: WebSocket relay for service worker contexts'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-12 02:09'
-updated_date: '2026-09-12 09:11'
+updated_date: '2026-09-12 10:52'
 labels:
   - extensions
   - webkit
@@ -25,10 +26,10 @@ WebKit runs an extension's background service worker on the main thread of its c
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 In a service worker, new WebSocket('wss://...') connects, sends and receives text and binary frames, and closes with the server's code, without touching the main thread's run loop (verified with a probe extension against a public echo server and with 1Password's notifier connecting)
-- [ ] #2 Sockets are torn down when the worker closes them, when the worker is unloaded, and when the extension context is unloaded; no URLSessionWebSocketTask outlives its port
-- [ ] #3 Page contexts (popup, options, offscreen) keep using WebKit's native WebSocket
-- [ ] #4 ExtensionPolyfillTests cover the worker-side class (state machine, event order, send/close semantics) against a fake native side, and an integration test exercises the native relay end to end
-- [ ] #5 API Explorer gains a worker WebSocket probe and docs/1password-integration-plan.md records the design and remaining CSP/permission gaps
+- [x] #2 Sockets are torn down when the worker closes them, when the worker is unloaded, and when the extension context is unloaded; no URLSessionWebSocketTask outlives its port
+- [x] #3 Page contexts (popup, options, offscreen) keep using WebKit's native WebSocket
+- [x] #4 ExtensionPolyfillTests cover the worker-side class (state machine, event order, send/close semantics) against a fake native side, and an integration test exercises the native relay end to end
+- [x] #5 API Explorer gains a worker WebSocket probe and docs/1password-integration-plan.md records the design and remaining CSP/permission gaps
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -41,4 +42,10 @@ Design (2026-09-12, after TASK-16): 1. Native side: a second built-in host name 
 
 <!-- SECTION:NOTES:BEGIN -->
 Created 2026-09-11 after TASK-2 as the follow-up to the WebSocket guard. Depends on nothing; TASK-2 verified that the guard alone keeps 1Password alive.
+
+Implemented (2026-09-12): WebSocketRelay.swift (WebSocketRelayPort protocol + MessagePortRelayPort adapter + WebSocketRelaySession driving one URLSessionWebSocketTask per port, host name detourWebSocketRelay); ExtensionManager accepts the relay host without the nativeMessaging gate on the connectUsing path, rejects it for one-shot sendNativeMessage, keeps a per-(controller, extension) registry and tears sessions down in closeExtensionPorts (renamed from closeKeepAlivePort); worker polyfill webSocketRelayJS replaces the guard with RelayedWebSocket (full WebSocket interface, base64 binary both ways, guard kept as fallback when connectNative is unavailable), diag apis.webSocket relay|guard|native. Tests: 109 JS tests in ExtensionPolyfillTests (27 red before the relay), 13 WebSocketRelaySessionTests against a loopback NWListener WebSocket echo server, a real-worker integration round trip (mode relay, text+binary echo, close 1000 clean, registry back to 0) and a production-wiring variant on a real Profile controller with an extension declaring no permissions; 192 tests green, app builds. Platform notes: URLSessionWebSocketTask.cancel(with:) does deliver didCloseWith here; a clean server close also surfaces as a receive failure (closeCode checked to avoid a spurious 1006). API Explorer gained a relay probe; plan doc gained a TASK-8 section with the protocol table and the CSP connect-src gap.
+
+Code review (medium) decisions: per-socket FIFO so Blob frames keep order and flush during CLOSING; an open relayed socket now counts toward the TASK-16 keep-alive (broader than Chrome, which only resets its idle timer on socket traffic; chosen so a quiet notifier is not killed with the idle worker every 2.5 min); the handshake carries the owning profile's cookies (read from its WKWebsiteDataStore at open time only); close() without a code reports 1005 and close(null) throws InvalidAccessError; dead URLSession injection removed; relay mode decided once at install; dead guard alias dropped; delegate paths consult the NativeHostAccess enum and the relay's extension-id fallback applies only to controllers no Profile owns (a stale context is rejected like every other path); shared __detourResolveNativeRuntime helper in the preamble.
+
+After the review fix round: 202 tests green (WebSocketRelaySessionTests 19, ExtensionPolyfillTests 112, integration 21, wiring 10, permissions 23, keep-alive 17); app builds. AC #1 status: connect/send/receive text+binary/close with the server's code verified in a REAL service worker against a loopback echo server (integration + production-wiring tests), with the worker's main thread never blocked (relay is fully async over the port). Not yet verified: a public echo server and 1Password's notifier connecting in production, which needs the signed /Applications build (1Password only trusts that); deploy with scripts/deploy-1password-test.sh, then look for 'Relaying a WebSocket for aeblfdkhhhdcdjpifhhbdiojplfjncoa' and 'Relayed WebSocket open' in the websocket-relay log category, and the api-explorer WebSocket (Relay) panel against wss://echo.websocket.org. Extra fix found during review: application close codes 3000-4999 are now reported back verbatim (URLSessionWebSocketTask has no case for them).
 <!-- SECTION:NOTES:END -->

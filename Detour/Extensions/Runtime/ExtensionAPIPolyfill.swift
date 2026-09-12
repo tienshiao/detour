@@ -61,7 +61,7 @@ struct ExtensionAPIPolyfill {
         let modules = [
             preambleJS,
             consoleJS,
-            webSocketGuardJS,
+            webSocketRelayJS,
             nativePortKeepAliveJS,
             missingStubsJS,
             contentPolyfillBridgeJS,
@@ -110,6 +110,9 @@ struct ExtensionAPIPolyfill {
         // Whether WebKit vends webNavigation.getAllFrames/getFrame natively, as
         // observed *before* the polyfill patched anything (TASK-4).
         try { __detourPolyfillDiag.apis.webNavigationFrames = globalThis.__detourWebNavFrames; } catch(e) { __detourPolyfillDiag.apis.webNavigationFrames = 'error: ' + e.message; }
+        // Which WebSocket this context got: the native one (page contexts), the
+        // TASK-8 relay, or the TASK-2 guard fallback when there is no relay host.
+        try { __detourPolyfillDiag.apis.webSocket = globalThis.__detourWebSocketRelay ? globalThis.__detourWebSocketRelay.mode : 'native'; } catch(e) { __detourPolyfillDiag.apis.webSocket = 'error: ' + e.message; }
         } catch(e) {
         __detourPolyfillDiag.error = e.message || String(e);
         __detourPolyfillDiag.stack = e.stack || '';
@@ -173,6 +176,35 @@ struct ExtensionAPIPolyfill {
                     }
                 } catch(e) {}
                 return [];
+            };
+        }
+
+        // The chrome/browser runtime whose `connectNative` can be called, for the
+        // modules that open a native messaging port (the WebSocket relay and the
+        // native-port keep-alive).
+        //
+        // It hands back the namespace to call the method *on*, and is re-read on
+        // every call: nothing here binds, wraps, caches or replaces anything.
+        // WebKit re-materializes `runtime.connectNative` on every read, so a bound
+        // or stored copy goes stale, and shadowing the `chrome`/`browser` globals
+        // to intercept it breaks WebKit's page->worker message dispatch (TASK-15;
+        // see docs/chrome-runtime-patching.md).
+        //
+        // Returns `{ runtime, detail }`; `detail` says why there is none:
+        // '' | 'no-runtime' | 'no-connectNative:<typeof>'.
+        if (!g.__detourResolveNativeRuntime) {
+            g.__detourResolveNativeRuntime = function() {
+                const chromeRuntime = g.chrome && g.chrome.runtime;
+                if (chromeRuntime && typeof chromeRuntime.connectNative === 'function') {
+                    return { runtime: chromeRuntime, detail: '' };
+                }
+                const browserRuntime = g.browser && g.browser.runtime;
+                if (browserRuntime && typeof browserRuntime.connectNative === 'function') {
+                    return { runtime: browserRuntime, detail: '' };
+                }
+                if (!chromeRuntime && !browserRuntime) return { runtime: null, detail: 'no-runtime' };
+                const present = chromeRuntime || browserRuntime;
+                return { runtime: null, detail: 'no-connectNative:' + typeof present.connectNative };
             };
         }
 
@@ -424,7 +456,7 @@ struct ExtensionAPIPolyfill {
     """
 
 
-    // MARK: - WebSocket guard (service workers)
+    // MARK: - WebSocket relay (service workers)
 
     /// WebKit runs an extension's background service worker on the main thread of
     /// its content process. `new WebSocket()` in a worker goes through
@@ -436,20 +468,55 @@ struct ExtensionAPIPolyfill {
     /// worker can never run again (observed with 1Password's server notifier,
     /// 2026-09-11; see docs/1password-integration-plan.md, Phase 1).
     ///
-    /// Until WebKit fixes the channel, replace `WebSocket` in service worker
-    /// contexts with a stand-in that fails the connection asynchronously (an
-    /// `error` event, then a `close` event with code 1006), which is the path
-    /// extensions already handle for an unreachable server. The real constructor
-    /// is kept as `__detourNativeWebSocket`. `__detourForceWebSocketGuard` installs
-    /// it outside workers for tests.
-    private static let webSocketGuardJS = """
+    /// So in service worker contexts `WebSocket` is replaced by `RelayedWebSocket`
+    /// (TASK-8), which never touches WebKit's channel: it opens a native messaging
+    /// port to Detour's own `detourWebSocketRelay` host (accepted by
+    /// ExtensionManager without the `nativeMessaging` manifest permission — a
+    /// worker may open a socket whether or not it declares one) and speaks a small
+    /// JSON protocol over it while `WebSocketRelaySession` drives a real
+    /// `URLSessionWebSocketTask` natively:
+    ///
+    ///  - worker -> native: `{op:'open', url, protocols}`, `{op:'send', text}`,
+    ///    `{op:'send', binary}` (base64), `{op:'close', code, reason}`
+    ///  - native -> worker: `{op:'open', protocol, extensions}`,
+    ///    `{op:'message', text|binary}`, `{op:'error', message}`,
+    ///    `{op:'close', code, reason, wasClean}`
+    ///
+    /// The real constructor is kept as `__detourNativeWebSocket`, and
+    /// `__detourForceWebSocketRelay` installs the module outside workers for tests.
+    ///
+    /// **The TASK-2 guard remains the fallback**: if `runtime.connectNative` is
+    /// missing or throws there is no relay host to talk to, and a real socket would
+    /// still deadlock the worker, so the socket fails asynchronously (an `error`
+    /// event, then `close` 1006 — the path extensions already handle for an
+    /// unreachable server), with a per-context backoff so a client reconnecting
+    /// straight from `onclose` cannot spin the worker. `__detourWebSocketRelay.mode`
+    /// says which path this context has ('relay' or 'guard'), decided once at
+    /// install from whether a runtime with `connectNative` is reachable.
+    ///
+    /// Gaps, both deliberate (see the plan doc): the extension's CSP `connect-src`
+    /// is *not* applied to relayed sockets (WebKit enforces it on its own channel,
+    /// which is bypassed here), and no host permission is required — matching
+    /// Chrome, which does not restrict WebSockets from extension workers.
+    private static let webSocketRelayJS = """
     (function() {
         const g = globalThis;
         const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
-        if (!isWorker && g.__detourForceWebSocketGuard !== true) return;
+        if (!isWorker && g.__detourForceWebSocketRelay !== true) return;
         const NativeWebSocket = g.WebSocket;
-        if (typeof NativeWebSocket !== 'function' || NativeWebSocket.__detourGuard) return;
+        if (typeof NativeWebSocket !== 'function' || NativeWebSocket.__detourRelay) return;
 
+        const RELAY_HOST = 'detourWebSocketRelay';
+        const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
+
+        // Which path this context has, decided once here: whether a relay host can
+        // be reached is a property of the context, not of any one socket. A socket
+        // that then fails to open its port still falls back to the guard behaviour
+        // (`this._guard`), but that does not rewrite what the context reports.
+        const mode = g.__detourResolveNativeRuntime().runtime ? 'relay' : 'guard';
+        let openSockets = 0;
+
+        // --- Guard fallback state (TASK-2) ---
         let warned = false;
         // A real unreachable server fails after DNS/TCP latency, which is what paces a
         // client that reconnects straight from onclose. Fail the first socket at once
@@ -457,51 +524,370 @@ struct ExtensionAPIPolyfill {
         // this context so such a client cannot spin the worker.
         let failures = 0;
         const MAX_FAILURE_DELAY_MS = 2000;
-        class GuardedWebSocket extends EventTarget {
+
+        // Chunked so a multi-megabyte frame cannot blow the argument limit of
+        // String.fromCharCode.apply.
+        const BASE64_CHUNK = 0x8000;
+        function bytesToBase64(bytes) {
+            let binary = '';
+            for (let i = 0; i < bytes.length; i += BASE64_CHUNK) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + BASE64_CHUNK));
+            }
+            return btoa(binary);
+        }
+        function base64ToBytes(text) {
+            const binary = atob(text);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes;
+        }
+
+        function utf8Length(text) {
+            try { return new TextEncoder().encode(text).length; } catch (e) { return text.length; }
+        }
+
+        function syntaxError(message) {
+            return new DOMException(message, 'SyntaxError');
+        }
+
+        // The URL parsing WebSocket does: ws/wss only (http/https are rewritten,
+        // as browsers do), no fragment.
+        function parseSocketURL(input) {
+            const text = String(input);
+            let parsed;
+            try { parsed = new URL(text); } catch (e) {
+                throw syntaxError("Failed to construct 'WebSocket': The URL '" + text + "' is invalid.");
+            }
+            if (parsed.protocol === 'http:') parsed = new URL('ws:' + parsed.href.slice(5));
+            else if (parsed.protocol === 'https:') parsed = new URL('wss:' + parsed.href.slice(6));
+            if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+                throw syntaxError("Failed to construct 'WebSocket': The URL's scheme must be either 'ws' or 'wss'. '"
+                    + parsed.protocol.slice(0, -1) + "' is not allowed.");
+            }
+            if (parsed.hash) {
+                throw syntaxError("Failed to construct 'WebSocket': The URL contains a fragment identifier ('"
+                    + parsed.hash.slice(1) + "'). Fragment identifiers are not allowed in WebSocket URLs.");
+            }
+            return parsed.href;
+        }
+
+        function normalizeProtocols(protocols) {
+            if (protocols === undefined || protocols === null) return [];
+            if (typeof protocols === 'string') return [protocols];
+            return Array.prototype.map.call(protocols, function(p) { return String(p); });
+        }
+
+        class RelayedWebSocket extends EventTarget {
             constructor(url, protocols) {
                 super();
-                this.url = String(url);
-                this.readyState = GuardedWebSocket.CONNECTING;
-                this.bufferedAmount = 0;
-                this.extensions = '';
+                const href = parseSocketURL(url);
+                const list = normalizeProtocols(protocols);
+
+                this.url = href;
+                this.readyState = CONNECTING;
                 this.protocol = '';
+                this.extensions = '';
+                this.bufferedAmount = 0;
                 this.binaryType = 'blob';
                 this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+
+                this._port = null;
+                this._guard = false;
+                // The FIFO of frames (and the close) still to reach native, and
+                // whether the drain loop is waiting on the entry at its head.
+                this._queue = [];
+                this._draining = false;
+                openSockets += 1;
+
+                const runtime = g.__detourResolveNativeRuntime().runtime;
+                let port = null;
+                if (runtime) {
+                    try { port = runtime.connectNative(RELAY_HOST); } catch (e) { port = null; }
+                }
+                if (!port) {
+                    this._failAsGuard();
+                    return;
+                }
+
+                this._port = port;
+                const self = this;
+                try {
+                    port.onMessage.addListener(function(message) { self._onRelayMessage(message); });
+                } catch (e) {}
+                try {
+                    port.onDisconnect.addListener(function() { self._onRelayDisconnect(); });
+                } catch (e) {}
+                this._post({ op: 'open', url: href, protocols: list });
+            }
+
+            // --- Guard fallback ---
+
+            _failAsGuard() {
+                this._guard = true;
                 if (!warned) {
                     warned = true;
-                    console.warn('[Detour polyfill] WebSocket is unavailable in extension service workers on this WebKit (it would deadlock the worker); failing connection to ' + this.url);
+                    console.warn('[Detour polyfill] No WebSocket relay host in this context (a real WebSocket would deadlock the worker); failing connection to ' + this.url);
                 }
                 const delay = Math.min(MAX_FAILURE_DELAY_MS, 250 * failures);
                 failures += 1;
-                setTimeout(() => {
-                    if (this.readyState === GuardedWebSocket.CLOSED) return;
-                    this.readyState = GuardedWebSocket.CLOSED;
-                    this._dispatch(new Event('error'));
-                    this._dispatch(new CloseEvent('close', { wasClean: false, code: 1006, reason: 'WebSocket unavailable in service worker' }));
+                const self = this;
+                setTimeout(function() {
+                    if (self.readyState === CLOSED) return;
+                    self._markClosed();
+                    self._dispatch(new Event('error'));
+                    self._dispatch(new CloseEvent('close', { wasClean: false, code: 1006, reason: 'WebSocket unavailable in service worker' }));
                 }, delay);
             }
+
+            // --- Plumbing ---
+
             _dispatch(event) {
                 const handler = this['on' + event.type];
                 if (typeof handler === 'function') { try { handler.call(this, event); } catch (e) {} }
                 this.dispatchEvent(event);
             }
-            send() {
-                if (this.readyState === GuardedWebSocket.CONNECTING) throw new DOMException("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
-                // Closed: browsers silently drop and bump bufferedAmount; do the same.
+
+            _markClosed() {
+                if (this.readyState === CLOSED) return false;
+                this.readyState = CLOSED;
+                // Whatever is still queued will never be sent: the socket is gone.
+                // `bufferedAmount` keeps counting those bytes, as a real socket
+                // that died with data buffered does.
+                this._queue.length = 0;
+                openSockets -= 1;
+                return true;
             }
+
+            // --- Send queue ---
+            //
+            // Frames have to reach native in the order `send()` was called, but a
+            // Blob's bytes only arrive a microtask later, so posting each frame as
+            // it comes let a later string overtake an earlier Blob — and a Blob
+            // still being read when `close()` ran was dropped outright. Everything
+            // therefore goes through one FIFO: `send` appends `{text}`, `{binary}`
+            // or `{pending}` (a promise for a Blob's base64) and `close` appends
+            // `{close}`, and the drain loop posts entries strictly in order,
+            // stopping at a pending entry until its bytes are in. It keeps running
+            // while CLOSING — a real socket flushes what is buffered during the
+            // closing handshake — and stops for good once CLOSED.
+
+            _enqueue(entry) {
+                this.bufferedAmount += entry.size;
+                this._queue.push(entry);
+                this._drain();
+            }
+
+            _drain() {
+                while (!this._draining && this._queue.length > 0 && this.readyState !== CLOSED) {
+                    const entry = this._queue[0];
+                    if (entry.pending === undefined) {
+                        this._queue.shift();
+                        this._postEntry(entry);
+                        continue;
+                    }
+                    // Nothing behind a Blob may be posted before its bytes are in.
+                    this._draining = true;
+                    const self = this;
+                    entry.pending.then(function(binary) {
+                        self._draining = false;
+                        if (self._queue[0] === entry) {
+                            self._queue.shift();
+                            self._postEntry({ binary: binary, size: entry.size });
+                        }
+                        self._drain();
+                    }, function() {
+                        // The Blob could not be read: drop that frame, keep the order.
+                        self._draining = false;
+                        if (self._queue[0] === entry) {
+                            self._queue.shift();
+                            self.bufferedAmount -= entry.size;
+                        }
+                        self._drain();
+                    });
+                }
+            }
+
+            _postEntry(entry) {
+                this.bufferedAmount -= entry.size;
+                if (this.readyState === CLOSED) return;
+                if (entry.close !== undefined) {
+                    const message = { op: 'close' };
+                    // An absent code stays absent: native turns that into the 1005
+                    // ('no status received') the spec requires, not a 1000.
+                    if (entry.close.code !== undefined) message.code = entry.close.code;
+                    if (entry.close.reason !== undefined) message.reason = entry.close.reason;
+                    this._post(message);
+                    return;
+                }
+                if (entry.text !== undefined) {
+                    this._post({ op: 'send', text: entry.text });
+                    return;
+                }
+                this._post({ op: 'send', binary: entry.binary });
+            }
+
+            _post(message) {
+                if (!this._port) return;
+                try { this._port.postMessage(message); } catch (e) {}
+            }
+
+            _releasePort() {
+                const port = this._port;
+                this._port = null;
+                if (!port) return;
+                try { port.disconnect(); } catch (e) {}
+            }
+
+            _onRelayMessage(message) {
+                if (!message || typeof message !== 'object') return;
+                switch (message.op) {
+                case 'open':
+                    if (this.readyState !== CONNECTING) return;
+                    this.readyState = OPEN;
+                    this.protocol = typeof message.protocol === 'string' ? message.protocol : '';
+                    this.extensions = typeof message.extensions === 'string' ? message.extensions : '';
+                    this._dispatch(new Event('open'));
+                    return;
+                case 'message': {
+                    if (this.readyState === CLOSED) return;
+                    let data;
+                    if (typeof message.text === 'string') {
+                        data = message.text;
+                    } else if (typeof message.binary === 'string') {
+                        const bytes = base64ToBytes(message.binary);
+                        data = this.binaryType === 'arraybuffer' ? bytes.buffer : new Blob([bytes]);
+                    } else {
+                        return;
+                    }
+                    this._dispatch(new MessageEvent('message', { data: data }));
+                    return;
+                }
+                case 'error':
+                    if (this.readyState === CLOSED) return;
+                    this._dispatch(new Event('error'));
+                    return;
+                case 'close': {
+                    if (!this._markClosed()) return;
+                    const code = typeof message.code === 'number' ? message.code : 1005;
+                    this._dispatch(new CloseEvent('close', {
+                        code: code,
+                        reason: typeof message.reason === 'string' ? message.reason : '',
+                        wasClean: message.wasClean === true
+                    }));
+                    this._releasePort();
+                    return;
+                }
+                default:
+                    return;
+                }
+            }
+
+            // Detour dropped the port (its session was torn down, or the context is
+            // unloading): the socket died the way an aborted connection does.
+            _onRelayDisconnect() {
+                this._port = null;
+                if (!this._markClosed()) return;
+                this._dispatch(new Event('error'));
+                this._dispatch(new CloseEvent('close', { code: 1006, reason: '', wasClean: false }));
+            }
+
+            // --- WebSocket interface ---
+
+            send(data) {
+                if (this.readyState === CONNECTING) {
+                    throw new DOMException("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
+                }
+                // CLOSING/CLOSED: browsers silently drop, so do the same.
+                if (this.readyState !== OPEN) return;
+                if (typeof data === 'string') {
+                    this._enqueue({ text: data, size: utf8Length(data) });
+                    return;
+                }
+                if (data instanceof ArrayBuffer) {
+                    this._enqueue({ binary: bytesToBase64(new Uint8Array(data)), size: data.byteLength });
+                    return;
+                }
+                if (ArrayBuffer.isView(data)) {
+                    this._enqueue({
+                        binary: bytesToBase64(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)),
+                        size: data.byteLength
+                    });
+                    return;
+                }
+                if (typeof Blob !== 'undefined' && data instanceof Blob) {
+                    // The read starts now, as it does in a browser, but the frame is
+                    // queued: anything sent behind it waits for these bytes rather
+                    // than overtaking them. Until it posts, the bytes are
+                    // outstanding — which is exactly what bufferedAmount reports.
+                    this._enqueue({
+                        pending: data.arrayBuffer().then(function(buffer) {
+                            return bytesToBase64(new Uint8Array(buffer));
+                        }),
+                        size: data.size
+                    });
+                    return;
+                }
+                const text = String(data);
+                this._enqueue({ text: text, size: utf8Length(text) });
+            }
+
             close(code, reason) {
-                if (this.readyState === GuardedWebSocket.CLOSED) return;
-                this.readyState = GuardedWebSocket.CLOSED;
-                const c = code === undefined ? 1005 : code;
-                setTimeout(() => this._dispatch(new CloseEvent('close', { wasClean: false, code: c, reason: reason || '' })), 0);
+                // Only an omitted argument is "no code": WebIDL converts null to 0,
+                // which is not a permitted close code, so close(null) throws.
+                if (code !== undefined) {
+                    const numeric = Number(code);
+                    if (numeric !== 1000 && !(numeric >= 3000 && numeric <= 4999)) {
+                        throw new DOMException("Failed to execute 'close' on 'WebSocket': The code must be either 1000, or between 3000 and 4999. "
+                            + numeric + ' is neither.', 'InvalidAccessError');
+                    }
+                }
+                if (reason !== undefined && reason !== null && utf8Length(String(reason)) > 123) {
+                    throw syntaxError("Failed to execute 'close' on 'WebSocket': The message must not be greater than 123 bytes.");
+                }
+                if (this.readyState === CLOSING || this.readyState === CLOSED) return;
+
+                if (this._guard) {
+                    // No relay: close locally, and suppress the pending failure so the
+                    // extension sees exactly one close event.
+                    this._markClosed();
+                    const guardCode = code === undefined ? 1005 : Number(code);
+                    const guardReason = reason === undefined || reason === null ? '' : String(reason);
+                    const self = this;
+                    setTimeout(function() {
+                        self._dispatch(new CloseEvent('close', { wasClean: false, code: guardCode, reason: guardReason }));
+                    }, 0);
+                    return;
+                }
+
+                // CLOSING at once, as the spec requires, but the close op goes
+                // *behind* whatever is still queued: a real socket flushes its
+                // buffer during the closing handshake rather than dropping it.
+                this.readyState = CLOSING;
+                this._enqueue({
+                    close: {
+                        code: code === undefined ? undefined : Number(code),
+                        reason: reason === undefined || reason === null ? undefined : String(reason)
+                    },
+                    size: 0
+                });
             }
         }
-        GuardedWebSocket.CONNECTING = 0; GuardedWebSocket.OPEN = 1; GuardedWebSocket.CLOSING = 2; GuardedWebSocket.CLOSED = 3;
-        Object.assign(GuardedWebSocket.prototype, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
-        Object.defineProperty(GuardedWebSocket, '__detourGuard', { value: true });
+
+        RelayedWebSocket.CONNECTING = CONNECTING; RelayedWebSocket.OPEN = OPEN;
+        RelayedWebSocket.CLOSING = CLOSING; RelayedWebSocket.CLOSED = CLOSED;
+        Object.assign(RelayedWebSocket.prototype, {
+            CONNECTING: CONNECTING, OPEN: OPEN, CLOSING: CLOSING, CLOSED: CLOSED
+        });
+        Object.defineProperty(RelayedWebSocket, '__detourRelay', { value: true });
 
         g.__detourNativeWebSocket = NativeWebSocket;
-        g.__detourDefine(g, 'WebSocket', GuardedWebSocket);
+        g.__detourDefine(g, 'WebSocket', RelayedWebSocket);
+
+        // Read-only status for diagnostics and tests.
+        g.__detourWebSocketRelay = Object.freeze({
+            get mode() { return mode; },
+            get openSockets() { return openSockets; }
+        });
     })();
     """
 
@@ -610,23 +996,17 @@ struct ExtensionAPIPolyfill {
             }, delay);
         }
 
-        // The namespace's own connectNative, called as a plain method: nothing is
-        // wrapped, bound or replaced (see the doc comment — TASK-15).
-        function resolveRuntime() {
-            const chromeRuntime = g.chrome && g.chrome.runtime;
-            if (chromeRuntime && typeof chromeRuntime.connectNative === 'function') return chromeRuntime;
-            const browserRuntime = g.browser && g.browser.runtime;
-            if (browserRuntime && typeof browserRuntime.connectNative === 'function') return browserRuntime;
-            if (!chromeRuntime && !browserRuntime) { installDetail = 'no-runtime'; return null; }
-            const present = chromeRuntime || browserRuntime;
-            installDetail = 'no-connectNative:' + typeof present.connectNative;
-            return null;
-        }
-
         function connect() {
             if (port) return;
-            const runtime = resolveRuntime();
-            if (!runtime) return;
+            // Shared with the WebSocket relay (preambleJS): the namespace's own
+            // connectNative, called as a plain method — nothing is wrapped, bound
+            // or replaced (see the doc comment — TASK-15).
+            const resolved = g.__detourResolveNativeRuntime();
+            if (!resolved.runtime) {
+                installDetail = resolved.detail;
+                return;
+            }
+            const runtime = resolved.runtime;
 
             let opened;
             try {

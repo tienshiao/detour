@@ -212,10 +212,18 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-// --- WebSocket guard probe ---
-// WebSocket is replaced in extension service workers by a guard that fails the
-// connection instead of deadlocking the worker (see ExtensionAPIPolyfill).
-// Log what an extension actually observes.
+// --- WebSocket relay probe ---
+// A real WebSocket in an extension service worker would deadlock the worker, so
+// Detour replaces it with a relay: the socket is opened natively and driven over
+// a port to the 'detourWebSocketRelay' host (TASK-8). Without that host the
+// pre-TASK-8 guard remains, failing the connection instead
+// (`__detourWebSocketRelay.mode` says which). Log what an extension observes for
+// a server that does not exist — the old guard-probe semantics.
+
+function webSocketRelayMode() {
+  const relay = globalThis.__detourWebSocketRelay;
+  return relay ? relay.mode : 'none (native WebSocket)';
+}
 
 try {
   const ws = new WebSocket('wss://example.invalid/api-explorer');
@@ -223,7 +231,9 @@ try {
   ws.addEventListener('close', (e) => appendLog({
     event: 'websocket.close',
     code: e.code,
-    guarded: WebSocket.__detourGuard === true
+    wasClean: e.wasClean,
+    mode: webSocketRelayMode(),
+    relayed: WebSocket.__detourRelay === true
   }));
 } catch (e) {
   appendLog({ event: 'websocket.unavailable', error: String(e) });
@@ -392,6 +402,60 @@ async function handleMessage(message) {
       // Write a test value — the onChanged listener above will log it
       await chrome.storage.local.set({ _testOnChanged: message.value || 'test-' + Date.now() });
       return { written: true };
+    }
+
+    case 'webSocketProbe': {
+      // Open a socket from the worker, echo a text and a binary frame off it,
+      // then close cleanly — the whole relay round trip (TASK-8).
+      const url = message.url || 'wss://echo.websocket.org';
+      const out = {
+        url,
+        mode: webSocketRelayMode(),
+        relayed: WebSocket.__detourRelay === true,
+        opened: false,
+        protocol: null,
+        messages: [],
+        closeCode: null,
+        closeReason: null,
+        wasClean: null,
+        error: null,
+        timedOut: false
+      };
+      try {
+        const socket = new WebSocket(url);
+        socket.binaryType = 'arraybuffer';
+        await new Promise((resolve) => {
+          socket.onopen = () => {
+            out.opened = true;
+            out.protocol = socket.protocol;
+            socket.send('detour-relay-hello');
+            socket.send(new Uint8Array([1, 2, 3, 4]));
+          };
+          socket.onmessage = (e) => {
+            out.messages.push(typeof e.data === 'string'
+              ? { text: e.data }
+              : { bytes: Array.from(new Uint8Array(e.data)) });
+            if (out.messages.length >= 2) socket.close(1000, 'done');
+          };
+          socket.onerror = () => { out.error = 'error event'; };
+          socket.onclose = (e) => {
+            out.closeCode = e.code;
+            out.closeReason = e.reason;
+            out.wasClean = e.wasClean;
+            resolve();
+          };
+          setTimeout(() => {
+            out.timedOut = true;
+            try { socket.close(1000, 'timeout'); } catch (e) {}
+            resolve();
+          }, 10000);
+        });
+      } catch (e) {
+        out.error = String(e && e.message ? e.message : e);
+      }
+      out.mode = webSocketRelayMode();
+      appendLog({ event: 'websocket.probe', url, opened: out.opened, closeCode: out.closeCode, mode: out.mode });
+      return out;
     }
 
     case 'queryIdleState': {

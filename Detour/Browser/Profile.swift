@@ -368,7 +368,7 @@ class Profile {
         polyfillHandler?.closeOffscreenDocument(for: id)
         // Likewise the worker's keep-alive port: WebKit is not relied on to
         // report its disconnect once the context is gone.
-        ExtensionManager.shared.closeKeepAlivePort(for: id, in: extensionController)
+        ExtensionManager.shared.closeExtensionPorts(for: id, in: extensionController)
         try? extensionController.unload(context)
         if removeData {
             let allTypes = WKWebExtensionController.allExtensionDataTypes
