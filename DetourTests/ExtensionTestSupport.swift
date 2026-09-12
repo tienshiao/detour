@@ -98,9 +98,23 @@ func waitUntil(_ what: String, timeout: TimeInterval = 10, pollInterval: TimeInt
     }
 }
 
+/// How a test page reaches the background worker.
+enum WorkerTransport {
+    /// Call `chrome.runtime.sendMessage` from the page itself — only works on an
+    /// extension-origin page, which is the only kind that has `chrome` in the
+    /// page world.
+    case direct
+    /// Post `{ __detourTest: 'ask', id, message }` on `window` and wait for the
+    /// matching `{ __detourTest: 'answer' }` — for an https page whose only
+    /// `chrome` lives in the content-script world, which a test cannot evaluate
+    /// JS in. The fixture's content.js must carry the relay listener.
+    case contentScriptRelay
+}
+
 /// One round trip to an extension's background service worker: sends `message`
-/// with `chrome.runtime.sendMessage` from a loaded extension page and returns the
-/// parsed envelope, with both halves of the answer in it:
+/// either straight from the page (`.direct`) or through the content script's
+/// relay (`.contentScriptRelay`) and returns the parsed envelope, with both
+/// halves of the answer in it:
 ///  - `reply`: what the worker responded (`NSNull` when it answered nothing —
 ///    which is also what WebKit produces when it could not reach the worker at
 ///    all — and the string `"timeout"` when the callback never fired);
@@ -109,22 +123,58 @@ func waitUntil(_ what: String, timeout: TimeInterval = 10, pollInterval: TimeInt
 ///    "the message never got there".
 @MainActor
 func askWorker(from webView: WKWebView, message: [String: Any],
+               via transport: WorkerTransport = .direct,
                timeout: TimeInterval = 10) async throws -> [String: Any] {
-    let raw = try await webView.callAsyncJavaScript("""
-        const reply = await new Promise((resolve) => {
-            let settled = false;
-            chrome.runtime.sendMessage(message, (r) => {
-                settled = true;
-                resolve({ reply: r === undefined ? null : r,
-                          lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+    let js: String
+    switch transport {
+    case .direct:
+        js = """
+            const reply = await new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({ reply: 'timeout', lastError: null }), timeoutMS);
+                chrome.runtime.sendMessage(message, (r) => {
+                    clearTimeout(timer);
+                    resolve({ reply: r === undefined ? null : r,
+                              lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+                });
             });
-            setTimeout(() => { if (!settled) resolve({ reply: 'timeout', lastError: null }); }, timeoutMS);
-        });
-        return JSON.stringify(reply);
-    """, arguments: ["message": message, "timeoutMS": Int(timeout * 1000)], contentWorld: .page)
+            return JSON.stringify(reply);
+        """
+    case .contentScriptRelay:
+        js = """
+            const id = String(Math.random());
+            const answer = await new Promise((resolve) => {
+                const onAnswer = (event) => {
+                    const data = event.data;
+                    if (!data || data.__detourTest !== 'answer' || data.id !== id) { return; }
+                    clearTimeout(timer);
+                    window.removeEventListener('message', onAnswer);
+                    resolve({ reply: data.reply, lastError: data.lastError });
+                };
+                const timer = setTimeout(() => {
+                    window.removeEventListener('message', onAnswer);
+                    resolve({ reply: 'timeout', lastError: null });
+                }, timeoutMS);
+                window.addEventListener('message', onAnswer);
+                window.postMessage({ __detourTest: 'ask', id: id, message: message }, '*');
+            });
+            return JSON.stringify(answer);
+        """
+    }
+    let raw = try await webView.callAsyncJavaScript(
+        js, arguments: ["message": message, "timeoutMS": Int(timeout * 1000)], contentWorld: .page)
     let jsonString = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
     let data = try XCTUnwrap(jsonString.data(using: .utf8))
     return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+/// Did the worker answer nothing? A message that never got there and a worker
+/// that responded `undefined` both arrive as null, and `"timeout"` means the
+/// callback never fired at all.
+func workerReplyIsEmpty(_ envelope: [String: Any]) -> Bool {
+    guard let reply = envelope["reply"] else { return true }
+    if reply is NSNull { return true }
+    if let text = reply as? String, text == "timeout" { return true }
+    return false
 }
 
 /// Post a raw polyfill envelope straight through `webkit.messageHandlers` from
@@ -155,6 +205,83 @@ func postRawPolyfillEnvelope(
     let data = try XCTUnwrap(jsonString.data(using: .utf8))
     let dict = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     return (dict["result"], dict["error"] as? String)
+}
+
+// MARK: - Minimal tab/window conformances
+
+/// A window WebKit will accept for a bare WKWebView. `BrowserWindowController`
+/// is the app's conformance, but it needs a real NSWindow and a TabStore space;
+/// a test only needs `chrome.tabs` to see one window with one tab.
+@MainActor
+final class ProbeExtensionWindow: NSObject, WKWebExtensionWindow {
+    var openTabs: [any WKWebExtensionTab] = []
+
+    func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] { openTabs }
+    func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? { openTabs.first }
+    func isPrivate(for context: WKWebExtensionContext) -> Bool { false }
+    func windowType(for context: WKWebExtensionContext) -> WKWebExtension.WindowType { .normal }
+    func windowState(for context: WKWebExtensionContext) -> WKWebExtension.WindowState { .normal }
+    func frame(for context: WKWebExtensionContext) -> CGRect { CGRect(x: 0, y: 0, width: 800, height: 600) }
+    func screenFrame(for context: WKWebExtensionContext) -> CGRect { CGRect(x: 0, y: 0, width: 1440, height: 900) }
+}
+
+/// A tab backed by a plain WKWebView, so a page loaded outside TabStore can
+/// still be given a `chrome.tabs` id.
+@MainActor
+final class ProbeExtensionTab: NSObject, WKWebExtensionTab {
+    private let wv: WKWebView
+    private weak var containingWindow: ProbeExtensionWindow?
+
+    init(webView: WKWebView, window: ProbeExtensionWindow) {
+        self.wv = webView
+        self.containingWindow = window
+        super.init()
+    }
+
+    func webView(for context: WKWebExtensionContext) -> WKWebView? { wv }
+    func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? { containingWindow }
+    func url(for context: WKWebExtensionContext) -> URL? { wv.url }
+    func title(for context: WKWebExtensionContext) -> String? { wv.title }
+    func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !wv.isLoading }
+    func isSelected(for context: WKWebExtensionContext) -> Bool { true }
+    func isPrivate(for context: WKWebExtensionContext) -> Bool { false }
+    func isPlayingAudio(for context: WKWebExtensionContext) -> Bool { false }
+    func isMuted(for context: WKWebExtensionContext) -> Bool { false }
+    func shouldGrantPermissionsOnUserGesture(for context: WKWebExtensionContext) -> Bool { true }
+}
+
+/// Register `webView` with `context` as the one tab of a fresh window. This
+/// mirrors the app's own open/focus/activate sequence
+/// (`ExtensionManager.notifyExistingTabs`) — the focus step is what gives the
+/// context a `focusedWindow`, without which `tabs.query({currentWindow: true})`
+/// and `windows.getCurrent` see nothing. It does not forward
+/// `didChangeTabProperties` after the load: url and title are read live off the
+/// web view, so the only thing missing is `tabs.onUpdated` events.
+///
+/// Content-script messages only reach the background worker, and
+/// `chrome.tabs.query` only sees anything, once the web view is a registered tab
+/// — so this must happen *before* the page loads. The returned pair has to be
+/// kept alive for as long as the tab should exist and handed to
+/// `unregisterProbeTab` when the test is done with it.
+@MainActor
+func registerProbeTab(for webView: WKWebView, in context: WKWebExtensionContext)
+    -> (window: ProbeExtensionWindow, tab: ProbeExtensionTab) {
+    let window = ProbeExtensionWindow()
+    let tab = ProbeExtensionTab(webView: webView, window: window)
+    window.openTabs = [tab]
+    context.didOpenWindow(window)
+    context.didFocusWindow(window)
+    context.didOpenTab(tab)
+    context.didActivateTab(tab, previousActiveTab: nil)
+    return (window, tab)
+}
+
+/// Undo `registerProbeTab`, so a tab does not outlive the test that opened it.
+@MainActor
+func unregisterProbeTab(_ probe: (window: ProbeExtensionWindow, tab: ProbeExtensionTab),
+                        in context: WKWebExtensionContext) {
+    context.didCloseTab(probe.tab, windowIsClosing: true)
+    context.didCloseWindow(probe.window)
 }
 
 // MARK: - One-shot flag

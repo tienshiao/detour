@@ -751,16 +751,8 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         // in this suite goes through TabStore's observer (which is what does
         // this in the app), and BrowserTab's `window(for:)` needs a real
         // BrowserWindowController, so use minimal conformances instead.
-        let probeWindow = ProbeExtensionWindow()
-        let tab = ProbeExtensionTab(webView: pageView, window: probeWindow)
-        probeWindow.openTabs = [tab]
-        state.context.didOpenWindow(probeWindow)
-        state.context.didOpenTab(tab)
-        state.context.didActivateTab(tab, previousActiveTab: nil)
-        defer {
-            state.context.didCloseTab(tab, windowIsClosing: true)
-            state.context.didCloseWindow(probeWindow)
-        }
+        let probe = registerProbeTab(for: pageView, in: state.context)
+        defer { unregisterProbeTab(probe, in: state.context) }
 
         try await loadAndWait(pageView, URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!))
 
@@ -1005,47 +997,6 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 }
 
-// `LockedFlag` (shared with the loopback WebSocket server) lives in ExtensionTestSupport.
-
-// MARK: - Minimal tab/window conformances for the frame probe
-
-/// A window WebKit will accept for a bare WKWebView. `BrowserWindowController`
-/// is the app's conformance, but it needs a real NSWindow and a TabStore space;
-/// the frame probe only needs `chrome.tabs` to see one window with one tab.
-@MainActor
-final class ProbeExtensionWindow: NSObject, WKWebExtensionWindow {
-    var openTabs: [any WKWebExtensionTab] = []
-
-    func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] { openTabs }
-    func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? { openTabs.first }
-    func isPrivate(for context: WKWebExtensionContext) -> Bool { false }
-    func windowType(for context: WKWebExtensionContext) -> WKWebExtension.WindowType { .normal }
-    func windowState(for context: WKWebExtensionContext) -> WKWebExtension.WindowState { .normal }
-    func frame(for context: WKWebExtensionContext) -> CGRect { CGRect(x: 0, y: 0, width: 800, height: 600) }
-    func screenFrame(for context: WKWebExtensionContext) -> CGRect { CGRect(x: 0, y: 0, width: 1440, height: 900) }
-}
-
-/// A tab backed by a plain WKWebView, so a page loaded outside TabStore can
-/// still be given a `chrome.tabs` id.
-@MainActor
-final class ProbeExtensionTab: NSObject, WKWebExtensionTab {
-    private let wv: WKWebView
-    private weak var containingWindow: ProbeExtensionWindow?
-
-    init(webView: WKWebView, window: ProbeExtensionWindow) {
-        self.wv = webView
-        self.containingWindow = window
-        super.init()
-    }
-
-    func webView(for context: WKWebExtensionContext) -> WKWebView? { wv }
-    func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? { containingWindow }
-    func url(for context: WKWebExtensionContext) -> URL? { wv.url }
-    func title(for context: WKWebExtensionContext) -> String? { wv.title }
-    func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !wv.isLoading }
-    func isSelected(for context: WKWebExtensionContext) -> Bool { true }
-    func isPrivate(for context: WKWebExtensionContext) -> Bool { false }
-    func isPlayingAudio(for context: WKWebExtensionContext) -> Bool { false }
-    func isMuted(for context: WKWebExtensionContext) -> Bool { false }
-    func shouldGrantPermissionsOnUserGesture(for context: WKWebExtensionContext) -> Bool { true }
-}
+// `LockedFlag` (shared with the loopback WebSocket server) and the
+// `ProbeExtensionWindow`/`ProbeExtensionTab` conformances used above (shared with
+// WKExtensionIntegrationTests) live in ExtensionTestSupport.

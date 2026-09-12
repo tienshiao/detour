@@ -63,54 +63,80 @@ final class WKExtensionIntegrationTests: XCTestCase {
         try manifestJSON.write(to: tempDir.appendingPathComponent("manifest.json"),
                                atomically: true, encoding: .utf8)
 
-        // Background script that handles messages
+        // Background script that handles messages. Every handler is awaited
+        // through one dispatcher and its throw or rejection is answered as
+        // `{ error }`: a listener that dies mid-way simply never calls
+        // sendResponse, which reaches the test as an empty reply — indistinguishable
+        // from a message that never arrived (and from a return value that is not a
+        // promise, which is how `chrome.alarms.create(...).then(...)` used to fail
+        // here). Every handler answers explicitly; one that returned undefined
+        // would answer nothing, which the test reports as an empty reply.
         let backgroundJS = """
+        const handlers = {
+            'ping': () => ({ type: 'pong', receivedAt: Date.now() }),
+            'get-sender': (message, sender) => ({ tab: sender.tab, url: sender.url }),
+            'storage-set': async (message) => {
+                await chrome.storage.local.set(message.data);
+                return { ok: true };
+            },
+            'storage-get': (message) => chrome.storage.local.get(message.keys),
+            'storage-dump': () => chrome.storage.local.get(null),
+            'tabs-query': async (message) => ({ tabs: await chrome.tabs.query(message.queryInfo || {}) }),
+            'alarms-create': async (message) => {
+                await chrome.alarms.create(message.name, message.alarmInfo);
+                return { ok: true };
+            },
+            'alarms-get-all': async () => ({ alarms: await chrome.alarms.getAll() }),
+            'alarms-clear-all': async () => {
+                await chrome.alarms.clearAll();
+                return { ok: true };
+            },
+            'install-events': () => ({ events: globalThis.__installEvents })
+        };
+
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-            if (message.type === 'ping') {
-                sendResponse({ type: 'pong', receivedAt: Date.now() });
-                return true;
-            }
-            if (message.type === 'get-sender') {
-                sendResponse({ tab: sender.tab, url: sender.url });
-                return true;
-            }
-            if (message.type === 'storage-set') {
-                chrome.storage.local.set(message.data).then(() => sendResponse({ ok: true }));
-                return true;
-            }
-            if (message.type === 'storage-get') {
-                chrome.storage.local.get(message.keys).then(result => sendResponse(result));
-                return true;
-            }
-            if (message.type === 'tabs-query') {
-                chrome.tabs.query(message.queryInfo || {}).then(tabs => sendResponse({ tabs }));
-                return true;
-            }
-            if (message.type === 'alarms-create') {
-                chrome.alarms.create(message.name, message.alarmInfo).then(() => sendResponse({ ok: true }));
-                return true;
-            }
-            if (message.type === 'alarms-get-all') {
-                chrome.alarms.getAll().then(alarms => sendResponse({ alarms }));
-                return true;
-            }
-            if (message.type === 'alarms-clear-all') {
-                chrome.alarms.clearAll().then(() => sendResponse({ ok: true }));
-                return true;
-            }
+            const handler = handlers[message && message.type];
+            if (!handler) { return false; }
+            (async () => handler(message, sender))()
+                .then(sendResponse, (error) => sendResponse({ error: String(error && error.message ? error.message : error) }));
+            return true;
         });
 
+        // Record the install event twice over: in a worker global, which says the
+        // listener ran in *this* worker instance, and in storage, which survives the
+        // worker being restarted. A test can then tell "the event never fired" from
+        // "the event fired for an instance that is gone".
+        globalThis.__installEvents = [];
         chrome.runtime.onInstalled.addListener((details) => {
-            // Set a marker so we can verify onInstalled fired
+            globalThis.__installEvents.push(details.reason);
             chrome.storage.local.set({ __onInstalledReason: details.reason });
         });
         """
         try backgroundJS.write(to: tempDir.appendingPathComponent("background.js"),
                                atomically: true, encoding: .utf8)
 
-        // Content script that sets a marker on the page
+        // Content script: marks the page, and relays the tests' messages to the
+        // background worker. The relay is needed because only the content script
+        // can talk to the worker — a plain https page has no `chrome` of its own
+        // ("Can't find variable: chrome"), and a test cannot evaluate JS in the
+        // content script's world — so `askWorker(via: .contentScriptRelay)` posts
+        // a request on `window` from the page and the answer comes back the same
+        // way.
         let contentJS = """
         document.documentElement.setAttribute('data-extension-loaded', 'true');
+
+        window.addEventListener('message', (event) => {
+            const request = event.data;
+            if (!request || request.__detourTest !== 'ask') { return; }
+            chrome.runtime.sendMessage(request.message, (reply) => {
+                window.postMessage({
+                    __detourTest: 'answer',
+                    id: request.id,
+                    reply: reply === undefined ? null : reply,
+                    lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null
+                }, '*');
+            });
+        });
         """
         try contentJS.write(to: tempDir.appendingPathComponent("content.js"),
                             atomically: true, encoding: .utf8)
@@ -161,9 +187,6 @@ final class WKExtensionIntegrationTests: XCTestCase {
             name: "WK Test Space", emoji: "T", colorHex: "#000000", profileID: testProfile.id)
         ExtensionManager.shared.lastActiveSpaceID = testSpace.id
 
-        // Wait for onInstalled to fire
-        try await Task.sleep(nanoseconds: 500_000_000)
-
         Self.shared = SharedState(
             tempDir: tempDir,
             ext: ext,
@@ -173,6 +196,19 @@ final class WKExtensionIntegrationTests: XCTestCase {
             testSpace: testSpace,
             testProfile: testProfile
         )
+    }
+
+    /// Probe tabs registered by `makeWebView`, closed again after each test so a
+    /// case never sees the tabs of the ones before it (`chrome.tabs.query` would
+    /// count them).
+    private var registeredProbes: [(window: ProbeExtensionWindow, tab: ProbeExtensionTab)] = []
+
+    override func tearDown() async throws {
+        for probe in registeredProbes.reversed() {
+            unregisterProbeTab(probe, in: state.context)
+        }
+        registeredProbes.removeAll()
+        try await super.tearDown()
     }
 
     override class func tearDown() {
@@ -188,41 +224,58 @@ final class WKExtensionIntegrationTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Create a WKWebView wired to the test extension controller and load a page.
+    /// Create a WKWebView wired to the test extension controller, register it as
+    /// a tab of the extension context, and load a page in it.
+    ///
+    /// The registration is what makes the extension side of the web view work at
+    /// all: content scripts only reach the background worker, and
+    /// `chrome.tabs.query` only sees anything, once the web view is a tab the
+    /// context knows about (established in TASK-4 Phase A). It has to happen
+    /// before the load, and it is undone in `tearDown`.
     private func makeWebView(html: String = testHTMLPage, baseURL: String = "https://test.example.com") async throws -> WKWebView {
         let config = WKWebViewConfiguration()
         config.webExtensionController = state.controller
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
-        wv.loadHTMLString(html, baseURL: URL(string: baseURL)!)
-        // Wait for page load
-        try await Task.sleep(nanoseconds: 500_000_000)
+
+        registeredProbes.append(registerProbeTab(for: wv, in: state.context))
+
+        try await loadHTMLStringAndWait(wv, html: html, baseURL: URL(string: baseURL)!)
         return wv
     }
 
-    /// Evaluate JS in the background context via a round-trip message from a content page.
-    /// Sends a message via chrome.runtime.sendMessage and returns the response.
+    /// Round-trip one message to the background worker from a content page and
+    /// return the worker's response.
+    ///
+    /// The worker is woken first: a message sent while the service worker sleeps
+    /// is silently dropped — the callback fires with no response and no
+    /// `lastError` (observed in TASK-4 Phase A) — so `loadBackgroundContent()`
+    /// runs before the send, and an empty reply is retried once before it counts
+    /// as a failure.
+    ///
+    /// The page is a plain https page, so the round trip goes through the content
+    /// script's relay (`askWorker(via: .contentScriptRelay)`).
     private func sendMessageToBackground(_ message: [String: Any], via webView: WKWebView) async throws -> Any? {
-        let msgData = try JSONSerialization.data(withJSONObject: message)
-        let msgJSON = String(data: msgData, encoding: .utf8)!
-
-        let js = """
-        new Promise((resolve, reject) => {
-            chrome.runtime.sendMessage(\(msgJSON), response => {
-                if (chrome.runtime.lastError) {
-                    reject(new Error(chrome.runtime.lastError.message));
-                } else {
-                    resolve(JSON.stringify(response));
-                }
-            });
-        });
-        """
-
-        let result = try await webView.evaluateJavaScript(js)
-        if let jsonString = result as? String,
-           let data = jsonString.data(using: .utf8) {
-            return try JSONSerialization.jsonObject(with: data)
+        try? await state.context.loadBackgroundContent()
+        var envelope = try await askWorker(from: webView, message: message, via: .contentScriptRelay)
+        if workerReplyIsEmpty(envelope) {
+            try? await state.context.loadBackgroundContent()
+            try await Task.sleep(nanoseconds: 250_000_000)
+            envelope = try await askWorker(from: webView, message: message, via: .contentScriptRelay)
         }
-        return result
+        guard !workerReplyIsEmpty(envelope) else {
+            XCTFail("""
+                the background worker did not answer \(message["type"] ?? message), twice over: \
+                reply=\(envelope["reply"] ?? "nil") \
+                lastError=\(envelope["lastError"] ?? "nil")
+                """)
+            return nil
+        }
+        // The worker answers a handler that threw as `{ error }` — say so here
+        // rather than leaving the caller's assertion to report a bare nil.
+        if let reply = envelope["reply"] as? [String: Any], let error = reply["error"] as? String {
+            XCTFail("the worker failed to handle \(message["type"] ?? message): \(error)")
+        }
+        return envelope["reply"]
     }
 
     // MARK: - Extension Loading
@@ -266,21 +319,17 @@ final class WKExtensionIntegrationTests: XCTestCase {
     }
 
     // MARK: - Runtime Messaging
-    // These tests require full WebKit extension runtime with background service worker
-    // communication. They fail in the unit test sandbox due to missing entitlements.
-    // Run the app with the API Explorer extension for manual verification.
+    // These need the web view to be a registered tab of the extension context,
+    // which `makeWebView` does — a content script in an unregistered web view
+    // cannot reach the background worker at all.
 
     func testRuntimeSendMessagePing() async throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] != nil,
-                       "Skipped in test sandbox — requires full WebKit runtime")
         let wv = try await makeWebView()
         let response = try await sendMessageToBackground(["type": "ping"], via: wv) as? [String: Any]
         XCTAssertEqual(response?["type"] as? String, "pong")
     }
 
     func testRuntimeSendMessageSender() async throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] != nil,
-                       "Skipped in test sandbox — requires full WebKit runtime")
         let wv = try await makeWebView()
         let response = try await sendMessageToBackground(["type": "get-sender"], via: wv) as? [String: Any]
         // Sender should include tab info
@@ -290,8 +339,6 @@ final class WKExtensionIntegrationTests: XCTestCase {
     // MARK: - Storage
 
     func testStorageLocalSetAndGet() async throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] != nil,
-                       "Skipped in test sandbox — requires full WebKit runtime")
         let wv = try await makeWebView()
 
         // Set a value
@@ -305,22 +352,58 @@ final class WKExtensionIntegrationTests: XCTestCase {
         XCTAssertEqual(getResponse?["testKey"] as? String, "testValue")
     }
 
-    func testStorageOnInstalledFired() async throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] != nil,
-                       "Skipped in test sandbox — requires full WebKit runtime")
+    /// `chrome.runtime.onInstalled` is *not* delivered in this harness — measured
+    /// 2026-09-12 on macOS 26, and the reason the storage marker this test used to
+    /// wait for never appeared.
+    ///
+    /// A context loaded programmatically (`controller.load(context)` plus
+    /// `loadBackgroundContent()`) runs its worker — the same worker answers every
+    /// message in this suite — but the worker's `onInstalled` listener never fires:
+    /// neither its in-worker record nor the storage marker shows up, while a value
+    /// another test wrote is still in `storage.local`, so storage persists across
+    /// worker instances and the write was not merely lost with one.
+    ///
+    /// The worker has been running since `createSharedState`, which awaited
+    /// `loadBackgroundContent()`, and the listener writes both records
+    /// synchronously at dispatch — so there is nothing to wait for: if the event
+    /// were delivered, the records would already be there. What makes an empty
+    /// dump mean something is the positive control: a value written through the
+    /// very same message path has to come back out of `storage-dump`, or an
+    /// absent marker would prove only that the probe is broken.
+    ///
+    /// What is pinned here is that measurement, not Chrome parity. Unlike the tab
+    /// registration this file depends on (TASK-20), there is nothing a test can
+    /// register to make the event arrive, and this says nothing about whether the
+    /// app sees onInstalled when it installs an extension for real. If WebKit
+    /// starts delivering it, this test fails — which is the point: flip it to the
+    /// Chrome expectation (`reason == "install"`) and re-check what in Detour
+    /// depends on onInstalled.
+    func testRuntimeOnInstalledIsNotDelivered() async throws {
         let wv = try await makeWebView()
 
-        // The onInstalled listener sets __onInstalledReason in storage
-        let response = try await sendMessageToBackground(
-            ["type": "storage-get", "keys": ["__onInstalledReason"]], via: wv) as? [String: Any]
-        XCTAssertEqual(response?["__onInstalledReason"] as? String, "install")
+        // Positive control: write a marker through the same message path the
+        // onInstalled listener would have used, so the dump below is known to see
+        // values that really are in storage.local.
+        _ = try await sendMessageToBackground(
+            ["type": "storage-set", "data": ["__probeMarker": "live"]], via: wv)
+        let dumpReply = try await sendMessageToBackground(["type": "storage-dump"], via: wv)
+        let dump = try XCTUnwrap(dumpReply as? [String: Any], "storage-dump probe returned no dictionary")
+        XCTAssertEqual(dump["__probeMarker"] as? String, "live",
+                       "storage-dump does not see a value written through the same path, "
+                       + "so an absent onInstalled marker would prove nothing")
+
+        let eventsReply = try await sendMessageToBackground(["type": "install-events"], via: wv)
+        let events = try XCTUnwrap((eventsReply as? [String: Any])?["events"] as? [Any],
+                                   "install-events probe returned no array")
+
+        let evidence = "storage.local holds \(dump), the worker recorded install events \(events)"
+        XCTAssertNil(dump["__onInstalledReason"], evidence)
+        XCTAssertTrue(events.isEmpty, evidence)
     }
 
     // MARK: - Tabs
 
     func testTabsQueryReturnsResults() async throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] != nil,
-                       "Skipped in test sandbox — requires full WebKit runtime")
         let wv = try await makeWebView()
         let response = try await sendMessageToBackground(
             ["type": "tabs-query"], via: wv) as? [String: Any]
@@ -332,8 +415,6 @@ final class WKExtensionIntegrationTests: XCTestCase {
     // MARK: - Alarms
 
     func testAlarmsCreateAndGetAll() async throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] != nil,
-                       "Skipped in test sandbox — requires full WebKit runtime")
         let wv = try await makeWebView()
 
         // Create an alarm
