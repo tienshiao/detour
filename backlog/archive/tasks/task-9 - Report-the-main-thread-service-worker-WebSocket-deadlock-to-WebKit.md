@@ -4,6 +4,7 @@ title: Report the main-thread service worker WebSocket deadlock to WebKit
 status: To Do
 assignee: []
 created_date: '2026-09-12 02:09'
+updated_date: '2026-09-12 22:47'
 labels:
   - webkit
   - upstream
@@ -30,4 +31,6 @@ File a bug at bugs.webkit.org for the deadlock found in TASK-2: an extension's b
 
 <!-- SECTION:NOTES:BEGIN -->
 Created 2026-09-11 after TASK-2. The Detour-side guard (ExtensionAPIPolyfill.webSocketGuardJS) stays until macOS ships the fix.
+
+Won't do (2026-09-12): the user decided not to pursue the upstream WebKit report. The Detour-side guard (ExtensionAPIPolyfill.webSocketGuardJS) and the TASK-8 WebSocket relay remain the workaround; the deadlock analysis stays in docs/1password-integration-plan.md if the report is revisited.
 <!-- SECTION:NOTES:END -->
