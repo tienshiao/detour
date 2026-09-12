@@ -1,4 +1,5 @@
 import XCTest
+import Network
 import WebKit
 @testable import Detour
 
@@ -53,9 +54,12 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
             "version": "1.0.0",
             "permissions": ["storage", "tabs", "idle", "notifications", "history",
                              "sessions", "search", "offscreen", "fontSettings", "nativeMessaging",
-                             "webRequest"],
+                             "webRequest", "webNavigation"],
             "host_permissions": ["<all_urls>"],
             "background": {"service_worker": "background.js", "type": "module"},
+            "content_scripts": [
+                {"matches": ["<all_urls>"], "js": ["content.js"], "all_frames": true, "run_at": "document_end"}
+            ],
             "action": {"default_title": "Polyfill Test"}
         }
         """
@@ -89,10 +93,124 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
                           (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }));
                 return true;
             }
+            // TASK-4: what WebKit itself provides for frame enumeration, as seen
+            // from inside the worker, plus what native getAllFrames answers for a
+            // real tab. Everything is wrapped so a throw or rejection comes back
+            // as text rather than an empty reply.
+            if (message && message.type === 'probeWebNavFrames') {
+                (async () => {
+                    const out = {
+                        frames: globalThis.__detourWebNavFrames || null,
+                        navType: typeof chrome.webNavigation,
+                        getAllFramesType: 'n/a',
+                        getFrameType: 'n/a',
+                        tabs: null,
+                        tabsError: null,
+                        getAllFrames: null,
+                        getAllFramesError: null
+                    };
+                    try { out.getAllFramesType = typeof chrome.webNavigation.getAllFrames; } catch (e) { out.getAllFramesType = 'error: ' + e.message; }
+                    try { out.getFrameType = typeof chrome.webNavigation.getFrame; } catch (e) { out.getFrameType = 'error: ' + e.message; }
+                    try {
+                        const tabs = await chrome.tabs.query({});
+                        out.tabs = tabs.map((t) => ({ id: t.id, url: t.url }));
+                    } catch (e) { out.tabsError = String(e && e.message ? e.message : e); }
+                    const tabId = message.tabId != null
+                        ? message.tabId
+                        : (out.tabs && out.tabs.length ? out.tabs[0].id : null);
+                    out.probedTabId = tabId;
+                    if (tabId != null) {
+                        try {
+                            out.getAllFrames = await chrome.webNavigation.getAllFrames({ tabId: tabId });
+                        } catch (e) { out.getAllFramesError = String(e && e.message ? e.message : e); }
+                    }
+                    return out;
+                })().then((r) => sendResponse(r), (e) => sendResponse({ fatal: String(e && e.message ? e.message : e) }));
+                return true;
+            }
+            // TASK-4: every content-script hello, with the sender fields the
+            // frame registry would be built out of.
+            if (message && message.type === 'frameHello') {
+                const record = {
+                    frameId: sender.frameId,
+                    tabId: sender.tab ? sender.tab.id : null,
+                    hasTab: !!sender.tab,
+                    url: sender.url,
+                    documentId: sender.documentId,
+                    reportedURL: message.url,
+                    isTop: message.isTop,
+                    parentIsTop: message.parentIsTop
+                };
+                if (!globalThis.__frameHellos) globalThis.__frameHellos = [];
+                globalThis.__frameHellos.push(record);
+                sendResponse(record);
+                return true;
+            }
+            if (message && message.type === 'getFrameHellos') {
+                sendResponse({ hellos: globalThis.__frameHellos || [] });
+                return true;
+            }
+            // TASK-4: are the observed ids usable for targeting?
+            if (message && message.type === 'probeFrameTargeting') {
+                (async () => {
+                    const out = { getFrame: null, getFrameError: null, sendMessage: null, sendMessageError: null };
+                    try {
+                        out.getFrame = await chrome.webNavigation.getFrame({
+                            tabId: message.tabId, frameId: message.frameId
+                        });
+                    } catch (e) { out.getFrameError = String(e && e.message ? e.message : e); }
+                    try {
+                        out.sendMessage = await new Promise((resolve) => {
+                            let settled = false;
+                            try {
+                                chrome.tabs.sendMessage(message.tabId, { type: 'ping' }, { frameId: message.frameId }, (r) => {
+                                    settled = true;
+                                    resolve({ reply: r === undefined ? null : r,
+                                              lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+                                });
+                            } catch (e) { resolve({ threw: String(e && e.message ? e.message : e) }); return; }
+                            setTimeout(() => { if (!settled) resolve({ reply: 'timeout' }); }, 5000);
+                        });
+                    } catch (e) { out.sendMessageError = String(e && e.message ? e.message : e); }
+                    return out;
+                })().then((r) => sendResponse(r), (e) => sendResponse({ fatal: String(e && e.message ? e.message : e) }));
+                return true;
+            }
         });
         """
         try backgroundJS.write(to: tempDir.appendingPathComponent("background.js"),
                                atomically: true, encoding: .utf8)
+
+        // Content script for the frame-enumeration probe (TASK-4): says hello
+        // from every frame it is injected into, stores the worker's reply on the
+        // document so Swift can read it, and answers a targeted ping so
+        // `tabs.sendMessage(tabId, msg, {frameId})` can be verified end to end.
+        let contentJS = """
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message && message.type === 'ping') {
+                sendResponse({ type: 'pong', url: location.href, isTop: self === top });
+                return true;
+            }
+        });
+        try {
+            chrome.runtime.sendMessage({
+                type: 'frameHello',
+                url: location.href,
+                isTop: self === top,
+                parentIsTop: self.parent === top
+            }, (reply) => {
+                const payload = {
+                    reply: reply === undefined ? null : reply,
+                    lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null
+                };
+                try { document.documentElement.dataset.frameReply = JSON.stringify(payload); } catch (e) {}
+            });
+        } catch (e) {
+            try { document.documentElement.dataset.frameReply = JSON.stringify({ threw: String(e) }); } catch (e2) {}
+        }
+        """
+        try contentJS.write(to: tempDir.appendingPathComponent("content.js"),
+                            atomically: true, encoding: .utf8)
 
         // A test page we can load in an extension context web view
         let testHTML = "<html><body><div id=\"test\">Extension Context Page</div></body></html>"
@@ -475,4 +593,389 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         """, in: wv) as? [String: Any]
         XCTAssertEqual(result?["error"] as? String, "Extension identity mismatch")
     }
+
+    // MARK: - TASK-4: frame enumeration
+
+    /// Round-trip a message to the service worker from a real extension page and
+    /// return the parsed reply.
+    private func askWorker(_ message: [String: Any], from wv: WKWebView,
+                           timeoutMS: Int = 10000) async throws -> [String: Any] {
+        let raw = try await wv.callAsyncJavaScript("""
+            const reply = await new Promise((resolve) => {
+                let settled = false;
+                chrome.runtime.sendMessage(message, (r) => {
+                    settled = true;
+                    resolve({ reply: r === undefined ? null : r,
+                              lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+                });
+                setTimeout(() => { if (!settled) resolve({ reply: 'timeout', lastError: null }); }, timeoutMS);
+            });
+            return JSON.stringify(reply);
+        """, arguments: ["message": message, "timeoutMS": timeoutMS], contentWorld: .page)
+        let jsonString = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
+        let data = try XCTUnwrap(jsonString.data(using: .utf8))
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// Does WebKit vend `webNavigation.getAllFrames`/`getFrame` in a real
+    /// extension context — the question that decided TASK-4 Phase 3 (no
+    /// worker-side frame registry, and no polyfill fallback either)?
+    ///
+    /// The answer is recorded pre-patch in
+    /// `_polyfillDiag.apis.webNavigationFrames`. The `native`/`native`/`object`
+    /// pin below is intentional, not an over-tight assertion: it is the measured
+    /// environment 1Password's iframe autofill depends on, and nothing in the
+    /// polyfill stands in if it goes away. A change here means the platform
+    /// moved under us and must be investigated — re-measure and decide what
+    /// replaces native frame enumeration — never loosened to make the suite
+    /// green. The observed values are carried in the failure messages so the new
+    /// reading is visible immediately.
+    func testWebNavigationFrameAPIsInRealExtensionContext() async throws {
+        let wv = try await makeExtensionWebView()
+
+        let page = try await evalJSON("""
+            return JSON.stringify({
+                diag: __detourPolyfillDiag.apis.webNavigationFrames,
+                navType: typeof chrome.webNavigation,
+                getAllFrames: chrome.webNavigation ? typeof chrome.webNavigation.getAllFrames : 'no-namespace',
+                getFrame: chrome.webNavigation ? typeof chrome.webNavigation.getFrame : 'no-namespace'
+            });
+        """, in: wv) as? [String: Any]
+
+        let worker = try await askWorker(["type": "probeWebNavFrames"], from: wv)
+        let workerReply = worker["reply"] as? [String: Any]
+
+        let evidence = """
+        page=\(page ?? [:])
+        worker=\(String(describing: worker))
+        """
+
+        // The page always ends up with callable frame enumeration, whether it is
+        // WebKit's or the polyfill's.
+        XCTAssertEqual(page?["getAllFrames"] as? String, "function", evidence)
+        XCTAssertEqual(page?["getFrame"] as? String, "function", evidence)
+
+        let diag = try XCTUnwrap(page?["diag"] as? [String: Any], evidence)
+        let pageGetAllFrames = try XCTUnwrap(diag["getAllFrames"] as? String, evidence)
+        XCTAssertTrue(["missing", "native", "non-native"].contains(pageGetAllFrames), evidence)
+
+        // The worker must answer at all (an empty reply means WebKit skipped it).
+        XCTAssertNotNil(workerReply, "the worker did not answer the probe: \(evidence)")
+        let workerFrames = workerReply?["frames"] as? [String: Any]
+        let workerGetAllFrames = workerFrames?["getAllFrames"] as? String
+        XCTAssertTrue(["missing", "native", "non-native"].contains(workerGetAllFrames ?? ""), evidence)
+
+        // Whatever the worker reports for the pre-patch environment, the API is
+        // callable there afterwards.
+        XCTAssertEqual(workerReply?["getAllFramesType"] as? String, "function", evidence)
+        XCTAssertEqual(workerReply?["getFrameType"] as? String, "function", evidence)
+
+        XCTAssertEqual(pageGetAllFrames, workerGetAllFrames,
+                       "page and worker should see the same environment: \(evidence)")
+
+        // Observed on macOS 26 (2026-09-12): WebKit vends chrome.webNavigation
+        // with *native* getAllFrames and getFrame in both the extension page and
+        // the service worker, so no polyfill fallback and no worker-side frame
+        // registry is needed (TASK-4). This is the load-bearing reading; if it
+        // ever flips to 'missing' nothing stands in — `getAllFrames` becomes a
+        // TypeError at the call site and 1Password loses iframe autofill.
+        XCTAssertEqual(pageGetAllFrames, "native", evidence)
+        XCTAssertEqual(diag["getFrame"] as? String, "native", evidence)
+        XCTAssertEqual(diag["namespace"] as? String, "object", evidence)
+    }
+
+    /// Does a content script injected with `all_frames: true` reach the worker,
+    /// and are the `sender.frameId`s it arrives with usable for targeting? This
+    /// is the mechanism the Phase-3 frame registry would be built on, so it is
+    /// probed directly rather than assumed.
+    func testContentScriptFrameHellosReachTheWorker() async throws {
+        // Real http(s) subframes, not srcdoc/data: ones — content scripts are
+        // only injected into frames whose URL a match pattern accepts, and
+        // `<all_urls>` does not cover about:srcdoc or data:. A loopback server
+        // is the cheapest way to get a page with genuine subframe documents.
+        let server = try LoopbackHTTPServer(routes: [
+            "/": """
+                <html><body><p>top</p>
+                <iframe id="a" src="/child-a"></iframe>
+                <iframe id="b" src="/child-b"></iframe>
+                <iframe id="c" srcdoc="<p>srcdoc child</p>"></iframe>
+                </body></html>
+                """,
+            "/child-a": "<html><body><p>child a</p></body></html>",
+            "/child-b": "<html><body><p>child b</p></body></html>"
+        ])
+        // Above `start`: a throwing start (timeout, bind failure) must not leak
+        // the listener.
+        defer { server.stop() }
+        let port = try await server.start()
+
+        // Wake the service worker before the page loads: a hello sent while the
+        // worker is asleep gets an empty reply and is never recorded (observed
+        // 2026-09-12), which matters for the Phase-3 registry design too.
+        let wv = try await makeExtensionWebView()
+        _ = try await askWorker(["type": "ping"], from: wv)
+
+        let config = WKWebViewConfiguration()
+        config.webExtensionController = state.controller
+        let pageView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
+
+        // Register the web view as a tab in a window of the extension context
+        // *before* loading. Without it the worker sees no tab at all: content
+        // script messages never arrive and chrome.tabs.query is empty. Nothing
+        // in this suite goes through TabStore's observer (which is what does
+        // this in the app), and BrowserTab's `window(for:)` needs a real
+        // BrowserWindowController, so use minimal conformances instead.
+        let probeWindow = ProbeExtensionWindow()
+        let tab = ProbeExtensionTab(webView: pageView, window: probeWindow)
+        probeWindow.openTabs = [tab]
+        state.context.didOpenWindow(probeWindow)
+        state.context.didOpenTab(tab)
+        state.context.didActivateTab(tab, previousActiveTab: nil)
+        defer {
+            state.context.didCloseTab(tab, windowIsClosing: true)
+            state.context.didCloseWindow(probeWindow)
+        }
+
+        try await loadAndWait(pageView, URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!))
+
+        // Subframes finish after the main frame's didFinish; poll for the hellos
+        // instead of sleeping blindly.
+        var hellos: [[String: Any]] = []
+        for _ in 0..<40 {
+            let reply = try await askWorker(["type": "getFrameHellos"], from: wv)
+            hellos = (reply["reply"] as? [String: Any])?["hellos"] as? [[String: Any]] ?? []
+            if hellos.count >= 3 { break }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        let topReply = try await pageView.evaluateJavaScript(
+            "document.documentElement.dataset.frameReply || null") as? String
+
+        let probedTabID = hellos.compactMap { $0["tabId"] as? Int }.first
+        let frameProbe = probedTabID != nil
+            ? try await askWorker(["type": "probeWebNavFrames", "tabId": probedTabID!], from: wv)
+            : try await askWorker(["type": "probeWebNavFrames"], from: wv)
+
+        // Can a non-zero frame id actually be used to target that frame?
+        let enumeratedFrames = ((frameProbe["reply"] as? [String: Any])?["getAllFrames"] as? [[String: Any]]) ?? []
+        let helloSubframeID = hellos.compactMap { $0["frameId"] as? Int }.first { $0 != 0 }
+        let nonZeroFrameID = helloSubframeID
+            ?? enumeratedFrames.compactMap { $0["frameId"] as? Int }.first { $0 != 0 }
+        var targeting: [String: Any] = [:]
+        if let tabID = probedTabID, let frameID = nonZeroFrameID {
+            targeting = try await askWorker(
+                ["type": "probeFrameTargeting", "tabId": tabID, "frameId": frameID], from: wv)
+        }
+
+        let evidence = """
+        topReply=\(topReply ?? "nil")
+        hellos=\(hellos)
+        frameProbe=\(frameProbe)
+        targetedFrameId=\(nonZeroFrameID.map(String.init) ?? "nil")
+        targeting=\(targeting)
+        """
+
+        // 1. Content scripts reach the worker from every real frame, top and sub.
+        XCTAssertNotNil(topReply, "content script never stored a reply in the top frame: \(evidence)")
+        XCTAssertGreaterThanOrEqual(hellos.count, 3,
+                                    "expected a hello from the top frame and both http subframes: \(evidence)")
+        XCTAssertTrue(hellos.contains { ($0["frameId"] as? Int) == 0 },
+                      "the top frame must report frameId 0: \(evidence)")
+        XCTAssertNotNil(helloSubframeID, "no subframe reported a non-zero frameId: \(evidence)")
+
+        // 2. `sender.tab` resolves once the web view is a registered tab, and
+        //    every frame reports the same tab with a distinct frame id.
+        XCTAssertTrue(hellos.allSatisfy { ($0["hasTab"] as? Bool) == true },
+                      "sender.tab must be populated for a registered tab: \(evidence)")
+        XCTAssertEqual(Set(hellos.compactMap { $0["tabId"] as? Int }).count, 1, evidence)
+        let distinctFrameIDs = Set(hellos.compactMap { $0["frameId"] as? Int })
+        XCTAssertEqual(distinctFrameIDs.count, hellos.count,
+                       "frame ids must be unique per frame: \(evidence)")
+
+        // 3. Native getAllFrames enumerates the subframes with those same ids.
+        //    This is the finding that decides TASK-4: WebKit already answers the
+        //    question a worker-side frame registry would have been built for.
+        XCTAssertGreaterThanOrEqual(enumeratedFrames.count, 3,
+                                    "native getAllFrames should list the subframes: \(evidence)")
+        let enumeratedIDs = Set(enumeratedFrames.compactMap { $0["frameId"] as? Int })
+        XCTAssertTrue(distinctFrameIDs.isSubset(of: enumeratedIDs),
+                      "every frame that said hello must appear in getAllFrames with the same id: \(evidence)")
+        let topRecord = enumeratedFrames.first { ($0["frameId"] as? Int) == 0 }
+        XCTAssertEqual(topRecord?["parentFrameId"] as? Int, -1, evidence)
+        for frame in enumeratedFrames where (frame["frameId"] as? Int) != 0 {
+            XCTAssertEqual(frame["parentFrameId"] as? Int, 0,
+                           "depth-one frames should report parentFrameId 0: \(evidence)")
+        }
+
+        // 4. Those ids are usable for targeting: getFrame resolves one and
+        //    tabs.sendMessage with {frameId} reaches that frame's content script.
+        XCTAssertNil(targeting["lastError"] as? String, evidence)
+        let targetingReply = try XCTUnwrap(targeting["reply"] as? [String: Any], evidence)
+        XCTAssertNil(targetingReply["getFrameError"] as? String, evidence)
+        XCTAssertNotNil(targetingReply["getFrame"] as? [String: Any],
+                        "getFrame should resolve an observed frame id: \(evidence)")
+        let pong = (targetingReply["sendMessage"] as? [String: Any])?["reply"] as? [String: Any]
+        XCTAssertEqual(pong?["type"] as? String, "pong",
+                       "tabs.sendMessage with {frameId} must reach that frame: \(evidence)")
+        XCTAssertEqual(pong?["isTop"] as? Bool, false,
+                       "the pong must come from the subframe, not the top frame: \(evidence)")
+    }
+}
+
+// MARK: - Loopback HTTP server
+
+/// A one-shot-per-connection HTTP/1.1 server on 127.0.0.1, just enough to serve
+/// a handful of HTML routes. Content scripts are only injected into frames whose
+/// URL matches a manifest match pattern, and `<all_urls>` covers neither
+/// `about:srcdoc` nor `data:` — so a frame probe needs real http documents.
+final class LoopbackHTTPServer: @unchecked Sendable {
+
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "detour-test-loopback-http")
+    private let routes: [String: String]
+
+    struct StartTimedOut: Error, CustomStringConvertible {
+        var description: String { "loopback HTTP server did not become ready" }
+    }
+
+    init(routes: [String: String]) throws {
+        self.routes = routes
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        params.requiredInterfaceType = .loopback
+        listener = try NWListener(using: params, on: .any)
+    }
+
+    /// Start listening and return the port that was assigned.
+    func start(timeout: TimeInterval = 5) async throws -> UInt16 {
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.handle(connection)
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            let resumed = LockedFlag()
+            listener.stateUpdateHandler = { [listener] state in
+                switch state {
+                case .ready:
+                    guard resumed.claim() else { return }
+                    continuation.resume(returning: listener.port?.rawValue ?? 0)
+                case .failed(let error):
+                    guard resumed.claim() else { return }
+                    continuation.resume(throwing: error)
+                default:
+                    break
+                }
+            }
+            listener.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + timeout) {
+                guard resumed.claim() else { return }
+                continuation.resume(throwing: StartTimedOut())
+            }
+        }
+    }
+
+    func stop() {
+        listener.cancel()
+    }
+
+    private func handle(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        readHead(connection, accumulated: Data())
+    }
+
+    /// A single `receive` is not guaranteed to deliver the whole request line —
+    /// keep reading until the head terminator arrives, and give up (cancelling
+    /// the connection) on EOF or error rather than leaving it open.
+    private func readHead(_ connection: NWConnection, accumulated: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { connection.cancel(); return }
+            guard error == nil, let data, !data.isEmpty else {
+                connection.cancel()
+                return
+            }
+            var head = accumulated
+            head.append(data)
+            guard head.range(of: Data("\r\n\r\n".utf8)) != nil else {
+                if isComplete || head.count > 64 * 1024 {
+                    connection.cancel()
+                } else {
+                    self.readHead(connection, accumulated: head)
+                }
+                return
+            }
+            self.respond(connection, head: head)
+        }
+    }
+
+    private func respond(_ connection: NWConnection, head: Data) {
+        let request = String(decoding: head, as: UTF8.self)
+        let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+        let body = Data((routes[path] ?? "<html><body>not found</body></html>").utf8)
+        let status = routes[path] == nil ? "404 Not Found" : "200 OK"
+        let header = "HTTP/1.1 \(status)\r\n"
+            + "Content-Type: text/html; charset=utf-8\r\n"
+            + "Content-Length: \(body.count)\r\n"
+            + "Connection: close\r\n\r\n"
+        var response = Data(header.utf8)
+        response.append(body)
+        connection.send(content: response, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
+    }
+}
+
+/// One-shot flag guarding a continuation that several callbacks can reach.
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var used = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if used { return false }
+        used = true
+        return true
+    }
+}
+
+// MARK: - Minimal tab/window conformances for the frame probe
+
+/// A window WebKit will accept for a bare WKWebView. `BrowserWindowController`
+/// is the app's conformance, but it needs a real NSWindow and a TabStore space;
+/// the frame probe only needs `chrome.tabs` to see one window with one tab.
+@MainActor
+final class ProbeExtensionWindow: NSObject, WKWebExtensionWindow {
+    var openTabs: [any WKWebExtensionTab] = []
+
+    func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] { openTabs }
+    func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? { openTabs.first }
+    func isPrivate(for context: WKWebExtensionContext) -> Bool { false }
+    func windowType(for context: WKWebExtensionContext) -> WKWebExtension.WindowType { .normal }
+    func windowState(for context: WKWebExtensionContext) -> WKWebExtension.WindowState { .normal }
+    func frame(for context: WKWebExtensionContext) -> CGRect { CGRect(x: 0, y: 0, width: 800, height: 600) }
+    func screenFrame(for context: WKWebExtensionContext) -> CGRect { CGRect(x: 0, y: 0, width: 1440, height: 900) }
+}
+
+/// A tab backed by a plain WKWebView, so a page loaded outside TabStore can
+/// still be given a `chrome.tabs` id.
+@MainActor
+final class ProbeExtensionTab: NSObject, WKWebExtensionTab {
+    private let wv: WKWebView
+    private weak var containingWindow: ProbeExtensionWindow?
+
+    init(webView: WKWebView, window: ProbeExtensionWindow) {
+        self.wv = webView
+        self.containingWindow = window
+        super.init()
+    }
+
+    func webView(for context: WKWebExtensionContext) -> WKWebView? { wv }
+    func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? { containingWindow }
+    func url(for context: WKWebExtensionContext) -> URL? { wv.url }
+    func title(for context: WKWebExtensionContext) -> String? { wv.title }
+    func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !wv.isLoading }
+    func isSelected(for context: WKWebExtensionContext) -> Bool { true }
+    func isPrivate(for context: WKWebExtensionContext) -> Bool { false }
+    func isPlayingAudio(for context: WKWebExtensionContext) -> Bool { false }
+    func isMuted(for context: WKWebExtensionContext) -> Bool { false }
+    func shouldGrantPermissionsOnUserGesture(for context: WKWebExtensionContext) -> Bool { true }
 }

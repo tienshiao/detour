@@ -107,6 +107,9 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.privacy = globalThis.__detourPrivacyInstall; } catch(e) { __detourPolyfillDiag.apis.privacy = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.webRequest = globalThis.__detourWebRequestInstall; } catch(e) { __detourPolyfillDiag.apis.webRequest = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.actionGetUserSettings = globalThis.__detourActionUserSettingsInstall; } catch(e) { __detourPolyfillDiag.apis.actionGetUserSettings = 'error: ' + e.message; }
+        // Whether WebKit vends webNavigation.getAllFrames/getFrame natively, as
+        // observed *before* the polyfill patched anything (TASK-4).
+        try { __detourPolyfillDiag.apis.webNavigationFrames = globalThis.__detourWebNavFrames; } catch(e) { __detourPolyfillDiag.apis.webNavigationFrames = 'error: ' + e.message; }
         } catch(e) {
         __detourPolyfillDiag.error = e.message || String(e);
         __detourPolyfillDiag.stack = e.stack || '';
@@ -1214,12 +1217,50 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.webNavigation
 
-    /// Polyfill for chrome.webNavigation — WKWebExtension does not provide this API.
-    /// Event emitters for all navigation events, getAllFrames/getFrame backed by
-    /// native polyfill handler, and dispatch function for native-fired events.
+    /// Polyfill for chrome.webNavigation. WebKit provides the namespace in real
+    /// extension contexts but not every event, so this patches in what is
+    /// missing rather than replacing the object.
+    ///
+    /// `getAllFrames`/`getFrame` are deliberately *not* polyfilled. Measured on
+    /// macOS 26 (2026-09-12, TASK-4) both are native in an extension page and in
+    /// the service worker on every WebKit we have measured, and native
+    /// `getAllFrames({tabId})` enumerates subframes with WebKit's own frame ids,
+    /// correct `parentFrameId`s and URLs — ids that `getFrame` and
+    /// `tabs.sendMessage(…, {frameId})` accept. A fallback could only fabricate
+    /// frame records (it has no cross-origin frame tree to read), so a WebKit
+    /// regression here must fail loudly — `getAllFrames is not a function` at
+    /// the call site, and `missing` in
+    /// `_polyfillDiag.apis.webNavigationFrames` — rather than silently hand
+    /// 1Password phantom frames.
     static let webNavigationJS = """
     (function() {
         const chrome = globalThis.chrome;
+
+        // Record — once, before anything is patched — whether WebKit itself
+        // vends getAllFrames/getFrame. `getAllFrames({tabId})` is how 1Password
+        // fans autofill out to iframes and nothing here polyfills it, so this
+        // reading is the only warning a WebKit regression would give (TASK-4).
+        // Re-running the polyfill must not overwrite the first reading.
+        try {
+            if (!globalThis.__detourWebNavFrames) {
+                const nativeness = function(fn) {
+                    if (typeof fn !== 'function') return 'missing';
+                    try {
+                        return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1
+                            ? 'native' : 'non-native';
+                    } catch (e) { return 'non-native'; }
+                };
+                const nav0 = chrome && chrome.webNavigation;
+                globalThis.__detourWebNavFrames = {
+                    namespace: typeof (chrome && chrome.webNavigation),
+                    getAllFrames: nativeness(nav0 && nav0.getAllFrames),
+                    getFrame: nativeness(nav0 && nav0.getFrame)
+                };
+            }
+        } catch (e) {
+            try { globalThis.__detourWebNavFrames = { error: String(e && e.message ? e.message : e) }; } catch (e2) {}
+        }
+
         if (chrome.webNavigation && chrome.webNavigation._detourPolyfill) return;
 
         // WKWebExtension may provide a native chrome.webNavigation with some events
@@ -1272,26 +1313,7 @@ struct ExtensionAPIPolyfill {
             }
         }
 
-        if (!nav.getAllFrames) {
-            nav.getAllFrames = function(details, callback) {
-                const promise = __detourPolyfillRequest('webNavigation.getAllFrames', {
-                    tabId: details ? details.tabId : undefined
-                });
-                if (callback) { promise.then(callback); return; }
-                return promise;
-            };
-        }
-
-        if (!nav.getFrame) {
-            nav.getFrame = function(details, callback) {
-                const promise = __detourPolyfillRequest('webNavigation.getFrame', {
-                    tabId: details ? details.tabId : undefined,
-                    frameId: details ? details.frameId : 0
-                });
-                if (callback) { promise.then(callback); return; }
-                return promise;
-            };
-        }
+        // No getAllFrames/getFrame fallback on purpose — see the doc comment.
 
         if (createdNav) {
             __detourDefine(chrome, 'webNavigation', nav);

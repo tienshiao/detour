@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-12 02:48'
-updated_date: '2026-09-12 08:04'
+updated_date: '2026-09-12 08:33'
 labels:
   - extensions
   - permissions
@@ -45,6 +45,8 @@ Found by the 2026-09-11 code review of TASK-2 (skipped there as a permission-mod
 Implemented: ExtensionPermissionType.url; the URL site-access prompt records .url rows; AppDatabase.loadPermissions(extensionID:type:) and migration v8 reclassifying legacy *-free scheme:// match-pattern rows to .url; Profile.loadExtensionContext applies .url rows via setPermissionStatus(_:for: URL); settings toggle handles .url. Observed WebKit behaviour (recorded in ExtensionPermissionRestoreTests): a URL grant is widened to an origin pattern *://*.host/* (scheme and subdomains), a per-URL denial beats a granted <all_urls>, and a denied pattern beats a URL grant inside it (status deniedExplicitly). 84 tests green across six suites; app builds.
 
 Code review (medium) findings and decisions: migration v8 removed (its heuristic would also flip wildcard-free manifest host permissions and widen them; legacy rows stay inert, one re-prompt at most); loadPermissionsByKey replaced by a single fetch partitioned per type via statusByKey(type:) so same-string URL and pattern keys never shadow each other and the launch path reads once; the URL restore is gated on the manifest's requested/optional host patterns so stale grants for origins a newer manifest dropped are not re-applied; Settings gains a Site access group listing .url rows so a prompt decision can be reversed. Not addressed here (pre-existing, separate row kind): optional API permissions and an <all_urls> denial are not restored on reload because the loop is gated on wkExt.requestedPermissions.
+
+Follow-up commit after the TASK-3 review: Settings listed .url rows the restore would skip; the askable check moved to WebExtension.canAskForAccess(to:) and Settings now hides stale rows.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

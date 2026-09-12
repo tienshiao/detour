@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-12 06:39'
+updated_date: '2026-09-12 08:50'
 labels:
   - extensions
   - 1password
@@ -30,3 +31,9 @@ Chrome keeps an extension's service worker alive while it holds a native messagi
 - [ ] #3 Popup, options and content-script runtime.sendMessage to the worker keep working (ExtensionPolyfillIntegrationTests.testRuntimeSendMessageReachesWorkerRunningThePolyfill stays green) and the mechanism never reassigns the chrome/browser globals
 - [ ] #4 Unit tests cover the native-side state machine (host connected -> keep-alive active, last host exits -> inactive, context unload -> cleaned up) and docs/1password-integration-plan.md Phase 1 is updated with the measured unload-timer behaviour
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Established (TASK-2 harness, 2026-09-11 18:14): a message the background posts on any port resets WebKit's 2-minute inactive-ports unload (WebExtensionContext::portPostMessage); with pings flowing on the detourPolyfill port a worker holding a native port survived a 3-minute hold and unloaded 30 s after release. What failed later was only the JS-side detection of real ports (connectNative unpatchable). Design: 1. Worker polyfill (service workers only): at startup open one port to detourPolyfill via a plain chrome.runtime.connectNative call (no wrapping), keep it idle, reconnect with backoff if Detour drops it; ping {type:'keepalive'} every 45 s only while a native control message {type:'keepalive-start'} has been received and until {type:'keepalive-stop'}; expose installMode/state on __detourNativePortKeepAlive for the diag; remove the dead wrap/trackRealPort machinery. 2. ExtensionManager: per (controller, extension) a NativeHostKeepAlive record {port, connectedHosts: Int}; connectUsing .allowed increments on host.connect success and decrements on host disconnect / port disconnect; 0->1 sends keepalive-start on the keep-alive port (or remembers 'pending' if the port is not open yet and sends when it opens), 1->0 sends keepalive-stop; context unload (closeKeepAlivePort) clears everything. sendNativeMessage one-shots do not count. Pure state machine extracted (struct) and unit-tested; the port plumbing tested with a fake port in ExtensionPolyfillTests / a fake NativeMessagingHost. 3. Runtime verification in the isolated harness (DETOUR_DATA_DIR, DETOUR_NATIVE_MESSAGING_HOSTS_DIR -> silent fake host script, probe extension holding a port with a 1-minute alarm): no terminateWorker for 10 min while held; unload within ~2.5 min after release; popup->worker sendMessage still works (integration test stays green). 4. docs/1password-integration-plan.md Phase 1: replace the inert-keep-alive status with the native-driven design and the measured timer behaviour.
+<!-- SECTION:PLAN:END -->

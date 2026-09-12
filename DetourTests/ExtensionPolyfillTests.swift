@@ -526,6 +526,49 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["diag"] as? String, "absent")
     }
 
+    // MARK: - chrome.webNavigation frame enumeration
+
+    /// `getAllFrames`/`getFrame` are deliberately not polyfilled — the only
+    /// honest implementation is WebKit's, and a stub would hand 1Password
+    /// fabricated frames. So in a bare WKWebView, which has no native
+    /// chrome.webNavigation at all, the diag must read `missing` and the
+    /// functions must stay `undefined`: no silent fallback.
+    func testWebNavigationFrameNativenessRecordedInDiag() async throws {
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            diag: __detourPolyfillDiag.apis.webNavigationFrames,
+            getAllFrames: typeof chrome.webNavigation.getAllFrames,
+            getFrame: typeof chrome.webNavigation.getFrame
+        });
+        """)
+
+        let diag = try XCTUnwrap(result["diag"] as? [String: Any])
+        XCTAssertEqual(diag["namespace"] as? String, "undefined",
+                       "a bare WKWebView has no native chrome.webNavigation")
+        XCTAssertEqual(diag["getAllFrames"] as? String, "missing")
+        XCTAssertEqual(diag["getFrame"] as? String, "missing")
+
+        XCTAssertEqual(result["getAllFrames"] as? String, "undefined",
+                       "the polyfill must not fabricate frame enumeration")
+        XCTAssertEqual(result["getFrame"] as? String, "undefined")
+    }
+
+    /// Re-running the polyfill must not relabel the environment: the diag
+    /// records the *pre-patch* reading once, and nothing patches these two.
+    func testWebNavigationFrameNativenessSurvivesRerun() async throws {
+        let result = try await evalDictionary("""
+        \(ExtensionAPIPolyfill.polyfillJS)
+        return JSON.stringify({
+            diag: globalThis.__detourWebNavFrames,
+            getAllFrames: typeof chrome.webNavigation.getAllFrames
+        });
+        """)
+        let diag = try XCTUnwrap(result["diag"] as? [String: Any])
+        XCTAssertEqual(diag["getAllFrames"] as? String, "missing")
+        XCTAssertEqual(diag["getFrame"] as? String, "missing")
+        XCTAssertEqual(result["getAllFrames"] as? String, "undefined")
+    }
+
     // MARK: - chrome.action.getUserSettings
 
     func testActionGetUserSettingsStub() async throws {
