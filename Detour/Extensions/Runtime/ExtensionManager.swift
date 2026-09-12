@@ -996,22 +996,36 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         replyHandler: @escaping (Any?, (any Error)?) -> Void
     ) {
         // Route polyfill messages from service workers (where webkit.messageHandlers
-        // is unavailable and the polyfill falls back to sendNativeMessage).
-        if appID == ExtensionPolyfillHandler.handlerName,
-           let body = message as? [String: Any] {
+        // is unavailable and the polyfill falls back to sendNativeMessage). The
+        // polyfill host never reaches the real native-host path below: a payload
+        // that is not the polyfill envelope is rejected here rather than falling
+        // through to `nativeHostAccess`, which exempts this host name from the
+        // manifest permission and would otherwise spawn a host named after it.
+        if appID == ExtensionPolyfillHandler.handlerName {
+            guard let body = message as? [String: Any] else {
+                log.error("Rejecting polyfill native message with a non-object payload")
+                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
+                                          userInfo: [NSLocalizedDescriptionKey: "Invalid polyfill message format"]))
+                return
+            }
             log.debug("Routing polyfill native message: \(body["type"] as? String ?? "(no type)", privacy: .public)")
             let profile = profile(for: controller)
-            if let handler = profile?.polyfillHandler {
-                handler.handleNativeMessage(
-                    body,
-                    verifiedExtensionID: extensionIDFromContext(extensionContext),
-                    replyHandler: replyHandler
-                )
-            } else {
+            guard let handler = profile?.polyfillHandler else {
                 log.error("No polyfill handler for profile")
                 replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
                                           userInfo: [NSLocalizedDescriptionKey: "No polyfill handler for profile"]))
+                return
             }
+            // The sender's identity comes from the context, never from the body:
+            // a context the profile no longer lists (unloaded, or a message in
+            // flight across a reload) is rejected rather than trusted.
+            guard let verifiedExtensionID = extensionIDFromContext(extensionContext) else {
+                log.error("Rejecting polyfill native message \(body["type"] as? String ?? "(unknown)", privacy: .public) from a context not loaded in profile \(profile?.name ?? "?", privacy: .public)")
+                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
+                                          userInfo: [NSLocalizedDescriptionKey: "Unrecognized extension context"]))
+                return
+            }
+            handler.handleNativeMessage(body, verifiedExtensionID: verifiedExtensionID, replyHandler: replyHandler)
             return
         }
 
@@ -1025,9 +1039,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         // nativeMessaging is auto-granted so the polyfill bridge works, but
         // real native messaging hosts should only be reachable by extensions
-        // that explicitly declared the permission in their manifest.
+        // that explicitly declared the permission in their manifest. Only
+        // `.allowed` proceeds: `.polyfillHost` was consumed above.
         let manifestPermissions = self.extension(withID: extID)?.manifest.permissions ?? []
-        if Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) == .denied {
+        guard Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) == .allowed else {
             log.warning("Extension \(extID, privacy: .public) tried native messaging to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
             replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))

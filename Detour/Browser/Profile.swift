@@ -170,6 +170,12 @@ class Profile {
         // Inject polyfills for Chrome APIs not natively provided by WKWebExtension
         // (idle, notifications, history, management, fontSettings, sessions, search, offscreen, etc.)
         let handler = ExtensionPolyfillHandler()
+        handler.extensionOriginResolver = { [weak self] scheme, host in
+            self?.extensionID(forOriginScheme: scheme, host: host)
+        }
+        handler.extensionContextResolver = { [weak self] extensionID in
+            self?.extensionContext(for: extensionID)
+        }
         self.polyfillHandler = handler
         let ucc = config.webViewConfiguration.userContentController
         ucc.addScriptMessageHandler(handler, contentWorld: .page, name: ExtensionPolyfillHandler.handlerName)
@@ -267,9 +273,7 @@ class Profile {
             // Observe extension context errors for debugging. `context.errors` is
             // cumulative but WebKit consolidates repeats and may clear it, so the
             // *log* is deduped by error content rather than by position; the set
-            // lives with this observer (one per context) and dies with it. A shrink
-            // means WebKit cleared the array (e.g. a background reload): forget what
-            // was logged so a recurring failure is reported again rather than silenced.
+            // lives with this observer (one per context) and dies with it.
             //
             // Recovery is deliberately not gated by that dedupe: it fires whenever
             // the array holds a background-load failure, and the rate limiter in
@@ -277,13 +281,15 @@ class Profile {
             // "newly logged" would make a failure that outlives the limiter's window
             // unrecoverable, because its key is already in the set.
             let extID = ext.id
+            // Keys of the errors present at the previous notification; an error
+            // is logged when it is not among them. Rebuilt from the current array
+            // each time, so it is bounded by the array and a WebKit clear drops
+            // the old keys by itself (a recurring failure is logged again).
             var loggedErrorKeys = Set<String>()
-            var lastErrorCount = 0
             extensionErrorObservers[extID] = NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak self, weak context] _ in
                 guard let context else { return }
                 let errors = context.errors
-                if errors.count < lastErrorCount { loggedErrorKeys.removeAll() }
-                lastErrorCount = errors.count
+                var currentKeys = Set<String>()
                 var backgroundLoadFailed = false
                 for error in errors {
                     let nsError = error as NSError
@@ -292,9 +298,11 @@ class Profile {
                         backgroundLoadFailed = true
                     }
                     let key = "\(nsError.domain)#\(nsError.code)#\(nsError.localizedDescription)"
-                    guard loggedErrorKeys.insert(key).inserted else { continue }
+                    currentKeys.insert(key)
+                    guard !loggedErrorKeys.contains(key) else { continue }
                     log.error("Extension error [\(extID, privacy: .public)]: domain=\(nsError.domain, privacy: .public) code=\(nsError.code) \(nsError.localizedDescription, privacy: .public)")
                 }
+                loggedErrorKeys = currentKeys
                 if backgroundLoadFailed, let self {
                     // Recover outside the notification callback: WebKit is still
                     // recording the error when it posts, so don't unload from here.
@@ -352,9 +360,34 @@ class Profile {
         }
     }
 
+    /// Unload every extension loaded in this profile. Called before the profile
+    /// is discarded (`TabStore.deleteProfile`): each unload releases the state
+    /// other owners key on this profile's controller (keep-alive ports in
+    /// ExtensionManager, offscreen hosts, error observers), which would
+    /// otherwise outlive the profile under a recyclable `ObjectIdentifier`.
+    func unloadAllExtensions() {
+        for id in Array(extensionContexts.keys) {
+            unloadExtension(id: id)
+        }
+    }
+
     /// Get the extension context for a given extension ID in this profile.
     func extensionContext(for extensionID: String) -> WKWebExtensionContext? {
         extensionContexts[extensionID]
+    }
+
+    /// The id of the loaded extension whose context serves pages from the
+    /// given origin, i.e. whose `baseURL` has that scheme and host. WebKit
+    /// assigns each loaded context a fresh `webkit-extension://<UUID>/` base
+    /// URL (not the `uniqueIdentifier`), so this is the only trustworthy way
+    /// to attribute an extension page to its extension. Nil when no loaded
+    /// context matches, including after the context was unloaded.
+    func extensionID(forOriginScheme scheme: String, host: String) -> String? {
+        guard !host.isEmpty else { return nil }
+        return extensionContexts.first { _, context in
+            context.baseURL.scheme?.caseInsensitiveCompare(scheme) == .orderedSame
+                && context.baseURL.host?.caseInsensitiveCompare(host) == .orderedSame
+        }?.key
     }
 
     // MARK: - Background content recovery

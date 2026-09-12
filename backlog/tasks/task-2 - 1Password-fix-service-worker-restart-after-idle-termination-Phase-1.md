@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 22:28'
-updated_date: '2026-09-12 02:37'
+updated_date: '2026-09-12 05:39'
 labels:
   - 1password
   - extensions
@@ -71,6 +71,16 @@ PRODUCTION VERIFIED (build deployed 18:50:17, PID 44025): at 19:05, 15 idle minu
 
 Code review (2026-09-11) fixes applied to the Phase 1 work: console bridge swallows the bridge promise so the unhandledrejection reporter cannot feed itself; recovery is triggered by presence of code 6 (not by the log dedupe), checks context identity, logs loudly when the reload itself fails, and quiets give-up logging so the 10-min window can re-arm; keep-alive ports are keyed per (controller, extension), replaced rather than accumulated, and closed from Profile.unloadExtension; only the reloaded context is re-told about windows/tabs; the WebSocket guard backs off 250 ms per extra construction (cap 2 s); local port.disconnect() is tracked via a bound proxy when WebKit rejects the patch; nativeHostAccess() extracted and unit-tested (+/-); api-explorer gained WebSocket and detourPolyfill keep-alive probes.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @claude
+created: 2026-09-12 05:39
+---
+2026-09-11 22:40 follow-up from TASK-15: the native-port keep-alive's global-swap fallback broke all page->worker runtime.sendMessage (1Password popup 'Oops' screen) and has been removed. Probing shows WebKit re-materializes runtime.connectNative on every read, so the wrap can never take from JS; the keep-alive is inert in WebKit workers. With the old wrapper in place the three 1Password workers were still terminated and re-activated every 2 minutes (22:00-22:10), so it was not preventing unload either. Worker lifetime parity needs a native-side mechanism; proposed follow-up task pending the user's approval.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 

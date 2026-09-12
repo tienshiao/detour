@@ -375,6 +375,7 @@ class TabStore {
         guard profiles.filter({ !$0.isIncognito }).count > 1 else { return }
         let hasSpaces = spaces.contains { $0.profileID == id && !$0.isIncognito }
         guard !hasSpaces else { return }
+        profiles.first { $0.id == id }?.unloadAllExtensions()
         profiles.removeAll { $0.id == id }
         appDB.deleteProfile(id: id.uuidString)
         scheduleSave()

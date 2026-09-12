@@ -211,12 +211,24 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    host and posts `{type: "keepalive"}` on it every 45 s. WebKit counts any message the background
    posts on any port as activity, so the inactive-ports unload never fires while 1Password is
    connected. The keep-alive stops when the last real port closes, so idle unload resumes then.
-   ExtensionManager accepts `detourPolyfill` ports without spawning a process. WebKit's
-   `runtime.connectNative` is a non-writable own property that ignores assignment and
-   `defineProperty`, so in worker contexts the polyfill shadows the writable `chrome`/`browser`
-   globals with proxies that bind the real runtime's functions to the real object and override
-   only `connectNative`. Verified with a probe holding a native port for 3 minutes: no unload
-   while held, unload 30 s after release, clean restart on the next alarm.
+   ExtensionManager accepts `detourPolyfill` ports without spawning a process. Verified with a
+   probe holding a native port for 3 minutes: no unload while held, unload 30 s after release,
+   clean restart on the next alarm.
+
+   **Status 2026-09-11 22:40 (TASK-15): inert in WebKit, and its first version broke the popup.**
+   WebKit re-materializes `runtime.connectNative` on every read (assignment and `defineProperty`
+   complete, the read-back is always a fresh native function), so the wrap never takes. The
+   original fallback shadowed the `chrome`/`browser` globals with proxies; WebKit's message
+   dispatcher unwraps those globals to find the worker's `onMessage` listeners, cannot unwrap a
+   proxy, and answers every `runtime.sendMessage` to the worker with the empty default reply.
+   That is why 1Password's popup showed "Oops, something went wrong while loading" from this
+   commit on (`get-popup-config` got no reply). The fallback is removed; the keep-alive now
+   reports `installMode: 'none' (patch-rejected)` in workers and does nothing there. Also observed
+   with the fallback still in place: all three 1Password workers were terminated and re-activated
+   every 2 minutes (`SWContextManager::terminateWorker` at :06, `didFinishActivation` at :36), so
+   the keep-alive was not preventing unload even when its wrapper was in effect. Chrome parity for
+   worker lifetime needs a native-side mechanism (Detour knows when a real native host is
+   connected); see `docs/chrome-runtime-patching.md` "Level 3".
 2. **Recovery** (`Profile.recoverFromBackgroundLoadFailure`): when the context records code 6, unload
    and reload the context in that profile, re-associate its windows and tabs, and call
    `loadBackgroundContent`. The new context gets a new `webkit-extension://` base URL, so the stale

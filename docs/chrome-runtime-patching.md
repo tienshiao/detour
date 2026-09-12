@@ -60,7 +60,18 @@ This works because:
 - The runtime wrapper is now strongly referenced by the own property, so GC won't collect it
 - Your `getURL` own property on the wrapper persists
 
-### Option 2: Replace chrome itself with a Proxy
+### Option 2: Replace chrome itself with a Proxy — DO NOT USE (breaks messaging)
+
+**Broken in service workers, and any other extension page (TASK-15, 2026-09-11).** WebKit's
+runtime-message dispatcher (`WebExtensionContextProxy::enumerateFramesAndNamespaceObjects`) reads
+the `browser` global, then `chrome`, from each extension frame or worker and unwraps it with
+`toWebExtensionAPINamespace` to reach the native `onMessage` listener list. A Proxy (or any other
+stand-in) fails the unwrap, so the frame is skipped, no listener "handles" the message, and
+`internalDispatchRuntimeMessageEvent` sends the sender the empty default reply: every
+`runtime.sendMessage` to that context resolves `undefined` with no `lastError`. This is what took
+down 1Password's popup ("Oops, something went wrong while loading"). Kept here only as a record of
+why the polyfill must never reassign `globalThis.chrome` / `globalThis.browser`;
+`ExtensionPolyfillIntegrationTests.testRuntimeSendMessageReachesWorkerRunningThePolyfill` guards it.
 
 ```js
 const patchedRuntime = chrome.runtime;
@@ -168,7 +179,23 @@ function/value tables (patchable). But some have additional `[Dynamic]` members 
 - **chrome.windows** — `create`, `update`, `remove` (Dynamic)
 - **chrome.tabs** — `getSelected`, `executeScript`, `insertCSS`, `removeCSS` (Dynamic)
 
+### Level 3: members that re-materialize on every read (probed 2026-09-11, module service worker)
+
+`chrome.runtime.connectNative` is reported as an own property, and both assignment and
+`Object.defineProperty` on it complete without throwing, but every read returns a freshly created
+native function: the read-back equals neither the value just written nor the previous read. There
+is no JS-side way to wrap it (`ExtensionAPIPolyfill.nativePortKeepAliveJS` reports
+`installMode: 'none'`, `installDetail: 'patch-rejected'` in WebKit; only plain runtime objects in
+tests get `'direct'`). Assume the same for the other `[Dynamic]` runtime members listed above.
+
+Pinning a *different* object under `chrome.runtime` (Option 1 with a proxy instead of the real
+wrapper) is accepted by `defineProperty` but ignored on reads: the static getter keeps returning
+the native runtime. Option 1 only works because it pins the *same* wrapper WebKit vends.
+
 ### Bottom line
 
-The Proxy approach (Option 2) is the only reliable way to intercept everything uniformly, since
-the patchability of any given property depends on its IDL attributes.
+Patch members in place on the native wrappers where the IDL allows it (Option 1), accept that
+`[Dynamic]`/`[MainWorldOnly]` members and re-materialized functions cannot be patched from JS, and
+intercept those on the native side instead (delegate callbacks, `WKScriptMessageHandler`). Never
+replace the `chrome`/`browser` globals: it silently disconnects the context from runtime messaging
+(Option 2).

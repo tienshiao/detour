@@ -12,12 +12,31 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extensio
 class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     static let handlerName = "detourPolyfill"
 
+    /// Maps the security origin of an extension page (scheme and host) to the
+    /// id of the loaded extension it belongs to, or nil when no loaded context
+    /// serves that origin. Installed by the owning `Profile` against its
+    /// `extensionContexts` (see `Profile.extensionID(forOriginScheme:host:)`).
+    /// Without a resolver, every web-view message is treated as unverifiable
+    /// and rejected: the body's `extensionID` is never trusted on this path.
+    var extensionOriginResolver: ((_ scheme: String, _ host: String) -> String?)?
+
+    /// The owning profile's loaded context for an extension id, installed by
+    /// `Profile` alongside the origin resolver. Offscreen documents are hosted
+    /// per handler (i.e. per profile), so they must be built from *this*
+    /// profile's context: `ExtensionManager.context(for:)` prefers the last
+    /// active space's profile, which may be a different one. Falls back to the
+    /// manager when unset (bare handlers in tests). TASK-13 folds both
+    /// resolvers into a profile back-reference.
+    var extensionContextResolver: ((_ extensionID: String) -> WKWebExtensionContext?)?
+
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
 
     /// Stop and forget the extension's offscreen document, if any. The single
     /// teardown for `offscreen.closeDocument` and for context unload
-    /// (`Profile.unloadExtension`), so both release the hidden web view.
+    /// (`Profile.unloadExtension`), so both release the hidden web view. A
+    /// `createDocument` still loading is settled by `stop()` running its
+    /// completion, which sees the host gone and fails the request.
     func closeOffscreenDocument(for extensionID: String) {
         guard let host = offscreenHosts.removeValue(forKey: extensionID) else { return }
         host.stop()
@@ -67,26 +86,60 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(nil, "Invalid message format")
             return
         }
-        dispatch(body, verifiedExtensionID: verifiedExtensionID(from: message), replyHandler: replyHandler)
+        // The body id is never a fallback: any page reaching this handler can
+        // put any string in the body, so an unverifiable origin is rejected
+        // rather than trusted.
+        let origin = message.frameInfo.securityOrigin
+        guard let verifiedExtensionID = verifiedExtensionID(for: origin) else {
+            logRejectedOrigin(origin, type: body["type"] as? String)
+            replyHandler(nil, "Unrecognized extension origin")
+            return
+        }
+        dispatch(body, verifiedExtensionID: verifiedExtensionID, replyHandler: replyHandler)
     }
 
     /// The trustworthy extension identity for a message from an extension web
-    /// view (popup/options), derived from the frame's security origin rather
-    /// than the self-reported body field. Extension pages load from an origin
-    /// whose host is the context's `uniqueIdentifier` (== the chrome extension
-    /// id, see Profile.loadExtension). Returns nil when the origin can't be
-    /// matched to a loaded extension, in which case the caller falls back to
-    /// the body value.
-    private func verifiedExtensionID(from message: WKScriptMessage) -> String? {
-        let host = message.frameInfo.securityOrigin.host
-        guard !host.isEmpty, ExtensionManager.shared.extension(withID: host) != nil else { return nil }
-        return host
+    /// view (popup/options/offscreen), derived from the frame's security origin
+    /// rather than the self-reported body field. Extension pages load from the
+    /// context's `baseURL` (`webkit-extension://<UUID>/`), and WebKit assigns
+    /// that UUID afresh every time a context is loaded, independent of the
+    /// context's `uniqueIdentifier`; only the profile that loaded the context
+    /// knows which extension currently owns the origin, hence the resolver.
+    /// Returns nil when the origin is not served by any loaded extension.
+    private func verifiedExtensionID(for origin: WKSecurityOrigin) -> String? {
+        extensionOriginResolver?(origin.protocol, origin.host)
+    }
+
+    /// Origins already reported as unrecognized, so a page that keeps posting
+    /// (every `console.log` goes through the bridge, and the polyfill swallows
+    /// the rejection) costs one log line rather than one per message. Bounded
+    /// because an extension tab navigated to ordinary web content would
+    /// otherwise grow it by one entry per site visited.
+    private var reportedUnrecognizedOrigins = Set<String>()
+    private static let reportedUnrecognizedOriginsLimit = 64
+
+    private func logRejectedOrigin(_ origin: WKSecurityOrigin, type: String?) {
+        // The origin is not an extension's, so its host may be a site the user
+        // is browsing (an extension tab navigated away, or a remote iframe in
+        // an extension page): the scheme is public, the host is not.
+        let key = "\(origin.protocol)://\(origin.host):\(origin.port)"
+        if reportedUnrecognizedOrigins.contains(key) {
+            log.debug("Rejecting polyfill message \(type ?? "(unknown)", privacy: .public) from already-reported unrecognized origin \(key, privacy: .private)")
+            return
+        }
+        if reportedUnrecognizedOrigins.count >= Self.reportedUnrecognizedOriginsLimit {
+            reportedUnrecognizedOrigins.removeAll()
+        }
+        reportedUnrecognizedOrigins.insert(key)
+        log.error("Rejecting polyfill message \(type ?? "(unknown)", privacy: .public) from unrecognized \(origin.protocol, privacy: .public) origin \(key, privacy: .private); further messages from it are logged at debug")
     }
 
     /// Entry point for service worker contexts via browser.runtime.sendNativeMessage.
     /// Called by ExtensionManager's delegate when appID == "detourPolyfill".
-    /// `verifiedExtensionID` is derived from the sending `WKWebExtensionContext`.
-    func handleNativeMessage(_ body: [String: Any], verifiedExtensionID: String?, replyHandler: @escaping (Any?, (any Error)?) -> Void) {
+    /// `verifiedExtensionID` is derived from the sending `WKWebExtensionContext`;
+    /// the delegate rejects messages whose context it cannot attribute before
+    /// they reach here, so the body id is never a fallback on this path either.
+    func handleNativeMessage(_ body: [String: Any], verifiedExtensionID: String, replyHandler: @escaping (Any?, (any Error)?) -> Void) {
         let type = body["type"] as? String ?? "(unknown)"
         log.debug("Native message bridge: \(type, privacy: .public)")
         dispatch(body, verifiedExtensionID: verifiedExtensionID) { result, errorString in
@@ -103,7 +156,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     // MARK: - Dispatch
 
-    private func dispatch(_ body: [String: Any], verifiedExtensionID: String?, replyHandler: @escaping (Any?, String?) -> Void) {
+    /// `verifiedExtensionID` is the sender's identity as established by the
+    /// entry point (frame origin for web views, `WKWebExtensionContext` for
+    /// workers); both entry points reject before calling this when they cannot
+    /// establish one, so the body's `extensionID` is never trusted.
+    private func dispatch(_ body: [String: Any], verifiedExtensionID extensionID: String, replyHandler: @escaping (Any?, String?) -> Void) {
         guard let type = body["type"] as? String else {
             // Values and foreign key names are extension data (storage values,
             // message payloads) that must not land in the log.
@@ -112,18 +169,13 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             return
         }
 
-        // Trust the identity verified from the sending context/frame over the
-        // self-reported body value. When both are present and disagree, the
-        // caller is impersonating another extension — reject it.
-        let claimedID = body["extensionID"] as? String
-        if let verifiedExtensionID, let claimedID, claimedID != verifiedExtensionID {
-            log.error("Extension \(verifiedExtensionID, privacy: .public) attempted to act as \(claimedID, privacy: .public); rejecting")
+        // A self-reported id that disagrees with the verified one means the
+        // caller is impersonating another extension — reject it. The polyfill
+        // stamps an empty string when `chrome.runtime.id` is unavailable in its
+        // frame; that carries no claim, so it is not a mismatch.
+        if let claimedID = body["extensionID"] as? String, !claimedID.isEmpty, claimedID != extensionID {
+            log.error("Extension \(extensionID, privacy: .public) attempted to act as \(claimedID, privacy: .public); rejecting")
             replyHandler(nil, "Extension identity mismatch")
-            return
-        }
-        guard let extensionID = verifiedExtensionID ?? claimedID else {
-            log.error("Invalid polyfill message: missing extensionID for type \(type, privacy: .public) (\(Self.envelopeSummary(body), privacy: .public))")
-            replyHandler(nil, "Invalid message format: missing extensionID")
             return
         }
 
@@ -279,8 +331,9 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         case "offscreen.createDocument":
             let url = params["url"] as? String ?? "offscreen.html"
             log.info("offscreen.createDocument: url=\(url, privacy: .private) ext=\(extensionID, privacy: .public)")
+            let resolvedContext = extensionContextResolver?(extensionID) ?? ExtensionManager.shared.context(for: extensionID)
             guard let ext = ExtensionManager.shared.extension(withID: extensionID),
-                  let context = ExtensionManager.shared.context(for: extensionID) else {
+                  let context = resolvedContext else {
                 log.error("offscreen.createDocument: extension or context not found for \(extensionID, privacy: .public)")
                 replyHandler(nil, "Extension not found")
                 return
@@ -295,7 +348,15 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             offscreenHosts[extensionID] = host
             let config = context.webViewConfiguration
             log.info("offscreen.createDocument: baseURL=\(context.baseURL.absoluteString, privacy: .public)")
-            host.load(url: url, configuration: config, baseURL: context.baseURL) {
+            host.load(url: url, configuration: config, baseURL: context.baseURL) { [weak self, weak host] in
+                // `stop()` also runs this when the document is closed (explicitly
+                // or by a context unload) before it finished loading; the request
+                // must settle either way, and must not report a document that is gone.
+                guard let self, let host, self.offscreenHosts[extensionID] === host else {
+                    log.info("offscreen.createDocument: closed before it finished loading for \(extensionID, privacy: .public)")
+                    replyHandler(nil, "Offscreen document was closed before it finished loading")
+                    return
+                }
                 log.info("offscreen.createDocument: loaded successfully for \(extensionID, privacy: .public)")
                 replyHandler(true, nil)
             }

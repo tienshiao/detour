@@ -211,7 +211,12 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         webView?.stopLoading()
         webView = nil
 
+        // A load still in flight never reaches didFinish now; run its completions
+        // so the pending createDocument request settles (the handler's completion
+        // checks whether the host is still registered and fails it if not).
+        let handlers = loadCompletionHandlers
         loadCompletionHandlers.removeAll()
+        handlers.forEach { $0() }
     }
 
     /// Evaluate JavaScript in the offscreen document.

@@ -52,16 +52,44 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
             "name": "Polyfill Integration Test",
             "version": "1.0.0",
             "permissions": ["storage", "tabs", "idle", "notifications", "history",
-                             "sessions", "search", "offscreen", "fontSettings"],
+                             "sessions", "search", "offscreen", "fontSettings", "nativeMessaging"],
             "host_permissions": ["<all_urls>"],
-            "background": {"service_worker": "background.js"},
+            "background": {"service_worker": "background.js", "type": "module"},
             "action": {"default_title": "Polyfill Test"}
         }
         """
         try manifestJSON.write(to: tempDir.appendingPathComponent("manifest.json"),
                                atomically: true, encoding: .utf8)
 
-        let backgroundJS = "// minimal background"
+        // The worker runs the real polyfill (as ExtensionManager injects it into
+        // installed extensions) plus a ping listener, so page->worker messaging is
+        // exercised in a real module service worker with nativeMessaging, the
+        // shape 1Password's worker has (TASK-15).
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message && message.type === 'ping') {
+                sendResponse({
+                    type: 'pong',
+                    chromeIsNamespace: Object.prototype.toString.call(globalThis.chrome),
+                    installMode: globalThis.__detourNativePortKeepAlive ? globalThis.__detourNativePortKeepAlive.installMode : 'missing',
+                    installDetail: globalThis.__detourNativePortKeepAlive ? globalThis.__detourNativePortKeepAlive.installDetail : 'missing',
+                    connectNativeType: typeof chrome.runtime.connectNative
+                });
+                return true;
+            }
+            // Forward an arbitrary payload to the polyfill host via the real
+            // sendNativeMessage, so the page can probe the delegate's gate with
+            // shapes the polyfill itself never sends.
+            if (message && message.type === 'rawPolyfillNative') {
+                Promise.resolve()
+                    .then(() => chrome.runtime.sendNativeMessage('detourPolyfill', message.payload))
+                    .then((r) => sendResponse({ ok: true, reply: r === undefined ? null : r }),
+                          (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }));
+                return true;
+            }
+        });
+        """
         try backgroundJS.write(to: tempDir.appendingPathComponent("background.js"),
                                atomically: true, encoding: .utf8)
 
@@ -94,9 +122,11 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
         let context = WKWebExtensionContext(for: wkExt)
         context.isInspectable = true
-        // Mirror Profile.loadExtension: extension pages load from an origin whose
-        // host is the context's uniqueIdentifier, which the polyfill dispatcher
-        // uses to verify the caller's identity (and thus permission checks).
+        // Mirror Profile.loadExtension. Note the uniqueIdentifier is NOT the
+        // page origin: WebKit gives the context a fresh webkit-extension://<UUID>/
+        // base URL, and the polyfill dispatcher attributes pages to extensions
+        // by resolving that origin against the profile's loaded contexts (wired
+        // below once the test profile exists).
         context.uniqueIdentifier = Self.extensionID
 
         for permission in wkExt.requestedPermissions {
@@ -119,6 +149,12 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
         let testProfile = TabStore.shared.addProfile(name: "Polyfill Int Profile")
         testProfile.extensionContexts[Self.extensionID] = context
+        // Strong capture on purpose: the profile lives for the whole suite (pinned
+        // by SharedState), and a weakly captured, released profile would turn every
+        // later test into an "Unrecognized extension origin" rejection.
+        polyfillHandler.extensionOriginResolver = { scheme, host in
+            testProfile.extensionID(forOriginScheme: scheme, host: host)
+        }
         let testSpace = TabStore.shared.addSpace(
             name: "Polyfill Int Space", emoji: "P", colorHex: "#000000", profileID: testProfile.id)
         ExtensionManager.shared.lastActiveSpaceID = testSpace.id
@@ -303,5 +339,103 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
             return typeof chrome.idle.queryState === 'function';
         """, in: wv) as? Bool
         XCTAssertEqual(result, true, "Re-running polyfill should leave APIs functional")
+    }
+
+    // MARK: - Page -> service worker messaging with the polyfill in the worker
+
+    /// WebKit answers runtime.sendMessage with an empty reply when it cannot unwrap
+    /// the worker's `browser`/`chrome` global to the native namespace. The worker
+    /// here is a module worker with nativeMessaging, running the real polyfill,
+    /// i.e. shaped like 1Password's; this fails with an empty reply if the polyfill
+    /// ever replaces those globals again (TASK-15, verified 2026-09-11 by grafting
+    /// the old global-swapping fallback back in: reply nil, lastError nil).
+    func testRuntimeSendMessageReachesWorkerRunningThePolyfill() async throws {
+        let wv = try await makeExtensionWebView()
+        let result = try await evalJSON("""
+            const reply = await new Promise((resolve) => {
+                let settled = false;
+                chrome.runtime.sendMessage({ type: 'ping' }, (r) => {
+                    settled = true;
+                    resolve({ reply: r === undefined ? null : r,
+                              lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+                });
+                setTimeout(() => { if (!settled) resolve({ reply: 'timeout', lastError: null }); }, 8000);
+            });
+            return JSON.stringify(reply);
+        """, in: wv) as? [String: Any]
+        XCTAssertNil(result?["lastError"] as? String, "sendMessage reported lastError")
+        let reply = result?["reply"] as? [String: Any]
+        XCTAssertEqual(reply?["type"] as? String, "pong",
+                       "the worker must answer; an empty reply means WebKit skipped the worker (globals not native?). Got: \(String(describing: result))")
+        XCTAssertEqual(reply?["chromeIsNamespace"] as? String, "[object Namespace]",
+                       "the worker's chrome global must still be WebKit's native namespace object")
+        // WebKit re-materializes `runtime.connectNative` on every read, so a patch
+        // never takes there (probed 2026-09-11: assignment and defineProperty do not
+        // throw, the read-back equals neither the written function nor a previous
+        // read). The keep-alive therefore reports 'none'; if this ever flips to
+        // 'direct', WebKit changed and the keep-alive is live in workers again.
+        XCTAssertEqual(reply?["connectNativeType"] as? String, "function", "nativeMessaging is granted, connectNative must exist")
+        XCTAssertEqual(reply?["installMode"] as? String, "none")
+        XCTAssertEqual(reply?["installDetail"] as? String, "patch-rejected",
+                       "the keep-alive must have tried the direct patch and been rejected by WebKit, and then done nothing else")
+    }
+
+    /// NEGATIVE: a non-object payload addressed to the polyfill host must be
+    /// rejected by the delegate, not routed to the real native-host path (where
+    /// `nativeHostAccess` exempts that host name from the manifest permission and
+    /// a host manifest named "detourPolyfill" would be searched for and spawned).
+    func testNonObjectPolyfillNativeMessageIsRejected() async throws {
+        let wv = try await makeExtensionWebView()
+        let result = try await evalJSON("""
+            const reply = await new Promise((resolve) => {
+                chrome.runtime.sendMessage({ type: 'rawPolyfillNative', payload: 'not-an-envelope' },
+                                           (r) => resolve(r === undefined ? null : r));
+                setTimeout(() => resolve({ ok: false, error: 'timeout' }), 8000);
+            });
+            return JSON.stringify(reply);
+        """, in: wv) as? [String: Any]
+        XCTAssertEqual(result?["ok"] as? Bool, false, "a string payload must not be accepted, got: \(String(describing: result))")
+        let error = result?["error"] as? String ?? ""
+        XCTAssertTrue(error.contains("Invalid polyfill message format"),
+                      "expected the delegate's format rejection, got: \(error)")
+    }
+
+    // MARK: - Origin Verification Against a Real Extension Context
+
+    /// The page's origin is the context's random webkit-extension://<UUID>/,
+    /// not the uniqueIdentifier; the profile resolves it to the extension id.
+    func testExtensionPageOriginResolvesToExtensionID() async throws {
+        let wv = try await makeExtensionWebView()
+        let originJSON = try await evalJSON(
+            "return JSON.stringify({ scheme: location.protocol.slice(0, -1), host: location.host })", in: wv
+        )
+        let origin = try XCTUnwrap(originJSON as? [String: String])
+        let scheme = try XCTUnwrap(origin["scheme"])
+        let host = try XCTUnwrap(origin["host"])
+        XCTAssertEqual(scheme, "webkit-extension")
+        XCTAssertNotEqual(host, Self.extensionID, "origin host must not be the uniqueIdentifier")
+        XCTAssertEqual(state.testProfile.extensionID(forOriginScheme: scheme, host: host), Self.extensionID)
+        XCTAssertNil(state.testProfile.extensionID(forOriginScheme: "https", host: host),
+                     "same host under another scheme is not an extension page")
+        XCTAssertNil(state.testProfile.extensionID(forOriginScheme: scheme, host: Self.extensionID),
+                     "the uniqueIdentifier is not an origin")
+    }
+
+    /// NEGATIVE: from a real extension page, a body that names another
+    /// extension is rejected because the origin-verified id disagrees.
+    func testExtensionPageCannotClaimAnotherExtensionID() async throws {
+        let wv = try await makeExtensionWebView()
+        let result = try await evalJSON("""
+            try {
+                await webkit.messageHandlers.detourPolyfill.postMessage({
+                    type: 'idle.queryState', extensionID: 'another-extension',
+                    params: { detectionIntervalInSeconds: 60 }
+                });
+                return JSON.stringify({ error: null });
+            } catch (e) {
+                return JSON.stringify({ error: String(e && e.message ? e.message : e) });
+            }
+        """, in: wv) as? [String: Any]
+        XCTAssertEqual(result?["error"] as? String, "Extension identity mismatch")
     }
 }

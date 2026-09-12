@@ -18,6 +18,12 @@ final class ExtensionPolyfillTests: XCTestCase {
         try await super.setUp()
 
         handler = ExtensionPolyfillHandler()
+        // The bare web view loads from https://test.example.com; attribute that
+        // origin to the shim's extension id the way Profile attributes a
+        // context's webkit-extension:// origin to its extension.
+        handler.extensionOriginResolver = { scheme, host in
+            scheme == "https" && host == "test.example.com" ? "test-polyfill-extension" : nil
+        }
 
         // The injected shim sets chrome.runtime.id = 'test-polyfill-extension'.
         // Register a matching extension declaring the permission-gated APIs
@@ -43,9 +49,11 @@ final class ExtensionPolyfillTests: XCTestCase {
             if (!globalThis.chrome.runtime.id) globalThis.chrome.runtime.id = 'test-polyfill-extension';
 
             globalThis.__detourKeepAlivePingIntervalMs = 50;
-            // Install the service-worker WebSocket guard in this page context so
-            // it can be exercised without a real service worker.
+            // Install the service-worker-only WebSocket guard and native port
+            // keep-alive in this page context so they can be exercised without a
+            // real service worker.
             globalThis.__detourForceWebSocketGuard = true;
+            globalThis.__detourForceNativePortKeepAlive = true;
             globalThis.__fakeNativePorts = [];
             // Opt-in: make each fake port's `disconnect` non-writable so the
             // keep-alive cannot patch it in place and must fall back to its proxy,
@@ -132,9 +140,9 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Evaluate JS that returns a JSON-serializable value, parsed back to Swift.
     /// Uses callAsyncJavaScript so Promises are automatically awaited.
-    private func evalJSON(_ js: String) async throws -> Any? {
+    private func evalJSON(_ js: String, arguments: [String: Any] = [:]) async throws -> Any? {
         let result = try await webView.callAsyncJavaScript(
-            js, arguments: [:], contentWorld: .page
+            js, arguments: arguments, contentWorld: .page
         )
         if let jsonString = result as? String,
            let data = jsonString.data(using: .utf8) {
@@ -401,7 +409,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         handler.handleNativeMessage(
             ["type": "idle.queryState", "extensionID": "test", "params": ["detectionIntervalInSeconds": 60]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "test"
         ) { result, error in
             XCTAssertNil(error)
             XCTAssertNotNil(result as? String)
@@ -418,7 +426,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         handler.handleNativeMessage(
             ["type": "fontSettings.getFontList", "extensionID": "test", "params": [:] as [String: Any]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "test"
         ) { result, error in
             XCTAssertNil(error)
             let fonts = result as? [[String: String]]
@@ -440,7 +448,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         handler.handleNativeMessage(
             ["type": "history.search", "extensionID": "test",
              "params": ["query": ["text": "", "maxResults": 10]]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "test"
         ) { result, error in
             XCTAssertNil(result)
             XCTAssertEqual((error as NSError?)?.localizedDescription, "history permission not declared")
@@ -456,7 +464,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         handler.handleNativeMessage(
             ["type": "offscreen.hasDocument", "extensionID": "test", "params": [:] as [String: Any]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "test"
         ) { result, error in
             XCTAssertNil(error)
             XCTAssertEqual(result as? Bool, false)
@@ -472,7 +480,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         handler.handleNativeMessage(
             ["type": "nonexistent.api", "extensionID": "test", "params": [:] as [String: Any]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "test"
         ) { result, error in
             XCTAssertNotNil(error)
             expectation.fulfill()
@@ -487,7 +495,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         handler.handleNativeMessage(
             ["extensionID": "test"],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "test"
         ) { result, error in
             XCTAssertNotNil(error)
             expectation.fulfill()
@@ -508,7 +516,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         handler.handleNativeMessage(
             ["type": "history.search", "extensionID": "histperm-ext",
              "params": ["query": ["text": "", "maxResults": 10]]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "histperm-ext"
         ) { result, error in
             XCTAssertNil(error)
             let dict = result as? [String: Any]
@@ -530,7 +538,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         handler.handleNativeMessage(
             ["type": "history.search", "extensionID": "nohistory-ext",
              "params": ["query": ["text": "", "maxResults": 10]]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "nohistory-ext"
         ) { result, error in
             XCTAssertNil(result)
             XCTAssertEqual((error as NSError?)?.localizedDescription, "history permission not declared")
@@ -550,7 +558,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         handler.handleNativeMessage(
             ["type": "management.getAll", "extensionID": "mgmtperm-ext",
              "params": [:] as [String: Any]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "mgmtperm-ext"
         ) { result, error in
             XCTAssertNil(error)
             XCTAssertNotNil(result as? [[String: Any]],
@@ -571,7 +579,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         handler.handleNativeMessage(
             ["type": "management.getAll", "extensionID": "nomgmt-ext",
              "params": [:] as [String: Any]],
-            verifiedExtensionID: nil
+            verifiedExtensionID: "nomgmt-ext"
         ) { result, error in
             XCTAssertNil(result)
             XCTAssertEqual((error as NSError?)?.localizedDescription, "management permission not declared")
@@ -621,6 +629,84 @@ final class ExtensionPolyfillTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 5)
+    }
+
+    // MARK: - Web View Origin Verification
+
+    /// Send a raw envelope through webkit.messageHandlers from the test page,
+    /// bypassing the polyfill's own `extensionID` stamping so the body can
+    /// claim any id. Returns the bridge's reply or the error string.
+    private func sendRawBridgeMessage(type: String, claimedID: String) async throws -> (result: Any?, error: String?) {
+        let js = """
+            try {
+                const r = await webkit.messageHandlers.detourPolyfill.postMessage({
+                    type: type, extensionID: claimedID, params: { detectionIntervalInSeconds: 60 }
+                });
+                return JSON.stringify({ result: r === undefined ? null : r });
+            } catch (e) {
+                return JSON.stringify({ error: String(e && e.message ? e.message : e) });
+            }
+        """
+        let reply = try await evalJSON(js, arguments: ["type": type, "claimedID": claimedID])
+        let dict = try XCTUnwrap(reply as? [String: Any])
+        return (dict["result"], dict["error"] as? String)
+    }
+
+    /// POSITIVE: a message from a page whose origin resolves to an extension is
+    /// attributed to that extension, and a matching body id proceeds.
+    func testWebViewMessageAttributedByOrigin() async throws {
+        let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
+        XCTAssertNil(reply.error)
+        XCTAssertTrue(["active", "idle", "locked"].contains(reply.result as? String ?? ""),
+                      "origin-verified request should succeed, got \(String(describing: reply.result))")
+    }
+
+    /// POSITIVE: the polyfill stamps an empty id when `chrome.runtime.id` is
+    /// unavailable in the sending frame; that is no claim at all, so the
+    /// origin-verified identity is used and the request proceeds.
+    func testWebViewMessageWithEmptyClaimedIDUsesVerifiedOrigin() async throws {
+        let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "")
+        XCTAssertNil(reply.error)
+        XCTAssertTrue(["active", "idle", "locked"].contains(reply.result as? String ?? ""))
+    }
+
+    /// NEGATIVE: the body claims another extension's id from a verified origin;
+    /// the verified id wins and the request is rejected as impersonation.
+    func testWebViewMessageClaimingOtherExtensionRejected() async throws {
+        let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "some-other-extension")
+        XCTAssertNil(reply.result)
+        XCTAssertEqual(reply.error, "Extension identity mismatch")
+    }
+
+    /// NEGATIVE: the origin resolves to no loaded extension (e.g. its context
+    /// was unloaded, so its old UUID origin is stale); the body id is not a
+    /// fallback on the web-view path, even when it names a real extension.
+    func testWebViewMessageFromUnknownOriginRejected() async throws {
+        handler.extensionOriginResolver = { _, _ in nil }
+        let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
+        XCTAssertNil(reply.result)
+        XCTAssertEqual(reply.error, "Unrecognized extension origin")
+    }
+
+    /// NEGATIVE: a handler with no resolver installed at all trusts nothing.
+    func testWebViewMessageWithoutResolverRejected() async throws {
+        handler.extensionOriginResolver = nil
+        let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
+        XCTAssertNil(reply.result)
+        XCTAssertEqual(reply.error, "Unrecognized extension origin")
+    }
+
+    /// The resolver is handed the frame's real scheme and host, so a resolver
+    /// keyed on both (as Profile's is) sees exactly the page's origin.
+    func testWebViewOriginResolverReceivesFrameOrigin() async throws {
+        var seen: (scheme: String, host: String)?
+        handler.extensionOriginResolver = { scheme, host in
+            seen = (scheme, host)
+            return "test-polyfill-extension"
+        }
+        _ = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
+        XCTAssertEqual(seen?.scheme, "https")
+        XCTAssertEqual(seen?.host, "test.example.com")
     }
 
     // MARK: - Service Worker Fallback Detection
@@ -884,6 +970,7 @@ final class ExtensionPolyfillTests: XCTestCase {
             livePorts: status.livePorts,
             active: status.active,
             pingIntervalMs: status.pingIntervalMs,
+            installMode: status.installMode,
             applications: globalThis.__fakeNativePorts.map(p => p.application)
         });
         """)
@@ -896,6 +983,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(status["livePorts"] as? Int, 1)
         XCTAssertEqual(status["active"] as? Bool, true)
         XCTAssertEqual(status["pingIntervalMs"] as? Int, 50, "the test override should be honoured")
+        XCTAssertEqual(status["installMode"] as? String, "direct", "connectNative was patched in place")
         XCTAssertEqual(status["applications"] as? [String], ["com.example.host", "detourPolyfill"],
                        "opening a real port should also open the keep-alive port")
     }
@@ -1103,6 +1191,103 @@ final class ExtensionPolyfillTests: XCTestCase {
         """)
 
         XCTAssertEqual(result["livePorts"] as? Int, 0, "the status object must not be writable")
+    }
+
+    // MARK: - Keep-alive must never replace the chrome/browser globals
+
+    /// Builds a page whose `chrome`/`browser` namespace is one shared object under
+    /// both names, with a `runtime` whose `connectNative` cannot be patched: it is
+    /// a getter-only accessor on the prototype (assignment cannot replace it) and
+    /// the runtime is non-extensible (defineProperty cannot add an own override).
+    /// This is the shape in which the keep-alive's direct patch fails and it is
+    /// tempted to reach for a fallback.
+    private func makeUnpatchableNamespaceWebView() async throws -> WKWebView {
+        let config = WKWebViewConfiguration()
+        let shim = WKUserScript(
+            source: """
+            globalThis.__fakeNativePorts = [];
+            const nativeConnectNative = function(application) {
+                const port = {
+                    name: application, application: application, posted: [],
+                    onDisconnect: { addListener() {} }, onMessage: { addListener() {} },
+                    postMessage(m) { this.posted.push(m); }, disconnect() {}
+                };
+                globalThis.__fakeNativePorts.push(port);
+                return port;
+            };
+            const runtimeProto = {};
+            Object.defineProperty(runtimeProto, 'connectNative', {
+                get() { return nativeConnectNative; }, configurable: false, enumerable: true
+            });
+            const realRuntime = Object.create(runtimeProto);
+            realRuntime.id = 'shadow-test-extension';
+            realRuntime._listeners = [];
+            realRuntime.onMessage = {
+                addListener(fn) { realRuntime._listeners.push(fn); },
+                removeListener(fn) { realRuntime._listeners = realRuntime._listeners.filter(f => f !== fn); },
+                hasListener(fn) { return realRuntime._listeners.includes(fn); }
+            };
+            realRuntime.getURL = function(path) { return 'webkit-extension://0000/' + path; };
+            realRuntime.sendNativeMessage = function() { return Promise.resolve(undefined); };
+            Object.preventExtensions(realRuntime);
+            const realChrome = { runtime: realRuntime };
+            globalThis.chrome = realChrome;
+            globalThis.browser = realChrome;
+            globalThis.__realChrome = realChrome;
+            globalThis.__realRuntime = realRuntime;
+            globalThis.__detourKeepAlivePingIntervalMs = 50;
+            globalThis.__detourForceNativePortKeepAlive = true;
+            """,
+            injectionTime: .atDocumentStart, forMainFrameOnly: false
+        )
+        config.userContentController.addUserScript(shim)
+        config.userContentController.addUserScript(WKUserScript(
+            source: ExtensionAPIPolyfill.polyfillJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
+        wv.loadHTMLString("<html><body>ns</body></html>", baseURL: URL(string: "https://test.example.com")!)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        return wv
+    }
+
+    /// WebKit's runtime-message dispatcher unwraps the worker's `browser`/`chrome`
+    /// global to the native namespace to find its onMessage listeners; a Proxy or
+    /// any other stand-in cannot be unwrapped, so the worker is skipped and every
+    /// runtime.sendMessage to it gets an empty reply (TASK-15, 1Password popup).
+    /// When connectNative cannot be patched in place there is no fallback: the
+    /// globals, the runtime and connectNative must be left exactly as found.
+    func testKeepAliveLeavesGlobalsUntouchedWhenConnectNativeIsNotPatchable() async throws {
+        let wv = try await makeUnpatchableNamespaceWebView()
+        let raw = try await wv.callAsyncJavaScript("""
+            try {
+                const fn = function() {};
+                chrome.runtime.onMessage.addListener(fn);
+                return JSON.stringify({
+                    chromeIsReal: globalThis.chrome === globalThis.__realChrome,
+                    browserIsReal: globalThis.browser === globalThis.__realChrome,
+                    runtimeIsReal: chrome.runtime === globalThis.__realRuntime,
+                    connectNativeIsNative: chrome.runtime.connectNative === globalThis.__realRuntime.connectNative,
+                    installMode: globalThis.__detourNativePortKeepAlive.installMode,
+                    listenerReachedRealEvent: globalThis.__realRuntime.onMessage.hasListener(fn),
+                    getURL: chrome.runtime.getURL('x.html')
+                });
+            } catch (e) {
+                return JSON.stringify({
+                    error: (e && e.name ? e.name + ': ' : '') + String(e && e.message !== undefined ? e.message : e),
+                    diag: typeof __detourPolyfillDiag !== 'undefined' ? __detourPolyfillDiag : null
+                });
+            }
+        """, arguments: [:], contentWorld: .page) as? String
+        let result = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(raw).utf8)) as? [String: Any])
+        XCTAssertNil(result["error"], "test body threw: \(result["error"] ?? "") diag=\(result["diag"] ?? "")")
+
+        XCTAssertEqual(result["chromeIsReal"] as? Bool, true, "globalThis.chrome must stay the object WebKit installed")
+        XCTAssertEqual(result["browserIsReal"] as? Bool, true, "globalThis.browser must stay the object WebKit installed")
+        XCTAssertEqual(result["runtimeIsReal"] as? Bool, true, "chrome.runtime must not be swapped for a stand-in")
+        XCTAssertEqual(result["connectNativeIsNative"] as? Bool, true, "an unpatchable connectNative is left alone")
+        XCTAssertEqual(result["installMode"] as? String, "none")
+        XCTAssertEqual(result["listenerReachedRealEvent"] as? Bool, true, "onMessage.addListener must register on the real event object")
+        XCTAssertEqual(result["getURL"] as? String, "webkit-extension://0000/x.html", "later polyfill patches (getURL) still work")
+        withExtendedLifetime(wv) {}
     }
 
     // MARK: - WebSocket guard

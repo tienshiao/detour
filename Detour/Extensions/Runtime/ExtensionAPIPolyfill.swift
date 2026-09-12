@@ -280,6 +280,7 @@ struct ExtensionAPIPolyfill {
     (function() {
         const g = globalThis;
         const _origLog = console.log.bind(console);
+        const _origInfo = console.info.bind(console);
         const _origWarn = console.warn.bind(console);
         const _origError = console.error.bind(console);
         const MAX_MESSAGE_LENGTH = 8192;
@@ -340,47 +341,39 @@ struct ExtensionAPIPolyfill {
             }
             return String(a);
         }
+        function truncate(s, limit) {
+            return s.length > limit ? s.slice(0, limit) + '…[truncated]' : s;
+        }
         function formatArgs(args) {
+            // Every argument gets a share of the budget, so a large first argument
+            // (a logged response payload) cannot push the Error after it out of the
+            // message entirely; the final cap is the backstop for many arguments.
+            const perArg = Math.max(512, Math.floor(MAX_MESSAGE_LENGTH / Math.max(1, args.length)));
             const parts = [];
-            let length = 0;
             for (let i = 0; i < args.length; i++) {
-                // Anything past the truncation point is cut anyway; skip formatting it.
-                if (length > MAX_MESSAGE_LENGTH) break;
                 let s;
                 try { s = formatOne(args[i]); } catch (e) { s = '[unserializable]'; }
-                parts.push(s);
-                length += s.length + 1;
+                parts.push(truncate(s, perArg));
             }
-            let message = parts.join(' ');
-            if (message.length > MAX_MESSAGE_LENGTH) {
-                message = message.slice(0, MAX_MESSAGE_LENGTH) + '…[truncated]';
-            }
-            return message;
+            return truncate(parts.join(' '), MAX_MESSAGE_LENGTH);
         }
 
         function sendLog(level, args) {
             try {
                 const message = formatArgs(args);
-                // Use __detourPolyfillRequest if available (web view contexts),
-                // otherwise fall back to sendNativeMessage (service worker contexts).
-                if (typeof g.__detourPolyfillRequest === 'function') {
-                    // Swallow the bridge's rejection: an unhandled one would reach the
-                    // unhandledrejection reporter below, which logs through this same
-                    // path and would feed itself for as long as the bridge keeps failing.
-                    const pending = g.__detourPolyfillRequest('log', { level: level, message: message });
-                    if (pending && typeof pending.then === 'function') pending.then(null, function() {});
-                } else {
-                    let extID = '';
-                    try { extID = chrome.runtime.id || ''; } catch(e) {}
-                    chrome.runtime.sendNativeMessage('detourPolyfill', {
-                        type: 'log', extensionID: extID,
-                        params: { level: level, message: message }
-                    });
-                }
+                // __detourPolyfillRequest (preamble) already picks the transport:
+                // webkit.messageHandlers in web views, sendNativeMessage in workers.
+                if (typeof g.__detourPolyfillRequest !== 'function') return;
+                // Swallow the bridge's rejection: an unhandled one would reach the
+                // unhandledrejection reporter below, which logs through this same
+                // path and would feed itself for as long as the bridge keeps failing.
+                const pending = g.__detourPolyfillRequest('log', { level: level, message: message });
+                if (pending && typeof pending.then === 'function') pending.then(null, function() {});
             } catch (e) {}
         }
 
         console.log = function() { _origLog.apply(console, arguments); sendLog('info', arguments); };
+        console.info = function() { _origInfo.apply(console, arguments); sendLog('info', arguments); };
         console.warn = function() { _origWarn.apply(console, arguments); sendLog('warn', arguments); };
         console.error = function() { _origError.apply(console, arguments); sendLog('error', arguments); };
 
@@ -501,8 +494,9 @@ struct ExtensionAPIPolyfill {
     /// ping stops, and the keep-alive port is closed, when the last real native
     /// port disconnects, so the worker can be unloaded normally afterwards.
     ///
-    /// `__detourKeepAlivePingIntervalMs` (read once at install) overrides the ping
-    /// interval for tests.
+    /// Installed in service worker contexts only. `__detourKeepAlivePingIntervalMs`
+    /// (read once at install) overrides the ping interval for tests, and
+    /// `__detourForceNativePortKeepAlive` installs it outside workers for tests.
     private static let nativePortKeepAliveJS = """
     (function() {
         const g = globalThis;
@@ -611,55 +605,65 @@ struct ExtensionAPIPolyfill {
             return runtime.connectNative === wrapped;
         }
 
-        // Fallback for WebKit's runtime object, whose `connectNative` is a
-        // non-writable own property that silently ignores both assignment and
-        // defineProperty: shadow the `chrome`/`browser` globals (plain writable
-        // globals) with proxies whose `runtime` binds every real function to the
-        // real runtime object (WebKit's bindings need the original `this`) and
-        // overrides only `connectNative`. Everything else, including
-        // __detourDefine calls from later polyfill modules, forwards to the real
-        // objects. Only done in service worker contexts: the keep-alive is about
-        // the background page, and extension UI pages are left untouched.
-        function installByShadowingGlobals(realChrome, runtime, wrapped) {
-            if (typeof ServiceWorkerGlobalScope === 'undefined') return false;
-            // The bound-function cache in boundProxy is keyed on the current value on
-            // purpose: missingStubsJS later patches runtime.getURL through this proxy,
-            // and the patched function must be what subsequent reads return.
-            const runtimeProxy = boundProxy(runtime, { connectNative: wrapped });
-            const chromeProxy = new Proxy(realChrome, {
-                get(target, prop) {
-                    if (prop === 'runtime') return runtimeProxy;
-                    return Reflect.get(target, prop, target);
-                },
-                set(target, prop, value) { return Reflect.set(target, prop, value, target); }
-            });
-            try {
-                if (g.chrome === realChrome) g.chrome = chromeProxy;
-                if (g.browser === realChrome) g.browser = chromeProxy;
-            } catch (e) { return false; }
-            return g.chrome === chromeProxy;
-        }
-
+        // There is deliberately no fallback when the direct patch does not take,
+        // and in WebKit it never does: `runtime.connectNative` there is
+        // re-materialized on every read, so assignment and defineProperty are
+        // accepted but the read-back is always a fresh native function (probed in
+        // ExtensionPolyfillIntegrationTests, 2026-09-11, TASK-15). The keep-alive
+        // is therefore inert in WebKit workers ('none' / 'patch-rejected') and only
+        // 'direct' on plain runtime objects (tests). The two conceivable fallbacks
+        // both fail in WebKit service workers:
+        //  - Replacing the `chrome`/`browser` globals with a proxy breaks every
+        //    runtime.sendMessage to the worker: WebKit's dispatcher reads those
+        //    globals and unwraps them to the native namespace to find the worker's
+        //    onMessage listeners; a proxy fails the unwrap, the worker is skipped,
+        //    and the sender gets the empty default reply (1Password's popup died
+        //    with "Oops, something went wrong while loading").
+        //  - Pinning a proxied `runtime` as an own property on the namespace is
+        //    accepted but ignored on reads: the static getter keeps returning the
+        //    native runtime object.
+        // 'direct' | 'none': which install path took effect (read-only status below).
+        let installMode = 'none';
+        // Why 'none', for diagnostics: 'not-a-worker' | 'no-runtime' | 'no-connectNative:<typeof>' | 'patch-rejected'.
+        let installDetail = '';
         function install(realChrome) {
             const runtime = realChrome && realChrome.runtime;
-            if (!runtime || typeof runtime.connectNative !== 'function') return;
+            if (!runtime) { installDetail = 'no-runtime'; return; }
+            if (typeof runtime.connectNative !== 'function') { installDetail = 'no-connectNative:' + typeof runtime.connectNative; return; }
             const wrapped = makeWrapped(runtime);
-            if (installDirectly(runtime, wrapped)) return;
-            installByShadowingGlobals(realChrome, runtime, wrapped);
+            if (installDirectly(runtime, wrapped)) { installMode = 'direct'; installDetail = ''; }
+            else installDetail = 'patch-rejected';
         }
 
-        install(g.chrome);
-        // WebKit vends one namespace object under both names, so this is only for
-        // environments where `browser` is a separate object with its own runtime.
-        if (g.browser && g.browser !== g.chrome && (!g.chrome || g.browser.runtime !== g.chrome.runtime)) {
-            install(g.browser);
+        // Workers only: the keep-alive exists to hold the *background worker*
+        // alive, and Detour keeps one keep-alive port per extension, so a popup
+        // or options page opening a real native port would otherwise open its
+        // own keep-alive port and evict the worker's. `__detourForceNativePortKeepAlive`
+        // installs it outside workers for tests.
+        const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
+        if (isWorker || g.__detourForceNativePortKeepAlive === true) {
+            install(g.chrome);
+            // WebKit vends one namespace object under both names, so this is only for
+            // environments where `browser` is a separate object with its own runtime.
+            if (g.browser && g.browser !== g.chrome && (!g.chrome || g.browser.runtime !== g.chrome.runtime)) {
+                install(g.browser);
+            }
+        } else {
+            installDetail = 'not-a-worker';
+        }
+        if (isWorker) {
+            // One line per worker start, through the console bridge, so the path a
+            // real worker took is visible in the unified log.
+            try { console.info('[Detour polyfill] native port keep-alive install mode: ' + installMode + (installDetail ? ' (' + installDetail + ')' : '')); } catch (e) {}
         }
 
         // Read-only status for diagnostics and tests.
         g.__detourNativePortKeepAlive = Object.freeze({
             get livePorts() { return livePorts; },
             get active() { return keepAlivePort !== null; },
-            get pingIntervalMs() { return pingIntervalMs; }
+            get pingIntervalMs() { return pingIntervalMs; },
+            get installMode() { return installMode; },
+            get installDetail() { return installDetail; }
         });
     })();
     """
