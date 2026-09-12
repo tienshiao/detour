@@ -1,11 +1,11 @@
 ---
 id: TASK-8
 title: 'Extensions: WebSocket relay for service worker contexts'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-12 02:09'
-updated_date: '2026-09-12 10:52'
+updated_date: '2026-09-12 17:30'
 labels:
   - extensions
   - webkit
@@ -25,7 +25,7 @@ WebKit runs an extension's background service worker on the main thread of its c
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 In a service worker, new WebSocket('wss://...') connects, sends and receives text and binary frames, and closes with the server's code, without touching the main thread's run loop (verified with a probe extension against a public echo server and with 1Password's notifier connecting)
+- [x] #1 In a service worker, new WebSocket('wss://...') connects, sends and receives text and binary frames, and closes with the server's code, without touching the main thread's run loop (verified with a probe extension against a public echo server and with 1Password's notifier connecting)
 - [x] #2 Sockets are torn down when the worker closes them, when the worker is unloaded, and when the extension context is unloaded; no URLSessionWebSocketTask outlives its port
 - [x] #3 Page contexts (popup, options, offscreen) keep using WebKit's native WebSocket
 - [x] #4 ExtensionPolyfillTests cover the worker-side class (state machine, event order, send/close semantics) against a fake native side, and an integration test exercises the native relay end to end
@@ -48,4 +48,12 @@ Implemented (2026-09-12): WebSocketRelay.swift (WebSocketRelayPort protocol + Me
 Code review (medium) decisions: per-socket FIFO so Blob frames keep order and flush during CLOSING; an open relayed socket now counts toward the TASK-16 keep-alive (broader than Chrome, which only resets its idle timer on socket traffic; chosen so a quiet notifier is not killed with the idle worker every 2.5 min); the handshake carries the owning profile's cookies (read from its WKWebsiteDataStore at open time only); close() without a code reports 1005 and close(null) throws InvalidAccessError; dead URLSession injection removed; relay mode decided once at install; dead guard alias dropped; delegate paths consult the NativeHostAccess enum and the relay's extension-id fallback applies only to controllers no Profile owns (a stale context is rejected like every other path); shared __detourResolveNativeRuntime helper in the preamble.
 
 After the review fix round: 202 tests green (WebSocketRelaySessionTests 19, ExtensionPolyfillTests 112, integration 21, wiring 10, permissions 23, keep-alive 17); app builds. AC #1 status: connect/send/receive text+binary/close with the server's code verified in a REAL service worker against a loopback echo server (integration + production-wiring tests), with the worker's main thread never blocked (relay is fully async over the port). Not yet verified: a public echo server and 1Password's notifier connecting in production, which needs the signed /Applications build (1Password only trusts that); deploy with scripts/deploy-1password-test.sh, then look for 'Relaying a WebSocket for aeblfdkhhhdcdjpifhhbdiojplfjncoa' and 'Relayed WebSocket open' in the websocket-relay log category, and the api-explorer WebSocket (Relay) panel against wss://echo.websocket.org. Extra fix found during review: application close codes 3000-4999 are now reported back verbatim (URLSessionWebSocketTask has no case for them).
+
+Closed 2026-09-12 on the user's decision. AC #1's loopback half (real service worker, text+binary, server close code, no main-thread blocking) is verified by the integration and production-wiring tests; the public-echo-server and live-1Password-notifier half needs the signed /Applications build and is tracked in TASK-21 together with TASK-16's production check.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Worker WebSockets are relayed through Detour: RelayedWebSocket in the worker polyfill (full WebSocket interface, guard kept as fallback) talks over a per-socket runtime.connectNative port to the built-in detourWebSocketRelay host, where WebSocketRelaySession drives one URLSessionWebSocketTask per port and tears it down with the port, worker, or context. Sessions carry the owning profile's cookies, honor host_permissions where declared, keep per-socket FIFO order for Blob frames, report application close codes 3000-4999 verbatim, and an open socket counts toward the TASK-16 keep-alive. Verified with 202 green tests (WebSocketRelaySessionTests, ExtensionPolyfillTests, a real-worker integration round trip and a production-wiring variant against a loopback echo server). Production check against wss://echo.websocket.org and 1Password's notifier moved to TASK-21.
+<!-- SECTION:FINAL_SUMMARY:END -->
