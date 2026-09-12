@@ -436,7 +436,8 @@ class TabStore {
                     peekInteractionState: tab.peekInteractionState,
                     peekFaviconURL: tab.peekFaviconURL?.absoluteString,
                     splitGroupID: tab.splitGroupID?.uuidString,
-                    splitFraction: tab.splitFraction
+                    splitFraction: tab.splitFraction,
+                    extensionID: space.profile?.extensionID(forPageURL: tab.url)
                 ))
             }
 
@@ -456,7 +457,8 @@ class TabStore {
                     parentID: tab.parentID?.uuidString,
                     peekURL: tab.peekURL?.absoluteString,
                     peekInteractionState: tab.peekInteractionState,
-                    peekFaviconURL: tab.peekFaviconURL?.absoluteString
+                    peekFaviconURL: tab.peekFaviconURL?.absoluteString,
+                    extensionID: space.profile?.extensionID(forPageURL: tab.url)
                 ))
             }
 
@@ -484,7 +486,8 @@ class TabStore {
                     parentID: nil,
                     peekURL: nil,
                     peekInteractionState: nil,
-                    peekFaviconURL: nil
+                    peekFaviconURL: nil,
+                    extensionID: profile.extensionID(forPageURL: tab.url)
                 )
                 if let idx = sessionData.firstIndex(where: { $0.0.id == hostSpaceID.uuidString }) {
                     sessionData[idx].1.append(tabRecord)
@@ -528,7 +531,8 @@ class TabStore {
                     folderID: entry.folderID?.uuidString,
                     tabID: entry.tab?.id.uuidString,
                     splitGroupID: entry.splitGroupID?.uuidString,
-                    splitFraction: entry.splitFraction
+                    splitFraction: entry.splitFraction,
+                    extensionID: space.profile?.extensionID(forPageURL: entry.pinnedURL)
                 ))
             }
 
@@ -547,7 +551,8 @@ class TabStore {
                     title: fav.title,
                     faviconURL: fav.faviconURL?.absoluteString,
                     sortOrder: i,
-                    tabID: fav.tab?.id.uuidString
+                    tabID: fav.tab?.id.uuidString,
+                    extensionID: profile.extensionID(forPageURL: fav.url)
                 )
             }
             appDB.saveFavorites(records, profileID: profile.id.uuidString)
@@ -568,6 +573,53 @@ class TabStore {
 
         // Ensure the built-in incognito profile exists
         ensureIncognitoProfile()
+
+        // Extension pages (TASK-24). A persisted webkit-extension:// URL names an
+        // origin that died with the previous launch's context; the extension id
+        // saved alongside it is the durable identity (`classifyPersistedExtensionPage`):
+        // - not installed (or no saved id): dropped everywhere, so no tab or tile
+        //   is ever restored for a page that can never load;
+        // - installed but disabled in the profile: pinned entries, favourites and
+        //   closed-tab records keep it for a later enable, but a tab open on it
+        //   (session or backing tab) is dropped — what a mid-session disable does;
+        // - enabled: tabs are restored *sleeping*, without their interaction
+        //   state (its back/forward list is all on the dead origin).
+        // Every kept page registers its origin as pending on the profile:
+        // contexts load asynchronously after this returns, and
+        // `Profile.resolvePendingExtensionPages` moves the pages onto them then
+        // (or on the enable, for a disabled extension).
+        let installedExtensionIDs = appDB.installedExtensionIDs()
+        var enabledExtensionIDsByProfile: [UUID: Set<String>] = [:]
+        var droppedTabIDs = Set<UUID>()
+        func persistedPage(_ urlString: String?, extensionID: String?, in profile: Profile?) -> PersistedExtensionPage {
+            let url = urlString.flatMap { URL(string: $0) }
+            guard isExtensionPageURL(url) else { return .notExtensionPage }
+            var enabled: Set<String> = []
+            if let profile {
+                if let cached = enabledExtensionIDsByProfile[profile.id] {
+                    enabled = cached
+                } else {
+                    enabled = appDB.enabledExtensionIDs(for: profile.id.uuidString)
+                    enabledExtensionIDsByProfile[profile.id] = enabled
+                }
+            }
+            return classifyPersistedExtensionPage(url: url, extensionID: extensionID,
+                                                  installedExtensionIDs: installedExtensionIDs,
+                                                  enabledExtensionIDs: enabled)
+        }
+        /// Registers the pending origin of a page that is being kept.
+        func keep(_ page: PersistedExtensionPage, in profile: Profile?) {
+            guard let origin = page.pendingOrigin else { return }
+            profile?.registerPendingExtensionOrigin(host: origin.originHost, extensionID: origin.extensionID)
+        }
+        /// Whether a tab open on `page` can be restored: an ordinary page, or an
+        /// enabled extension's page.
+        func isRestorableAsTab(_ page: PersistedExtensionPage) -> Bool {
+            switch page {
+            case .notExtensionPage, .restorable: return true
+            case .disabled, .unavailable: return false
+            }
+        }
 
         for (spaceRecord, tabRecords) in session.spaces {
             guard let spaceID = UUID(uuidString: spaceRecord.id) else { continue }
@@ -593,9 +645,28 @@ class TabStore {
                 guard let tabID = UUID(uuidString: tabRecord.id) else { continue }
                 guard !backingTabIDs.contains(tabRecord.id) else { continue }
                 guard tabRecord.sortOrder >= 0 else { continue }
+                let page = persistedPage(tabRecord.url, extensionID: tabRecord.extensionID, in: space.profile)
+                guard isRestorableAsTab(page) else {
+                    droppedTabIDs.insert(tabID)
+                    continue
+                }
+                keep(page, in: space.profile)
+                let isExtensionPage = page != .notExtensionPage
                 let isSelected = space.selectedTabID == tabID
                 let tab: BrowserTab
-                if isSelected {
+                if isExtensionPage {
+                    tab = BrowserTab(
+                        id: tabID,
+                        title: tabRecord.title,
+                        url: tabRecord.url.flatMap { URL(string: $0) },
+                        faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
+                        cachedInteractionState: nil,
+                        spaceID: spaceID
+                    )
+                    tab.lastDeselectedAt = isSelected
+                        ? nil
+                        : tabRecord.lastDeselectedAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+                } else if isSelected {
                     tab = BrowserTab(
                         id: tabID,
                         title: tabRecord.title,
@@ -646,14 +717,46 @@ class TabStore {
             let tabRecordsByID = Dictionary(tabRecords.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             for pinnedRecord in pinnedRecords {
                 guard let entryID = UUID(uuidString: pinnedRecord.id) else { continue }
+                // An entry whose home page belongs to an extension that is not
+                // installed is dropped with its backing tab (a tile that can only
+                // open a dead page). A split partner left alone is dissolved by
+                // `sanitizePinnedSplitGroups` below. A disabled extension's entry
+                // is kept, dormant, for a later enable.
+                let pinnedPage = persistedPage(pinnedRecord.pinnedURL, extensionID: pinnedRecord.extensionID, in: space.profile)
+                if pinnedPage == .unavailable {
+                    if let backingTabID = pinnedRecord.tabID.flatMap({ UUID(uuidString: $0) }) {
+                        droppedTabIDs.insert(backingTabID)
+                    }
+                    continue
+                }
+                keep(pinnedPage, in: space.profile)
                 let pinnedURL = URL(string: pinnedRecord.pinnedURL) ?? URL(string: "about:blank")!
 
                 var backingTab: BrowserTab? = nil
                 if let backingTabIDStr = pinnedRecord.tabID,
                    let backingTabID = UUID(uuidString: backingTabIDStr),
                    let tabRecord = tabRecordsByID[backingTabIDStr] {
+                    // The backing tab falls back to the entry's URL, so it is that
+                    // page (already classified) when the record has none. One on a
+                    // page of an extension that is gone or disabled is dropped,
+                    // leaving the entry dormant — what closing the tab by hand does.
+                    let backingPage = tabRecord.url == nil
+                        ? pinnedPage
+                        : persistedPage(tabRecord.url, extensionID: tabRecord.extensionID, in: space.profile)
                     let isSelected = space.selectedTabID == backingTabID
-                    if isSelected {
+                    if !isRestorableAsTab(backingPage) {
+                        droppedTabIDs.insert(backingTabID)
+                    } else if backingPage != .notExtensionPage {
+                        keep(backingPage, in: space.profile)
+                        backingTab = BrowserTab(
+                            id: backingTabID,
+                            title: tabRecord.title,
+                            url: tabRecord.url.flatMap { URL(string: $0) } ?? pinnedURL,
+                            faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
+                            cachedInteractionState: nil,
+                            spaceID: spaceID
+                        )
+                    } else if isSelected {
                         backingTab = BrowserTab(
                             id: backingTabID,
                             title: tabRecord.title,
@@ -730,20 +833,37 @@ class TabStore {
             let hostSpace = self.spaces.first(where: { $0.profileID == profile.id && !$0.isIncognito })
             for record in favRecords {
                 guard let favID = UUID(uuidString: record.id) else { continue }
+                // As for pinned entries: a favourite of an uninstalled extension's
+                // page is dropped with its backing tab, a disabled one's is kept;
+                // a backing tab on either is dropped, leaving the favourite dormant.
+                let favoritePage = persistedPage(record.url, extensionID: record.extensionID, in: profile)
+                if favoritePage == .unavailable {
+                    if let tabID = record.tabID.flatMap({ UUID(uuidString: $0) }) {
+                        droppedTabIDs.insert(tabID)
+                    }
+                    continue
+                }
+                keep(favoritePage, in: profile)
 
                 var backingTab: BrowserTab? = nil
                 if let tabIDStr = record.tabID,
                    let tabID = UUID(uuidString: tabIDStr),
                    let (tabRecord, _) = allTabRecordsByID[tabIDStr],
                    let hostSpace {
-                    backingTab = BrowserTab(
-                        id: tabID,
-                        title: tabRecord.title,
-                        url: tabRecord.url.flatMap { URL(string: $0) },
-                        faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
-                        cachedInteractionState: tabRecord.interactionState,
-                        spaceID: hostSpace.id
-                    )
+                    let backingPage = persistedPage(tabRecord.url, extensionID: tabRecord.extensionID, in: profile)
+                    if !isRestorableAsTab(backingPage) {
+                        droppedTabIDs.insert(tabID)
+                    } else {
+                        keep(backingPage, in: profile)
+                        backingTab = BrowserTab(
+                            id: tabID,
+                            title: tabRecord.title,
+                            url: tabRecord.url.flatMap { URL(string: $0) },
+                            faviconURL: tabRecord.faviconURL.flatMap { URL(string: $0) },
+                            cachedInteractionState: backingPage == .notExtensionPage ? tabRecord.interactionState : nil,
+                            spaceID: hostSpace.id
+                        )
+                    }
                     backingTab?.spaceID = hostSpace.id
                     if let tab = backingTab {
                         self.subscribeToTab(tab, spaceID: hostSpace.id)
@@ -768,8 +888,24 @@ class TabStore {
             }
         }
 
-        // Load closed tab stack from DB
-        self.closedTabStack = appDB.loadClosedTabs()
+        // A space whose selected tab was dropped above must not keep pointing at it.
+        for space in self.spaces {
+            guard let selectedID = space.selectedTabID, droppedTabIDs.contains(selectedID) else { continue }
+            space.selectedTabID = space.tabs.first?.id
+                ?? space.pinnedEntries.first(where: { $0.tab != nil })?.tab?.id
+        }
+
+        // Load closed tab stack from DB. A closed extension page is resolved when
+        // it is reopened (`reopenClosedTab`), which skips (and keeps) a disabled
+        // extension's; one whose extension is not installed can never be reopened
+        // and is deleted now.
+        self.closedTabStack = appDB.loadClosedTabs().filter { record in
+            guard let space = UUID(uuidString: record.spaceID).flatMap({ self.space(withID: $0) }),
+                  persistedPage(record.url, extensionID: record.extensionID, in: space.profile) == .unavailable
+            else { return true }
+            appDB.deleteClosedTab(tabID: record.tabID)
+            return false
+        }
 
         let activeID = session.lastActiveSpaceID.flatMap { UUID(uuidString: $0) } ?? self.spaces.first!.id
         self.lastActiveSpaceID = activeID
@@ -814,15 +950,7 @@ class TabStore {
               let fav = profile.favorites.first(where: { $0.id == id }),
               fav.tab == nil else { return }
 
-        let tab = BrowserTab(
-            id: UUID(),
-            title: fav.title,
-            archivedInteractionState: nil,
-            fallbackURL: fav.url,
-            faviconURL: fav.faviconURL,
-            configuration: space.makeWebViewConfiguration()
-        )
-        tab.spaceID = space.id
+        let tab = makeTab(loading: fav.url, title: fav.title, faviconURL: fav.faviconURL, in: space)
         fav.tab = tab
         subscribeToTab(tab, spaceID: space.id)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
@@ -1479,7 +1607,8 @@ class TabStore {
                 faviconURL: tabFaviconURL,
                 interactionState: stateData,
                 sortOrder: index,
-                archivedAt: archivedAt?.timeIntervalSince1970
+                archivedAt: archivedAt?.timeIntervalSince1970,
+                extensionID: space.profile?.extensionID(forPageURL: tab.url)
             )
             appDB.pushClosedTab(record)
             closedTabStack.insert(record, at: 0)
@@ -1833,7 +1962,8 @@ class TabStore {
                     faviconURL: snapshot.faviconURL,
                     interactionState: snapshot.interactionState,
                     sortOrder: index,
-                    archivedAt: nil
+                    archivedAt: nil,
+                    extensionID: space.profile?.extensionID(forPageURL: member.url)
                 )
                 appDB.pushClosedTab(record)
                 closedTabStack.insert(record, at: 0)
@@ -2194,16 +2324,34 @@ class TabStore {
     /// the pinned URL. The caller decides the entry's fate: keep it live
     /// (`entry.tab = tab`) or remove it (the unpin paths).
     private func materializeDormantEntry(_ entry: PinnedEntry, in space: Space) -> BrowserTab {
+        let tab = makeTab(loading: entry.pinnedURL, title: entry.pinnedTitle, faviconURL: entry.faviconURL, in: space)
+        subscribeToTab(tab, spaceID: space.id)
+        return tab
+    }
+
+    /// A new tab that opens `url` — for a tile (dormant pinned entry, favourite)
+    /// or record that has no web view yet.
+    ///
+    /// An extension page is created *sleeping* instead of loaded here: it can only
+    /// load in the configuration of the context serving its origin, which the
+    /// space configuration is not, and `BrowserTab.wake` resolves exactly that
+    /// when the window displays the tab (TASK-24). A restored page whose context
+    /// has not loaded yet stays unloaded until `resolvePendingExtensionPages`
+    /// moves it.
+    private func makeTab(loading url: URL, title: String, faviconURL: URL?, in space: Space) -> BrowserTab {
+        if isExtensionPageURL(url) {
+            return BrowserTab(id: UUID(), title: title, url: url, faviconURL: faviconURL,
+                              cachedInteractionState: nil, spaceID: space.id)
+        }
         let tab = BrowserTab(
             id: UUID(),
-            title: entry.pinnedTitle,
+            title: title,
             archivedInteractionState: nil,
-            fallbackURL: entry.pinnedURL,
-            faviconURL: entry.faviconURL,
+            fallbackURL: url,
+            faviconURL: faviconURL,
             configuration: space.makeWebViewConfiguration()
         )
         tab.spaceID = space.id
-        subscribeToTab(tab, spaceID: space.id)
         return tab
     }
 
@@ -2613,27 +2761,92 @@ class TabStore {
 
     func canReopenClosedTab(in space: Space) -> Bool {
         let spaceIDString = space.id.uuidString
-        return closedTabStack.contains { $0.spaceID == spaceIDString }
+        return closedTabStack.contains { record in
+            guard record.spaceID == spaceIDString else { return false }
+            switch closedTabPage(record, in: space) {
+            case .notExtensionPage, .restorable: return true
+            case .disabled, .unavailable: return false
+            }
+        }
+    }
+
+    /// What a closed-tab record's page is now (TASK-24). Only an extension page
+    /// consults the database.
+    private func closedTabPage(_ record: ClosedTabRecord, in space: Space) -> PersistedExtensionPage {
+        let url = record.url.flatMap { URL(string: $0) }
+        guard isExtensionPageURL(url) else { return .notExtensionPage }
+        return classifyPersistedExtensionPage(
+            url: url, extensionID: record.extensionID,
+            installedExtensionIDs: appDB.installedExtensionIDs(),
+            enabledExtensionIDs: space.profile.map { appDB.enabledExtensionIDs(for: $0.id.uuidString) } ?? []
+        )
     }
 
     @discardableResult
     func reopenClosedTab(in space: Space) -> BrowserTab? {
         let spaceIDString = space.id.uuidString
-        guard let stackIndex = closedTabStack.firstIndex(where: { $0.spaceID == spaceIDString }) else {
-            return nil
-        }
-        let record = closedTabStack.remove(at: stackIndex)
-        _ = appDB.popClosedTab(spaceID: spaceIDString)
 
-        let tab = BrowserTab(
-            id: UUID(),
-            title: record.title,
-            archivedInteractionState: record.interactionState,
-            fallbackURL: record.url.flatMap { URL(string: $0) },
-            faviconURL: record.faviconURL.flatMap { URL(string: $0) },
-            configuration: space.makeWebViewConfiguration()
-        )
-        tab.spaceID = space.id
+        // The most recent record of this space that can be reopened now. An
+        // extension page (TASK-24) is judged by its saved extension id: one whose
+        // extension has been uninstalled since can never load again and is
+        // discarded; one whose extension is disabled is skipped but *kept*, so
+        // it can be reopened after the extension is enabled again.
+        var candidate: (index: Int, record: ClosedTabRecord, page: PersistedExtensionPage)?
+        var index = 0
+        scan: while index < closedTabStack.count {
+            let record = closedTabStack[index]
+            guard record.spaceID == spaceIDString else { index += 1; continue }
+            let page = closedTabPage(record, in: space)
+            switch page {
+            case .unavailable:
+                closedTabStack.remove(at: index)
+                appDB.deleteClosedTab(tabID: record.tabID)
+            case .disabled:
+                index += 1
+            case .notExtensionPage, .restorable:
+                candidate = (index, record, page)
+                break scan
+            }
+        }
+        guard let (stackIndex, record, page) = candidate else { return nil }
+        closedTabStack.remove(at: stackIndex)
+        // By tab id rather than popping the space's newest row: skipped records
+        // may sit above this one.
+        appDB.deleteClosedTab(tabID: record.tabID)
+
+        let recordURL = record.url.flatMap { URL(string: $0) }
+        let tab: BrowserTab
+        if case .restorable(let extensionID, let host) = page, let recordURL {
+            // The record's origin may be a dead one (a previous launch, or a
+            // context reloaded since the close). Rewritten onto the extension's
+            // current context, or — when the context has not loaded yet —
+            // registered as a pending origin for `resolvePendingExtensionPages` to
+            // move. The interaction state is dropped either way: its back/forward
+            // list is on the old origin.
+            var url = recordURL
+            if let profile = space.profile {
+                if let context = profile.extensionContext(for: extensionID) {
+                    if let oldBase = extensionOriginBaseURL(host: host),
+                       let rewritten = rewriteExtensionPageURL(recordURL, from: oldBase, to: context.baseURL) {
+                        url = rewritten
+                    }
+                } else {
+                    profile.registerPendingExtensionOrigin(host: host, extensionID: extensionID)
+                }
+            }
+            tab = makeTab(loading: url, title: record.title,
+                          faviconURL: record.faviconURL.flatMap { URL(string: $0) }, in: space)
+        } else {
+            tab = BrowserTab(
+                id: UUID(),
+                title: record.title,
+                archivedInteractionState: record.interactionState,
+                fallbackURL: recordURL,
+                faviconURL: record.faviconURL.flatMap { URL(string: $0) },
+                configuration: space.makeWebViewConfiguration()
+            )
+            tab.spaceID = space.id
+        }
 
         let insertionIndex = snappedToSplitGroupBoundary(
             min(record.sortOrder, space.tabs.count),

@@ -507,6 +507,19 @@ struct AppDatabase {
             }
         }
 
+        // TASK-24: the durable identity of an extension page. WebKit mints a fresh
+        // webkit-extension://<uuid>/ origin per context load, so a stored URL on
+        // its own is dead after a relaunch; the id (with the path/query/fragment
+        // the URL already carries) lets restore rewrite it onto the current
+        // context. NULL for every URL that is not an extension page.
+        migrator.registerMigration("v8") { db in
+            for table in ["tab", "pinnedTab", "favorite", "closedTab"] {
+                try db.alter(table: table) { t in
+                    t.add(column: "extensionID", .text)
+                }
+            }
+        }
+
         return migrator
     }
 
@@ -742,6 +755,13 @@ struct AppDatabase {
             } else {
                 try ProfileExtensionRecord(profileID: profileID, extensionID: extensionID, isEnabled: true, isPinned: true).insert(db)
             }
+        }
+    }
+
+    /// Ids of every installed extension, enabled or not.
+    func installedExtensionIDs() -> Set<String> {
+        performRead("load installed extension IDs", default: []) { db in
+            Set(try String.fetchAll(db, sql: "SELECT id FROM \"extension\""))
         }
     }
 

@@ -505,4 +505,57 @@ final class ExtensionPageRehostTests: XCTestCase {
 
         XCTAssertEqual(tabIDs, [page.id], "only the rehosted tab is named; \(webTab.id) was untouched")
     }
+
+    // MARK: - TASK-24: pending origins
+
+    /// A disable leaves the pinned tile dormant on the dead origin; the origin is
+    /// kept as pending, so the tile keeps its extension identity (a save writes
+    /// it) and a re-enable moves it onto the new context's origin.
+    func testReEnablingMovesADormantTileLeftOnTheDisabledOrigin() async throws {
+        let ext = try await makeTestExtension(named: "reenable")
+        let profile = makeProfile("Rehost Reenable Profile")
+        let space = makeSpace("Rehost Reenable", in: profile)
+        let first = try loadContext(profile, ext)
+        let (tab, pageURL) = try openExtensionPage(first, in: space, path: "options.html?keep=1")
+        TabStore.shared.pinTab(id: tab.id, in: space)
+        let entry = try XCTUnwrap(space.pinnedEntries.first)
+
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
+        await waitUntil("the pinned extension page to go dormant") { entry.tab == nil }
+        XCTAssertEqual(entry.pinnedURL, pageURL, "precondition: the tile stays on the dead origin")
+        XCTAssertEqual(profile.extensionID(forPageURL: entry.pinnedURL), ext.id,
+                       "the dormant tile keeps its identity while the extension is disabled")
+
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
+        await waitUntil("the context to come back") { profile.extensionContexts[ext.id] != nil }
+        let second = try XCTUnwrap(profile.extensionContexts[ext.id])
+        XCTAssertEqual(entry.pinnedURL, rewriteExtensionPageURL(pageURL, from: first.baseURL, to: second.baseURL),
+                       "the re-enable moves the tile onto the new origin")
+        XCTAssertTrue(profile.pendingExtensionOrigins.isEmpty)
+    }
+
+    /// A page restored from the previous launch that is still waiting for its
+    /// context is on no loaded origin, so a disable must find it through the
+    /// pending origin to close it; an uninstall forgets the origin entirely.
+    func testDisablingAndUninstallingCloseRestoredPagesStillWaitingForTheirContext() async throws {
+        let ext = try await makeTestExtension(named: "pending-close")
+        let profile = makeProfile("Rehost Pending Profile")
+        let space = makeSpace("Rehost Pending", in: profile)
+        _ = profile.extensionController
+
+        let deadHost = UUID().uuidString.lowercased()
+        let deadURL = try XCTUnwrap(URL(string: "webkit-extension://\(deadHost)/options.html"))
+        profile.registerPendingExtensionOrigin(host: deadHost, extensionID: ext.id)
+        let restored = BrowserTab(id: UUID(), title: "Restored", url: deadURL, faviconURL: nil,
+                                  cachedInteractionState: nil, spaceID: space.id)
+        space.tabs.append(restored)
+
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
+        await waitUntil("the waiting page to be closed") { !space.tabs.contains { $0.id == restored.id } }
+        XCTAssertEqual(profile.pendingExtensionOrigins, [deadHost: ext.id],
+                       "a disable keeps the origin so the extension's tiles keep their identity")
+
+        ExtensionManager.shared.uninstall(id: ext.id)
+        XCTAssertTrue(profile.pendingExtensionOrigins.isEmpty, "an uninstall forgets it")
+    }
 }

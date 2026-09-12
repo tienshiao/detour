@@ -528,10 +528,23 @@ class BrowserTab: NSObject {
 
         let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
         self.webView = Self.makeWebView(configuration: wakeConfiguration(in: space))
+
+        // An extension page on a pending origin — restored from the previous
+        // launch before its extension's context loaded (TASK-24) — is left
+        // unloaded: its origin is dead and this web view cannot load the scheme.
+        // `Profile.resolvePendingExtensionPages` rebuilds the tab against the
+        // context once it loads, finding it by `url`, which must therefore
+        // survive the empty web view: the URL observer installed below replaces
+        // `url` with the web view's nil URL unless there is an attempted URL.
+        let awaitingExtensionContext = space?.profile?.isAwaitingExtensionContext(url) == true
+        if awaitingExtensionContext { lastAttemptedURL = url }
+
         applyUserAgent()
         setupObservers()
 
-        if let cachedInteractionState,
+        if awaitingExtensionContext {
+            // Nothing to load until the context does.
+        } else if let cachedInteractionState,
            let state = Self.unarchiveInteractionState(cachedInteractionState) {
             webView?.interactionState = state
         } else if let url {
@@ -561,9 +574,10 @@ class BrowserTab: NSObject {
     /// WebKit gives every loaded context a fresh base URL.
     ///
     /// Falls back to the space's configuration when no loaded context claims the
-    /// origin (the extension was disabled, uninstalled, or this is a persisted
-    /// tab from a previous launch): the page is dead either way, but the tab
-    /// still gets a web view rather than crashing the wake.
+    /// origin (the extension was disabled or uninstalled, or this is a page
+    /// restored from the previous launch whose context has not loaded yet — see
+    /// `Profile.pendingExtensionOrigins`): the tab still gets a web view rather
+    /// than crashing the wake.
     private func wakeConfiguration(in space: Space?) -> WKWebViewConfiguration {
         if let url, let host = url.host,
            url.scheme?.caseInsensitiveCompare(ExtensionPageURL.scheme) == .orderedSame,

@@ -214,6 +214,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             reconcileExtensionContext(ext, in: profile)
         }
 
+        // Pages restored from the previous launch are on origins that died with
+        // it; move them onto the contexts just loaded (TASK-24). Before the
+        // announce below, as for a context reload: each moved tab is left asleep
+        // and announces itself once, on wake.
+        profile.resolvePendingExtensionPages()
         notifyExistingTabs(for: profile)
     }
 
@@ -287,6 +292,30 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         if closed > 0 {
             log.info("Closed \(closed) extension page tab(s) in profile \(profile.name, privacy: .public) after its context was unloaded")
+        }
+    }
+
+    /// Close every page of `extensionID` in `profile` once it is disabled or
+    /// uninstalled there: those on the unloaded context's origin (`unloadedBase`,
+    /// from `Profile.unloadExtension`; nil when no context was loaded) and those
+    /// still on a pending origin — restored from the previous launch before a
+    /// context loaded (TASK-24), which `closeExtensionPages(in:from:)` on the
+    /// unloaded base alone would miss.
+    ///
+    /// A disable keeps the pending origins and registers the unloaded one, so the
+    /// dormant pinned and favourite tiles left on them keep their identity (it is
+    /// saved with them) and are moved onto the new origin if the extension is
+    /// re-enabled. An uninstall forgets them: nothing will serve them again, and
+    /// the next restore drops those tiles.
+    private func closePagesOfUnloadedExtension(
+        _ extensionID: String, in profile: Profile, unloadedBase: URL?, uninstalling: Bool
+    ) {
+        closeExtensionPages(in: profile, from: unloadedBase)
+        for pendingBase in profile.pendingExtensionOriginBaseURLs(for: extensionID, forget: uninstalling) {
+            closeExtensionPages(in: profile, from: pendingBase)
+        }
+        if !uninstalling, let host = unloadedBase?.host {
+            profile.registerPendingExtensionOrigin(host: host, extensionID: extensionID)
         }
     }
 
@@ -706,13 +735,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                     if let context = profile.extensionContext(for: ext.id) {
                         profile.retargetExtensionPages(from: oldBase, to: context.baseURL)
                     } else {
-                        closeExtensionPages(in: profile, from: oldBase)
+                        closePagesOfUnloadedExtension(ext.id, in: profile, unloadedBase: oldBase,
+                                                      uninstalling: false)
                     }
                 }
 
                 // Notify existing tabs in relevant profiles
                 for profile in TabStore.shared.profiles {
                     if profile.extensionContext(for: ext.id) != nil {
+                        profile.resolvePendingExtensionPages()
                         notifyExistingTabs(for: profile)
                     }
                 }
@@ -741,7 +772,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // they can only be dead.
         for profile in TabStore.shared.profiles {
             let oldBase = profile.unloadExtension(id: id, removeData: true)
-            closeExtensionPages(in: profile, from: oldBase)
+            closePagesOfUnloadedExtension(id, in: profile, unloadedBase: oldBase, uninstalling: true)
         }
 
         extensions.removeAll { $0.id == id }
@@ -807,11 +838,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for profile in profiles {
             switch reconcileExtensionContext(ext, in: profile) {
             case .loaded(let context):
+                // Pages left on this extension's pending origins (restored while
+                // it was disabled, or left dormant by an earlier disable) move onto
+                // the new context before it is told about the tabs (TASK-24).
+                profile.resolvePendingExtensionPages()
                 notifyExistingTabs(for: profile, contexts: [context])
             case .unloaded(let oldBase):
-                closeExtensionPages(in: profile, from: oldBase)
+                closePagesOfUnloadedExtension(ext.id, in: profile, unloadedBase: oldBase, uninstalling: false)
             case .unchanged:
-                break
+                // No context to unload — e.g. one that failed to load, leaving the
+                // pages restored for it waiting on pending origins (TASK-24) — but
+                // a disabled extension's pages must still not stay open.
+                if !isEnabled(extensionID: ext.id, inProfile: profile.id) {
+                    closePagesOfUnloadedExtension(ext.id, in: profile, unloadedBase: nil, uninstalling: false)
+                }
             }
         }
     }

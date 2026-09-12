@@ -18,4 +18,6 @@ struct TabRecord: Codable, FetchableRecord, PersistableRecord {
     var peekFaviconURL: String?
     var splitGroupID: String?
     var splitFraction: Double?
+    /// Extension id of the extension page the record's URL names (TASK-24); nil otherwise.
+    var extensionID: String? = nil
 }

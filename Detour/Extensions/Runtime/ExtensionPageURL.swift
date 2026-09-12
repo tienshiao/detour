@@ -49,3 +49,74 @@ func rewriteExtensionPageURL(_ url: URL, from oldBase: URL, to newBase: URL) -> 
     components.percentEncodedFragment = source.percentEncodedFragment
     return components.url
 }
+
+/// Whether `url` is served from the extension scheme at all, whichever context's
+/// origin it names.
+func isExtensionPageURL(_ url: URL?) -> Bool {
+    guard let url, let host = url.host, !host.isEmpty else { return false }
+    return url.scheme?.caseInsensitiveCompare(ExtensionPageURL.scheme) == .orderedSame
+}
+
+/// The base URL of the context origin `host` names (`webkit-extension://<host>/`),
+/// e.g. to rewrite pages persisted on an origin that no longer exists.
+func extensionOriginBaseURL(host: String) -> URL? {
+    guard !host.isEmpty else { return nil }
+    return URL(string: "\(ExtensionPageURL.scheme)://\(host)/")
+}
+
+// MARK: - Persisted extension pages (TASK-24)
+
+/// What a persisted URL is, as far as restoring it goes.
+///
+/// A stored extension page URL names the origin of the context that served it
+/// *in the launch that saved it*; WebKit mints a new one for every context load,
+/// so the URL on its own is dead after a relaunch. The durable identity is the
+/// extension id saved alongside it (the URL still carries the page's path, query
+/// and fragment), and restore rewrites the page onto that extension's current
+/// context once it is loaded.
+enum PersistedExtensionPage: Equatable {
+    /// An ordinary URL (or none): restore it as it always was.
+    case notExtensionPage
+    /// An extension page of an extension installed and enabled in the profile.
+    /// `originHost` is the dead origin the page was saved on, lowercased — the
+    /// key its pages are later rewritten from.
+    case restorable(extensionID: String, originHost: String)
+    /// An extension page of an extension that is installed but not enabled in
+    /// the profile (globally off, or off for this profile). Nothing can show it
+    /// now, but a later enable can: bookmark-like tiles (pinned entries,
+    /// favourites) and closed-tab records keep it, while open tabs on it are
+    /// dropped — what a mid-session disable does.
+    case disabled(extensionID: String, originHost: String)
+    /// An extension page that can never load again: its extension is not
+    /// installed, or the row predates the saved id. Dropped at restore rather
+    /// than restored as a blank tab.
+    case unavailable
+}
+
+/// Classifies a persisted `url` and its saved `extensionID` against the installed
+/// extensions (`AppDatabase.installedExtensionIDs`) and those enabled in the
+/// profile it is restored into (`AppDatabase.enabledExtensionIDs`, the rule
+/// `ExtensionManager` loads contexts by).
+func classifyPersistedExtensionPage(
+    url: URL?, extensionID: String?,
+    installedExtensionIDs: Set<String>, enabledExtensionIDs: Set<String>
+) -> PersistedExtensionPage {
+    guard let url, isExtensionPageURL(url), let host = url.host else { return .notExtensionPage }
+    guard let extensionID, !extensionID.isEmpty, installedExtensionIDs.contains(extensionID) else {
+        return .unavailable
+    }
+    return enabledExtensionIDs.contains(extensionID)
+        ? .restorable(extensionID: extensionID, originHost: host.lowercased())
+        : .disabled(extensionID: extensionID, originHost: host.lowercased())
+}
+
+extension PersistedExtensionPage {
+    /// The extension and dead origin of an installed extension's page — the
+    /// pending origin to register when the page (or its tile) is kept.
+    var pendingOrigin: (extensionID: String, originHost: String)? {
+        switch self {
+        case .restorable(let id, let host), .disabled(let id, let host): return (id, host)
+        case .notExtensionPage, .unavailable: return nil
+        }
+    }
+}

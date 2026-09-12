@@ -485,7 +485,7 @@ class Profile {
     /// i.e. from one context's `webkit-extension://<host>/` origin, with where
     /// it lives. Spaces are global, so only those referencing this profile are
     /// walked; favourites are per-profile already.
-    func extensionPageLocations(forOriginHost host: String) -> [ExtensionPageLocation] {
+    func extensionPageLocations(forOriginHost host: String, in store: TabStore = .shared) -> [ExtensionPageLocation] {
         var result: [ExtensionPageLocation] = []
 
         func considerPeek(of host_: BrowserTab) {
@@ -494,7 +494,7 @@ class Profile {
             }
         }
 
-        for space in TabStore.shared.spaces where space.profileID == id {
+        for space in store.spaces where space.profileID == id {
             for tab in space.tabs {
                 if tab.showsExtensionPage(ofOriginHost: host) { result.append(.tab(space, tab)) }
                 considerPeek(of: tab)
@@ -540,17 +540,16 @@ class Profile {
     /// still asleep when the sweep runs and announces itself exactly once, on
     /// wake.
     @MainActor
-    func retargetExtensionPages(from oldBase: URL, to newBase: URL) {
+    func retargetExtensionPages(from oldBase: URL, to newBase: URL, in store: TabStore = .shared) {
         // Not conditioned on the two origins differing (WebKit always mints a new
         // UUID): even if they somehow matched, the open pages' web views still
         // belong to the *unloaded* context and must be rebuilt from the new one.
         guard let oldHost = oldBase.host else { return }
-        let store = TabStore.shared
         let profileSpaces = store.spaces.filter { $0.profileID == id }
 
         var affectedSpaceIDs = Set<UUID>()
         var retargetedTabIDs = Set<UUID>()
-        for location in extensionPageLocations(forOriginHost: oldHost) {
+        for location in extensionPageLocations(forOriginHost: oldHost, in: store) {
             let tab = location.tab
             guard let url = tab.webView?.url ?? tab.url,
                   let rewritten = rewriteExtensionPageURL(url, from: oldBase, to: newBase) else { continue }
@@ -604,6 +603,85 @@ class Profile {
                 )
             }
         }
+    }
+
+    // MARK: - Extension pages without a live origin (TASK-24)
+
+    /// Origins of extension pages whose extension has no loaded context to serve
+    /// them: the dead origin host (lowercased) → the extension id. Two sources:
+    ///
+    /// - **Pages restored from the previous launch.** WebKit mints a fresh
+    ///   `webkit-extension://<UUID>/` base URL for every context load, so a
+    ///   restored page URL matches no context in this launch. Contexts load
+    ///   asynchronously *after* `TabStore.restoreSession` (the Task started by
+    ///   `ExtensionManager.initialize`), so restore cannot rewrite the URLs
+    ///   itself: it records each origin here and leaves the pages sleeping on it.
+    ///   The dormant tiles (pinned entries, favourites) of an extension that is
+    ///   installed but disabled are restored the same way, for a later enable.
+    /// - **A disable.** The disabled context's origin, so the dormant pinned and
+    ///   favourite tiles left on it are moved if the extension is re-enabled.
+    ///
+    /// `resolvePendingExtensionPages` moves the pages once the extension's context
+    /// is loaded. Until then this map is also what lets a save write the extension
+    /// id out (`extensionID(forPageURL:)`), so quitting before the contexts load
+    /// does not lose the identity.
+    private(set) var pendingExtensionOrigins: [String: String] = [:]
+
+    func registerPendingExtensionOrigin(host: String, extensionID: String) {
+        guard !host.isEmpty, !extensionID.isEmpty else { return }
+        pendingExtensionOrigins[host.lowercased()] = extensionID
+    }
+
+    /// The extension id to persist alongside `url`: the id of the loaded context
+    /// serving its origin, or the id registered for a pending origin. Nil for any
+    /// URL that is not an extension page, and for an extension page whose origin
+    /// no context of this profile claims (it could not be restored either way).
+    func extensionID(forPageURL url: URL?) -> String? {
+        guard let url, isExtensionPageURL(url), let host = url.host else { return nil }
+        return extensionID(forOriginScheme: ExtensionPageURL.scheme, host: host)
+            ?? pendingExtensionOrigins[host.lowercased()]
+    }
+
+    /// Whether `url` is an extension page on a pending origin: no loaded context
+    /// serves it, but its extension is known. `BrowserTab.wake` does not load such
+    /// a page — the fallback configuration cannot load the scheme, and the
+    /// resolution pass rebuilds the tab against the right context anyway.
+    func isAwaitingExtensionContext(_ url: URL?) -> Bool {
+        guard let url, isExtensionPageURL(url), let host = url.host else { return false }
+        return pendingExtensionOrigins[host.lowercased()] != nil
+            && extensionID(forOriginScheme: ExtensionPageURL.scheme, host: host) == nil
+    }
+
+    /// Move every page on a pending origin whose extension now has a loaded
+    /// context onto that context's origin. Origins whose extension has no context
+    /// yet (its load failed, or it is loaded later) stay registered for a later call.
+    ///
+    /// This is `retargetExtensionPages` with the pending origin as the old base,
+    /// so it covers every place such a page can live — space tabs, pinned entries
+    /// (live and dormant), favourites and their backing tabs — rewrites the stored
+    /// pinned/favourite URLs, and has the windows showing one rebuild it, exactly
+    /// as a mid-session context reload does. Callers run it right after loading
+    /// contexts and *before* announcing tabs to them (`notifyExistingTabs`), for
+    /// the same announce-once reason as the reload.
+    @MainActor
+    func resolvePendingExtensionPages(in store: TabStore = .shared) {
+        for (host, extensionID) in pendingExtensionOrigins {
+            guard let context = extensionContext(for: extensionID),
+                  let oldBase = extensionOriginBaseURL(host: host) else { continue }
+            pendingExtensionOrigins.removeValue(forKey: host)
+            retargetExtensionPages(from: oldBase, to: context.baseURL, in: store)
+        }
+    }
+
+    /// The base URLs of `extensionID`'s pending origins, for a disable or
+    /// uninstall to close the pages still open on them. `forget` drops them from
+    /// the map (an uninstall: nothing will ever serve them again).
+    func pendingExtensionOriginBaseURLs(for extensionID: String, forget: Bool) -> [URL] {
+        let hosts = pendingExtensionOrigins.filter { $0.value == extensionID }.map { $0.key }
+        if forget {
+            for host in hosts { pendingExtensionOrigins.removeValue(forKey: host) }
+        }
+        return hosts.compactMap { extensionOriginBaseURL(host: $0) }
     }
 
     // MARK: - Background content recovery

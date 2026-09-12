@@ -11,4 +11,6 @@ struct FavoriteRecord: Codable, FetchableRecord, PersistableRecord {
     var faviconURL: String?
     var sortOrder: Int
     var tabID: String?
+    /// Extension id of the extension page the record's URL names (TASK-24); nil otherwise.
+    var extensionID: String? = nil
 }
