@@ -294,12 +294,8 @@ extension BrowserWindowController: WKNavigationDelegate {
         return (candidates + peeks).first { $0.webView === webView }
     }
 
-    /// Download-policy interruptions and user-initiated cancellations aren't real failures.
     private func isIgnoredNavigationError(_ error: Error) -> Bool {
-        let nsError = error as NSError
-        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return true }
-        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return true }
-        return false
+        error.isIgnoredNavigationError
     }
 
     internal func triggerDownloadAnimation(iconName: String = "doc.fill") {
@@ -368,5 +364,19 @@ extension BrowserWindowController: WKNavigationDelegate {
                 completionHandler(.rejectProtectionSpace, nil)
             }
         }
+    }
+}
+
+extension Error {
+    /// Download-policy interruptions (WebKitErrorDomain 102) and cancellations
+    /// (`NSURLErrorCancelled`, e.g. a page that navigates itself before its
+    /// first load finishes) are not real navigation failures: a superseded load
+    /// is followed by the load that replaced it, so a navigation delegate must
+    /// not treat these as the end of the navigation.
+    var isIgnoredNavigationError: Bool {
+        let nsError = self as NSError
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return true }
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return true }
+        return false
     }
 }

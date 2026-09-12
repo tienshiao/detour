@@ -9,10 +9,47 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "offscree
 /// Created on demand via `chrome.offscreen.createDocument()` and destroyed
 /// via `chrome.offscreen.closeDocument()`.
 class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler, AVAudioPlayerDelegate {
+
+    /// Why an offscreen document's load did not succeed. Both cases settle a
+    /// pending `chrome.offscreen.createDocument`, which would otherwise hang
+    /// forever waiting for a `didFinish` that is never coming.
+    enum LoadError: LocalizedError {
+        /// `stop()` ran while the document was still loading — an explicit
+        /// `closeDocument`, or the context being unloaded/reloaded (TASK-12).
+        case closedBeforeLoad
+        /// The navigation itself failed: the page is missing (404), or the load
+        /// was blocked or otherwise errored out (TASK-18). `path` is the
+        /// extension-relative path that was asked for.
+        case navigationFailed(path: String?, underlying: any Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .closedBeforeLoad:
+                return "Offscreen document was closed before it finished loading"
+            case .navigationFailed(let path, let underlying):
+                let page = path ?? "(unknown page)"
+                return "Offscreen document \(page) failed to load: \(underlying.localizedDescription)"
+            }
+        }
+    }
+
     let extensionID: String
     private(set) var webView: WKWebView?
     private let basePath: URL
-    private var loadCompletionHandlers: [() -> Void] = []
+    /// Completions waiting for the current load to settle. Every path that ends
+    /// a load — `didFinish`, a real navigation failure, and `stop()` — drains
+    /// them through `settleLoad`, exactly once, so a pending `createDocument`
+    /// can neither hang nor be answered twice. More than one can wait: a
+    /// `createDocument` that arrives while the first is still loading joins
+    /// the same load (`addLoadCompletion`) rather than being told a document
+    /// exists before one does.
+    private var loadCompletionHandlers: [(Result<Void, any Error>) -> Void] = []
+    /// True from `load(url:)` until the load settles. While true, the registered
+    /// host is not yet a document: `hasDocument`-style checks must not count it,
+    /// and a concurrent create must wait on it instead of reporting success.
+    private(set) var isLoading = false
+    /// Extension-relative path of the document being loaded, for error text.
+    private var requestedPath: String?
     private var audioPlayer: AVAudioPlayer?
 
     private static let audioBridgeHandler = "detourAudioBridge"
@@ -100,8 +137,12 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
     ///   - url: Relative path within the extension (e.g. "offscreen.html")
     ///   - configuration: Optional WKWebViewConfiguration to use (e.g. from the extension context)
     ///   - baseURL: The extension's webkit-extension:// base URL (from WKWebExtensionContext.baseURL)
-    ///   - completion: Called after the page finishes loading
-    func load(url: String, configuration: WKWebViewConfiguration? = nil, baseURL: URL? = nil, completion: (() -> Void)? = nil) {
+    ///   - completion: Called exactly once when the load settles: `.success`
+    ///     from `didFinish`, `.failure(LoadError.navigationFailed)` when the
+    ///     navigation errors out, `.failure(LoadError.closedBeforeLoad)` when
+    ///     `stop()` runs first.
+    func load(url: String, configuration: WKWebViewConfiguration? = nil, baseURL: URL? = nil,
+              completion: ((Result<Void, any Error>) -> Void)? = nil) {
         let config = configuration ?? WKWebViewConfiguration()
 
         // Register native audio bridge handler. The AudioContext shim itself is injected
@@ -116,6 +157,8 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         self.webView = wv
 
         if let completion { loadCompletionHandlers.append(completion) }
+        requestedPath = url
+        isLoading = true
 
         if let baseURL {
             // Load via the extension's webkit-extension:// URL scheme so chrome.* APIs work
@@ -211,12 +254,48 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         webView?.stopLoading()
         webView = nil
 
-        // A load still in flight never reaches didFinish now; run its completions
-        // so the pending createDocument request settles (the handler's completion
-        // checks whether the host is still registered and fails it if not).
+        // A load still in flight never reaches didFinish now; fail its
+        // completions so the pending createDocument request settles. The web
+        // view is already gone at this point, so a completion that calls back
+        // into stop() finds nothing left to do.
+        settleLoad(.failure(LoadError.closedBeforeLoad))
+    }
+
+    /// Wait on the load already in flight. Only meaningful while `isLoading`;
+    /// callers check that first, since a settled load never runs completions
+    /// again.
+    func addLoadCompletion(_ completion: @escaping (Result<Void, any Error>) -> Void) {
+        loadCompletionHandlers.append(completion)
+    }
+
+    /// Record that the load is over and run the pending completions. Clearing
+    /// first makes this re-entrant: a completion that closes or reloads the
+    /// document cannot see the handlers it is itself running. Once settled,
+    /// later delegate callbacks (a post-load navigation, a trailing
+    /// cancellation from `stopLoading()`) find nothing to do.
+    private func settleLoad(_ result: Result<Void, any Error>) {
+        guard isLoading else { return }
+        isLoading = false
         let handlers = loadCompletionHandlers
         loadCompletionHandlers.removeAll()
-        handlers.forEach { $0() }
+        handlers.forEach { $0(result) }
+    }
+
+    /// A navigation failure reported by WebKit. Cancellations are not the end
+    /// of the load: a page that navigates itself before its first load finishes
+    /// fails the first navigation with `NSURLErrorCancelled` and then finishes
+    /// the second, so the load stays pending for that `didFinish` (and is still
+    /// settled by `stop()` if the document is closed first). Anything else is a
+    /// real failure: a missing page, a blocked load, a dropped connection. The
+    /// dead web view itself is torn down by whoever owns the host (the polyfill
+    /// handler unregisters and stops it), not here.
+    private func failLoad(_ error: any Error, phase: StaticString) {
+        if error.isIgnoredNavigationError {
+            log.info("Offscreen document \(phase, privacy: .public) navigation superseded for \(self.extensionID, privacy: .public); still loading")
+            return
+        }
+        log.error("Offscreen document \(phase, privacy: .public) navigation failed for \(self.extensionID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        settleLoad(.failure(LoadError.navigationFailed(path: requestedPath, underlying: error)))
     }
 
     /// Evaluate JavaScript in the offscreen document.
@@ -239,16 +318,18 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
             }
         }
 
-        let handlers = loadCompletionHandlers
-        loadCompletionHandlers.removeAll()
-        handlers.forEach { $0() }
+        settleLoad(.success(()))
     }
 
+    // Both failure callbacks go through failLoad: a real failure must settle the
+    // pending createDocument rather than leave it waiting for a didFinish that
+    // will never arrive (TASK-18).
+
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        log.error("Offscreen document navigation failed for \(self.extensionID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        failLoad(error, phase: "committed")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        log.error("Offscreen document provisional navigation failed for \(self.extensionID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        failLoad(error, phase: "provisional")
     }
 }

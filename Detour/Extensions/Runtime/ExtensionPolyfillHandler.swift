@@ -35,11 +35,60 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// Stop and forget the extension's offscreen document, if any. The single
     /// teardown for `offscreen.closeDocument` and for context unload
     /// (`Profile.unloadExtension`), so both release the hidden web view. A
-    /// `createDocument` still loading is settled by `stop()` running its
-    /// completion, which sees the host gone and fails the request.
+    /// `createDocument` still loading is settled by `stop()` failing its
+    /// completion with `.closedBeforeLoad`; the completion also sees the host is
+    /// no longer registered, so it can never report a document that is gone.
+    /// Unregister before stopping, in that order, for exactly that reason.
     func closeOffscreenDocument(for extensionID: String) {
         guard let host = offscreenHosts.removeValue(forKey: extensionID) else { return }
         host.stop()
+    }
+
+    /// The reply for one `offscreen.createDocument` request, run when `host`'s
+    /// load settles. Shared by the request that started the load and by any
+    /// request that joined it while it was in flight, so every waiter sees the
+    /// same outcome and the failure teardown runs once.
+    ///
+    /// The load settles exactly once, one of three ways: it finished, it
+    /// failed, or `stop()` ran first (an explicit closeDocument or a context
+    /// unload). The request must settle either way, and must never report a
+    /// document that is gone.
+    private func offscreenLoadCompletion(
+        extensionID: String, host: OffscreenDocumentHost,
+        replyHandler: @escaping (Any?, String?) -> Void
+    ) -> (Result<Void, any Error>) -> Void {
+        return { [weak self, weak host] result in
+            // The identity check is what keeps a late reply off a newer
+            // document: by the time this runs the registered host may be a
+            // second one built by a later createDocument, and neither a
+            // success nor a failure belonging to the dead host may touch it.
+            // A waiter that joined the load runs after the first completion
+            // has already torn a failed host down and lands here too; it
+            // reports the failure it actually waited on.
+            guard let self, let host, self.offscreenHosts[extensionID] === host else {
+                if case .failure(let error) = result {
+                    log.info("offscreen.createDocument: failed for \(extensionID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    replyHandler(nil, error.localizedDescription)
+                } else {
+                    log.info("offscreen.createDocument: closed before it finished loading for \(extensionID, privacy: .public)")
+                    replyHandler(nil, OffscreenDocumentHost.LoadError.closedBeforeLoad.localizedDescription)
+                }
+                return
+            }
+            switch result {
+            case .success:
+                log.info("offscreen.createDocument: loaded successfully for \(extensionID, privacy: .public)")
+                replyHandler(true, nil)
+            case .failure(let error):
+                // The host is still the registered one (checked above) but
+                // its document never loaded, so drop it: leaving it in place
+                // would make hasDocument lie and short-circuit every later
+                // createDocument with success (TASK-18).
+                self.closeOffscreenDocument(for: extensionID)
+                log.error("offscreen.createDocument: load failed for \(extensionID, privacy: .public), host unregistered: \(error.localizedDescription, privacy: .public)")
+                replyHandler(nil, error.localizedDescription)
+            }
+        }
     }
 
     /// The fixed polyfill envelope keys (see `__detourPolyfillRequest` in
@@ -364,9 +413,19 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(nil, "Extension not found")
                 return
             }
-            guard offscreenHosts[extensionID] == nil else {
-                log.info("offscreen.createDocument: already exists for \(extensionID, privacy: .public), returning success")
-                replyHandler(true, nil)
+            if let existing = offscreenHosts[extensionID] {
+                if existing.isLoading {
+                    // A document is being created but is not there yet. Wait on
+                    // that load rather than reporting success now: it may still
+                    // fail, and this request must then fail with it instead of
+                    // holding a resolved promise for a document that never came.
+                    log.info("offscreen.createDocument: joining the load in flight for \(extensionID, privacy: .public)")
+                    existing.addLoadCompletion(
+                        offscreenLoadCompletion(extensionID: extensionID, host: existing, replyHandler: replyHandler))
+                } else {
+                    log.info("offscreen.createDocument: already exists for \(extensionID, privacy: .public), returning success")
+                    replyHandler(true, nil)
+                }
                 return
             }
 
@@ -374,25 +433,16 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             offscreenHosts[extensionID] = host
             let config = context.webViewConfiguration
             log.info("offscreen.createDocument: baseURL=\(context.baseURL.absoluteString, privacy: .public)")
-            host.load(url: url, configuration: config, baseURL: context.baseURL) { [weak self, weak host] in
-                // `stop()` also runs this when the document is closed (explicitly
-                // or by a context unload) before it finished loading; the request
-                // must settle either way, and must not report a document that is gone.
-                guard let self, let host, self.offscreenHosts[extensionID] === host else {
-                    log.info("offscreen.createDocument: closed before it finished loading for \(extensionID, privacy: .public)")
-                    replyHandler(nil, "Offscreen document was closed before it finished loading")
-                    return
-                }
-                log.info("offscreen.createDocument: loaded successfully for \(extensionID, privacy: .public)")
-                replyHandler(true, nil)
-            }
+            host.load(url: url, configuration: config, baseURL: context.baseURL,
+                      completion: offscreenLoadCompletion(extensionID: extensionID, host: host, replyHandler: replyHandler))
 
         case "offscreen.closeDocument":
             closeOffscreenDocument(for: extensionID)
             replyHandler(true, nil)
 
         case "offscreen.hasDocument":
-            let hasDoc = offscreenHosts[extensionID] != nil
+            // A host whose load has not settled is not a document yet.
+            let hasDoc = offscreenHosts[extensionID].map { !$0.isLoading } ?? false
             replyHandler(hasDoc, nil)
 
         // MARK: - i18n

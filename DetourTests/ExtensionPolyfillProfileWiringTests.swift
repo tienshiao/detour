@@ -259,6 +259,371 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                      "the other profile must not have been used to host the document")
     }
 
+    // MARK: - TASK-18: a failed offscreen page load settles and unregisters
+
+    /// The page the extension asks for does not exist, so the navigation fails
+    /// instead of finishing. The request must be rejected and the dead host
+    /// unregistered: otherwise the promise pends forever, `hasDocument` claims a
+    /// document that never loaded, and every later `createDocument`
+    /// short-circuits with success against the corpse.
+    func testOffscreenCreateDocumentFailsAndUnregistersWhenPageIsMissing() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Offscreen Failure Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let contextHost = try XCTUnwrap(context.baseURL.host)
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+
+        // One reply, and only one: the failure path stops the host, which must
+        // not drain the same completion a second time.
+        let failed = expectation(description: "offscreen.createDocument reply for a missing page")
+        var replyResult: Any?
+        var replyError: (any Error)?
+        var replyCount = 0
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "no-such-offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            replyCount += 1
+            replyResult = result
+            replyError = error
+            failed.fulfill()
+        }
+        await fulfillment(of: [failed], timeout: 10)
+
+        XCTAssertNil(replyResult, "a document that never loaded must not report success")
+        let message = try XCTUnwrap((replyError as NSError?)?.localizedDescription)
+        XCTAssertTrue(message.contains("no-such-offscreen.html") && message.contains("failed to load"),
+                      "the error should name the page that failed, got: \(message)")
+        XCTAssertNil(handler.offscreenHosts[ext.id],
+                     "the failed host must be unregistered, not left to fake a document")
+        let hasDoc = await nativeReply(
+            handler, ["type": "offscreen.hasDocument", "extensionID": ext.id],
+            verifiedExtensionID: ext.id)
+        XCTAssertEqual(hasDoc.result as? Bool, false,
+                       "hasDocument must not report the document that failed to load")
+
+        // A retry with a page that exists has to load: the failure left nothing
+        // registered to short-circuit it.
+        let retry = await nativeReply(
+            handler, ["type": "offscreen.createDocument", "extensionID": ext.id,
+                      "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id, description: "offscreen.createDocument retry")
+        XCTAssertNil(retry.error, "the retry failed: \(String(describing: retry.error))")
+        XCTAssertEqual(retry.result as? Bool, true)
+        let host = try XCTUnwrap(handler.offscreenHosts[ext.id], "the retry should be hosted")
+        let documentHost = try XCTUnwrap(host.webView?.url?.host)
+        XCTAssertEqual(documentHost.caseInsensitiveCompare(contextHost), .orderedSame)
+        XCTAssertEqual(replyCount, 1, "the failed request must be answered exactly once")
+    }
+
+    /// A load failure that arrives once a *newer* document has taken the
+    /// extension's slot must settle its own request and leave the newer host
+    /// alone — unregistering by key would take the live document down with it.
+    /// Driven through the navigation delegate directly, because production
+    /// settles a replaced host's completion at `stop()` and so never produces a
+    /// genuinely late reply; the guard is what keeps that true. The reply
+    /// reports the failure it actually waited on, not the closed case: the load
+    /// it was waiting for did fail, it just must not touch the newer host.
+    func testLateOffscreenLoadFailureDoesNotUnregisterANewerHost() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Offscreen Late Failure Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        _ = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+
+        let replied = expectation(description: "offscreen.createDocument reply for a replaced host")
+        var replyResult: Any?
+        var replyError: (any Error)?
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            replyResult = result
+            replyError = error
+            replied.fulfill()
+        }
+        let pending = try XCTUnwrap(handler.offscreenHosts[ext.id],
+                                    "precondition: the host is registered while its load is in flight")
+        let pendingWebView = try XCTUnwrap(pending.webView)
+
+        // A second document takes over the slot while the first is still loading.
+        let replacement = OffscreenDocumentHost(extensionID: ext.id, basePath: ext.basePath)
+        handler.offscreenHosts[ext.id] = replacement
+
+        pending.webView(pendingWebView, didFailProvisionalNavigation: nil,
+                        withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotFindHost))
+        await fulfillment(of: [replied], timeout: 10)
+        pending.stop()
+
+        XCTAssertNil(replyResult)
+        let lateMessage = try XCTUnwrap((replyError as NSError?)?.localizedDescription)
+        XCTAssertTrue(lateMessage.contains("offscreen.html") && lateMessage.contains("failed to load"),
+                      "a reply for a host that is no longer the extension's must report the failure "
+                      + "it waited on, got: \(lateMessage)")
+        XCTAssertTrue(handler.offscreenHosts[ext.id] === replacement,
+                      "the newer host must still be registered")
+    }
+
+    // MARK: - TASK-12 AC #3: closing a document mid-load settles its create
+
+    /// `closeOffscreenDocument` (an explicit `closeDocument`, or a context
+    /// unload through `Profile.unloadExtension`) runs while the create is still
+    /// loading. The worker's promise must reject rather than hang, and no
+    /// document may be left behind.
+    func testPendingOffscreenCreateDocumentFailsWhenTheDocumentIsClosed() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Offscreen Close Race Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        _ = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+
+        let replied = expectation(description: "offscreen.createDocument reply for a closed document")
+        var replyResult: Any?
+        var replyError: (any Error)?
+        var replyCount = 0
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            replyCount += 1
+            replyResult = result
+            replyError = error
+            replied.fulfill()
+        }
+        // `createDocument` registers the host and starts the load synchronously,
+        // so at this point the request is genuinely in flight.
+        let pending = try XCTUnwrap(handler.offscreenHosts[ext.id],
+                                    "precondition: the host is registered while its load is in flight")
+        XCTAssertEqual(replyCount, 0, "precondition: the load has not settled yet")
+
+        handler.closeOffscreenDocument(for: ext.id)
+        await fulfillment(of: [replied], timeout: 10)
+
+        XCTAssertNil(replyResult)
+        XCTAssertEqual((replyError as NSError?)?.localizedDescription,
+                       OffscreenDocumentHost.LoadError.closedBeforeLoad.localizedDescription)
+        XCTAssertNil(pending.webView, "stop() must release the hidden web view")
+        XCTAssertNil(handler.offscreenHosts[ext.id])
+        let hasDoc = await nativeReply(
+            handler, ["type": "offscreen.hasDocument", "extensionID": ext.id],
+            verifiedExtensionID: ext.id)
+        XCTAssertEqual(hasDoc.result as? Bool, false,
+                       "a create that was closed mid-load must not leave a document behind")
+
+        // The extension can create one again afterwards; this also gives a
+        // stray second reply for the closed request time to show up.
+        let again = await nativeReply(
+            handler, ["type": "offscreen.createDocument", "extensionID": ext.id,
+                      "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id, description: "offscreen.createDocument after close")
+        XCTAssertNil(again.error, "creating again after a close failed: \(String(describing: again.error))")
+        XCTAssertEqual(again.result as? Bool, true)
+        XCTAssertNotNil(handler.offscreenHosts[ext.id])
+        XCTAssertEqual(replyCount, 1, "the closed request must be answered exactly once")
+    }
+
+    // MARK: - Concurrent createDocument joins the load in flight
+
+    /// Two `createDocument` calls race (a worker that fires twice, or two
+    /// listeners each ensuring the document exists). The second must wait on the
+    /// load already in flight instead of being told a document exists: while the
+    /// first load is pending there is no document yet, so replying success early
+    /// would hand the worker a resolved promise for a page it cannot talk to.
+    /// Both requests settle with the one outcome of the one load, and only one
+    /// host is ever built.
+    func testConcurrentOffscreenCreateDocumentJoinsTheLoadInFlight() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Offscreen Concurrent Create Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        _ = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+
+        let firstReplied = expectation(description: "first offscreen.createDocument reply")
+        var firstResult: Any?
+        var firstError: (any Error)?
+        var firstCount = 0
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            firstCount += 1
+            firstResult = result
+            firstError = error
+            firstReplied.fulfill()
+        }
+
+        let secondReplied = expectation(description: "second offscreen.createDocument reply")
+        var secondResult: Any?
+        var secondError: (any Error)?
+        var secondCount = 0
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            secondCount += 1
+            secondResult = result
+            secondError = error
+            secondReplied.fulfill()
+        }
+
+        // Both were issued without a suspension point between them, so the load
+        // cannot have settled: neither request may have been answered yet.
+        XCTAssertEqual(firstCount, 0, "precondition: the load has not settled yet")
+        XCTAssertEqual(secondCount, 0, "the second create must wait on the load, not reply early")
+        let pending = try XCTUnwrap(handler.offscreenHosts[ext.id],
+                                   "precondition: the host is registered while its load is in flight")
+        XCTAssertTrue(pending.isLoading, "precondition: the single host's load is still in flight")
+        // `hasDocument` is answered synchronously, so this captures the value as
+        // of now — while the load is still pending.
+        let loadingHasDoc = await nativeReply(
+            handler, ["type": "offscreen.hasDocument", "extensionID": ext.id],
+            verifiedExtensionID: ext.id, description: "offscreen.hasDocument while loading")
+        XCTAssertEqual(loadingHasDoc.result as? Bool, false,
+                       "a host whose load has not settled is not a document yet")
+
+        await fulfillment(of: [firstReplied, secondReplied], timeout: 10)
+
+        XCTAssertEqual(firstResult as? Bool, true)
+        XCTAssertNil(firstError, "the first create failed: \(String(describing: firstError))")
+        XCTAssertEqual(secondResult as? Bool, true, "the joined create must see the same success")
+        XCTAssertNil(secondError, "the joined create failed: \(String(describing: secondError))")
+        XCTAssertEqual(firstCount, 1, "the first request must be answered exactly once")
+        XCTAssertEqual(secondCount, 1, "the joined request must be answered exactly once")
+
+        let host = try XCTUnwrap(handler.offscreenHosts[ext.id])
+        XCTAssertTrue(host === pending, "the second create must not have built a second host")
+        XCTAssertFalse(host.isLoading, "the load has settled")
+        let hasDoc = await nativeReply(
+            handler, ["type": "offscreen.hasDocument", "extensionID": ext.id],
+            verifiedExtensionID: ext.id)
+        XCTAssertEqual(hasDoc.result as? Bool, true, "the loaded document must be reported")
+    }
+
+    /// The same race, but the page does not exist. The request that joined the
+    /// load must fail with it rather than inherit a success it never got: a
+    /// joined waiter runs after the first completion has already unregistered
+    /// the dead host, so it lands on the identity guard and must still report
+    /// the failure. Nothing may be left registered to fake a document.
+    func testConcurrentOffscreenCreateDocumentBothFailWhenPageIsMissing() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Offscreen Concurrent Failure Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        _ = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+
+        let firstReplied = expectation(description: "first offscreen.createDocument reply for a missing page")
+        var firstResult: Any?
+        var firstError: (any Error)?
+        var firstCount = 0
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "no-such-offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            firstCount += 1
+            firstResult = result
+            firstError = error
+            firstReplied.fulfill()
+        }
+
+        let secondReplied = expectation(description: "joined offscreen.createDocument reply for a missing page")
+        var secondResult: Any?
+        var secondError: (any Error)?
+        var secondCount = 0
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "no-such-offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            secondCount += 1
+            secondResult = result
+            secondError = error
+            secondReplied.fulfill()
+        }
+
+        XCTAssertEqual(firstCount, 0, "precondition: the load has not settled yet")
+        XCTAssertEqual(secondCount, 0, "the second create must wait on the load, not reply early")
+        let pending = try XCTUnwrap(handler.offscreenHosts[ext.id],
+                                   "precondition: the host is registered while its load is in flight")
+        XCTAssertTrue(pending.isLoading, "precondition: the single host's load is still in flight")
+
+        await fulfillment(of: [firstReplied, secondReplied], timeout: 10)
+
+        XCTAssertNil(firstResult, "a document that never loaded must not report success")
+        XCTAssertNil(secondResult, "the joined request must not report success either")
+        let firstMessage = try XCTUnwrap((firstError as NSError?)?.localizedDescription)
+        XCTAssertTrue(firstMessage.contains("failed to load"),
+                      "the error should say the load failed, got: \(firstMessage)")
+        let secondMessage = try XCTUnwrap((secondError as NSError?)?.localizedDescription)
+        XCTAssertTrue(secondMessage.contains("failed to load"),
+                      "the joined error should say the load failed, got: \(secondMessage)")
+        XCTAssertEqual(firstCount, 1, "the first request must be answered exactly once")
+        XCTAssertEqual(secondCount, 1, "the joined request must be answered exactly once")
+        XCTAssertNil(handler.offscreenHosts[ext.id],
+                     "the failed host must be unregistered, not left to fake a document")
+    }
+
+    /// A page that navigates itself before its first load finishes fails that
+    /// first navigation with `NSURLErrorCancelled` and then finishes the one
+    /// that replaced it. A cancellation must therefore leave the load pending:
+    /// settling it would reject a `createDocument` whose document does in fact
+    /// arrive, and tearing the host down would kill the load in progress.
+    func testCancelledOffscreenNavigationKeepsTheCreateDocumentPending() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Offscreen Cancelled Navigation Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        _ = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+
+        let replied = expectation(description: "offscreen.createDocument reply after a cancellation")
+        var replyResult: Any?
+        var replyError: (any Error)?
+        var replyCount = 0
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { result, error in
+            replyCount += 1
+            replyResult = result
+            replyError = error
+            replied.fulfill()
+        }
+        let pending = try XCTUnwrap(handler.offscreenHosts[ext.id],
+                                   "precondition: the host is registered while its load is in flight")
+        let pendingWebView = try XCTUnwrap(pending.webView)
+
+        // The test is @MainActor and there is no suspension point between the
+        // create above and this callback, so the real `didFinish` cannot have
+        // interleaved: the cancellation genuinely lands mid-load.
+        pending.webView(pendingWebView, didFail: nil,
+                        withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+
+        XCTAssertEqual(replyCount, 0, "a cancellation must not settle the pending create")
+        XCTAssertTrue(pending.isLoading, "the load must still be waiting for the navigation that replaced it")
+        XCTAssertTrue(handler.offscreenHosts[ext.id] === pending,
+                      "a cancellation must not tear the host down")
+
+        // The real load of offscreen.html still finishes, and answers the request.
+        await fulfillment(of: [replied], timeout: 10)
+
+        XCTAssertEqual(replyResult as? Bool, true)
+        XCTAssertNil(replyError, "the create failed: \(String(describing: replyError))")
+        XCTAssertEqual(replyCount, 1, "the request must be answered exactly once")
+    }
+
     // MARK: - Profile-scoped tab actions (search.query / sessions.restore)
 
     /// Await one `handleNativeMessage` round trip.
