@@ -30,6 +30,10 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Extension ids registered in ExtensionManager during a test, torn down after.
     private var registeredExtensionIDs: [String] = []
 
+    /// Every web view `makeWebView` handed out, so tearDown can unregister the
+    /// script message handler each of them holds (the handler is shared).
+    private var createdWebViews: [WKWebView] = []
+
     override func setUp() async throws {
         try await super.setUp()
 
@@ -44,9 +48,31 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         // The injected shim sets chrome.runtime.id = 'test-polyfill-extension'.
         // Register a matching extension declaring the permission-gated APIs
-        // (history, management) so the JS-path tests exercise the happy path;
-        // dedicated positive/negative gate tests live further below.
-        try registerExtension(id: "test-polyfill-extension", permissions: ["history", "management"])
+        // (history, management, privacy) so the JS-path tests exercise the happy
+        // path; dedicated positive/negative gate tests live further below.
+        try registerExtension(id: "test-polyfill-extension", permissions: ["history", "management", "privacy"])
+
+        // The manifest the shim reports also declares `webRequest`, the other
+        // permission-gated polyfill module, so the default web view exercises
+        // both stubs; the absent-without-permission cases build their own view.
+        webView = try await makeWebView(manifestPermissions: ["history", "management", "privacy", "webRequest"])
+    }
+
+    /// Build a web view configured the way an extension context is: the shared
+    /// polyfill message handler, a shim for the pieces of the extension
+    /// environment a plain WKWebView lacks, then the polyfill itself.
+    ///
+    /// `manifestPermissions` is what the shim's `chrome.runtime.getManifest()`
+    /// reports, so permission-gated polyfill modules (chrome.privacy,
+    /// chrome.webRequest) can be exercised with and without their permission. `shimExtras` is appended to
+    /// the shim — i.e. it runs *before* the polyfill — for tests that need a
+    /// different starting environment (e.g. a native `chrome.action`).
+    ///
+    /// Every view is tracked in `createdWebViews` and unregistered in tearDown.
+    private func makeWebView(manifestPermissions: [String], shimExtras: String = "") async throws -> WKWebView {
+        let permissionsJSON = String(
+            decoding: try JSONSerialization.data(withJSONObject: manifestPermissions), as: UTF8.self
+        )
 
         let config = WKWebViewConfiguration()
         let ucc = config.userContentController
@@ -55,15 +81,17 @@ final class ExtensionPolyfillTests: XCTestCase {
         ucc.addScriptMessageHandler(handler, contentWorld: .page, name: ExtensionPolyfillHandler.handlerName)
 
         // Inject a shim for the pieces of the extension environment that a plain
-        // WKWebView lacks: chrome.runtime.id, and a fake connectNative that
-        // records every port it hands out (see `__fakeNativePorts`) so the native
-        // port keep-alive can be exercised without a real native host. The
-        // keep-alive ping interval is shortened so tests need not wait 45 s.
+        // WKWebView lacks: chrome.runtime.id, chrome.runtime.getManifest, and a
+        // fake connectNative that records every port it hands out (see
+        // `__fakeNativePorts`) so the native port keep-alive can be exercised
+        // without a real native host. The keep-alive ping interval is shortened
+        // so tests need not wait 45 s.
         let shimScript = WKUserScript(
             source: """
             if (!globalThis.chrome) globalThis.chrome = {};
             if (!globalThis.chrome.runtime) globalThis.chrome.runtime = {};
             if (!globalThis.chrome.runtime.id) globalThis.chrome.runtime.id = 'test-polyfill-extension';
+            globalThis.chrome.runtime.getManifest = () => ({ manifest_version: 3, permissions: \(permissionsJSON) });
 
             globalThis.__detourKeepAlivePingIntervalMs = 50;
             // Install the service-worker-only WebSocket guard and native port
@@ -101,6 +129,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                 globalThis.__fakeNativePorts.push(port);
                 return port;
             };
+            \(shimExtras)
             """,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
@@ -117,13 +146,18 @@ final class ExtensionPolyfillTests: XCTestCase {
         )
         ucc.addUserScript(polyfillScript)
 
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
-        try await loadHTMLStringAndWait(webView, html: "<html><body>test</body></html>",
+        let created = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
+        createdWebViews.append(created)
+        try await loadHTMLStringAndWait(created, html: "<html><body>test</body></html>",
                                         baseURL: URL(string: "https://test.example.com")!)
+        return created
     }
 
     override func tearDown() {
-        webView?.configuration.userContentController.removeAllScriptMessageHandlers()
+        for created in createdWebViews {
+            created.configuration.userContentController.removeAllScriptMessageHandlers()
+        }
+        createdWebViews.removeAll()
         webView = nil
         handler = nil
         profile = nil
@@ -158,8 +192,10 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Evaluate JS that returns a JSON-serializable value, parsed back to Swift.
     /// Uses callAsyncJavaScript so Promises are automatically awaited.
-    private func evalJSON(_ js: String, arguments: [String: Any] = [:]) async throws -> Any? {
-        let result = try await webView.callAsyncJavaScript(
+    /// `on` defaults to the suite's own web view; pass one from `makeWebView`
+    /// to evaluate in a differently-shimmed context.
+    private func evalJSON(_ js: String, arguments: [String: Any] = [:], on target: WKWebView? = nil) async throws -> Any? {
+        let result = try await (target ?? webView!).callAsyncJavaScript(
             js, arguments: arguments, contentWorld: .page
         )
         if let jsonString = result as? String,
@@ -171,8 +207,8 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Evaluate a JS expression that may return a Promise.
     /// Uses callAsyncJavaScript so Promises are automatically awaited.
-    private func eval(_ js: String) async throws -> Any? {
-        try await webView.callAsyncJavaScript(
+    private func eval(_ js: String, on target: WKWebView? = nil) async throws -> Any? {
+        try await (target ?? webView!).callAsyncJavaScript(
             js, arguments: [:], contentWorld: .page
         )
     }
@@ -361,6 +397,180 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result?["isArray"] as? Bool, true)
     }
 
+    /// setEnabled is a no-op on the native side, but it must resolve rather than
+    /// reject: 1Password calls it to disable its sibling channel builds and an
+    /// "Unknown polyfill message type" rejection surfaces as a setup failure.
+    func testManagementSetEnabledResolves() async throws {
+        let result = try await evalDictionary("""
+        let rejection = null;
+        let value = '(not settled)';
+        try {
+            value = await chrome.management.setEnabled('some-other-id', false);
+        } catch (e) {
+            rejection = e && e.message ? e.message : String(e);
+        }
+        return JSON.stringify({ rejection: rejection, settled: value !== '(not settled)' });
+        """)
+        XCTAssertNil(result["rejection"] as? String,
+                     "management.setEnabled must not reject: \(result["rejection"] ?? "")")
+        XCTAssertEqual(result["settled"] as? Bool, true)
+    }
+
+    // MARK: - chrome.privacy
+
+    /// With the `privacy` permission declared, the no-op ChromeSetting objects
+    /// 1Password dereferences (`chrome.privacy.services.*`) must be present and
+    /// answer in both the promise and callback styles.
+    func testPrivacyServicesInstalledWithPermission() async throws {
+        let result = try await evalDictionary("""
+        const names = ['passwordSavingEnabled', 'autofillEnabled', 'autofillCreditCardEnabled', 'autofillAddressEnabled'];
+        const getters = names.map(n => typeof chrome.privacy.services[n].get);
+        const got = await chrome.privacy.services.autofillEnabled.get({});
+        const setResult = await chrome.privacy.services.passwordSavingEnabled.set({ value: true });
+        const clearResult = await chrome.privacy.services.passwordSavingEnabled.clear({});
+        const viaCallback = await new Promise(resolve => {
+            chrome.privacy.services.passwordSavingEnabled.get({}, resolve);
+        });
+        const onChange = chrome.privacy.services.passwordSavingEnabled.onChange;
+        return JSON.stringify({
+            getters: getters,
+            got: got,
+            setSettled: setResult === undefined,
+            clearSettled: clearResult === undefined,
+            viaCallback: viaCallback,
+            events: ['addListener', 'removeListener', 'hasListener'].map(k => typeof onChange[k]),
+            hasNetwork: typeof chrome.privacy.network === 'object',
+            hasWebsites: typeof chrome.privacy.websites === 'object',
+            diag: __detourPolyfillDiag.apis.privacy
+        });
+        """)
+
+        XCTAssertEqual(result["getters"] as? [String], ["function", "function", "function", "function"])
+        let got = try XCTUnwrap(result["got"] as? [String: Any])
+        XCTAssertEqual(got["value"] as? Bool, false)
+        XCTAssertEqual(got["levelOfControl"] as? String, "not_controllable")
+        XCTAssertEqual(result["setSettled"] as? Bool, true, "set() must resolve")
+        XCTAssertEqual(result["clearSettled"] as? Bool, true, "clear() must resolve")
+        let viaCallback = try XCTUnwrap(result["viaCallback"] as? [String: Any])
+        XCTAssertEqual(viaCallback["value"] as? Bool, false)
+        XCTAssertEqual(viaCallback["levelOfControl"] as? String, "not_controllable")
+        XCTAssertEqual(result["events"] as? [String], ["function", "function", "function"])
+        XCTAssertEqual(result["hasNetwork"] as? Bool, true)
+        XCTAssertEqual(result["hasWebsites"] as? Bool, true)
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+    }
+
+    /// Without the permission the namespace must stay absent, the way Chrome
+    /// leaves it out, so a feature detection on chrome.privacy is honest.
+    func testPrivacyAbsentWithoutPermission() async throws {
+        let unprivileged = try await makeWebView(manifestPermissions: ["history", "management"])
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            type: typeof chrome.privacy,
+            diag: __detourPolyfillDiag.apis.privacy
+        });
+        """, on: unprivileged)
+        XCTAssertEqual(result["type"] as? String, "undefined")
+        XCTAssertEqual(result["diag"] as? String, "absent")
+    }
+
+    // MARK: - chrome.webRequest
+
+    /// 1Password registers onAuthRequired with Chrome's three-argument
+    /// addListener in the same block as its webNavigation listeners; a missing
+    /// event there throws and skips the rest of the block.
+    func testWebRequestOnAuthRequiredStub() async throws {
+        let result = try await evalDictionary("""
+        const fn = function() {};
+        let threw = null;
+        try {
+            chrome.webRequest.onAuthRequired.addListener(fn, { urls: ['<all_urls>'] }, ['asyncBlocking']);
+        } catch (e) {
+            threw = e && e.message ? e.message : String(e);
+        }
+        const added = chrome.webRequest.onAuthRequired.hasListener(fn);
+        chrome.webRequest.onAuthRequired.removeListener(fn);
+        const removed = chrome.webRequest.onAuthRequired.hasListener(fn);
+        return JSON.stringify({
+            threw: threw,
+            added: added,
+            stillThere: removed,
+            onBeforeRequest: typeof chrome.webRequest.onBeforeRequest.addListener,
+            maxCalls: chrome.webRequest.MAX_HANDLER_BEHAVIOR_CHANGED_CALLS_PER_10_MINUTES,
+            diag: __detourPolyfillDiag.apis.webRequest
+        });
+        """)
+
+        XCTAssertNil(result["threw"] as? String,
+                     "the three-argument addListener must not throw: \(result["threw"] ?? "")")
+        XCTAssertEqual(result["added"] as? Bool, true)
+        XCTAssertEqual(result["stillThere"] as? Bool, false)
+        XCTAssertEqual(result["onBeforeRequest"] as? String, "function")
+        XCTAssertEqual(result["maxCalls"] as? Int, 20)
+        XCTAssertEqual(result["diag"] as? String, "polyfill",
+                       "a bare WKWebView has no native chrome.webRequest")
+    }
+
+    /// Chrome exposes chrome.webRequest only to extensions that declared it, so
+    /// an extension feature-testing the namespace (to choose between blocking
+    /// listeners and declarativeNetRequest) must keep seeing `undefined`.
+    func testWebRequestAbsentWithoutPermission() async throws {
+        let unprivileged = try await makeWebView(manifestPermissions: ["history", "management"])
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            type: typeof chrome.webRequest,
+            diag: __detourPolyfillDiag.apis.webRequest
+        });
+        """, on: unprivileged)
+        XCTAssertEqual(result["type"] as? String, "undefined")
+        XCTAssertEqual(result["diag"] as? String, "absent")
+    }
+
+    // MARK: - chrome.action.getUserSettings
+
+    func testActionGetUserSettingsStub() async throws {
+        // A bare WKWebView has no chrome.action at all; give it the shape
+        // WebKit provides (an action object without getUserSettings).
+        let withAction = try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy"],
+            shimExtras: "globalThis.chrome.action = {};"
+        )
+        let result = try await evalDictionary("""
+        const viaPromise = await chrome.action.getUserSettings();
+        const viaCallback = await new Promise(resolve => chrome.action.getUserSettings(resolve));
+        return JSON.stringify({
+            viaPromise: viaPromise,
+            viaCallback: viaCallback,
+            diag: __detourPolyfillDiag.apis.actionGetUserSettings
+        });
+        """, on: withAction)
+
+        XCTAssertEqual((result["viaPromise"] as? [String: Any])?["isOnToolbar"] as? Bool, true)
+        XCTAssertEqual((result["viaCallback"] as? [String: Any])?["isOnToolbar"] as? Bool, true)
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+    }
+
+    func testActionGetUserSettingsNotReplacedWhenNative() async throws {
+        let nativeAction = try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy"],
+            shimExtras: """
+            globalThis.chrome.action = {
+                getUserSettings: () => Promise.resolve({ isOnToolbar: false, marker: 'native' })
+            };
+            """
+        )
+        let result = try await evalDictionary("""
+        const settings = await chrome.action.getUserSettings();
+        return JSON.stringify({ settings: settings, diag: __detourPolyfillDiag.apis.actionGetUserSettings });
+        """, on: nativeAction)
+
+        let settings = try XCTUnwrap(result["settings"] as? [String: Any])
+        XCTAssertEqual(settings["marker"] as? String, "native",
+                       "a native getUserSettings must survive the polyfill")
+        XCTAssertEqual(settings["isOnToolbar"] as? Bool, false)
+        XCTAssertEqual(result["diag"] as? String, "native")
+    }
+
     // MARK: - chrome.sessions
 
     func testSessionsMaxSessionResults() async throws {
@@ -467,6 +677,26 @@ final class ExtensionPolyfillTests: XCTestCase {
         ) { result, error in
             XCTAssertNil(result)
             XCTAssertEqual((error as NSError?)?.localizedDescription, "history permission not declared")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    /// management.setEnabled is honoured as a no-op success on the native side.
+    /// The sender must declare `management` (see the negative test below), so
+    /// this registers one rather than using the bare "test" id.
+    func testNativeMessageBridgeManagementSetEnabled() throws {
+        try registerExtension(id: "mgmt-setenabled-ext", permissions: ["management"])
+        let expectation = expectation(description: "management.setEnabled via native bridge")
+
+        handler.handleNativeMessage(
+            ["type": "management.setEnabled", "extensionID": "mgmt-setenabled-ext",
+             "params": ["id": "some-other-extension", "enabled": false]],
+            verifiedExtensionID: "mgmt-setenabled-ext"
+        ) { result, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(result as? Bool, true)
             expectation.fulfill()
         }
 
@@ -588,6 +818,27 @@ final class ExtensionPolyfillTests: XCTestCase {
             ["type": "management.getAll", "extensionID": "nomgmt-ext",
              "params": [:] as [String: Any]],
             verifiedExtensionID: "nomgmt-ext"
+        ) { result, error in
+            XCTAssertNil(result)
+            XCTAssertEqual((error as NSError?)?.localizedDescription, "management permission not declared")
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5)
+    }
+
+    /// setEnabled is gated the same way getAll is: in Chrome only getSelf and
+    /// uninstallSelf are permission-free, so an extension that never declared
+    /// `management` must not be able to ask Detour to disable anything — even
+    /// though the handler's answer is a no-op success when it may.
+    func testManagementSetEnabledDeniedWithoutPermission() throws {
+        try registerExtension(id: "nomgmt-setenabled-ext", permissions: ["storage"])
+        let expectation = expectation(description: "management.setEnabled denied without permission")
+
+        handler.handleNativeMessage(
+            ["type": "management.setEnabled", "extensionID": "nomgmt-setenabled-ext",
+             "params": ["id": "some-other-extension", "enabled": false]],
+            verifiedExtensionID: "nomgmt-setenabled-ext"
         ) { result, error in
             XCTAssertNil(result)
             XCTAssertEqual((error as NSError?)?.localizedDescription, "management permission not declared")
@@ -745,8 +996,8 @@ final class ExtensionPolyfillTests: XCTestCase {
         config.userContentController.addUserScript(polyfillScript)
 
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
-        wv.loadHTMLString("<html><body>test</body></html>", baseURL: URL(string: "https://test.example.com")!)
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await loadHTMLStringAndWait(wv, html: "<html><body>test</body></html>",
+                                        baseURL: URL(string: "https://test.example.com")!)
 
         // Call a polyfill API — should fall back to sendNativeMessage since no handler is registered
         _ = try await wv.callAsyncJavaScript(
@@ -954,9 +1205,9 @@ final class ExtensionPolyfillTests: XCTestCase {
     // MARK: - Native port keep-alive
 
     /// Run JS that returns a JSON string and parse it into a dictionary.
-    private func evalDictionary(_ js: String) async throws -> [String: Any] {
+    private func evalDictionary(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
         // Hoisted out of XCTUnwrap: its argument is an autoclosure and cannot await.
-        let value = try await evalJSON(js)
+        let value = try await evalJSON(js, on: target)
         return try XCTUnwrap(value as? [String: Any],
                              "expected a JSON object from the page, got: \(value ?? "nil")")
     }
@@ -1244,8 +1495,8 @@ final class ExtensionPolyfillTests: XCTestCase {
         config.userContentController.addUserScript(WKUserScript(
             source: ExtensionAPIPolyfill.polyfillJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
-        wv.loadHTMLString("<html><body>ns</body></html>", baseURL: URL(string: "https://test.example.com")!)
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await loadHTMLStringAndWait(wv, html: "<html><body>ns</body></html>",
+                                        baseURL: URL(string: "https://test.example.com")!)
         return wv
     }
 

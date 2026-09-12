@@ -250,7 +250,45 @@
       <button id="btn-badge-get" class="secondary">Get Badge</button>
       <button id="btn-badge-clear" class="secondary">Clear</button>
     </div>
+    <div class="row">
+      <button id="btn-action-user-settings">Get User Settings</button>
+    </div>
     <div class="result" id="res-action"></div>
+  </section>
+
+  <!-- Management -->
+  <section>
+    <h2>Management</h2>
+    <div class="row">
+      <button id="btn-mgmt-self">Get Self</button>
+      <button id="btn-mgmt-all" class="secondary">Get All</button>
+    </div>
+    <div class="row">
+      <input type="text" id="input-mgmt-id" placeholder="Extension id (blank = self)"/>
+      <button id="btn-mgmt-enable">Set Enabled</button>
+      <button id="btn-mgmt-disable" class="secondary">Set Disabled</button>
+    </div>
+    <div class="result" id="res-management"></div>
+  </section>
+
+  <!-- Privacy -->
+  <section>
+    <h2>Privacy</h2>
+    <div class="row">
+      <button id="btn-privacy-get">Get Services</button>
+      <button id="btn-privacy-set-on" class="secondary">Save Passwords On</button>
+      <button id="btn-privacy-set-off" class="secondary">Off</button>
+    </div>
+    <div class="result" id="res-privacy"></div>
+  </section>
+
+  <!-- Web Request -->
+  <section>
+    <h2>Web Request</h2>
+    <div class="row">
+      <button id="btn-webrequest-probe">Probe onAuthRequired</button>
+    </div>
+    <div class="result" id="res-webrequest"></div>
   </section>
 
   <!-- Commands -->

@@ -287,6 +287,27 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             }
             replyHandler(allInfos, nil)
 
+        case "management.setEnabled":
+            // Deliberately a no-op that reports success: Detour never enables or
+            // disables one extension on another extension's say-so — that is the
+            // user's decision, made in Settings. 1Password calls this only to
+            // disable its sibling channel builds (stable/beta/nightly) when more
+            // than one is installed; rejecting would surface as a setup failure,
+            // so the call is logged and ignored. Extension ids are public.
+            //
+            // Chrome gates setEnabled on the `management` permission (only
+            // getSelf/uninstallSelf are permission-free), so an extension that
+            // never declared it gets the same rejection it would get in Chrome
+            // rather than a silent success.
+            guard hasPermission("management", extensionID: extensionID) else {
+                replyHandler(nil, "management permission not declared")
+                return
+            }
+            let targetID = params["id"] as? String ?? "(none)"
+            let enabled = params["enabled"] as? Bool ?? true
+            log.info("management.setEnabled ignored: \(extensionID, privacy: .public) asked to set \(targetID, privacy: .public) enabled=\(enabled, privacy: .public)")
+            replyHandler(true, nil)
+
         // MARK: - Sessions
         case "sessions.restore":
             guard let space = targetSpace() else {

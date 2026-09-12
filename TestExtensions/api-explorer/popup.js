@@ -394,6 +394,70 @@ document.getElementById('btn-badge-clear').addEventListener('click', async () =>
   }
 });
 
+document.getElementById('btn-action-user-settings').addEventListener('click', async () => {
+  try {
+    const result = await sendBg({ type: 'actionGetUserSettings' });
+    showResult('res-action', result);
+  } catch (e) {
+    showResult('res-action', e.message, true);
+  }
+});
+
+// --- Management ---
+
+document.getElementById('btn-mgmt-self').addEventListener('click', async () => {
+  try {
+    const { extensionInfo } = await sendBg({ type: 'getManagementSelf' });
+    showResult('res-management', extensionInfo);
+  } catch (e) { showResult('res-management', e.message, true); }
+});
+
+document.getElementById('btn-mgmt-all').addEventListener('click', async () => {
+  try {
+    const { extensions } = await sendBg({ type: 'getManagementAll' });
+    showResult('res-management', extensions);
+  } catch (e) { showResult('res-management', e.message, true); }
+});
+
+async function setEnabled(enabled) {
+  try {
+    const id = document.getElementById('input-mgmt-id').value || undefined;
+    const result = await sendBg({ type: 'managementSetEnabled', id, enabled });
+    showResult('res-management', `setEnabled(${id || '(self)'}, ${enabled}) → ${JSON.stringify(result)}`);
+  } catch (e) { showResult('res-management', e.message, true); }
+}
+
+document.getElementById('btn-mgmt-enable').addEventListener('click', () => setEnabled(true));
+document.getElementById('btn-mgmt-disable').addEventListener('click', () => setEnabled(false));
+
+// --- Privacy ---
+
+document.getElementById('btn-privacy-get').addEventListener('click', async () => {
+  try {
+    const { settings } = await sendBg({ type: 'privacyGet' });
+    showResult('res-privacy', settings);
+  } catch (e) { showResult('res-privacy', e.message, true); }
+});
+
+async function setPasswordSaving(value) {
+  try {
+    const { settings } = await sendBg({ type: 'privacySet', value });
+    showResult('res-privacy', settings);
+  } catch (e) { showResult('res-privacy', e.message, true); }
+}
+
+document.getElementById('btn-privacy-set-on').addEventListener('click', () => setPasswordSaving(true));
+document.getElementById('btn-privacy-set-off').addEventListener('click', () => setPasswordSaving(false));
+
+// --- Web Request ---
+
+document.getElementById('btn-webrequest-probe').addEventListener('click', async () => {
+  try {
+    const result = await sendBg({ type: 'webRequestProbe' });
+    showResult('res-webrequest', result);
+  } catch (e) { showResult('res-webrequest', e.message, true); }
+});
+
 // --- Commands ---
 
 document.getElementById('btn-commands-getall').addEventListener('click', async () => {

@@ -52,7 +52,8 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
             "name": "Polyfill Integration Test",
             "version": "1.0.0",
             "permissions": ["storage", "tabs", "idle", "notifications", "history",
-                             "sessions", "search", "offscreen", "fontSettings", "nativeMessaging"],
+                             "sessions", "search", "offscreen", "fontSettings", "nativeMessaging",
+                             "webRequest"],
             "host_permissions": ["<all_urls>"],
             "background": {"service_worker": "background.js", "type": "module"},
             "action": {"default_title": "Polyfill Test"}
@@ -325,6 +326,44 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
             return has && removed;
         """, in: wv) as? Bool
         XCTAssertEqual(result, true)
+    }
+
+    /// What a *real* extension context gets for the gaps TASK-3 fills, rather
+    /// than what the bare-WKWebView suite can infer. The diag records which path
+    /// each module took, so this both asserts the API is usable and pins the
+    /// environment: if a future WebKit starts vending `chrome.webRequest` or
+    /// `chrome.action.getUserSettings`, the install mode changes here first.
+    func testGapFillingModulesInRealExtensionContext() async throws {
+        let wv = try await makeExtensionWebView()
+        let result = try await evalJSON("""
+            return JSON.stringify({
+                webRequestInstall: __detourPolyfillDiag.apis.webRequest,
+                onAuthRequired: typeof chrome.webRequest.onAuthRequired.addListener,
+                actionInstall: __detourPolyfillDiag.apis.actionGetUserSettings,
+                getUserSettings: chrome.action ? typeof chrome.action.getUserSettings : 'no-action',
+                privacyInstall: __detourPolyfillDiag.apis.privacy,
+                privacyType: typeof chrome.privacy
+            });
+        """, in: wv) as? [String: Any]
+
+        // The manifest declares `webRequest`, so the stub is installed and —
+        // whichever path was taken — onAuthRequired must be registrable.
+        // Observed on macOS 26 (2026-09-12): WebKit provides neither
+        // chrome.webRequest nor chrome.action.getUserSettings, so both are
+        // 'polyfill' here; the assertions stay tolerant so a future WebKit that
+        // ships them is a passing test rather than a mystery failure.
+        XCTAssertEqual(result?["onAuthRequired"] as? String, "function")
+        XCTAssertTrue(["native", "polyfill", "native+onAuthRequired"].contains(result?["webRequestInstall"] as? String ?? ""),
+                      "unexpected webRequest install mode: \(result?["webRequestInstall"] ?? "nil")")
+
+        // The test manifest declares an `action`, so chrome.action exists here.
+        XCTAssertEqual(result?["getUserSettings"] as? String, "function")
+        XCTAssertTrue(["native", "polyfill"].contains(result?["actionInstall"] as? String ?? ""),
+                      "unexpected action.getUserSettings install mode: \(result?["actionInstall"] ?? "nil")")
+
+        // The manifest does not declare `privacy`, so the namespace stays absent.
+        XCTAssertEqual(result?["privacyInstall"] as? String, "absent")
+        XCTAssertEqual(result?["privacyType"] as? String, "undefined")
     }
 
     // MARK: - Polyfill Guards

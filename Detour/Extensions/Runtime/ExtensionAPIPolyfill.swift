@@ -69,6 +69,9 @@ struct ExtensionAPIPolyfill {
             notificationsJS,
             historyJS,
             managementJS,
+            privacyJS,
+            webRequestStubJS,
+            actionUserSettingsJS,
             fontSettingsJS,
             sessionsJS,
             searchJS,
@@ -99,6 +102,11 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.sessions = typeof chrome.sessions.restore; } catch(e) { __detourPolyfillDiag.apis.sessions = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.search = typeof chrome.search.query; } catch(e) { __detourPolyfillDiag.apis.search = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.fontSettings = typeof chrome.fontSettings.getFontList; } catch(e) { __detourPolyfillDiag.apis.fontSettings = 'error: ' + e.message; }
+        // Which path each gap-filling module took: 'native' when WebKit already
+        // provided the API (nothing was patched), otherwise what was installed.
+        try { __detourPolyfillDiag.apis.privacy = globalThis.__detourPrivacyInstall; } catch(e) { __detourPolyfillDiag.apis.privacy = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.webRequest = globalThis.__detourWebRequestInstall; } catch(e) { __detourPolyfillDiag.apis.webRequest = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.actionGetUserSettings = globalThis.__detourActionUserSettingsInstall; } catch(e) { __detourPolyfillDiag.apis.actionGetUserSettings = 'error: ' + e.message; }
         } catch(e) {
         __detourPolyfillDiag.error = e.message || String(e);
         __detourPolyfillDiag.stack = e.stack || '';
@@ -144,6 +152,24 @@ struct ExtensionAPIPolyfill {
                     hasListener: function(cb) { return listeners.includes(cb); },
                     hasListeners: function() { return listeners.length > 0; }
                 };
+            };
+        }
+
+        // The permissions the manifest declares, or [] when they cannot be read
+        // (no chrome.runtime.getManifest, a manifest without a permissions
+        // array, or a throw). Modules that must stay absent unless the
+        // extension asked for them — chrome.privacy, chrome.webRequest — gate
+        // on this, the way Chrome leaves an undeclared namespace out entirely.
+        if (!g.__detourManifestPermissions) {
+            g.__detourManifestPermissions = function() {
+                try {
+                    const runtime = g.chrome && g.chrome.runtime;
+                    if (runtime && typeof runtime.getManifest === 'function') {
+                        const manifest = runtime.getManifest();
+                        if (manifest && Array.isArray(manifest.permissions)) return manifest.permissions;
+                    }
+                } catch(e) {}
+                return [];
             };
         }
 
@@ -885,6 +911,183 @@ struct ExtensionAPIPolyfill {
             onInstalled: __detourMakeEventEmitter(_onInstalledListeners),
             onUninstalled: __detourMakeEventEmitter(_onUninstalledListeners)
         });
+    })();
+    """
+
+    // MARK: - chrome.privacy
+
+    /// Polyfill for `chrome.privacy` — WKWebExtension does not provide it, and
+    /// 1Password dereferences `chrome.privacy.services.passwordSavingEnabled`
+    /// without an existence check (a TypeError that takes the rest of its setup
+    /// block with it).
+    ///
+    /// Every setting is a no-op ChromeSetting reporting `value: false` /
+    /// `levelOfControl: 'not_controllable'`, which is honest: Detour has no
+    /// built-in password manager or autofill to turn off, and an extension
+    /// cannot control what does not exist.
+    ///
+    /// Installed only when the extension declares the `privacy` permission, so
+    /// a feature detection on `chrome.privacy` stays truthful for extensions
+    /// that did not ask for it — the way Chrome leaves the namespace out. The
+    /// namespace is built entirely in a local before it is published, so an
+    /// exception part-way through leaves `chrome.privacy` undefined rather than
+    /// half-built. Like every other module here it defines on `chrome` only:
+    /// WebKit vends one namespace object under both `chrome` and `browser`.
+    private static let privacyJS = """
+    (function() {
+        const g = globalThis;
+        const chrome = g.chrome;
+        let install = 'absent';
+        try {
+            if (chrome.privacy && typeof chrome.privacy === 'object') {
+                install = 'native';
+            } else {
+                if (__detourManifestPermissions().indexOf('privacy') !== -1) {
+                    // A ChromeSetting: get/set/clear in both the callback and the
+                    // promise style, plus an onChange event that never fires
+                    // (nothing here can change).
+                    const makeSetting = () => {
+                        const listeners = [];
+                        const state = () => ({ value: false, levelOfControl: 'not_controllable' });
+                        // Chrome resolves the promise form and returns undefined
+                        // from the callback form; `details` may be omitted, in
+                        // which case the callback arrives in its place.
+                        const settle = (result, callback) => {
+                            if (callback) { callback(result); return; }
+                            return Promise.resolve(result);
+                        };
+                        return {
+                            get(details, callback) { return settle(state(), typeof details === 'function' ? details : callback); },
+                            set(details, callback) { return settle(undefined, typeof details === 'function' ? details : callback); },
+                            clear(details, callback) { return settle(undefined, typeof details === 'function' ? details : callback); },
+                            onChange: __detourMakeEventEmitter(listeners)
+                        };
+                    };
+                    const privacy = {
+                        services: {
+                            passwordSavingEnabled: makeSetting(),
+                            autofillEnabled: makeSetting(),
+                            autofillCreditCardEnabled: makeSetting(),
+                            autofillAddressEnabled: makeSetting()
+                        },
+                        // Nothing in these groups is dereferenced by the
+                        // extensions Detour supports; present so that iterating
+                        // the namespace does not throw.
+                        network: {},
+                        websites: {}
+                    };
+                    __detourDefine(chrome, 'privacy', privacy);
+                    install = 'polyfill';
+                }
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+        g.__detourPrivacyInstall = install;
+    })();
+    """
+
+    // MARK: - chrome.webRequest
+
+    /// Stub for `chrome.webRequest` — WKWebExtension does not provide it, and
+    /// Detour cannot observe or block network requests from the extension
+    /// layer, so **no listener registered here ever fires**. The stub exists so
+    /// that registering one does not throw: 1Password registers
+    /// `onAuthRequired` in the same block as its webNavigation listeners, and a
+    /// TypeError there skips everything after it.
+    ///
+    /// Chrome's signature is `addListener(callback, filter, extraInfoSpec)`;
+    /// `__detourMakeEventEmitter`'s `addListener(cb)` takes only the callback,
+    /// so the extra arguments are accepted and ignored, which is what a stub
+    /// that never fires wants.
+    ///
+    /// The namespace is created only when the extension declares the
+    /// `webRequest` permission, as Chrome does: an extension that feature-tests
+    /// `chrome.webRequest` to pick between blocking listeners and
+    /// declarativeNetRequest must keep seeing `undefined` when it never asked
+    /// for it. Undeclared, nothing is installed and the marker reads `'absent'`.
+    ///
+    /// If WebKit ever ships a native `chrome.webRequest`, only a missing
+    /// `onAuthRequired` is filled in on it — the native object is never replaced,
+    /// and that path is not permission-gated: the gate belongs to whoever vends
+    /// the namespace.
+    private static let webRequestStubJS = """
+    (function() {
+        const g = globalThis;
+        const chrome = g.chrome;
+        let install = 'absent';
+        try {
+            const emitter = () => __detourMakeEventEmitter([]);
+
+            if (chrome.webRequest && typeof chrome.webRequest === 'object') {
+                const onAuthRequired = chrome.webRequest.onAuthRequired;
+                if (onAuthRequired && typeof onAuthRequired.addListener === 'function') {
+                    install = 'native';
+                } else {
+                    __detourDefine(chrome.webRequest, 'onAuthRequired', emitter());
+                    install = 'native+onAuthRequired';
+                }
+            } else if (__detourManifestPermissions().indexOf('webRequest') !== -1) {
+                __detourDefine(chrome, 'webRequest', {
+                    onAuthRequired: emitter(),
+                    onBeforeRequest: emitter(),
+                    onBeforeSendHeaders: emitter(),
+                    onSendHeaders: emitter(),
+                    onHeadersReceived: emitter(),
+                    onBeforeRedirect: emitter(),
+                    onResponseStarted: emitter(),
+                    onCompleted: emitter(),
+                    onErrorOccurred: emitter(),
+
+                    MAX_HANDLER_BEHAVIOR_CHANGED_CALLS_PER_10_MINUTES: 20,
+
+                    handlerBehaviorChanged: function(callback) {
+                        if (callback) { callback(); return; }
+                        return Promise.resolve();
+                    }
+                });
+                install = 'polyfill';
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+
+        g.__detourWebRequestInstall = install;
+    })();
+    """
+
+    // MARK: - chrome.action.getUserSettings
+
+    /// Fills in `chrome.action.getUserSettings` when WebKit's `chrome.action`
+    /// lacks it (1Password feature-detects it before asking whether its icon is
+    /// pinned). Reporting `isOnToolbar: true` matches Detour, where an
+    /// extension's action is always reachable from the toolbar. A native
+    /// implementation is left alone, and `chrome.action` itself is never
+    /// created: outside a page with an `action` manifest key its absence is the
+    /// correct answer.
+    private static let actionUserSettingsJS = """
+    (function() {
+        const g = globalThis;
+        const chrome = g.chrome;
+        let install = 'no-action';
+        try {
+            if (chrome.action && typeof chrome.action === 'object') {
+                if (typeof chrome.action.getUserSettings === 'function') {
+                    install = 'native';
+                } else {
+                    __detourDefine(chrome.action, 'getUserSettings', function(callback) {
+                        const settings = { isOnToolbar: true };
+                        if (typeof callback === 'function') { callback(settings); return; }
+                        return Promise.resolve(settings);
+                    });
+                    install = 'polyfill';
+                }
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+
+        g.__detourActionUserSettingsInstall = install;
     })();
     """
 

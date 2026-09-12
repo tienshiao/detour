@@ -437,6 +437,54 @@ async function handleMessage(message) {
       return { extensions: all };
     }
 
+    case 'managementSetEnabled': {
+      await chrome.management.setEnabled(message.id || chrome.runtime.id, message.enabled !== false);
+      return { ok: true };
+    }
+
+    case 'privacyGet': {
+      const services = chrome.privacy.services;
+      const names = ['passwordSavingEnabled', 'autofillEnabled', 'autofillCreditCardEnabled', 'autofillAddressEnabled'];
+      const settings = {};
+      for (const name of names) {
+        settings[name] = await services[name].get({});
+      }
+      return { settings };
+    }
+
+    case 'privacySet': {
+      await chrome.privacy.services.passwordSavingEnabled.set({ value: message.value !== false });
+      const settings = { passwordSavingEnabled: await chrome.privacy.services.passwordSavingEnabled.get({}) };
+      return { settings };
+    }
+
+    case 'webRequestProbe': {
+      const hasWebRequest = typeof chrome.webRequest === 'object';
+      const hasOnAuthRequired = hasWebRequest && typeof chrome.webRequest.onAuthRequired === 'object';
+      let registered = false;
+      let removed = false;
+      if (hasOnAuthRequired) {
+        const listener = () => {};
+        // Chrome's three-argument form — the one 1Password uses.
+        chrome.webRequest.onAuthRequired.addListener(listener, { urls: ['<all_urls>'] }, ['asyncBlocking']);
+        registered = chrome.webRequest.onAuthRequired.hasListener(listener);
+        chrome.webRequest.onAuthRequired.removeListener(listener);
+        removed = !chrome.webRequest.onAuthRequired.hasListener(listener);
+      }
+      return {
+        hasWebRequest,
+        hasOnAuthRequired,
+        registered,
+        removed,
+        install: globalThis.__detourWebRequestInstall,
+      };
+    }
+
+    case 'actionGetUserSettings': {
+      const settings = await chrome.action.getUserSettings();
+      return { settings, install: globalThis.__detourActionUserSettingsInstall };
+    }
+
     case 'captureVisibleTab': {
       const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
       return { dataUrl: dataUrl ? dataUrl.substring(0, 50) + '...' : null };
