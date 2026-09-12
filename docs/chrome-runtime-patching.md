@@ -191,6 +191,22 @@ port and Detour tells it when to ping, since the native side knows when a real h
 whose manifest declares `nativeMessaging`, and `'none'` / `'no-nativeMessaging-permission'`
 otherwise — an extension that cannot open a native port has nothing to keep alive).
 
+`chrome.runtime.lastError` is unwritable the same way (probed 2026-09-12, TASK-23, in both an
+extension page and a module service worker, with `chrome.runtime` already pinned). It reports as
+an own data property `{ value: null, writable: false, configurable: true, enumerable: false }`,
+and `Object.defineProperty` (with a getter or a value), plain assignment and `delete` all complete
+without throwing, yet every read keeps returning `null` and the descriptor never changes. So the
+"only if configurable" check is not enough on its own: a write has to be verified by reading it
+back. WebKit's own callbacks do set it: inside a failing native callback it is
+`{ message: "Invalid call to <api>(). <reason>." }`, the callback gets no arguments, and it is
+`null` again once the callback returns. The polyfill's callback wrappers (`__detourSettle` in
+`ExtensionAPIPolyfill.preambleJS`) use exactly that: when a polyfilled API rejects and lastError
+cannot be installed from JS, they bounce the message off Detour's polyfill host with the
+callback form of `runtime.sendNativeMessage` (message type `runtime.lastErrorRelay`, which always
+fails with the text it was given), and run the extension's callback from inside WebKit's callback.
+The extension then sees `"Invalid call to runtime.sendNativeMessage(). <message>."`: WebKit's
+prefix is the one visible difference from Chrome.
+
 Pinning a *different* object under `chrome.runtime` (Option 1 with a proxy instead of the real
 wrapper) is accepted by `defineProperty` but ignored on reads: the static getter keeps returning
 the native runtime. Option 1 only works because it pins the *same* wrapper WebKit vends.

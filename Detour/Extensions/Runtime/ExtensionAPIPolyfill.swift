@@ -214,12 +214,15 @@ struct ExtensionAPIPolyfill {
         let _hasWebkitHandler = false;
         try { _hasWebkitHandler = typeof webkit !== 'undefined' && !!webkit.messageHandlers.detourPolyfill; } catch(e) {}
 
-        g.__detourPolyfillRequest = function(type, params) {
+        const currentExtensionID = function() {
             let extensionID = '';
             try { extensionID = chrome.runtime.id || ''; } catch(e) {}
             try { if (!extensionID) extensionID = browser.runtime.id || ''; } catch(e) {}
+            return extensionID;
+        };
 
-            const msg = { type: type, params: params || {}, extensionID: extensionID };
+        g.__detourPolyfillRequest = function(type, params) {
+            const msg = { type: type, params: params || {}, extensionID: currentExtensionID() };
 
             if (_hasWebkitHandler) {
                 return webkit.messageHandlers.detourPolyfill.postMessage(msg);
@@ -243,6 +246,151 @@ struct ExtensionAPIPolyfill {
             }
             return Promise.reject(new Error('Polyfill bridge unavailable: no webkit handler or sendNativeMessage'));
         };
+
+        // MARK: Callback settlement (TASK-23)
+        //
+        // Every promise-backed polyfill API takes an optional trailing callback.
+        // `__detourSettle(promise, callback, passResult)` returns the promise
+        // untouched when there is no callback. With one, it settles the promise
+        // into the callback the way Chrome does: on success the callback gets
+        // the result (or nothing, for `passResult === false`); on failure it
+        // runs with no arguments while `runtime.lastError` is `{ message }`,
+        // lastError is gone again once it returns, and a failure the callback
+        // never looked at is reported as `Unchecked runtime.lastError: ...`.
+        // Either way the rejection is handled, so nothing is logged as an
+        // unhandled rejection, and an exception the callback throws is
+        // rethrown on a fresh task (an uncaught error, as in Chrome) rather
+        // than becoming one.
+        //
+        // How lastError gets set depends on the runtime object:
+        //  - 'js': a runtime whose `lastError` can be redefined (verified by
+        //    reading it back) gets a getter for the duration of the callback,
+        //    and the original property is restored afterwards.
+        //  - 'native-relay': WebKit's native runtime. Its `lastError` reports
+        //    as a configurable data property, but defineProperty, assignment
+        //    and delete are all silently ignored and reads stay `null` (probed
+        //    2026-09-12, extension page and module service worker; see
+        //    docs/chrome-runtime-patching.md). So the message is bounced off
+        //    Detour's polyfill host through the native, callback-style
+        //    `runtime.sendNativeMessage`: the host always answers with that
+        //    message as the error, and WebKit runs the callback inside its own
+        //    lastError scope (set, cleared, unchecked reporting). WebKit
+        //    prefixes the text: "Invalid call to runtime.sendNativeMessage().
+        //    <message>." The namespace is re-read here, never cached (TASK-15).
+        //  - 'console': neither is possible; the callback runs without
+        //    lastError and the message goes to console.error.
+        const lastErrorRelayType = '\(ExtensionPolyfillHandler.lastErrorRelayType)';
+        let lastErrorMode = 'none';
+
+        const invokeCallback = function(callback, args) {
+            try {
+                callback.apply(undefined, args);
+            } catch (e) {
+                setTimeout(function() { throw e; }, 0);
+            }
+        };
+
+        const errorMessage = function(error) {
+            let message = '';
+            try { message = error && typeof error.message === 'string' ? error.message : String(error); } catch (e) {}
+            return message || 'Unknown error';
+        };
+
+        // Point `lastError` at `error` on every distinct chrome/browser runtime
+        // object. Returns a function restoring the original properties, or null
+        // (with nothing left changed) when any runtime refuses or ignores it.
+        const installLastError = function(error, onRead) {
+            const runtimes = [];
+            try { if (g.chrome && g.chrome.runtime) runtimes.push(g.chrome.runtime); } catch (e) {}
+            try {
+                if (g.browser && g.browser.runtime && runtimes.indexOf(g.browser.runtime) === -1) runtimes.push(g.browser.runtime);
+            } catch (e) {}
+            if (runtimes.length === 0) return null;
+
+            const installed = [];
+            const restore = function() {
+                for (let i = installed.length - 1; i >= 0; i--) {
+                    const entry = installed[i];
+                    try {
+                        if (entry.original) Object.defineProperty(entry.runtime, 'lastError', entry.original);
+                        else delete entry.runtime.lastError;
+                    } catch (e) {}
+                }
+            };
+            let verifying = true;
+            const getter = function() {
+                if (!verifying) onRead();
+                return error;
+            };
+            for (let i = 0; i < runtimes.length; i++) {
+                const runtime = runtimes[i];
+                let original;
+                try {
+                    original = Object.getOwnPropertyDescriptor(runtime, 'lastError');
+                    if (original && !original.configurable) { restore(); return null; }
+                    Object.defineProperty(runtime, 'lastError', {
+                        get: getter, configurable: true, enumerable: original ? !!original.enumerable : false
+                    });
+                } catch (e) { restore(); return null; }
+                installed.push({ runtime: runtime, original: original });
+                let took = false;
+                try { took = runtime.lastError === error; } catch (e) {}
+                if (!took) { restore(); return null; }
+            }
+            verifying = false;
+            return restore;
+        };
+
+        const callbackWithLastError = function(callback, message) {
+            const error = { message: message };
+            let checked = false;
+            const restore = installLastError(error, function() { checked = true; });
+            if (restore) {
+                lastErrorMode = 'js';
+                try { invokeCallback(callback, []); } finally { restore(); }
+                if (!checked) {
+                    try { console.error('Unchecked runtime.lastError: ' + message); } catch (e) {}
+                }
+                return;
+            }
+
+            let runtime = null;
+            try {
+                if (g.chrome && g.chrome.runtime && typeof g.chrome.runtime.sendNativeMessage === 'function') {
+                    runtime = g.chrome.runtime;
+                } else if (g.browser && g.browser.runtime && typeof g.browser.runtime.sendNativeMessage === 'function') {
+                    runtime = g.browser.runtime;
+                }
+            } catch (e) {}
+            if (runtime) {
+                try {
+                    runtime.sendNativeMessage('detourPolyfill', {
+                        type: lastErrorRelayType, params: { message: message }, extensionID: currentExtensionID()
+                    }, function() { invokeCallback(callback, []); });
+                    lastErrorMode = 'native-relay';
+                    return;
+                } catch (e) {}
+            }
+
+            lastErrorMode = 'console';
+            try { console.error('Unchecked runtime.lastError: ' + message); } catch (e) {}
+            invokeCallback(callback, []);
+        };
+
+        g.__detourSettle = function(promise, callback, passResult) {
+            if (typeof callback !== 'function') return promise;
+            promise.then(function(result) {
+                invokeCallback(callback, passResult === false ? [] : [result]);
+            }, function(error) {
+                callbackWithLastError(callback, errorMessage(error));
+            });
+            return undefined;
+        };
+
+        // Which path the most recent failed callback took, for tests.
+        g.__detourCallbackLastError = Object.freeze({
+            get lastMode() { return lastErrorMode; }
+        });
     })();
     """
 
@@ -1284,11 +1432,10 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'idle', {
             queryState: function(detectionIntervalInSeconds, callback) {
-                const promise =__detourPolyfillRequest('idle.queryState', {
+                const promise = __detourPolyfillRequest('idle.queryState', {
                     detectionIntervalInSeconds: detectionIntervalInSeconds
                 });
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                return __detourSettle(promise, callback);
             },
 
             setDetectionInterval: function(intervalInSeconds) {
@@ -1331,35 +1478,31 @@ struct ExtensionAPIPolyfill {
                     options = notificationId;
                     notificationId = null;
                 }
-                const promise =__detourPolyfillRequest('notifications.create', {
+                const promise = __detourPolyfillRequest('notifications.create', {
                     notificationId: notificationId,
                     options: options || {}
                 }).then(function(r) { return r.notificationId || ''; });
-                if (callback) { promise.then(function(id) { callback(id); }); return; }
-                return promise;
+                return __detourSettle(promise, callback);
             },
 
             update: function(notificationId, options, callback) {
-                const promise =__detourPolyfillRequest('notifications.update', {
+                const promise = __detourPolyfillRequest('notifications.update', {
                     notificationId: notificationId,
                     options: options || {}
                 }).then(function(r) { return r.wasUpdated === true; });
-                if (callback) { promise.then(function(v) { callback(v); }); return; }
-                return promise;
+                return __detourSettle(promise, callback);
             },
 
             clear: function(notificationId, callback) {
-                const promise =__detourPolyfillRequest('notifications.clear', {
+                const promise = __detourPolyfillRequest('notifications.clear', {
                     notificationId: notificationId
                 }).then(function(r) { return r.wasCleared === true; });
-                if (callback) { promise.then(function(v) { callback(v); }); return; }
-                return promise;
+                return __detourSettle(promise, callback);
             },
 
             getAll: function(callback) {
-                const promise =__detourPolyfillRequest('notifications.getAll', {});
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                const promise = __detourPolyfillRequest('notifications.getAll', {});
+                return __detourSettle(promise, callback);
             },
 
             onClicked: __detourMakeEventEmitter(_onClickedListeners),
@@ -1399,11 +1542,10 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'history', {
             search: function(query, callback) {
-                const promise =__detourPolyfillRequest('history.search', {
+                const promise = __detourPolyfillRequest('history.search', {
                     query: query || {}
                 }).then(function(r) { return r.results || []; });
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                return __detourSettle(promise, callback);
             },
 
             getVisits: function(details, callback) {
@@ -1466,23 +1608,20 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'management', {
             getSelf: function(callback) {
-                const promise =__detourPolyfillRequest('management.getSelf', {});
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                const promise = __detourPolyfillRequest('management.getSelf', {});
+                return __detourSettle(promise, callback);
             },
 
             getAll: function(callback) {
-                const promise =__detourPolyfillRequest('management.getAll', {});
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                const promise = __detourPolyfillRequest('management.getAll', {});
+                return __detourSettle(promise, callback);
             },
 
             setEnabled: function(id, enabled, callback) {
-                const promise =__detourPolyfillRequest('management.setEnabled', {
+                const promise = __detourPolyfillRequest('management.setEnabled', {
                     id: id, enabled: enabled
                 });
-                if (callback) { promise.then(function() { callback(); }); return; }
-                return promise;
+                return __detourSettle(promise, callback, false);
             },
 
             onEnabled: __detourMakeEventEmitter(_onEnabledListeners),
@@ -1679,9 +1818,8 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'fontSettings', {
             getFontList: function(callback) {
-                const promise =__detourPolyfillRequest('fontSettings.getFontList', {});
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                const promise = __detourPolyfillRequest('fontSettings.getFontList', {});
+                return __detourSettle(promise, callback);
             }
         });
     })();
@@ -1698,11 +1836,10 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'sessions', {
             restore: function(sessionId, callback) {
-                const promise =__detourPolyfillRequest('sessions.restore', {
+                const promise = __detourPolyfillRequest('sessions.restore', {
                     sessionId: sessionId
                 });
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                return __detourSettle(promise, callback);
             },
 
             getRecentlyClosed: function(filter, callback) {
@@ -1734,11 +1871,10 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'search', {
             query: function(queryInfo, callback) {
-                const promise =__detourPolyfillRequest('search.query', {
+                const promise = __detourPolyfillRequest('search.query', {
                     query: queryInfo || {}
                 });
-                if (callback) { promise.then(function() { callback(); }); return; }
-                return promise;
+                return __detourSettle(promise, callback, false);
             }
         });
     })();
@@ -1753,21 +1889,18 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'offscreen', {
             createDocument: function(params, callback) {
-                const promise =__detourPolyfillRequest('offscreen.createDocument', params || {});
-                if (callback) { promise.then(function() { callback(); }); return; }
-                return promise;
+                const promise = __detourPolyfillRequest('offscreen.createDocument', params || {});
+                return __detourSettle(promise, callback, false);
             },
 
             closeDocument: function(callback) {
-                const promise =__detourPolyfillRequest('offscreen.closeDocument', {});
-                if (callback) { promise.then(function() { callback(); }); return; }
-                return promise;
+                const promise = __detourPolyfillRequest('offscreen.closeDocument', {});
+                return __detourSettle(promise, callback, false);
             },
 
             hasDocument: function(callback) {
-                const promise =__detourPolyfillRequest('offscreen.hasDocument', {});
-                if (callback) { promise.then(callback); return; }
-                return promise;
+                const promise = __detourPolyfillRequest('offscreen.hasDocument', {});
+                return __detourSettle(promise, callback);
             },
 
             Reason: {

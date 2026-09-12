@@ -643,6 +643,226 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result as? Bool, false)
     }
 
+    // MARK: - Callback form and runtime.lastError (TASK-23)
+    //
+    // The shim's chrome.runtime is a plain object, so these exercise the 'js'
+    // path of `__detourSettle` (lastError installed as a getter for the
+    // duration of the callback). WebKit's native runtime ignores that, and the
+    // 'native-relay' path it takes instead is covered against a real extension
+    // page in ExtensionPolyfillProfileWiringTests.
+
+    private static let offscreenParams =
+        "{ url: 'offscreen.html', reasons: ['DOM_PARSER'], justification: 'test' }"
+
+    private func callbackOutcome(call: String, setup: String = "", teardown: String = "",
+                                 readLastError: Bool = true, throwFromCallback: Bool = false,
+                                 on target: WKWebView? = nil) async throws -> [String: Any] {
+        try await evalDictionary(
+            callbackOutcomeJS(call: call, setup: setup, teardown: teardown,
+                              readLastError: readLastError, throwFromCallback: throwFromCallback),
+            on: target)
+    }
+
+    /// The harness must be able to see an unhandled rejection at all, or the
+    /// "no unhandled rejection" assertions below prove nothing.
+    func testCallbackHarnessObservesUnhandledRejections() async throws {
+        let outcome = try await callbackOutcome(call: """
+            Promise.reject(new Error('control rejection'));
+            cb();
+        """)
+        XCTAssertEqual(outcome["unhandled"] as? [String], ["control rejection"])
+    }
+
+    /// NEGATIVE: the native side rejects (a bare web view has no loaded
+    /// context, so "Extension not found"). The callback still runs, with no
+    /// arguments and lastError carrying the message, and lastError is gone
+    /// once it returns. A checked error is not reported to the console.
+    func testOffscreenCreateDocumentCallbackGetsLastErrorOnNativeFailure() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);")
+
+        XCTAssertEqual(outcome["timedOut"] as? Bool, false, "the callback must run on failure: \(outcome)")
+        XCTAssertEqual(outcome["returnedType"] as? String, "undefined")
+        XCTAssertEqual(outcome["argc"] as? Int, 0)
+        XCTAssertEqual(outcome["lastErrorInCallback"] as? String, "Extension not found")
+        XCTAssertEqual(outcome["lastErrorAfter"] as? String, "undefined", "lastError must be cleared after the callback")
+        XCTAssertEqual(outcome["ownLastErrorAfter"] as? Bool, false, "the runtime object must be left as it was")
+        XCTAssertEqual(outcome["mode"] as? String, "js")
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], [], "a checked lastError is not reported")
+    }
+
+    /// NEGATIVE: a callback that never reads lastError gets Chrome's
+    /// "Unchecked runtime.lastError" console report, and still no unhandled
+    /// rejection.
+    func testOffscreenCreateDocumentUncheckedLastErrorIsReported() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
+            readLastError: false)
+
+        XCTAssertEqual(outcome["argc"] as? Int, 0)
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], ["Unchecked runtime.lastError: Extension not found"])
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+        XCTAssertEqual(outcome["lastErrorAfter"] as? String, "undefined")
+    }
+
+    /// NEGATIVE: the promise form is untouched by the callback handling and
+    /// still rejects with the native message.
+    func testOffscreenCreateDocumentPromiseFormStillRejects() async throws {
+        let outcome = try await evalDictionary(
+            promiseOutcomeJS("chrome.offscreen.createDocument(\(Self.offscreenParams))"))
+        XCTAssertEqual(outcome["settled"] as? String, "rejected")
+        XCTAssertEqual(outcome["message"] as? String, "Extension not found")
+    }
+
+    /// POSITIVE: a successful createDocument runs the callback with no
+    /// arguments and no lastError. The bridge is stubbed to succeed, since a
+    /// bare web view cannot host a real offscreen document (the real success
+    /// path is covered in ExtensionPolyfillProfileWiringTests).
+    func testOffscreenCreateDocumentCallbackOnSuccess() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
+            setup: """
+                const realRequest = globalThis.__detourPolyfillRequest;
+                globalThis.__detourRestoreRequest = () => { globalThis.__detourPolyfillRequest = realRequest; };
+                globalThis.__detourPolyfillRequest = function(type, params) {
+                    return type === 'offscreen.createDocument' ? Promise.resolve(true) : realRequest(type, params);
+                };
+            """,
+            teardown: "globalThis.__detourRestoreRequest();")
+
+        XCTAssertEqual(outcome["timedOut"] as? Bool, false)
+        XCTAssertEqual(outcome["returnedType"] as? String, "undefined")
+        XCTAssertEqual(outcome["argc"] as? Int, 0, "createDocument's callback takes no arguments")
+        XCTAssertNil(outcome["lastErrorInCallback"] as? String)
+        XCTAssertEqual(outcome["lastErrorAfter"] as? String, "undefined")
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], [])
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+    }
+
+    /// POSITIVE: history.search through the real native bridge hands its
+    /// result to the callback with no lastError.
+    func testHistorySearchCallbackReceivesResults() async throws {
+        let outcome = try await callbackOutcome(call: "return chrome.history.search({ text: '' }, cb);")
+
+        XCTAssertEqual(outcome["returnedType"] as? String, "undefined")
+        XCTAssertEqual(outcome["argc"] as? Int, 1)
+        let results = try JSONSerialization.jsonObject(
+            with: Data(try XCTUnwrap(outcome["arg0"] as? String).utf8))
+        XCTAssertTrue(results is [Any], "the callback should receive the results array, got \(String(describing: results))")
+        XCTAssertNil(outcome["lastErrorInCallback"] as? String)
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], [])
+    }
+
+    /// NEGATIVE: without the `history` permission the native gate rejects;
+    /// the callback gets that as lastError, and the promise form rejects.
+    func testHistorySearchCallbackGetsLastErrorWithoutPermission() async throws {
+        ExtensionManager.shared.extensions.removeAll { $0.id == "test-polyfill-extension" }
+        try registerExtension(id: "test-polyfill-extension", permissions: ["management"])
+
+        let outcome = try await callbackOutcome(call: "return chrome.history.search({ text: '' }, cb);")
+        XCTAssertEqual(outcome["argc"] as? Int, 0, "a failed call passes no result: \(outcome)")
+        XCTAssertEqual(outcome["lastErrorInCallback"] as? String, "history permission not declared")
+        XCTAssertEqual(outcome["lastErrorAfter"] as? String, "undefined")
+        XCTAssertEqual(outcome["ownLastErrorAfter"] as? Bool, false)
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+
+        let promise = try await evalDictionary(promiseOutcomeJS("chrome.history.search({ text: '' })"))
+        XCTAssertEqual(promise["settled"] as? String, "rejected")
+        XCTAssertEqual(promise["message"] as? String, "history permission not declared")
+    }
+
+    /// An exception thrown by the callback surfaces as an uncaught error (as
+    /// in Chrome), not as an unhandled rejection, and lastError is still
+    /// cleared behind it.
+    func testCallbackExceptionIsRethrownAndLastErrorStillCleared() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
+            throwFromCallback: true)
+
+        XCTAssertEqual(outcome["lastErrorInCallback"] as? String, "Extension not found")
+        XCTAssertEqual(outcome["lastErrorAfter"] as? String, "undefined")
+        XCTAssertEqual(outcome["ownLastErrorAfter"] as? Bool, false)
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+        // The rethrow happens inside the polyfill, a user script, so WebKit
+        // mutes the error event's text to "Script error."; its count is what
+        // shows the exception surfaced exactly once.
+        let uncaught = outcome["uncaught"] as? [String] ?? []
+        XCTAssertEqual(uncaught.count, 1, "the callback's exception should be reported as uncaught, got \(uncaught)")
+    }
+
+    /// A runtime whose lastError cannot be redefined (WebKit's native one
+    /// ignores the write; here the property is made non-configurable) takes
+    /// the relay: the message goes to Detour's polyfill host through the
+    /// callback-style sendNativeMessage, and the callback runs from that
+    /// callback. The fake sendNativeMessage stands in for WebKit's.
+    func testNonOverridableLastErrorRelaysThroughSendNativeMessage() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
+            setup: """
+                Object.defineProperty(chrome.runtime, 'lastError', { get() { return undefined; }, configurable: false });
+                globalThis.__relayed = [];
+                chrome.runtime.sendNativeMessage = function(application, message, callback) {
+                    globalThis.__relayed.push({ application, message });
+                    callback();
+                };
+            """,
+            teardown: "delete chrome.runtime.sendNativeMessage;")
+
+        XCTAssertEqual(outcome["mode"] as? String, "native-relay")
+        XCTAssertEqual(outcome["timedOut"] as? Bool, false)
+        XCTAssertEqual(outcome["argc"] as? Int, 0)
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+        XCTAssertEqual(outcome["ownLastErrorAfter"] as? Bool, true, "the non-configurable property is untouched")
+
+        let relayedValue = try await evalJSON("return JSON.stringify(globalThis.__relayed)")
+        let relayed = try XCTUnwrap(relayedValue as? [[String: Any]])
+        XCTAssertEqual(relayed.count, 1)
+        XCTAssertEqual(relayed.first?["application"] as? String, ExtensionPolyfillHandler.handlerName)
+        let message = relayed.first?["message"] as? [String: Any]
+        XCTAssertEqual(message?["type"] as? String, ExtensionPolyfillHandler.lastErrorRelayType)
+        XCTAssertEqual((message?["params"] as? [String: Any])?["message"] as? String, "Extension not found")
+    }
+
+    /// With neither a redefinable lastError nor sendNativeMessage, the callback
+    /// still runs and the error is reported to the console.
+    func testNonOverridableLastErrorWithoutRelayFallsBackToConsole() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
+            setup: "Object.defineProperty(chrome.runtime, 'lastError', { get() { return undefined; }, configurable: false });")
+
+        XCTAssertEqual(outcome["mode"] as? String, "console")
+        XCTAssertEqual(outcome["timedOut"] as? Bool, false)
+        XCTAssertEqual(outcome["argc"] as? Int, 0)
+        XCTAssertNil(outcome["lastErrorInCallback"] as? String)
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], ["Unchecked runtime.lastError: Extension not found"])
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+    }
+
+    /// The native half of the relay: it always fails, with the sender's own
+    /// message (capped), and needs no permission.
+    func testLastErrorRelayRepliesWithTheMessageAsItsError() async throws {
+        func relay(_ params: [String: Any]) async -> (result: Any?, error: String?) {
+            await withCheckedContinuation { continuation in
+                handler.handleNativeMessage(
+                    ["type": ExtensionPolyfillHandler.lastErrorRelayType, "extensionID": "", "params": params],
+                    verifiedExtensionID: "no-permissions-extension"
+                ) { result, error in
+                    continuation.resume(returning: (result, (error as NSError?)?.localizedDescription))
+                }
+            }
+        }
+        let echoed = await relay(["message": "offscreen page failed to load"])
+        XCTAssertNil(echoed.result)
+        XCTAssertEqual(echoed.error, "offscreen page failed to load")
+
+        let empty = await relay([:])
+        XCTAssertEqual(empty.error, "Unknown error")
+
+        let long = await relay(["message": String(repeating: "x", count: ExtensionPolyfillHandler.lastErrorRelayMessageLimit + 100)])
+        XCTAssertEqual(long.error?.count, ExtensionPolyfillHandler.lastErrorRelayMessageLimit)
+    }
+
 
     // MARK: - Event Emitter Utility
 

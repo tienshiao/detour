@@ -580,3 +580,95 @@ final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
         connection.cancel()
     }
 }
+
+// MARK: - Callback-form polyfill calls (TASK-23)
+
+/// JS (for `callAsyncJavaScript`) that makes one callback-style extension API
+/// call and returns, as a JSON string, everything the callback-or-promise
+/// contract is judged on:
+///  - `returnedType`: `typeof` what the API call returned (`undefined` when a
+///    callback was taken);
+///  - `argc` / `arg0`: what the callback was invoked with (`arg0` JSON-encoded);
+///  - `lastErrorInCallback`: `chrome.runtime.lastError.message` read inside the
+///    callback, or null (absent when `readLastError` is false, so the error
+///    goes unchecked);
+///  - `lastErrorAfter`: `chrome.runtime.lastError` once the callback has
+///    returned and the event loop has turned (`"undefined"`, `"null"`, or JSON);
+///  - `ownLastErrorAfter`: whether `lastError` is still an own property of
+///    `chrome.runtime` afterwards;
+///  - `mode`: `__detourCallbackLastError.lastMode`;
+///  - `unhandled`: reasons of every `unhandledrejection` seen meanwhile;
+///  - `consoleErrors`: every `console.error` line meanwhile;
+///  - `uncaught`: messages of every `error` event meanwhile (exceptions the
+///    callback threw);
+///  - `timedOut`: the callback never ran.
+///
+/// `call` is a function body with `cb` in scope that returns the API's return
+/// value, e.g. `return chrome.offscreen.createDocument({...}, cb);`. `setup`
+/// runs first; `teardown` runs in a `finally` after the outcome is recorded.
+func callbackOutcomeJS(call: String, setup: String = "", teardown: String = "",
+                       readLastError: Bool = true, throwFromCallback: Bool = false) -> String {
+    #"""
+    const unhandled = [];
+    const uncaught = [];
+    const consoleErrors = [];
+    const onUnhandled = (event) => {
+        unhandled.push(String(event.reason && event.reason.message ? event.reason.message : event.reason));
+        event.preventDefault();
+    };
+    const onError = (event) => { uncaught.push(String(event.message)); event.preventDefault(); };
+    const originalConsoleError = console.error;
+    globalThis.addEventListener('unhandledrejection', onUnhandled);
+    globalThis.addEventListener('error', onError);
+    console.error = function(...args) { consoleErrors.push(args.map(String).join(' ')); };
+    try {
+        \#(setup)
+        const outcome = { timedOut: false };
+        await new Promise((resolve) => {
+            const timer = setTimeout(() => { outcome.timedOut = true; resolve(); }, 8000);
+            const cb = function(...args) {
+                clearTimeout(timer);
+                outcome.argc = args.length;
+                outcome.arg0 = args.length ? JSON.stringify(args[0]) : null;
+                if (\#(readLastError ? "true" : "false")) {
+                    const lastError = chrome.runtime.lastError;
+                    outcome.lastErrorInCallback = lastError ? String(lastError.message) : null;
+                }
+                resolve();
+                if (\#(throwFromCallback ? "true" : "false")) throw new Error('thrown from callback');
+            };
+            const returned = (function() { \#(call) })();
+            outcome.returnedType = typeof returned;
+        });
+        // Let a stray rejection or a rethrown exception be reported.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const after = chrome.runtime.lastError;
+        outcome.lastErrorAfter = after === undefined ? 'undefined' : JSON.stringify(after);
+        outcome.ownLastErrorAfter = Object.prototype.hasOwnProperty.call(chrome.runtime, 'lastError');
+        outcome.mode = globalThis.__detourCallbackLastError ? globalThis.__detourCallbackLastError.lastMode : 'missing';
+        outcome.unhandled = unhandled;
+        outcome.uncaught = uncaught;
+        outcome.consoleErrors = consoleErrors.slice();
+        return JSON.stringify(outcome);
+    } finally {
+        console.error = originalConsoleError;
+        globalThis.removeEventListener('unhandledrejection', onUnhandled);
+        globalThis.removeEventListener('error', onError);
+        \#(teardown)
+    }
+    """#
+}
+
+/// JS returning, as a JSON string, how the promise form of `call` settled:
+/// `{ settled: 'resolved' | 'rejected', value, message }`. `call` is an
+/// expression evaluating to the promise.
+func promiseOutcomeJS(_ call: String) -> String {
+    #"""
+    try {
+        const value = await (\#(call));
+        return JSON.stringify({ settled: 'resolved', value: value === undefined ? null : value });
+    } catch (e) {
+        return JSON.stringify({ settled: 'rejected', message: String(e && e.message ? e.message : e) });
+    }
+    """#
+}

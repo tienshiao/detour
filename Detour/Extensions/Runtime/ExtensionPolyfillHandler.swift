@@ -21,6 +21,13 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extensio
 class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     static let handlerName = "detourPolyfill"
 
+    /// The message type the polyfill uses to have WebKit set
+    /// `runtime.lastError` for a failed callback-style call (TASK-23).
+    static let lastErrorRelayType = "runtime.lastErrorRelay"
+
+    /// Longest relayed lastError message, in characters.
+    static let lastErrorRelayMessageLimit = 2048
+
     /// The profile whose extension controller this handler serves.
     private(set) weak var profile: Profile?
 
@@ -203,7 +210,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         let type = body["type"] as? String ?? "(unknown)"
         log.debug("Native message bridge: \(type, privacy: .public)")
         dispatch(body, verifiedExtensionID: verifiedExtensionID) { result, errorString in
-            if let errorString {
+            if let errorString, type == Self.lastErrorRelayType {
+                // The relay fails by design, and the original failure was
+                // already logged where it happened; its text is extension-
+                // supplied, so keep it private and out of the error log.
+                log.debug("lastError relay: \(errorString, privacy: .private)")
+                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
+                                          userInfo: [NSLocalizedDescriptionKey: errorString]))
+            } else if let errorString {
                 log.error("Polyfill error for \(type, privacy: .public): \(errorString, privacy: .public)")
                 replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
                                           userInfo: [NSLocalizedDescriptionKey: errorString]))
@@ -487,6 +501,19 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             } else {
                 replyHandler([:] as [String: Any], nil)
             }
+
+        // MARK: - runtime.lastError relay
+        case Self.lastErrorRelayType:
+            // Always fails, with the caller's own message as the error. The
+            // polyfill sends this through the native, callback-style
+            // `runtime.sendNativeMessage` when a polyfilled API rejects and
+            // WebKit's `runtime.lastError` cannot be set from JS: WebKit then
+            // runs the extension's callback with lastError carrying the
+            // message (TASK-23; `__detourSettle` in ExtensionAPIPolyfill). It
+            // echoes the sender's text back to the sender only, so it needs no
+            // permission. Capped so a runaway string is not carried through IPC.
+            let message = (params["message"] as? String).map { String($0.prefix(Self.lastErrorRelayMessageLimit)) } ?? ""
+            replyHandler(nil, message.isEmpty ? "Unknown error" : message)
 
         // MARK: - Logging Bridge
         case "log":

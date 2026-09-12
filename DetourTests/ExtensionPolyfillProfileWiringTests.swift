@@ -319,6 +319,153 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(replyCount, 1, "the failed request must be answered exactly once")
     }
 
+    // MARK: - TASK-23: callback-form failures reach runtime.lastError
+
+    /// The TASK-18 failure seen from a real extension page using the callback
+    /// form. WebKit's native `runtime.lastError` ignores every JS write (probed
+    /// 2026-09-12: defineProperty, assignment and delete all "succeed" and
+    /// reads stay null), so the polyfill relays the message through the
+    /// callback-style `runtime.sendNativeMessage` and WebKit sets lastError
+    /// itself. The page's manifest declares only `offscreen`, so this also
+    /// shows the relay does not depend on the extension declaring
+    /// nativeMessaging (Profile grants it at the context level).
+    ///
+    /// If a future WebKit makes lastError writable, `mode` turns 'js' and the
+    /// message loses WebKit's prefix; the callback contract assertions hold
+    /// either way.
+    func testOffscreenCreateDocumentCallbackGetsLastErrorInARealExtensionPage() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Offscreen lastError Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+        let webView = try await makeExtensionWebView(for: context)
+
+        func evalObject(_ js: String) async throws -> [String: Any] {
+            let raw = try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+            let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        }
+
+        // NEGATIVE: the page does not exist.
+        let failed = try await evalObject(callbackOutcomeJS(call: """
+            return chrome.offscreen.createDocument(
+                { url: 'no-such-offscreen.html', reasons: ['DOM_PARSER'], justification: 'test' }, cb);
+        """))
+        XCTAssertEqual(failed["timedOut"] as? Bool, false, "the callback must run on failure: \(failed)")
+        XCTAssertEqual(failed["returnedType"] as? String, "undefined")
+        XCTAssertEqual(failed["argc"] as? Int, 0)
+        let message = try XCTUnwrap(failed["lastErrorInCallback"] as? String,
+                                    "lastError must be set inside the callback: \(failed)")
+        XCTAssertTrue(message.contains("no-such-offscreen.html") && message.contains("failed to load"),
+                      "lastError should carry the native failure, got: \(message)")
+        XCTAssertEqual(failed["mode"] as? String, "native-relay",
+                       "WebKit's lastError was expected to ignore JS writes (see docs/chrome-runtime-patching.md)")
+        XCTAssertTrue(["null", "undefined"].contains(failed["lastErrorAfter"] as? String ?? ""),
+                      "lastError must be cleared after the callback, got \(failed["lastErrorAfter"] ?? "nil")")
+        XCTAssertEqual(failed["unhandled"] as? [String], [])
+        XCTAssertNil(handler.offscreenHosts[ext.id], "the failed document must not stay registered")
+
+        // NEGATIVE: the promise form still rejects.
+        let promise = try await evalObject(promiseOutcomeJS("""
+            chrome.offscreen.createDocument({ url: 'no-such-offscreen.html', reasons: ['DOM_PARSER'], justification: 'test' })
+        """))
+        XCTAssertEqual(promise["settled"] as? String, "rejected")
+        XCTAssertTrue((promise["message"] as? String ?? "").contains("failed to load"),
+                      "unexpected rejection: \(promise)")
+
+        // POSITIVE: a page that exists loads; the callback runs clean.
+        let loaded = try await evalObject(callbackOutcomeJS(call: """
+            return chrome.offscreen.createDocument(
+                { url: 'offscreen.html', reasons: ['DOM_PARSER'], justification: 'test' }, cb);
+        """))
+        XCTAssertEqual(loaded["timedOut"] as? Bool, false, "the callback must run on success: \(loaded)")
+        XCTAssertEqual(loaded["argc"] as? Int, 0)
+        XCTAssertNil(loaded["lastErrorInCallback"] as? String, "no lastError on success: \(loaded)")
+        XCTAssertEqual(loaded["unhandled"] as? [String], [])
+        XCTAssertNotNil(handler.offscreenHosts[ext.id], "the document should be hosted")
+    }
+
+    /// The same contract from a background service worker, where the polyfill
+    /// request itself travels over the promise-form sendNativeMessage bridge
+    /// and its rejection is relayed back through the callback form.
+    func testOffscreenCreateDocumentCallbackGetsLastErrorInARealServiceWorker() async throws {
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+        const unhandled = [];
+        self.addEventListener('unhandledrejection', (event) => {
+            unhandled.push(String(event.reason && event.reason.message ? event.reason.message : event.reason));
+        });
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message && message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+            if (!message || message.type !== 'offscreenCallback') return false;
+            const outcome = {};
+            chrome.offscreen.createDocument(
+                { url: message.url, reasons: ['DOM_PARSER'], justification: 'test' },
+                function(...args) {
+                    outcome.argc = args.length;
+                    const lastError = chrome.runtime.lastError;
+                    outcome.lastErrorInCallback = lastError ? String(lastError.message) : null;
+                    setTimeout(() => {
+                        outcome.lastErrorAfter = String(chrome.runtime.lastError);
+                        outcome.mode = globalThis.__detourCallbackLastError.lastMode;
+                        outcome.unhandled = unhandled.slice();
+                        sendResponse(outcome);
+                    }, 150);
+                });
+            return true;
+        });
+        """
+        let ext = try await makeTestExtension(
+            idPrefix: "lasterror-worker",
+            manifest: """
+            {
+                "manifest_version": 3,
+                "name": "lastError Worker Test",
+                "version": "1.0.0",
+                "permissions": ["offscreen"],
+                "background": {"service_worker": "background.js", "type": "module"}
+            }
+            """,
+            extraFiles: ["background.js": backgroundJS])
+        let profile = makeProfile("Worker lastError Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let webView = try await makeExtensionWebView(for: context)
+
+        // The worker is started on demand and answers nothing until it is up.
+        try await waitUntil("the background worker to wake") {
+            let ping = try await askWorker(from: webView, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+
+        // NEGATIVE
+        let failedAnswer = try await askWorker(
+            from: webView, message: ["type": "offscreenCallback", "url": "no-such-offscreen.html"])
+        XCTAssertNil(failedAnswer["lastError"] as? String, "the page could not reach the worker")
+        let failed = try XCTUnwrap(failedAnswer["reply"] as? [String: Any],
+                                   "the worker must answer: \(failedAnswer)")
+        XCTAssertEqual(failed["argc"] as? Int, 0)
+        let message = try XCTUnwrap(failed["lastErrorInCallback"] as? String,
+                                    "lastError must be set inside the worker's callback: \(failed)")
+        XCTAssertTrue(message.contains("no-such-offscreen.html") && message.contains("failed to load"),
+                      "lastError should carry the native failure, got: \(message)")
+        XCTAssertEqual(failed["mode"] as? String, "native-relay")
+        XCTAssertTrue(["null", "undefined"].contains(failed["lastErrorAfter"] as? String ?? ""))
+        XCTAssertEqual(failed["unhandled"] as? [String], [])
+
+        // POSITIVE
+        let loadedAnswer = try await askWorker(
+            from: webView, message: ["type": "offscreenCallback", "url": "offscreen.html"])
+        let loaded = try XCTUnwrap(loadedAnswer["reply"] as? [String: Any],
+                                   "the worker must answer: \(loadedAnswer)")
+        XCTAssertEqual(loaded["argc"] as? Int, 0)
+        XCTAssertNil(loaded["lastErrorInCallback"] as? String, "no lastError on success: \(loaded)")
+        XCTAssertEqual(loaded["unhandled"] as? [String], [])
+    }
+
     /// A load failure that arrives once a *newer* document has taken the
     /// extension's slot must settle its own request and leave the newer host
     /// alone — unregistering by key would take the live document down with it.
