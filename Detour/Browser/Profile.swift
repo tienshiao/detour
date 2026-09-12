@@ -263,11 +263,9 @@ class Profile {
         // is what the user was asked about, so it is matched against what the
         // extension may ask for: its requested and optional host patterns
         // (`<all_urls>` / `*://*/*` match everything).
-        let askablePatterns = wkExt.requestedPermissionMatchPatterns
-            .union(wkExt.optionalPermissionMatchPatterns)
         for record in saved where record.permissionType == ExtensionPermissionType.url.rawValue {
             guard let url = URL(string: record.permissionKey) else { continue }
-            guard askablePatterns.contains(where: { $0.matches(url) }) else {
+            guard ext.canAskForAccess(to: url) else {
                 log.debug("Skipping stale URL grant \(record.permissionKey, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
                 continue
             }

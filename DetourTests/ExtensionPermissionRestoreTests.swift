@@ -261,6 +261,26 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
                       "a grant covered by an optional host pattern is restored")
     }
 
+    /// The predicate itself, shared by the restore loop and the Settings
+    /// site-access list so the two can never disagree about which stored `.url`
+    /// decisions are live.
+    func testCanAskForAccessCoversRequestedAndOptionalPatternsOnly() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+
+        XCTAssertTrue(ext.canAskForAccess(to: try url("https://a.example/x")),
+                      "a requested host pattern is askable")
+        XCTAssertTrue(ext.canAskForAccess(to: try url("https://opt.example/")),
+                      "an optional host pattern is askable")
+        XCTAssertFalse(ext.canAskForAccess(to: try url("https://b.other/")),
+                       "an origin no pattern covers is stale, not askable")
+
+        ext.wkExtension = nil
+        XCTAssertFalse(ext.canAskForAccess(to: try url("https://a.example/x")),
+                       "with no loaded WKWebExtension there are no patterns to consult")
+    }
+
     // MARK: - Regression: the pre-TASK-11 row shape
 
     /// Before TASK-11 the site-access prompt stored full URLs under the

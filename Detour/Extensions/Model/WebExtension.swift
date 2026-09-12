@@ -15,6 +15,23 @@ class WebExtension {
     /// The native WKWebExtension, loaded asynchronously. Shared across profiles.
     var wkExtension: WKWebExtension?
 
+    /// Whether `url` is an origin this extension may ask the user about: it is
+    /// covered by one of the manifest's requested or optional host match
+    /// patterns, the only two sources a site-access prompt can come from.
+    ///
+    /// A stored site-access decision (`ExtensionPermissionType.url`) outside
+    /// this set is stale — the row survived a manifest that no longer asks for
+    /// the origin — so it must be neither restored onto a context nor offered
+    /// as a togglable row in Settings, or the switch would claim an access the
+    /// next launch silently drops. False when `wkExtension` has not loaded:
+    /// with no patterns to consult, nothing can be shown to be askable.
+    func canAskForAccess(to url: URL) -> Bool {
+        guard let wkExt = wkExtension else { return false }
+        let askable = wkExt.requestedPermissionMatchPatterns
+            .union(wkExt.optionalPermissionMatchPatterns)
+        return askable.contains { $0.matches(url) }
+    }
+
     /// Cached icon image.
     private(set) lazy var icon: NSImage? = {
         loadIcon()

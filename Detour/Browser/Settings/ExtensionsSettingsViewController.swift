@@ -249,8 +249,17 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         let savedPermissions = AppDatabase.shared.loadPermissions(extensionID: ext.id)
         let savedAPI = savedPermissions.statusByKey(type: .apiPermission)
         let savedPatterns = savedPermissions.statusByKey(type: .matchPattern)
+        // Only rows the restore would actually re-apply: `loadExtensionContext`
+        // skips a `.url` decision for an origin the manifest no longer asks
+        // about, so listing one here would offer a switch that takes effect for
+        // the session and is silently dropped on the next launch while still
+        // reading ON.
         let savedURLs = savedPermissions
             .filter { $0.permissionType == ExtensionPermissionType.url.rawValue }
+            .filter { record in
+                guard let url = URL(string: record.permissionKey) else { return false }
+                return ext.canAskForAccess(to: url)
+            }
             .sorted { $0.permissionKey < $1.permissionKey }
 
         let requiredPerms = ext.manifest.permissions ?? []
