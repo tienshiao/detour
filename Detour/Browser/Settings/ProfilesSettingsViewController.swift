@@ -443,20 +443,25 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
 
     private func updateExtensionToggles() {
         guard let profile = selectedProfile else { return }
-        let enabledExts = ExtensionManager.shared.enabledExtensions
+        let installedExts = ExtensionManager.shared.extensions
 
         // Hide if no extensions installed
-        gridView.row(at: 13).isHidden = enabledExts.isEmpty
+        gridView.row(at: 13).isHidden = installedExts.isEmpty
 
         // Rebuild toggle rows
         extensionTogglesStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
-        for ext in enabledExts {
+        for ext in installedExts {
             let toggle = NSSwitch()
             toggle.controlSize = .small
-            let isEnabled = AppDatabase.shared.isExtensionEnabled(
+            // The switch shows the profile's own saved choice. While the extension
+            // is turned off globally that choice is kept but has no effect, so the
+            // switch is shown disabled (and the name dimmed) rather than hidden:
+            // it tells the user what turning the extension back on will restore.
+            let isEnabledByProfile = AppDatabase.shared.isExtensionEnabledByProfile(
                 extensionID: ext.id, profileID: profile.id.uuidString)
-            toggle.state = isEnabled ? .on : .off
+            toggle.state = isEnabledByProfile ? .on : .off
+            toggle.isEnabled = ext.isEnabled
             toggle.identifier = NSUserInterfaceItemIdentifier(ext.id)
             toggle.target = self
             toggle.action = #selector(extensionToggled(_:))
@@ -464,11 +469,17 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             let resolvedName = ExtensionManager.shared.displayName(for: ext.id)
             let label = NSTextField(labelWithString: resolvedName)
             label.font = .systemFont(ofSize: 12)
+            label.textColor = ext.isEnabled ? .labelColor : .disabledControlTextColor
 
             let row = NSStackView(views: [toggle, label])
             row.orientation = .horizontal
             row.spacing = 6
             row.alignment = .centerY
+            if !ext.isEnabled {
+                let note = "\(resolvedName) is turned off for all profiles in Extensions settings"
+                toggle.toolTip = note
+                label.toolTip = note
+            }
             extensionTogglesStack.addArrangedSubview(row)
         }
     }

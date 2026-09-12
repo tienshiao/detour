@@ -697,6 +697,16 @@ struct AppDatabase {
         }
     }
 
+    /// The profile's own choice, ignoring the global flag: true unless the
+    /// profile has a row turning the extension off (missing row = enabled).
+    func isExtensionEnabledByProfile(extensionID: String, profileID: String) -> Bool {
+        performRead("check profile extension enabled row", default: true) { db in
+            try ProfileExtensionRecord
+                .filter(Column("profileID") == profileID && Column("extensionID") == extensionID)
+                .fetchOne(db)?.isEnabled ?? true
+        }
+    }
+
     /// Upsert per-profile extension enabled state.
     func setProfileExtensionEnabled(extensionID: String, profileID: String, enabled: Bool) {
         performWrite("set profile extension enabled") { db in

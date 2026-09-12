@@ -390,12 +390,6 @@ class Profile {
         }
     }
 
-    /// Load an extension context into this profile. Background content loads on demand.
-    @MainActor
-    func loadExtension(_ ext: WebExtension) {
-        loadExtensionContext(ext)
-    }
-
     /// Unload an extension from this profile's controller.
     ///
     /// Returns the unloaded context's `baseURL` — the origin every page the

@@ -203,15 +203,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
-    /// Load all globally-enabled extensions into a profile's controller (respecting per-profile disabling).
+    /// Load every extension that is enabled in `profile` (`isEnabled(extensionID:inProfile:)`)
+    /// into its controller.
     @MainActor
     func loadExtensionsIntoProfile(_ profile: Profile) {
-        let enabledIDs = AppDatabase.shared.enabledExtensionIDs(for: profile.id.uuidString)
-        log.info("Loading extensions for profile \(profile.name, privacy: .public), enabledIDs: \(enabledIDs, privacy: .public)")
+        log.info("Loading extensions for profile \(profile.name, privacy: .public)")
 
         // Load all contexts. Background content loads on demand when needed.
-        for ext in extensions where enabledIDs.contains(ext.id) {
-            profile.loadExtensionContext(ext)
+        for ext in extensions {
+            reconcileExtensionContext(ext, in: profile)
         }
 
         notifyExistingTabs(for: profile)
@@ -512,12 +512,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     private var enabledIDsCache: [UUID: Set<String>] = [:]
 
+    /// Extensions enabled in the profile, by `isEnabled(extensionID:inProfile:)`.
     func enabledExtensions(for profileID: UUID) -> [WebExtension] {
         let ids: Set<String>
         if let cached = enabledIDsCache[profileID] {
             ids = cached
         } else {
-            ids = Set(AppDatabase.shared.enabledExtensionIDs(for: profileID.uuidString))
+            ids = Set(extensions.map(\.id).filter { isEnabled(extensionID: $0, inProfile: profileID) })
             enabledIDsCache[profileID] = ids
         }
         return extensions.filter { ids.contains($0.id) }
@@ -536,7 +537,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     func pinnedExtensions(for profileID: UUID) -> [WebExtension] {
         let pinnedIDs = AppDatabase.shared.pinnedExtensionIDs(for: profileID.uuidString)
-        return pinnedIDs.compactMap { id in extensions.first { $0.id == id } }.filter { $0.isEnabled }
+        return pinnedIDs.compactMap { id in extensions.first { $0.id == id } }
+            .filter { isEnabled(extensionID: $0.id, inProfile: profileID) }
     }
 
     /// Build an icon image for an extension, compositing badge text from WKWebExtension.Action.
@@ -690,10 +692,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 ext.wkExtension = try await WKWebExtension(resourceBaseURL: ext.basePath)
 
                 for profile in TabStore.shared.profiles {
-                    let enabledIDs = AppDatabase.shared.enabledExtensionIDs(for: profile.id.uuidString)
-                    if enabledIDs.contains(ext.id) {
-                        profile.loadExtension(ext)
-                    }
+                    self.reconcileExtensionContext(ext, in: profile)
                 }
 
                 // Pages the replaced version had open are on a dead origin; move
@@ -757,41 +756,93 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     // MARK: - Enable / Disable
 
+    /// Whether the extension is enabled in the profile — the one rule every path
+    /// that loads a context (launch, install, both toggles) and every per-profile
+    /// list (menus, pinned toolbar icons) goes through: the global flag is on AND
+    /// the profile has not turned it off (no per-profile row means on).
+    ///
+    /// The two flags are stored independently and each toggle writes only its
+    /// own: a global disable leaves the per-profile rows alone, so re-enabling
+    /// restores every profile's earlier choice, and a per-profile enable while
+    /// the extension is globally off records the choice without loading it.
+    func isEnabled(extensionID: String, inProfile profileID: UUID) -> Bool {
+        AppDatabase.shared.isExtensionEnabled(extensionID: extensionID, profileID: profileID.uuidString)
+    }
+
+    /// What `reconcileExtensionContext` did to the profile's context.
+    private enum ContextReconciliation {
+        case unchanged
+        case loaded(WKWebExtensionContext)
+        /// The unloaded context's base URL — the origin its open pages are stranded on.
+        case unloaded(oldBase: URL)
+    }
+
+    /// Load or unload `ext`'s context in `profile` so it matches
+    /// `isEnabled(extensionID:inProfile:)`. Idempotent, and it reads the saved
+    /// flags at call time rather than applying a delta, so no sequence of toggles
+    /// can leave a profile out of step with what Settings shows.
+    @MainActor
+    @discardableResult
+    private func reconcileExtensionContext(_ ext: WebExtension, in profile: Profile) -> ContextReconciliation {
+        let shouldLoad = isEnabled(extensionID: ext.id, inProfile: profile.id)
+        switch (shouldLoad, profile.extensionContext(for: ext.id)) {
+        case (true, nil):
+            _ = profile.loadExtensionContext(ext)
+            return profile.extensionContext(for: ext.id).map { .loaded($0) } ?? .unchanged
+        case (false, .some):
+            return profile.unloadExtension(id: ext.id).map { .unloaded(oldBase: $0) } ?? .unchanged
+        default:
+            return .unchanged
+        }
+    }
+
+    /// Bring every profile in `profiles` in line after a toggle. A newly loaded
+    /// context is told about the profile's windows and tabs (only that context:
+    /// the others already know them, and re-announcing surfaces duplicate
+    /// lifecycle events). An unloaded context's pages are closed in *that*
+    /// profile only — the same extension's pages in a profile where it stays
+    /// enabled are served by a different, still-live context.
+    @MainActor
+    private func applyEnabledState(of ext: WebExtension, to profiles: [Profile]) {
+        for profile in profiles {
+            switch reconcileExtensionContext(ext, in: profile) {
+            case .loaded(let context):
+                notifyExistingTabs(for: profile, contexts: [context])
+            case .unloaded(let oldBase):
+                closeExtensionPages(in: profile, from: oldBase)
+            case .unchanged:
+                break
+            }
+        }
+    }
+
+    /// Turn the extension on or off for every profile. Only the global flag is
+    /// written; per-profile choices survive, so enabling loads it just where
+    /// the profile has not turned it off.
+    @MainActor
     func setEnabled(id: String, enabled: Bool) {
         guard let ext = self.extension(withID: id) else { return }
         log.info("Extension \(id, privacy: .public) \(enabled ? "enabled" : "disabled")")
         ext.isEnabled = enabled
         AppDatabase.shared.setEnabled(id: id, enabled: enabled)
 
-        Task { @MainActor in
-            for profile in TabStore.shared.profiles {
-                if enabled {
-                    profile.loadExtension(ext)
-                    notifyExistingTabs(for: profile)
-                } else {
-                    closeExtensionPages(in: profile, from: profile.unloadExtension(id: id))
-                }
-            }
-        }
+        applyEnabledState(of: ext, to: TabStore.shared.profiles)
 
         invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
+    /// Turn the extension on or off for one profile. The choice is saved even
+    /// while the extension is globally off, but it only takes effect (loads)
+    /// once the global flag is on again.
+    @MainActor
     func setEnabled(id: String, profileID: UUID, enabled: Bool) {
+        log.info("Extension \(id, privacy: .public) \(enabled ? "enabled" : "disabled") for profile \(profileID.uuidString, privacy: .public)")
         AppDatabase.shared.setProfileExtensionEnabled(extensionID: id, profileID: profileID.uuidString, enabled: enabled)
 
-        // Load/unload in the specific profile
-        if let profile = TabStore.shared.profiles.first(where: { $0.id == profileID }),
+        if let profile = TabStore.shared.profile(withID: profileID),
            let ext = self.extension(withID: id) {
-            Task { @MainActor in
-                if enabled {
-                    profile.loadExtension(ext)
-                    notifyExistingTabs(for: profile)
-                } else {
-                    closeExtensionPages(in: profile, from: profile.unloadExtension(id: id))
-                }
-            }
+            applyEnabledState(of: ext, to: [profile])
         }
 
         invalidateEnabledExtensionsCache()
