@@ -54,8 +54,11 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         // The manifest the shim reports also declares `webRequest`, the other
         // permission-gated polyfill module, so the default web view exercises
-        // both stubs; the absent-without-permission cases build their own view.
-        webView = try await makeWebView(manifestPermissions: ["history", "management", "privacy", "webRequest"])
+        // both stubs, and `nativeMessaging`, without which the native port
+        // keep-alive installs nothing at all (TASK-16); the
+        // absent-without-permission cases build their own view.
+        webView = try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy", "webRequest", "nativeMessaging"])
     }
 
     /// Build a web view configured the way an extension context is: the shared
@@ -84,8 +87,11 @@ final class ExtensionPolyfillTests: XCTestCase {
         // WKWebView lacks: chrome.runtime.id, chrome.runtime.getManifest, and a
         // fake connectNative that records every port it hands out (see
         // `__fakeNativePorts`) so the native port keep-alive can be exercised
-        // without a real native host. The keep-alive ping interval is shortened
-        // so tests need not wait 45 s.
+        // without a real native host or a real Detour port. Each fake port can be
+        // driven from the test with `__simulateNativeMessage` (what Detour sends:
+        // keepalive-start / keepalive-stop) and `__simulateRemoteDisconnect`.
+        // The keep-alive's ping interval and reconnect backoff are shortened so
+        // tests need not wait 45 s / 1 s.
         let shimScript = WKUserScript(
             source: """
             if (!globalThis.chrome) globalThis.chrome = {};
@@ -94,48 +100,44 @@ final class ExtensionPolyfillTests: XCTestCase {
             globalThis.chrome.runtime.getManifest = () => ({ manifest_version: 3, permissions: \(permissionsJSON) });
 
             globalThis.__detourKeepAlivePingIntervalMs = 50;
+            globalThis.__detourKeepAliveReconnectBaseMs = 100;
             // Install the service-worker-only WebSocket guard and native port
             // keep-alive in this page context so they can be exercised without a
             // real service worker.
             globalThis.__detourForceWebSocketGuard = true;
             globalThis.__detourForceNativePortKeepAlive = true;
             globalThis.__fakeNativePorts = [];
-            // Opt-in: make each fake port's `disconnect` non-writable so the
-            // keep-alive cannot patch it in place and must fall back to its proxy,
-            // the way WebKit's own port objects behave. Left configurable: a
-            // non-configurable non-writable own property would make the Proxy's
-            // get trap violate an ES invariant, which is a JS-engine rule rather
-            // than anything the keep-alive controls.
-            globalThis.__fakePortsFreezeDisconnect = false;
             globalThis.chrome.runtime.connectNative = function(application) {
                 const disconnectListeners = [];
+                const messageListeners = [];
                 const port = {
                     name: application,
                     application: application,
                     posted: [],
                     disconnectedLocally: false,
                     onDisconnect: { addListener(fn) { disconnectListeners.push(fn); } },
-                    onMessage: { addListener() {} },
+                    onMessage: { addListener(fn) { messageListeners.push(fn); } },
                     postMessage(m) { this.posted.push(m); },
                     disconnect() { this.disconnectedLocally = true; },
+                    // Test helper: deliver a message from the other side (Detour).
+                    __simulateNativeMessage(m) { messageListeners.slice().forEach(fn => fn(m)); },
                     // Test helper: simulate the other side closing the port.
                     __simulateRemoteDisconnect() { disconnectListeners.slice().forEach(fn => fn()); }
                 };
-                if (globalThis.__fakePortsFreezeDisconnect) {
-                    Object.defineProperty(port, 'disconnect', {
-                        value: port.disconnect, writable: false, configurable: true, enumerable: true
-                    });
-                }
                 globalThis.__fakeNativePorts.push(port);
                 return port;
             };
+            // Pinned so a test can assert the keep-alive left connectNative alone.
+            globalThis.__shimConnectNative = globalThis.chrome.runtime.connectNative;
+            globalThis.__shimChrome = globalThis.chrome;
+            globalThis.__shimRuntime = globalThis.chrome.runtime;
             \(shimExtras)
             """,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         )
-        // Inject before the polyfill: it reads the ping interval and wraps
-        // chrome.runtime.connectNative while it installs.
+        // Inject before the polyfill: it reads the timer overrides and opens its
+        // keep-alive port through chrome.runtime.connectNative while it installs.
         ucc.addUserScript(shimScript)
 
         // Inject polyfill JS at document start
@@ -1257,222 +1259,183 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// `__detourNativePortKeepAlive` plus the applications every fake native port
     /// was opened with, in order.
-    private func keepAliveStatus() async throws -> [String: Any] {
+    private func keepAliveStatus(on target: WKWebView? = nil) async throws -> [String: Any] {
         try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         return JSON.stringify({
-            livePorts: status.livePorts,
+            armed: status.armed,
             active: status.active,
             pingIntervalMs: status.pingIntervalMs,
             installMode: status.installMode,
+            installDetail: status.installDetail,
+            reconnectAttempts: status.reconnectAttempts,
             applications: globalThis.__fakeNativePorts.map(p => p.application)
         });
-        """)
+        """, on: target)
     }
 
-    func testKeepAliveStartsWithFirstRealNativePort() async throws {
+    /// The worker opens its port to Detour at startup and then waits: nothing is
+    /// pinging until Detour says a native host is connected (TASK-16).
+    func testKeepAliveOpensOneIdlePortAtInstall() async throws {
+        let status = try await keepAliveStatus()
+        XCTAssertEqual(status["applications"] as? [String], ["detourPolyfill"],
+                       "exactly one port, to Detour's own host, opened at install")
+        XCTAssertEqual(status["installMode"] as? String, "port")
+        XCTAssertEqual(status["installDetail"] as? String, "")
+        XCTAssertEqual(status["armed"] as? Bool, false, "an idle port must not ping")
+        XCTAssertEqual(status["active"] as? Bool, false)
+        XCTAssertEqual(status["pingIntervalMs"] as? Int, 50, "the test override should be honoured")
+        XCTAssertEqual(status["reconnectAttempts"] as? Int, 0)
+    }
+
+    /// Opening a real native port is Detour's business now: the worker must not
+    /// react to it at all (it cannot even see it — TASK-15).
+    func testKeepAliveIgnoresTheExtensionsOwnNativePorts() async throws {
         _ = try await eval("chrome.runtime.connectNative('com.example.host');")
 
         let status = try await keepAliveStatus()
-        XCTAssertEqual(status["livePorts"] as? Int, 1)
-        XCTAssertEqual(status["active"] as? Bool, true)
-        XCTAssertEqual(status["pingIntervalMs"] as? Int, 50, "the test override should be honoured")
-        XCTAssertEqual(status["installMode"] as? String, "direct", "connectNative was patched in place")
-        XCTAssertEqual(status["applications"] as? [String], ["com.example.host", "detourPolyfill"],
-                       "opening a real port should also open the keep-alive port")
+        XCTAssertEqual(status["armed"] as? Bool, false,
+                       "only Detour's keepalive-start may arm the worker")
+        XCTAssertEqual(status["applications"] as? [String], ["detourPolyfill", "com.example.host"],
+                       "no extra keep-alive port should be opened")
     }
 
-    func testKeepAliveIsNotStartedByItsOwnPort() async throws {
-        _ = try await eval("chrome.runtime.connectNative('detourPolyfill');")
-
-        let status = try await keepAliveStatus()
-        XCTAssertEqual(status["livePorts"] as? Int, 0)
-        XCTAssertEqual(status["active"] as? Bool, false)
-        XCTAssertEqual(status["applications"] as? [String], ["detourPolyfill"],
-                       "the keep-alive host must not be tracked as a real port")
-    }
-
-    func testKeepAlivePingsOnTheKeepAlivePort() async throws {
+    func testKeepAliveStartPingsImmediatelyThenAtTheInterval() async throws {
         let result = try await evalDictionary("""
-        chrome.runtime.connectNative('com.example.host');
-        await new Promise(r => setTimeout(r, 200));
-        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
-        return JSON.stringify({ posted: keepAlive ? keepAlive.posted : null });
+        const status = globalThis.__detourNativePortKeepAlive;
+        const keepAlive = globalThis.__fakeNativePorts[0];
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        const postedImmediately = keepAlive.posted.length;
+        const armedImmediately = status.armed;
+        await new Promise(r => setTimeout(r, 250));
+        return JSON.stringify({
+            postedImmediately: postedImmediately,
+            armedImmediately: armedImmediately,
+            active: status.active,
+            posted: keepAlive.posted
+        });
         """)
 
-        let posted = try XCTUnwrap(result["posted"] as? [[String: String]],
-                                   "the keep-alive port should have received pings")
-        XCTAssertGreaterThanOrEqual(posted.count, 2,
+        XCTAssertEqual(result["postedImmediately"] as? Int, 1,
+                       "the first ping must go out with the start, not one interval later")
+        XCTAssertEqual(result["armedImmediately"] as? Bool, true)
+        XCTAssertEqual(result["active"] as? Bool, true)
+        let posted = try XCTUnwrap(result["posted"] as? [[String: String]])
+        XCTAssertGreaterThanOrEqual(posted.count, 3,
                                     "expected repeated pings at a 50 ms interval, got \(posted.count)")
         for message in posted {
             XCTAssertEqual(message, ["type": "keepalive"])
         }
     }
 
-    func testKeepAliveStopsWhenLastRealPortDisconnectsLocally() async throws {
+    func testKeepAliveStopEndsThePings() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
-        const first = chrome.runtime.connectNative('com.example.first');
-        const second = chrome.runtime.connectNative('com.example.second');
-
-        first.disconnect();
-        const afterFirst = { livePorts: status.livePorts, active: status.active };
-
-        second.disconnect();
-        const afterSecond = { livePorts: status.livePorts, active: status.active };
-
-        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
+        const keepAlive = globalThis.__fakeNativePorts[0];
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await new Promise(r => setTimeout(r, 150));
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-stop' });
         const postedAtStop = keepAlive.posted.length;
-        await new Promise(r => setTimeout(r, 200));
-
+        const armedAfterStop = status.armed;
+        await new Promise(r => setTimeout(r, 250));
         return JSON.stringify({
-            afterFirst: afterFirst,
-            afterSecond: afterSecond,
-            keepAliveDisconnectedLocally: keepAlive.disconnectedLocally,
             postedAtStop: postedAtStop,
-            postedAfterWait: keepAlive.posted.length
-        });
-        """)
-
-        let afterFirst = try XCTUnwrap(result["afterFirst"] as? [String: Any])
-        XCTAssertEqual(afterFirst["livePorts"] as? Int, 1)
-        XCTAssertEqual(afterFirst["active"] as? Bool, true,
-                       "the keep-alive should survive while another real port is open")
-
-        let afterSecond = try XCTUnwrap(result["afterSecond"] as? [String: Any])
-        XCTAssertEqual(afterSecond["livePorts"] as? Int, 0)
-        XCTAssertEqual(afterSecond["active"] as? Bool, false)
-        XCTAssertEqual(result["keepAliveDisconnectedLocally"] as? Bool, true,
-                       "the keep-alive port itself should be disconnected")
-        XCTAssertEqual(result["postedAfterWait"] as? Int, result["postedAtStop"] as? Int,
-                       "pings must stop once the last real port is released")
-    }
-
-    func testKeepAliveStopsWhenRealPortIsClosedRemotely() async throws {
-        _ = try await eval("""
-        const port = chrome.runtime.connectNative('com.example.host');
-        port.__simulateRemoteDisconnect();
-        """)
-
-        let status = try await keepAliveStatus()
-        XCTAssertEqual(status["livePorts"] as? Int, 0)
-        XCTAssertEqual(status["active"] as? Bool, false)
-    }
-
-    func testKeepAliveReleaseIsIdempotent() async throws {
-        let result = try await evalDictionary("""
-        const status = globalThis.__detourNativePortKeepAlive;
-        const port = chrome.runtime.connectNative('com.example.host');
-        port.disconnect();
-        port.disconnect();
-        port.__simulateRemoteDisconnect();
-        const afterRelease = { livePorts: status.livePorts, active: status.active };
-
-        chrome.runtime.connectNative('com.example.second');
-        return JSON.stringify({
-            afterRelease: afterRelease,
-            afterReopen: { livePorts: status.livePorts, active: status.active },
-            keepAlivePortCount: globalThis.__fakeNativePorts.filter(p => p.application === 'detourPolyfill').length
-        });
-        """)
-
-        let afterRelease = try XCTUnwrap(result["afterRelease"] as? [String: Any])
-        XCTAssertEqual(afterRelease["livePorts"] as? Int, 0,
-                       "repeated releases of one port must not drive the count negative")
-        XCTAssertEqual(afterRelease["active"] as? Bool, false)
-
-        let afterReopen = try XCTUnwrap(result["afterReopen"] as? [String: Any])
-        XCTAssertEqual(afterReopen["livePorts"] as? Int, 1)
-        XCTAssertEqual(afterReopen["active"] as? Bool, true,
-                       "a later real port should start the keep-alive again")
-        XCTAssertEqual(result["keepAlivePortCount"] as? Int, 2,
-                       "restarting the keep-alive should open a fresh keep-alive port")
-    }
-
-    func testKeepAliveReconnectsIfDetourDropsThePort() async throws {
-        let result = try await evalDictionary("""
-        const status = globalThis.__detourNativePortKeepAlive;
-        chrome.runtime.connectNative('com.example.host');
-        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
-        keepAlive.__simulateRemoteDisconnect();
-        await new Promise(r => setTimeout(r, 1300));
-        return JSON.stringify({
-            livePorts: status.livePorts,
+            armedAfterStop: armedAfterStop,
             active: status.active,
-            keepAlivePortCount: globalThis.__fakeNativePorts.filter(p => p.application === 'detourPolyfill').length
+            postedAfterWait: keepAlive.posted.length,
+            disconnectedLocally: keepAlive.disconnectedLocally
         });
         """)
 
-        XCTAssertEqual(result["keepAlivePortCount"] as? Int, 2,
-                       "a dropped keep-alive port should be reopened while a real port is live")
-        XCTAssertEqual(result["active"] as? Bool, true)
-        XCTAssertEqual(result["livePorts"] as? Int, 1)
-    }
-
-    /// When the port object refuses the `disconnect` patch (as WebKit's own does),
-    /// the extension is handed a proxy that still releases the keep-alive on a
-    /// local disconnect and forwards everything else to the real port.
-    func testKeepAliveTracksLocalDisconnectOnUnpatchablePort() async throws {
-        let result = try await evalDictionary("""
-        globalThis.__fakePortsFreezeDisconnect = true;
-        const status = globalThis.__detourNativePortKeepAlive;
-        const returned = chrome.runtime.connectNative('com.example.host');
-        const real = globalThis.__fakeNativePorts[0];
-
-        const isProxy = returned !== real;
-        const nameReadsThrough = returned.name;
-        const afterConnect = { livePorts: status.livePorts, active: status.active };
-
-        returned.disconnect();
-
-        return JSON.stringify({
-            isProxy: isProxy,
-            nameReadsThrough: nameReadsThrough,
-            afterConnect: afterConnect,
-            livePorts: status.livePorts,
-            active: status.active,
-            disconnectedLocally: real.disconnectedLocally
-        });
-        """)
-
-        XCTAssertEqual(result["isProxy"] as? Bool, true,
-                       "an unpatchable port should be handed back wrapped in a proxy")
-        XCTAssertEqual(result["nameReadsThrough"] as? String, "com.example.host",
-                       "reads should forward to the real port")
-
-        let afterConnect = try XCTUnwrap(result["afterConnect"] as? [String: Any])
-        XCTAssertEqual(afterConnect["livePorts"] as? Int, 1)
-        XCTAssertEqual(afterConnect["active"] as? Bool, true)
-
-        XCTAssertEqual(result["livePorts"] as? Int, 0,
-                       "disconnect() through the proxy must release the live-port count")
+        XCTAssertGreaterThanOrEqual(result["postedAtStop"] as? Int ?? 0, 2,
+                                    "the port should have been pinging before the stop")
+        XCTAssertEqual(result["armedAfterStop"] as? Bool, false)
         XCTAssertEqual(result["active"] as? Bool, false)
-        XCTAssertEqual(result["disconnectedLocally"] as? Bool, true,
-                       "the real port's disconnect should still run with the right `this`")
+        XCTAssertEqual(result["postedAfterWait"] as? Int, result["postedAtStop"] as? Int,
+                       "pings must stop when Detour disarms the worker")
+        XCTAssertEqual(result["disconnectedLocally"] as? Bool, false,
+                       "the port stays open while idle; Detour re-arms it on the same port")
     }
 
-    /// The 1 s reconnect scheduled when Detour drops the keep-alive port must not
-    /// resurrect it if the last real port closed in the meantime.
-    func testKeepAliveReconnectDoesNotResurrectAfterLastPortCloses() async throws {
+    func testKeepAliveIgnoresUnknownMessages() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
-        const real = chrome.runtime.connectNative('com.example.host');
-        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
-        keepAlive.__simulateRemoteDisconnect();
-        real.disconnect();
-        await new Promise(r => setTimeout(r, 1300));
+        const keepAlive = globalThis.__fakeNativePorts[0];
+        keepAlive.__simulateNativeMessage({ type: 'something-else' });
+        keepAlive.__simulateNativeMessage('keepalive-start');
+        keepAlive.__simulateNativeMessage(null);
+        await new Promise(r => setTimeout(r, 150));
+        return JSON.stringify({ armed: status.armed, posted: keepAlive.posted.length });
+        """)
+
+        XCTAssertEqual(result["armed"] as? Bool, false)
+        XCTAssertEqual(result["posted"] as? Int, 0, "nothing should have been posted")
+    }
+
+    /// Detour dropping the port (a profile reload, an unloaded context) must not
+    /// leave the worker without one: it reconnects with a backoff, disarmed, and
+    /// Detour re-sends keepalive-start on the new port if hosts are still connected.
+    func testKeepAliveReconnectsAfterARemoteDisconnect() async throws {
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourNativePortKeepAlive;
+        const first = globalThis.__fakeNativePorts[0];
+        first.__simulateNativeMessage({ type: 'keepalive-start' });
+        first.__simulateRemoteDisconnect();
+        const immediately = {
+            installMode: status.installMode,
+            installDetail: status.installDetail,
+            armed: status.armed,
+            portCount: globalThis.__fakeNativePorts.length
+        };
+        const postedOnFirstAtDrop = first.posted.length;
+
+        await new Promise(r => setTimeout(r, 400));
+        const second = globalThis.__fakeNativePorts[1];
+        const afterReconnect = {
+            installMode: status.installMode,
+            installDetail: status.installDetail,
+            armed: status.armed,
+            reconnectAttempts: status.reconnectAttempts,
+            application: second ? second.application : null,
+            postedOnSecond: second ? second.posted.length : null,
+            postedOnFirst: first.posted.length
+        };
+
+        if (second) second.__simulateNativeMessage({ type: 'keepalive-start' });
+        await new Promise(r => setTimeout(r, 150));
         return JSON.stringify({
-            livePorts: status.livePorts,
-            active: status.active,
-            keepAlivePortCount: globalThis.__fakeNativePorts.filter(p => p.application === 'detourPolyfill').length
+            immediately: immediately,
+            postedOnFirstAtDrop: postedOnFirstAtDrop,
+            afterReconnect: afterReconnect,
+            armedAfterRestart: status.armed,
+            postedOnSecondAfterRestart: second ? second.posted.length : null,
+            portCount: globalThis.__fakeNativePorts.length
         });
         """)
 
-        XCTAssertEqual(result["active"] as? Bool, false,
-                       "the delayed reconnect must not restart the keep-alive with no real port left")
-        XCTAssertEqual(result["livePorts"] as? Int, 0)
-        XCTAssertEqual(result["keepAlivePortCount"] as? Int, 1,
-                       "only the original keep-alive port should ever have been opened")
+        let immediately = try XCTUnwrap(result["immediately"] as? [String: Any])
+        XCTAssertEqual(immediately["installMode"] as? String, "none")
+        XCTAssertEqual(immediately["installDetail"] as? String, "disconnected")
+        XCTAssertEqual(immediately["armed"] as? Bool, false, "a dropped port cannot be armed")
+        XCTAssertEqual(immediately["portCount"] as? Int, 1, "the reconnect is delayed by the backoff")
+
+        let afterReconnect = try XCTUnwrap(result["afterReconnect"] as? [String: Any])
+        XCTAssertEqual(afterReconnect["application"] as? String, "detourPolyfill",
+                       "the worker should have reopened its port to Detour")
+        XCTAssertEqual(afterReconnect["installMode"] as? String, "port")
+        XCTAssertEqual(afterReconnect["installDetail"] as? String, "")
+        XCTAssertEqual(afterReconnect["reconnectAttempts"] as? Int, 0,
+                       "the backoff resets after a successful connect")
+        XCTAssertEqual(afterReconnect["armed"] as? Bool, false,
+                       "a reconnected port starts disarmed until Detour arms it again")
+        XCTAssertEqual(afterReconnect["postedOnSecond"] as? Int, 0)
+        XCTAssertEqual(afterReconnect["postedOnFirst"] as? Int, result["postedOnFirstAtDrop"] as? Int,
+                       "the dropped port must never be posted on again")
+
+        XCTAssertEqual(result["armedAfterRestart"] as? Bool, true)
+        XCTAssertGreaterThanOrEqual(result["postedOnSecondAfterRestart"] as? Int ?? 0, 2,
+                                    "a new keepalive-start must ping on the reconnected port")
+        XCTAssertEqual(result["portCount"] as? Int, 2, "exactly one reconnect")
     }
 
     func testKeepAliveStatusIsReadOnly() async throws {
@@ -1480,11 +1443,62 @@ final class ExtensionPolyfillTests: XCTestCase {
         // status object silently no-ops rather than throwing.
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
-        status.livePorts = 99;
-        return JSON.stringify({ livePorts: status.livePorts });
+        status.armed = true;
+        status.installMode = 'hijacked';
+        return JSON.stringify({ armed: status.armed, installMode: status.installMode });
         """)
 
-        XCTAssertEqual(result["livePorts"] as? Int, 0, "the status object must not be writable")
+        XCTAssertEqual(result["armed"] as? Bool, false, "the status object must not be writable")
+        XCTAssertEqual(result["installMode"] as? String, "port")
+    }
+
+    /// Only an extension that declares `nativeMessaging` can ever have a native
+    /// host, so for every other worker the keep-alive would open a port that stays
+    /// idle for the worker's whole life — and moves it off WebKit's 30 s idle
+    /// unload onto the 2-minute inactive-ports path for nothing (TASK-16).
+    func testKeepAliveNotInstalledWithoutNativeMessagingPermission() async throws {
+        let noNativeMessaging = try await makeWebView(manifestPermissions: ["history", "management"])
+
+        let status = try await keepAliveStatus(on: noNativeMessaging)
+        XCTAssertEqual(status["installMode"] as? String, "none")
+        XCTAssertEqual(status["installDetail"] as? String, "no-nativeMessaging-permission")
+        XCTAssertEqual(status["armed"] as? Bool, false)
+        XCTAssertEqual(status["applications"] as? [String], [],
+                       "no port may be opened for an extension that cannot use native messaging")
+    }
+
+    /// Only the background worker holds a keep-alive port: Detour keeps one per
+    /// extension, so a popup or options page opening its own would evict the
+    /// worker's. Page contexts install nothing at all.
+    func testKeepAliveIsNotInstalledOutsideAWorker() async throws {
+        let pageView = try await makeWebView(
+            manifestPermissions: ["history"],
+            // Runs after the shim set the flag and before the polyfill reads it.
+            shimExtras: "globalThis.__detourForceNativePortKeepAlive = false;")
+
+        let status = try await keepAliveStatus(on: pageView)
+        XCTAssertEqual(status["installMode"] as? String, "none")
+        XCTAssertEqual(status["installDetail"] as? String, "not-a-worker")
+        XCTAssertEqual(status["armed"] as? Bool, false)
+        XCTAssertEqual(status["applications"] as? [String], [],
+                       "a page context must not open a port to Detour")
+    }
+
+    /// Nothing is wrapped, bound or replaced any more: the namespace, its runtime
+    /// and `connectNative` must be exactly what the environment provided (TASK-15).
+    func testKeepAliveLeavesConnectNativeAndTheGlobalsUntouched() async throws {
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            chromeIsShim: globalThis.chrome === globalThis.__shimChrome,
+            runtimeIsShim: chrome.runtime === globalThis.__shimRuntime,
+            connectNativeIsShim: chrome.runtime.connectNative === globalThis.__shimConnectNative
+        });
+        """)
+
+        XCTAssertEqual(result["chromeIsShim"] as? Bool, true, "the chrome global must not be replaced")
+        XCTAssertEqual(result["runtimeIsShim"] as? Bool, true, "chrome.runtime must not be swapped for a stand-in")
+        XCTAssertEqual(result["connectNativeIsShim"] as? Bool, true,
+                       "connectNative must be called, never wrapped")
     }
 
     // MARK: - Keep-alive must never replace the chrome/browser globals
@@ -1493,8 +1507,8 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// both names, with a `runtime` whose `connectNative` cannot be patched: it is
     /// a getter-only accessor on the prototype (assignment cannot replace it) and
     /// the runtime is non-extensible (defineProperty cannot add an own override).
-    /// This is the shape in which the keep-alive's direct patch fails and it is
-    /// tempted to reach for a fallback.
+    /// This is the shape WebKit's own namespace has, in which any attempt to
+    /// observe `connectNative` calls fails and a stand-in is tempting.
     private func makeUnpatchableNamespaceWebView() async throws -> WKWebView {
         let config = WKWebViewConfiguration()
         let shim = WKUserScript(
@@ -1523,6 +1537,10 @@ final class ExtensionPolyfillTests: XCTestCase {
             };
             realRuntime.getURL = function(path) { return 'webkit-extension://0000/' + path; };
             realRuntime.sendNativeMessage = function() { return Promise.resolve(undefined); };
+            // The keep-alive only installs for extensions declaring nativeMessaging.
+            realRuntime.getManifest = function() {
+                return { manifest_version: 3, permissions: ['nativeMessaging'] };
+            };
             Object.preventExtensions(realRuntime);
             const realChrome = { runtime: realRuntime };
             globalThis.chrome = realChrome;
@@ -1547,8 +1565,9 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// global to the native namespace to find its onMessage listeners; a Proxy or
     /// any other stand-in cannot be unwrapped, so the worker is skipped and every
     /// runtime.sendMessage to it gets an empty reply (TASK-15, 1Password popup).
-    /// When connectNative cannot be patched in place there is no fallback: the
-    /// globals, the runtime and connectNative must be left exactly as found.
+    /// The keep-alive only ever *calls* `connectNative`: even on a namespace where
+    /// nothing can be patched, the globals, the runtime and connectNative must be
+    /// left exactly as found and the port must still open (TASK-16).
     func testKeepAliveLeavesGlobalsUntouchedWhenConnectNativeIsNotPatchable() async throws {
         let wv = try await makeUnpatchableNamespaceWebView()
         let raw = try await wv.callAsyncJavaScript("""
@@ -1561,6 +1580,8 @@ final class ExtensionPolyfillTests: XCTestCase {
                     runtimeIsReal: chrome.runtime === globalThis.__realRuntime,
                     connectNativeIsNative: chrome.runtime.connectNative === globalThis.__realRuntime.connectNative,
                     installMode: globalThis.__detourNativePortKeepAlive.installMode,
+                    armed: globalThis.__detourNativePortKeepAlive.armed,
+                    openedApplications: globalThis.__fakeNativePorts.map(p => p.application),
                     listenerReachedRealEvent: globalThis.__realRuntime.onMessage.hasListener(fn),
                     getURL: chrome.runtime.getURL('x.html')
                 });
@@ -1577,8 +1598,11 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["chromeIsReal"] as? Bool, true, "globalThis.chrome must stay the object WebKit installed")
         XCTAssertEqual(result["browserIsReal"] as? Bool, true, "globalThis.browser must stay the object WebKit installed")
         XCTAssertEqual(result["runtimeIsReal"] as? Bool, true, "chrome.runtime must not be swapped for a stand-in")
-        XCTAssertEqual(result["connectNativeIsNative"] as? Bool, true, "an unpatchable connectNative is left alone")
-        XCTAssertEqual(result["installMode"] as? String, "none")
+        XCTAssertEqual(result["connectNativeIsNative"] as? Bool, true, "connectNative is called, never patched")
+        XCTAssertEqual(result["installMode"] as? String, "port",
+                       "calling connectNative needs no patching, so the keep-alive port opens here too")
+        XCTAssertEqual(result["armed"] as? Bool, false, "nothing arms it but Detour")
+        XCTAssertEqual(result["openedApplications"] as? [String], ["detourPolyfill"])
         XCTAssertEqual(result["listenerReachedRealEvent"] as? Bool, true, "onMessage.addListener must register on the real event object")
         XCTAssertEqual(result["getURL"] as? String, "webkit-extension://0000/x.html", "later polyfill patches (getURL) still work")
         withExtendedLifetime(wv) {}

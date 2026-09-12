@@ -184,9 +184,12 @@ function/value tables (patchable). But some have additional `[Dynamic]` members 
 `chrome.runtime.connectNative` is reported as an own property, and both assignment and
 `Object.defineProperty` on it complete without throwing, but every read returns a freshly created
 native function: the read-back equals neither the value just written nor the previous read. There
-is no JS-side way to wrap it (`ExtensionAPIPolyfill.nativePortKeepAliveJS` reports
-`installMode: 'none'`, `installDetail: 'patch-rejected'` in WebKit; only plain runtime objects in
-tests get `'direct'`). Assume the same for the other `[Dynamic]` runtime members listed above.
+is no JS-side way to wrap it. Assume the same for the other `[Dynamic]` runtime members listed
+above. The native-port keep-alive stopped trying: it now only *calls* `connectNative` to open its
+port and Detour tells it when to ping, since the native side knows when a real host is connected
+(TASK-16; `ExtensionAPIPolyfill.nativePortKeepAliveJS` reports `installMode: 'port'` in a worker
+whose manifest declares `nativeMessaging`, and `'none'` / `'no-nativeMessaging-permission'`
+otherwise — an extension that cannot open a native port has nothing to keep alive).
 
 Pinning a *different* object under `chrome.runtime` (Option 1 with a proxy instead of the real
 wrapper) is accepted by `defineProperty` but ignored on reads: the static getter keeps returning

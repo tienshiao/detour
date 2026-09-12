@@ -204,31 +204,53 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    notifications until a real WebSocket relay exists (candidate follow-up: relay sockets through
    Detour with `URLSessionWebSocketTask` over the polyfill port). Verified with a worker probe that
    opens a socket at startup: it gets `error` and `close`, stays alive, and restarts on every alarm.
-1. **Prevention, Chrome parity** (`ExtensionAPIPolyfill.nativePortKeepAliveJS`,
-   `ExtensionManager.webExtensionController(_:connectUsing:…)`): Chrome keeps a service worker alive
-   while it holds a native messaging port. The worker-side polyfill wraps `runtime.connectNative`;
-   while at least one real native port is open it holds a port to Detour's own `detourPolyfill`
-   host and posts `{type: "keepalive"}` on it every 45 s. WebKit counts any message the background
-   posts on any port as activity, so the inactive-ports unload never fires while 1Password is
-   connected. The keep-alive stops when the last real port closes, so idle unload resumes then.
-   ExtensionManager accepts `detourPolyfill` ports without spawning a process. Verified with a
-   probe holding a native port for 3 minutes: no unload while held, unload 30 s after release,
-   clean restart on the next alarm.
+1. **Prevention, Chrome parity — Detour drives the keep-alive** (TASK-16;
+   `ExtensionAPIPolyfill.nativePortKeepAliveJS`, `NativeHostKeepAliveState`,
+   `ExtensionManager.webExtensionController(_:connectUsing:…)`): Chrome keeps a service worker
+   alive while it holds a native messaging port. The worker cannot detect its own native ports in
+   WebKit (see the TASK-15 history below), but Detour knows natively, from
+   `NativeMessagingHost.connect()` / its exit, exactly when a real host is connected, so the
+   decision lives on the native side and the worker only obeys:
 
-   **Status 2026-09-11 22:40 (TASK-15): inert in WebKit, and its first version broke the popup.**
-   WebKit re-materializes `runtime.connectNative` on every read (assignment and `defineProperty`
-   complete, the read-back is always a fresh native function), so the wrap never takes. The
-   original fallback shadowed the `chrome`/`browser` globals with proxies; WebKit's message
-   dispatcher unwraps those globals to find the worker's `onMessage` listeners, cannot unwrap a
-   proxy, and answers every `runtime.sendMessage` to the worker with the empty default reply.
-   That is why 1Password's popup showed "Oops, something went wrong while loading" from this
-   commit on (`get-popup-config` got no reply). The fallback is removed; the keep-alive now
-   reports `installMode: 'none' (patch-rejected)` in workers and does nothing there. Also observed
-   with the fallback still in place: all three 1Password workers were terminated and re-activated
-   every 2 minutes (`SWContextManager::terminateWorker` at :06, `didFinishActivation` at :36), so
-   the keep-alive was not preventing unload even when its wrapper was in effect. Chrome parity for
-   worker lifetime needs a native-side mechanism (Detour knows when a real native host is
-   connected); see `docs/chrome-runtime-patching.md` "Level 3".
+   - At startup the worker opens **one idle port** to Detour's own `detourPolyfill` host with a
+     plain `chrome.runtime.connectNative('detourPolyfill')` — nothing is wrapped, and the
+     `chrome`/`browser` globals and `runtime.connectNative` are never touched. ExtensionManager
+     accepts the port without spawning a process and holds it (one per extension per controller).
+     Only in extensions whose manifest declares `nativeMessaging`: nothing else can ever have a
+     host, and an idle port would still move that worker off WebKit's 30 s idle unload onto the
+     2-minute inactive-ports path (and retain a port in Detour) for nothing.
+   - `NativeHostKeepAliveState` (pure, unit-tested in `NativeHostKeepAliveTests`) tracks, per
+     (controller, extension), how many real hosts are connected and whether the worker's port is
+     open. On the first host with the port open it answers `.sendStart` and Detour posts
+     `{type: "keepalive-start"}` on the port; when the last host exits it answers `.sendStop`
+     (`{type: "keepalive-stop"}`). One-shot `sendNativeMessage` hosts never count; live hosts are
+     held in a per-(controller, extension) registry, so a host is released exactly once whether its
+     process exit or the port's disconnect comes first, and a late release from a host whose
+     extension has since been reloaded cannot disarm a keep-alive a *new* host is holding up. A
+     control message that fails to send clears `armed` and is retried a second later while it is
+     still wanted (`controlSendFailed` / `reconcile`).
+   - While armed the worker posts `{type: "keepalive"}` on that port immediately and then every
+     45 s. If Detour drops the port the worker reconnects with a capped backoff (1 s, doubling, 30 s
+     max), disarmed, and Detour re-arms the new port from `portOpened` if hosts are still connected,
+     so the worker never has to remember anything.
+
+   Why this works, measured: WebKit unloads the background 30 s after a load/wake, but while the
+   background has open ports the unload is deferred until 2 minutes after the last message the
+   *background* posted on any of them (`delayForInactivePorts`). Posting on the Detour port is such
+   a message: the TASK-2 harness (2026-09-11 18:14) held a native port for 3 minutes with pings
+   flowing and saw no unload, then an idle unload 30 s after release and a clean restart on the
+   next alarm.
+
+   **History — 2026-09-11 22:40 (TASK-15): the worker-side detection this replaces was inert, and
+   its first version broke the popup.** The original design wrapped `runtime.connectNative` in the
+   worker to count real ports itself. WebKit re-materializes that property on every read
+   (assignment and `defineProperty` complete, the read-back is always a fresh native function), so
+   the wrap never took (`installMode: 'none' (patch-rejected)`). Its fallback shadowed the
+   `chrome`/`browser` globals with proxies; WebKit's message dispatcher unwraps those globals to
+   find the worker's `onMessage` listeners, cannot unwrap a proxy, and answered every
+   `runtime.sendMessage` to the worker with the empty default reply — which is why 1Password's
+   popup showed "Oops, something went wrong while loading" (`get-popup-config` got no reply). Both
+   the wrap and the fallback are gone; see `docs/chrome-runtime-patching.md` "Level 3".
 2. **Recovery** (`Profile.recoverFromBackgroundLoadFailure`): when the context records code 6, unload
    and reload the context in that profile, re-associate its windows and tabs, and call
    `loadBackgroundContent`. The new context gets a new `webkit-extension://` base URL, so the stale

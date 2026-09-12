@@ -80,6 +80,52 @@ func loadHTMLStringAndWait(
     }
 }
 
+/// Poll `condition` until it holds, failing the test if `timeout` elapses first.
+/// `what` names the thing being waited for, so the failure says what never
+/// happened.
+@MainActor
+func waitUntil(_ what: String, timeout: TimeInterval = 10, pollInterval: TimeInterval = 0.1,
+               file: StaticString = #filePath, line: UInt = #line,
+               _ condition: () async throws -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while try await !condition() {
+        if Date() >= deadline {
+            XCTFail("timed out after \(timeout) s waiting for \(what)", file: file, line: line)
+            return
+        }
+        try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+    }
+}
+
+/// One round trip to an extension's background service worker: sends `message`
+/// with `chrome.runtime.sendMessage` from a loaded extension page and returns the
+/// parsed envelope, with both halves of the answer in it:
+///  - `reply`: what the worker responded (`NSNull` when it answered nothing —
+///    which is also what WebKit produces when it could not reach the worker at
+///    all — and the string `"timeout"` when the callback never fired);
+///  - `lastError`: `chrome.runtime.lastError.message`, the only place a delivery
+///    failure is reported, so a caller can tell "the worker said nothing" from
+///    "the message never got there".
+@MainActor
+func askWorker(from webView: WKWebView, message: [String: Any],
+               timeout: TimeInterval = 10) async throws -> [String: Any] {
+    let raw = try await webView.callAsyncJavaScript("""
+        const reply = await new Promise((resolve) => {
+            let settled = false;
+            chrome.runtime.sendMessage(message, (r) => {
+                settled = true;
+                resolve({ reply: r === undefined ? null : r,
+                          lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+            });
+            setTimeout(() => { if (!settled) resolve({ reply: 'timeout', lastError: null }); }, timeoutMS);
+        });
+        return JSON.stringify(reply);
+    """, arguments: ["message": message, "timeoutMS": Int(timeout * 1000)], contentWorld: .page)
+    let jsonString = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
+    let data = try XCTUnwrap(jsonString.data(using: .utf8))
+    return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
 /// Post a raw polyfill envelope straight through `webkit.messageHandlers` from
 /// the page, bypassing the polyfill JS (which stamps its own `extensionID`), so
 /// a test can claim any id. Returns the bridge's reply or its rejection text.

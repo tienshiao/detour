@@ -230,29 +230,26 @@ try {
 }
 
 // --- Native port keep-alive probe ---
-// The 'detourPolyfill' host is accepted without the nativeMessaging manifest
-// permission (this extension does not declare it), and a real native port
-// starts the service-worker keep-alive.
+// In an extension that declares `nativeMessaging`, the polyfill opens one idle
+// port to the 'detourPolyfill' host at worker start and Detour arms it —
+// `armed`/`active` flip to true — while a real native messaging host is connected
+// for that extension (TASK-16). This one does NOT declare the permission, so it can
+// never have a host and the keep-alive installs nothing: expect installMode 'none'
+// with installDetail 'no-nativeMessaging-permission'. This only reports that state;
+// opening a 'detourPolyfill' port here would evict a keep-alive port if there were
+// one, since Detour keeps one per extension.
 
-if (chrome.runtime.connectNative) {
-  try {
-    const port = chrome.runtime.connectNative('detourPolyfill');
-    appendLog({
-      event: 'runtime.connectNative',
-      application: 'detourPolyfill',
-      keepAlive: globalThis.__detourNativePortKeepAlive ? {
-        livePorts: globalThis.__detourNativePortKeepAlive.livePorts,
-        active: globalThis.__detourNativePortKeepAlive.active
-      } : null
-    });
-    port.onDisconnect.addListener(() => appendLog({
-      event: 'runtime.connectNative.disconnect',
-      application: 'detourPolyfill'
-    }));
-  } catch (e) {
-    appendLog({ event: 'runtime.connectNative.error', error: String(e) });
-  }
-}
+const keepAlive = globalThis.__detourNativePortKeepAlive;
+appendLog({
+  event: 'nativePortKeepAlive',
+  connectNativeType: typeof chrome.runtime.connectNative,
+  keepAlive: keepAlive ? {
+    installMode: keepAlive.installMode,
+    installDetail: keepAlive.installDetail,
+    armed: keepAlive.armed,
+    active: keepAlive.active
+  } : null
+});
 
 // --- Message handling from popup ---
 

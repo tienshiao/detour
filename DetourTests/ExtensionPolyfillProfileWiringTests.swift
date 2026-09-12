@@ -59,18 +59,24 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    /// Write a minimal MV3 extension (no background content, one test page and
-    /// one offscreen page) to a fresh temp directory and register it in
-    /// ExtensionManager, the way an installed extension is registered.
-    /// The id is unique per call so leftovers from another run can never match.
-    private func makeTestExtension() async throws -> WebExtension {
-        let id = "polyfill-wiring-\(UUID().uuidString.prefix(8))"
+    /// Write an MV3 extension to a fresh temp directory and register it in
+    /// ExtensionManager, the way an installed extension is registered. The id is
+    /// unique per call so leftovers from another run can never match.
+    ///
+    /// The default is a minimal extension with no background content, one test
+    /// page and one offscreen page; `manifest` and `extraFiles` (written next to
+    /// them, e.g. a `background.js`) replace and extend that for tests that need a
+    /// different shape.
+    private func makeTestExtension(idPrefix: String = "polyfill-wiring",
+                                   manifest: String? = nil,
+                                   extraFiles: [String: String] = [:]) async throws -> WebExtension {
+        let id = "\(idPrefix)-\(UUID().uuidString.prefix(8))"
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-\(id)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         tempDirs.append(dir)
 
-        let manifestJSON = """
+        let manifestJSON = manifest ?? """
         {
             "manifest_version": 3,
             "name": "Polyfill Wiring Test",
@@ -84,6 +90,9 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             .write(to: dir.appendingPathComponent("test.html"), atomically: true, encoding: .utf8)
         try "<html><body><div id=\"offscreen\">offscreen</div></body></html>"
             .write(to: dir.appendingPathComponent("offscreen.html"), atomically: true, encoding: .utf8)
+        for (name, contents) in extraFiles {
+            try contents.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
 
         let wkExt = try await WKWebExtension(resourceBaseURL: dir)
         let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
@@ -410,4 +419,112 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     // Note: a released profile rejecting every web-view message is covered by
     // `ExtensionPolyfillTests.testWebViewMessageWithReleasedProfileRejected`;
     // it exercises nothing about the Profile→handler wiring these tests are for.
+
+    // MARK: - TASK-16: Detour drives the worker's native-host keep-alive
+
+    /// An extension with a background service worker running the real polyfill, so
+    /// the worker opens its idle keep-alive port through the production path (the
+    /// profile's own controller, with ExtensionManager as its delegate).
+    /// `nativeMessaging` is what makes the keep-alive install at all (TASK-16).
+    private func makeKeepAliveTestExtension() async throws -> WebExtension {
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message && message.type === 'keepAliveStatus') {
+                const status = globalThis.__detourNativePortKeepAlive;
+                sendResponse(status ? {
+                    installMode: status.installMode,
+                    installDetail: status.installDetail,
+                    armed: status.armed,
+                    active: status.active
+                } : { installMode: 'missing' });
+                return true;
+            }
+            return false;
+        });
+        """
+        return try await makeTestExtension(
+            idPrefix: "keepalive-wiring",
+            manifest: """
+            {
+                "manifest_version": 3,
+                "name": "Keep-alive Wiring Test",
+                "version": "1.0.0",
+                "permissions": ["nativeMessaging"],
+                "background": {"service_worker": "background.js", "type": "module"}
+            }
+            """,
+            extraFiles: ["background.js": backgroundJS])
+    }
+
+    /// One round trip to the background worker, asking it what its keep-alive is
+    /// doing. Fails the test if the message never reached the worker; returns nil
+    /// when the worker answered nothing.
+    private func workerKeepAliveStatus(from webView: WKWebView,
+                                       file: StaticString = #filePath,
+                                       line: UInt = #line) async throws -> [String: Any]? {
+        let answer = try await askWorker(from: webView, message: ["type": "keepAliveStatus"], timeout: 5)
+        XCTAssertNil(answer["lastError"] as? String,
+                     "sendMessage to the worker reported lastError", file: file, line: line)
+        return answer["reply"] as? [String: Any]
+    }
+
+    /// End to end through the production wiring: the worker holds an idle port,
+    /// Detour arms it when a real native messaging host connects for that
+    /// extension and disarms it when the last one goes away, and the worker's
+    /// pings arrive back on the same port.
+    func testDetourArmsAndDisarmsTheWorkerKeepAlivePort() async throws {
+        let ext = try await makeKeepAliveTestExtension()
+        let profile = makeProfile("Keep-alive Wiring Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id],
+                                    "the context should be loaded in the profile's controller")
+        let webView = try await makeExtensionWebView(for: context)
+
+        let manager = ExtensionManager.shared
+        func state() -> NativeHostKeepAliveState? {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager") {
+            state()?.portOpen == true
+        }
+        let opened = try XCTUnwrap(state())
+        XCTAssertEqual(opened.connectedHosts, 0)
+        XCTAssertFalse(opened.armed, "no native host is connected yet")
+
+        let idleReply = try await workerKeepAliveStatus(from: webView)
+        let idle = try XCTUnwrap(idleReply, "the worker must answer the status round trip")
+        XCTAssertEqual(idle["installMode"] as? String, "port")
+        XCTAssertEqual(idle["installDetail"] as? String, "")
+        XCTAssertEqual(idle["armed"] as? Bool, false)
+
+        // A real native host connects (the spawn itself is not what is under test).
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        XCTAssertEqual(state()?.armed, true, "the state machine should have armed on the first host")
+
+        var armedStatus: [String: Any]?
+        try await waitUntil("the worker to report itself armed") {
+            armedStatus = try await self.workerKeepAliveStatus(from: webView)
+            return armedStatus?["armed"] as? Bool == true
+        }
+        XCTAssertEqual(armedStatus?["active"] as? Bool, true)
+        XCTAssertGreaterThanOrEqual(
+            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id), 1,
+            "arming must produce an immediate ping on the keep-alive port")
+
+        // The last host exits.
+        manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        XCTAssertEqual(state()?.armed, false)
+
+        var disarmedStatus: [String: Any]?
+        try await waitUntil("the worker to report itself disarmed") {
+            disarmedStatus = try await self.workerKeepAliveStatus(from: webView)
+            return disarmedStatus?["armed"] as? Bool == false
+        }
+        XCTAssertEqual(disarmedStatus?["installMode"] as? String, "port",
+                       "the worker keeps its idle port after the pings stop")
+        XCTAssertEqual(state()?.portOpen, true)
+    }
 }

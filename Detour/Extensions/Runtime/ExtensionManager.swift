@@ -39,6 +39,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
     private var keepAlivePorts: [KeepAlivePortKey: WKWebExtension.MessagePort] = [:]
 
+    /// Whether each extension's worker should currently be pinging its keep-alive
+    /// port, driven by real native-host connects/disconnects (TASK-16). Entries are
+    /// created on demand and dropped as soon as they go idle.
+    private var keepAliveStates: [KeepAlivePortKey: NativeHostKeepAliveState] = [:]
+
+    /// `{type:"keepalive"}` pings received on each keep-alive port, for diagnostics
+    /// and tests. Dropped with the state entry.
+    private var keepAlivePingCounts: [KeepAlivePortKey: Int] = [:]
+
+    /// The real native messaging hosts currently connected for each extension, keyed
+    /// by host identity (TASK-16). The keep-alive count is derived from this registry
+    /// rather than from a flag captured in each connection's closures: those closures
+    /// outlive an extension reload, and a late release from a host whose context is
+    /// long gone must not disarm a keep-alive that a *new* host on the same
+    /// (controller, extensionID) key is holding up. Removal is also what makes a
+    /// double release (process exit and port disconnect both fire) a no-op.
+    private var liveNativeHosts: [KeepAlivePortKey: [ObjectIdentifier: NativeMessagingHost]] = [:]
+
     /// Whether a native-host connection from an extension may proceed.
     enum NativeHostAccess: Equatable {
         /// Detour's own polyfill host: accepted without the manifest permission.
@@ -201,9 +219,105 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// or uninstall does not strand the retained port.
     func closeKeepAlivePort(for extensionID: String, in controller: WKWebExtensionController) {
         let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
-        guard let port = keepAlivePorts.removeValue(forKey: key) else { return }
-        port.disconnect(throwing: nil)
-        log.info("Keep-alive port closed for \(extensionID, privacy: .public) (context unloaded)")
+        // The whole context is going away: take its hosts out of the registry and
+        // reset the keep-alive bookkeeping with it (nothing is sent, so the order
+        // relative to the disconnects below is moot). Dropping the registry entry
+        // first also means each host's own release callback finds nothing to release.
+        let hosts = liveNativeHosts.removeValue(forKey: key) ?? [:]
+        applyKeepAlive(.contextUnloaded, for: key)
+        if let port = keepAlivePorts.removeValue(forKey: key) {
+            port.disconnect(throwing: nil)
+            log.info("Keep-alive port closed for \(extensionID, privacy: .public) (context unloaded)")
+        }
+        // WebKit closes an unloaded context's ports itself, but that only ends the
+        // extension side of the conversation: disconnect the hosts explicitly so the
+        // processes are gone rather than left talking to a dead context.
+        for host in hosts.values {
+            host.disconnect()
+        }
+    }
+
+    /// Feed an event to the extension's keep-alive state machine and carry out what
+    /// it asks for on the worker's keep-alive port (TASK-16). Main-thread only:
+    /// every caller is a delegate callback or a native-host callback dispatched to
+    /// the main queue.
+    private func applyKeepAlive(_ event: NativeHostKeepAliveState.Event, for key: KeepAlivePortKey) {
+        var state = keepAliveStates[key] ?? NativeHostKeepAliveState()
+        let action = state.apply(event)
+        if state.isIdle {
+            keepAliveStates.removeValue(forKey: key)
+            keepAlivePingCounts.removeValue(forKey: key)
+        } else {
+            keepAliveStates[key] = state
+        }
+
+        let extID = key.extensionID
+        switch action {
+        case .none:
+            return
+        case .sendStart:
+            log.info("Keep-alive armed for \(extID, privacy: .public): \(state.connectedHosts) native host(s) connected")
+            sendKeepAliveControl("keepalive-start", for: key)
+        case .sendStop:
+            log.info("Keep-alive disarmed for \(extID, privacy: .public): no native host connected")
+            sendKeepAliveControl("keepalive-stop", for: key)
+        }
+    }
+
+    /// Send one `keepalive-start` / `keepalive-stop` on the extension's keep-alive
+    /// port. A failed send leaves the worker doing the *opposite* of what the state
+    /// machine believes, so it is not just logged: `controlSendFailed` clears `armed`
+    /// and a `reconcile` a second later re-sends the control message if it is still
+    /// wanted (and stops re-sending as soon as it is not).
+    private func sendKeepAliveControl(_ type: String, for key: KeepAlivePortKey) {
+        guard let port = keepAlivePorts[key] else { return }
+        let extID = key.extensionID
+        port.sendMessage(["type": type], completionHandler: { [weak self, weak port] error in
+            guard let error else { return }
+            log.error("Keep-alive '\(type, privacy: .public)' failed for \(extID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            guard let self, let port else { return }
+            // The keep-alive bookkeeping is main-thread only (see `applyKeepAlive`);
+            // WebKit calls this back on the main queue, but do not rely on it.
+            let recover = { self.handleKeepAliveControlFailure(for: key, on: port) }
+            if Thread.isMainThread { recover() } else { DispatchQueue.main.async(execute: recover) }
+        })
+    }
+
+    /// A control message never reached the worker: forget that it was sent and
+    /// re-evaluate a second later, which re-sends it while it is still wanted.
+    private func handleKeepAliveControlFailure(for key: KeepAlivePortKey, on port: WKWebExtension.MessagePort) {
+        applyKeepAlive(.controlSendFailed, for: key)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak port] in
+            // Only retry on the port that failed: a port replaced or closed since
+            // then got its own portOpened/portClosed event, which already left the
+            // state (and the new worker port) consistent.
+            guard let self, let port, self.keepAlivePorts[key] === port else { return }
+            self.applyKeepAlive(.reconcile, for: key)
+        }
+    }
+
+    /// The keep-alive state for an extension in a controller, or nil when nothing
+    /// is tracked. Tests only (`ExtensionPolyfillProfileWiringTests`).
+    func keepAliveStateForTesting(controller: WKWebExtensionController, extensionID: String) -> NativeHostKeepAliveState? {
+        keepAliveStates[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)]
+    }
+
+    /// Pings received on the extension's keep-alive port so far. Tests only.
+    func keepAlivePingCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
+        keepAlivePingCounts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)] ?? 0
+    }
+
+    /// Real native messaging hosts currently registered as live for the extension.
+    /// Tests only.
+    func liveNativeHostCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
+        liveNativeHosts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)]?.count ?? 0
+    }
+
+    /// Drive a real native host's connect/disconnect without spawning one, so the
+    /// worker-facing half of the keep-alive can be tested end to end. Tests only.
+    func simulateNativeHostForTesting(connected: Bool, controller: WKWebExtensionController, extensionID: String) {
+        let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
+        applyKeepAlive(connected ? .hostConnected : .hostDisconnected, for: key)
     }
 
     /// Tell `contexts` (default: every context loaded in the profile) about the
@@ -1088,24 +1202,40 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         case .polyfillHost:
             // The polyfill's keep-alive port (see ExtensionAPIPolyfill.nativePortKeepAliveJS):
             // accept it without spawning anything and hold it until the worker closes it
-            // or its context unloads. WebKit treats the worker's periodic pings on it as
-            // background activity, which is what keeps the worker from being unloaded
-            // while a real native port is open. One per extension per controller: a
-            // worker only ever holds one, so a second replaces (and closes) the first
-            // rather than accumulating.
+            // or its context unloads. The worker opens it idle at startup and never
+            // decides anything itself — Detour arms it (`keepalive-start`) while a real
+            // native messaging host is connected for this extension and disarms it when
+            // the last one exits (TASK-16), and WebKit counts the worker's pings on it
+            // as the background activity that defers the unload. One port per extension
+            // per controller: a worker only ever holds one, so a second replaces (and
+            // closes) the first rather than accumulating.
             let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
             if let previous = keepAlivePorts.removeValue(forKey: key) {
                 previous.disconnect(throwing: nil)
+                // Disarm the state with the old port so the new one (which starts
+                // disarmed) is re-armed below rather than silently left idle.
+                applyKeepAlive(.portClosed, for: key)
             }
             keepAlivePorts[key] = port
-            port.messageHandler = { _, _ in }
+            port.messageHandler = { [weak self] message, _ in
+                guard let self,
+                      let body = message as? [String: Any],
+                      body["type"] as? String == "keepalive" else { return }
+                self.keepAlivePingCounts[key, default: 0] += 1
+            }
             port.disconnectHandler = { [weak self, weak port] _ in
                 guard let self, let port, self.keepAlivePorts[key] === port else { return }
                 self.keepAlivePorts.removeValue(forKey: key)
+                self.applyKeepAlive(.portClosed, for: key)
                 log.info("Keep-alive port closed for \(extID, privacy: .public)")
             }
             log.info("Keep-alive port opened for \(extID, privacy: .public)")
+            // Accept the port before arming it: the completion handler is what marks
+            // the connection ready to use, and `portOpened` may immediately send a
+            // `keepalive-start` on it (a native host connected before the worker's
+            // port arrived, or reconnected after a drop).
             completionHandler(nil)
+            applyKeepAlive(.portOpened, for: key)
             return
         case .denied:
             log.warning("Extension \(extID, privacy: .public) tried connectNative to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
@@ -1117,10 +1247,31 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         let host = NativeMessagingHost(hostName: hostName, extensionID: extID)
+        let keepAliveKey = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
+        let hostKey = ObjectIdentifier(host)
+
+        // This host counts towards the worker's keep-alive exactly once (TASK-16).
+        // The host's process exit and the port's disconnect both end the connection
+        // and either can come first, so both release through here; the registry
+        // removal is the token — it only succeeds for a host that was registered as
+        // live (i.e. `connect()` succeeded) and only once, and it cannot match a host
+        // the context unload already took away. Main thread only: `onDisconnect` is
+        // dispatched to the main queue and `disconnectHandler` is a WebKit delegate
+        // callback.
+        let releaseHost = { [weak self] in
+            guard let self,
+                  self.liveNativeHosts[keepAliveKey]?.removeValue(forKey: hostKey) != nil else { return }
+            if self.liveNativeHosts[keepAliveKey]?.isEmpty == true {
+                self.liveNativeHosts.removeValue(forKey: keepAliveKey)
+            }
+            self.applyKeepAlive(.hostDisconnected, for: keepAliveKey)
+        }
+
         host.onMessage = { response in
             port.sendMessage(response, completionHandler: nil)
         }
         host.onDisconnect = { _ in
+            releaseHost()
             port.disconnect(throwing: nil)
         }
         port.messageHandler = { message, _ in
@@ -1129,6 +1280,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
         }
         port.disconnectHandler = { _ in
+            releaseHost()
             host.disconnect()
         }
         do {
@@ -1137,6 +1289,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(error)
             return
         }
+        liveNativeHosts[keepAliveKey, default: [:]][hostKey] = host
+        applyKeepAlive(.hostConnected, for: keepAliveKey)
         completionHandler(nil)
     }
 }

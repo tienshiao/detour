@@ -1,11 +1,11 @@
 ---
 id: TASK-4
 title: '1Password: real frame enumeration for iframe autofill (Phase 3)'
-status: In Progress
+status: To Do
 assignee:
   - '@claude'
 created_date: '2026-09-11 22:28'
-updated_date: '2026-09-12 09:05'
+updated_date: '2026-09-12 09:08'
 labels:
   - 1password
   - extensions

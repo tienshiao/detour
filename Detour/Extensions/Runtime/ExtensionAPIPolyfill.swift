@@ -510,175 +510,183 @@ struct ExtensionAPIPolyfill {
     /// Keeps the background service worker alive while the extension holds a
     /// native messaging port open, matching Chrome (which extends the worker's
     /// lifetime for the duration of a native port connection). WebKit unloads a
-    /// non-persistent background after 30 s of inactivity, or 2 minutes after the
-    /// last message on any of its ports; when 1Password's worker is unloaded with
-    /// its native ports open, the ports close and its service worker registration
-    /// can be left in a state where the next wake never starts a worker (see
+    /// non-persistent background 30 s after load/wake, or — while the background
+    /// has open ports — 2 minutes after the last message the *background* posted
+    /// on any of them; when 1Password's worker is unloaded with its native ports
+    /// open, the ports close and its service worker registration can be left in a
+    /// state where the next wake never starts a worker (see
     /// docs/1password-integration-plan.md, Phase 1).
     ///
-    /// WebKit counts any message posted by the background page on any port as
-    /// activity, so while at least one real native port is connected this opens a
-    /// port to Detour's own `detourPolyfill` host (accepted by ExtensionManager
-    /// without spawning a process) and posts a small ping on it periodically. The
-    /// ping stops, and the keep-alive port is closed, when the last real native
-    /// port disconnects, so the worker can be unloaded normally afterwards.
+    /// **Detour drives this, not the worker** (TASK-16). The worker cannot detect
+    /// its own native ports: WebKit re-materializes `runtime.connectNative` on
+    /// every read so it cannot be wrapped, and the one fallback that could have
+    /// seen the calls — shadowing the `chrome`/`browser` globals — breaks WebKit's
+    /// page→worker message dispatch, which unwraps those globals to find the
+    /// worker's `onMessage` listeners (TASK-15: 1Password's popup died with "Oops,
+    /// something went wrong while loading"). So nothing here wraps or replaces
+    /// anything. Instead the worker opens one *idle* port to Detour's own
+    /// `detourPolyfill` host at startup (accepted by ExtensionManager without
+    /// spawning a process) and waits: Detour, which knows exactly when a real
+    /// native messaging host is connected, sends `{type:'keepalive-start'}` on that
+    /// port while at least one is, and `{type:'keepalive-stop'}` when the last one
+    /// goes away. While armed the worker posts `{type:'keepalive'}` on the port
+    /// every `pingIntervalMs`, which is the activity WebKit's inactive-ports timer
+    /// counts (verified 2026-09-11, TASK-2 harness: posting on this port held the
+    /// worker for the whole hold, and idle unload resumed after release).
     ///
-    /// Installed in service worker contexts only. `__detourKeepAlivePingIntervalMs`
-    /// (read once at install) overrides the ping interval for tests, and
-    /// `__detourForceNativePortKeepAlive` installs it outside workers for tests.
+    /// If Detour drops the port the worker reconnects with a capped backoff,
+    /// disarmed; Detour re-sends `keepalive-start` on the new port if hosts are
+    /// still connected (`NativeHostKeepAliveState`), so the worker never has to
+    /// remember anything across a reconnect.
+    ///
+    /// Installed in service worker contexts of extensions that declare
+    /// `nativeMessaging` only: an extension that cannot open a native port has
+    /// nothing to keep alive, and an idle port would still cost it WebKit's 30 s
+    /// idle unload (a background with open ports is unloaded on the 2-minute
+    /// inactive-ports rule instead) plus a retained port in Detour.
+    ///
+    /// `__detourKeepAlivePingIntervalMs`
+    /// and `__detourKeepAliveReconnectBaseMs` (both read once at install) shorten
+    /// the timers for tests, and `__detourForceNativePortKeepAlive` installs it
+    /// outside workers for tests.
     private static let nativePortKeepAliveJS = """
     (function() {
         const g = globalThis;
         const KEEPALIVE_HOST = 'detourPolyfill';
         const DEFAULT_PING_INTERVAL_MS = 45000;
+        const DEFAULT_RECONNECT_BASE_MS = 1000;
+        const MAX_RECONNECT_MS = 30000;
         const pingIntervalMs = (typeof g.__detourKeepAlivePingIntervalMs === 'number' && g.__detourKeepAlivePingIntervalMs > 0)
             ? g.__detourKeepAlivePingIntervalMs : DEFAULT_PING_INTERVAL_MS;
+        const reconnectBaseMs = (typeof g.__detourKeepAliveReconnectBaseMs === 'number' && g.__detourKeepAliveReconnectBaseMs > 0)
+            ? g.__detourKeepAliveReconnectBaseMs : DEFAULT_RECONNECT_BASE_MS;
 
-        let livePorts = 0;
-        let keepAlivePort = null;
+        // The one port this worker holds to Detour, or null between a drop and the
+        // reconnect. `armed` mirrors the last keepalive-start/stop Detour sent.
+        let port = null;
+        let armed = false;
         let pingTimer = null;
-        let originalConnectNative = null;
+        let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        // 'port' (a port is open) | 'none'.
+        let installMode = 'none';
+        // Why, for diagnostics: '' | 'not-a-worker' | 'no-nativeMessaging-permission' |
+        // 'no-runtime' | 'no-connectNative:<typeof>' | 'connect-failed: <message>' |
+        // 'disconnected'.
+        let installDetail = '';
 
-        function stopKeepAlive() {
+        function clearPingTimer() {
             if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-            const port = keepAlivePort;
-            keepAlivePort = null;
-            if (port) { try { port.disconnect(); } catch (e) {} }
         }
 
-        function startKeepAlive() {
-            // Also re-checked here because the reconnect below is delayed: the last
-            // real port may have gone away in the meantime.
-            if (keepAlivePort || !originalConnectNative || livePorts <= 0) return;
-            let port;
-            try { port = originalConnectNative(KEEPALIVE_HOST); } catch (e) { return; }
-            if (!port) return;
-            keepAlivePort = port;
-            try {
-                port.onDisconnect.addListener(function() {
-                    if (keepAlivePort !== port) return;
-                    stopKeepAlive();
-                    // Detour dropped the port (e.g. a profile reload); retry while still needed.
-                    if (livePorts > 0) setTimeout(startKeepAlive, 1000);
-                });
-            } catch (e) {}
+        function disarm() {
+            clearPingTimer();
+            armed = false;
+        }
+
+        function postPing(target) {
+            try { target.postMessage({ type: 'keepalive' }); } catch (e) {}
+        }
+
+        // Armed: post now (so the inactive-ports timer is reset immediately) and
+        // keep posting while this port is the current one.
+        function arm(target) {
+            clearPingTimer();
+            armed = true;
+            postPing(target);
             pingTimer = setInterval(function() {
-                if (keepAlivePort !== port) return;
-                try { port.postMessage({ type: 'keepalive' }); } catch (e) {}
+                if (port !== target) return;
+                postPing(target);
             }, pingIntervalMs);
         }
 
-        // Bind every function of `target` to it when read through the proxy: WebKit's
-        // bindings need the original `this`. `overrides` win over the target's props.
-        function boundProxy(target, overrides) {
-            const boundCache = new Map();
-            return new Proxy(target, {
-                get(t, prop) {
-                    if (Object.prototype.hasOwnProperty.call(overrides, prop)) return overrides[prop];
-                    const value = Reflect.get(t, prop, t);
-                    if (typeof value !== 'function') return value;
-                    let bound = boundCache.get(prop);
-                    if (!bound || bound.original !== value) {
-                        bound = { original: value, fn: value.bind(t) };
-                        boundCache.set(prop, bound);
-                    }
-                    return bound.fn;
-                },
-                set(t, prop, value) { return Reflect.set(t, prop, value, t); }
-            });
+        function scheduleReconnect() {
+            if (reconnectTimer) return;
+            const delay = Math.min(reconnectBaseMs * Math.pow(2, reconnectAttempts), MAX_RECONNECT_MS);
+            reconnectAttempts += 1;
+            reconnectTimer = setTimeout(function() {
+                reconnectTimer = null;
+                connect();
+            }, delay);
         }
 
-        // Count `port` as a live real port until it disconnects. Returns the object to
-        // hand back to the extension: the port itself when its `disconnect` could be
-        // patched, otherwise a proxy over it, so a local disconnect() is always seen.
-        function trackRealPort(port) {
-            livePorts += 1;
-            if (livePorts === 1) startKeepAlive();
-            let released = false;
-            function release() {
-                if (released) return;
-                released = true;
-                livePorts = Math.max(0, livePorts - 1);
-                if (livePorts === 0) stopKeepAlive();
+        // The namespace's own connectNative, called as a plain method: nothing is
+        // wrapped, bound or replaced (see the doc comment — TASK-15).
+        function resolveRuntime() {
+            const chromeRuntime = g.chrome && g.chrome.runtime;
+            if (chromeRuntime && typeof chromeRuntime.connectNative === 'function') return chromeRuntime;
+            const browserRuntime = g.browser && g.browser.runtime;
+            if (browserRuntime && typeof browserRuntime.connectNative === 'function') return browserRuntime;
+            if (!chromeRuntime && !browserRuntime) { installDetail = 'no-runtime'; return null; }
+            const present = chromeRuntime || browserRuntime;
+            installDetail = 'no-connectNative:' + typeof present.connectNative;
+            return null;
+        }
+
+        function connect() {
+            if (port) return;
+            const runtime = resolveRuntime();
+            if (!runtime) return;
+
+            let opened;
+            try {
+                opened = runtime.connectNative(KEEPALIVE_HOST);
+            } catch (e) {
+                installMode = 'none';
+                installDetail = 'connect-failed: ' + (e && e.message !== undefined ? e.message : String(e));
+                scheduleReconnect();
+                return;
             }
-            // onDisconnect fires when the other side closes; a local disconnect() does not.
-            try { port.onDisconnect.addListener(release); } catch (e) {}
-            const originalDisconnect = typeof port.disconnect === 'function' ? port.disconnect.bind(port) : function() {};
-            const disconnect = function() { release(); return originalDisconnect(); };
-            try { port.disconnect = disconnect; } catch (e) {}
-            if (port.disconnect === disconnect) return port;
-            // WebKit's port object refused the patch (as its runtime does for
-            // connectNative); intercept through a proxy instead. A proxy cannot
-            // override a non-writable, non-configurable own data property (the
-            // [[Get]] invariant would throw on every read), so in that shape the
-            // port is handed back as is and only a remote close is tracked.
-            let desc = null;
-            try { desc = Object.getOwnPropertyDescriptor(port, 'disconnect'); } catch (e) {}
-            if (desc && desc.configurable === false && desc.writable === false) return port;
-            return boundProxy(port, { disconnect: disconnect });
+            if (!opened) {
+                installMode = 'none';
+                installDetail = 'connect-failed: no port';
+                scheduleReconnect();
+                return;
+            }
+
+            port = opened;
+            installMode = 'port';
+            installDetail = '';
+            reconnectAttempts = 0;
+
+            // Detour drives the pings; a reconnected port always starts disarmed and
+            // is re-armed by Detour if hosts are still connected.
+            try {
+                opened.onMessage.addListener(function(message) {
+                    if (port !== opened || !message) return;
+                    if (message.type === 'keepalive-start') arm(opened);
+                    else if (message.type === 'keepalive-stop') disarm();
+                });
+            } catch (e) {}
+            try {
+                opened.onDisconnect.addListener(function() {
+                    if (port !== opened) return;
+                    port = null;
+                    disarm();
+                    installMode = 'none';
+                    installDetail = 'disconnected';
+                    scheduleReconnect();
+                });
+            } catch (e) {}
         }
 
-        function makeWrapped(runtime) {
-            const original = runtime.connectNative.bind(runtime);
-            if (!originalConnectNative) originalConnectNative = original;
-            return function connectNative(application) {
-                const port = original.apply(runtime, arguments);
-                if (application !== KEEPALIVE_HOST && port) return trackRealPort(port);
-                return port;
-            };
-        }
-
-        // Preferred: replace the property in place (works on plain runtime objects).
-        function installDirectly(runtime, wrapped) {
-            g.__detourDefine(runtime, 'connectNative', wrapped);
-            return runtime.connectNative === wrapped;
-        }
-
-        // There is deliberately no fallback when the direct patch does not take,
-        // and in WebKit it never does: `runtime.connectNative` there is
-        // re-materialized on every read, so assignment and defineProperty are
-        // accepted but the read-back is always a fresh native function (probed in
-        // ExtensionPolyfillIntegrationTests, 2026-09-11, TASK-15). The keep-alive
-        // is therefore inert in WebKit workers ('none' / 'patch-rejected') and only
-        // 'direct' on plain runtime objects (tests). The two conceivable fallbacks
-        // both fail in WebKit service workers:
-        //  - Replacing the `chrome`/`browser` globals with a proxy breaks every
-        //    runtime.sendMessage to the worker: WebKit's dispatcher reads those
-        //    globals and unwraps them to the native namespace to find the worker's
-        //    onMessage listeners; a proxy fails the unwrap, the worker is skipped,
-        //    and the sender gets the empty default reply (1Password's popup died
-        //    with "Oops, something went wrong while loading").
-        //  - Pinning a proxied `runtime` as an own property on the namespace is
-        //    accepted but ignored on reads: the static getter keeps returning the
-        //    native runtime object.
-        // 'direct' | 'none': which install path took effect (read-only status below).
-        let installMode = 'none';
-        // Why 'none', for diagnostics: 'not-a-worker' | 'no-runtime' | 'no-connectNative:<typeof>' | 'patch-rejected'.
-        let installDetail = '';
-        function install(realChrome) {
-            const runtime = realChrome && realChrome.runtime;
-            if (!runtime) { installDetail = 'no-runtime'; return; }
-            if (typeof runtime.connectNative !== 'function') { installDetail = 'no-connectNative:' + typeof runtime.connectNative; return; }
-            const wrapped = makeWrapped(runtime);
-            if (installDirectly(runtime, wrapped)) { installMode = 'direct'; installDetail = ''; }
-            else installDetail = 'patch-rejected';
-        }
-
-        // Workers only: the keep-alive exists to hold the *background worker*
-        // alive, and Detour keeps one keep-alive port per extension, so a popup
-        // or options page opening a real native port would otherwise open its
-        // own keep-alive port and evict the worker's. `__detourForceNativePortKeepAlive`
-        // installs it outside workers for tests.
+        // Workers only: this exists to hold the *background worker* alive, and
+        // Detour keeps one keep-alive port per extension, so a popup or options
+        // page would otherwise open its own and evict the worker's.
+        // `__detourForceNativePortKeepAlive` installs it outside workers for tests.
+        //
+        // And only for extensions that declare `nativeMessaging`: nothing else can
+        // ever have a native host, so for them the port would only ever sit idle —
+        // at the cost of moving the worker off WebKit's 30 s idle unload onto the
+        // 2-minute inactive-ports path and holding a port per worker in Detour for
+        // nothing.
         const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
-        if (isWorker || g.__detourForceNativePortKeepAlive === true) {
-            install(g.chrome);
-            // WebKit vends one namespace object under both names, so this is only for
-            // environments where `browser` is a separate object with its own runtime.
-            if (g.browser && g.browser !== g.chrome && (!g.chrome || g.browser.runtime !== g.chrome.runtime)) {
-                install(g.browser);
-            }
-        } else {
+        if (!isWorker && g.__detourForceNativePortKeepAlive !== true) {
             installDetail = 'not-a-worker';
+        } else if (g.__detourManifestPermissions().indexOf('nativeMessaging') === -1) {
+            installDetail = 'no-nativeMessaging-permission';
+        } else {
+            connect();
         }
         if (isWorker) {
             // One line per worker start, through the console bridge, so the path a
@@ -688,11 +696,12 @@ struct ExtensionAPIPolyfill {
 
         // Read-only status for diagnostics and tests.
         g.__detourNativePortKeepAlive = Object.freeze({
-            get livePorts() { return livePorts; },
-            get active() { return keepAlivePort !== null; },
-            get pingIntervalMs() { return pingIntervalMs; },
             get installMode() { return installMode; },
-            get installDetail() { return installDetail; }
+            get installDetail() { return installDetail; },
+            get armed() { return armed; },
+            get active() { return armed && port !== null; },
+            get pingIntervalMs() { return pingIntervalMs; },
+            get reconnectAttempts() { return reconnectAttempts; }
         });
     })();
     """

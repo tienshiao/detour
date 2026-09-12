@@ -4,6 +4,7 @@ title: 'Extensions: WebSocket relay for service worker contexts'
 status: To Do
 assignee: []
 created_date: '2026-09-12 02:09'
+updated_date: '2026-09-12 09:11'
 labels:
   - extensions
   - webkit
@@ -29,6 +30,12 @@ WebKit runs an extension's background service worker on the main thread of its c
 - [ ] #4 ExtensionPolyfillTests cover the worker-side class (state machine, event order, send/close semantics) against a fake native side, and an integration test exercises the native relay end to end
 - [ ] #5 API Explorer gains a worker WebSocket probe and docs/1password-integration-plan.md records the design and remaining CSP/permission gaps
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Design (2026-09-12, after TASK-16): 1. Native side: a second built-in host name 'detourWebSocketRelay' accepted by ExtensionManager.nativeHostAccess without the nativeMessaging manifest gate (generalise .polyfillHost to a builtInHost set); one port per socket. WebSocketRelaySession per port: first message {op:'open', url, protocols} -> URLSessionWebSocketTask (dedicated URLSession, delegate reports didOpenWithProtocol / didCloseWith code+reason); {op:'send', text} / {op:'send', binary:<base64>} forwarded; receive loop posts {op:'message', text} / {op:'message', binary:<base64>}; open -> {op:'open', protocol, extensions}; failures -> {op:'error', message} then {op:'close', code:1006}; server close -> {op:'close', code, reason, wasClean:true}; {op:'close', code, reason} from the worker cancels the task with that close code; port disconnect (worker closed the socket, worker unloaded, context unloaded via closeKeepAlivePort-style teardown) cancels the task. Registry keyed by (controller, extension, port) so nothing outlives its port. 2. Worker side (ExtensionAPIPolyfill): replace the guard's GuardedWebSocket with RelayedWebSocket implementing the WebSocket interface (constructor(url, protocols), CONNECTING/OPEN/CLOSING/CLOSED, readyState, url, protocol, extensions, bufferedAmount, binaryType 'blob'|'arraybuffer', send(string|ArrayBuffer|ArrayBufferView|Blob), close(code, reason) with code/reason validation like browsers, EventTarget + on* handlers, MessageEvent with data typed per binaryType); each instance opens its own relay port; guard behaviour kept as fallback when connectNative is unavailable. Page contexts untouched (native WebSocket). 3. Permissions/CSP: document that URLSession does not apply the extension's connect-src; enforce host_permissions match on the URL natively where the manifest declares them, else allow (Chrome allows any wss from a worker); record the gap in the plan doc. 4. Tests: ExtensionPolyfillTests drive RelayedWebSocket against a fake connectNative port (state machine, event order, send buffering before open, close codes, binary round trip); native unit test of WebSocketRelaySession against a fake port and a local loopback WebSocket server (URLSessionWebSocketTask to a Network.framework echo server, or the loopback HTTP server from the TASK-4 tests extended with an RFC6455 handshake); integration test through a real worker to a loopback echo server; API Explorer worker WebSocket probe; plan doc updated.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

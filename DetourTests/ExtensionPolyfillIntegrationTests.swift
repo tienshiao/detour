@@ -79,6 +79,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
                     chromeIsNamespace: Object.prototype.toString.call(globalThis.chrome),
                     installMode: globalThis.__detourNativePortKeepAlive ? globalThis.__detourNativePortKeepAlive.installMode : 'missing',
                     installDetail: globalThis.__detourNativePortKeepAlive ? globalThis.__detourNativePortKeepAlive.installDetail : 'missing',
+                    armed: globalThis.__detourNativePortKeepAlive ? globalThis.__detourNativePortKeepAlive.armed : null,
                     connectNativeType: typeof chrome.runtime.connectNative
                 });
                 return true;
@@ -506,33 +507,24 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// the old global-swapping fallback back in: reply nil, lastError nil).
     func testRuntimeSendMessageReachesWorkerRunningThePolyfill() async throws {
         let wv = try await makeExtensionWebView()
-        let result = try await evalJSON("""
-            const reply = await new Promise((resolve) => {
-                let settled = false;
-                chrome.runtime.sendMessage({ type: 'ping' }, (r) => {
-                    settled = true;
-                    resolve({ reply: r === undefined ? null : r,
-                              lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
-                });
-                setTimeout(() => { if (!settled) resolve({ reply: 'timeout', lastError: null }); }, 8000);
-            });
-            return JSON.stringify(reply);
-        """, in: wv) as? [String: Any]
-        XCTAssertNil(result?["lastError"] as? String, "sendMessage reported lastError")
-        let reply = result?["reply"] as? [String: Any]
+        let result = try await askWorker(from: wv, message: ["type": "ping"])
+        XCTAssertNil(result["lastError"] as? String, "sendMessage reported lastError")
+        let reply = result["reply"] as? [String: Any]
         XCTAssertEqual(reply?["type"] as? String, "pong",
                        "the worker must answer; an empty reply means WebKit skipped the worker (globals not native?). Got: \(String(describing: result))")
         XCTAssertEqual(reply?["chromeIsNamespace"] as? String, "[object Namespace]",
                        "the worker's chrome global must still be WebKit's native namespace object")
-        // WebKit re-materializes `runtime.connectNative` on every read, so a patch
-        // never takes there (probed 2026-09-11: assignment and defineProperty do not
-        // throw, the read-back equals neither the written function nor a previous
-        // read). The keep-alive therefore reports 'none'; if this ever flips to
-        // 'direct', WebKit changed and the keep-alive is live in workers again.
+        // The keep-alive no longer patches anything (WebKit re-materializes
+        // `runtime.connectNative` on every read, so a wrap never took; probed
+        // 2026-09-11, TASK-15). It just calls it once at worker start and holds the
+        // resulting port idle: 'port' with no detail, and disarmed, because nothing
+        // in this suite connects a real native host (TASK-16).
         XCTAssertEqual(reply?["connectNativeType"] as? String, "function", "nativeMessaging is granted, connectNative must exist")
-        XCTAssertEqual(reply?["installMode"] as? String, "none")
-        XCTAssertEqual(reply?["installDetail"] as? String, "patch-rejected",
-                       "the keep-alive must have tried the direct patch and been rejected by WebKit, and then done nothing else")
+        XCTAssertEqual(reply?["installMode"] as? String, "port",
+                       "the worker must hold a port to Detour's polyfill host; detail: \(reply?["installDetail"] ?? "nil")")
+        XCTAssertEqual(reply?["installDetail"] as? String, "")
+        XCTAssertEqual(reply?["armed"] as? Bool, false,
+                       "only Detour arms the worker, and no native host is connected here")
     }
 
     /// NEGATIVE: a non-object payload addressed to the polyfill host must be
@@ -596,27 +588,6 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
     // MARK: - TASK-4: frame enumeration
 
-    /// Round-trip a message to the service worker from a real extension page and
-    /// return the parsed reply.
-    private func askWorker(_ message: [String: Any], from wv: WKWebView,
-                           timeoutMS: Int = 10000) async throws -> [String: Any] {
-        let raw = try await wv.callAsyncJavaScript("""
-            const reply = await new Promise((resolve) => {
-                let settled = false;
-                chrome.runtime.sendMessage(message, (r) => {
-                    settled = true;
-                    resolve({ reply: r === undefined ? null : r,
-                              lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
-                });
-                setTimeout(() => { if (!settled) resolve({ reply: 'timeout', lastError: null }); }, timeoutMS);
-            });
-            return JSON.stringify(reply);
-        """, arguments: ["message": message, "timeoutMS": timeoutMS], contentWorld: .page)
-        let jsonString = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
-        let data = try XCTUnwrap(jsonString.data(using: .utf8))
-        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-    }
-
     /// Does WebKit vend `webNavigation.getAllFrames`/`getFrame` in a real
     /// extension context — the question that decided TASK-4 Phase 3 (no
     /// worker-side frame registry, and no polyfill fallback either)?
@@ -642,7 +613,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
             });
         """, in: wv) as? [String: Any]
 
-        let worker = try await askWorker(["type": "probeWebNavFrames"], from: wv)
+        let worker = try await askWorker(from: wv, message: ["type": "probeWebNavFrames"])
         let workerReply = worker["reply"] as? [String: Any]
 
         let evidence = """
@@ -713,7 +684,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         // worker is asleep gets an empty reply and is never recorded (observed
         // 2026-09-12), which matters for the Phase-3 registry design too.
         let wv = try await makeExtensionWebView()
-        _ = try await askWorker(["type": "ping"], from: wv)
+        _ = try await askWorker(from: wv, message: ["type": "ping"])
 
         let config = WKWebViewConfiguration()
         config.webExtensionController = state.controller
@@ -742,7 +713,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         // instead of sleeping blindly.
         var hellos: [[String: Any]] = []
         for _ in 0..<40 {
-            let reply = try await askWorker(["type": "getFrameHellos"], from: wv)
+            let reply = try await askWorker(from: wv, message: ["type": "getFrameHellos"])
             hellos = (reply["reply"] as? [String: Any])?["hellos"] as? [[String: Any]] ?? []
             if hellos.count >= 3 { break }
             try await Task.sleep(nanoseconds: 250_000_000)
@@ -753,8 +724,8 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
         let probedTabID = hellos.compactMap { $0["tabId"] as? Int }.first
         let frameProbe = probedTabID != nil
-            ? try await askWorker(["type": "probeWebNavFrames", "tabId": probedTabID!], from: wv)
-            : try await askWorker(["type": "probeWebNavFrames"], from: wv)
+            ? try await askWorker(from: wv, message: ["type": "probeWebNavFrames", "tabId": probedTabID!])
+            : try await askWorker(from: wv, message: ["type": "probeWebNavFrames"])
 
         // Can a non-zero frame id actually be used to target that frame?
         let enumeratedFrames = ((frameProbe["reply"] as? [String: Any])?["getAllFrames"] as? [[String: Any]]) ?? []
@@ -764,7 +735,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         var targeting: [String: Any] = [:]
         if let tabID = probedTabID, let frameID = nonZeroFrameID {
             targeting = try await askWorker(
-                ["type": "probeFrameTargeting", "tabId": tabID, "frameId": frameID], from: wv)
+                from: wv, message: ["type": "probeFrameTargeting", "tabId": tabID, "frameId": frameID])
         }
 
         let evidence = """
