@@ -161,6 +161,72 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertTrue(saved.statusByKey(type: .apiPermission).isEmpty)
     }
 
+    // MARK: - Optional permissions and <all_urls> (TASK-19)
+
+    /// A decision about an `optional_permissions` / `optional_host_permissions`
+    /// entry (prompted when the extension calls `permissions.request`) is stored
+    /// under exactly the same type and key as a required one — the row carries no
+    /// "optional" marker. That is why `Profile.loadExtensionContext` has to look
+    /// each key up in *both* manifest sets: the DB cannot tell it which list the
+    /// key came from.
+    func testOptionalPermissionDecisionsAreStoredLikeRequiredOnes() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermissions([
+            // Required in the manifest.
+            samplePermission(key: "tabs", type: .apiPermission, status: .granted),
+            samplePermission(key: "https://a.example/*", type: .matchPattern, status: .granted),
+            // Optional in the manifest, answered at a runtime prompt.
+            samplePermission(key: "cookies", type: .apiPermission, status: .granted),
+            samplePermission(key: "webNavigation", type: .apiPermission, status: .denied),
+            samplePermission(key: "https://opt.example/*", type: .matchPattern, status: .denied),
+        ])
+
+        let saved = db.loadPermissions(extensionID: "ext-1")
+        let api = saved.statusByKey(type: .apiPermission)
+        let patterns = saved.statusByKey(type: .matchPattern)
+
+        XCTAssertEqual(api["tabs"], .granted)
+        XCTAssertEqual(api["cookies"], .granted, "an optional grant is an ordinary .apiPermission row")
+        XCTAssertEqual(api["webNavigation"], .denied, "a denial is persisted, not just a missing row")
+        XCTAssertEqual(patterns["https://a.example/*"], .granted)
+        XCTAssertEqual(patterns["https://opt.example/*"], .denied)
+        XCTAssertNil(api["https://opt.example/*"], "a host pattern is never an API permission")
+    }
+
+    /// The all-sites decision is an ordinary match-pattern row keyed by the
+    /// literal string WebKit reports for the pattern, and both statuses are
+    /// persisted — the restore applies either one.
+    func testAllURLsRowIsAnOrdinaryMatchPatternRow() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermission(samplePermission(key: "<all_urls>", type: .matchPattern, status: .denied))
+
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "<all_urls>", type: .matchPattern),
+                       .denied)
+        XCTAssertEqual(db.loadPermissions(extensionID: "ext-1").statusByKey(type: .matchPattern)["<all_urls>"],
+                       .denied)
+
+        db.savePermission(samplePermission(key: "<all_urls>", type: .matchPattern, status: .granted))
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "<all_urls>", type: .matchPattern),
+                       .granted, "answering the prompt again replaces the decision, it does not add one")
+    }
+
+    /// The restore turns a status into `.grantedExplicitly` / `.deniedExplicitly`,
+    /// so an unrecognised raw value (a downgrade, a hand-edited DB) must read as
+    /// denied rather than as a grant.
+    func testUnknownStatusRawValueReadsAsDenied() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        var bogus = samplePermission(key: "cookies", type: .apiPermission, status: .granted)
+        bogus.status = 99
+        db.savePermission(bogus)
+
+        let saved = db.loadPermissions(extensionID: "ext-1")
+        XCTAssertEqual(saved.statusByKey(type: .apiPermission)["cookies"], .denied,
+                       "an unknown status must fail closed")
+    }
+
     // MARK: - Native Messaging Host Gate (positive)
 
     /// Detour's own polyfill host is the transport for the polyfill bridge and the

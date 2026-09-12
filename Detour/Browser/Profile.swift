@@ -192,8 +192,6 @@ class Profile {
     /// so a reload does not accumulate observers.
     private var extensionErrorObservers: [String: NSObjectProtocol] = [:]
 
-    private static let allURLsPattern = try? WKWebExtension.MatchPattern(string: "<all_urls>")
-
     /// Load an extension context into this profile's controller (synchronous).
     /// Returns true if the context was loaded and background content should be started.
     @MainActor
@@ -212,43 +210,94 @@ class Profile {
         context.uniqueIdentifier = ext.id
         context.isInspectable = true
 
-        // Always grant nativeMessaging at the context level so the polyfill bridge
-        // can use browser.runtime.sendNativeMessage(). The user's grant/deny decision
-        // for nativeMessaging is checked after the polyfill bridge logic.
+        // Always grant nativeMessaging at the context level so the polyfill
+        // bridge can use browser.runtime.sendNativeMessage() at all. A real
+        // native host is gated separately, by `ExtensionManager.nativeHostAccess`
+        // — and that gate looks only at the manifest's nativeMessaging
+        // declaration: the user's saved nativeMessaging decision is not enforced
+        // anywhere today. The restore loop below therefore skips the saved row,
+        // so it cannot flip this grant to a denial the bridge would trip over.
         context.setPermissionStatus(.grantedExplicitly, for: .nativeMessaging)
 
-        // Restore saved permission decisions from DB — API permissions, requested
-        // match patterns, <all_urls>, and the per-URL decisions taken at the
-        // site-access prompt; leave unknown permissions for WebKit to prompt via
-        // the delegate.
+        // Grant content script match patterns as host permissions when the extension
+        // has activeTab. In Chrome, extensions with active content scripts can use
+        // tab APIs (detectLanguage, sendMessage, etc.) on pages where their content
+        // scripts run. WebKit doesn't grant this implicitly, so we set the content
+        // script match patterns as granted permissions on the context.
+        //
+        // Applied *before* the DB restore so the user's saved decisions take
+        // precedence: a restored denial for the same or a broader pattern must
+        // not be overwritten by this implicit grant.
+        if ext.manifest.permissions?.contains("activeTab") == true {
+            for cs in ext.manifest.contentScripts ?? [] {
+                for pattern in cs.matches {
+                    if let matchPattern = try? WKWebExtension.MatchPattern(string: pattern) {
+                        context.setPermissionStatus(.grantedExplicitly, for: matchPattern)
+                    }
+                }
+            }
+        }
+
+        // Restore saved permission decisions from DB — API permissions, host
+        // match patterns (`<all_urls>` included), and the per-URL decisions taken
+        // at the site-access prompt; leave undecided permissions for WebKit to
+        // prompt via the delegate.
         // One read, partitioned by type: a `.url` key can be the same string as
         // a `.matchPattern` key, so the two must never share a dictionary.
         let saved = AppDatabase.shared.loadPermissions(extensionID: ext.id)
         let savedAPI = saved.statusByKey(type: .apiPermission)
         let savedPatterns = saved.statusByKey(type: .matchPattern)
 
-        for permission in wkExt.requestedPermissions {
+        // Both the up-front manifest lists and the optional ones: WebKit prompts
+        // for an `optional_permissions` / `optional_host_permissions` entry when
+        // the extension calls `permissions.request`, and ExtensionManager saves
+        // that answer under the very same key — so restoring only the requested
+        // sets would re-prompt (or silently drop) every decision the user already
+        // made about an optional permission on each context (re)load.
+        //
+        // A key in neither set is left alone (TASK-11's rule): rows are never
+        // purged on extension update, and re-applying a grant the current
+        // manifest no longer asks for would widen the extension's access.
+        for permission in ext.askablePermissions {
+            // nativeMessaging is granted unconditionally above so the polyfill
+            // bridge works; a saved denial must not undo that grant.
             if permission == .nativeMessaging { continue }
             if let saved = savedAPI[permission.rawValue] {
-                context.setPermissionStatus(
-                    saved == .granted ? .grantedExplicitly : .deniedExplicitly,
-                    for: permission
-                )
+                context.setPermissionStatus(saved.contextStatus, for: permission)
             }
         }
 
-        for pattern in wkExt.requestedPermissionMatchPatterns {
-            if let saved = savedPatterns[pattern.string] {
-                context.setPermissionStatus(
-                    saved == .granted ? .grantedExplicitly : .deniedExplicitly,
-                    for: pattern
-                )
-            }
-        }
-
-        if let allURLs = Self.allURLsPattern {
-            if let saved = savedPatterns["<all_urls>"], saved == .granted {
-                context.setPermissionStatus(.grantedExplicitly, for: allURLs)
+        // Walk the *saved rows*, not the manifest's patterns, and gate each row
+        // by MATCH rather than by exact string membership: `permissions.request
+        // ({origins})` prompts with the caller's own pattern verbatim (e.g.
+        // "https://mail.example/*" under an optional "<all_urls>"), and
+        // ExtensionManager saves the answer under that sub-pattern's string —
+        // which is in neither manifest set. A row is restorable iff some
+        // requested/optional manifest pattern matches it, the same rule the
+        // `.url` rows below already use. Rows outside every manifest pattern
+        // stay inert (TASK-11's rule): rows are never purged on extension
+        // update, and re-applying a grant the current manifest no longer asks
+        // for would widen the extension's access.
+        //
+        // `<all_urls>` needs no special case: WebKit reports it verbatim, which
+        // is exactly the key the prompt saves, and it matches itself.
+        //
+        // Grants are applied before denials because a later overlapping write
+        // *erases* the earlier entry from the other set: granted and denied
+        // patterns live in separate dictionaries, and setting a (non-all-hosts)
+        // pattern removes whatever the opposite dictionary held that the new
+        // pattern subsumes. Denials therefore go last, so that no grant can
+        // erase a denial (fail closed) — these are unordered rows, so the
+        // two passes are the only thing making the outcome deterministic.
+        let askablePatterns = ext.askableMatchPatterns   // hoisted once; reused by the .url loop
+        for status in [ExtensionPermissionStatus.granted, .denied] {
+            for (key, saved) in savedPatterns where saved == status {
+                guard let pattern = try? WKWebExtension.MatchPattern(string: key) else { continue }
+                guard askablePatterns.contains(where: { $0.matches(pattern) }) else {
+                    log.debug("Skipping stale pattern decision \(key, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
+                    continue
+                }
+                context.setPermissionStatus(status.contextStatus, for: pattern)
             }
         }
 
@@ -262,29 +311,24 @@ class Profile {
         // re-appear for an origin a newer manifest no longer asks about. The URL
         // is what the user was asked about, so it is matched against what the
         // extension may ask for: its requested and optional host patterns
-        // (`<all_urls>` / `*://*/*` match everything).
-        for record in saved where record.permissionType == ExtensionPermissionType.url.rawValue {
-            guard let url = URL(string: record.permissionKey) else { continue }
-            guard ext.canAskForAccess(to: url) else {
-                log.debug("Skipping stale URL grant \(record.permissionKey, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
-                continue
-            }
-            let status = ExtensionPermissionStatus(rawValue: record.status) ?? .denied
-            context.setPermissionStatus(status == .granted ? .grantedExplicitly : .deniedExplicitly, for: url)
-        }
-
-        // Grant content script match patterns as host permissions when the extension
-        // has activeTab. In Chrome, extensions with active content scripts can use
-        // tab APIs (detectLanguage, sendMessage, etc.) on pages where their content
-        // scripts run. WebKit doesn't grant this implicitly, so we set the content
-        // script match patterns as granted permissions on the context.
-        if ext.manifest.permissions?.contains("activeTab") == true {
-            for cs in ext.manifest.contentScripts ?? [] {
-                for pattern in cs.matches {
-                    if let matchPattern = try? WKWebExtension.MatchPattern(string: pattern) {
-                        context.setPermissionStatus(.grantedExplicitly, for: matchPattern)
-                    }
+        // (`<all_urls>` / `*://*/*` match everything). The gate is the hoisted
+        // `askablePatterns` — the same set `ext.canAskForAccess(to:)` consults,
+        // which Settings still uses for its site-access list.
+        //
+        // Grants before denials here too: WebKit widens each URL into an origin
+        // match pattern, so two rows on one origin produce overlapping patterns
+        // and the later write erases the earlier one from the opposite set —
+        // the same ordering rule as the match-pattern loop above.
+        let savedURLs = saved.filter { $0.permissionType == ExtensionPermissionType.url.rawValue }
+        for status in [ExtensionPermissionStatus.granted, .denied] {
+            for record in savedURLs
+            where (ExtensionPermissionStatus(rawValue: record.status) ?? .denied) == status {
+                guard let url = URL(string: record.permissionKey) else { continue }
+                guard askablePatterns.contains(where: { $0.matches(url) }) else {
+                    log.debug("Skipping stale URL grant \(record.permissionKey, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
+                    continue
                 }
+                context.setPermissionStatus(status.contextStatus, for: url)
             }
         }
 

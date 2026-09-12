@@ -15,6 +15,27 @@ class WebExtension {
     /// The native WKWebExtension, loaded asynchronously. Shared across profiles.
     var wkExtension: WKWebExtension?
 
+    /// The API permissions a prompt can come from: the manifest's `permissions`
+    /// plus its `optional_permissions`, the only two lists WebKit will ask the
+    /// user about. Empty when `wkExtension` has not loaded.
+    var askablePermissions: Set<WKWebExtension.Permission> {
+        guard let wkExt = wkExtension else { return [] }
+        return wkExt.requestedPermissions.union(wkExt.optionalPermissions)
+    }
+
+    /// The host match patterns a prompt can come from: the manifest's
+    /// `host_permissions` plus its `optional_host_permissions`, the only two
+    /// sources a site-access or `permissions.request` prompt can come from.
+    /// Empty when `wkExtension` has not loaded.
+    ///
+    /// The underlying ObjC properties bridge a *fresh* `Set` on every access,
+    /// so callers that consult this inside a loop should hoist it into a local.
+    var askableMatchPatterns: Set<WKWebExtension.MatchPattern> {
+        guard let wkExt = wkExtension else { return [] }
+        return wkExt.requestedPermissionMatchPatterns
+            .union(wkExt.optionalPermissionMatchPatterns)
+    }
+
     /// Whether `url` is an origin this extension may ask the user about: it is
     /// covered by one of the manifest's requested or optional host match
     /// patterns, the only two sources a site-access prompt can come from.
@@ -25,11 +46,11 @@ class WebExtension {
     /// as a togglable row in Settings, or the switch would claim an access the
     /// next launch silently drops. False when `wkExtension` has not loaded:
     /// with no patterns to consult, nothing can be shown to be askable.
+    ///
+    /// `Profile.loadExtensionContext` applies the same match-based gate to
+    /// saved `.matchPattern` rows against a hoisted `askableMatchPatterns`.
     func canAskForAccess(to url: URL) -> Bool {
-        guard let wkExt = wkExtension else { return false }
-        let askable = wkExt.requestedPermissionMatchPatterns
-            .union(wkExt.optionalPermissionMatchPatterns)
-        return askable.contains { $0.matches(url) }
+        askableMatchPatterns.contains { $0.matches(url) }
     }
 
     /// Cached icon image.

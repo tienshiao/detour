@@ -44,12 +44,16 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    /// A minimal MV3 extension with no background content. `host_permissions`
-    /// are *requested*, never granted: nothing is granted unless a test saves a
-    /// permission row for it.
+    /// A minimal MV3 extension with no background content. `permissions` /
+    /// `host_permissions` and their `optional_` counterparts are *requested*,
+    /// never granted: nothing is granted unless a test saves a permission row
+    /// for it.
     private func makeTestExtension(
+        permissions: [String] = [],
+        optionalPermissions: [String] = [],
         hostPermissions: [String] = ["<all_urls>"],
-        optionalHostPermissions: [String] = []
+        optionalHostPermissions: [String] = [],
+        contentScriptMatches: [String] = []
     ) async throws -> WebExtension {
         let id = "perm-restore-\(UUID().uuidString.prefix(8))"
         let dir = FileManager.default.temporaryDirectory
@@ -57,17 +61,28 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         tempDirs.append(dir)
 
+        func jsonArrayEntry(_ key: String, _ values: [String]) -> String {
+            guard !values.isEmpty else { return "" }
+            let list = values.map { "\"\($0)\"" }.joined(separator: ", ")
+            return ",\n            \"\(key)\": [\(list)]"
+        }
+
+        /// A one-entry `content_scripts` list, plus the `cs.js` file it names.
+        func contentScriptsEntry(_ matches: [String]) throws -> String {
+            guard !matches.isEmpty else { return "" }
+            try "// content script\n".write(to: dir.appendingPathComponent("cs.js"),
+                                           atomically: true, encoding: .utf8)
+            let list = matches.map { "\"\($0)\"" }.joined(separator: ", ")
+            return ",\n            \"content_scripts\": [{\"matches\": [\(list)], \"js\": [\"cs.js\"]}]"
+        }
+
         let hosts = hostPermissions.map { "\"\($0)\"" }.joined(separator: ", ")
-        let optionalHosts = optionalHostPermissions.map { "\"\($0)\"" }.joined(separator: ", ")
-        let optionalHostsEntry = optionalHostPermissions.isEmpty
-            ? ""
-            : ",\n            \"optional_host_permissions\": [\(optionalHosts)]"
         let manifestJSON = """
         {
             "manifest_version": 3,
             "name": "Permission Restore Test",
             "version": "1.0.0",
-            "host_permissions": [\(hosts)]\(optionalHostsEntry)
+            "host_permissions": [\(hosts)]\(jsonArrayEntry("optional_host_permissions", optionalHostPermissions))\(jsonArrayEntry("permissions", permissions))\(jsonArrayEntry("optional_permissions", optionalPermissions))\(try contentScriptsEntry(contentScriptMatches))
         }
         """
         try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"),
@@ -281,17 +296,243 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
                        "with no loaded WKWebExtension there are no patterns to consult")
     }
 
+    // MARK: - TASK-19: how WebKit reports the manifest's permission sets
+
+    /// The restore loop keys saved rows off `pattern.string` and
+    /// `permission.rawValue`, so what WebKit puts in the four sets *is* the
+    /// contract. Pinned here because `Profile.loadExtensionContext` no longer
+    /// special-cases `<all_urls>`: it relies on WebKit reporting it verbatim in
+    /// whichever set the manifest lists it in.
+    func testWebKitReportsAllURLsVerbatimInBothPatternSets() async throws {
+        let allURLs = try XCTUnwrap(try? WKWebExtension.MatchPattern(string: "<all_urls>"))
+        XCTAssertEqual(allURLs.string, "<all_urls>",
+                       "the literal pattern round-trips as its own string, not as an expansion")
+
+        let required = try await makeTestExtension(
+            permissions: ["tabs"],
+            optionalPermissions: ["cookies"],
+            hostPermissions: ["<all_urls>"])
+        let requiredWK = try XCTUnwrap(required.wkExtension)
+        XCTAssertEqual(Set(requiredWK.requestedPermissionMatchPatterns.map(\.string)), ["<all_urls>"],
+                       "host_permissions: <all_urls> is reported verbatim, not expanded per scheme")
+        XCTAssertTrue(requiredWK.requestedPermissionMatchPatterns.contains(allURLs))
+        XCTAssertEqual(Set(requiredWK.requestedPermissions.map(\.rawValue)), ["tabs"])
+        XCTAssertEqual(Set(requiredWK.optionalPermissions.map(\.rawValue)), ["cookies"])
+
+        let optional = try await makeTestExtension(
+            optionalPermissions: ["cookies"],
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["<all_urls>"])
+        let optionalWK = try XCTUnwrap(optional.wkExtension)
+        XCTAssertEqual(Set(optionalWK.optionalPermissionMatchPatterns.map(\.string)), ["<all_urls>"],
+                       "optional_host_permissions: <all_urls> lands in the optional set, verbatim")
+        XCTAssertTrue(optionalWK.optionalPermissionMatchPatterns.contains(allURLs))
+        XCTAssertEqual(Set(optionalWK.requestedPermissionMatchPatterns.map(\.string)), ["https://a.example/*"],
+                       "an optional pattern never leaks into the requested set")
+    }
+
+    // MARK: - TASK-19 AC #1 / #2: optional API permissions
+
+    func testGrantedOptionalAPIPermissionIsRestored() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["tabs"], optionalPermissions: ["cookies"])
+        savePermission(ext, key: "cookies", type: .apiPermission, status: .granted)
+
+        let profile = makeProfile("Optional API Grant Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertTrue(context.hasPermission(.cookies),
+                      "an optional permission granted at the prompt must be restored on load")
+        XCTAssertEqual(context.permissionStatus(for: .cookies), .grantedExplicitly)
+        XCTAssertFalse(context.hasPermission(.tabs),
+                       "an undecided required permission stays for WebKit to prompt")
+    }
+
+    func testDeniedOptionalAPIPermissionStaysDenied() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["tabs"], optionalPermissions: ["cookies"])
+        savePermission(ext, key: "cookies", type: .apiPermission, status: .denied)
+
+        let profile = makeProfile("Optional API Deny Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasPermission(.cookies))
+        XCTAssertEqual(context.permissionStatus(for: .cookies), .deniedExplicitly,
+                       "a denial must be re-applied explicitly, or WebKit prompts again")
+        XCTAssertTrue(context.deniedPermissions.keys.contains(.cookies))
+    }
+
+    /// A required (non-optional) API permission decision keeps working — the
+    /// union must not drop what the pre-TASK-19 loop already restored.
+    func testRequiredAPIPermissionDecisionsStillRestore() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["tabs", "storage"], optionalPermissions: ["cookies"])
+        savePermission(ext, key: "tabs", type: .apiPermission, status: .granted)
+        savePermission(ext, key: "storage", type: .apiPermission, status: .denied)
+
+        let profile = makeProfile("Required API Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertTrue(context.hasPermission(.tabs))
+        XCTAssertEqual(context.permissionStatus(for: .storage), .deniedExplicitly)
+    }
+
+    // MARK: - TASK-19 AC #3: optional host patterns
+
+    func testGrantedOptionalHostPatternIsRestored() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        savePermission(ext, key: "https://opt.example/*", type: .matchPattern, status: .granted)
+
+        let profile = makeProfile("Optional Pattern Grant Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertTrue(context.hasAccess(to: try url("https://opt.example/page")),
+                      "a granted optional host pattern must be restored on load")
+        XCTAssertFalse(context.hasAccess(to: try url("https://a.example/page")),
+                       "the undecided required pattern is not granted as a side effect")
+    }
+
+    func testDeniedOptionalHostPatternStaysDenied() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        savePermission(ext, key: "https://opt.example/*", type: .matchPattern, status: .denied)
+
+        let profile = makeProfile("Optional Pattern Deny Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://opt.example/page")))
+        XCTAssertTrue(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "https://opt.example/*" },
+                      "the denial must be re-applied explicitly, or WebKit prompts again")
+    }
+
+    /// The recovery path for the optional decisions: `unloadExtension` +
+    /// `loadExtensionContext`, as `recoverFromBackgroundLoadFailure` does.
+    func testOptionalDecisionsSurviveContextReload() async throws {
+        let ext = try await makeTestExtension(
+            optionalPermissions: ["cookies", "webNavigation"],
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*", "https://no.example/*"])
+        savePermission(ext, key: "cookies", type: .apiPermission, status: .granted)
+        savePermission(ext, key: "webNavigation", type: .apiPermission, status: .denied)
+        savePermission(ext, key: "https://opt.example/*", type: .matchPattern, status: .granted)
+        savePermission(ext, key: "https://no.example/*", type: .matchPattern, status: .denied)
+
+        let profile = makeProfile("Optional Reload Profile")
+        let first = try loadContext(profile, ext)
+        XCTAssertTrue(first.hasPermission(.cookies))
+
+        profile.unloadExtension(id: ext.id)
+        XCTAssertNil(profile.extensionContexts[ext.id])
+
+        let second = try loadContext(profile, ext)
+        XCTAssertTrue(second.hasPermission(.cookies),
+                      "the reloaded context must not re-prompt for a granted optional permission")
+        XCTAssertEqual(second.permissionStatus(for: .webNavigation), .deniedExplicitly)
+        XCTAssertTrue(second.hasAccess(to: try url("https://opt.example/x")))
+        XCTAssertFalse(second.hasAccess(to: try url("https://no.example/x")))
+    }
+
+    // MARK: - TASK-19 AC #4: <all_urls>, both statuses
+
+    func testGrantedAllURLsIsRestored() async throws {
+        let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .granted)
+
+        let profile = makeProfile("AllURLs Grant Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertTrue(context.hasAccess(to: try url("https://anything.example/page")))
+        XCTAssertTrue(context.grantedPermissionMatchPatterns.keys.contains { $0.string == "<all_urls>" },
+                      "the grant is applied once, as the <all_urls> pattern itself")
+    }
+
+    func testDeniedAllURLsIsRestoredAsDenied() async throws {
+        let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .denied)
+
+        let profile = makeProfile("AllURLs Deny Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://anything.example/page")))
+        XCTAssertTrue(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "<all_urls>" },
+                      "a refused all-sites prompt must not be forgotten on the next load")
+        XCTAssertTrue(context.grantedPermissionMatchPatterns.isEmpty,
+                      "nothing is granted as a side effect of applying the denial")
+    }
+
+    /// `<all_urls>` listed only under optional_host_permissions: the decision
+    /// lives in the optional set, which the restore now walks too.
+    func testOptionalAllURLsDecisionsAreRestored() async throws {
+        let granted = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"], optionalHostPermissions: ["<all_urls>"])
+        savePermission(granted, key: "<all_urls>", type: .matchPattern, status: .granted)
+        let grantedContext = try loadContext(makeProfile("Optional AllURLs Grant"), granted)
+        XCTAssertTrue(grantedContext.hasAccess(to: try url("https://anything.example/")))
+
+        let denied = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"], optionalHostPermissions: ["<all_urls>"])
+        savePermission(denied, key: "<all_urls>", type: .matchPattern, status: .denied)
+        let deniedContext = try loadContext(makeProfile("Optional AllURLs Deny"), denied)
+        XCTAssertFalse(deniedContext.hasAccess(to: try url("https://anything.example/")))
+        XCTAssertTrue(deniedContext.deniedPermissionMatchPatterns.keys.contains { $0.string == "<all_urls>" })
+    }
+
+    // MARK: - TASK-19 AC #5: the stale-row rule still holds
+
+    /// Rows are never purged when an extension updates, so a decision for a key
+    /// the current manifest asks for in neither list must stay inert — applying
+    /// a stale grant would widen access the manifest no longer justifies.
+    func testStaleAPIPermissionRowIsNotApplied() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["tabs"], optionalPermissions: ["cookies"])
+        // An older manifest asked for webNavigation; this one does not.
+        savePermission(ext, key: "webNavigation", type: .apiPermission, status: .granted)
+        savePermission(ext, key: "cookies", type: .apiPermission, status: .granted)
+
+        let profile = makeProfile("Stale API Row Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasPermission(.webNavigation),
+                       "a grant for a permission outside permissions + optional_permissions is skipped")
+        XCTAssertEqual(context.permissionStatus(for: .webNavigation), .unknown)
+        XCTAssertTrue(context.hasPermission(.cookies),
+                      "the optional permission the manifest does ask for is still restored")
+    }
+
+    func testStaleHostPatternRowIsNotApplied() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        savePermission(ext, key: "https://stale.example/*", type: .matchPattern, status: .granted)
+        // Verified against WebKit: neither "https://a.example/*" nor
+        // "https://opt.example/*" *matches* "<all_urls>" (a narrow pattern never
+        // subsumes a broader one), so the match gate rejects the row.
+        savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .granted)
+
+        let profile = makeProfile("Stale Pattern Row Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://stale.example/page")),
+                       "a grant for a pattern outside host_permissions + optional_host_permissions is skipped")
+        XCTAssertFalse(context.hasAccess(to: try url("https://anything.example/page")),
+                       "an <all_urls> grant is not applied to a manifest that never asks for all sites")
+        XCTAssertTrue(context.grantedPermissionMatchPatterns.isEmpty)
+    }
+
     // MARK: - Regression: the pre-TASK-11 row shape
 
     /// Before TASK-11 the site-access prompt stored full URLs under the
-    /// match-pattern type. The restore loop only consults the manifest's
-    /// *requested* patterns, so such a row is inert — and it is deliberately
-    /// left alone: no migration reclassifies it, because a `*`-free key is
-    /// indistinguishable from a legitimate wildcard-free manifest host
-    /// permission (e.g. "https://mail.google.com/"), which must not be widened
-    /// into an origin grant. The cost of leaving it is at most one re-prompt.
+    /// match-pattern type. Such a row is deliberately left alone: no migration
+    /// reclassifies it, because a `*`-free key is indistinguishable from a
+    /// legitimate wildcard-free manifest host permission (e.g.
+    /// "https://mail.google.com/"), which must not be widened into an origin
+    /// grant. Outside the manifest's host patterns it stays inert, exactly like
+    /// any other stale pattern row; the cost is at most one re-prompt.
     func testLegacyRowsAreNotAppliedAsPatterns() async throws {
-        let ext = try await makeTestExtension()
+        let ext = try await makeTestExtension(hostPermissions: ["https://a.example/*"])
         savePermission(ext, key: "https://legacy.example/page", type: .matchPattern, status: .granted)
 
         let profile = makeProfile("Legacy Row Profile")
@@ -299,5 +540,155 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
         XCTAssertFalse(context.hasAccess(to: try url("https://legacy.example/page")),
                        "a full URL stored under the match-pattern type is never restored")
+    }
+
+    /// The other half of the legacy shape: when the manifest *does* cover the
+    /// key, the match gate accepts it and it is applied as its own (exact-path)
+    /// pattern — narrower than the origin-wide grant a `.url` row produces, so
+    /// this is no widening beyond what the user was prompted for.
+    func testLegacyRowCoveredByTheManifestIsAppliedAsItsOwnPattern() async throws {
+        let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "https://legacy.example/page", type: .matchPattern, status: .granted)
+
+        let profile = makeProfile("Legacy Row Covered Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertTrue(context.hasAccess(to: try url("https://legacy.example/page")))
+        XCTAssertFalse(context.hasAccess(to: try url("https://legacy.example/other")),
+                       "the row grants only the path it names, not the whole origin")
+    }
+
+    // MARK: - TASK-19 review: the activeTab content-script grant vs. the restore
+
+    /// The implicit activeTab content-script grant is applied before the DB
+    /// restore, so a saved denial for the same pattern wins.
+    func testRestoredDenialWinsOverActiveTabContentScriptGrant() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["activeTab"],
+            hostPermissions: ["<all_urls>"],
+            contentScriptMatches: ["<all_urls>"])
+        XCTAssertEqual(ext.manifest.contentScripts?.count, 1,
+                       "precondition: the content_scripts entry parsed")
+        savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .denied)
+
+        let profile = makeProfile("ActiveTab Denial Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://anything.example/page")),
+                       "a saved <all_urls> denial must survive the implicit activeTab grant")
+        XCTAssertTrue(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "<all_urls>" },
+                      "the denial is applied explicitly, last, so nothing can erase it")
+        // Observed WebKit behaviour: `<all_urls>` is an all-hosts pattern, and
+        // writing one only removes an *equal* entry from the opposite dictionary
+        // (a narrower overlapping pattern is removed, an all-hosts one is not),
+        // so the implicit grant entry lingers in grantedPermissionMatchPatterns.
+        // The deny side wins at query time, which is what hasAccess reports —
+        // though with both entries present a URL query resolves to
+        // .deniedImplicitly rather than .deniedExplicitly.
+        XCTAssertTrue(context.grantedPermissionMatchPatterns.keys.contains { $0.string == "<all_urls>" },
+                      "precondition for the note above: the all-hosts grant is not erased")
+    }
+
+    /// The positive companion: with no saved decision the implicit grant stands.
+    func testActiveTabContentScriptGrantStillAppliesWithoutASavedDecision() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["activeTab"],
+            hostPermissions: ["<all_urls>"],
+            contentScriptMatches: ["<all_urls>"])
+
+        let profile = makeProfile("ActiveTab Grant Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertTrue(context.hasAccess(to: try url("https://anything.example/page")),
+                      "content-script hosts are still granted implicitly under activeTab")
+    }
+
+    // MARK: - TASK-19 review: permissions.request sub-patterns
+
+    /// `permissions.request({origins: ["https://mail.example/*"]})` prompts with
+    /// the caller's pattern verbatim, gated only by whether some optional
+    /// manifest pattern matches it — and the answer is saved under that
+    /// sub-pattern's own string, which is in neither manifest set. The restore
+    /// must therefore gate by match, not by exact membership.
+    func testRequestedSubPatternDecisionIsRestoredUnderOptionalAllURLs() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "https://mail.example/*", type: .matchPattern, status: .granted)
+
+        let profile = makeProfile("Sub Pattern Grant Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertTrue(context.hasAccess(to: try url("https://mail.example/inbox")),
+                      "a granted permissions.request sub-pattern must be restored")
+        XCTAssertTrue(context.grantedPermissionMatchPatterns.keys.contains { $0.string == "https://mail.example/*" },
+                      "the row is applied as its own pattern, verbatim")
+    }
+
+    func testRequestedSubPatternDenialIsRestoredUnderOptionalAllURLs() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "https://mail.example/*", type: .matchPattern, status: .denied)
+
+        let profile = makeProfile("Sub Pattern Deny Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://mail.example/inbox")))
+        XCTAssertTrue(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "https://mail.example/*" },
+                      "a refused permissions.request must not be forgotten on the next load")
+    }
+
+    /// The negative: no manifest pattern matches the row, so it stays inert.
+    func testSubPatternOutsideEveryManifestPatternIsNotApplied() async throws {
+        let ext = try await makeTestExtension(hostPermissions: ["https://a.example/*"])
+        savePermission(ext, key: "https://mail.example/*", type: .matchPattern, status: .granted)
+
+        let profile = makeProfile("Sub Pattern Outside Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://mail.example/inbox")),
+                       "the extension can never ask for this pattern, so the row is stale")
+        XCTAssertTrue(context.grantedPermissionMatchPatterns.isEmpty)
+    }
+
+    // MARK: - TASK-19 review: ordering of overlapping decisions
+
+    /// WebKit widens each `.url` row into an origin pattern, so two rows on one
+    /// origin overlap: the later write erases the earlier entry from the
+    /// opposite dictionary. Denials go last, so the origin ends up denied
+    /// regardless of the order the rows were saved in.
+    func testOppositeSiteAccessDecisionsOnOneOriginFailClosed() async throws {
+        let grantFirst = try await makeTestExtension(hostPermissions: ["<all_urls>"])
+        savePermission(grantFirst, key: "https://a.example/x", type: .url, status: .granted)
+        savePermission(grantFirst, key: "https://a.example/y", type: .url, status: .denied)
+        let grantFirstContext = try loadContext(makeProfile("URL Order Grant First"), grantFirst)
+        XCTAssertFalse(grantFirstContext.hasAccess(to: try url("https://a.example/z")),
+                       "grant saved first: the denial must still win")
+
+        let denyFirst = try await makeTestExtension(hostPermissions: ["<all_urls>"])
+        savePermission(denyFirst, key: "https://a.example/y", type: .url, status: .denied)
+        savePermission(denyFirst, key: "https://a.example/x", type: .url, status: .granted)
+        let denyFirstContext = try loadContext(makeProfile("URL Order Deny First"), denyFirst)
+        XCTAssertFalse(denyFirstContext.hasAccess(to: try url("https://a.example/z")),
+                       "denial saved first: the grant must not erase it")
+    }
+
+    /// Pins the mechanism the ordering defends against: setting a broad pattern
+    /// REMOVES a narrower entry from the opposite dictionary, so a grant applied
+    /// after a denial would silently drop it.
+    func testBroadGrantDoesNotEraseNarrowDenial() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["*://*.example.com/*", "https://sub.example.com/*"])
+        savePermission(ext, key: "*://*.example.com/*", type: .matchPattern, status: .granted)
+        savePermission(ext, key: "https://sub.example.com/*", type: .matchPattern, status: .denied)
+
+        let profile = makeProfile("Broad Grant Narrow Deny Profile")
+        let context = try loadContext(profile, ext)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://sub.example.com/x")),
+                       "the narrow denial must survive the broad grant")
+        XCTAssertTrue(context.hasAccess(to: try url("https://www.example.com/x")),
+                      "the broad grant still covers the rest of the origin")
     }
 }

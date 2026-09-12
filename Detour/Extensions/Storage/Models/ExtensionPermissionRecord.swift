@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WebKit
 
 enum ExtensionPermissionType: Int, Codable {
     case apiPermission = 0
@@ -16,6 +17,12 @@ enum ExtensionPermissionType: Int, Codable {
 enum ExtensionPermissionStatus: Int, Codable {
     case granted = 0
     case denied = 1
+
+    /// The context-level status a saved decision restores as. Anything that is
+    /// not a grant is an explicit denial (fail closed), matching `statusByKey`.
+    var contextStatus: WKWebExtensionContext.PermissionStatus {
+        self == .granted ? .grantedExplicitly : .deniedExplicitly
+    }
 }
 
 struct ExtensionPermissionRecord: Codable, FetchableRecord, PersistableRecord {
