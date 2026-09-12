@@ -337,6 +337,34 @@ struct ExtensionAPIPolyfill {
     /// throws into extension code: each argument is formatted in isolation and
     /// the whole send is guarded. Tests observe it by stubbing
     /// `__detourPolyfillRequest` and calling `console.*`.
+    ///
+    /// **The send is rate limited per context** (TASK-17). A 1Password worker error
+    /// loop once forwarded ~950,000 lines in 55s, each a native-messaging round
+    /// trip and a unified-log write. Three mechanisms, all *after* formatting and
+    /// *before* the bridge send, so `_orig*` — and therefore the extension's own
+    /// Web Inspector console — still sees everything:
+    ///
+    ///  - a token bucket: `BRIDGE_BURST` messages, then `BRIDGE_REFILL_PER_SEC`/s,
+    ///    so the first occurrences of a burst always get through;
+    ///  - dedupe of consecutive identical `(level, message)` pairs, flushed as one
+    ///    `… (repeated N times)` line when a different message arrives or after
+    ///    `DEDUPE_FLUSH_MS`, whichever comes first — a message repeating in a loop
+    ///    therefore costs about one send per second, not one per iteration;
+    ///  - one `[console bridge] dropped …` summary per drop episode, emitted when
+    ///    tokens return (at most once per `DROP_SUMMARY_MS`, so a sustained flood
+    ///    costs one summary per period rather than one per returning token) or
+    ///    after `DROP_SUMMARY_MS` (a backstop timer, so a flood that stops dead is
+    ///    still accounted for). The summary bypasses both the bucket and the
+    ///    dedupe — it can never itself be dropped, and it never becomes the
+    ///    deduped "previous message" — and emitting one requires a fresh drop, so
+    ///    summaries cannot feed themselves. A dropped `(repeated N times)` flush
+    ///    counts as N drops, so the summary's total is the number of messages
+    ///    that never reached the log.
+    ///
+    /// At most one dedupe timer and one summary timer exist at a time and both are
+    /// cleared when they fire, so the limiter never holds a worker awake beyond the
+    /// single line it still owes. `globalThis.__detourConsoleBridge` exposes the
+    /// constants and a `reset()` so tests can drive the limiter deterministically.
     private static let consoleJS = """
     (function() {
         const g = globalThis;
@@ -345,6 +373,13 @@ struct ExtensionAPIPolyfill {
         const _origWarn = console.warn.bind(console);
         const _origError = console.error.bind(console);
         const MAX_MESSAGE_LENGTH = 8192;
+
+        // Rate-limit tuning. The burst is what a legitimately noisy startup needs;
+        // the refill is the sustained ceiling on bridge traffic for this context.
+        const BRIDGE_BURST = 50;
+        const BRIDGE_REFILL_PER_SEC = 20;
+        const DEDUPE_FLUSH_MS = 1000;
+        const DROP_SUMMARY_MS = 5000;
 
         function isErrorLike(v) {
             if (v === null || typeof v !== 'object') return false;
@@ -419,9 +454,10 @@ struct ExtensionAPIPolyfill {
             return truncate(parts.join(' '), MAX_MESSAGE_LENGTH);
         }
 
-        function sendLog(level, args) {
+        // The unlimited transport. Everything the limiter decides to forward ends
+        // up here, including its own summaries.
+        function emit(level, message) {
             try {
-                const message = formatArgs(args);
                 // __detourPolyfillRequest (preamble) already picks the transport:
                 // webkit.messageHandlers in web views, sendNativeMessage in workers.
                 if (typeof g.__detourPolyfillRequest !== 'function') return;
@@ -432,6 +468,157 @@ struct ExtensionAPIPolyfill {
                 if (pending && typeof pending.then === 'function') pending.then(null, function() {});
             } catch (e) {}
         }
+
+        function nowMs() {
+            try { return Date.now(); } catch (e) { return 0; }
+        }
+
+        // --- Limiter state (per context; the module is installed once per context).
+        let tokens, refilledAt;
+        // The last message admitted to the dedupe window, and how many identical
+        // ones have arrived since. `pendingLevel === null` means no window is open.
+        let pendingLevel, pendingMessage, repeats, dedupeTimer;
+        // Drops since the last summary. `dropsStartedAt < 0` means none pending;
+        // `lastSummaryAt` paces summaries under a sustained flood.
+        let dropped, droppedError, droppedWarn, droppedInfo, dropsStartedAt, summaryTimer, lastSummaryAt;
+
+        // Timers are optional: a context without setTimeout still limits correctly,
+        // it just flushes a repeat count only when a different message arrives and
+        // a drop summary only when tokens return.
+        function setTimer(fn, ms) {
+            if (typeof g.setTimeout !== 'function') return null;
+            try { return g.setTimeout(fn, ms); } catch (e) { return null; }
+        }
+        function clearTimer(id) {
+            if (id === null) return;
+            try { if (typeof g.clearTimeout === 'function') g.clearTimeout(id); } catch (e) {}
+        }
+
+        // The single definition of "a full bucket and nothing pending": the
+        // initial state, and what the test seam's `reset()` returns to.
+        function resetState() {
+            clearTimer(dedupeTimer); dedupeTimer = null;
+            clearTimer(summaryTimer); summaryTimer = null;
+            tokens = BRIDGE_BURST;
+            refilledAt = nowMs();
+            pendingLevel = null; pendingMessage = null; repeats = 0;
+            dropped = 0; droppedError = 0; droppedWarn = 0; droppedInfo = 0;
+            dropsStartedAt = -1;
+            lastSummaryAt = -Infinity;
+        }
+        dedupeTimer = null; summaryTimer = null;
+        resetState();
+
+        function refill(t) {
+            const elapsed = t - refilledAt;
+            // A clock that jumped backwards must not grant tokens or stall refills.
+            if (elapsed <= 0) { if (elapsed < 0) refilledAt = t; return; }
+            refilledAt = t;
+            tokens = Math.min(BRIDGE_BURST, tokens + (elapsed / 1000) * BRIDGE_REFILL_PER_SEC);
+        }
+
+        // One line for a whole drop episode, outside the bucket so a saturated
+        // bucket cannot hide the fact that it is dropping. `force` is passed when a
+        // token has just become available; otherwise the episode must be
+        // DROP_SUMMARY_MS old, which is also what the backstop timer waits for.
+        function emitDropSummary(t, force) {
+            if (dropped === 0) return;
+            if (!force && (t - dropsStartedAt) < DROP_SUMMARY_MS) return;
+            const seconds = Math.max(0, t - dropsStartedAt) / 1000;
+            const summary = '[console bridge] dropped ' + dropped + ' messages (' +
+                droppedError + ' errors, ' + droppedWarn + ' warnings, ' +
+                droppedInfo + ' info) in the last ' + seconds.toFixed(1) + 's';
+            dropped = 0; droppedError = 0; droppedWarn = 0; droppedInfo = 0;
+            dropsStartedAt = -1;
+            lastSummaryAt = t;
+            clearTimer(summaryTimer); summaryTimer = null;
+            emit('warn', summary);
+        }
+
+        // `weight` is how many original messages the dropped line stood for: a
+        // dropped `(repeated N times)` flush loses N messages, not one.
+        function countDrop(t, level, weight) {
+            const n = weight > 1 ? weight : 1;
+            if (dropsStartedAt < 0) dropsStartedAt = t;
+            dropped += n;
+            if (level === 'error') droppedError += n;
+            else if (level === 'warn') droppedWarn += n;
+            else droppedInfo += n;
+            if (summaryTimer === null) {
+                summaryTimer = setTimer(function() {
+                    summaryTimer = null;
+                    emitDropSummary(nowMs(), true);
+                }, DROP_SUMMARY_MS);
+            }
+        }
+
+        // Spend a token, or count the message as dropped.
+        function admit(t, level, message, weight) {
+            refill(t);
+            // A returning token closes the episode, but at most one summary per
+            // DROP_SUMMARY_MS: under a sustained flood a token returns every
+            // 1/BRIDGE_REFILL_PER_SEC seconds, and a summary per token would
+            // double the bridge traffic the bucket exists to cap. A deferred
+            // summary keeps accumulating and lands on the backstop timer.
+            emitDropSummary(t, tokens >= 1 && (t - lastSummaryAt) >= DROP_SUMMARY_MS);
+            if (tokens >= 1) {
+                tokens -= 1;
+                emit(level, message);
+                return;
+            }
+            countDrop(t, level, weight);
+        }
+
+        // Close the dedupe window, forwarding the repeat count if there was one.
+        // The flushed line goes through the bucket like any other message: an
+        // alternating A,B,A,B flood must not get a free send per transition.
+        function flushRepeats(t) {
+            clearTimer(dedupeTimer); dedupeTimer = null;
+            const level = pendingLevel;
+            const message = pendingMessage;
+            const count = repeats;
+            pendingLevel = null; pendingMessage = null; repeats = 0;
+            if (count === 0 || level === null) return;
+            admit(t, level, message + ' (repeated ' + count + ' times)', count);
+        }
+
+        function sendLog(level, args) {
+            try {
+                const message = formatArgs(args);
+                const t = nowMs();
+                if (level === pendingLevel && message === pendingMessage) {
+                    repeats += 1;
+                    if (dedupeTimer === null) {
+                        dedupeTimer = setTimer(function() {
+                            dedupeTimer = null;
+                            flushRepeats(nowMs());
+                        }, DEDUPE_FLUSH_MS);
+                    }
+                    return;
+                }
+                flushRepeats(t);
+                pendingLevel = level;
+                pendingMessage = message;
+                admit(t, level, message);
+            } catch (e) {}
+        }
+
+        // Test seam: the tuning constants, and a reset so a test starts from a
+        // full bucket and an empty dedupe window regardless of what the context
+        // logged while loading. Extension code can reach it, but that grants
+        // nothing — the module runs in the extension's own realm, so an extension
+        // determined to flood can call `__detourPolyfillRequest('log', …)`
+        // directly. This limiter defends against accidental floods; the cap that
+        // holds against a deliberate one is native (`ConsoleBridgeLimiter`).
+        try {
+            g.__detourConsoleBridge = {
+                BURST: BRIDGE_BURST,
+                REFILL_PER_SEC: BRIDGE_REFILL_PER_SEC,
+                DEDUPE_FLUSH_MS: DEDUPE_FLUSH_MS,
+                DROP_SUMMARY_MS: DROP_SUMMARY_MS,
+                reset: resetState
+            };
+        } catch (x) {}
 
         console.log = function() { _origLog.apply(console, arguments); sendLog('info', arguments); };
         console.info = function() { _origInfo.apply(console, arguments); sendLog('info', arguments); };

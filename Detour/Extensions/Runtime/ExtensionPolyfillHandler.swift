@@ -123,6 +123,16 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         return enabled
     }()
 
+    /// Per-extension cap on forwarded console messages (TASK-17). Per handler, so
+    /// per profile; keyed by the *verified* extension id, never a claimed one.
+    private var consoleLimiter = ConsoleBridgeLimiter()
+
+    /// Drop the extension's console rate-limit window, for context unload
+    /// (`Profile.unloadExtension`). A reloaded context gets a fresh burst.
+    func forgetConsoleRateLimit(for extensionID: String) {
+        consoleLimiter.forget(extensionID)
+    }
+
     // MARK: - Entry Points
 
     /// Entry point for web view contexts (popup, options) via WKScriptMessageHandlerWithReply.
@@ -490,6 +500,23 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             let level = params["level"] as? String ?? "info"
             let message = params["message"] as? String ?? ""
             let source = params["source"] as? String ?? extensionID
+            // Cap the log writes per extension per second regardless of what the
+            // context's own limiter did (TASK-17). The reply is still `true`: the
+            // bridge is fire-and-forget and a rejection would only make the
+            // polyfill's own error reporting noisier.
+            switch consoleLimiter.admit(extensionID) {
+            case .drop:
+                replyHandler(true, nil)
+                return
+            case .allowReportingDropped(let count, let interval):
+                // Same prefix as the polyfill's own summary so one log predicate
+                // finds both halves of an incident. `interval` is the age of the
+                // window that dropped them, not the flood's span (bounded by the
+                // window), so it is not phrased as a rate.
+                log.warning("[console bridge] dropped \(count, privacy: .public) messages from \(extensionID, privacy: .public) over the \(ConsoleBridgeLimiter.messagesPerWindow, privacy: .public)/s cap, in a window opened \(String(format: "%.1f", interval), privacy: .public)s ago")
+            case .allow:
+                break
+            }
             if Self.consoleLogIsPublic {
                 switch level {
                 case "error": log.error("[SW \(source, privacy: .public)] \(message, privacy: .public)")

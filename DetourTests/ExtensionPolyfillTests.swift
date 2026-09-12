@@ -1063,21 +1063,35 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - Console bridge
 
-    /// Run `statementJS` with the polyfill bridge stubbed out and return the level
-    /// and message of the first 'log' request it produced. Covers both ways the
-    /// console bridge is driven: calling `console.*` directly, and dispatching an
-    /// `error` / `unhandledrejection` event that the bridge reports.
-    private func bridgedLog(running statementJS: String) async throws -> (level: String, message: String) {
-        let entry = try await evalDictionary("""
+    /// Run `statementJS` with the polyfill bridge stubbed out and return every
+    /// 'log' request it produced, in order. The rate limiter (TASK-17) is reset
+    /// first, so a test starts from a full token bucket and an empty dedupe
+    /// window whatever the context logged while loading.
+    private func bridgedLogs(running statementJS: String, on target: WKWebView? = nil)
+        async throws -> [(level: String, message: String)] {
+        let raw = try await evalJSON("""
+        globalThis.__detourConsoleBridge.reset();
         const calls = [];
         const orig = globalThis.__detourPolyfillRequest;
-        globalThis.__detourPolyfillRequest = function(type, params) { calls.push({ type: type, params: params }); return Promise.resolve(); };
+        globalThis.__detourPolyfillRequest = function(type, params) { if (type === 'log') calls.push(params); return Promise.resolve(); };
         try { \(statementJS) } finally { globalThis.__detourPolyfillRequest = orig; }
-        const entry = calls.find(c => c.type === 'log');
-        return entry ? JSON.stringify({ level: entry.params.level, message: entry.params.message }) : null;
-        """)
-        return (try XCTUnwrap(entry["level"] as? String, "the bridged log carried no level"),
-                try XCTUnwrap(entry["message"] as? String, "the bridged log carried no message"))
+        return JSON.stringify(calls.map(p => ({ level: String(p.level), message: String(p.message) })));
+        """, on: target)
+        let entries = try XCTUnwrap(raw as? [[String: Any]],
+                                    "expected a JSON array of log requests, got: \(raw ?? "nil")")
+        return try entries.map {
+            (try XCTUnwrap($0["level"] as? String, "a bridged log carried no level"),
+             try XCTUnwrap($0["message"] as? String, "a bridged log carried no message"))
+        }
+    }
+
+    /// The level and message of the first 'log' request `statementJS` produced.
+    /// Covers both ways the console bridge is driven: calling `console.*`
+    /// directly, and dispatching an `error` / `unhandledrejection` event that the
+    /// bridge reports.
+    private func bridgedLog(running statementJS: String) async throws -> (level: String, message: String) {
+        let logs = try await bridgedLogs(running: statementJS)
+        return try XCTUnwrap(logs.first, "nothing reached the bridge")
     }
 
     func testConsoleBridgeFormatsErrorAsNameMessageAndStack() async throws {
@@ -1245,6 +1259,155 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         XCTAssertEqual(result["logCalls"] as? Int, 1,
                        "a rejected bridge send must not be reported back through the bridge, got: \(result["messages"] ?? "nil")")
+    }
+
+    // MARK: - Console bridge rate limit (TASK-17)
+
+    /// The JS limiter's burst, read from the polyfill so the tests follow tuning.
+    private func consoleBridgeBurst(on target: WKWebView? = nil) async throws -> Int {
+        // Hoisted out of XCTUnwrap: its argument is an autoclosure and cannot await.
+        let value = try await eval("return globalThis.__detourConsoleBridge.BURST", on: target)
+        return try XCTUnwrap(value as? Int, "the console bridge exposes no BURST constant")
+    }
+
+    func testConsoleBridgeForwardsTheWholeBurst() async throws {
+        let burst = try await consoleBridgeBurst()
+        let logs = try await bridgedLogs(running: """
+        for (let i = 0; i < \(burst); i++) console.log('burst ' + i);
+        """)
+        XCTAssertEqual(logs.count, burst, "the whole burst must reach the bridge")
+        XCTAssertEqual(logs.map(\.message), (0..<burst).map { "burst \($0)" })
+    }
+
+    /// Distinct messages beyond the burst are dropped, and the drop is accounted
+    /// for by one summary line once a token comes back.
+    func testConsoleBridgeDropsBeyondTheBurstAndSummarizesWhatItDropped() async throws {
+        let burst = try await consoleBridgeBurst()
+        let flood = 200
+        let logs = try await bridgedLogs(running: """
+        for (let i = 0; i < \(flood); i++) console.error('flood ' + i);
+        // A token returns within ~50ms of the bucket emptying; the next message
+        // is what carries the summary of everything dropped in between.
+        await new Promise(r => setTimeout(r, 200));
+        console.error('after the flood');
+        """)
+
+        let summaries = logs.filter { $0.message.hasPrefix("[console bridge] dropped") }
+        XCTAssertEqual(summaries.count, 1, "exactly one summary per drop episode, got: \(logs.map(\.message))")
+        let summary = try XCTUnwrap(summaries.first)
+        XCTAssertEqual(summary.level, "warn", "the summary is a warning whatever the dropped levels were")
+
+        let forwardedFlood = logs.filter { $0.message.hasPrefix("flood ") }
+        // The burst always gets through; a few more only if the loop itself took
+        // long enough to refill a token, which must not make this flaky.
+        XCTAssertGreaterThanOrEqual(forwardedFlood.count, burst)
+        XCTAssertLessThanOrEqual(forwardedFlood.count, burst + 5,
+                                 "far short of the \(flood) sent: \(logs.count) reached the bridge")
+        XCTAssertEqual(forwardedFlood.map(\.message), (0..<forwardedFlood.count).map { "flood \($0)" },
+                       "the *first* occurrences are the ones kept")
+        let dropped = flood - forwardedFlood.count
+        XCTAssertTrue(summary.message.contains("dropped \(dropped) messages (\(dropped) errors, 0 warnings, 0 info)"),
+                      "the summary must account for every dropped message and its level: \(summary.message)")
+        XCTAssertEqual(logs.last?.message, "after the flood",
+                       "logging resumes once tokens return, after the summary")
+        XCTAssertEqual(logs.count, forwardedFlood.count + 2,
+                       "nothing but the burst, one summary and the tail: \(logs.map(\.message))")
+    }
+
+    /// A flood that outlasts the burst: tokens return every 1/REFILL_PER_SEC, and
+    /// each return must not buy its own summary line, or the summaries double the
+    /// traffic the bucket caps. One summary per DROP_SUMMARY_MS, the rest deferred.
+    func testConsoleBridgeSummarizesASustainedFloodOncePerPeriod() async throws {
+        let logs = try await bridgedLogs(running: """
+        for (let batch = 0; batch < 8; batch++) {
+            for (let i = 0; i < 30; i++) console.error('sustained ' + batch + '/' + i);
+            // Long enough for at least one token to return between batches.
+            await new Promise(r => setTimeout(r, 60));
+        }
+        """)
+        let summaries = logs.filter { $0.message.hasPrefix("[console bridge] dropped") }
+        XCTAssertEqual(summaries.count, 1,
+                       "a returning token must not buy a summary each time: \(summaries.map(\.message))")
+    }
+
+    /// A `(repeated N times)` flush that the bucket drops loses N messages; the
+    /// summary must say so rather than counting the one line.
+    func testConsoleBridgeCountsADroppedRepeatFlushAsEveryRepeat() async throws {
+        let burst = try await consoleBridgeBurst()
+        let logs = try await bridgedLogs(running: """
+        for (let i = 0; i < \(burst); i++) console.error('burst ' + i);
+        // Bucket empty: the first 'same' is dropped, the next 99 fold into it.
+        for (let i = 0; i < 100; i++) console.error('same');
+        // Closes the dedupe window; the flush line is dropped too, worth 99.
+        console.error('other');
+        await new Promise(r => setTimeout(r, 200));
+        console.error('after');
+        """)
+        let summary = try XCTUnwrap(logs.first { $0.message.hasPrefix("[console bridge] dropped") },
+                                    "no summary in: \(logs.map(\.message))")
+        // 1 ('same') + 99 (its repeats, via the dropped flush) + 1 ('other').
+        XCTAssertTrue(summary.message.contains("dropped 101 messages (101 errors, 0 warnings, 0 info)"),
+                      "every folded repeat must be accounted for: \(summary.message)")
+    }
+
+    /// The shape of the 2026-09-11 incident: a worker error loop repeating one
+    /// message. It must cost a couple of sends, not one per iteration, and must
+    /// not burn the bucket other messages need.
+    func testConsoleBridgeCoalescesARepeatingMessageIntoACount() async throws {
+        let logs = try await bridgedLogs(running: """
+        for (let i = 0; i < 5000; i++) console.error('the same error');
+        console.error('something else');
+        """)
+        XCTAssertEqual(logs.map(\.message), [
+            "the same error",
+            "the same error (repeated 4999 times)",
+            "something else",
+        ])
+        XCTAssertEqual(logs.map(\.level), ["error", "error", "error"])
+    }
+
+    /// With no different message to close it, the dedupe window is flushed by its
+    /// own timer so a still-looping worker is reported about once a second.
+    func testConsoleBridgeFlushesARepeatCountOnATimer() async throws {
+        let logs = try await bridgedLogs(running: """
+        console.warn('tick');
+        console.warn('tick');
+        console.warn('tick');
+        const flush = globalThis.__detourConsoleBridge.DEDUPE_FLUSH_MS;
+        await new Promise(r => setTimeout(r, flush + 300));
+        """)
+        XCTAssertEqual(logs.map(\.message), ["tick", "tick (repeated 2 times)"])
+        XCTAssertEqual(logs.map(\.level), ["warn", "warn"])
+    }
+
+    /// Identical messages at *different* levels are different messages: a
+    /// warn/error pair must not be collapsed into one.
+    func testConsoleBridgeDoesNotCoalesceAcrossLevels() async throws {
+        let logs = try await bridgedLogs(running: """
+        console.warn('same text');
+        console.error('same text');
+        """)
+        XCTAssertEqual(logs.map(\.level), ["warn", "error"])
+        XCTAssertEqual(logs.map(\.message), ["same text", "same text"])
+    }
+
+    /// Only the bridge send is limited. The extension's own console — what the Web
+    /// Inspector shows — still receives every call, so limiting never hides
+    /// anything from the extension developer.
+    func testConsoleBridgeLimitDoesNotTouchTheContextsOwnConsole() async throws {
+        // The shim runs before the polyfill, so the polyfill binds _origError to
+        // this counter the way it would bind the real console.
+        let wv = try await makeWebView(manifestPermissions: ["history"], shimExtras: """
+        globalThis.__origConsoleCalls = 0;
+        console.error = function() { globalThis.__origConsoleCalls += 1; };
+        """)
+        let logs = try await bridgedLogs(running: """
+        globalThis.__origConsoleCalls = 0;
+        for (let i = 0; i < 200; i++) console.error('flood ' + i);
+        """, on: wv)
+        let seen = try await eval("return globalThis.__origConsoleCalls", on: wv) as? Int
+        XCTAssertEqual(seen, 200, "the context's own console must see every message")
+        XCTAssertLessThan(logs.count, 200, "the bridge must not have seen all of them")
     }
 
     // MARK: - Native port keep-alive
