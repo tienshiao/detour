@@ -352,16 +352,26 @@ final class WKExtensionIntegrationTests: XCTestCase {
         XCTAssertEqual(getResponse?["testKey"] as? String, "testValue")
     }
 
-    /// `chrome.runtime.onInstalled` is *not* delivered in this harness — measured
-    /// 2026-09-12 on macOS 26, and the reason the storage marker this test used to
-    /// wait for never appeared.
+    /// WebKit does *not* deliver `chrome.runtime.onInstalled` to this suite's
+    /// worker, and that is WebKit's rule, not a harness defect (TASK-20 measured it,
+    /// TASK-22 explained it).
     ///
-    /// A context loaded programmatically (`controller.load(context)` plus
-    /// `loadBackgroundContent()`) runs its worker — the same worker answers every
-    /// message in this suite — but the worker's `onInstalled` listener never fires:
-    /// neither its in-worker record nor the storage marker shows up, while a value
-    /// another test wrote is still in `storage.local`, so storage persists across
-    /// worker instances and the write was not merely lost with one.
+    /// WebKit picks the reason per context *load*
+    /// (`WebExtensionContext::determineInstallReasonDuringLoad`): a version other
+    /// than the one in its stored state is an update; otherwise the load gets an
+    /// install only if the controller is no longer "freshly created", a 5 s window
+    /// that in the shipped build starts with the controller's first load — inside
+    /// it the context gets `onStartup` instead. `createSharedState` builds a new
+    /// profile controller and loads this context into it straight away, so it is
+    /// always inside the window. The app behaves identically (measured 2026-09-12,
+    /// docs/1password-integration-plan.md "runtime.onInstalled"): the first
+    /// extension a profile ever loads gets no event, a later install gets
+    /// `install`, an update gets `update`, and every same-version reload or
+    /// re-enable gets a spurious `install`. That is why Detour no longer uses
+    /// WebKit's event: the worker polyfill suppresses it and Detour delivers its own
+    /// from a per-profile ledger (`RuntimeInstalledEvent`, tested in
+    /// `RuntimeInstalledEventTests` and `ExtensionPolyfillTests`). This suite's
+    /// worker does not run the polyfill, so what it pins is WebKit alone.
     ///
     /// The worker has been running since `createSharedState`, which awaited
     /// `loadBackgroundContent()`, and the listener writes both records
@@ -371,13 +381,9 @@ final class WKExtensionIntegrationTests: XCTestCase {
     /// very same message path has to come back out of `storage-dump`, or an
     /// absent marker would prove only that the probe is broken.
     ///
-    /// What is pinned here is that measurement, not Chrome parity. Unlike the tab
-    /// registration this file depends on (TASK-20), there is nothing a test can
-    /// register to make the event arrive, and this says nothing about whether the
-    /// app sees onInstalled when it installs an extension for real. If WebKit
-    /// starts delivering it, this test fails — which is the point: flip it to the
-    /// Chrome expectation (`reason == "install"`) and re-check what in Detour
-    /// depends on onInstalled.
+    /// If this starts failing, WebKit changed its install-reason rule: re-measure
+    /// the app scenarios before trusting either WebKit's event or Detour's
+    /// suppression of it.
     func testRuntimeOnInstalledIsNotDelivered() async throws {
         let wv = try await makeWebView()
 

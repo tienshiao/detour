@@ -19,9 +19,44 @@ async function appendLog(entry) {
 
 // --- runtime.onInstalled ---
 
+// Every delivery is kept in storage.local (`onInstalledEvents`, newest last) so
+// whether and when the event arrived can be read back after the worker that got
+// it is gone: on install, on update (reason 'update' + previousVersion), and —
+// wrongly, if it ever shows up — on a context reload or relaunch. Each worker
+// start logs the stored history too, so a run can be audited from the log alone.
+const MAX_INSTALL_EVENTS = 20;
+const workerStartedAt = Date.now();
+
+chrome.storage.local.get('onInstalledEvents').then(({ onInstalledEvents = [] }) => {
+  console.log('[API Explorer] worker start v' + chrome.runtime.getManifest().version
+    + ', onInstalled history: ' + JSON.stringify(onInstalledEvents));
+});
+// How Detour's polyfill installed the event in this worker ('detour' when Detour
+// delivers it, 'webkit (reason)' when WebKit's own event was left in place).
+{
+  const status = globalThis.__detourRuntimeOnInstalled;
+  chrome.storage.local.set({
+    onInstalledWorkerMode: status ? status.mode + (status.detail ? ' (' + status.detail + ')' : '') : 'no Detour polyfill'
+  });
+}
+
 chrome.runtime.onInstalled.addListener((details) => {
-  console.log('[API Explorer] runtime.onInstalled', details.reason);
-  appendLog({ event: 'runtime.onInstalled', reason: details.reason });
+  const record = {
+    reason: details.reason,
+    previousVersion: details.previousVersion,
+    version: chrome.runtime.getManifest().version,
+    timestamp: Date.now(),
+    msAfterWorkerStart: Date.now() - workerStartedAt
+  };
+  console.log('[API Explorer] runtime.onInstalled ' + JSON.stringify(record));
+  appendLog({ event: 'runtime.onInstalled', reason: details.reason, previousVersion: details.previousVersion });
+  chrome.storage.local.get('onInstalledEvents').then(({ onInstalledEvents = [] }) => {
+    onInstalledEvents.push(record);
+    if (onInstalledEvents.length > MAX_INSTALL_EVENTS) {
+      onInstalledEvents.splice(0, onInstalledEvents.length - MAX_INSTALL_EVENTS);
+    }
+    return chrome.storage.local.set({ onInstalledEvents });
+  });
 
   // Create context menu items on install
   chrome.contextMenus.create({

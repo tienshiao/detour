@@ -443,6 +443,93 @@ API Explorer and test coverage per project convention:
   `parent browser was not valid` → `UnsupportedBrowser`. Untested: the Debug configuration copied to
   `/Applications`. A dev-only bridge app is tracked as TASK-7.
 
+### runtime.onInstalled (TASK-22)
+
+Question: does WebKit deliver `chrome.runtime.onInstalled` to the background service worker in the
+app? TASK-20 had measured that it never arrives in the test process. 1Password, like most
+extensions, does its first-run setup (and opens its welcome page) from that event.
+
+#### Measurement (2026-09-12)
+
+macOS 26.6.2 (25G83), WebKit 21624.5.1.11.3, Debug build, isolated `DETOUR_DATA_DIR`. A temporary
+env-gated AppDelegate harness drove `ExtensionManager.install(from:)` (API Explorer with a manifest
+`key`, so every install shares one id), `Profile.recoverFromBackgroundLoadFailure`, and
+`setEnabled` globally and per profile, then woke the worker. The API Explorer worker records every
+delivery (`reason`, `previousVersion`, version, ms after worker start) in
+`storage.local.onInstalledEvents` and logs it, and logs the stored history each time it starts, so
+the log shows both the event and what storage holds (`-ExtensionConsoleLogPublic YES`, `log show`
+filtered by the harness PID).
+
+| Scenario | WebKit delivers | Evidence |
+|----------|-----------------|----------|
+| First install into a profile that has never loaded an extension (even 21 s after launch) | **nothing**; `runtime.onStartup` instead | `worker start v3.0.0, onInstalled history: []` → `runtime.onStartup` |
+| Install while the profile already has an extension loaded (installed 10 s earlier) | `install` | `runtime.onInstalled {"reason":"install","version":"3.0.0"}` |
+| Update 3.0.0 → 3.0.1, Default profile | `update`, `previousVersion: "3.0.0"` | `{"reason":"update","previousVersion":"3.0.0","version":"3.0.1"}` |
+| Update 3.0.1 → 3.0.2, Private profile (non-persistent controller) | `install`, no previousVersion | `{"reason":"install","version":"3.0.2"}` |
+| Background-recovery reload, same version | **`install`** (spurious) | `{"reason":"install","version":"3.0.1"}`, history already held the update |
+| Global disable → enable; per-profile disable → enable | **`install`** (spurious) | `{"reason":"install","version":"3.0.1"}` / `"3.0.2"` |
+| Reinstall of the same version | `install` | `{"reason":"install","version":"3.0.1","msAfterWorkerStart":12}` |
+| Relaunch (Default and Private) | nothing; `onStartup` | two `runtime.onStartup`, no `runtime.onInstalled` |
+
+WebKit's source explains every row (`WebExtensionContext::determineInstallReasonDuringLoad`,
+`WebExtensionController.cpp`): the reason is chosen per context *load*. A version (or bundle hash)
+different from `LastSeenVersion` in the context's `State.plist` is an update. Otherwise, if the
+controller is still "freshly created" — a 5-second window that, judging by the first row, starts at
+the controller's first load — there is no install reason and `onStartup` fires; after the window,
+every load is an install. The non-persistent Private controller has no stored state, so it never
+sees a previous version. The test process loads its context straight into a new controller, inside
+the window, which is why `testRuntimeOnInstalledIsNotDelivered` sees nothing (its doc comment now
+says so).
+
+#### Decision: Detour delivers the event itself
+
+WebKit's event is wrong in both directions — the first extension a user installs never gets it, and
+every background-recovery reload or re-enable replays `install` (for 1Password: its welcome page
+again). It cannot be fixed from outside WebKit's rule, so Detour suppresses it and emits its own:
+
+- **Rule** (`RuntimeInstalledEvent.pending`, pure): Detour keeps, per (profile, extension), the
+  version the event was last delivered for (table `extensionInstalledEvent`). No row → `install`;
+  a different version → `update` with that version as `previousVersion`; the same version →
+  nothing. So: exactly once per install or version change, per profile; never on a reload,
+  relaunch or enable; never `chrome_update`. A profile where the extension was disabled during an
+  update gets the `update` when it next runs there (Chrome defers a pending dispatch the same way).
+  A same-version reinstall is nothing (Chrome reports `update` for reloading an unpacked extension;
+  a version ledger cannot tell that from a reload, and a spurious event is the worse error).
+- **Per profile, Private included.** Each profile runs its own worker with its own storage, so each
+  gets the event once. The Private profile's storage is non-persistent, but the ledger is not, so
+  it is not replayed at relaunch — the same as Chrome never re-firing at startup.
+- **Upgrade:** migration v9 seeds the ledger with every installed extension's version in every
+  saved profile, so updating Detour does not deliver `install` to everything already installed.
+  Uninstall deletes the rows.
+- **Suppression** (`ExtensionAPIPolyfill.runtimeOnInstalledJS`, service workers only): the worker
+  polyfill shadows `addListener`/`removeListener`/`hasListener`/`hasListeners` on the native
+  `runtime.onInstalled` object and keeps the listeners itself, so WebKit's dispatch finds no
+  listener. It holds a strong reference to the event wrapper (WebKit caches wrappers weakly, and
+  `onInstalled` is `[MainWorldOnly]` so it cannot be pinned on `runtime`), verifies a second read
+  returns the patched object, and otherwise restores the object and leaves the event to WebKit.
+  `chrome`, `browser` and `chrome.runtime` are never replaced (TASK-15).
+- **Delivery:** on every worker start, one task after the script ran, the polyfill sends
+  `runtime.claimInstalledEvent`; the handler decides and advances the ledger in one transaction and
+  replies with the details, which the polyfill dispatches. A second claim gets `{}`, so a restarted
+  or racing worker cannot deliver twice; a worker that dies between claim and dispatch loses the
+  event (at-most-once, like Chrome clearing its pending pref at dispatch).
+- **Waking:** `ExtensionManager.wakeForPendingInstalledEvent` starts the worker after install,
+  update, enable and at launch when the ledger says an event is owed.
+- **Limits:** extension pages (popup, options) still get WebKit's event if one is open and
+  listening across an install or reload. A module worker that `await`s before registering its
+  listener can miss the claim, as it would miss Chrome's dispatch. WebKit's spurious
+  `runtime.onStartup` on a profile's first-ever install is left alone.
+
+Verified in the same harness with the fix: first install into a fresh profile → one `install`;
+update → one `update` (`previousVersion 3.0.0`); recovery reload, disable → enable and same-version
+reinstall → nothing, with the worker's stored history ending at exactly those two entries
+(`[Detour polyfill] runtime.onInstalled mode: detour` at every worker start). After a relaunch, the
+Private profile (created after the first install) got its one `install`, and an update to 3.0.2
+delivered one `update` in each profile; a per-profile disable → enable then delivered nothing.
+Tests: `RuntimeInstalledEventTests` (rule, ledger, migration), the `runtime.onInstalled` section of
+`ExtensionPolyfillTests` (suppression, claim-once dispatch, worker-only, fallback). API Explorer's
+popup shows the recorded deliveries and the worker's polyfill mode.
+
 ## Recommendation
 
 Phase 0 and Phase 1 first, in that order. Phase 1 is the whole game: until the worker survives past

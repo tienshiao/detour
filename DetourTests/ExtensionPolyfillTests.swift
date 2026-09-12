@@ -1,5 +1,6 @@
 import XCTest
 import WebKit
+import GRDB
 @testable import Detour
 
 /// A Profile whose origin attribution is driven by the test. The bare WKWebView
@@ -2721,5 +2722,278 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         XCTAssertEqual(result["warnings"] as? Int, 1,
                        "the fallback should warn once per context, not once per socket")
+    }
+
+    // MARK: - runtime.onInstalled (TASK-22)
+
+    /// A web view running the worker's `runtime.onInstalled` module against a fake
+    /// native event: `addListener`/`removeListener`/`hasListener` on the fake record
+    /// natively registered listeners in `__nativeInstalledListeners`, and
+    /// `__fireNativeInstalled(details)` plays WebKit dispatching its own event to
+    /// them. `eventExpression` replaces how `chrome.runtime.onInstalled` is set up.
+    private func makeInstalledEventWebView(force: Bool = true, eventExpression: String? = nil) async throws -> WKWebView {
+        let makeEvent = """
+        (() => ({
+            addListener(fn) { globalThis.__nativeInstalledListeners.push(fn); },
+            removeListener(fn) {
+                const i = globalThis.__nativeInstalledListeners.indexOf(fn);
+                if (i !== -1) globalThis.__nativeInstalledListeners.splice(i, 1);
+            },
+            hasListener(fn) { return globalThis.__nativeInstalledListeners.includes(fn); }
+        }))
+        """
+        let install = eventExpression
+            ?? "globalThis.__shimInstalledEvent = globalThis.__makeNativeInstalledEvent(); globalThis.chrome.runtime.onInstalled = globalThis.__shimInstalledEvent;"
+        return try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy", "webRequest", "nativeMessaging"],
+            shimExtras: """
+            globalThis.__nativeInstalledListeners = [];
+            globalThis.__fireNativeInstalled = (details) => globalThis.__nativeInstalledListeners.slice().forEach(fn => fn(details));
+            globalThis.__makeNativeInstalledEvent = \(makeEvent);
+            \(force ? "globalThis.__detourForceRuntimeOnInstalled = true;" : "")
+            \(install)
+            """)
+    }
+
+    /// Put the ledger row for the suite's extension in the suite's profile at
+    /// `version`, or remove it (nil: the event was never delivered there).
+    private func setInstalledLedger(version: String?) throws {
+        let profileID = profile.id.uuidString
+        try AppDatabase.shared.dbQueue.write { db in
+            try ExtensionInstalledEventRecord
+                .filter(Column("extensionID") == "test-polyfill-extension" && Column("profileID") == profileID)
+                .deleteAll(db)
+            if let version {
+                try ExtensionInstalledEventRecord(extensionID: "test-polyfill-extension", profileID: profileID,
+                                                  deliveredVersion: version, deliveredAt: 0).insert(db)
+            }
+        }
+    }
+
+    /// Wait for the claim the module sends by itself at install to settle, so a
+    /// test's own claim never races it.
+    private func settleInstallClaim(on target: WKWebView) async throws {
+        _ = try await eval("await new Promise((r) => setTimeout(r, 50));", on: target)
+    }
+
+    /// The extension's listeners live in Detour's list, not on WebKit's event, so
+    /// WebKit's own dispatch — the spurious `install` on every same-version reload —
+    /// never reaches them; and nothing but the event's methods was touched.
+    func testRuntimeOnInstalledKeepsListenersOffWebKitsEvent() async throws {
+        try setInstalledLedger(version: "1.0.0")
+        defer { try? setInstalledLedger(version: nil) }
+        let view = try await makeInstalledEventWebView()
+        try await settleInstallClaim(on: view)
+
+        let result = try await evalDictionary("""
+        const calls = [];
+        const listener = (details) => calls.push(details);
+        chrome.runtime.onInstalled.addListener(listener);
+        chrome.runtime.onInstalled.addListener(listener);
+        globalThis.__fireNativeInstalled({ reason: 'install' });
+        const status = globalThis.__detourRuntimeOnInstalled;
+        let threw = false;
+        try { chrome.runtime.onInstalled.addListener('not a function'); } catch (e) { threw = e instanceof TypeError; }
+        const out = {
+            mode: status.mode,
+            detail: status.detail,
+            holdsEvent: status.holdsEvent,
+            calls: calls.length,
+            nativeListeners: globalThis.__nativeInstalledListeners.length,
+            hasListener: chrome.runtime.onInstalled.hasListener(listener),
+            hasListeners: chrome.runtime.onInstalled.hasListeners(),
+            listenerCount: status.listenerCount,
+            sameEvent: chrome.runtime.onInstalled === globalThis.__shimInstalledEvent,
+            sameRuntime: chrome.runtime === globalThis.__shimRuntime,
+            threwForNonFunction: threw
+        };
+        chrome.runtime.onInstalled.removeListener(listener);
+        out.hasListenerAfterRemove = chrome.runtime.onInstalled.hasListener(listener);
+        return JSON.stringify(out);
+        """, on: view)
+
+        XCTAssertEqual(result["mode"] as? String, "detour")
+        XCTAssertEqual(result["detail"] as? String, "")
+        XCTAssertEqual(result["holdsEvent"] as? Bool, true, "the patched wrapper must be held strongly")
+        XCTAssertEqual(result["calls"] as? Int, 0, "WebKit's own dispatch must not reach the extension")
+        XCTAssertEqual(result["nativeListeners"] as? Int, 0, "no listener may be registered on WebKit's event")
+        XCTAssertEqual(result["hasListener"] as? Bool, true)
+        XCTAssertEqual(result["hasListeners"] as? Bool, true)
+        XCTAssertEqual(result["listenerCount"] as? Int, 1, "adding the same listener twice keeps one")
+        XCTAssertEqual(result["sameEvent"] as? Bool, true, "the event object is patched in place, not replaced")
+        XCTAssertEqual(result["sameRuntime"] as? Bool, true, "chrome.runtime must not be replaced (TASK-15)")
+        XCTAssertEqual(result["threwForNonFunction"] as? Bool, true)
+        XCTAssertEqual(result["hasListenerAfterRemove"] as? Bool, false)
+    }
+
+    /// Owed an update: the claim delivers `update` with the previous version to
+    /// every listener exactly once, and a second claim — a restarted worker, or
+    /// this one again — gets nothing. The ledger then says nothing is owed.
+    func testRuntimeOnInstalledClaimDeliversAnOwedUpdateExactlyOnce() async throws {
+        try setInstalledLedger(version: "1.0.0")
+        defer { try? setInstalledLedger(version: nil) }
+        let view = try await makeInstalledEventWebView()
+        try await settleInstallClaim(on: view)
+        try setInstalledLedger(version: "0.9.0")
+
+        let result = try await evalDictionary("""
+        const first = [], second = [];
+        chrome.runtime.onInstalled.addListener((d) => first.push(d));
+        chrome.runtime.onInstalled.addListener((d) => { second.push(d); throw new Error('listener failure is contained'); });
+        const status = globalThis.__detourRuntimeOnInstalled;
+        const claimed = await status.claim();
+        const again = await status.claim();
+        return JSON.stringify({ claimed, again, first, second });
+        """, on: view)
+
+        XCTAssertEqual(result["claimed"] as? [String: String], ["reason": "update", "previousVersion": "0.9.0"])
+        XCTAssertTrue(result["again"] is NSNull, "a second claim must deliver nothing, got \(result["again"] ?? "nil")")
+        XCTAssertEqual(result["first"] as? [[String: String]], [["reason": "update", "previousVersion": "0.9.0"]])
+        XCTAssertEqual(result["second"] as? [[String: String]], [["reason": "update", "previousVersion": "0.9.0"]])
+        XCTAssertNil(AppDatabase.shared.pendingRuntimeInstalledEvent(
+            extensionID: "test-polyfill-extension", profileID: profile.id.uuidString, currentVersion: "1.0.0"))
+    }
+
+    /// A throwing listener does not keep the event from the listeners after it.
+    func testRuntimeOnInstalledListenerErrorIsContained() async throws {
+        try setInstalledLedger(version: "1.0.0")
+        defer { try? setInstalledLedger(version: nil) }
+        let view = try await makeInstalledEventWebView()
+        try await settleInstallClaim(on: view)
+        try setInstalledLedger(version: nil)
+
+        let result = try await evalDictionary("""
+        const later = [];
+        chrome.runtime.onInstalled.addListener(() => { throw new Error('first listener fails'); });
+        chrome.runtime.onInstalled.addListener((d) => later.push(d));
+        await globalThis.__detourRuntimeOnInstalled.claim();
+        return JSON.stringify({ later });
+        """, on: view)
+
+        XCTAssertEqual(result["later"] as? [[String: String]], [["reason": "install"]])
+    }
+
+    /// Never delivered in this profile: the claim the module sends by itself at
+    /// install delivers `install`, without `previousVersion`.
+    func testRuntimeOnInstalledInstallIsClaimedAtStartup() async throws {
+        try setInstalledLedger(version: nil)
+        defer { try? setInstalledLedger(version: nil) }
+        let view = try await makeInstalledEventWebView()
+        try await settleInstallClaim(on: view)
+
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourRuntimeOnInstalled;
+        return JSON.stringify({ lastDispatched: status.lastDispatched, claimCount: status.claimCount, again: await status.claim() });
+        """, on: view)
+
+        XCTAssertEqual(result["lastDispatched"] as? [String: String], ["reason": "install"])
+        XCTAssertEqual(result["claimCount"] as? Int, 1, "one claim per worker start")
+        XCTAssertTrue(result["again"] is NSNull)
+    }
+
+    /// Same version as delivered (a reload, relaunch or re-enable): nothing.
+    func testRuntimeOnInstalledNothingOwedForTheDeliveredVersion() async throws {
+        try setInstalledLedger(version: "1.0.0")
+        defer { try? setInstalledLedger(version: nil) }
+        let view = try await makeInstalledEventWebView()
+        try await settleInstallClaim(on: view)
+
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourRuntimeOnInstalled;
+        return JSON.stringify({ lastDispatched: status.lastDispatched, claimCount: status.claimCount, again: await status.claim() });
+        """, on: view)
+
+        XCTAssertTrue(result["lastDispatched"] is NSNull)
+        XCTAssertEqual(result["claimCount"] as? Int, 1)
+        XCTAssertTrue(result["again"] is NSNull)
+    }
+
+    /// Outside a worker the event stays WebKit's: listeners go to the native event
+    /// and nothing is claimed.
+    func testRuntimeOnInstalledLeftToWebKitOutsideWorkers() async throws {
+        try setInstalledLedger(version: nil)
+        defer { try? setInstalledLedger(version: nil) }
+        let view = try await makeInstalledEventWebView(force: false)
+        try await settleInstallClaim(on: view)
+
+        let result = try await evalDictionary("""
+        const calls = [];
+        chrome.runtime.onInstalled.addListener((d) => calls.push(d));
+        globalThis.__fireNativeInstalled({ reason: 'install' });
+        const status = globalThis.__detourRuntimeOnInstalled;
+        return JSON.stringify({ mode: status.mode, detail: status.detail, calls: calls.length,
+                                claimCount: status.claimCount, claimed: await status.claim() });
+        """, on: view)
+
+        XCTAssertEqual(result["mode"] as? String, "webkit")
+        XCTAssertEqual(result["detail"] as? String, "not-a-worker")
+        XCTAssertEqual(result["calls"] as? Int, 1)
+        XCTAssertEqual(result["claimCount"] as? Int, 0)
+        XCTAssertTrue(result["claimed"] is NSNull)
+        XCTAssertNotNil(AppDatabase.shared.pendingRuntimeInstalledEvent(
+            extensionID: "test-polyfill-extension", profileID: profile.id.uuidString, currentVersion: "1.0.0"),
+            "a context that left the event to WebKit must not consume Detour's")
+    }
+
+    /// If reading the event again does not return the patched object (a wrapper
+    /// that is not cached), the patch is undone and the event left to WebKit, so
+    /// listeners are never split across two lists.
+    func testRuntimeOnInstalledFallsBackWhenThePatchIsNotVisible() async throws {
+        try setInstalledLedger(version: nil)
+        defer { try? setInstalledLedger(version: nil) }
+        let view = try await makeInstalledEventWebView(eventExpression: """
+            globalThis.__handedOutInstalledEvents = [];
+            Object.defineProperty(globalThis.chrome.runtime, 'onInstalled', {
+                configurable: true,
+                get() { const e = globalThis.__makeNativeInstalledEvent(); globalThis.__handedOutInstalledEvents.push(e); return e; }
+            });
+            """)
+        try await settleInstallClaim(on: view)
+
+        let result = try await evalDictionary("""
+        const calls = [];
+        chrome.runtime.onInstalled.addListener((d) => calls.push(d));
+        globalThis.__fireNativeInstalled({ reason: 'install' });
+        const status = globalThis.__detourRuntimeOnInstalled;
+        const first = globalThis.__handedOutInstalledEvents[0];
+        return JSON.stringify({ mode: status.mode, detail: status.detail, holdsEvent: status.holdsEvent,
+                                calls: calls.length, claimCount: status.claimCount,
+                                patchedOwnProps: Object.getOwnPropertyNames(first).filter(n => n === 'hasListeners'),
+                                restoredOriginal: (() => {
+                                    const before = globalThis.__nativeInstalledListeners.length;
+                                    first.addListener(() => {});
+                                    return globalThis.__nativeInstalledListeners.length === before + 1;
+                                })() });
+        """, on: view)
+
+        XCTAssertEqual(result["mode"] as? String, "webkit")
+        XCTAssertEqual(result["detail"] as? String, "patch-not-visible")
+        XCTAssertEqual(result["holdsEvent"] as? Bool, false)
+        XCTAssertEqual(result["calls"] as? Int, 1, "listeners must reach WebKit's event when the patch is undone")
+        XCTAssertEqual(result["claimCount"] as? Int, 0)
+        XCTAssertEqual(result["patchedOwnProps"] as? [String], [],
+                       "the shadowing must be removed from the object it was tried on")
+        XCTAssertEqual(result["restoredOriginal"] as? Bool, true,
+                       "an own method the event already had must be put back, not deleted")
+    }
+
+    /// The native side of the claim, as the worker reaches it: of two claims for
+    /// the same version exactly the first delivers.
+    func testClaimInstalledEventThroughTheNativeBridgeDeliversOnce() async throws {
+        try setInstalledLedger(version: nil)
+        defer { try? setInstalledLedger(version: nil) }
+
+        func claim() async -> Any? {
+            await withCheckedContinuation { continuation in
+                handler.handleNativeMessage(["type": "runtime.claimInstalledEvent", "params": [String: Any]()],
+                                            verifiedExtensionID: "test-polyfill-extension") { result, _ in
+                    continuation.resume(returning: result)
+                }
+            }
+        }
+        let first = await claim()
+        let second = await claim()
+        XCTAssertEqual(first as? [String: String], ["reason": "install"])
+        XCTAssertEqual((second as? [String: Any])?.isEmpty, true, "got \(second ?? "nil")")
     }
 }

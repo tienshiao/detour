@@ -655,6 +655,25 @@ document.getElementById('btn-refresh-log').addEventListener('click', async () =>
   }
 });
 
+// --- runtime.onInstalled ---
+// Every delivery the worker recorded (background.js keeps them in
+// storage.local.onInstalledEvents), plus how the polyfill installed the event.
+// Expected in Detour (TASK-22): one 'install' per profile after installing, one
+// 'update' with previousVersion after a version change, and nothing for a
+// reload, relaunch or disable/enable.
+document.getElementById('btn-oninstalled-history').addEventListener('click', async () => {
+  try {
+    const { onInstalledEvents = [], onInstalledWorkerMode = '(worker not started yet)' } =
+      await chrome.storage.local.get(['onInstalledEvents', 'onInstalledWorkerMode']);
+    const lines = onInstalledEvents.slice().reverse().map(e => {
+      const time = new Date(e.timestamp).toLocaleString();
+      const previous = e.previousVersion ? ` from ${e.previousVersion}` : '';
+      return `${time}  ${e.reason}${previous} -> v${e.version}`;
+    });
+    showResult('res-oninstalled', [`worker polyfill mode: ${onInstalledWorkerMode}`, ...(lines.length ? lines : ['(no deliveries recorded)'])].join('\n'));
+  } catch (e) { showResult('res-oninstalled', e.message, true); }
+});
+
 // --- History ---
 document.getElementById('btn-history-search').addEventListener('click', async () => {
   try {

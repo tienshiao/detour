@@ -25,12 +25,12 @@ struct AppDatabase {
         let dbPath = dir.appendingPathComponent("browser.db").path
 
         dbQueue = try! DatabaseQueue(path: dbPath)
-        try! migrator.migrate(dbQueue)
+        try! Self.migrator.migrate(dbQueue)
     }
 
     init(dbQueue: DatabaseQueue) throws {
         self.dbQueue = dbQueue
-        try migrator.migrate(dbQueue)
+        try Self.migrator.migrate(dbQueue)
     }
 
     // MARK: - Helpers
@@ -307,7 +307,9 @@ struct AppDatabase {
         }
     }
 
-    private var migrator: DatabaseMigrator {
+    /// Internal (not private) so tests can migrate a database part-way and check
+    /// what a later migration does to existing rows.
+    static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
 
         #if DEBUG
@@ -520,6 +522,27 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v9") { db in
+            // runtime.onInstalled ledger (TASK-22, RuntimeInstalledEvent).
+            try db.create(table: "extensionInstalledEvent") { t in
+                t.column("extensionID", .text).notNull()
+                t.column("profileID", .text).notNull()
+                t.column("deliveredVersion", .text).notNull()
+                t.column("deliveredAt", .double).notNull()
+                t.primaryKey(["extensionID", "profileID"])
+            }
+            // Extensions installed before the ledger existed have had their
+            // install (or WebKit's version of it) already: seed every saved
+            // profile with the installed version, or upgrading Detour would
+            // deliver `install` to all of them at the next launch. Profiles made
+            // later have no row and get `install` when the extension first runs
+            // there, which is Chrome's per-profile rule.
+            try db.execute(sql: """
+                INSERT INTO extensionInstalledEvent (extensionID, profileID, deliveredVersion, deliveredAt)
+                SELECT e.id, p.id, e.version, ? FROM "extension" e CROSS JOIN profile p
+                """, arguments: [Date().timeIntervalSince1970])
+        }
+
         return migrator
     }
 
@@ -562,6 +585,43 @@ struct AppDatabase {
     func deleteExtension(id: String) {
         performWrite("delete extension") { db in
             try ExtensionRecord.filter(Column("id") == id).deleteAll(db)
+            // A reinstall under the same id (a manifest key) is a new install.
+            try ExtensionInstalledEventRecord.filter(Column("extensionID") == id).deleteAll(db)
+        }
+    }
+
+    // MARK: - runtime.onInstalled ledger
+
+    /// The `runtime.onInstalled` event the extension's context in `profileID`
+    /// still owes, without delivering it. See `RuntimeInstalledEvent`.
+    func pendingRuntimeInstalledEvent(extensionID: String, profileID: String, currentVersion: String) -> RuntimeInstalledEvent.Details? {
+        performRead("read runtime.onInstalled ledger", default: nil) { db in
+            let delivered = try ExtensionInstalledEventRecord
+                .filter(Column("extensionID") == extensionID && Column("profileID") == profileID)
+                .fetchOne(db)?.deliveredVersion
+            return RuntimeInstalledEvent.pending(deliveredVersion: delivered, currentVersion: currentVersion)
+        }
+    }
+
+    /// Take the owed `runtime.onInstalled` event, if any, and record it delivered —
+    /// read and write in one transaction, so of any number of claims for the same
+    /// version exactly one gets the event. The ledger advances *before* the worker
+    /// dispatches: a worker that dies in between loses the event rather than
+    /// risking it twice (Chrome drops its pending dispatch at the same point).
+    /// Returns nil when nothing is owed or the write fails.
+    func claimRuntimeInstalledEvent(extensionID: String, profileID: String, currentVersion: String) -> RuntimeInstalledEvent.Details? {
+        performWrite("claim runtime.onInstalled event", default: nil) { db in
+            let delivered = try ExtensionInstalledEventRecord
+                .filter(Column("extensionID") == extensionID && Column("profileID") == profileID)
+                .fetchOne(db)?.deliveredVersion
+            guard let details = RuntimeInstalledEvent.pending(deliveredVersion: delivered, currentVersion: currentVersion) else {
+                return nil
+            }
+            try ExtensionInstalledEventRecord(
+                extensionID: extensionID, profileID: profileID,
+                deliveredVersion: currentVersion, deliveredAt: Date().timeIntervalSince1970
+            ).save(db)
+            return details
         }
     }
 

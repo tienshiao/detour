@@ -64,6 +64,7 @@ struct ExtensionAPIPolyfill {
             webSocketRelayJS,
             nativePortKeepAliveJS,
             missingStubsJS,
+            runtimeOnInstalledJS,
             contentPolyfillBridgeJS,
             idleJS,
             notificationsJS,
@@ -112,7 +113,9 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.webNavigationFrames = globalThis.__detourWebNavFrames; } catch(e) { __detourPolyfillDiag.apis.webNavigationFrames = 'error: ' + e.message; }
         // Which WebSocket this context got: the native one (page contexts), the
         // TASK-8 relay, or the TASK-2 guard fallback when there is no relay host.
-        try { __detourPolyfillDiag.apis.webSocket = globalThis.__detourWebSocketRelay ? globalThis.__detourWebSocketRelay.mode : 'native'; } catch(e) { __detourPolyfillDiag.apis.webSocket = 'error: ' + e.message; }
+        // Whether runtime.onInstalled is Detour's (TASK-22) or still WebKit's, and why.
+        try { __detourPolyfillDiag.apis.runtimeOnInstalled = globalThis.__detourRuntimeOnInstalled.mode + (globalThis.__detourRuntimeOnInstalled.detail ? ' (' + globalThis.__detourRuntimeOnInstalled.detail + ')' : ''); } catch(e) { __detourPolyfillDiag.apis.runtimeOnInstalled = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.webSocket =globalThis.__detourWebSocketRelay ? globalThis.__detourWebSocketRelay.mode : 'native'; } catch(e) { __detourPolyfillDiag.apis.webSocket = 'error: ' + e.message; }
         } catch(e) {
         __detourPolyfillDiag.error = e.message || String(e);
         __detourPolyfillDiag.stack = e.stack || '';
@@ -431,6 +434,186 @@ struct ExtensionAPIPolyfill {
                 value: runtime, writable: false, configurable: true, enumerable: true
             });
         }
+    })();
+    """
+
+    // MARK: - runtime.onInstalled
+
+    /// `chrome.runtime.onInstalled` in the background service worker, delivered by
+    /// Detour rather than WebKit (TASK-22; the rules and the measurement behind them
+    /// are in `RuntimeInstalledEvent`).
+    ///
+    /// **Suppressing WebKit's event.** WebKit dispatches to the listeners registered
+    /// on its native event object, so the only way to keep its spurious `install`
+    /// (every same-version reload) away from the extension is to keep the extension's
+    /// listeners off that object: `addListener` / `removeListener` / `hasListener` /
+    /// `hasListeners` are shadowed by own properties on the event object, holding the
+    /// listeners here. Nothing else is touched — not `chrome`, `browser` or
+    /// `chrome.runtime` (replacing a namespace object breaks WebKit's message
+    /// dispatch, TASK-15), and no native listener is registered, so WebKit sees a
+    /// worker with no onInstalled listener and has nothing to deliver.
+    ///
+    /// `onInstalled` is `[MainWorldOnly]`, so `chrome.runtime.onInstalled` is served
+    /// by the runtime class's property callback on every read and cannot be pinned
+    /// as an own property (docs/chrome-runtime-patching.md). What each read returns is
+    /// the event's JS wrapper from WebKit's *weak* wrapper cache; the module keeps a
+    /// strong reference to that wrapper, so every later read returns the same object
+    /// and the shadowing stays visible. The install checks that it is (`detail`
+    /// `patch-not-visible` otherwise) and, if not, puts everything back and leaves the
+    /// event to WebKit rather than splitting listeners across two lists.
+    ///
+    /// **Delivery.** Once per worker start, on a later task (a classic worker has
+    /// registered its top-level listeners by then; a module worker using top-level
+    /// `await` before registering could miss it — Chrome requires synchronous
+    /// registration too), the worker claims the event from Detour
+    /// (`runtime.claimInstalledEvent`). Detour answers `{reason, previousVersion?}` at
+    /// most once per install or version change per profile and advances its ledger in
+    /// the same step, so a second claim — this worker again, a restarted worker, a
+    /// racing one — gets `{}`. Listeners registered after the claim settled get
+    /// nothing, as in Chrome.
+    ///
+    /// Workers only. Extension pages keep WebKit's event (it is rare for one to be
+    /// open, and listening, across an install); `__detourForceRuntimeOnInstalled`
+    /// installs it outside workers for tests. `__detourRuntimeOnInstalled` exposes the
+    /// mode, a `claim()` that tests drive deterministically, and what was dispatched.
+    private static let runtimeOnInstalledJS = """
+    (function() {
+        const g = globalThis;
+        const listeners = [];
+        let mode = 'webkit';
+        let detail = '';
+        let heldEvent = null;
+        let lastDispatched = null;
+        let claimCount = 0;
+
+        function readEvent() {
+            try {
+                const runtime = g.chrome && g.chrome.runtime;
+                if (runtime && runtime.onInstalled) return runtime.onInstalled;
+            } catch (e) {}
+            try {
+                const runtime = g.browser && g.browser.runtime;
+                if (runtime && runtime.onInstalled) return runtime.onInstalled;
+            } catch (e) {}
+            return null;
+        }
+
+        const addListener = function(listener) {
+            if (typeof listener !== 'function') {
+                throw new TypeError('runtime.onInstalled.addListener: the listener must be a function');
+            }
+            if (listeners.indexOf(listener) === -1) listeners.push(listener);
+        };
+        const removeListener = function(listener) {
+            const index = listeners.indexOf(listener);
+            if (index !== -1) listeners.splice(index, 1);
+        };
+        const hasListener = function(listener) { return listeners.indexOf(listener) !== -1; };
+        const hasListeners = function() { return listeners.length > 0; };
+        const shadows = { addListener: addListener, removeListener: removeListener, hasListener: hasListener, hasListeners: hasListeners };
+        const shadowNames = Object.keys(shadows);
+
+        function dispatch(details) {
+            lastDispatched = details;
+            const snapshot = listeners.slice();
+            try {
+                console.info('[Detour polyfill] runtime.onInstalled: dispatching ' + details.reason
+                    + (details.previousVersion !== undefined ? ' (previousVersion ' + details.previousVersion + ')' : '')
+                    + ' to ' + snapshot.length + ' listener(s)');
+            } catch (e) {}
+            for (let i = 0; i < snapshot.length; i++) {
+                try {
+                    const copy = { reason: details.reason };
+                    if (details.previousVersion !== undefined) copy.previousVersion = details.previousVersion;
+                    snapshot[i](copy);
+                } catch (e) {
+                    try { console.error('[chrome.runtime.onInstalled] listener error:', e); } catch (e2) {}
+                }
+            }
+        }
+
+        // Resolves with the details dispatched, or null when nothing was owed.
+        function claim() {
+            if (mode !== 'detour') return Promise.resolve(null);
+            claimCount += 1;
+            let request;
+            try {
+                request = g.__detourPolyfillRequest('runtime.claimInstalledEvent', {});
+            } catch (e) {
+                return Promise.resolve(null);
+            }
+            return Promise.resolve(request).then(function(reply) {
+                if (!reply || (reply.reason !== 'install' && reply.reason !== 'update')) return null;
+                const details = { reason: reply.reason };
+                if (reply.reason === 'update' && typeof reply.previousVersion === 'string') {
+                    details.previousVersion = reply.previousVersion;
+                }
+                dispatch(details);
+                return details;
+            }, function() { return null; });
+        }
+
+        function install() {
+            const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
+            if (!isWorker && g.__detourForceRuntimeOnInstalled !== true) {
+                detail = 'not-a-worker';
+                return;
+            }
+            const event = readEvent();
+            if (!event || typeof event !== 'object') {
+                detail = 'no-onInstalled';
+                return;
+            }
+            // Own properties the event already had under these names (none on
+            // WebKit's, whose methods live on its class), restored on fallback.
+            const defined = [];
+            try {
+                for (let i = 0; i < shadowNames.length; i++) {
+                    const name = shadowNames[i];
+                    const original = Object.getOwnPropertyDescriptor(event, name);
+                    Object.defineProperty(event, name, {
+                        value: shadows[name], writable: true, configurable: true, enumerable: false
+                    });
+                    defined.push({ name: name, original: original });
+                }
+            } catch (e) {
+                detail = 'patch-failed: ' + (e && e.message !== undefined ? e.message : String(e));
+            }
+            // Held before the visibility check, so the wrapper that was patched is
+            // still the cached one when the check reads the event again.
+            heldEvent = event;
+            if (!detail) {
+                const again = readEvent();
+                if (!again || again.addListener !== addListener) detail = 'patch-not-visible';
+            }
+            if (detail) {
+                for (let i = 0; i < defined.length; i++) {
+                    try {
+                        if (defined[i].original) Object.defineProperty(event, defined[i].name, defined[i].original);
+                        else delete event[defined[i].name];
+                    } catch (e) {}
+                }
+                heldEvent = null;
+                return;
+            }
+            mode = 'detour';
+            setTimeout(claim, 0);
+        }
+        install();
+
+        if (typeof ServiceWorkerGlobalScope !== 'undefined') {
+            try { console.info('[Detour polyfill] runtime.onInstalled mode: ' + mode + (detail ? ' (' + detail + ')' : '')); } catch (e) {}
+        }
+
+        g.__detourRuntimeOnInstalled = Object.freeze({
+            get mode() { return mode; },
+            get detail() { return detail; },
+            get listenerCount() { return listeners.length; },
+            get lastDispatched() { return lastDispatched; },
+            get claimCount() { return claimCount; },
+            get holdsEvent() { return heldEvent !== null; },
+            claim: claim
+        });
     })();
     """
 

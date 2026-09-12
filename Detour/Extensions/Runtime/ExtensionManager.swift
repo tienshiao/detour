@@ -280,6 +280,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Load all contexts. Background content loads on demand when needed.
         for ext in extensions {
             reconcileExtensionContext(ext, in: profile)
+            wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
         }
 
         // Pages restored from the previous launch are on origins that died with
@@ -288,6 +289,29 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // and announces itself once, on wake.
         profile.resolvePendingExtensionPages()
         notifyExistingTabs(for: profile)
+    }
+
+    /// Start the extension's worker in `profile` when it is still owed a
+    /// `runtime.onInstalled` event, so the event arrives now — right after the
+    /// install or update, or at launch for one a crash or a disabled profile left
+    /// undelivered — rather than whenever something else next wakes the worker.
+    /// Delivery itself is the worker's claim (`RuntimeInstalledEvent`); a context
+    /// without a service worker never claims, so it is not woken.
+    func wakeForPendingInstalledEvent(extensionID: String, in profile: Profile) {
+        guard let context = profile.extensionContext(for: extensionID),
+              context.webExtension.hasBackgroundContent,
+              self.extension(withID: extensionID)?.manifest.background?.serviceWorker != nil,
+              let version = context.webExtension.version,
+              let pending = AppDatabase.shared.pendingRuntimeInstalledEvent(
+                  extensionID: extensionID, profileID: profile.id.uuidString, currentVersion: version
+              ) else { return }
+        log.info("runtime.onInstalled: \(pending.reason.rawValue, privacy: .public) pending for \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public); waking its worker")
+        context.loadBackgroundContent { error in
+            if let error {
+                let nsError = error as NSError
+                log.error("runtime.onInstalled: waking \(extensionID, privacy: .public) failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+            }
+        }
     }
 
     /// Re-associate the profile's open windows and tabs with a freshly reloaded
@@ -834,6 +858,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
                 for profile in TabStore.shared.profiles {
                     self.reconcileExtensionContext(ext, in: profile)
+                    self.wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
                 }
 
                 // Pages the replaced version had open are on a dead origin; move
@@ -954,6 +979,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 // it was disabled, or left dormant by an earlier disable) move onto
                 // the new context before it is told about the tabs (TASK-24).
                 profile.resolvePendingExtensionPages()
+                wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
                 notifyExistingTabs(for: profile, contexts: [context])
             case .unloaded(let oldBase):
                 closePagesOfUnloadedExtension(ext.id, in: profile, unloadedBase: oldBase, uninstalling: false)

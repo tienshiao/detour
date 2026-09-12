@@ -515,6 +515,26 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             let message = (params["message"] as? String).map { String($0.prefix(Self.lastErrorRelayMessageLimit)) } ?? ""
             replyHandler(nil, message.isEmpty ? "Unknown error" : message)
 
+        // MARK: - runtime.onInstalled
+        case "runtime.claimInstalledEvent":
+            // The worker polyfill asks once per worker start (TASK-22). The
+            // version is the one this profile's context actually runs; the
+            // manifest is the fallback for a context this profile does not hold.
+            guard let profile,
+                  let version = profile.extensionContext(for: extensionID)?.webExtension.version
+                    ?? ExtensionManager.shared.extension(withID: extensionID)?.manifest.version else {
+                replyHandler([:] as [String: Any], nil)
+                return
+            }
+            guard let details = AppDatabase.shared.claimRuntimeInstalledEvent(
+                extensionID: extensionID, profileID: profile.id.uuidString, currentVersion: version
+            ) else {
+                replyHandler([:] as [String: Any], nil)
+                return
+            }
+            log.notice("runtime.onInstalled: delivering \(details.reason.rawValue, privacy: .public) (previous \(details.previousVersion ?? "none", privacy: .public), now \(version, privacy: .public)) to \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public)")
+            replyHandler(details.dictionary, nil)
+
         // MARK: - Logging Bridge
         case "log":
             // Extension console output is arbitrary extension data (1Password
