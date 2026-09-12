@@ -114,6 +114,22 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(status, .granted)
     }
 
+    // MARK: - Native Messaging Host Gate (positive)
+
+    /// Detour's own polyfill host is the transport for the polyfill bridge and the
+    /// service-worker keep-alive, so it is accepted without any manifest permission.
+    func testNativeHostAccessAllowsPolyfillHostWithoutPermission() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: ExtensionPolyfillHandler.handlerName, manifestPermissions: [])
+        XCTAssertEqual(access, .polyfillHost)
+    }
+
+    func testNativeHostAccessAllowsRealHostWithNativeMessagingPermission() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: "com.1password.browser-support", manifestPermissions: ["nativeMessaging"])
+        XCTAssertEqual(access, .allowed)
+    }
+
     // MARK: - Negative Cases
 
     func testPermissionStatusForUnknownExtension() throws {
@@ -167,5 +183,27 @@ final class ExtensionPermissionTests: XCTestCase {
         let matchStatus = db.permissionStatus(extensionID: "ext-1", key: "tabs", type: .matchPattern)
         XCTAssertEqual(apiStatus, .granted)
         XCTAssertEqual(matchStatus, .denied)
+    }
+
+    // MARK: - Native Messaging Host Gate (negative)
+
+    func testNativeHostAccessDeniesRealHostWithoutPermissions() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: "com.1password.browser-support", manifestPermissions: [])
+        XCTAssertEqual(access, .denied)
+    }
+
+    func testNativeHostAccessDeniesRealHostWithUnrelatedPermissions() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: "com.1password.browser-support", manifestPermissions: ["storage", "tabs"])
+        XCTAssertEqual(access, .denied)
+    }
+
+    /// The polyfill exemption is an exact-match on the host name: a host that
+    /// merely contains or suffixes it must not inherit the free pass.
+    func testNativeHostAccessDeniesHostNameContainingPolyfillHost() {
+        let name = "com.example." + ExtensionPolyfillHandler.handlerName
+        let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [])
+        XCTAssertEqual(access, .denied)
     }
 }

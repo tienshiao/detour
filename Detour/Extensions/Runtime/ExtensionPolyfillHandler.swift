@@ -15,6 +15,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
 
+    /// Stop and forget the extension's offscreen document, if any. The single
+    /// teardown for `offscreen.closeDocument` and for context unload
+    /// (`Profile.unloadExtension`), so both release the hidden web view.
+    func closeOffscreenDocument(for extensionID: String) {
+        guard let host = offscreenHosts.removeValue(forKey: extensionID) else { return }
+        host.stop()
+    }
+
     /// The fixed polyfill envelope keys (see `__detourPolyfillRequest` in
     /// ExtensionAPIPolyfill). Diagnostics log only these names: any other key
     /// in a body is extension-authored text and stays out of the log, as do
@@ -293,8 +301,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             }
 
         case "offscreen.closeDocument":
-            offscreenHosts[extensionID]?.stop()
-            offscreenHosts.removeValue(forKey: extensionID)
+            closeOffscreenDocument(for: extensionID)
             replyHandler(true, nil)
 
         case "offscreen.hasDocument":

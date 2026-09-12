@@ -265,24 +265,42 @@ class Profile {
             try extensionController.load(context)
             extensionContexts[ext.id] = context
             // Observe extension context errors for debugging. `context.errors` is
-            // cumulative but WebKit consolidates repeats and may clear it, so dedupe
-            // by error content rather than by position; the set lives with this
-            // observer (one per context) and dies with it. A shrink means WebKit
-            // cleared the array (e.g. a background reload): forget what was logged
-            // so a recurring failure is reported again rather than silenced.
+            // cumulative but WebKit consolidates repeats and may clear it, so the
+            // *log* is deduped by error content rather than by position; the set
+            // lives with this observer (one per context) and dies with it. A shrink
+            // means WebKit cleared the array (e.g. a background reload): forget what
+            // was logged so a recurring failure is reported again rather than silenced.
+            //
+            // Recovery is deliberately not gated by that dedupe: it fires whenever
+            // the array holds a background-load failure, and the rate limiter in
+            // `recoverFromBackgroundLoadFailure` is its only suppressor. Tying it to
+            // "newly logged" would make a failure that outlives the limiter's window
+            // unrecoverable, because its key is already in the set.
             let extID = ext.id
             var loggedErrorKeys = Set<String>()
             var lastErrorCount = 0
-            extensionErrorObservers[extID] = NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak context] _ in
+            extensionErrorObservers[extID] = NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak self, weak context] _ in
                 guard let context else { return }
                 let errors = context.errors
                 if errors.count < lastErrorCount { loggedErrorKeys.removeAll() }
                 lastErrorCount = errors.count
+                var backgroundLoadFailed = false
                 for error in errors {
                     let nsError = error as NSError
+                    if nsError.domain == WKWebExtensionContext.errorDomain,
+                       nsError.code == WKWebExtensionContext.Error.backgroundContentFailedToLoad.rawValue {
+                        backgroundLoadFailed = true
+                    }
                     let key = "\(nsError.domain)#\(nsError.code)#\(nsError.localizedDescription)"
                     guard loggedErrorKeys.insert(key).inserted else { continue }
                     log.error("Extension error [\(extID, privacy: .public)]: domain=\(nsError.domain, privacy: .public) code=\(nsError.code) \(nsError.localizedDescription, privacy: .public)")
+                }
+                if backgroundLoadFailed, let self {
+                    // Recover outside the notification callback: WebKit is still
+                    // recording the error when it posts, so don't unload from here.
+                    Task { @MainActor in
+                        self.recoverFromBackgroundLoadFailure(extensionID: extID, failedContext: context)
+                    }
                 }
             }
             // Cache favicon permission for the scheme handler (checked per-request on any thread)
@@ -314,6 +332,14 @@ class Profile {
         if let host = context.baseURL.host {
             FaviconSchemeHandler.revokeFaviconPermission(forWebKitHost: host)
         }
+        // The offscreen document belongs to this context's origin; a reloaded
+        // context gets a new origin, so a lingering host would both leak a web
+        // view and make offscreen.createDocument report a document that no
+        // longer serves the extension.
+        polyfillHandler?.closeOffscreenDocument(for: id)
+        // Likewise the worker's keep-alive port: WebKit is not relied on to
+        // report its disconnect once the context is gone.
+        ExtensionManager.shared.closeKeepAlivePort(for: id, in: extensionController)
         try? extensionController.unload(context)
         if removeData {
             let allTypes = WKWebExtensionController.allExtensionDataTypes
@@ -329,6 +355,70 @@ class Profile {
     /// Get the extension context for a given extension ID in this profile.
     func extensionContext(for extensionID: String) -> WKWebExtensionContext? {
         extensionContexts[extensionID]
+    }
+
+    // MARK: - Background content recovery
+
+    /// Timestamps of recent background-load recoveries per extension id, for rate limiting.
+    private var backgroundRecoveryAttempts: [String: [Date]] = [:]
+    private static let backgroundRecoveryWindow: TimeInterval = 10 * 60
+    private static let backgroundRecoveryLimit = 3
+
+    /// Recover from `WKWebExtensionContextError.backgroundContentFailedToLoad`.
+    ///
+    /// Observed with 1Password (2026-09-11): after WebKit unloads an idle
+    /// background service worker, the worker's registration can survive in the
+    /// network process bound to the old content process. Every later wake then
+    /// re-registers, gets that registration back as "directly reusable", never
+    /// starts a worker, and fails 30 s later when WebKit closes the hidden page,
+    /// once a minute, forever. The registration is keyed by the context's base
+    /// URL, and WebKit assigns a fresh one to each context, so reloading the
+    /// context in this profile sidesteps the stale registration entirely. Rate
+    /// limited so a background script that genuinely fails to evaluate cannot
+    /// keep the extension reloading; once the limit is hit, the failing context
+    /// stays loaded and is retried again after the window passes.
+    ///
+    /// `failedContext` is the context that reported the failure: a stale or
+    /// duplicate notification must not reload the replacement context.
+    @MainActor
+    func recoverFromBackgroundLoadFailure(extensionID: String, failedContext: WKWebExtensionContext) {
+        guard extensionContexts[extensionID] === failedContext,
+              let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
+
+        let now = Date()
+        var attempts = (backgroundRecoveryAttempts[extensionID] ?? []).filter {
+            now.timeIntervalSince($0) < Self.backgroundRecoveryWindow
+        }
+        guard attempts.count < Self.backgroundRecoveryLimit else {
+            // Announced at .error when the last allowed reload ran; every later
+            // errorsDidUpdate for the still-failing context lands here.
+            log.debug("Background content for \(extensionID, privacy: .public) still failing; not reloading (\(attempts.count) reloads in the last \(Int(Self.backgroundRecoveryWindow)) s)")
+            return
+        }
+        attempts.append(now)
+        backgroundRecoveryAttempts[extensionID] = attempts
+
+        log.notice("Background content for \(extensionID, privacy: .public) failed to load; reloading its context in profile \(self.name, privacy: .public) (attempt \(attempts.count) of \(Self.backgroundRecoveryLimit))")
+        unloadExtension(id: extensionID)
+        // `loadExtensionContext`'s Bool means "has background content", not "loaded";
+        // the dictionary is the source of truth for whether the reload took.
+        _ = loadExtensionContext(ext)
+        guard let context = extensionContexts[extensionID] else {
+            log.error("Background recovery for \(extensionID, privacy: .public) could not reload its context; the extension is unloaded in profile \(self.name, privacy: .public) until it is re-enabled or the app relaunches")
+            return
+        }
+        if attempts.count == Self.backgroundRecoveryLimit {
+            log.error("Background content for \(extensionID, privacy: .public) has been reloaded \(attempts.count) times in \(Int(Self.backgroundRecoveryWindow)) s; further failures are not retried until that window passes")
+        }
+        ExtensionManager.shared.didReloadExtensionContext(context, in: self)
+        context.loadBackgroundContent { error in
+            if let error {
+                let nsError = error as NSError
+                log.error("Background reload for \(extensionID, privacy: .public) failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+            } else {
+                log.notice("Background content for \(extensionID, privacy: .public) reloaded")
+            }
+        }
     }
 
     init(id: UUID = UUID(), name: String, userAgentMode: UserAgentMode = .detour,

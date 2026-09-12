@@ -31,6 +31,59 @@ final class ExtensionPolyfillTests: XCTestCase {
         // Register the polyfill message handler
         ucc.addScriptMessageHandler(handler, contentWorld: .page, name: ExtensionPolyfillHandler.handlerName)
 
+        // Inject a shim for the pieces of the extension environment that a plain
+        // WKWebView lacks: chrome.runtime.id, and a fake connectNative that
+        // records every port it hands out (see `__fakeNativePorts`) so the native
+        // port keep-alive can be exercised without a real native host. The
+        // keep-alive ping interval is shortened so tests need not wait 45 s.
+        let shimScript = WKUserScript(
+            source: """
+            if (!globalThis.chrome) globalThis.chrome = {};
+            if (!globalThis.chrome.runtime) globalThis.chrome.runtime = {};
+            if (!globalThis.chrome.runtime.id) globalThis.chrome.runtime.id = 'test-polyfill-extension';
+
+            globalThis.__detourKeepAlivePingIntervalMs = 50;
+            // Install the service-worker WebSocket guard in this page context so
+            // it can be exercised without a real service worker.
+            globalThis.__detourForceWebSocketGuard = true;
+            globalThis.__fakeNativePorts = [];
+            // Opt-in: make each fake port's `disconnect` non-writable so the
+            // keep-alive cannot patch it in place and must fall back to its proxy,
+            // the way WebKit's own port objects behave. Left configurable: a
+            // non-configurable non-writable own property would make the Proxy's
+            // get trap violate an ES invariant, which is a JS-engine rule rather
+            // than anything the keep-alive controls.
+            globalThis.__fakePortsFreezeDisconnect = false;
+            globalThis.chrome.runtime.connectNative = function(application) {
+                const disconnectListeners = [];
+                const port = {
+                    name: application,
+                    application: application,
+                    posted: [],
+                    disconnectedLocally: false,
+                    onDisconnect: { addListener(fn) { disconnectListeners.push(fn); } },
+                    onMessage: { addListener() {} },
+                    postMessage(m) { this.posted.push(m); },
+                    disconnect() { this.disconnectedLocally = true; },
+                    // Test helper: simulate the other side closing the port.
+                    __simulateRemoteDisconnect() { disconnectListeners.slice().forEach(fn => fn()); }
+                };
+                if (globalThis.__fakePortsFreezeDisconnect) {
+                    Object.defineProperty(port, 'disconnect', {
+                        value: port.disconnect, writable: false, configurable: true, enumerable: true
+                    });
+                }
+                globalThis.__fakeNativePorts.push(port);
+                return port;
+            };
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        // Inject before the polyfill: it reads the ping interval and wraps
+        // chrome.runtime.connectNative while it installs.
+        ucc.addUserScript(shimScript)
+
         // Inject polyfill JS at document start
         let polyfillScript = WKUserScript(
             source: ExtensionAPIPolyfill.polyfillJS,
@@ -38,19 +91,6 @@ final class ExtensionPolyfillTests: XCTestCase {
             forMainFrameOnly: false
         )
         ucc.addUserScript(polyfillScript)
-
-        // Inject a shim for chrome.runtime.id since we're not in a real extension context
-        let shimScript = WKUserScript(
-            source: """
-            if (!globalThis.chrome) globalThis.chrome = {};
-            if (!globalThis.chrome.runtime) globalThis.chrome.runtime = {};
-            if (!globalThis.chrome.runtime.id) globalThis.chrome.runtime.id = 'test-polyfill-extension';
-            """,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        )
-        // Inject before polyfill so chrome.runtime.id is available
-        ucc.addUserScript(shimScript)
 
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
         webView.loadHTMLString("<html><body>test</body></html>", baseURL: URL(string: "https://test.example.com")!)
@@ -641,22 +681,25 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - Console bridge
 
-    /// Run `console.<level>(<argsJS>)` with the polyfill bridge stubbed and return
-    /// the message the bridge would have sent to native.
-    private func bridgedConsoleMessage(level: String = "error", args: String) async throws -> String {
-        let raw = try await eval("""
+    /// Run `statementJS` with the polyfill bridge stubbed out and return the level
+    /// and message of the first 'log' request it produced. Covers both ways the
+    /// console bridge is driven: calling `console.*` directly, and dispatching an
+    /// `error` / `unhandledrejection` event that the bridge reports.
+    private func bridgedLog(running statementJS: String) async throws -> (level: String, message: String) {
+        let entry = try await evalDictionary("""
         const calls = [];
         const orig = globalThis.__detourPolyfillRequest;
         globalThis.__detourPolyfillRequest = function(type, params) { calls.push({ type: type, params: params }); return Promise.resolve(); };
-        try { console.\(level)(\(args)); } finally { globalThis.__detourPolyfillRequest = orig; }
+        try { \(statementJS) } finally { globalThis.__detourPolyfillRequest = orig; }
         const entry = calls.find(c => c.type === 'log');
-        return entry ? entry.params.message : null;
+        return entry ? JSON.stringify({ level: entry.params.level, message: entry.params.message }) : null;
         """)
-        return try XCTUnwrap(raw as? String, "console.\(level) did not reach the bridge")
+        return (try XCTUnwrap(entry["level"] as? String, "the bridged log carried no level"),
+                try XCTUnwrap(entry["message"] as? String, "the bridged log carried no message"))
     }
 
     func testConsoleBridgeFormatsErrorAsNameMessageAndStack() async throws {
-        let formatted = try await bridgedConsoleMessage(args: "new TypeError('boom')")
+        let formatted = try await bridgedLog(running: "console.error(new TypeError('boom'));").message
         XCTAssertTrue(formatted.hasPrefix("TypeError: boom"),
                       "Expected 'TypeError: boom' prefix, got: \(formatted)")
         XCTAssertTrue(formatted.contains("\n"),
@@ -664,48 +707,48 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     func testConsoleBridgeFormatsErrorWithoutStack() async throws {
-        let formatted = try await bridgedConsoleMessage(
-            args: "Object.assign(Object.create(Error.prototype), { name: 'Error', message: 'nostack' })"
-        )
+        let formatted = try await bridgedLog(
+            running: "console.error(Object.assign(Object.create(Error.prototype), { name: 'Error', message: 'nostack' }));"
+        ).message
         XCTAssertEqual(formatted, "Error: nostack")
     }
 
     func testConsoleBridgeDoesNotDuplicateV8StyleHeader() async throws {
-        let formatted = try await bridgedConsoleMessage(args: """
-        Object.assign(Object.create(Error.prototype), {
+        let formatted = try await bridgedLog(running: """
+        console.error(Object.assign(Object.create(Error.prototype), {
             name: 'RangeError',
             message: 'bad',
             stack: 'RangeError: bad\\n    at foo (a.js:1:1)'
-        })
-        """)
+        }));
+        """).message
         XCTAssertEqual(formatted, "RangeError: bad\n    at foo (a.js:1:1)")
     }
 
     func testConsoleBridgeKeepsHeaderWhenStackMerelyStartsWithName() async throws {
         // JSC stacks carry no "Name: message" header line, so it must be kept
         // even when the first frame happens to start with the error's name.
-        let formatted = try await bridgedConsoleMessage(args: """
-        Object.assign(Object.create(Error.prototype), {
+        let formatted = try await bridgedLog(running: """
+        console.error(Object.assign(Object.create(Error.prototype), {
             name: 'Error',
             message: '',
             stack: 'ErrorReporter@app.js:3:9\\nglobal code@app.js:9:1'
-        })
-        """)
+        }));
+        """).message
         XCTAssertEqual(formatted, "Error\nErrorReporter@app.js:3:9\nglobal code@app.js:9:1")
     }
 
     func testConsoleBridgeIncludesOwnPropertiesOfErrors() async throws {
-        let formatted = try await bridgedConsoleMessage(
-            args: "Object.assign(new Error('boom'), { code: 'E_AUTH' })"
-        )
+        let formatted = try await bridgedLog(
+            running: "console.error(Object.assign(new Error('boom'), { code: 'E_AUTH' }));"
+        ).message
         XCTAssertTrue(formatted.hasPrefix("Error: boom {\"code\":\"E_AUTH\"}"),
                       "Expected own props after the header, got: \(formatted)")
     }
 
     func testConsoleBridgeSerializesNestedErrors() async throws {
-        let formatted = try await bridgedConsoleMessage(
-            args: "{ err: Object.assign(new Error('inner'), { code: 'E1' }), n: 1 }"
-        )
+        let formatted = try await bridgedLog(
+            running: "console.error({ err: Object.assign(new Error('inner'), { code: 'E1' }), n: 1 });"
+        ).message
         let data = try XCTUnwrap(formatted.data(using: .utf8))
         let parsed = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any],
                                    "Nested-error output should be a JSON object, got: \(formatted)")
@@ -717,28 +760,29 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     func testConsoleBridgeFormatsDOMException() async throws {
-        let formatted = try await bridgedConsoleMessage(
-            args: "new DOMException('denied', 'NotAllowedError')"
-        )
+        let formatted = try await bridgedLog(
+            running: "console.error(new DOMException('denied', 'NotAllowedError'));"
+        ).message
         XCTAssertTrue(formatted.hasPrefix("NotAllowedError: denied"),
                       "Expected 'NotAllowedError: denied' prefix, got: \(formatted)")
     }
 
     func testConsoleBridgeFormatsPlainValues() async throws {
-        let formatted = try await bridgedConsoleMessage(
-            level: "log", args: "'a', 1, null, undefined, {k: 'v'}"
+        let bridged = try await bridgedLog(
+            running: "console.log('a', 1, null, undefined, {k: 'v'});"
         )
-        XCTAssertEqual(formatted, "a 1 null undefined {\"k\":\"v\"}")
+        XCTAssertEqual(bridged.level, "info")
+        XCTAssertEqual(bridged.message, "a 1 null undefined {\"k\":\"v\"}")
     }
 
     func testConsoleBridgeSurvivesThrowingErrorAccessors() async throws {
-        let formatted = try await bridgedConsoleMessage(args: """
-        (() => {
+        let formatted = try await bridgedLog(running: """
+        console.error((() => {
             const e = new Error('x');
             Object.defineProperty(e, 'message', { get() { throw new Error('nope'); } });
             return { ctx: 'save', err: e, id: 'abc' };
-        })()
-        """)
+        })());
+        """).message
         XCTAssertTrue(formatted.contains("\"ctx\":\"save\""),
                       "Sibling keys should survive a throwing accessor, got: \(formatted)")
         XCTAssertTrue(formatted.contains("\"id\":\"abc\""),
@@ -747,14 +791,14 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     func testConsoleBridgeIsolatesUnserializableArguments() async throws {
         // Also proves console.* never throws: otherwise `eval` itself would reject.
-        let formatted = try await bridgedConsoleMessage(
-            args: "'before', new Proxy({}, { get() { throw new TypeError('get'); }, ownKeys() { throw new TypeError('keys'); }, getPrototypeOf() { throw new TypeError('gpo'); } }), 'after'"
-        )
+        let formatted = try await bridgedLog(
+            running: "console.error('before', new Proxy({}, { get() { throw new TypeError('get'); }, ownKeys() { throw new TypeError('keys'); }, getPrototypeOf() { throw new TypeError('gpo'); } }), 'after');"
+        ).message
         XCTAssertEqual(formatted, "before [unserializable] after")
     }
 
     func testConsoleBridgeTruncatesLongMessages() async throws {
-        let formatted = try await bridgedConsoleMessage(args: "'x'.repeat(20000)")
+        let formatted = try await bridgedLog(running: "console.error('x'.repeat(20000));").message
         XCTAssertTrue(formatted.hasSuffix("…[truncated]"),
                       "Expected a truncation marker, got suffix: \(formatted.suffix(20))")
         XCTAssertEqual(formatted.count, 8192 + "…[truncated]".count)
@@ -766,5 +810,516 @@ final class ExtensionPolyfillTests: XCTestCase {
         return 'ok';
         """) as? String
         XCTAssertEqual(result, "ok")
+    }
+
+    func testConsoleBridgeReportsUncaughtExceptions() async throws {
+        let entry = try await bridgedLog(running: """
+        globalThis.dispatchEvent(new ErrorEvent('error', { message: 'boom', error: new RangeError('boom'), filename: 'sw.js', lineno: 12, colno: 7 }));
+        """)
+        XCTAssertEqual(entry.level, "error")
+        XCTAssertTrue(entry.message.hasPrefix("[uncaught exception] (sw.js:12:7) RangeError: boom"),
+                      "Unexpected uncaught-exception line: \(entry.message)")
+    }
+
+    func testConsoleBridgeReportsUncaughtExceptionsWithoutErrorObject() async throws {
+        let entry = try await bridgedLog(running: """
+        globalThis.dispatchEvent(new ErrorEvent('error', { message: 'Script error.' }));
+        """)
+        XCTAssertEqual(entry.message, "[uncaught exception] Script error.")
+    }
+
+    func testConsoleBridgeReportsUnhandledRejections() async throws {
+        let entry = try await bridgedLog(running: """
+        globalThis.dispatchEvent(new PromiseRejectionEvent('unhandledrejection', { promise: Promise.resolve(), reason: new TypeError('rejected') }));
+        """)
+        XCTAssertEqual(entry.level, "error")
+        XCTAssertTrue(entry.message.hasPrefix("[unhandled rejection] TypeError: rejected"),
+                      "Unexpected unhandled-rejection line: \(entry.message)")
+    }
+
+    /// The bridge swallows its own rejection: an unhandledrejection reporter that
+    /// logs through the same path must not turn one failed send into a loop.
+    func testConsoleBridgeDoesNotFeedItselfWhenBridgeRejects() async throws {
+        let result = try await evalDictionary("""
+        const calls = [];
+        const orig = globalThis.__detourPolyfillRequest;
+        globalThis.__detourPolyfillRequest = function(type, params) {
+            calls.push({ type: type, params: params });
+            return Promise.reject(new Error('bridge down'));
+        };
+        try {
+            console.error('x');
+            // Let the rejection settle and any unhandledrejection event fire.
+            await new Promise(r => setTimeout(r, 100));
+            await new Promise(r => setTimeout(r, 100));
+        } finally {
+            globalThis.__detourPolyfillRequest = orig;
+        }
+        return JSON.stringify({
+            logCalls: calls.filter(c => c.type === 'log').length,
+            messages: calls.filter(c => c.type === 'log').map(c => c.params.message)
+        });
+        """)
+
+        XCTAssertEqual(result["logCalls"] as? Int, 1,
+                       "a rejected bridge send must not be reported back through the bridge, got: \(result["messages"] ?? "nil")")
+    }
+
+    // MARK: - Native port keep-alive
+
+    /// Run JS that returns a JSON string and parse it into a dictionary.
+    private func evalDictionary(_ js: String) async throws -> [String: Any] {
+        // Hoisted out of XCTUnwrap: its argument is an autoclosure and cannot await.
+        let value = try await evalJSON(js)
+        return try XCTUnwrap(value as? [String: Any],
+                             "expected a JSON object from the page, got: \(value ?? "nil")")
+    }
+
+    /// `__detourNativePortKeepAlive` plus the applications every fake native port
+    /// was opened with, in order.
+    private func keepAliveStatus() async throws -> [String: Any] {
+        try await evalDictionary("""
+        const status = globalThis.__detourNativePortKeepAlive;
+        return JSON.stringify({
+            livePorts: status.livePorts,
+            active: status.active,
+            pingIntervalMs: status.pingIntervalMs,
+            applications: globalThis.__fakeNativePorts.map(p => p.application)
+        });
+        """)
+    }
+
+    func testKeepAliveStartsWithFirstRealNativePort() async throws {
+        _ = try await eval("chrome.runtime.connectNative('com.example.host');")
+
+        let status = try await keepAliveStatus()
+        XCTAssertEqual(status["livePorts"] as? Int, 1)
+        XCTAssertEqual(status["active"] as? Bool, true)
+        XCTAssertEqual(status["pingIntervalMs"] as? Int, 50, "the test override should be honoured")
+        XCTAssertEqual(status["applications"] as? [String], ["com.example.host", "detourPolyfill"],
+                       "opening a real port should also open the keep-alive port")
+    }
+
+    func testKeepAliveIsNotStartedByItsOwnPort() async throws {
+        _ = try await eval("chrome.runtime.connectNative('detourPolyfill');")
+
+        let status = try await keepAliveStatus()
+        XCTAssertEqual(status["livePorts"] as? Int, 0)
+        XCTAssertEqual(status["active"] as? Bool, false)
+        XCTAssertEqual(status["applications"] as? [String], ["detourPolyfill"],
+                       "the keep-alive host must not be tracked as a real port")
+    }
+
+    func testKeepAlivePingsOnTheKeepAlivePort() async throws {
+        let result = try await evalDictionary("""
+        chrome.runtime.connectNative('com.example.host');
+        await new Promise(r => setTimeout(r, 200));
+        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
+        return JSON.stringify({ posted: keepAlive ? keepAlive.posted : null });
+        """)
+
+        let posted = try XCTUnwrap(result["posted"] as? [[String: String]],
+                                   "the keep-alive port should have received pings")
+        XCTAssertGreaterThanOrEqual(posted.count, 2,
+                                    "expected repeated pings at a 50 ms interval, got \(posted.count)")
+        for message in posted {
+            XCTAssertEqual(message, ["type": "keepalive"])
+        }
+    }
+
+    func testKeepAliveStopsWhenLastRealPortDisconnectsLocally() async throws {
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourNativePortKeepAlive;
+        const first = chrome.runtime.connectNative('com.example.first');
+        const second = chrome.runtime.connectNative('com.example.second');
+
+        first.disconnect();
+        const afterFirst = { livePorts: status.livePorts, active: status.active };
+
+        second.disconnect();
+        const afterSecond = { livePorts: status.livePorts, active: status.active };
+
+        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
+        const postedAtStop = keepAlive.posted.length;
+        await new Promise(r => setTimeout(r, 200));
+
+        return JSON.stringify({
+            afterFirst: afterFirst,
+            afterSecond: afterSecond,
+            keepAliveDisconnectedLocally: keepAlive.disconnectedLocally,
+            postedAtStop: postedAtStop,
+            postedAfterWait: keepAlive.posted.length
+        });
+        """)
+
+        let afterFirst = try XCTUnwrap(result["afterFirst"] as? [String: Any])
+        XCTAssertEqual(afterFirst["livePorts"] as? Int, 1)
+        XCTAssertEqual(afterFirst["active"] as? Bool, true,
+                       "the keep-alive should survive while another real port is open")
+
+        let afterSecond = try XCTUnwrap(result["afterSecond"] as? [String: Any])
+        XCTAssertEqual(afterSecond["livePorts"] as? Int, 0)
+        XCTAssertEqual(afterSecond["active"] as? Bool, false)
+        XCTAssertEqual(result["keepAliveDisconnectedLocally"] as? Bool, true,
+                       "the keep-alive port itself should be disconnected")
+        XCTAssertEqual(result["postedAfterWait"] as? Int, result["postedAtStop"] as? Int,
+                       "pings must stop once the last real port is released")
+    }
+
+    func testKeepAliveStopsWhenRealPortIsClosedRemotely() async throws {
+        _ = try await eval("""
+        const port = chrome.runtime.connectNative('com.example.host');
+        port.__simulateRemoteDisconnect();
+        """)
+
+        let status = try await keepAliveStatus()
+        XCTAssertEqual(status["livePorts"] as? Int, 0)
+        XCTAssertEqual(status["active"] as? Bool, false)
+    }
+
+    func testKeepAliveReleaseIsIdempotent() async throws {
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourNativePortKeepAlive;
+        const port = chrome.runtime.connectNative('com.example.host');
+        port.disconnect();
+        port.disconnect();
+        port.__simulateRemoteDisconnect();
+        const afterRelease = { livePorts: status.livePorts, active: status.active };
+
+        chrome.runtime.connectNative('com.example.second');
+        return JSON.stringify({
+            afterRelease: afterRelease,
+            afterReopen: { livePorts: status.livePorts, active: status.active },
+            keepAlivePortCount: globalThis.__fakeNativePorts.filter(p => p.application === 'detourPolyfill').length
+        });
+        """)
+
+        let afterRelease = try XCTUnwrap(result["afterRelease"] as? [String: Any])
+        XCTAssertEqual(afterRelease["livePorts"] as? Int, 0,
+                       "repeated releases of one port must not drive the count negative")
+        XCTAssertEqual(afterRelease["active"] as? Bool, false)
+
+        let afterReopen = try XCTUnwrap(result["afterReopen"] as? [String: Any])
+        XCTAssertEqual(afterReopen["livePorts"] as? Int, 1)
+        XCTAssertEqual(afterReopen["active"] as? Bool, true,
+                       "a later real port should start the keep-alive again")
+        XCTAssertEqual(result["keepAlivePortCount"] as? Int, 2,
+                       "restarting the keep-alive should open a fresh keep-alive port")
+    }
+
+    func testKeepAliveReconnectsIfDetourDropsThePort() async throws {
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourNativePortKeepAlive;
+        chrome.runtime.connectNative('com.example.host');
+        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
+        keepAlive.__simulateRemoteDisconnect();
+        await new Promise(r => setTimeout(r, 1300));
+        return JSON.stringify({
+            livePorts: status.livePorts,
+            active: status.active,
+            keepAlivePortCount: globalThis.__fakeNativePorts.filter(p => p.application === 'detourPolyfill').length
+        });
+        """)
+
+        XCTAssertEqual(result["keepAlivePortCount"] as? Int, 2,
+                       "a dropped keep-alive port should be reopened while a real port is live")
+        XCTAssertEqual(result["active"] as? Bool, true)
+        XCTAssertEqual(result["livePorts"] as? Int, 1)
+    }
+
+    /// When the port object refuses the `disconnect` patch (as WebKit's own does),
+    /// the extension is handed a proxy that still releases the keep-alive on a
+    /// local disconnect and forwards everything else to the real port.
+    func testKeepAliveTracksLocalDisconnectOnUnpatchablePort() async throws {
+        let result = try await evalDictionary("""
+        globalThis.__fakePortsFreezeDisconnect = true;
+        const status = globalThis.__detourNativePortKeepAlive;
+        const returned = chrome.runtime.connectNative('com.example.host');
+        const real = globalThis.__fakeNativePorts[0];
+
+        const isProxy = returned !== real;
+        const nameReadsThrough = returned.name;
+        const afterConnect = { livePorts: status.livePorts, active: status.active };
+
+        returned.disconnect();
+
+        return JSON.stringify({
+            isProxy: isProxy,
+            nameReadsThrough: nameReadsThrough,
+            afterConnect: afterConnect,
+            livePorts: status.livePorts,
+            active: status.active,
+            disconnectedLocally: real.disconnectedLocally
+        });
+        """)
+
+        XCTAssertEqual(result["isProxy"] as? Bool, true,
+                       "an unpatchable port should be handed back wrapped in a proxy")
+        XCTAssertEqual(result["nameReadsThrough"] as? String, "com.example.host",
+                       "reads should forward to the real port")
+
+        let afterConnect = try XCTUnwrap(result["afterConnect"] as? [String: Any])
+        XCTAssertEqual(afterConnect["livePorts"] as? Int, 1)
+        XCTAssertEqual(afterConnect["active"] as? Bool, true)
+
+        XCTAssertEqual(result["livePorts"] as? Int, 0,
+                       "disconnect() through the proxy must release the live-port count")
+        XCTAssertEqual(result["active"] as? Bool, false)
+        XCTAssertEqual(result["disconnectedLocally"] as? Bool, true,
+                       "the real port's disconnect should still run with the right `this`")
+    }
+
+    /// The 1 s reconnect scheduled when Detour drops the keep-alive port must not
+    /// resurrect it if the last real port closed in the meantime.
+    func testKeepAliveReconnectDoesNotResurrectAfterLastPortCloses() async throws {
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourNativePortKeepAlive;
+        const real = chrome.runtime.connectNative('com.example.host');
+        const keepAlive = globalThis.__fakeNativePorts.find(p => p.application === 'detourPolyfill');
+        keepAlive.__simulateRemoteDisconnect();
+        real.disconnect();
+        await new Promise(r => setTimeout(r, 1300));
+        return JSON.stringify({
+            livePorts: status.livePorts,
+            active: status.active,
+            keepAlivePortCount: globalThis.__fakeNativePorts.filter(p => p.application === 'detourPolyfill').length
+        });
+        """)
+
+        XCTAssertEqual(result["active"] as? Bool, false,
+                       "the delayed reconnect must not restart the keep-alive with no real port left")
+        XCTAssertEqual(result["livePorts"] as? Int, 0)
+        XCTAssertEqual(result["keepAlivePortCount"] as? Int, 1,
+                       "only the original keep-alive port should ever have been opened")
+    }
+
+    func testKeepAliveStatusIsReadOnly() async throws {
+        // The callAsyncJavaScript body is sloppy mode, so the write to the frozen
+        // status object silently no-ops rather than throwing.
+        let result = try await evalDictionary("""
+        const status = globalThis.__detourNativePortKeepAlive;
+        status.livePorts = 99;
+        return JSON.stringify({ livePorts: status.livePorts });
+        """)
+
+        XCTAssertEqual(result["livePorts"] as? Int, 0, "the status object must not be writable")
+    }
+
+    // MARK: - WebSocket guard
+
+    /// The guard normally installs only in service worker contexts; the test shim
+    /// sets `__detourForceWebSocketGuard` before the polyfill loads so these run
+    /// against the page context.
+
+    func testWebSocketGuardInstalls() async throws {
+        let result = try await evalDictionary("""
+        const instance = new WebSocket('wss://example.invalid/');
+        return JSON.stringify({
+            guarded: WebSocket.__detourGuard === true,
+            nativeType: typeof globalThis.__detourNativeWebSocket,
+            nativeIsReplaced: globalThis.__detourNativeWebSocket !== WebSocket,
+            statics: [WebSocket.CONNECTING, WebSocket.OPEN, WebSocket.CLOSING, WebSocket.CLOSED],
+            onInstance: [instance.CONNECTING, instance.OPEN, instance.CLOSING, instance.CLOSED]
+        });
+        """)
+
+        XCTAssertEqual(result["guarded"] as? Bool, true,
+                       "globalThis.WebSocket should be the guard, not the native constructor")
+        XCTAssertEqual(result["nativeType"] as? String, "function",
+                       "the native constructor should be kept at __detourNativeWebSocket")
+        XCTAssertEqual(result["nativeIsReplaced"] as? Bool, true)
+        XCTAssertEqual(result["statics"] as? [Int], [0, 1, 2, 3])
+        XCTAssertEqual(result["onInstance"] as? [Int], [0, 1, 2, 3],
+                       "the ready-state constants should also be on the prototype")
+    }
+
+    func testWebSocketGuardFailsAsynchronously() async throws {
+        let result = try await evalDictionary("""
+        const events = [];
+        const socket = new WebSocket('wss://example.invalid/notify');
+        const stateAtConstruction = socket.readyState;
+        let closeCode = null, closeWasClean = null;
+        socket.addEventListener('error', e => events.push(e.type));
+        socket.addEventListener('close', e => {
+            events.push(e.type);
+            closeCode = e.code;
+            closeWasClean = e.wasClean;
+        });
+        await new Promise(r => setTimeout(r, 50));
+        return JSON.stringify({
+            url: socket.url,
+            stateAtConstruction: stateAtConstruction,
+            stateAfterWait: socket.readyState,
+            events: events,
+            closeCode: closeCode,
+            closeWasClean: closeWasClean
+        });
+        """)
+
+        XCTAssertEqual(result["url"] as? String, "wss://example.invalid/notify")
+        XCTAssertEqual(result["stateAtConstruction"] as? Int, 0, "should start in CONNECTING")
+        XCTAssertEqual(result["stateAfterWait"] as? Int, 3, "should end in CLOSED")
+        XCTAssertEqual(result["events"] as? [String], ["error", "close"],
+                       "the guard should fail the connection the way an unreachable server does")
+        XCTAssertEqual(result["closeCode"] as? Int, 1006)
+        XCTAssertEqual(result["closeWasClean"] as? Bool, false)
+    }
+
+    /// The first socket in a context fails at once; each further one backs off by
+    /// 250 ms so a client reconnecting straight from onclose cannot spin the worker.
+    func testWebSocketGuardBacksOffRepeatedConnections() async throws {
+        let result = try await evalDictionary("""
+        const first = new WebSocket('wss://example.invalid/first');
+        await new Promise(r => setTimeout(r, 50));
+        const firstAfter50 = first.readyState;
+
+        const second = new WebSocket('wss://example.invalid/second');
+        const third = new WebSocket('wss://example.invalid/third');
+        await new Promise(r => setTimeout(r, 50));
+        const secondAfter50 = second.readyState;
+        const thirdAfter50 = third.readyState;
+
+        await new Promise(r => setTimeout(r, 600));
+        return JSON.stringify({
+            firstAfter50: firstAfter50,
+            secondAfter50: secondAfter50,
+            thirdAfter50: thirdAfter50,
+            secondAtEnd: second.readyState,
+            thirdAtEnd: third.readyState
+        });
+        """)
+
+        XCTAssertEqual(result["firstAfter50"] as? Int, 3,
+                       "the first socket in a context should fail immediately")
+        XCTAssertEqual(result["secondAfter50"] as? Int, 0,
+                       "the second socket should still be CONNECTING after 50 ms (250 ms backoff)")
+        XCTAssertEqual(result["thirdAfter50"] as? Int, 0,
+                       "the third socket should still be CONNECTING after 50 ms (500 ms backoff)")
+        XCTAssertEqual(result["secondAtEnd"] as? Int, 3)
+        XCTAssertEqual(result["thirdAtEnd"] as? Int, 3,
+                       "the backoff is a delay, not a cap: every socket still fails")
+    }
+
+    func testWebSocketGuardInvokesHandlerProperties() async throws {
+        let result = try await evalDictionary("""
+        const socket = new WebSocket('wss://example.invalid/');
+        let errorCalls = 0, closeCalls = 0, closeCode = null;
+        socket.onerror = () => { errorCalls += 1; };
+        socket.onclose = e => { closeCalls += 1; closeCode = e.code; };
+        await new Promise(r => setTimeout(r, 50));
+        return JSON.stringify({ errorCalls: errorCalls, closeCalls: closeCalls, closeCode: closeCode });
+        """)
+
+        XCTAssertEqual(result["errorCalls"] as? Int, 1, "onerror should be invoked once")
+        XCTAssertEqual(result["closeCalls"] as? Int, 1, "onclose should be invoked once")
+        XCTAssertEqual(result["closeCode"] as? Int, 1006)
+    }
+
+    func testWebSocketGuardSendWhileConnectingThrowsInvalidState() async throws {
+        let result = try await evalDictionary("""
+        const socket = new WebSocket('wss://example.invalid/');
+        let threw = false, name = null;
+        try { socket.send('x'); } catch (e) { threw = true; name = e.name; }
+        return JSON.stringify({ threw: threw, name: name, readyState: socket.readyState });
+        """)
+
+        XCTAssertEqual(result["threw"] as? Bool, true, "send() while CONNECTING must throw")
+        XCTAssertEqual(result["name"] as? String, "InvalidStateError")
+        XCTAssertEqual(result["readyState"] as? Int, 0)
+    }
+
+    func testWebSocketGuardSendAfterCloseIsSilent() async throws {
+        let result = try await evalDictionary("""
+        const socket = new WebSocket('wss://example.invalid/');
+        await new Promise(r => setTimeout(r, 50));
+        let threw = false;
+        try { socket.send('x'); } catch (e) { threw = true; }
+        return JSON.stringify({ threw: threw, readyState: socket.readyState });
+        """)
+
+        XCTAssertEqual(result["readyState"] as? Int, 3)
+        XCTAssertEqual(result["threw"] as? Bool, false,
+                       "send() after the socket closed should be a silent no-op, as in browsers")
+    }
+
+    func testWebSocketGuardExplicitCloseUsesGivenCode() async throws {
+        let result = try await evalDictionary("""
+        function watch(socket) {
+            const record = { events: [], code: null, reason: null };
+            socket.addEventListener('error', e => record.events.push(e.type));
+            socket.addEventListener('close', e => {
+                record.events.push(e.type);
+                record.code = e.code;
+                record.reason = e.reason;
+            });
+            return record;
+        }
+
+        const withCode = new WebSocket('wss://example.invalid/a');
+        const withCodeRecord = watch(withCode);
+        withCode.close(4000, 'bye');
+
+        const withoutCode = new WebSocket('wss://example.invalid/b');
+        const withoutCodeRecord = watch(withoutCode);
+        withoutCode.close();
+
+        await new Promise(r => setTimeout(r, 50));
+        return JSON.stringify({
+            withCode: withCodeRecord,
+            withCodeReadyState: withCode.readyState,
+            withoutCode: withoutCodeRecord,
+            withoutCodeReadyState: withoutCode.readyState
+        });
+        """)
+
+        let withCode = try XCTUnwrap(result["withCode"] as? [String: Any])
+        XCTAssertEqual(withCode["events"] as? [String], ["close"],
+                       "an explicit close before the automatic failure must not fire an error event")
+        XCTAssertEqual(withCode["code"] as? Int, 4000)
+        XCTAssertEqual(withCode["reason"] as? String, "bye")
+        XCTAssertEqual(result["withCodeReadyState"] as? Int, 3)
+
+        let withoutCode = try XCTUnwrap(result["withoutCode"] as? [String: Any])
+        XCTAssertEqual(withoutCode["events"] as? [String], ["close"])
+        XCTAssertEqual(withoutCode["code"] as? Int, 1005, "close() with no code should report 1005")
+        XCTAssertEqual(result["withoutCodeReadyState"] as? Int, 3)
+    }
+
+    func testWebSocketGuardWarnsOnce() async throws {
+        let result = try await evalDictionary("""
+        const originalWarn = console.warn;
+        let warnings = 0;
+        try {
+            console.warn = function(...args) {
+                if (args.some(a => typeof a === 'string' && a.includes('WebSocket is unavailable'))) warnings += 1;
+            };
+            new WebSocket('wss://example.invalid/one');
+            new WebSocket('wss://example.invalid/two');
+            await new Promise(r => setTimeout(r, 50));
+        } finally {
+            console.warn = originalWarn;
+        }
+        return JSON.stringify({ warnings: warnings });
+        """)
+
+        XCTAssertEqual(result["warnings"] as? Int, 1,
+                       "the guard should warn once per context, not once per socket")
+    }
+
+    func testWebSocketGuardDoesNotAffectEventTargetSemantics() async throws {
+        let result = try await evalDictionary("""
+        const socket = new WebSocket('wss://example.invalid/');
+        let removedCalls = 0, keptCalls = 0;
+        const removed = () => { removedCalls += 1; };
+        socket.addEventListener('close', removed);
+        socket.addEventListener('close', () => { keptCalls += 1; });
+        socket.removeEventListener('close', removed);
+        await new Promise(r => setTimeout(r, 50));
+        return JSON.stringify({ removedCalls: removedCalls, keptCalls: keptCalls });
+        """)
+
+        XCTAssertEqual(result["removedCalls"] as? Int, 0,
+                       "a listener removed before the failure must not be called")
+        XCTAssertEqual(result["keptCalls"] as? Int, 1)
     }
 }

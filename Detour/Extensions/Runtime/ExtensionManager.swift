@@ -28,6 +28,35 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Retained native messaging hosts for one-shot sendMessage calls.
     private var activeMessagingHosts: [ObjectIdentifier: NativeMessagingHost] = [:]
 
+    /// Open keep-alive ports from background workers, at most one per extension per
+    /// controller (see the `connectUsing` delegate method and
+    /// ExtensionAPIPolyfill.nativePortKeepAliveJS). Held so the port objects stay
+    /// alive until the worker disconnects them or the context is unloaded
+    /// (`closeKeepAlivePort(for:in:)`).
+    private struct KeepAlivePortKey: Hashable {
+        let controller: ObjectIdentifier
+        let extensionID: String
+    }
+    private var keepAlivePorts: [KeepAlivePortKey: WKWebExtension.MessagePort] = [:]
+
+    /// Whether a native-host connection from an extension may proceed.
+    enum NativeHostAccess: Equatable {
+        /// Detour's own polyfill host: accepted without the manifest permission.
+        case polyfillHost
+        /// A real native host the extension declared `nativeMessaging` for.
+        case allowed
+        /// A real native host without the manifest permission.
+        case denied
+    }
+
+    /// The gate shared by `sendNativeMessage` and `connectNative`. `nativeMessaging`
+    /// is auto-granted at the context level so the polyfill bridge works, so the
+    /// manifest declaration is the real gate for anything but the polyfill host.
+    static func nativeHostAccess(hostName: String, manifestPermissions: [String]) -> NativeHostAccess {
+        if hostName == ExtensionPolyfillHandler.handlerName { return .polyfillHost }
+        return manifestPermissions.contains("nativeMessaging") ? .allowed : .denied
+    }
+
     // MARK: - Notifications
 
     static let extensionsDidChangeNotification = Notification.Name("ExtensionManagerExtensionsDidChange")
@@ -159,13 +188,35 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         notifyExistingTabs(for: profile)
     }
 
-    private func notifyExistingTabs(for profile: Profile) {
-        let controller = profile.extensionController
+    /// Re-associate the profile's open windows and tabs with a freshly reloaded
+    /// extension context (Profile.recoverFromBackgroundLoadFailure). Only the
+    /// reloaded context is told: the profile's other contexts already know these
+    /// windows and tabs, and re-announcing them surfaces duplicate lifecycle events.
+    func didReloadExtensionContext(_ context: WKWebExtensionContext, in profile: Profile) {
+        notifyExistingTabs(for: profile, contexts: [context])
+    }
+
+    /// Drop the keep-alive port the extension's worker holds open in `controller`'s
+    /// profile, if any. Called from `Profile.unloadExtension` so a reload, disable
+    /// or uninstall does not strand the retained port.
+    func closeKeepAlivePort(for extensionID: String, in controller: WKWebExtensionController) {
+        let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
+        guard let port = keepAlivePorts.removeValue(forKey: key) else { return }
+        port.disconnect(throwing: nil)
+        log.info("Keep-alive port closed for \(extensionID, privacy: .public) (context unloaded)")
+    }
+
+    /// Tell `contexts` (default: every context loaded in the profile) about the
+    /// profile's open windows and tabs.
+    private func notifyExistingTabs(for profile: Profile, contexts: [WKWebExtensionContext]? = nil) {
+        let contexts = contexts ?? Array(profile.extensionContexts.values)
         let windowControllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
             .filter { $0.activeSpace?.profileID == profile.id }
 
         for wc in windowControllers {
-            controller.didOpenWindow(wc)
+            for context in contexts {
+                context.didOpenWindow(wc)
+            }
         }
 
         // Report ALL tabs across ALL spaces for this profile, not just the active space.
@@ -176,7 +227,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let profileSpaces = TabStore.shared.spaces.filter { $0.profileID == profile.id }
         for space in profileSpaces {
             for tab in space.pinnedTabs + space.tabs where !tab.isSleeping {
-                for context in profile.extensionContexts.values {
+                for context in contexts {
                     context.didOpenTab(tab)
                 }
             }
@@ -184,9 +235,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         if let focusedWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
            focusedWC.activeSpace?.profileID == profile.id {
-            controller.didFocusWindow(focusedWC)
-            if let activeTab = focusedWC.selectedTab {
-                for context in profile.extensionContexts.values {
+            for context in contexts {
+                context.didFocusWindow(focusedWC)
+                if let activeTab = focusedWC.selectedTab {
                     context.didActivateTab(activeTab, previousActiveTab: nil)
                 }
             }
@@ -975,9 +1026,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // nativeMessaging is auto-granted so the polyfill bridge works, but
         // real native messaging hosts should only be reachable by extensions
         // that explicitly declared the permission in their manifest.
-        let ext = self.extension(withID: extID)
-        let manifestPermissions = ext?.manifest.permissions ?? []
-        if !manifestPermissions.contains("nativeMessaging") {
+        let manifestPermissions = self.extension(withID: extID)?.manifest.permissions ?? []
+        if Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) == .denied {
             log.warning("Extension \(extID, privacy: .public) tried native messaging to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
             replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
@@ -1018,16 +1068,37 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return
         }
 
-        // Mirror the sendNativeMessage gate (see above): connecting to a real
-        // native host requires the extension to have declared the nativeMessaging
-        // permission. It is auto-granted at the context level so the polyfill
-        // bridge works, so the manifest declaration is the real gate.
         let manifestPermissions = self.extension(withID: extID)?.manifest.permissions ?? []
-        guard manifestPermissions.contains("nativeMessaging") else {
+        switch Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) {
+        case .polyfillHost:
+            // The polyfill's keep-alive port (see ExtensionAPIPolyfill.nativePortKeepAliveJS):
+            // accept it without spawning anything and hold it until the worker closes it
+            // or its context unloads. WebKit treats the worker's periodic pings on it as
+            // background activity, which is what keeps the worker from being unloaded
+            // while a real native port is open. One per extension per controller: a
+            // worker only ever holds one, so a second replaces (and closes) the first
+            // rather than accumulating.
+            let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
+            if let previous = keepAlivePorts.removeValue(forKey: key) {
+                previous.disconnect(throwing: nil)
+            }
+            keepAlivePorts[key] = port
+            port.messageHandler = { _, _ in }
+            port.disconnectHandler = { [weak self, weak port] _ in
+                guard let self, let port, self.keepAlivePorts[key] === port else { return }
+                self.keepAlivePorts.removeValue(forKey: key)
+                log.info("Keep-alive port closed for \(extID, privacy: .public)")
+            }
+            log.info("Keep-alive port opened for \(extID, privacy: .public)")
+            completionHandler(nil)
+            return
+        case .denied:
             log.warning("Extension \(extID, privacy: .public) tried connectNative to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
             completionHandler(NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
             return
+        case .allowed:
+            break
         }
 
         let host = NativeMessagingHost(hostName: hostName, extensionID: extID)

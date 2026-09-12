@@ -24,14 +24,24 @@ struct NativeHostManifest: Codable {
 class NativeMessagingHost {
 
     /// Search directories for native messaging host manifests (Chrome-compatible locations).
+    ///
+    /// Debug builds additionally honor `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`, searched
+    /// first, so an isolated test profile can point a host name at a stand-in binary
+    /// (e.g. a fake host that keeps the port open) without touching the real manifests.
     static let searchDirectories: [String] = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return [
+        var directories = [
             "\(home)/Library/Application Support/Google/Chrome/NativeMessagingHosts",
             "\(home)/Library/Application Support/Chromium/NativeMessagingHosts",
             "\(home)/Library/Application Support/Detour/NativeMessagingHosts",
             "/Library/Google/Chrome/NativeMessagingHosts",
         ]
+        #if DEBUG
+        if let override = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"], !override.isEmpty {
+            directories.insert(override, at: 0)
+        }
+        #endif
+        return directories
     }()
 
     static let maxMessageSize = 1_048_576 // 1 MB

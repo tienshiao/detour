@@ -67,6 +67,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   appendLog({ event: 'alarms.onAlarm', alarmName: alarm.name });
 });
 
+// Periodic heartbeat: the canonical way to wake a service worker after WebKit
+// unloads it when idle, so idle termination and restart can be observed in logs.
+chrome.alarms.create('api-explorer-heartbeat', { periodInMinutes: 1 });
+
 // --- Idle ---
 
 if (chrome.idle) {
@@ -207,6 +211,48 @@ chrome.runtime.onConnect.addListener((port) => {
     appendLog({ event: 'port.onDisconnect', portName: port.name });
   });
 });
+
+// --- WebSocket guard probe ---
+// WebSocket is replaced in extension service workers by a guard that fails the
+// connection instead of deadlocking the worker (see ExtensionAPIPolyfill).
+// Log what an extension actually observes.
+
+try {
+  const ws = new WebSocket('wss://example.invalid/api-explorer');
+  ws.addEventListener('error', () => appendLog({ event: 'websocket.error' }));
+  ws.addEventListener('close', (e) => appendLog({
+    event: 'websocket.close',
+    code: e.code,
+    guarded: WebSocket.__detourGuard === true
+  }));
+} catch (e) {
+  appendLog({ event: 'websocket.unavailable', error: String(e) });
+}
+
+// --- Native port keep-alive probe ---
+// The 'detourPolyfill' host is accepted without the nativeMessaging manifest
+// permission (this extension does not declare it), and a real native port
+// starts the service-worker keep-alive.
+
+if (chrome.runtime.connectNative) {
+  try {
+    const port = chrome.runtime.connectNative('detourPolyfill');
+    appendLog({
+      event: 'runtime.connectNative',
+      application: 'detourPolyfill',
+      keepAlive: globalThis.__detourNativePortKeepAlive ? {
+        livePorts: globalThis.__detourNativePortKeepAlive.livePorts,
+        active: globalThis.__detourNativePortKeepAlive.active
+      } : null
+    });
+    port.onDisconnect.addListener(() => appendLog({
+      event: 'runtime.connectNative.disconnect',
+      application: 'detourPolyfill'
+    }));
+  } catch (e) {
+    appendLog({ event: 'runtime.connectNative.error', error: String(e) });
+  }
+}
 
 // --- Message handling from popup ---
 

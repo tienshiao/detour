@@ -133,43 +133,126 @@ sudo log erase --all
 Goal: after WebKit terminates the idle background service worker, the next wake must succeed and
 1Password must reconnect its native ports.
 
-Experiments, in order, each cheap enough to run in one deploy:
+**Status (2026-09-11 evening, TASK-2, done):** root cause found by sampling the production process
+(a WebSocket deadlock in the worker, below), three-layer fix implemented, verified in the isolated
+harness and then in production: with the fixed build deployed at 18:50, the worker and all three
+native-messaging helpers were still alive after 15 idle minutes; the build without the WebSocket
+guard lost them at 2.5 minutes.
 
-1. **Isolate WebKit vs. 1Password.** Load `TestExtensions/api-explorer` (classic service worker),
-   leave it idle past termination, then trigger an event. If its worker also fails to restart, this
-   is a WebKit-general problem in how Detour configures the controller or data store, and 1Password
-   specifics can be ignored.
-2. **Offscreen document as a lingering client.** `OffscreenDocumentHost` keeps a hidden `WKWebView`
-   using the context's configuration alive after 1Password's one-time migration. That page is a
-   client of the worker's registration scope. Make `offscreen.createDocument` return an error (or
-   close the host after a timeout) and re-run the idle test.
-3. **Module vs. classic worker.** `ExtensionManager.useModuleBundler` already exists. Flip it so
-   the module worker is bundled into a classic script and re-run the idle test.
-4. **Explicit reload.** On observing `errorsDidUpdate` with a background-load failure, call
-   `WKWebExtensionContext.loadBackgroundContent(completionHandler:)` and see whether a second
-   attempt succeeds, or whether unload/load of the context is required.
-5. **Keep-alive as a fallback only.** If restart cannot be fixed, mirror Chrome's behavior of
-   extending worker lifetime while a native port is open. WebKit has no public keep-alive API, so
-   this would rely on activity that resets WebKit's idle timer. Treat as a last resort.
+#### How WebKit runs an extension service worker (from WebKit source, `WebExtensionContextCocoa.mm`)
 
-Log filter for this phase:
+- The "background" is a hidden `WKWebView` that loads a one-line page calling
+  `navigator.serviceWorker.register(url)`. The load is reported successful when that promise
+  settles (`willSettleRegistrationPromise` → `didFinishServiceWorkerPageRegistration`).
+- 30 s after a load or wake, `unloadBackgroundContentIfPossible` closes the hidden page. If the page
+  has open ports (native or runtime), the unload is deferred until 2 minutes after the last message
+  the background posted on any port (`delayForInactivePorts`). Closing the hidden page fails any
+  still-pending load with `WKWebExtensionContextError.backgroundContentFailedToLoad` (code 6).
+- Closing the hidden page normally makes the network process's `SWServer` clear the registration
+  and terminate the worker (`SWServerRegistration::clear`), so the next wake registers afresh,
+  fetches the script and creates a new worker.
+
+#### What production does instead
+
+Captured live at 17:53 on the 14:56 build: every wake creates a new hidden page, `register()`
+resolves instantly as `SWServerJobQueue::runRegisterJob: Found directly reusable registration 36`
+with `active=50, state=4 (activated)`, the network process still believes worker 50 lives in the
+*original* content process from 14:56 (still alive, silent), no script is fetched, no worker is
+created, and 30 s later code 6 is recorded. The network process logged nothing but "reusable
+registration" for over an hour. So the registration created at the first load was never torn down
+when the background unloaded at 15:01, and every wake reuses it. Upstream WebKit reworked exactly
+this area on 2026-08-31 (commit 4ce58a7ff7, "Extension service worker loses clients when it is
+unloaded and reloaded"), which is not in the shipped WebKit.
+
+#### Harness experiments (Debug build, isolated `DETOUR_DATA_DIR` profiles, 1-minute alarm as wake)
+
+| Case | Result |
+|------|--------|
+| classic worker probe, api-explorer | unload at +30 s, registration cleared, alarm restarts a fresh worker every minute for 8 min |
+| module-type worker probe | identical → module type is not the cause |
+| classic worker + never-closed offscreen document | identical → a lingering offscreen client alone is not the cause |
+| classic worker holding a native port to a silent fake host | 2-minute inactive-ports path taken, then clean unload and restart |
+| 1Password itself (native messaging untrusted, ports close at once) | restarts cleanly every minute with fresh registrations |
+
+None reproduce the stuck registration. The trigger was found by sampling the production process.
+
+#### Root cause: the worker deadlocks on `new WebSocket()`
+
+`sample` of the hidden page's content process on the redeployed build (18:45) showed its **main
+thread** parked in `WorkerThreadableWebSocketChannel`'s constructor, reached from 1Password's worker
+JS calling `new WebSocket()` (its `@1password/web-api` server push notifier). WebKit runs an
+extension's background service worker on the main thread of its content process
+(`WorkerMainRunLoop`), and the worker WebSocket channel blocks the calling thread on a semaphore
+until the main thread creates the channel. On a main-thread worker that wait can never end.
+
+Everything observed follows from the frozen process: the worker's event loop stops (no keep-alive
+pings, no more native-messaging traffic), WebKit's 2-minute inactive-ports unload closes the hidden
+page but the process never handles the close, so the page's service worker client is never
+unregistered and the registration is never cleared; the worker and its process linger silently
+(hours in the 14:56 session); and every wake reuses the registration with no worker, failing
+loudly (code 6) when the new hidden page lands in the frozen process and silently when it gets a
+new process. The harness never reproduced because without a desktop-app session 1Password never
+reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
+(`WorkerThreadableWebSocketChannel.cpp`), so this is worth a WebKit bug report.
+
+#### Fix
+
+0. **WebSocket guard** (`ExtensionAPIPolyfill.webSocketGuardJS`): in service worker contexts,
+   `WebSocket` is replaced by a stand-in that fails the connection asynchronously (`error`, then
+   `close` with code 1006), the path extensions already handle for an unreachable server. The real
+   constructor stays available as `__detourNativeWebSocket`. 1Password loses only live vault-change
+   notifications until a real WebSocket relay exists (candidate follow-up: relay sockets through
+   Detour with `URLSessionWebSocketTask` over the polyfill port). Verified with a worker probe that
+   opens a socket at startup: it gets `error` and `close`, stays alive, and restarts on every alarm.
+1. **Prevention, Chrome parity** (`ExtensionAPIPolyfill.nativePortKeepAliveJS`,
+   `ExtensionManager.webExtensionController(_:connectUsing:…)`): Chrome keeps a service worker alive
+   while it holds a native messaging port. The worker-side polyfill wraps `runtime.connectNative`;
+   while at least one real native port is open it holds a port to Detour's own `detourPolyfill`
+   host and posts `{type: "keepalive"}` on it every 45 s. WebKit counts any message the background
+   posts on any port as activity, so the inactive-ports unload never fires while 1Password is
+   connected. The keep-alive stops when the last real port closes, so idle unload resumes then.
+   ExtensionManager accepts `detourPolyfill` ports without spawning a process. WebKit's
+   `runtime.connectNative` is a non-writable own property that ignores assignment and
+   `defineProperty`, so in worker contexts the polyfill shadows the writable `chrome`/`browser`
+   globals with proxies that bind the real runtime's functions to the real object and override
+   only `connectNative`. Verified with a probe holding a native port for 3 minutes: no unload
+   while held, unload 30 s after release, clean restart on the next alarm.
+2. **Recovery** (`Profile.recoverFromBackgroundLoadFailure`): when the context records code 6, unload
+   and reload the context in that profile, re-associate its windows and tabs, and call
+   `loadBackgroundContent`. The new context gets a new `webkit-extension://` base URL, so the stale
+   registration (keyed by the old origin) is simply never consulted again. Rate-limited to three
+   reloads per ten minutes per extension so a genuinely broken background script cannot loop.
+   `unloadExtension` also stops the extension's offscreen document host, which belongs to the old
+   origin. Verified in the harness with a worker that throws at top level: three reloads, then
+   "keeps failing to load; giving up".
+
+Diagnostics added on the way: the console bridge reports uncaught exceptions and unhandled
+rejections from the worker (`[uncaught exception] (file:line:col) Name: message`), which is how the
+harness cold-start failure was diagnosed in one run; and Debug builds honor
+`DETOUR_NATIVE_MESSAGING_HOSTS_DIR` to point a host name at a stand-in binary.
+
+#### Log filters
+
+Detour side (the network process lines are the ones that say whether a registration was reused or
+cleared; `log show` cannot run inside the Claude Code sandbox and debug-level lines are retained for
+roughly an hour):
 
 ```
-log show --last 30m --style compact --predicate 'process == "Detour" AND (category == "native-messaging" OR category == "EXT-LOAD" OR (subsystem == "com.apple.WebKit" AND category == "ServiceWorker"))'
+log show --last 30m --style compact --info --debug --predicate 'process == "Detour" AND (category == "native-messaging" OR category == "EXT-LOAD" OR (subsystem == "com.apple.WebKit" AND category == "ServiceWorker"))'
+log show --last 30m --style compact --info --debug --predicate 'process == "com.apple.WebKit.Networking" AND category == "ServiceWorker" AND (eventMessage CONTAINS "runRegisterJob" OR eventMessage CONTAINS "clear" OR eventMessage CONTAINS "erminat")'
 ```
-
-`log show` cannot run inside the Claude Code sandbox.
 
 1Password's own service-worker console output (the `[SW <id>]` lines in the `extension-polyfill`
 category) is logged **privately by default**, because it can contain native-messaging responses.
-For a debugging session, opt in before launching and revert afterwards:
+For a debugging session either launch with the argument `-ExtensionConsoleLogPublic YES` (argument
+domain, nothing persisted) or opt in with defaults and revert afterwards:
 
 ```
 defaults write com.detourbrowser.mac ExtensionConsoleLogPublic -bool YES
 defaults delete com.detourbrowser.mac ExtensionConsoleLogPublic
 ```
 
-Add `OR category == "extension-polyfill"` to the predicate above to include it. Purge the log store
+Add `OR category == "extension-polyfill"` to the Detour predicate to include it. Purge the log store
 again after such a session.
 
 ### Phase 2 — Cheap, high-confidence stubs (parallelizable with Phase 1)
@@ -218,7 +301,10 @@ API Explorer and test coverage per project convention:
 - Test whether a Developer ID–signed **Debug** build in DerivedData is trusted by BrowserSupport.
   `project.yml` signs both configurations with the same identity; the only known difference is the
   path stored in 1Password's trust record. If it works, the Release build and `/Applications` copy
-  can be dropped from the iteration loop.
+  can be dropped from the iteration loop. **Answer (2026-09-11): not trusted from DerivedData.**
+  BrowserSupport logs `Verifying browser ".../DerivedData/.../Debug/Detour.app/..."` →
+  `parent browser was not valid` → `UnsupportedBrowser`. Untested: the Debug configuration copied to
+  `/Applications`. A dev-only bridge app is tracked as TASK-7.
 
 ## Recommendation
 

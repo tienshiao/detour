@@ -61,6 +61,8 @@ struct ExtensionAPIPolyfill {
         let modules = [
             preambleJS,
             consoleJS,
+            webSocketGuardJS,
+            nativePortKeepAliveJS,
             missingStubsJS,
             contentPolyfillBridgeJS,
             idleJS,
@@ -340,10 +342,14 @@ struct ExtensionAPIPolyfill {
         }
         function formatArgs(args) {
             const parts = [];
+            let length = 0;
             for (let i = 0; i < args.length; i++) {
+                // Anything past the truncation point is cut anyway; skip formatting it.
+                if (length > MAX_MESSAGE_LENGTH) break;
                 let s;
                 try { s = formatOne(args[i]); } catch (e) { s = '[unserializable]'; }
                 parts.push(s);
+                length += s.length + 1;
             }
             let message = parts.join(' ');
             if (message.length > MAX_MESSAGE_LENGTH) {
@@ -358,7 +364,11 @@ struct ExtensionAPIPolyfill {
                 // Use __detourPolyfillRequest if available (web view contexts),
                 // otherwise fall back to sendNativeMessage (service worker contexts).
                 if (typeof g.__detourPolyfillRequest === 'function') {
-                    g.__detourPolyfillRequest('log', { level: level, message: message });
+                    // Swallow the bridge's rejection: an unhandled one would reach the
+                    // unhandledrejection reporter below, which logs through this same
+                    // path and would feed itself for as long as the bridge keeps failing.
+                    const pending = g.__detourPolyfillRequest('log', { level: level, message: message });
+                    if (pending && typeof pending.then === 'function') pending.then(null, function() {});
                 } else {
                     let extID = '';
                     try { extID = chrome.runtime.id || ''; } catch(e) {}
@@ -373,9 +383,286 @@ struct ExtensionAPIPolyfill {
         console.log = function() { _origLog.apply(console, arguments); sendLog('info', arguments); };
         console.warn = function() { _origWarn.apply(console, arguments); sendLog('warn', arguments); };
         console.error = function() { _origError.apply(console, arguments); sendLog('error', arguments); };
+
+        // Report uncaught exceptions and unhandled rejections through the bridge.
+        // A background script that throws during evaluation makes WebKit fail the
+        // whole background load with only "The background content failed to load"
+        // and logs the real exception privately; this leaves it in the native log.
+        try {
+            g.addEventListener('error', function(e) {
+                const where = (e && e.filename) ? ' (' + e.filename + ':' + e.lineno + ':' + e.colno + ')' : '';
+                const detail = (e && e.error !== undefined && e.error !== null) ? e.error : (e ? e.message : undefined);
+                sendLog('error', ['[uncaught exception]' + where, detail]);
+            });
+            g.addEventListener('unhandledrejection', function(e) {
+                sendLog('error', ['[unhandled rejection]', e ? e.reason : undefined]);
+            });
+        } catch (x) {}
     })();
     """
 
+
+    // MARK: - WebSocket guard (service workers)
+
+    /// WebKit runs an extension's background service worker on the main thread of
+    /// its content process. `new WebSocket()` in a worker goes through
+    /// WorkerThreadableWebSocketChannel, whose constructor blocks the calling
+    /// thread on a semaphore until the *main thread* creates the channel. On a
+    /// main-thread worker that is a self-deadlock: the worker's event loop
+    /// freezes, the process never handles WebKit's later page-close, the worker's
+    /// registration is never cleared, and every wake reuses a registration whose
+    /// worker can never run again (observed with 1Password's server notifier,
+    /// 2026-09-11; see docs/1password-integration-plan.md, Phase 1).
+    ///
+    /// Until WebKit fixes the channel, replace `WebSocket` in service worker
+    /// contexts with a stand-in that fails the connection asynchronously (an
+    /// `error` event, then a `close` event with code 1006), which is the path
+    /// extensions already handle for an unreachable server. The real constructor
+    /// is kept as `__detourNativeWebSocket`. `__detourForceWebSocketGuard` installs
+    /// it outside workers for tests.
+    private static let webSocketGuardJS = """
+    (function() {
+        const g = globalThis;
+        const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
+        if (!isWorker && g.__detourForceWebSocketGuard !== true) return;
+        const NativeWebSocket = g.WebSocket;
+        if (typeof NativeWebSocket !== 'function' || NativeWebSocket.__detourGuard) return;
+
+        let warned = false;
+        // A real unreachable server fails after DNS/TCP latency, which is what paces a
+        // client that reconnects straight from onclose. Fail the first socket at once
+        // (so a single attempt is not slowed down) and back off per further attempt in
+        // this context so such a client cannot spin the worker.
+        let failures = 0;
+        const MAX_FAILURE_DELAY_MS = 2000;
+        class GuardedWebSocket extends EventTarget {
+            constructor(url, protocols) {
+                super();
+                this.url = String(url);
+                this.readyState = GuardedWebSocket.CONNECTING;
+                this.bufferedAmount = 0;
+                this.extensions = '';
+                this.protocol = '';
+                this.binaryType = 'blob';
+                this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+                if (!warned) {
+                    warned = true;
+                    console.warn('[Detour polyfill] WebSocket is unavailable in extension service workers on this WebKit (it would deadlock the worker); failing connection to ' + this.url);
+                }
+                const delay = Math.min(MAX_FAILURE_DELAY_MS, 250 * failures);
+                failures += 1;
+                setTimeout(() => {
+                    if (this.readyState === GuardedWebSocket.CLOSED) return;
+                    this.readyState = GuardedWebSocket.CLOSED;
+                    this._dispatch(new Event('error'));
+                    this._dispatch(new CloseEvent('close', { wasClean: false, code: 1006, reason: 'WebSocket unavailable in service worker' }));
+                }, delay);
+            }
+            _dispatch(event) {
+                const handler = this['on' + event.type];
+                if (typeof handler === 'function') { try { handler.call(this, event); } catch (e) {} }
+                this.dispatchEvent(event);
+            }
+            send() {
+                if (this.readyState === GuardedWebSocket.CONNECTING) throw new DOMException("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
+                // Closed: browsers silently drop and bump bufferedAmount; do the same.
+            }
+            close(code, reason) {
+                if (this.readyState === GuardedWebSocket.CLOSED) return;
+                this.readyState = GuardedWebSocket.CLOSED;
+                const c = code === undefined ? 1005 : code;
+                setTimeout(() => this._dispatch(new CloseEvent('close', { wasClean: false, code: c, reason: reason || '' })), 0);
+            }
+        }
+        GuardedWebSocket.CONNECTING = 0; GuardedWebSocket.OPEN = 1; GuardedWebSocket.CLOSING = 2; GuardedWebSocket.CLOSED = 3;
+        Object.assign(GuardedWebSocket.prototype, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+        Object.defineProperty(GuardedWebSocket, '__detourGuard', { value: true });
+
+        g.__detourNativeWebSocket = NativeWebSocket;
+        g.__detourDefine(g, 'WebSocket', GuardedWebSocket);
+    })();
+    """
+
+    // MARK: - Native port keep-alive
+
+    /// Keeps the background service worker alive while the extension holds a
+    /// native messaging port open, matching Chrome (which extends the worker's
+    /// lifetime for the duration of a native port connection). WebKit unloads a
+    /// non-persistent background after 30 s of inactivity, or 2 minutes after the
+    /// last message on any of its ports; when 1Password's worker is unloaded with
+    /// its native ports open, the ports close and its service worker registration
+    /// can be left in a state where the next wake never starts a worker (see
+    /// docs/1password-integration-plan.md, Phase 1).
+    ///
+    /// WebKit counts any message posted by the background page on any port as
+    /// activity, so while at least one real native port is connected this opens a
+    /// port to Detour's own `detourPolyfill` host (accepted by ExtensionManager
+    /// without spawning a process) and posts a small ping on it periodically. The
+    /// ping stops, and the keep-alive port is closed, when the last real native
+    /// port disconnects, so the worker can be unloaded normally afterwards.
+    ///
+    /// `__detourKeepAlivePingIntervalMs` (read once at install) overrides the ping
+    /// interval for tests.
+    private static let nativePortKeepAliveJS = """
+    (function() {
+        const g = globalThis;
+        const KEEPALIVE_HOST = 'detourPolyfill';
+        const DEFAULT_PING_INTERVAL_MS = 45000;
+        const pingIntervalMs = (typeof g.__detourKeepAlivePingIntervalMs === 'number' && g.__detourKeepAlivePingIntervalMs > 0)
+            ? g.__detourKeepAlivePingIntervalMs : DEFAULT_PING_INTERVAL_MS;
+
+        let livePorts = 0;
+        let keepAlivePort = null;
+        let pingTimer = null;
+        let originalConnectNative = null;
+
+        function stopKeepAlive() {
+            if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+            const port = keepAlivePort;
+            keepAlivePort = null;
+            if (port) { try { port.disconnect(); } catch (e) {} }
+        }
+
+        function startKeepAlive() {
+            // Also re-checked here because the reconnect below is delayed: the last
+            // real port may have gone away in the meantime.
+            if (keepAlivePort || !originalConnectNative || livePorts <= 0) return;
+            let port;
+            try { port = originalConnectNative(KEEPALIVE_HOST); } catch (e) { return; }
+            if (!port) return;
+            keepAlivePort = port;
+            try {
+                port.onDisconnect.addListener(function() {
+                    if (keepAlivePort !== port) return;
+                    stopKeepAlive();
+                    // Detour dropped the port (e.g. a profile reload); retry while still needed.
+                    if (livePorts > 0) setTimeout(startKeepAlive, 1000);
+                });
+            } catch (e) {}
+            pingTimer = setInterval(function() {
+                if (keepAlivePort !== port) return;
+                try { port.postMessage({ type: 'keepalive' }); } catch (e) {}
+            }, pingIntervalMs);
+        }
+
+        // Bind every function of `target` to it when read through the proxy: WebKit's
+        // bindings need the original `this`. `overrides` win over the target's props.
+        function boundProxy(target, overrides) {
+            const boundCache = new Map();
+            return new Proxy(target, {
+                get(t, prop) {
+                    if (Object.prototype.hasOwnProperty.call(overrides, prop)) return overrides[prop];
+                    const value = Reflect.get(t, prop, t);
+                    if (typeof value !== 'function') return value;
+                    let bound = boundCache.get(prop);
+                    if (!bound || bound.original !== value) {
+                        bound = { original: value, fn: value.bind(t) };
+                        boundCache.set(prop, bound);
+                    }
+                    return bound.fn;
+                },
+                set(t, prop, value) { return Reflect.set(t, prop, value, t); }
+            });
+        }
+
+        // Count `port` as a live real port until it disconnects. Returns the object to
+        // hand back to the extension: the port itself when its `disconnect` could be
+        // patched, otherwise a proxy over it, so a local disconnect() is always seen.
+        function trackRealPort(port) {
+            livePorts += 1;
+            if (livePorts === 1) startKeepAlive();
+            let released = false;
+            function release() {
+                if (released) return;
+                released = true;
+                livePorts = Math.max(0, livePorts - 1);
+                if (livePorts === 0) stopKeepAlive();
+            }
+            // onDisconnect fires when the other side closes; a local disconnect() does not.
+            try { port.onDisconnect.addListener(release); } catch (e) {}
+            const originalDisconnect = typeof port.disconnect === 'function' ? port.disconnect.bind(port) : function() {};
+            const disconnect = function() { release(); return originalDisconnect(); };
+            try { port.disconnect = disconnect; } catch (e) {}
+            if (port.disconnect === disconnect) return port;
+            // WebKit's port object refused the patch (as its runtime does for
+            // connectNative); intercept through a proxy instead. A proxy cannot
+            // override a non-writable, non-configurable own data property (the
+            // [[Get]] invariant would throw on every read), so in that shape the
+            // port is handed back as is and only a remote close is tracked.
+            let desc = null;
+            try { desc = Object.getOwnPropertyDescriptor(port, 'disconnect'); } catch (e) {}
+            if (desc && desc.configurable === false && desc.writable === false) return port;
+            return boundProxy(port, { disconnect: disconnect });
+        }
+
+        function makeWrapped(runtime) {
+            const original = runtime.connectNative.bind(runtime);
+            if (!originalConnectNative) originalConnectNative = original;
+            return function connectNative(application) {
+                const port = original.apply(runtime, arguments);
+                if (application !== KEEPALIVE_HOST && port) return trackRealPort(port);
+                return port;
+            };
+        }
+
+        // Preferred: replace the property in place (works on plain runtime objects).
+        function installDirectly(runtime, wrapped) {
+            g.__detourDefine(runtime, 'connectNative', wrapped);
+            return runtime.connectNative === wrapped;
+        }
+
+        // Fallback for WebKit's runtime object, whose `connectNative` is a
+        // non-writable own property that silently ignores both assignment and
+        // defineProperty: shadow the `chrome`/`browser` globals (plain writable
+        // globals) with proxies whose `runtime` binds every real function to the
+        // real runtime object (WebKit's bindings need the original `this`) and
+        // overrides only `connectNative`. Everything else, including
+        // __detourDefine calls from later polyfill modules, forwards to the real
+        // objects. Only done in service worker contexts: the keep-alive is about
+        // the background page, and extension UI pages are left untouched.
+        function installByShadowingGlobals(realChrome, runtime, wrapped) {
+            if (typeof ServiceWorkerGlobalScope === 'undefined') return false;
+            // The bound-function cache in boundProxy is keyed on the current value on
+            // purpose: missingStubsJS later patches runtime.getURL through this proxy,
+            // and the patched function must be what subsequent reads return.
+            const runtimeProxy = boundProxy(runtime, { connectNative: wrapped });
+            const chromeProxy = new Proxy(realChrome, {
+                get(target, prop) {
+                    if (prop === 'runtime') return runtimeProxy;
+                    return Reflect.get(target, prop, target);
+                },
+                set(target, prop, value) { return Reflect.set(target, prop, value, target); }
+            });
+            try {
+                if (g.chrome === realChrome) g.chrome = chromeProxy;
+                if (g.browser === realChrome) g.browser = chromeProxy;
+            } catch (e) { return false; }
+            return g.chrome === chromeProxy;
+        }
+
+        function install(realChrome) {
+            const runtime = realChrome && realChrome.runtime;
+            if (!runtime || typeof runtime.connectNative !== 'function') return;
+            const wrapped = makeWrapped(runtime);
+            if (installDirectly(runtime, wrapped)) return;
+            installByShadowingGlobals(realChrome, runtime, wrapped);
+        }
+
+        install(g.chrome);
+        // WebKit vends one namespace object under both names, so this is only for
+        // environments where `browser` is a separate object with its own runtime.
+        if (g.browser && g.browser !== g.chrome && (!g.chrome || g.browser.runtime !== g.chrome.runtime)) {
+            install(g.browser);
+        }
+
+        // Read-only status for diagnostics and tests.
+        g.__detourNativePortKeepAlive = Object.freeze({
+            get livePorts() { return livePorts; },
+            get active() { return keepAlivePort !== null; },
+            get pingIntervalMs() { return pingIntervalMs; }
+        });
+    })();
+    """
 
     // MARK: - chrome.idle
 
