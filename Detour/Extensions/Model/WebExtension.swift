@@ -53,6 +53,30 @@ class WebExtension {
         askableMatchPatterns.contains { $0.matches(url) }
     }
 
+    /// The saved `.matchPattern` decisions that are not one of the manifest's
+    /// own `host_permissions` / `optional_host_permissions` entries but that
+    /// `Profile.loadExtensionContext` would still restore — in practice the
+    /// sub-patterns a `permissions.request({origins})` prompt was answered for
+    /// (e.g. "https://mail.example/*" under an optional `<all_urls>`), which
+    /// are saved under the caller's own pattern string. Sorted by key.
+    ///
+    /// Gated exactly like the restore (TASK-19): a row is listed iff some
+    /// requested or optional manifest pattern matches it. A row outside every
+    /// manifest pattern is stale and inert, so offering a switch for it would
+    /// claim an access the next launch silently drops. Empty when
+    /// `wkExtension` has not loaded.
+    func savedSubPatternDecisionKeys(in savedPatterns: [String: ExtensionPermissionStatus]) -> [String] {
+        let listed = Set((manifest.hostPermissions ?? []) + (manifest.optionalHostPermissions ?? []))
+        let askable = askableMatchPatterns
+        return savedPatterns.keys
+            .filter { key in
+                guard !listed.contains(key),
+                      let pattern = try? WKWebExtension.MatchPattern(string: key) else { return false }
+                return askable.contains { $0.matches(pattern) }
+            }
+            .sorted()
+    }
+
     /// Cached icon image.
     private(set) lazy var icon: NSImage? = {
         loadIcon()

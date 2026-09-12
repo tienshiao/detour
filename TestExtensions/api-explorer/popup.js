@@ -539,6 +539,77 @@ document.getElementById('btn-perm-remove').addEventListener('click', async () =>
   }
 });
 
+// `https://example.org/*` is listed in optional_host_permissions, so Settings
+// shows it as an Optional row whose switch writes the decision and applies it
+// to the loaded context without a relaunch (TASK-25).
+const EXAMPLE_ORIGIN = 'https://example.org/*';
+
+document.getElementById('btn-perm-request-origin').addEventListener('click', async () => {
+  try {
+    const granted = await chrome.permissions.request({ origins: [EXAMPLE_ORIGIN] });
+    const has = await chrome.permissions.contains({ origins: [EXAMPLE_ORIGIN] });
+    showResult('res-permissions', `permissions.request(origins "${EXAMPLE_ORIGIN}"): ${granted}, contains: ${has}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
+document.getElementById('btn-perm-remove-origin').addEventListener('click', async () => {
+  try {
+    const removed = await chrome.permissions.remove({ origins: [EXAMPLE_ORIGIN] });
+    showResult('res-permissions', `permissions.remove(origins "${EXAMPLE_ORIGIN}"): ${removed}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
+// --- Native Messaging ---
+// Probes a host that does not exist, to show the error shapes an extension sees.
+// This extension does not declare `nativeMessaging`, so a real host is refused
+// with "nativeMessaging permission not declared". In an extension that declares it,
+// a saved denial in Settings refuses real hosts with Chrome's "Access to the
+// specified native messaging host is forbidden." (TASK-25): a rejected
+// sendNativeMessage promise, or a connectNative port disconnected with
+// `port.error` set. Detour's built-in hosts (detourPolyfill, detourWebSocketRelay)
+// are never affected by that decision.
+const PROBE_HOST = 'com.detour.api_explorer_probe';
+
+document.getElementById('btn-nm-send').addEventListener('click', async () => {
+  if (typeof chrome.runtime.sendNativeMessage !== 'function') {
+    showResult('res-native-messaging', 'runtime.sendNativeMessage is unavailable', true);
+    return;
+  }
+  try {
+    const reply = await chrome.runtime.sendNativeMessage(PROBE_HOST, { probe: true });
+    showResult('res-native-messaging', { host: PROBE_HOST, reply });
+  } catch (e) {
+    showResult('res-native-messaging', `sendNativeMessage("${PROBE_HOST}") rejected: ${e.message || e}`, true);
+  }
+});
+
+document.getElementById('btn-nm-connect').addEventListener('click', () => {
+  if (typeof chrome.runtime.connectNative !== 'function') {
+    showResult('res-native-messaging', 'runtime.connectNative is unavailable', true);
+    return;
+  }
+  try {
+    const port = chrome.runtime.connectNative(PROBE_HOST);
+    port.onDisconnect.addListener((p) => {
+      const lastError = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+      const err = (p && p.error) || port.error;
+      showResult('res-native-messaging', {
+        host: PROBE_HOST,
+        event: 'port.onDisconnect',
+        lastError,
+        portError: err ? String(err.message || err) : null
+      }, !!(lastError || err));
+    });
+    showResult('res-native-messaging', `connectNative("${PROBE_HOST}") opened; waiting for onDisconnect...`);
+  } catch (e) {
+    showResult('res-native-messaging', `connectNative("${PROBE_HOST}") threw: ${e.message || e}`, true);
+  }
+});
+
 // --- Runtime Extras ---
 
 document.getElementById('btn-file-access').addEventListener('click', async () => {

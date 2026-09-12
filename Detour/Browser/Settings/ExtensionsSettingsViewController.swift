@@ -265,10 +265,17 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         let requiredPerms = ext.manifest.permissions ?? []
         let hostPerms = ext.manifest.hostPermissions ?? []
         let optionalPerms = ext.manifest.optionalPermissions ?? []
+        let optionalHostPerms = ext.manifest.optionalHostPermissions ?? []
+        // Decisions saved for patterns the manifest does not list itself — the
+        // sub-patterns a `permissions.request({origins})` prompt was answered
+        // for — gated exactly as the restore gates them (TASK-19), so every row
+        // listed here is one the next launch re-applies.
+        let savedSubPatterns = ext.savedSubPatternDecisionKeys(in: savedPatterns)
 
         var permContentViews: [NSView] = []
 
-        if requiredPerms.isEmpty && hostPerms.isEmpty && optionalPerms.isEmpty && savedURLs.isEmpty {
+        if requiredPerms.isEmpty && hostPerms.isEmpty && optionalPerms.isEmpty
+            && optionalHostPerms.isEmpty && savedSubPatterns.isEmpty && savedURLs.isEmpty {
             let noneLabel = NSTextField(labelWithString: "No special permissions requested.")
             noneLabel.font = .systemFont(ofSize: 12)
             noneLabel.textColor = .secondaryLabelColor
@@ -278,7 +285,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             for perm in requiredPerms {
                 let row = makePermissionRow(
                     extensionID: ext.id, key: perm,
-                    type: .apiPermission, isGranted: savedAPI[perm] == .granted,
+                    type: .apiPermission, isGranted: Self.apiPermissionIsOn(perm, saved: savedAPI[perm]),
                     label: ExtensionPermissionDescriptions.describe(perm),
                     isRequired: true
                 )
@@ -286,17 +293,18 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             }
             // Host permissions
             for pattern in hostPerms {
-                let display = pattern == "<all_urls>" ? "All websites" : pattern
                 let row = makePermissionRow(
                     extensionID: ext.id, key: pattern,
                     type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
-                    label: display,
+                    label: Self.displayName(forPattern: pattern),
                     isRequired: true
                 )
                 permContentViews.append(row)
             }
-            // Optional permissions
-            if !optionalPerms.isEmpty {
+            // Optional permissions: API permissions, then host patterns. An
+            // optional host pattern reads OFF until the user grants it (at a
+            // `permissions.request` prompt or here), and a Deny is reversible.
+            if !optionalPerms.isEmpty || !optionalHostPerms.isEmpty {
                 let optHeader = NSTextField(labelWithString: "Optional:")
                 optHeader.font = .systemFont(ofSize: 11, weight: .medium)
                 optHeader.textColor = .secondaryLabelColor
@@ -304,12 +312,47 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
                 for perm in optionalPerms {
                     let row = makePermissionRow(
                         extensionID: ext.id, key: perm,
-                        type: .apiPermission, isGranted: savedAPI[perm] == .granted,
+                        type: .apiPermission, isGranted: Self.apiPermissionIsOn(perm, saved: savedAPI[perm]),
                         label: ExtensionPermissionDescriptions.describe(perm),
                         isRequired: false
                     )
                     permContentViews.append(row)
                 }
+                for pattern in optionalHostPerms {
+                    let row = makePermissionRow(
+                        extensionID: ext.id, key: pattern,
+                        type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
+                        label: Self.displayName(forPattern: pattern),
+                        isRequired: false
+                    )
+                    permContentViews.append(row)
+                }
+            }
+        }
+
+        // Requested sites: decisions taken when the extension asked for a
+        // specific pattern under one of its optional host permissions. Like the
+        // site-access rows below, they live outside the manifest lists, so
+        // without a row here such a Deny could never be reversed.
+        if !savedSubPatterns.isEmpty {
+            let requestedHeader = NSTextField(labelWithString: "Requested sites:")
+            requestedHeader.font = .systemFont(ofSize: 11, weight: .medium)
+            requestedHeader.textColor = .secondaryLabelColor
+            permContentViews.append(requestedHeader)
+
+            let requestedCaption = NSTextField(labelWithString: "Decisions made when the extension asked for access to specific sites.")
+            requestedCaption.font = .systemFont(ofSize: 11)
+            requestedCaption.textColor = .tertiaryLabelColor
+            permContentViews.append(requestedCaption)
+
+            for pattern in savedSubPatterns {
+                let row = makePermissionRow(
+                    extensionID: ext.id, key: pattern,
+                    type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
+                    label: Self.displayName(forPattern: pattern),
+                    isRequired: false
+                )
+                permContentViews.append(row)
             }
         }
 
@@ -401,6 +444,23 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         ])
     }
 
+    /// The label a host match pattern is shown under.
+    private static func displayName(forPattern pattern: String) -> String {
+        pattern == "<all_urls>" ? "All websites" : pattern
+    }
+
+    /// Whether an API permission's switch reads ON. A saved grant, as for every
+    /// row — except nativeMessaging, whose switch mirrors what is enforced
+    /// (`ExtensionManager.nativeHostAccess`): only a saved denial blocks native
+    /// hosts, so no row at all reads ON rather than claiming a block that is not
+    /// in force.
+    private static func apiPermissionIsOn(_ permission: String, saved: ExtensionPermissionStatus?) -> Bool {
+        if permission == ExtensionPermissionRecord.nativeMessagingKey {
+            return saved != .denied
+        }
+        return saved == .granted
+    }
+
     // MARK: - Actions
 
     @objc private func enabledToggled(_ sender: NSSwitch) {
@@ -452,7 +512,9 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             if isRequired {
                 let alert = NSAlert()
                 alert.messageText = "Revoke Permission?"
-                alert.informativeText = "Revoking this permission may cause the extension to stop working."
+                alert.informativeText = key == ExtensionPermissionRecord.nativeMessagingKey
+                    ? "The extension will no longer be able to communicate with native applications, and any it is connected to now are disconnected. Extensions that rely on a desktop app, such as password managers, stop working."
+                    : "Revoking this permission may cause the extension to stop working."
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "Revoke")
                 alert.addButton(withTitle: "Cancel")
@@ -463,31 +525,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             }
         }
 
-        AppDatabase.shared.savePermission(ExtensionPermissionRecord(
-            extensionID: extensionID, key: key, type: type,
-            status: isGranted ? .granted : .denied
-        ))
-
-        // Update the WKWebExtensionContext permission status in all loaded profiles
-        let wkStatus: WKWebExtensionContext.PermissionStatus = isGranted ? .grantedExplicitly : .deniedExplicitly
-        for profile in TabStore.shared.profiles {
-            guard let context = profile.extensionContext(for: extensionID) else { continue }
-            switch type {
-            case .apiPermission:
-                let permission = WKWebExtension.Permission(rawValue: key)
-                context.setPermissionStatus(wkStatus, for: permission)
-            case .matchPattern:
-                if let pattern = try? WKWebExtension.MatchPattern(string: key) {
-                    context.setPermissionStatus(wkStatus, for: pattern)
-                }
-            case .url:
-                // A site-access decision for one specific URL; WebKit converts
-                // it to an origin match pattern.
-                if let url = URL(string: key) {
-                    context.setPermissionStatus(wkStatus, for: url)
-                }
-            }
-        }
+        // Saves the row and applies it to every loaded context in every profile
+        // (nativeMessaging to native-host enforcement instead), without a relaunch.
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: extensionID, key: key, type: type, granted: isGranted)
     }
 
     @objc private func addExtensionClicked(_ sender: NSButton) {

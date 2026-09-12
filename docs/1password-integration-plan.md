@@ -41,6 +41,29 @@ What remains, in priority order:
 - **Native messaging is the only desktop-app channel.** The `http://127.0.0.1:<port>` entries in the
   CSP are the Kolide device-trust agent client scanning a fixed port list. They are irrelevant for
   personal use and need no work.
+- **Decision (TASK-25, 2026-09-12): a saved `nativeMessaging` denial blocks real native hosts.**
+  Turning the extension's "Communicate with native applications" switch off in Settings writes a
+  denied `nativeMessaging` row, and that row is enforced where a host is dispatched —
+  `ExtensionManager.nativeHostAccess`, consulted by both `WKWebExtensionControllerDelegate` paths
+  that can spawn a `NativeMessagingHost` (`sendMessage(toApplicationWithIdentifier:)` for
+  `sendNativeMessage`, `connectUsing:` for `connectNative`). A denied host is refused before a host
+  object exists, so nothing is looked up or spawned: `sendNativeMessage` rejects and
+  `connectNative`'s port disconnects with `port.error`, both carrying Chrome's "Access to the
+  specified native messaging host is forbidden." The denial takes effect on the loaded context with
+  no relaunch, and hosts already running are torn down at once (process killed, port disconnected,
+  keep-alive released, a pending one-shot reply rejected). No saved row, or a grant, means allowed
+  (install saves every declared permission as granted). Rationale: the switch has been in Settings
+  since native messaging landed and read as a real control; persisting the decision while ignoring
+  it (the state TASK-19 left) was worse than either enforcing it or removing the row.
+  - **Detour's built-in hosts are exempt, by design.** `detourPolyfill` (the service-worker polyfill
+    bridge and the keep-alive port) and `detourWebSocketRelay` (TASK-8) are Detour's own transport,
+    not the user-facing capability, and are decided by host name before the saved decision is read.
+    For the same reason `Profile.loadExtensionContext` still grants `nativeMessaging` on every
+    context unconditionally and never applies the saved row to it.
+  - **Denying it breaks 1Password, by design.** 1Password's only channel to the desktop app is its
+    native host (`1Password-BrowserSupport`, above), so with the switch off the extension cannot unlock,
+    fill or save (and the keep-alive has no host to arm for). Turning the switch back on lifts the
+    block immediately; the extension reconnects on its next attempt.
 - BrowserSupport logs (one file per host process, grep for `Detour`):
   `~/Library/Group Containers/2BUA8C4S2C.com.1password/Library/Application Support/1Password/Data/logs/BrowserSupport/`.
 

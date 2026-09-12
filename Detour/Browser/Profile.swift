@@ -192,80 +192,17 @@ class Profile {
     /// so a reload does not accumulate observers.
     private var extensionErrorObservers: [String: NSObjectProtocol] = [:]
 
-    /// Load an extension context into this profile's controller (synchronous).
-    /// Returns true if the context was loaded and background content should be started.
+    /// Apply the saved host-access decisions — `.matchPattern` rows and the
+    /// per-URL `.url` rows — to `context`, in the one order that makes the
+    /// outcome deterministic. Used by `loadExtensionContext` on every (re)load
+    /// and by `ExtensionManager.setPermissionDecision` after a Settings toggle
+    /// (TASK-25), so a toggle leaves a loaded context in exactly the state the
+    /// next launch restores.
     @MainActor
-    func loadExtensionContext(_ ext: WebExtension) -> Bool {
-        guard let wkExt = ext.wkExtension else {
-            log.error("Skipping \(ext.id, privacy: .public) — wkExtension is nil")
-            return false
-        }
-
-        if extensionContexts[ext.id] != nil {
-            log.info("Skipping \(ext.id, privacy: .public) — already loaded")
-            return false
-        }
-
-        let context = WKWebExtensionContext(for: wkExt)
-        context.uniqueIdentifier = ext.id
-        context.isInspectable = true
-
-        // Always grant nativeMessaging at the context level so the polyfill
-        // bridge can use browser.runtime.sendNativeMessage() at all. A real
-        // native host is gated separately, by `ExtensionManager.nativeHostAccess`
-        // — and that gate looks only at the manifest's nativeMessaging
-        // declaration: the user's saved nativeMessaging decision is not enforced
-        // anywhere today. The restore loop below therefore skips the saved row,
-        // so it cannot flip this grant to a denial the bridge would trip over.
-        context.setPermissionStatus(.grantedExplicitly, for: .nativeMessaging)
-
-        // Grant content script match patterns as host permissions when the extension
-        // has activeTab. In Chrome, extensions with active content scripts can use
-        // tab APIs (detectLanguage, sendMessage, etc.) on pages where their content
-        // scripts run. WebKit doesn't grant this implicitly, so we set the content
-        // script match patterns as granted permissions on the context.
-        //
-        // Applied *before* the DB restore so the user's saved decisions take
-        // precedence: a restored denial for the same or a broader pattern must
-        // not be overwritten by this implicit grant.
-        if ext.manifest.permissions?.contains("activeTab") == true {
-            for cs in ext.manifest.contentScripts ?? [] {
-                for pattern in cs.matches {
-                    if let matchPattern = try? WKWebExtension.MatchPattern(string: pattern) {
-                        context.setPermissionStatus(.grantedExplicitly, for: matchPattern)
-                    }
-                }
-            }
-        }
-
-        // Restore saved permission decisions from DB — API permissions, host
-        // match patterns (`<all_urls>` included), and the per-URL decisions taken
-        // at the site-access prompt; leave undecided permissions for WebKit to
-        // prompt via the delegate.
-        // One read, partitioned by type: a `.url` key can be the same string as
-        // a `.matchPattern` key, so the two must never share a dictionary.
-        let saved = AppDatabase.shared.loadPermissions(extensionID: ext.id)
-        let savedAPI = saved.statusByKey(type: .apiPermission)
+    static func applySavedHostAccessDecisions(_ saved: [ExtensionPermissionRecord],
+                                              for ext: WebExtension,
+                                              to context: WKWebExtensionContext) {
         let savedPatterns = saved.statusByKey(type: .matchPattern)
-
-        // Both the up-front manifest lists and the optional ones: WebKit prompts
-        // for an `optional_permissions` / `optional_host_permissions` entry when
-        // the extension calls `permissions.request`, and ExtensionManager saves
-        // that answer under the very same key — so restoring only the requested
-        // sets would re-prompt (or silently drop) every decision the user already
-        // made about an optional permission on each context (re)load.
-        //
-        // A key in neither set is left alone (TASK-11's rule): rows are never
-        // purged on extension update, and re-applying a grant the current
-        // manifest no longer asks for would widen the extension's access.
-        for permission in ext.askablePermissions {
-            // nativeMessaging is granted unconditionally above so the polyfill
-            // bridge works; a saved denial must not undo that grant.
-            if permission == .nativeMessaging { continue }
-            if let saved = savedAPI[permission.rawValue] {
-                context.setPermissionStatus(saved.contextStatus, for: permission)
-            }
-        }
 
         // Walk the *saved rows*, not the manifest's patterns, and gate each row
         // by MATCH rather than by exact string membership: `permissions.request
@@ -331,6 +268,84 @@ class Profile {
                 context.setPermissionStatus(status.contextStatus, for: url)
             }
         }
+    }
+
+    /// Load an extension context into this profile's controller (synchronous).
+    /// Returns true if the context was loaded and background content should be started.
+    @MainActor
+    func loadExtensionContext(_ ext: WebExtension) -> Bool {
+        guard let wkExt = ext.wkExtension else {
+            log.error("Skipping \(ext.id, privacy: .public) — wkExtension is nil")
+            return false
+        }
+
+        if extensionContexts[ext.id] != nil {
+            log.info("Skipping \(ext.id, privacy: .public) — already loaded")
+            return false
+        }
+
+        let context = WKWebExtensionContext(for: wkExt)
+        context.uniqueIdentifier = ext.id
+        context.isInspectable = true
+
+        // Always grant nativeMessaging at the context level so the polyfill
+        // bridge can use browser.runtime.sendNativeMessage() at all, and so the
+        // built-in detourPolyfill / detourWebSocketRelay hosts keep working. A
+        // real native host is gated separately, at dispatch, by
+        // `ExtensionManager.nativeHostAccess`: the manifest must declare
+        // nativeMessaging AND the user's saved nativeMessaging decision must not
+        // be a denial (TASK-25). The restore loop below therefore skips the saved
+        // row, so a denial can never flip this grant and break the bridge.
+        context.setPermissionStatus(.grantedExplicitly, for: .nativeMessaging)
+
+        // Grant content script match patterns as host permissions when the extension
+        // has activeTab. In Chrome, extensions with active content scripts can use
+        // tab APIs (detectLanguage, sendMessage, etc.) on pages where their content
+        // scripts run. WebKit doesn't grant this implicitly, so we set the content
+        // script match patterns as granted permissions on the context.
+        //
+        // Applied *before* the DB restore so the user's saved decisions take
+        // precedence: a restored denial for the same or a broader pattern must
+        // not be overwritten by this implicit grant.
+        if ext.manifest.permissions?.contains("activeTab") == true {
+            for cs in ext.manifest.contentScripts ?? [] {
+                for pattern in cs.matches {
+                    if let matchPattern = try? WKWebExtension.MatchPattern(string: pattern) {
+                        context.setPermissionStatus(.grantedExplicitly, for: matchPattern)
+                    }
+                }
+            }
+        }
+
+        // Restore saved permission decisions from DB — API permissions, host
+        // match patterns (`<all_urls>` included), and the per-URL decisions taken
+        // at the site-access prompt; leave undecided permissions for WebKit to
+        // prompt via the delegate.
+        // One read, partitioned by type: a `.url` key can be the same string as
+        // a `.matchPattern` key, so the two must never share a dictionary.
+        let saved = AppDatabase.shared.loadPermissions(extensionID: ext.id)
+        let savedAPI = saved.statusByKey(type: .apiPermission)
+
+        // Both the up-front manifest lists and the optional ones: WebKit prompts
+        // for an `optional_permissions` / `optional_host_permissions` entry when
+        // the extension calls `permissions.request`, and ExtensionManager saves
+        // that answer under the very same key — so restoring only the requested
+        // sets would re-prompt (or silently drop) every decision the user already
+        // made about an optional permission on each context (re)load.
+        //
+        // A key in neither set is left alone (TASK-11's rule): rows are never
+        // purged on extension update, and re-applying a grant the current
+        // manifest no longer asks for would widen the extension's access.
+        for permission in ext.askablePermissions {
+            // nativeMessaging is granted unconditionally above so the polyfill
+            // bridge works; a saved denial is enforced at host dispatch instead.
+            if permission == .nativeMessaging { continue }
+            if let saved = savedAPI[permission.rawValue] {
+                context.setPermissionStatus(saved.contextStatus, for: permission)
+            }
+        }
+
+        Self.applySavedHostAccessDecisions(saved, for: ext, to: context)
 
         do {
             try extensionController.load(context)

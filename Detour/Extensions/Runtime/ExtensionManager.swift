@@ -25,8 +25,27 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Retained popover controllers for extension-initiated popups.
     private var activePopovers: [String: ExtensionPopoverController] = [:]
 
+    /// A one-shot `sendNativeMessage` in flight: the host plus the reply WebKit is
+    /// waiting for, answered at most once — by the host's response, by its exit,
+    /// or by a nativeMessaging denial that tears it down (TASK-25).
+    private final class OneShotNativeRequest {
+        let host: NativeMessagingHost
+        private var replyHandler: ((Any?, (any Error)?) -> Void)?
+
+        init(host: NativeMessagingHost, replyHandler: @escaping (Any?, (any Error)?) -> Void) {
+            self.host = host
+            self.replyHandler = replyHandler
+        }
+
+        func finish(_ response: Any?, _ error: (any Error)?) {
+            guard let handler = replyHandler else { return }
+            replyHandler = nil
+            handler(response, error)
+        }
+    }
+
     /// Retained native messaging hosts for one-shot sendMessage calls.
-    private var activeMessagingHosts: [ObjectIdentifier: NativeMessagingHost] = [:]
+    private var activeMessagingHosts: [ObjectIdentifier: OneShotNativeRequest] = [:]
 
     /// Open keep-alive ports from background workers, at most one per extension per
     /// controller (see the `connectUsing` delegate method and
@@ -61,7 +80,16 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// long gone must not disarm a keep-alive that a *new* host on the same
     /// (controller, extensionID) key is holding up. Removal is also what makes a
     /// double release (process exit and port disconnect both fire) a no-op.
-    private var liveNativeHosts: [KeepAlivePortKey: [ObjectIdentifier: NativeMessagingHost]] = [:]
+    ///
+    /// The port is kept next to its host so a nativeMessaging denial can end the
+    /// extension's side of the connection too (TASK-25): `host.disconnect()`
+    /// deliberately does not fire the host's own `onDisconnect`, which is what
+    /// would otherwise close the port.
+    private struct LiveNativeHost {
+        let host: NativeMessagingHost
+        let port: WKWebExtension.MessagePort
+    }
+    private var liveNativeHosts: [KeepAlivePortKey: [ObjectIdentifier: LiveNativeHost]] = [:]
 
     /// Whether a native-host connection from an extension may proceed.
     enum NativeHostAccess: Equatable {
@@ -71,19 +99,59 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         /// manifest permission — a worker may open a WebSocket whether or not it
         /// declares `nativeMessaging`, and this host is the only way it can.
         case webSocketRelayHost
-        /// A real native host the extension declared `nativeMessaging` for.
+        /// A real native host the extension declared `nativeMessaging` for, and
+        /// the user has not denied it.
         case allowed
         /// A real native host without the manifest permission.
         case denied
+        /// A real native host the manifest declares `nativeMessaging` for, but
+        /// the user's saved nativeMessaging decision is a denial (TASK-25).
+        case deniedByUser
     }
 
     /// The gate shared by `sendNativeMessage` and `connectNative`. `nativeMessaging`
-    /// is auto-granted at the context level so the polyfill bridge works, so the
-    /// manifest declaration is the real gate for anything but Detour's own hosts.
-    static func nativeHostAccess(hostName: String, manifestPermissions: [String]) -> NativeHostAccess {
+    /// is auto-granted at the context level so the polyfill bridge works, so this
+    /// is the real gate for anything but Detour's own hosts: the manifest must
+    /// declare the permission, and the user's saved decision (Settings) must not
+    /// be a denial. No saved decision means allowed — install saves every declared
+    /// permission as granted, and Chrome grants a declared permission outright.
+    ///
+    /// Detour's own hosts are decided first and never consult the saved decision:
+    /// they are the polyfill bridge and the WebSocket relay, not the user-facing
+    /// "communicate with native applications" capability, and denying them would
+    /// break `runtime` messaging and every worker WebSocket. `savedDecision` is an
+    /// autoclosure so it is only read (a DB lookup) for a real host.
+    static func nativeHostAccess(hostName: String, manifestPermissions: [String],
+                                 savedDecision: @autoclosure () -> ExtensionPermissionStatus?) -> NativeHostAccess {
         if hostName == ExtensionPolyfillHandler.handlerName { return .polyfillHost }
         if hostName == WebSocketRelaySession.hostName { return .webSocketRelayHost }
-        return manifestPermissions.contains("nativeMessaging") ? .allowed : .denied
+        guard manifestPermissions.contains(ExtensionPermissionRecord.nativeMessagingKey) else { return .denied }
+        return savedDecision() == .denied ? .deniedByUser : .allowed
+    }
+
+    /// `nativeHostAccess` for a delegate callback: the manifest and the saved
+    /// decision of the profile-verified extension id (none for a stale context,
+    /// which therefore reads as `.denied` for any real host).
+    private func nativeHostAccess(hostName: String, extensionID: String?) -> NativeHostAccess {
+        let manifestPermissions = extensionID
+            .flatMap { self.extension(withID: $0)?.manifest.permissions } ?? []
+        return Self.nativeHostAccess(
+            hostName: hostName, manifestPermissions: manifestPermissions,
+            savedDecision: extensionID.flatMap {
+                AppDatabase.shared.permissionStatus(
+                    extensionID: $0, key: ExtensionPermissionRecord.nativeMessagingKey, type: .apiPermission)
+            })
+    }
+
+    /// What an extension sees when the user denied nativeMessaging: Chrome's own
+    /// wording for a host the extension may not use, delivered the same way as
+    /// every other native-host failure — a rejected `sendNativeMessage` promise /
+    /// `runtime.lastError`, or a port disconnected with that error.
+    static let nativeHostForbiddenMessage = "Access to the specified native messaging host is forbidden."
+
+    static func nativeHostForbiddenError() -> NSError {
+        NSError(domain: "DetourExtension", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: nativeHostForbiddenMessage])
     }
 
     // MARK: - Notifications
@@ -351,9 +419,48 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // WebKit closes an unloaded context's ports itself, but that only ends the
         // extension side of the conversation: disconnect the hosts explicitly so the
         // processes are gone rather than left talking to a dead context.
-        for host in hosts.values {
-            host.disconnect()
+        for live in hosts.values {
+            live.host.disconnect()
         }
+    }
+
+    /// Tear down every real native host the extension has running, in every
+    /// profile: its long-lived `connectNative` hosts (process killed, port
+    /// disconnected with the forbidden error, keep-alive released) and any
+    /// one-shot `sendNativeMessage` still waiting for its reply (process killed,
+    /// reply rejected). Detour's built-in hosts are untouched — the keep-alive
+    /// port and relayed WebSockets are not in these registries. Called when the
+    /// user denies nativeMessaging (TASK-25). Returns how many hosts were torn
+    /// down.
+    @discardableResult
+    func disconnectRealNativeHosts(for extensionID: String) -> Int {
+        let error = Self.nativeHostForbiddenError()
+        var torn = 0
+
+        for key in liveNativeHosts.keys where key.extensionID == extensionID {
+            // Take the whole entry first: each port's disconnect handler and each
+            // host's release then find nothing left to release, so the keep-alive
+            // is released exactly once per host, here.
+            let hosts = liveNativeHosts.removeValue(forKey: key) ?? [:]
+            for live in hosts.values {
+                live.host.disconnect()
+                live.port.disconnect(throwing: error)
+                applyKeepAlive(.hostDisconnected, for: key)
+                torn += 1
+            }
+        }
+
+        for (hostKey, request) in activeMessagingHosts where request.host.extensionID == extensionID {
+            activeMessagingHosts.removeValue(forKey: hostKey)
+            request.host.disconnect()
+            request.finish(nil, error)
+            torn += 1
+        }
+
+        if torn > 0 {
+            log.info("Disconnected \(torn) native host(s) for \(extensionID, privacy: .public): nativeMessaging denied")
+        }
+        return torn
     }
 
     /// Start a relayed WebSocket for a worker that connected to the relay host
@@ -481,6 +588,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Tests only.
     func liveNativeHostCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
         liveNativeHosts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)]?.count ?? 0
+    }
+
+    /// One-shot native messages still waiting for their host's reply. Tests only.
+    func pendingOneShotNativeMessageCountForTesting(extensionID: String) -> Int {
+        activeMessagingHosts.values.filter { $0.host.extensionID == extensionID }.count
     }
 
     /// Relayed WebSockets currently open for the extension (TASK-8). Tests only.
@@ -1050,6 +1162,81 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         )
     }
 
+    // MARK: - Permission decisions (Settings)
+
+    /// Save the user's decision for one permission row and apply it right away
+    /// to every loaded context of the extension, in every profile — the Settings
+    /// toggles' single entry point (TASK-25), so no change waits for a relaunch.
+    ///
+    /// - `nativeMessaging` is never applied to a context (the context keeps it so
+    ///   Detour's built-in hosts work, see `Profile.loadExtensionContext`). The
+    ///   saved row is what `nativeHostAccess` enforces on the next connect, and a
+    ///   denial also tears down the real hosts the extension already has running.
+    /// - Host rows (`.matchPattern` and `.url`) re-run the whole saved host-access
+    ///   restore on each context rather than setting only the toggled key.
+    ///   Overlapping patterns interact in WebKit — a later write erases what the
+    ///   opposite set held under it — so setting one key alone could, say, let a
+    ///   broad grant wipe a narrower saved denial for the rest of the session,
+    ///   while the next launch (which restores in grant-then-deny order) would
+    ///   bring the denial back. Clearing the toggled key and re-running the
+    ///   restore makes the live state the state the next launch produces. The
+    ///   same manifest gate applies, so a row
+    ///   the manifest cannot ask for is saved but stays inert, as on load.
+    /// - Other API permissions are set on the context directly.
+    @MainActor
+    func setPermissionDecision(extensionID: String, key: String,
+                               type: ExtensionPermissionType, granted: Bool) {
+        let status: ExtensionPermissionStatus = granted ? .granted : .denied
+        AppDatabase.shared.savePermission(ExtensionPermissionRecord(
+            extensionID: extensionID, key: key, type: type, status: status))
+
+        if type == .apiPermission, key == ExtensionPermissionRecord.nativeMessagingKey {
+            if !granted {
+                disconnectRealNativeHosts(for: extensionID)
+            }
+            return
+        }
+
+        let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
+        guard !contexts.isEmpty else { return }
+
+        switch type {
+        case .apiPermission:
+            let permission = WKWebExtension.Permission(rawValue: key)
+            for context in contexts {
+                context.setPermissionStatus(status.contextStatus, for: permission)
+            }
+        case .matchPattern, .url:
+            guard let ext = self.extension(withID: extensionID) else { return }
+            let saved = AppDatabase.shared.loadPermissions(extensionID: extensionID)
+            for context in contexts {
+                // Forget the context's previous status for the toggled key first:
+                // the restore only ever *adds* entries, and not every WebKit write
+                // replaces its opposite. For the all-hosts pattern neither a grant
+                // nor `.unknown` removes an earlier `<all_urls>` denial, which
+                // then keeps winning (pinned by
+                // ExtensionPermissionRestoreTests.testWebKitAllHostsGrantDoesNotEraseAllHostsDenial),
+                // so a pattern key is dropped from both dictionaries directly.
+                // A `.url` key widens to a non-all-hosts origin pattern, which
+                // `.unknown` does clear.
+                switch type {
+                case .matchPattern:
+                    context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns
+                        .filter { $0.key.string != key }
+                    context.deniedPermissionMatchPatterns = context.deniedPermissionMatchPatterns
+                        .filter { $0.key.string != key }
+                case .url:
+                    if let url = URL(string: key) {
+                        context.setPermissionStatus(.unknown, for: url)
+                    }
+                case .apiPermission:
+                    break
+                }
+                Profile.applySavedHostAccessDecisions(saved, for: ext, to: context)
+            }
+        }
+    }
+
     /// Find the extension ID for a context by searching the owning profile.
     private func extensionIDFromContext(_ context: WKWebExtensionContext) -> String? {
         guard let controller = context.webExtensionController,
@@ -1417,15 +1604,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         // nativeMessaging is auto-granted so the polyfill bridge works, but real
         // native messaging hosts should only be reachable by extensions that
-        // explicitly declared the permission in their manifest. Decided before the
-        // extension id is resolved, so Detour's own host names can never fall
-        // through to the real-host path below — where they are exempt from the
-        // manifest gate and a process named after one would be searched for and
+        // explicitly declared the permission in their manifest and whose
+        // nativeMessaging the user has not denied. Decided by host name first, so
+        // Detour's own host names can never fall through to the real-host path
+        // below — where a process named after one would be searched for and
         // spawned.
         let resolvedExtensionID = extensionIDFromContext(extensionContext)
-        let manifestPermissions = resolvedExtensionID
-            .flatMap { self.extension(withID: $0)?.manifest.permissions } ?? []
-        switch Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) {
+        switch nativeHostAccess(hostName: hostName, extensionID: resolvedExtensionID) {
         case .polyfillHost:
             // Unreachable: the polyfill envelope path above answers this host name
             // and always returns. Kept so the exhaustive switch is the only place
@@ -1453,6 +1638,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
             return
+        case .deniedByUser:
+            // Refused before any host object exists: nothing is looked up or spawned.
+            log.warning("Refusing native message to '\(hostName, privacy: .public)' from \(resolvedExtensionID ?? "?", privacy: .public): nativeMessaging denied by the user")
+            replyHandler(nil, Self.nativeHostForbiddenError())
+            return
         case .allowed:
             break
         }
@@ -1465,14 +1655,26 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         let host = NativeMessagingHost(hostName: hostName, extensionID: extID)
         let hostKey = ObjectIdentifier(host)
-        activeMessagingHosts[hostKey] = host
+        let request = OneShotNativeRequest(host: host, replyHandler: replyHandler)
+        activeMessagingHosts[hostKey] = request
 
-        host.onMessage = { [weak self] response in
+        // The request is captured weakly: the registry owns it (and through it the
+        // host), so the host's own callbacks cannot keep it alive in a cycle. The
+        // reply is delivered at most once, whichever of these ends it first.
+        // (Each callback takes a strong local before dropping the registry entry,
+        // which would otherwise release the request it is about to answer.)
+        host.onMessage = { [weak self, weak request] response in
+            guard let request else { return }
             self?.activeMessagingHosts.removeValue(forKey: hostKey)
-            replyHandler(response, nil)
+            request.finish(response, nil)
         }
-        host.onDisconnect = { [weak self] _ in
+        host.onDisconnect = { [weak self, weak request] _ in
+            guard let request else { return }
             self?.activeMessagingHosts.removeValue(forKey: hostKey)
+            // A host that exits without answering must still settle the
+            // extension's promise, with Chrome's wording for it.
+            request.finish(nil, NSError(domain: "DetourExtension", code: -1,
+                                        userInfo: [NSLocalizedDescriptionKey: "Native host has exited."]))
         }
         do {
             try host.connect()
@@ -1481,7 +1683,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
         } catch {
             activeMessagingHosts.removeValue(forKey: hostKey)
-            replyHandler(nil, error)
+            request.finish(nil, error)
         }
     }
 
@@ -1496,11 +1698,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return
         }
 
-        // Decided before the extension id is resolved: Detour's own hosts need no
-        // manifest permission, and the relay needs no extension record at all.
+        // Decided by host name first: Detour's own hosts need no manifest
+        // permission and ignore the user's nativeMessaging decision, and the relay
+        // needs no extension record at all.
         let resolvedExtensionID = extensionIDFromContext(extensionContext)
-        let manifestPermissions = resolvedExtensionID
-            .flatMap { self.extension(withID: $0)?.manifest.permissions } ?? []
 
         // Every path but the relay's needs the profile-verified id.
         func verifiedExtensionID() -> String? {
@@ -1509,7 +1710,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return nil
         }
 
-        switch Self.nativeHostAccess(hostName: hostName, manifestPermissions: manifestPermissions) {
+        switch nativeHostAccess(hostName: hostName, extensionID: resolvedExtensionID) {
         case .webSocketRelayHost:
             // The relay only labels its session with the extension id, so it needs
             // no extension record — but when a Profile owns this controller the id
@@ -1577,6 +1778,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
             return
+        case .deniedByUser:
+            guard let extID = verifiedExtensionID() else { return }
+            // Refused before any host object exists: nothing is looked up or spawned.
+            log.warning("Refusing connectNative to '\(hostName, privacy: .public)' from \(extID, privacy: .public): nativeMessaging denied by the user")
+            completionHandler(Self.nativeHostForbiddenError())
+            return
         case .allowed:
             break
         }
@@ -1625,7 +1832,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(error)
             return
         }
-        liveNativeHosts[keepAliveKey, default: [:]][hostKey] = host
+        liveNativeHosts[keepAliveKey, default: [:]][hostKey] = LiveNativeHost(host: host, port: port)
         applyKeepAlive(.hostConnected, for: keepAliveKey)
         completionHandler(nil)
     }

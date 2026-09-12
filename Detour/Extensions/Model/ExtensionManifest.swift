@@ -9,6 +9,7 @@ struct ExtensionManifest: Codable {
     let permissions: [String]?
     let hostPermissions: [String]?
     let optionalPermissions: [String]?
+    let optionalHostPermissions: [String]?
     let action: Action?
     let background: Background?
     let contentScripts: [ContentScript]?
@@ -144,6 +145,7 @@ struct ExtensionManifest: Codable {
         case name, version, description, permissions, action, background, commands, key
         case hostPermissions = "host_permissions"
         case optionalPermissions = "optional_permissions"
+        case optionalHostPermissions = "optional_host_permissions"
         case defaultLocale = "default_locale"
         case contentScripts = "content_scripts"
         case optionsPage = "options_page"

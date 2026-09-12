@@ -691,4 +691,253 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
         XCTAssertTrue(context.hasAccess(to: try url("https://www.example.com/x")),
                       "the broad grant still covers the rest of the origin")
     }
+
+    // MARK: - TASK-25: Settings rows for optional host permissions
+
+    private func savedStatus(_ ext: WebExtension, _ key: String,
+                             _ type: ExtensionPermissionType) -> ExtensionPermissionStatus? {
+        AppDatabase.shared.permissionStatus(extensionID: ext.id, key: key, type: type)
+    }
+
+    func testManifestParsesOptionalHostPermissions() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*", "<all_urls>"])
+        XCTAssertEqual(ext.manifest.optionalHostPermissions, ["https://opt.example/*", "<all_urls>"])
+    }
+
+    /// POSITIVE: turning an optional host pattern on writes the row and grants it
+    /// on the already-loaded context — no reload.
+    func testGrantingOptionalHostPatternAppliesToLoadedContext() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        let profile = makeProfile("Toggle Optional Grant Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertFalse(context.hasAccess(to: try url("https://opt.example/page")))
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "https://opt.example/*", type: .matchPattern, granted: true)
+
+        XCTAssertEqual(savedStatus(ext, "https://opt.example/*", .matchPattern), .granted)
+        XCTAssertTrue(context.hasAccess(to: try url("https://opt.example/page")),
+                      "the grant must take effect on the loaded context")
+        XCTAssertTrue(profile.extensionContexts[ext.id] === context, "no reload happened")
+    }
+
+    /// NEGATIVE: turning it off writes a denial and revokes access live.
+    func testDenyingOptionalHostPatternAppliesToLoadedContext() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        savePermission(ext, key: "https://opt.example/*", type: .matchPattern, status: .granted)
+        let profile = makeProfile("Toggle Optional Deny Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertTrue(context.hasAccess(to: try url("https://opt.example/page")))
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "https://opt.example/*", type: .matchPattern, granted: false)
+
+        XCTAssertEqual(savedStatus(ext, "https://opt.example/*", .matchPattern), .denied)
+        XCTAssertFalse(context.hasAccess(to: try url("https://opt.example/page")))
+        XCTAssertTrue(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "https://opt.example/*" },
+                      "an explicit denial, so WebKit does not prompt again")
+    }
+
+    /// The reversal the task exists for: a Deny taken at a prompt is undone from
+    /// Settings, and the grant survives a reload (it is the saved row).
+    func testReversingDeniedSubPatternFromSettingsSurvivesReload() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "https://mail.example/*", type: .matchPattern, status: .denied)
+        let profile = makeProfile("Toggle Sub Pattern Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertFalse(context.hasAccess(to: try url("https://mail.example/inbox")))
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "https://mail.example/*", type: .matchPattern, granted: true)
+        XCTAssertTrue(context.hasAccess(to: try url("https://mail.example/inbox")),
+                      "the reversed denial must take effect on the loaded context")
+        XCTAssertFalse(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "https://mail.example/*" })
+
+        profile.unloadExtension(id: ext.id)
+        let reloaded = try loadContext(profile, ext)
+        XCTAssertTrue(reloaded.hasAccess(to: try url("https://mail.example/inbox")))
+    }
+
+    /// Pins the WebKit behaviour `setPermissionDecision` works around (probed
+    /// 2026-09-12): for the all-hosts pattern neither `.unknown` nor a grant
+    /// removes an existing `<all_urls>` denial, and the denial keeps winning;
+    /// only replacing the denied dictionary does. If this starts failing, WebKit
+    /// changed and the dictionary filtering there may be unnecessary.
+    func testWebKitAllHostsGrantDoesNotEraseAllHostsDenial() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .denied)
+        let context = try loadContext(makeProfile("All Hosts Pin Profile"), ext)
+        let allURLs = try WKWebExtension.MatchPattern(string: "<all_urls>")
+        let anySite = try url("https://anything.example/")
+
+        context.setPermissionStatus(.unknown, for: allURLs)
+        XCTAssertTrue(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "<all_urls>" },
+                      ".unknown does not clear an all-hosts denial")
+        context.setPermissionStatus(.grantedExplicitly, for: allURLs)
+        XCTAssertFalse(context.hasAccess(to: anySite), "the stale all-hosts denial still wins over the grant")
+
+        context.deniedPermissionMatchPatterns = context.deniedPermissionMatchPatterns
+            .filter { $0.key.string != "<all_urls>" }
+        XCTAssertTrue(context.hasAccess(to: anySite), "dropping the denial from the dictionary does")
+    }
+
+    /// `<all_urls>` is WebKit's all-hosts pattern, which it special-cases; the
+    /// toggle must still flip it both ways on a live context.
+    func testTogglingOptionalAllURLsBothWaysOnLoadedContext() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .denied)
+        let profile = makeProfile("Toggle All URLs Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertFalse(context.hasAccess(to: try url("https://anything.example/")))
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "<all_urls>", type: .matchPattern, granted: true)
+        XCTAssertTrue(context.hasAccess(to: try url("https://anything.example/")),
+                      "granting a denied <all_urls> must take effect live")
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "<all_urls>", type: .matchPattern, granted: false)
+        XCTAssertFalse(context.hasAccess(to: try url("https://anything.example/")),
+                       "denying it again must take effect live")
+    }
+
+    /// NEGATIVE: the live state after a toggle is the post-relaunch state. A
+    /// broad grant toggled on must not erase a narrower saved denial for the
+    /// session (setting the key alone would: WebKit's broad write subsumes it).
+    func testBroadGrantToggleKeepsNarrowSavedDenialLive() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["*://*.example.com/*"])
+        savePermission(ext, key: "https://sub.example.com/*", type: .matchPattern, status: .denied)
+        let profile = makeProfile("Toggle Broad Grant Profile")
+        let context = try loadContext(profile, ext)
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "*://*.example.com/*", type: .matchPattern, granted: true)
+
+        XCTAssertTrue(context.hasAccess(to: try url("https://www.example.com/x")))
+        XCTAssertFalse(context.hasAccess(to: try url("https://sub.example.com/x")),
+                       "the narrow denial must survive the broad grant, as it does on reload")
+    }
+
+    /// NEGATIVE: a pattern outside every manifest pattern is saved but stays
+    /// inert — the toggle obeys the restore's gate.
+    func testTogglingPatternOutsideManifestDoesNotGrant() async throws {
+        let ext = try await makeTestExtension(hostPermissions: ["https://a.example/*"])
+        let profile = makeProfile("Toggle Stale Pattern Profile")
+        let context = try loadContext(profile, ext)
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "https://mail.example/*", type: .matchPattern, granted: true)
+
+        XCTAssertFalse(context.hasAccess(to: try url("https://mail.example/inbox")))
+        XCTAssertTrue(context.grantedPermissionMatchPatterns.isEmpty)
+    }
+
+    /// Every profile that has the extension loaded is updated.
+    func testToggleAppliesToEveryProfilesContext() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        let first = try loadContext(makeProfile("Toggle Profile One"), ext)
+        let second = try loadContext(makeProfile("Toggle Profile Two"), ext)
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "https://opt.example/*", type: .matchPattern, granted: true)
+
+        XCTAssertTrue(first.hasAccess(to: try url("https://opt.example/page")))
+        XCTAssertTrue(second.hasAccess(to: try url("https://opt.example/page")))
+    }
+
+    /// A site-access (`.url`) toggle still applies live through the same path.
+    func testSiteAccessURLToggleAppliesToLoadedContext() async throws {
+        let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
+        savePermission(ext, key: "https://site.example/page", type: .url, status: .granted)
+        let profile = makeProfile("Toggle URL Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertTrue(context.hasAccess(to: try url("https://site.example/page")))
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "https://site.example/page", type: .url, granted: false)
+
+        XCTAssertEqual(savedStatus(ext, "https://site.example/page", .url), .denied)
+        XCTAssertFalse(context.hasAccess(to: try url("https://site.example/page")))
+    }
+
+    /// An API permission toggle is applied to the context directly.
+    func testOptionalAPIPermissionToggleAppliesToLoadedContext() async throws {
+        let ext = try await makeTestExtension(optionalPermissions: ["cookies"])
+        let profile = makeProfile("Toggle API Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertFalse(context.hasPermission(.cookies))
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "cookies", type: .apiPermission, granted: true)
+        XCTAssertTrue(context.hasPermission(.cookies))
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "cookies", type: .apiPermission, granted: false)
+        XCTAssertEqual(context.permissionStatus(for: .cookies), .deniedExplicitly)
+    }
+
+    /// NEGATIVE: denying nativeMessaging never reaches the context — the context
+    /// keeps it so Detour's built-in hosts work, and the denial is enforced at
+    /// host dispatch instead (see NativeMessagingEnforcementTests).
+    func testNativeMessagingDenialIsNotAppliedToTheContext() async throws {
+        let ext = try await makeTestExtension(permissions: ["nativeMessaging"])
+        let profile = makeProfile("Toggle Native Messaging Profile")
+        let context = try loadContext(profile, ext)
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "nativeMessaging", type: .apiPermission, granted: false)
+
+        XCTAssertEqual(savedStatus(ext, "nativeMessaging", .apiPermission), .denied, "the row is written")
+        XCTAssertTrue(context.hasPermission(.nativeMessaging),
+                      "the context must keep nativeMessaging for the polyfill bridge")
+
+        profile.unloadExtension(id: ext.id)
+        let reloaded = try loadContext(profile, ext)
+        XCTAssertTrue(reloaded.hasPermission(.nativeMessaging), "nor may a reload apply the denial")
+    }
+
+    // MARK: TASK-25: which saved sub-pattern rows Settings lists
+
+    func testSavedSubPatternKeysListRestorableRowsNotInTheManifest() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["<all_urls>"])
+        let keys = ext.savedSubPatternDecisionKeys(in: [
+            "https://mail.example/*": .denied,
+            "https://docs.example/*": .granted,
+            "https://a.example/*": .granted,     // a manifest host permission: its own row
+            "<all_urls>": .granted,              // a manifest optional pattern: its own row
+        ])
+        XCTAssertEqual(keys, ["https://docs.example/*", "https://mail.example/*"])
+    }
+
+    /// NEGATIVE: rows outside every manifest pattern, and keys that do not parse,
+    /// are stale — listing one would offer a switch the next launch ignores.
+    func testSavedSubPatternKeysOmitStaleAndInvalidRows() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://*.opt.example/*"])
+        let keys = ext.savedSubPatternDecisionKeys(in: [
+            "https://mail.opt.example/*": .granted,
+            "https://mail.example/*": .granted,
+            "not a pattern": .denied,
+        ])
+        XCTAssertEqual(keys, ["https://mail.opt.example/*"])
+    }
 }

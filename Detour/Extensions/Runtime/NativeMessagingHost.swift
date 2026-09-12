@@ -28,7 +28,9 @@ class NativeMessagingHost {
     /// Debug builds additionally honor `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`, searched
     /// first, so an isolated test profile can point a host name at a stand-in binary
     /// (e.g. a fake host that keeps the port open) without touching the real manifests.
-    static let searchDirectories: [String] = {
+    /// Read on every lookup rather than once, so a test can point it at a fake
+    /// host directory in-process (TASK-25).
+    static var searchDirectories: [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var directories = [
             "\(home)/Library/Application Support/Google/Chrome/NativeMessagingHosts",
@@ -37,12 +39,12 @@ class NativeMessagingHost {
             "/Library/Google/Chrome/NativeMessagingHosts",
         ]
         #if DEBUG
-        if let override = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"], !override.isEmpty {
+        if let raw = getenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR"), case let override = String(cString: raw), !override.isEmpty {
             directories.insert(override, at: 0)
         }
         #endif
         return directories
-    }()
+    }
 
     static let maxMessageSize = 1_048_576 // 1 MB
 

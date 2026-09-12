@@ -225,6 +225,10 @@ final class ExtensionPermissionTests: XCTestCase {
         let saved = db.loadPermissions(extensionID: "ext-1")
         XCTAssertEqual(saved.statusByKey(type: .apiPermission)["cookies"], .denied,
                        "an unknown status must fail closed")
+        // The single-key lookup the native-host gate uses must agree (TASK-25):
+        // a present-but-unreadable nativeMessaging row may not read as "no row".
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "cookies", type: .apiPermission), .denied,
+                       "permissionStatus must fail closed too")
     }
 
     // MARK: - Native Messaging Host Gate (positive)
@@ -233,13 +237,13 @@ final class ExtensionPermissionTests: XCTestCase {
     /// service-worker keep-alive, so it is accepted without any manifest permission.
     func testNativeHostAccessAllowsPolyfillHostWithoutPermission() {
         let access = ExtensionManager.nativeHostAccess(
-            hostName: ExtensionPolyfillHandler.handlerName, manifestPermissions: [])
+            hostName: ExtensionPolyfillHandler.handlerName, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .polyfillHost)
     }
 
     func testNativeHostAccessAllowsRealHostWithNativeMessagingPermission() {
         let access = ExtensionManager.nativeHostAccess(
-            hostName: "com.1password.browser-support", manifestPermissions: ["nativeMessaging"])
+            hostName: "com.1password.browser-support", manifestPermissions: ["nativeMessaging"], savedDecision: nil)
         XCTAssertEqual(access, .allowed)
     }
 
@@ -249,7 +253,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// manifest gate. It spawns no process: the port drives a URLSession socket.
     func testNativeHostAccessAllowsWebSocketRelayHostWithoutPermission() {
         let access = ExtensionManager.nativeHostAccess(
-            hostName: WebSocketRelaySession.hostName, manifestPermissions: [])
+            hostName: WebSocketRelaySession.hostName, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .webSocketRelayHost)
     }
 
@@ -257,7 +261,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// a real host to spawn.
     func testNativeHostAccessKeepsRelayHostDistinctWithNativeMessaging() {
         let access = ExtensionManager.nativeHostAccess(
-            hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"])
+            hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"], savedDecision: nil)
         XCTAssertEqual(access, .webSocketRelayHost)
     }
 
@@ -320,13 +324,13 @@ final class ExtensionPermissionTests: XCTestCase {
 
     func testNativeHostAccessDeniesRealHostWithoutPermissions() {
         let access = ExtensionManager.nativeHostAccess(
-            hostName: "com.1password.browser-support", manifestPermissions: [])
+            hostName: "com.1password.browser-support", manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .denied)
     }
 
     func testNativeHostAccessDeniesRealHostWithUnrelatedPermissions() {
         let access = ExtensionManager.nativeHostAccess(
-            hostName: "com.1password.browser-support", manifestPermissions: ["storage", "tabs"])
+            hostName: "com.1password.browser-support", manifestPermissions: ["storage", "tabs"], savedDecision: nil)
         XCTAssertEqual(access, .denied)
     }
 
@@ -334,14 +338,14 @@ final class ExtensionPermissionTests: XCTestCase {
     /// merely contains or suffixes it must not inherit the free pass.
     func testNativeHostAccessDeniesHostNameContainingPolyfillHost() {
         let name = "com.example." + ExtensionPolyfillHandler.handlerName
-        let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [])
+        let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .denied)
     }
 
     /// Same exact-match rule for the relay host.
     func testNativeHostAccessDeniesHostNameContainingRelayHost() {
         let name = "com.example." + WebSocketRelaySession.hostName
-        let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [])
+        let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .denied)
     }
 
@@ -350,10 +354,84 @@ final class ExtensionPermissionTests: XCTestCase {
     /// not `.allowed`, so the delegate's gate rejects it with its own error.
     func testNativeHostAccessForRelayHostIsNotAllowedForSendNativeMessage() {
         let access = ExtensionManager.nativeHostAccess(
-            hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"])
+            hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"], savedDecision: nil)
         XCTAssertNotEqual(access, .allowed,
                           "sendNativeMessage only proceeds on .allowed; the relay must never be that")
         XCTAssertNotEqual(access, .polyfillHost,
                           "nor may it be mistaken for the polyfill bridge's envelope host")
+    }
+}
+
+// MARK: - TASK-25: the user's saved nativeMessaging decision
+
+extension ExtensionPermissionTests {
+
+    private static let realHost = "com.1password.browser-support"
+
+    // MARK: Positive
+
+    /// No saved decision: a declared permission is in force, as in Chrome.
+    func testNativeHostAccessAllowsRealHostWithNoSavedDecision() {
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: Self.realHost, manifestPermissions: ["nativeMessaging"], savedDecision: nil), .allowed)
+    }
+
+    func testNativeHostAccessAllowsRealHostWithSavedGrant() {
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: Self.realHost, manifestPermissions: ["nativeMessaging"], savedDecision: .granted), .allowed)
+    }
+
+    /// The built-in hosts are Detour's own bridge, not the user-facing
+    /// capability: a denial never reaches them.
+    func testNativeHostAccessIgnoresDenialForPolyfillHost() {
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: ExtensionPolyfillHandler.handlerName,
+            manifestPermissions: ["nativeMessaging"], savedDecision: .denied), .polyfillHost)
+    }
+
+    func testNativeHostAccessIgnoresDenialForWebSocketRelayHost() {
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: WebSocketRelaySession.hostName,
+            manifestPermissions: ["nativeMessaging"], savedDecision: .denied), .webSocketRelayHost)
+    }
+
+    /// The saved decision is only read for a real host (it is a DB lookup).
+    func testNativeHostAccessDoesNotReadSavedDecisionForBuiltInHosts() {
+        var reads = 0
+        func decision() -> ExtensionPermissionStatus? { reads += 1; return .denied }
+        _ = ExtensionManager.nativeHostAccess(
+            hostName: ExtensionPolyfillHandler.handlerName, manifestPermissions: ["nativeMessaging"],
+            savedDecision: decision())
+        _ = ExtensionManager.nativeHostAccess(
+            hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"],
+            savedDecision: decision())
+        XCTAssertEqual(reads, 0)
+    }
+
+    // MARK: Negative
+
+    func testNativeHostAccessDeniesRealHostWithSavedDenial() {
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: Self.realHost, manifestPermissions: ["nativeMessaging"], savedDecision: .denied), .deniedByUser)
+    }
+
+    /// A saved grant cannot stand in for the manifest declaration: the manifest
+    /// gate still comes first.
+    func testNativeHostAccessSavedGrantDoesNotBypassManifestGate() {
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: Self.realHost, manifestPermissions: [], savedDecision: .granted), .denied)
+    }
+
+    /// The built-in exemption is still an exact match with a denial saved.
+    func testNativeHostAccessDeniesLookalikeOfBuiltInHostWithSavedDenial() {
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: "com.example." + ExtensionPolyfillHandler.handlerName,
+            manifestPermissions: ["nativeMessaging"], savedDecision: .denied), .deniedByUser)
+    }
+
+    func testNativeHostForbiddenErrorUsesChromeWording() {
+        let error = ExtensionManager.nativeHostForbiddenError()
+        XCTAssertEqual(error.localizedDescription, "Access to the specified native messaging host is forbidden.")
+        XCTAssertEqual(error.domain, "DetourExtension")
     }
 }

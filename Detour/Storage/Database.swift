@@ -666,6 +666,7 @@ struct AppDatabase {
         }
     }
 
+    /// The saved decision for one key, or nil when none is saved.
     func permissionStatus(extensionID: String, key: String, type: ExtensionPermissionType) -> ExtensionPermissionStatus? {
         performRead("check extension permission", default: nil) { db in
             if let record = try ExtensionPermissionRecord
@@ -673,7 +674,9 @@ struct AppDatabase {
                     && Column("permissionKey") == key
                     && Column("permissionType") == type.rawValue)
                 .fetchOne(db) {
-                return ExtensionPermissionStatus(rawValue: record.status)
+                // An unrecognised raw status fails closed, as `statusByKey` does:
+                // a present-but-unreadable row must not read as "no decision".
+                return ExtensionPermissionStatus(rawValue: record.status) ?? .denied
             }
             return nil
         }

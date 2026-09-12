@@ -42,6 +42,12 @@ struct ExtensionPermissionRecord: Codable, FetchableRecord, PersistableRecord {
         self.grantedAt = grantedAt
     }
 
+    /// The API permission key whose saved decision gates real native messaging
+    /// hosts (TASK-25). Never applied to a context: the context always holds
+    /// `nativeMessaging` so Detour's own bridge hosts keep working, and
+    /// `ExtensionManager` enforces the saved decision at host dispatch instead.
+    static let nativeMessagingKey = WKWebExtension.Permission.nativeMessaging.rawValue
+
     init(extensionID: String, key: String, type: ExtensionPermissionType, status: ExtensionPermissionStatus) {
         self.extensionID = extensionID
         self.permissionKey = key
