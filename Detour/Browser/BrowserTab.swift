@@ -426,11 +426,26 @@ class BrowserTab: NSObject {
     private func releaseWebView() {
         guard let webView else { return }
         webView.removeObserver(self, forKeyPath: "_isPlayingAudio")
+        // The KVO observer above is the only writer of `isPlayingAudio`, and it
+        // dispatches async — so a forced release mid-playback would otherwise pin
+        // the flag true on a tab with no web view (sticky sidebar indicator, and
+        // `sleepStaleTabs` would never auto-sleep the tab again).
+        isPlayingAudio = false
         faviconCancellables.removeAll()
         webView.removeFromSuperview()
         webViewContainer?.removeFromSuperview()
         webViewContainer = nil
         self.webView = nil
+    }
+
+    /// Whether this tab is showing a page from the `webkit-extension://<host>/`
+    /// origin. A live web view has already moved on when `url` has not (the
+    /// published property only follows it through a KVO publisher), so the web
+    /// view is preferred while one is attached; `url` covers a sleeping tab, or
+    /// one whose web view another window owns.
+    func showsExtensionPage(ofOriginHost host: String) -> Bool {
+        guard let url = webView?.url ?? url else { return false }
+        return isExtensionPage(url, ofOriginHost: host)
     }
 
     // MARK: - Sleep / Wake
@@ -462,17 +477,57 @@ class BrowserTab: NSObject {
         canGoForward = false
     }
 
+    /// Rehomes the tab onto `url`, discarding the page it is currently showing.
+    ///
+    /// Used when a tab's origin dies under it: a reloaded `WKWebExtensionContext`
+    /// gets a fresh `webkit-extension://<UUID>/` base URL, so the open page's
+    /// native bindings are gone and only a load from the new origin revives it.
+    ///
+    /// Unlike `sleep(force:)` this *discards* `cachedInteractionState` — restoring
+    /// it would put the tab straight back on the dead URL — and unlike `load` it
+    /// does not navigate the existing web view: that view was built from the old
+    /// context's configuration and cannot load the new origin at all. The tab is
+    /// left sleeping so the display path (`claimWebView` → `wakeIfNeeded` →
+    /// `wake`) rebuilds it against the new origin's configuration, which is also
+    /// what makes this correct for a tab whose web view is owned by another
+    /// window (or by none).
+    func retarget(to url: URL) {
+        webView?.pauseAllMediaPlayback(completionHandler: nil)
+        // As in `sleep(force:)`: a tab that has released its web view must not
+        // keep a live peek web view behind it, and the peek's state has to be
+        // captured first or a later save restores the peek to its open-time URL.
+        if let peek = peekTab {
+            savePeekStateForPersistence()
+            peek.sleep(force: true)
+        }
+        releaseWebView()
+        cachedInteractionState = nil
+
+        isSleeping = true
+        isLoading = false
+        estimatedProgress = 0
+        canGoBack = false
+        canGoForward = false
+        navigationPending = false
+
+        self.url = url
+        lastAttemptedURL = url
+        // Title and favicon are deliberately kept, unlike `load`: this is the
+        // *same page* coming back from a new internal origin, not a navigation to
+        // somewhere else, so replacing them would flash a raw
+        // `webkit-extension://<uuid>/…` title and drop an icon that is still
+        // right. Adopting the new host also keeps the host-change observer in
+        // `setupObservers` from clearing them when the page loads — which matters,
+        // because an extension page's icon lives at an extension URL and could
+        // not be fetched again.
+        previousHost = url.host
+    }
+
     func wake() {
         guard webView == nil else { return }
 
-        let config: WKWebViewConfiguration
-        if let spaceID, let space = TabStore.shared.space(withID: spaceID) {
-            config = space.makeWebViewConfiguration()
-        } else {
-            config = WKWebViewConfiguration()
-        }
-
-        self.webView = Self.makeWebView(configuration: config)
+        let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
+        self.webView = Self.makeWebView(configuration: wakeConfiguration(in: space))
         applyUserAgent()
         setupObservers()
 
@@ -489,12 +544,35 @@ class BrowserTab: NSObject {
         // Notify extension contexts that this tab is now available.
         // WKWebExtension needs didOpenTab to associate the new webView
         // with this tab for content script messaging.
-        if let spaceID, let space = TabStore.shared.space(withID: spaceID),
-           let profile = space.profile {
+        if let profile = space?.profile {
             for context in profile.extensionContexts.values {
                 context.didOpenTab(self)
             }
         }
+    }
+
+    /// The configuration a fresh web view for this tab must be built from.
+    ///
+    /// A `webkit-extension://` page can only load in the configuration of the
+    /// context that serves its origin — the space's own configuration has no
+    /// handler for the scheme, which is why `TabStore.addExtensionTab` takes the
+    /// context's configuration in the first place. So an extension tab is woken
+    /// from its owning context's configuration, resolved by *origin host* because
+    /// WebKit gives every loaded context a fresh base URL.
+    ///
+    /// Falls back to the space's configuration when no loaded context claims the
+    /// origin (the extension was disabled, uninstalled, or this is a persisted
+    /// tab from a previous launch): the page is dead either way, but the tab
+    /// still gets a web view rather than crashing the wake.
+    private func wakeConfiguration(in space: Space?) -> WKWebViewConfiguration {
+        if let url, let host = url.host,
+           url.scheme?.caseInsensitiveCompare(ExtensionPageURL.scheme) == .orderedSame,
+           let profile = space?.profile,
+           let extensionID = profile.extensionID(forOriginScheme: ExtensionPageURL.scheme, host: host),
+           let extensionConfig = profile.extensionContext(for: extensionID)?.webViewConfiguration {
+            return extensionConfig
+        }
+        return space?.makeWebViewConfiguration() ?? WKWebViewConfiguration()
     }
 
     /// Records a web content process termination and returns how many have hit

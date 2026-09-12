@@ -461,9 +461,9 @@ final class TabStoreTests: XCTestCase {
                        "selection must move to a surviving tab before the favorite's tab is torn down")
     }
 
-    func testProfileSwapPostsSpaceProfileDidSwapNotification() throws {
+    func testProfileSwapPostsSpaceTabsNeedRehostNotification() throws {
         let (store, space, _, newProfile) = try makeStoreWithTwoProfiles()
-        let exp = expectation(forNotification: .spaceProfileDidSwap, object: nil) { note in
+        let exp = expectation(forNotification: .spaceTabsNeedRehost, object: nil) { note in
             note.userInfo?["spaceID"] as? UUID == space.id
         }
 

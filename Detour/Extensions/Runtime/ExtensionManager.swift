@@ -225,6 +225,71 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         notifyExistingTabs(for: profile, contexts: [context])
     }
 
+    /// Close every tab in `profile` showing a page from the unloaded context's
+    /// origin (`oldBase`, as returned by `Profile.unloadExtension`).
+    ///
+    /// Used when an extension goes away for good — disabled or uninstalled. There
+    /// is no replacement origin to move these pages to (that is
+    /// `Profile.retargetExtensionPages`, for a reload), and a page whose context
+    /// is unloaded is inert: its `chrome.*` bindings are gone and the polyfill
+    /// bridge no longer recognises its origin. So the tab is closed rather than
+    /// navigated somewhere arbitrary — and closed through `TabStore`, so
+    /// selection, split groups and the sidebar all stay consistent. The close is
+    /// deliberately *not* undoable and not recorded on the closed-tab stack: the
+    /// page's origin died with its context (a re-enable mints a fresh one), so a
+    /// restored tab could never load.
+    ///
+    /// A pinned entry and a favourite keep their tile (dormant), matching what
+    /// closing one by hand does. A peek overlay has no `TabStore` close API and
+    /// cannot show an extension page today (it is built from the space
+    /// configuration), so it is left alone.
+    private func closeExtensionPages(in profile: Profile, from oldBase: URL?) {
+        guard let host = oldBase?.host else { return }
+        let store = TabStore.shared
+        // Resolved up front: every mutation below re-resolves its target by id,
+        // so a close that shifts a list cannot make a later one act on the wrong tab.
+        let locations = profile.extensionPageLocations(forOriginHost: host)
+        guard !locations.isEmpty else { return }
+
+        var closed = 0
+        for location in locations {
+            switch location {
+            case .tab(let space, let tab):
+                store.closeTab(id: tab.id, in: space, undoable: false)
+                closed += 1
+            case .pinned(let space, let entry, _):
+                store.closePinnedTab(id: entry.id, in: space, undoable: false)
+                closed += 1
+            case .favorite(let favorite, let tab):
+                // `deactivateFavorite` only tears the tab down and refreshes the
+                // favourites strip; a window displaying it would keep a selection
+                // that no longer resolves and an empty pane. Same remedy as the
+                // profile swap in `TabStore.updateSpace`: move each space's
+                // selection off the tab first, then have windows on those spaces
+                // re-select (the favourite is displayable from any of them).
+                let affectedSpaces = store.spaces.filter { $0.profileID == profile.id }
+                for space in affectedSpaces where space.selectedTabID == tab.id {
+                    space.selectedTabID = space.tabs.first?.id
+                        ?? space.pinnedEntries.first(where: { $0.tab != nil })?.tab?.id
+                }
+                store.deactivateFavorite(id: favorite.id, profileID: profile.id)
+                for space in affectedSpaces {
+                    NotificationCenter.default.post(
+                        name: .spaceTabsNeedRehost, object: nil,
+                        userInfo: ["spaceID": space.id, "tabIDs": Set([tab.id])]
+                    )
+                }
+                closed += 1
+            case .peek:
+                break
+            }
+        }
+
+        if closed > 0 {
+            log.info("Closed \(closed) extension page tab(s) in profile \(profile.name, privacy: .public) after its context was unloaded")
+        }
+    }
+
     /// Drop every port Detour holds for the extension in `controller`'s profile:
     /// the worker's keep-alive port and any relayed WebSockets. Called from
     /// `Profile.unloadExtension` so a reload, disable or uninstall does not strand
@@ -583,10 +648,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func install(from sourceURL: URL, publicKey: Data? = nil) throws -> WebExtension {
         let ext = try ExtensionInstaller.install(from: sourceURL, publicKey: publicKey)
 
-        // Clean up existing extension with same ID
+        // Clean up existing extension with same ID. An update replaces the
+        // context, so the origins its pages are open on are noted here and those
+        // pages are moved onto the replacement's origin below, once it is loaded.
+        var oldBasesByProfile: [UUID: URL] = [:]
         if let existingIdx = extensions.firstIndex(where: { $0.id == ext.id }) {
             for profile in TabStore.shared.profiles {
-                profile.unloadExtension(id: ext.id)
+                if let oldBase = profile.unloadExtension(id: ext.id) {
+                    oldBasesByProfile[profile.id] = oldBase
+                }
             }
             extensions.remove(at: existingIdx)
         }
@@ -626,6 +696,21 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                     }
                 }
 
+                // Pages the replaced version had open are on a dead origin; move
+                // them to the new context's before its tabs are announced, so each
+                // rehosted tab is announced once (on wake) rather than twice. A
+                // profile that got no replacement context (the extension is
+                // disabled there) has no origin to move them to: close them, as
+                // a disable would.
+                for profile in TabStore.shared.profiles {
+                    guard let oldBase = oldBasesByProfile[profile.id] else { continue }
+                    if let context = profile.extensionContext(for: ext.id) {
+                        profile.retargetExtensionPages(from: oldBase, to: context.baseURL)
+                    } else {
+                        closeExtensionPages(in: profile, from: oldBase)
+                    }
+                }
+
                 // Notify existing tabs in relevant profiles
                 for profile in TabStore.shared.profiles {
                     if profile.extensionContext(for: ext.id) != nil {
@@ -634,6 +719,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 }
             } catch {
                 log.error("Failed to load WKWebExtension after install: \(error.localizedDescription, privacy: .public)")
+                // The old contexts are already unloaded; nothing will replace
+                // them, so the pages they served can only be dead.
+                for profile in TabStore.shared.profiles {
+                    closeExtensionPages(in: profile, from: oldBasesByProfile[profile.id])
+                }
             }
         }
 
@@ -647,9 +737,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func uninstall(id: String) {
         log.info("Uninstalling extension \(id, privacy: .public)")
 
-        // Unload from all profiles and remove WebKit extension data
+        // Unload from all profiles and remove WebKit extension data, then close
+        // the pages each unloaded context was serving — the extension is gone, so
+        // they can only be dead.
         for profile in TabStore.shared.profiles {
-            profile.unloadExtension(id: id, removeData: true)
+            let oldBase = profile.unloadExtension(id: id, removeData: true)
+            closeExtensionPages(in: profile, from: oldBase)
         }
 
         extensions.removeAll { $0.id == id }
@@ -676,7 +769,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                     profile.loadExtension(ext)
                     notifyExistingTabs(for: profile)
                 } else {
-                    profile.unloadExtension(id: id)
+                    closeExtensionPages(in: profile, from: profile.unloadExtension(id: id))
                 }
             }
         }
@@ -696,7 +789,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                     profile.loadExtension(ext)
                     notifyExistingTabs(for: profile)
                 } else {
-                    profile.unloadExtension(id: id)
+                    closeExtensionPages(in: profile, from: profile.unloadExtension(id: id))
                 }
             }
         }

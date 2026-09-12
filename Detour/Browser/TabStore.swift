@@ -5,10 +5,13 @@ import WebKit
 
 extension Notification.Name {
     static let tabRestoredByUndo = Notification.Name("tabRestoredByUndo")
-    /// Posted after a space's profile changes and its live tabs were slept so
-    /// they rebind to the new profile. Windows showing the space re-select
-    /// their own displayed tab (userInfo: "spaceID").
-    static let spaceProfileDidSwap = Notification.Name("spaceProfileDidSwap")
+    /// Posted after a space's tabs were slept because the configuration their web
+    /// views were built from is no longer the right one, so each must be rebuilt
+    /// through the display path. Two callers: a space's profile changing
+    /// (`TabStore.updateSpace`), and an extension context reloading under the
+    /// pages it serves (`Profile.retargetExtensionPages`). Windows showing the
+    /// space re-select their own displayed tab (userInfo: "spaceID").
+    static let spaceTabsNeedRehost = Notification.Name("spaceTabsNeedRehost")
 }
 
 protocol TabStoreObserver: AnyObject {
@@ -1284,7 +1287,7 @@ class TabStore {
             // space keeps its place (it falls back to space.selectedTabID only
             // when its own tab no longer resolves).
             NotificationCenter.default.post(
-                name: .spaceProfileDidSwap, object: nil,
+                name: .spaceTabsNeedRehost, object: nil,
                 userInfo: ["spaceID": id]
             )
         }
@@ -1444,7 +1447,12 @@ class TabStore {
         return entry.tab
     }
 
-    func closeTab(id: UUID, in space: Space, archivedAt: Date? = nil) {
+    /// `undoable: false` neither records the tab on the closed-tab stack nor
+    /// registers an undo — for a page that could never be reopened (an extension
+    /// page whose context is gone: its origin dies with the context, and a
+    /// restore would rebuild it from the space configuration, which cannot load
+    /// the scheme at all).
+    func closeTab(id: UUID, in space: Space, archivedAt: Date? = nil, undoable: Bool = true) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs[index]
 
@@ -1461,7 +1469,7 @@ class TabStore {
         let splitPartnerWasLeft = splitPartnerID != nil && closedSplitGroup?.members.first?.id != tab.id
 
         // Archive to closed tab stack (skip incognito)
-        if !space.isIncognito {
+        if undoable, !space.isIncognito {
             let record = ClosedTabRecord(
                 id: nil,
                 tabID: tab.id.uuidString,
@@ -1487,7 +1495,7 @@ class TabStore {
         leaveSplitGroup(tab, in: space)
 
         // Register undo (skip for automated archival)
-        if archivedAt == nil {
+        if undoable, archivedAt == nil {
             registerUndo(actionName: "Close Tab") { [weak self] in
                 guard let self else { return }
                 let restored = BrowserTab(
@@ -2326,7 +2334,8 @@ class TabStore {
         scheduleSave()
     }
 
-    func closePinnedTab(id: UUID, in space: Space) {
+    /// `undoable: false` skips the undo registration — see `closeTab`.
+    func closePinnedTab(id: UUID, in space: Space, undoable: Bool = true) {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
         let entry = space.pinnedEntries[index]
         // Capture tab state for undo before discarding
@@ -2354,7 +2363,7 @@ class TabStore {
             }
         }
 
-        if tab != nil {
+        if undoable, tab != nil {
             registerUndo(actionName: "Close Tab") { [weak self] in
                 guard let self else { return }
                 guard let idx = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }

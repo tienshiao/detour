@@ -265,8 +265,8 @@ class BrowserWindowController: NSWindowController {
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(handleSpaceProfileDidSwap(_:)),
-            name: .spaceProfileDidSwap,
+            selector: #selector(handleSpaceTabsNeedRehost(_:)),
+            name: .spaceTabsNeedRehost,
             object: nil
         )
 
@@ -292,16 +292,40 @@ class BrowserWindowController: NSWindowController {
         selectTab(id: tabID)
     }
 
-    /// After a profile swap slept the space's tabs, re-select this window's own
-    /// displayed tab (waking it under the new profile) so each window keeps its
-    /// place. Falls back to the space's selection when our tab no longer
-    /// resolves — e.g. it was a favorite backing tab the swap deactivated.
-    @objc private func handleSpaceProfileDidSwap(_ notification: Notification) {
+    /// After something slept the space's tabs so they would be rebuilt from a
+    /// different configuration — a profile swap, or an extension context reload
+    /// that moved its pages to a new origin — re-select this window's own
+    /// displayed tab so each window keeps its place and wakes it against the new
+    /// configuration. Falls back to the space's selection when our tab no longer
+    /// resolves — e.g. it was a favorite backing tab the swap deactivated — and
+    /// clears the pane when nothing resolves, rather than keeping a selection
+    /// that points at a torn-down tab.
+    /// Windows on other spaces need nothing: their tabs wake when displayed.
+    ///
+    /// When the poster names the affected tabs (`userInfo["tabIDs"]`), a window
+    /// whose displayed tab (or split partner) is not among them is left alone:
+    /// `selectTab` is not a no-op for an untouched live tab (it re-parents the
+    /// content views, dismisses the palette, cycles PiP and re-announces the
+    /// activation to every extension).
+    @objc private func handleSpaceTabsNeedRehost(_ notification: Notification) {
         guard let spaceID = notification.userInfo?["spaceID"] as? UUID,
               spaceID == activeSpaceID else { return }
+        if let tabIDs = notification.userInfo?["tabIDs"] as? Set<UUID> {
+            var displayed: [UUID] = []
+            if let selectedTabID {
+                displayed.append(selectedTabID)
+                if let space = activeSpace,
+                   let group = store.splitGroup(containing: selectedTabID, in: space) {
+                    displayed.append(contentsOf: group.members.map(\.id))
+                }
+            }
+            guard displayed.contains(where: tabIDs.contains) else { return }
+        }
         let candidates = [selectedTabID, activeSpace?.selectedTabID].compactMap { $0 }
         if let id = candidates.first(where: displayableTab(id:)) {
             selectTab(id: id)
+        } else if selectedTabID != nil {
+            deselectAllTabs()
         }
     }
 

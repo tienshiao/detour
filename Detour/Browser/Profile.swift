@@ -397,8 +397,14 @@ class Profile {
     }
 
     /// Unload an extension from this profile's controller.
-    func unloadExtension(id: String, removeData: Bool = false) {
-        guard let context = extensionContexts.removeValue(forKey: id) else { return }
+    ///
+    /// Returns the unloaded context's `baseURL` — the origin every page the
+    /// extension had open is now stranded on — or nil when nothing was loaded.
+    /// Callers either move those pages to the replacement context's origin
+    /// (`retargetExtensionPages`) or close them (disable/uninstall).
+    @discardableResult
+    func unloadExtension(id: String, removeData: Bool = false) -> URL? {
+        guard let context = extensionContexts.removeValue(forKey: id) else { return nil }
         if let token = extensionErrorObservers.removeValue(forKey: id) {
             NotificationCenter.default.removeObserver(token)
         }
@@ -426,6 +432,7 @@ class Profile {
                 }
             }
         }
+        return context.baseURL
     }
 
     /// Unload every extension loaded in this profile. Called before the profile
@@ -456,6 +463,153 @@ class Profile {
             context.baseURL.scheme?.caseInsensitiveCompare(scheme) == .orderedSame
                 && context.baseURL.host?.caseInsensitiveCompare(host) == .orderedSame
         }?.key
+    }
+
+    // MARK: - Extension pages open in tabs
+
+    /// Where a tab of this profile showing an extension page lives. A tab can be
+    /// in four places, and an extension page can be in any of them: a space's
+    /// normal tabs, a space's pinned entries, a favourite's backing tab (which is
+    /// detached from `space.tabs`), and a tab's peek overlay. Consumers that
+    /// mutate through `TabStore` need the container, not just the tab, to pick
+    /// the right API (`closeTab` / `closePinnedTab` / `deactivateFavorite`).
+    enum ExtensionPageLocation {
+        case tab(Space, BrowserTab)
+        case pinned(Space, PinnedEntry, BrowserTab)
+        case favorite(Favorite, BrowserTab)
+        case peek(host: BrowserTab, BrowserTab)
+
+        var tab: BrowserTab {
+            switch self {
+            case .tab(_, let tab), .pinned(_, _, let tab), .favorite(_, let tab), .peek(_, let tab):
+                return tab
+            }
+        }
+    }
+
+    /// Every tab in this profile currently showing a page served from `host`,
+    /// i.e. from one context's `webkit-extension://<host>/` origin, with where
+    /// it lives. Spaces are global, so only those referencing this profile are
+    /// walked; favourites are per-profile already.
+    func extensionPageLocations(forOriginHost host: String) -> [ExtensionPageLocation] {
+        var result: [ExtensionPageLocation] = []
+
+        func considerPeek(of host_: BrowserTab) {
+            if let peek = host_.peekTab, peek.showsExtensionPage(ofOriginHost: host) {
+                result.append(.peek(host: host_, peek))
+            }
+        }
+
+        for space in TabStore.shared.spaces where space.profileID == id {
+            for tab in space.tabs {
+                if tab.showsExtensionPage(ofOriginHost: host) { result.append(.tab(space, tab)) }
+                considerPeek(of: tab)
+            }
+            for entry in space.pinnedEntries {
+                guard let tab = entry.tab else { continue }
+                if tab.showsExtensionPage(ofOriginHost: host) { result.append(.pinned(space, entry, tab)) }
+                considerPeek(of: tab)
+            }
+        }
+        for favorite in favorites {
+            guard let tab = favorite.tab else { continue }
+            if tab.showsExtensionPage(ofOriginHost: host) { result.append(.favorite(favorite, tab)) }
+            considerPeek(of: tab)
+        }
+        return result
+    }
+
+    /// Move every page open on `oldBase`'s origin onto `newBase`'s, keeping each
+    /// page's path so the user stays where they were.
+    ///
+    /// A reloaded context is a *new* origin. The pages left on the old one are
+    /// dead — their native `chrome.*` bindings went with the old context and the
+    /// polyfill bridge resolves an extension by the loaded contexts' base URLs,
+    /// so it rejects them — and they cannot simply be navigated, because their
+    /// web views were built from the old context's configuration and cannot load
+    /// the new origin at all. `BrowserTab.retarget` therefore drops each web view
+    /// and leaves the tab sleeping on the rewritten URL; the rehost notification
+    /// makes each window re-select its own displayed tab, and the display path
+    /// rebuilds it from the new context's configuration. Nothing here touches a
+    /// web view, so a tab whose view another window owns (this one shows a
+    /// snapshot) or a tab that is already asleep is handled identically.
+    ///
+    /// The pinned entries' and favourites' own URLs (`pinnedURL` / `url`) are
+    /// rewritten too — dormant or not — since they are what a later reactivation
+    /// loads, and they are what a "same page" comparison (`isAtPinnedHome`) uses.
+    ///
+    /// The rehost notification is posted on the next main-queue turn rather than
+    /// inline: a caller reloads the context and then announces the profile's
+    /// live tabs to it (`didReloadExtensionContext`), and a synchronous post
+    /// would have the window wake the displayed tab first — announcing it once
+    /// from `wake()` and again from that sweep. Deferred, every rehosted tab is
+    /// still asleep when the sweep runs and announces itself exactly once, on
+    /// wake.
+    @MainActor
+    func retargetExtensionPages(from oldBase: URL, to newBase: URL) {
+        // Not conditioned on the two origins differing (WebKit always mints a new
+        // UUID): even if they somehow matched, the open pages' web views still
+        // belong to the *unloaded* context and must be rebuilt from the new one.
+        guard let oldHost = oldBase.host else { return }
+        let store = TabStore.shared
+        let profileSpaces = store.spaces.filter { $0.profileID == id }
+
+        var affectedSpaceIDs = Set<UUID>()
+        var retargetedTabIDs = Set<UUID>()
+        for location in extensionPageLocations(forOriginHost: oldHost) {
+            let tab = location.tab
+            guard let url = tab.webView?.url ?? tab.url,
+                  let rewritten = rewriteExtensionPageURL(url, from: oldBase, to: newBase) else { continue }
+            tab.retarget(to: rewritten)
+            retargetedTabIDs.insert(tab.id)
+            switch location {
+            case .tab(let space, _), .pinned(let space, _, _):
+                affectedSpaceIDs.insert(space.id)
+            case .favorite:
+                // A favourite is shown in every space of the profile, and its
+                // backing tab's `spaceID` is only the space it was first
+                // activated in — a window on any of the profile's spaces may be
+                // displaying it.
+                affectedSpaceIDs.formUnion(profileSpaces.map(\.id))
+            case .peek(let host, _):
+                // The peek is rebuilt from the host's persisted `peekURL` (its web
+                // view is gone), so that must point at the new origin too. The
+                // window that shows the host re-presents the overlay on re-select.
+                host.peekURL = rewritten
+                retargetedTabIDs.insert(host.id)
+                if let spaceID = host.spaceID { affectedSpaceIDs.insert(spaceID) }
+                else { affectedSpaceIDs.formUnion(profileSpaces.map(\.id)) }
+            }
+        }
+
+        var rewroteBookmarks = false
+        for space in profileSpaces {
+            for entry in space.pinnedEntries {
+                if let rewritten = rewriteExtensionPageURL(entry.pinnedURL, from: oldBase, to: newBase) {
+                    entry.pinnedURL = rewritten
+                    rewroteBookmarks = true
+                }
+            }
+        }
+        for favorite in favorites {
+            if let rewritten = rewriteExtensionPageURL(favorite.url, from: oldBase, to: newBase) {
+                favorite.url = rewritten
+                rewroteBookmarks = true
+            }
+        }
+        if rewroteBookmarks { store.scheduleSave() }
+
+        guard !affectedSpaceIDs.isEmpty else { return }
+
+        log.info("Rehosted \(retargetedTabIDs.count) extension page tab(s) across \(affectedSpaceIDs.count) space(s) of profile \(self.name, privacy: .public) onto \(newBase.absoluteString, privacy: .public)")
+        for spaceID in affectedSpaceIDs {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .spaceTabsNeedRehost, object: nil,
+                    userInfo: ["spaceID": spaceID, "tabIDs": retargetedTabIDs]
+                )
+            }
+        }
     }
 
     // MARK: - Background content recovery
@@ -500,16 +654,27 @@ class Profile {
         backgroundRecoveryAttempts[extensionID] = attempts
 
         log.notice("Background content for \(extensionID, privacy: .public) failed to load; reloading its context in profile \(self.name, privacy: .public) (attempt \(attempts.count) of \(Self.backgroundRecoveryLimit))")
-        unloadExtension(id: extensionID)
+        let oldBase = unloadExtension(id: extensionID)
         // `loadExtensionContext`'s Bool means "has background content", not "loaded";
         // the dictionary is the source of truth for whether the reload took.
         _ = loadExtensionContext(ext)
         guard let context = extensionContexts[extensionID] else {
             log.error("Background recovery for \(extensionID, privacy: .public) could not reload its context; the extension is unloaded in profile \(self.name, privacy: .public) until it is re-enabled or the app relaunches")
+            // Any page it had open stays on the dead origin: there is no new
+            // origin to move it to, and closing the user's tabs over a failure
+            // we mean to retry would be worse than leaving them.
             return
         }
         if attempts.count == Self.backgroundRecoveryLimit {
             log.error("Background content for \(extensionID, privacy: .public) has been reloaded \(attempts.count) times in \(Int(Self.backgroundRecoveryWindow)) s; further failures are not retried until that window passes")
+        }
+        // Before `didReloadExtensionContext`, deliberately: retargeting puts each
+        // rehosted tab to sleep (and defers the window's re-select to the next
+        // main-queue turn), and `notifyExistingTabs` skips sleeping tabs, so each
+        // one announces itself exactly once — on wake — instead of being
+        // announced here and again from `wake()`.
+        if let oldBase {
+            retargetExtensionPages(from: oldBase, to: context.baseURL)
         }
         ExtensionManager.shared.didReloadExtensionContext(context, in: self)
         context.loadBackgroundContent { error in
