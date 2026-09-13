@@ -106,6 +106,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
             if let existing = oldTilesByID[fav.id] {
                 existing.updateIndex(index)
                 existing.isSelected = fav.tab?.id == selectedTabID
+                existing.refreshFavicon()
                 existing.refreshPeekBadge()
                 newTiles.append(existing)
             } else {
@@ -182,10 +183,11 @@ class FavoritesBarView: NSView, NSDraggingSource {
         needsLayout = true
     }
 
-    /// Refreshes the peek badge on the tile backed by `tabID`, if any. Called
-    /// when a Peek opens, navigates, or closes on a favourite host.
+    /// Refreshes the favicon and peek badge on the tile backed by `tabID`, if
+    /// any. Called when a Peek opens, navigates, or closes on a favourite host.
     func refreshTile(forTabID tabID: UUID) {
         for tile in tileViews where tile.favorite.tab?.id == tabID {
+            tile.refreshFavicon()
             tile.refreshPeekBadge()
         }
     }
@@ -502,13 +504,14 @@ class FavoritesBarView: NSView, NSDraggingSource {
 class FavoriteTileView: NSView {
     private(set) var index: Int
     let favorite: Favorite
-    private let imageView = NSImageView()
+    let imageView = NSImageView()
     /// Rounded chip in the tile's top-right corner backing the peek favicon, so
     /// the secondary icon reads over any main favicon. Hidden when the backing
     /// tab has no live or parked Peek.
     let peekBadgeView = NSView()
     let peekFaviconImageView = NSImageView()
     private var peekSubscription: AnyCancellable?
+    private var faviconSubscriptions = Set<AnyCancellable>()
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
 
@@ -542,7 +545,6 @@ class FavoriteTileView: NSView {
 
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
-        imageView.image = favorite.displayFavicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
         addSubview(imageView)
 
         NSLayoutConstraint.activate([
@@ -552,13 +554,43 @@ class FavoriteTileView: NSView {
             imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
-        favorite.onFaviconDownloaded = { [weak self, weak favorite] in
-            guard let favorite else { return }
-            self?.imageView.image = favorite.favicon
-        }
-
+        refreshFavicon()
         setupPeekBadge()
         refreshPeekBadge()
+    }
+
+    /// Syncs the main favicon with the favourite and rebinds the two sources
+    /// that can still change it: the favourite's own download and the backing
+    /// tab's. Both matter — a restored favourite downloads its icon while its
+    /// sleeping tab downloads the same URL — and publishing reaches every
+    /// window's tile, unlike the single callback this replaced (TASK-53).
+    /// Cheap and idempotent: call it whenever the tile is reused, since a
+    /// favourite's `tab` swaps as it activates or goes dormant.
+    func refreshFavicon() {
+        bindFavicon()
+        applyFavicon()
+    }
+
+    private func applyFavicon() {
+        imageView.image = favorite.displayFavicon
+            ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+    }
+
+    /// The main-thread hop is load-bearing for the same reason as the peek
+    /// badge's: `@Published` emits before the property is stored, and
+    /// `displayFavicon` re-reads it.
+    private func bindFavicon() {
+        faviconSubscriptions.removeAll()
+        favorite.$favicon
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.applyFavicon() }
+            .store(in: &faviconSubscriptions)
+        favorite.tab?.$favicon
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.applyFavicon() }
+            .store(in: &faviconSubscriptions)
     }
 
     private func setupPeekBadge() {

@@ -1,12 +1,15 @@
 import AppKit
+import Combine
 
 class Favorite {
     let id: UUID
     var url: URL
     var title: String
     var faviconURL: URL?
-    var favicon: NSImage?
-    var onFaviconDownloaded: (() -> Void)?
+    /// Published so every window's tile re-renders when the download lands. A
+    /// single `onFaviconDownloaded` callback only ever reached whichever tile
+    /// registered last, leaving the other windows on the globe (TASK-53).
+    @Published var favicon: NSImage?
     var sortOrder: Int
     var tab: BrowserTab?       // nil = dormant
 
@@ -26,16 +29,20 @@ class Favorite {
         self.sortOrder = sortOrder
         self.tab = tab
 
-        if tab == nil, favicon == nil, let faviconURL {
+        // Downloaded regardless of the backing tab: a restored tab is asleep and
+        // publishes its own favicon only later, so a favourite that deferred to
+        // it showed the globe until some other window rebuilt the tile
+        // (TASK-53). FaviconLoader caches and coalesces per URL, so the tab's
+        // identical fetch costs nothing extra.
+        if favicon == nil, let faviconURL {
             downloadFavicon(from: faviconURL)
         }
     }
 
     private func downloadFavicon(from url: URL) {
         FaviconLoader.shared.load(from: url) { [weak self] image in
-            guard let self, self.tab == nil, let image else { return }
+            guard let self, let image else { return }
             self.favicon = image
-            self.onFaviconDownloaded?()
         }
     }
 }

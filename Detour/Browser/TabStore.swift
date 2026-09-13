@@ -972,15 +972,10 @@ class TabStore {
                     sortOrder: record.sortOrder,
                     tab: backingTab
                 )
-                if backingTab == nil {
-                    // The profile is captured weakly: it holds this favourite, so a
-                    // strong capture is a cycle that keeps a deleted profile (and its
-                    // website data store and extension controller) alive (TASK-36).
-                    favorite.onFaviconDownloaded = { [weak self, weak favorite, weak profile] in
-                        guard let self, favorite != nil, let profile else { return }
-                        self.notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
-                    }
-                }
+                // No favicon callback is installed here: the favourite publishes
+                // `$favicon` and every window's tile subscribes, so a download
+                // reaches all of them rather than the last registered closure
+                // (TASK-53).
                 profile.favorites.append(favorite)
             }
         }
