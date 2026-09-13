@@ -9,10 +9,20 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage"
 /// that subdirectory name is used instead of "Detour", keeping test data isolated.
 func detourDataDirectory() -> URL {
     let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-    let subdir = ProcessInfo.processInfo.environment["DETOUR_DATA_DIR"] ?? "Detour"
+    let subdir = detourDataDirectoryName()
     let dir = appSupport.appendingPathComponent(subdir, isDirectory: true)
     try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir
+}
+
+/// The production data directory's name inside Application Support.
+let defaultDetourDataDirectoryName = "Detour"
+
+/// The data directory name in use: `DETOUR_DATA_DIR`, or "Detour" when unset.
+func detourDataDirectoryName(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> String {
+    environment["DETOUR_DATA_DIR"] ?? defaultDetourDataDirectoryName
 }
 
 struct AppDatabase {

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-13 01:41'
-updated_date: '2026-09-13 02:03'
+updated_date: '2026-09-13 02:12'
 labels:
   - profiles
   - storage
@@ -63,6 +63,11 @@ Implementation:
 Not changed / follow-ups: undoing Delete Space or Edit Space after the profile is deleted rebuilds a space whose profile is nil (Space.dataStore force-unwraps) - pre-existing, does not recreate a store. saveNow logs 'Failed to save favorites: FOREIGN KEY' for a profile whose live favourite has no host space (pre-existing).
 
 Tests: ProfileDataRemovalTests 12 (fake remover: ordering and release, only that profile, guard refusals, stale-DB-space flush, failure stays pending + launch retry, extension step retry, launch retry refuses stored/in-memory/Private/lower-case ids and drops invalid rows, re-check before each call, test-host detection; real WebKit: cookie + localStorage via a live favourite + extension storage.local deleted through TabStore.deleteProfile, identifier unlisted, both directories gone, other profile's store untouched then removed). AppDatabaseTests +1. ProfileDataRemovalTests+AppDatabaseTests+TabStoreTests+NewProfileExtensionLoadTests: 65 tests, 0 failures.
+
+Review follow-up (data-dir gate). Hazard: WebKit keys identifier stores and extension controller directories by bundle id (~/Library/WebKit/com.detourbrowser.mac/), shared by every DETOUR_DATA_DIR, but the removal guard can only read the current data dir's profile table. A run on a copy of the production data (e.g. DetourVerify) that deletes a profile would pass the guard and wipe the production profile's cookies and extension storage.
+Gate: ProfileDataRemoval.Remover.forCurrentDataDirectory(environment:) is the one decision point and TabStore.init's default. It returns .webKit only when DETOUR_DATA_DIR is unset or "Detour" (detourDataDirectoryName(environment:) now shared with detourDataDirectory()); otherwise a remover with skippedDataDirectory set whose closures do nothing, logging once per name at notice level. remove() checks it first and returns the new Outcome .skippedIsolatedDataDirectory, clearing the pending row (that data dir can never remove it, so it is not retried every launch); the profile rows are still deleted. The XCTest launch-retry skip stays as defence in depth. The real WebKit integration test passes .webKit explicitly and still only touches identifiers it creates.
+Verify skill: .claude/skills/verify/SKILL.md (untracked, main checkout) should say that deleting a profile under an isolated DETOUR_DATA_DIR does not remove on-disk WebKit data, so on-disk removal can only be verified in the default data dir; not edited here.
+Tests +4 in ProfileDataRemovalTests: default remover selection for unset / Detour / DetourVerify / DetourTests via injected env; skipped delete + launch retry with a fake remover (no calls, rows cleared); forCurrentDataDirectory's isolated remover through a TabStore; TabStore's default in the test host skips (XCTSkip if the host ever runs in the default dir). ProfileDataRemovalTests + AppDatabaseTests: 39 tests, 0 failures.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

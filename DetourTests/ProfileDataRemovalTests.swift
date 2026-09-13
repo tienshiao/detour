@@ -291,6 +291,83 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(fake.calls.map(\.step), ["extension"], "the store removal is never attempted")
     }
 
+    // MARK: - Isolated data directories
+
+    func testOnlyTheDefaultDataDirectoryGetsTheWebKitRemover() {
+        typealias Remover = ProfileDataRemoval.Remover
+        XCTAssertNil(Remover.forCurrentDataDirectory(environment: [:]).skippedDataDirectory,
+                     "DETOUR_DATA_DIR unset is the production data directory")
+        XCTAssertNil(Remover.forCurrentDataDirectory(environment: ["DETOUR_DATA_DIR": "Detour"]).skippedDataDirectory)
+        XCTAssertEqual(Remover.forCurrentDataDirectory(environment: ["DETOUR_DATA_DIR": "DetourVerify"]).skippedDataDirectory,
+                       "DetourVerify")
+        XCTAssertEqual(Remover.forCurrentDataDirectory(environment: ["DETOUR_DATA_DIR": "DetourTests"]).skippedDataDirectory,
+                       "DetourTests")
+        XCTAssertEqual(detourDataDirectoryName(environment: [:]), "Detour")
+        XCTAssertEqual(detourDataDirectoryName(environment: ["DETOUR_DATA_DIR": "DetourVerify"]), "DetourVerify")
+    }
+
+    /// A profile deleted in an isolated data directory may share its id with a
+    /// profile of another data directory (a copied production session), and the
+    /// WebKit directory is shared, so nothing is removed. The pending row is
+    /// cleared: this data directory could never remove it.
+    func testDeletingAProfileInAnIsolatedDataDirectoryRemovesNothing() async throws {
+        let db = try makeDatabase()
+        let fake = FakeRemover()
+        var skipping = fake.remover
+        skipping.skippedDataDirectory = "DetourVerify"
+        let store = TabStore(appDB: db, profileDataRemover: skipping, profileDataRemovalRetryDelays: [0.01])
+        _ = store.addProfile(name: "Keeper")
+        let doomed = store.addProfile(name: "Doomed").id
+
+        let outcome = await store.deleteProfile(id: doomed)?.value
+
+        XCTAssertEqual(outcome, .skippedIsolatedDataDirectory)
+        XCTAssertTrue(fake.calls.isEmpty, "no WebKit removal is attempted")
+        XCTAssertEqual(pendingIDs(db), [], "the pending row is cleared, not retried every launch")
+        XCTAssertFalse(db.loadProfiles().contains { $0.id == doomed.uuidString }, "the rows are still deleted")
+
+        // A row left by an earlier run is dropped the same way at launch.
+        let leftover = UUID()
+        db.recordPendingProfileDataRemoval(profileID: leftover.uuidString)
+        let outcomes = await store.retryPendingProfileDataRemovals().value
+        XCTAssertEqual(outcomes, [leftover: .skippedIsolatedDataDirectory])
+        XCTAssertTrue(fake.calls.isEmpty)
+        XCTAssertEqual(pendingIDs(db), [])
+    }
+
+    /// The remover `forCurrentDataDirectory` builds for an isolated directory,
+    /// through a store: deleting reports the skip.
+    func testTheIsolatedDataDirectoryRemoverSkips() async throws {
+        let db = try makeDatabase()
+        let remover = ProfileDataRemoval.Remover.forCurrentDataDirectory(environment: ["DETOUR_DATA_DIR": "DetourVerify"])
+        let store = TabStore(appDB: db, profileDataRemover: remover, profileDataRemovalRetryDelays: [0.01])
+        _ = store.addProfile(name: "Keeper")
+        let doomed = store.addProfile(name: "Doomed").id
+
+        let outcome = await store.deleteProfile(id: doomed)?.value
+
+        XCTAssertEqual(outcome, .skippedIsolatedDataDirectory)
+        XCTAssertEqual(pendingIDs(db), [])
+    }
+
+    /// TabStore's default remover follows the process's data directory. The test
+    /// scheme always sets an isolated one; if it is ever unset this test cannot
+    /// check the gate without real removal, so it skips.
+    func testTabStoreDefaultRemoverSkipsInTheTestHostDataDirectory() async throws {
+        let name = detourDataDirectoryName()
+        guard name != defaultDetourDataDirectoryName else {
+            throw XCTSkip("DETOUR_DATA_DIR is unset or \"Detour\"; the default remover would be the real one")
+        }
+        let db = try makeDatabase()
+        let store = TabStore(appDB: db)
+        _ = store.addProfile(name: "Keeper")
+        let doomed = store.addProfile(name: "Doomed").id
+
+        let outcome = await store.deleteProfile(id: doomed)?.value
+
+        XCTAssertEqual(outcome, .skippedIsolatedDataDirectory, "data dir \(name)")
+    }
+
     // MARK: - Session save removal (TASK-33)
 
     /// The runtime path where the session save removes profile rows: a launch
@@ -393,8 +470,10 @@ final class ProfileDataRemovalTests: XCTestCase {
             .write(to: extensionDirectory.appendingPathComponent("background.js"), atomically: true, encoding: .utf8)
 
         let db = try makeDatabase()
-        let store = TabStore(appDB: db)
-        // Every identifier below is created by this test; nothing else is removed.
+        // The real remover, explicitly: the test host runs in an isolated data
+        // directory, where the default remover removes nothing. Every identifier
+        // below is created by this test; nothing else is removed.
+        let store = TabStore(appDB: db, profileDataRemover: .webKit)
         let doomed = store.addProfile(name: "TASK-32 doomed").id
         let other = store.addProfile(name: "TASK-32 other").id
         _ = store.addProfile(name: "TASK-32 spare")   // keeps two profiles deletable; never touches WebKit

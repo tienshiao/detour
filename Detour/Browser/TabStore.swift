@@ -330,7 +330,7 @@ class TabStore {
     private let profileDataRemoval: ProfileDataRemoval
 
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
-         profileDataRemover: ProfileDataRemoval.Remover = .webKit,
+         profileDataRemover: ProfileDataRemoval.Remover = .forCurrentDataDirectory(),
          profileDataRemovalRetryDelays: [TimeInterval] = ProfileDataRemoval.defaultRetryDelays) {
         self.appDB = appDB
         self.historyDB = historyDB

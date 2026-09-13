@@ -42,6 +42,13 @@ final class ProfileDataRemoval {
         /// Removes the website data store for the identifier.
         var removeWebsiteDataStore: @MainActor (UUID) async throws -> Void
 
+        /// Set when on-disk removal is skipped because the app runs in this
+        /// isolated data directory (see `forCurrentDataDirectory`). The closures
+        /// are then never called.
+        var skippedDataDirectory: String? = nil
+
+        /// The real WebKit calls. Only for the default data directory, or for a
+        /// test that removes identifiers it created itself.
         static let webKit = Remover(
             removeExtensionData: { identifier in
                 try await ProfileDataRemoval.removeWebKitExtensionControllerData(identifier: identifier)
@@ -50,6 +57,42 @@ final class ProfileDataRemoval {
                 try await WKWebsiteDataStore.remove(forIdentifier: identifier)
             }
         )
+
+        /// The remover the app uses by default, and the one place that decides
+        /// whether on-disk removal may run at all.
+        ///
+        /// WebKit keys identifier stores and extension controller directories by
+        /// bundle id (`~/Library/WebKit/<bundle id>/`), not by Detour's data
+        /// directory, so every `DETOUR_DATA_DIR` shares them. The removal guard
+        /// can only consult the current data directory's profile table, so a run
+        /// on an isolated copy of the production data (say `DetourVerify`) that
+        /// deletes a profile would pass the guard and wipe the production
+        /// profile's cookies and extension storage. Only the default data
+        /// directory ("Detour", or `DETOUR_DATA_DIR` unset) gets `.webKit`; any
+        /// other gets a remover that removes nothing and logs that once.
+        static func forCurrentDataDirectory(
+            environment: [String: String] = ProcessInfo.processInfo.environment
+        ) -> Remover {
+            let name = detourDataDirectoryName(environment: environment)
+            guard name != defaultDetourDataDirectoryName else { return .webKit }
+            logSkippedDataDirectoryOnce(name)
+            return Remover(
+                removeExtensionData: { _ in },
+                removeWebsiteDataStore: { _ in },
+                skippedDataDirectory: name
+            )
+        }
+
+        private static let skipLogLock = NSLock()
+        private nonisolated(unsafe) static var loggedSkippedDataDirectories = Set<String>()
+
+        private static func logSkippedDataDirectoryOnce(_ name: String) {
+            skipLogLock.lock()
+            let isFirst = loggedSkippedDataDirectories.insert(name).inserted
+            skipLogLock.unlock()
+            guard isFirst else { return }
+            log.notice("On-disk profile data removal is skipped in isolated data dir \(name, privacy: .public): the WebKit directory is shared with other data dirs")
+        }
     }
 
     enum Outcome: Equatable {
@@ -60,6 +103,11 @@ final class ProfileDataRemoval {
         /// profile that exists (in memory or in the profile table). The pending
         /// row is cleared: it can never become removable.
         case refusedLiveProfile
+        /// Nothing was removed because the app runs in an isolated data
+        /// directory whose profile table cannot vouch for the shared WebKit
+        /// directory. The pending row is cleared: this data directory can never
+        /// remove it, so retrying every launch would be pointless.
+        case skippedIsolatedDataDirectory
         /// Every attempt failed, or the profile table could not be read. The
         /// pending row stays for the next launch.
         case failed(String)
@@ -151,6 +199,11 @@ final class ProfileDataRemoval {
     /// `retryDelays`.
     @MainActor
     private func remove(_ id: UUID, recordKey: String) async -> Outcome {
+        if let dataDirectory = remover.skippedDataDirectory {
+            log.info("Skipping on-disk data removal of profile \(id.uuidString, privacy: .public) in isolated data dir \(dataDirectory, privacy: .public)")
+            appDB.clearPendingProfileDataRemoval(profileID: recordKey)
+            return .skippedIsolatedDataDirectory
+        }
         var extensionDataRemoved = false
         var lastFailure = "not attempted"
 
