@@ -12,27 +12,14 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
-        // Shift+click: open link in peek view. The clicked webview must be a
-        // pane of the selected tab's split (or the selected tab itself) — never
-        // the peek webview, so shift-clicking inside a peek still navigates it.
-        // The peek attaches to the clicked pane's tab, focusing that pane first.
+        // Shift+click: open link in peek view. The peek attaches to the pane
+        // whose webview fired the link — never the peek webview, so
+        // shift-clicking inside a peek still navigates it (see `peekHostTab`).
         if navigationAction.navigationType == .linkActivated,
            navigationAction.modifierFlags.contains(.shift),
            let url = navigationAction.request.url,
-           let clickedTab = tab(owning: webView),
-           let selected = selectedTab,
-           splitMembers(of: selected).contains(where: { $0 === clickedTab }),
-           peekOverlayView == nil {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if clickedTab.id != self.selectedTabID {
-                    self.window?.makeFirstResponder(webView)
-                }
-                let clickPoint = self.window.map {
-                    self.contentContainerView.convert($0.mouseLocationOutsideOfEventStream, from: nil)
-                }
-                self.showPeekOverlay(url: url, clickPoint: clickPoint)
-            }
+           let tab = peekHostTab(firing: webView) {
+            presentPeek(of: url, on: tab, firing: webView)
             return .cancel
         }
 
@@ -95,25 +82,19 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .download
         }
 
-        // Peek mode: intercept cross-host navigation on pinned tabs and favourites
-        // Only intercept on the anchored tab's own webView, not the peek webView
+        // Peek mode: intercept cross-host navigation on pinned tabs and favourites.
+        // The anchored tab is the pane that fired, not the selection: in a
+        // pinned split the link can come from the unfocused pane (TASK-48) —
+        // see `peekHostTab`.
         if navigationAction.navigationType == .linkActivated,
-           let tab = selectedTab,
            let space = activeSpace,
-           webView === tab.webView,
-           peekOverlayView == nil,
+           let tab = peekHostTab(firing: webView),
            let url = navigationAction.request.url,
            let anchorURL = PeekAnchor.anchorURL(forTabID: tab.id,
                                                 pinnedEntries: space.pinnedEntries,
                                                 favorites: space.profile?.favorites ?? []),
            PeekAnchor.shouldPeekCrossHostNavigation(anchorURL: anchorURL, to: url) {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                let clickPoint = self.window.map {
-                    self.contentContainerView.convert($0.mouseLocationOutsideOfEventStream, from: nil)
-                }
-                self.showPeekOverlay(url: url, clickPoint: clickPoint)
-            }
+            presentPeek(of: url, on: tab, firing: webView)
             return .cancel
         }
 
@@ -293,6 +274,42 @@ extension BrowserWindowController: WKNavigationDelegate {
         }
         let peeks = candidates.compactMap { $0.peekTab }
         return (candidates + peeks).first { $0.webView === webView }
+    }
+
+    /// The hosted pane a link activation fired from, for the peek branches
+    /// (Shift+click, cross-host anchor): the selected tab or a pane of its split,
+    /// never a peek's web view and never a background tab (TASK-48). Nil while a
+    /// peek is up — the overlay owns the interaction.
+    private func peekHostTab(firing webView: WKWebView) -> BrowserTab? {
+        guard peekOverlayView == nil, let selected = selectedTab else { return nil }
+        let clicked = webView === selected.webView ? selected : tab(owning: webView)
+        return PeekAnchor.interceptTab(clicked: clicked, selectedTab: selected,
+                                       splitMembers: splitMembers(of: selected))
+    }
+
+    /// Presents `url` as a peek anchored on `tab`, the pane whose web view fired
+    /// the link. `showPeekOverlay` anchors on `selectedTab`, so an unfocused pane
+    /// is focused first (the synchronous `browserWebViewDidBecomeFirstResponder`
+    /// retargets `selectedTabID`); if focus did not move the selection — a first
+    /// responder that refuses to resign, or first responder already inside that
+    /// pane while the selection names the other — fall back to selecting the pane
+    /// outright rather than attaching the peek to the wrong tab. Deferred a turn so
+    /// the policy decision returns before the view hierarchy changes.
+    private func presentPeek(of url: URL, on tab: BrowserTab, firing webView: WKWebView) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if tab.id != self.selectedTabID {
+                self.window?.makeFirstResponder(webView)
+                if tab.id != self.selectedTabID {
+                    self.selectTab(id: tab.id)
+                }
+                guard tab.id == self.selectedTabID else { return }
+            }
+            let clickPoint = self.window.map {
+                self.contentContainerView.convert($0.mouseLocationOutsideOfEventStream, from: nil)
+            }
+            self.showPeekOverlay(url: url, clickPoint: clickPoint)
+        }
     }
 
     private func isIgnoredNavigationError(_ error: Error) -> Bool {

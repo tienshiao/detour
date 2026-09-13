@@ -73,6 +73,64 @@ final class PeekAnchorTests: XCTestCase {
                        url("https://pinned.example.com/"))
     }
 
+    // MARK: - interceptTab (TASK-48)
+
+    func testInterceptsALinkFiredByTheFocusedPane() {
+        let focused = makeSleepingTab()
+        let other = makeSleepingTab()
+
+        XCTAssertTrue(PeekAnchor.interceptTab(clicked: focused, selectedTab: focused,
+                                              splitMembers: [focused, other]) === focused)
+    }
+
+    /// The bug: a link activated in the pane that does not hold first responder
+    /// fires from a web view that is not `selectedTab.webView`.
+    func testInterceptsALinkFiredByTheUnfocusedPaneOfTheSelectedSplit() {
+        let focused = makeSleepingTab()
+        let unfocused = makeSleepingTab()
+
+        XCTAssertTrue(PeekAnchor.interceptTab(clicked: unfocused, selectedTab: focused,
+                                              splitMembers: [focused, unfocused]) === unfocused,
+                      "the clicked pane is anchored even while the other pane is selected")
+    }
+
+    func testIgnoresALinkFiredByATabOutsideTheSelectedSplit() {
+        let selected = makeSleepingTab()
+        let background = makeSleepingTab()
+
+        XCTAssertNil(PeekAnchor.interceptTab(clicked: background, selectedTab: selected,
+                                             splitMembers: [selected]),
+                     "a background tab's navigation must not take over the window's overlay")
+    }
+
+    func testIgnoresALinkFiredInsideAPeek() {
+        let host = makeSleepingTab()
+        let peek = makeSleepingTab()
+        host.peekTab = peek
+
+        // `tab(owning:)` resolves a peek web view to the peek tab, which is
+        // neither the selected tab nor a split member: peeks navigate in place.
+        XCTAssertNil(PeekAnchor.interceptTab(clicked: peek, selectedTab: host,
+                                             splitMembers: [host]))
+    }
+
+    func testIgnoresAnUnresolvedWebView() {
+        let selected = makeSleepingTab()
+
+        XCTAssertNil(PeekAnchor.interceptTab(clicked: nil, selectedTab: selected,
+                                             splitMembers: [selected]))
+    }
+
+    /// `splitMembers(of:)` scans the store on every link click; the common case
+    /// (the clicked tab is the selected tab) must not pay for it.
+    func testDoesNotResolveSplitMembersForTheSelectedTab() {
+        let selected = makeSleepingTab()
+
+        XCTAssertTrue(PeekAnchor.interceptTab(
+            clicked: selected, selectedTab: selected,
+            splitMembers: { XCTFail("split members must not be resolved"); return [] }()) === selected)
+    }
+
     // MARK: - shouldPeekCrossHostNavigation
 
     func testPeeksWhenHostsDiffer() {
