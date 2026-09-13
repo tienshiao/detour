@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 protocol FavoritesBarDelegate: AnyObject {
     func favoritesBar(_ bar: FavoritesBarView, didReceiveDropOfTab payload: SidebarDragPayload, at index: Int)
@@ -24,7 +25,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
     private static let vPad: CGFloat = 4
 
     private var favorites: [Favorite] = []
-    private var tileViews: [FavoriteTileView] = []
+    private(set) var tileViews: [FavoriteTileView] = []
     private var dropZoneLabel: NSTextField?
     private var dropZoneBorder: CAShapeLayer?
     private var isDragHighlighted = false
@@ -105,6 +106,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
             if let existing = oldTilesByID[fav.id] {
                 existing.updateIndex(index)
                 existing.isSelected = fav.tab?.id == selectedTabID
+                existing.refreshPeekBadge()
                 newTiles.append(existing)
             } else {
                 let tile = FavoriteTileView(favorite: fav, index: index)
@@ -178,6 +180,14 @@ class FavoritesBarView: NSView, NSDraggingSource {
             heightConstraintRef?.constant = newHeight
         }
         needsLayout = true
+    }
+
+    /// Refreshes the peek badge on the tile backed by `tabID`, if any. Called
+    /// when a Peek opens, navigates, or closes on a favourite host.
+    func refreshTile(forTabID tabID: UUID) {
+        for tile in tileViews where tile.favorite.tab?.id == tabID {
+            tile.refreshPeekBadge()
+        }
     }
 
     /// Returns the frame of the tile at `index` in this view's coordinate space.
@@ -493,11 +503,20 @@ class FavoriteTileView: NSView {
     private(set) var index: Int
     let favorite: Favorite
     private let imageView = NSImageView()
+    /// Rounded chip in the tile's top-right corner backing the peek favicon, so
+    /// the secondary icon reads over any main favicon. Hidden when the backing
+    /// tab has no live or parked Peek.
+    let peekBadgeView = NSView()
+    let peekFaviconImageView = NSImageView()
+    private var peekSubscription: AnyCancellable?
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
 
     private static let restingColor = NSColor.labelColor.withAlphaComponent(0.04)
     private static let hoverColor = UIConstants.hoverBackgroundColor
+    private static let peekBadgeSize: CGFloat = 14
+    private static let peekBadgeIconSize: CGFloat = 10
+    private static let peekBadgeInset: CGFloat = 2
 
     var isSelected = false { didSet { updateBackground() } }
     var selectionColor: NSColor? { didSet { updateBackground() } }
@@ -537,6 +556,94 @@ class FavoriteTileView: NSView {
             guard let favorite else { return }
             self?.imageView.image = favorite.favicon
         }
+
+        setupPeekBadge()
+        refreshPeekBadge()
+    }
+
+    private func setupPeekBadge() {
+        peekBadgeView.wantsLayer = true
+        peekBadgeView.translatesAutoresizingMaskIntoConstraints = false
+        peekBadgeView.layer?.cornerRadius = 4
+        peekBadgeView.layer?.borderWidth = 0.5
+        peekBadgeView.isHidden = true
+        updatePeekBadgeColors()
+
+        peekFaviconImageView.imageScaling = .scaleProportionallyUpOrDown
+        peekFaviconImageView.translatesAutoresizingMaskIntoConstraints = false
+        peekBadgeView.addSubview(peekFaviconImageView)
+
+        // Added after imageView so the chip draws on top of the main favicon.
+        addSubview(peekBadgeView)
+
+        NSLayoutConstraint.activate([
+            peekBadgeView.widthAnchor.constraint(equalToConstant: Self.peekBadgeSize),
+            peekBadgeView.heightAnchor.constraint(equalToConstant: Self.peekBadgeSize),
+            peekBadgeView.topAnchor.constraint(equalTo: topAnchor, constant: Self.peekBadgeInset),
+            peekBadgeView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.peekBadgeInset),
+
+            peekFaviconImageView.widthAnchor.constraint(equalToConstant: Self.peekBadgeIconSize),
+            peekFaviconImageView.heightAnchor.constraint(equalToConstant: Self.peekBadgeIconSize),
+            peekFaviconImageView.centerXAnchor.constraint(equalTo: peekBadgeView.centerXAnchor),
+            peekFaviconImageView.centerYAnchor.constraint(equalTo: peekBadgeView.centerYAnchor),
+        ])
+    }
+
+    /// Syncs the peek badge with the backing tab's live-or-parked peek favicon.
+    /// Cheap and idempotent: call it whenever the tile is reused or the peek
+    /// state may have changed. Rebinds unconditionally — tiles are reused
+    /// across `update(favorites:)` calls and a favourite's `tab` swaps as it
+    /// activates / goes dormant.
+    func refreshPeekBadge() {
+        bindPeekFavicon()
+        applyPeekBadge()
+    }
+
+    private func applyPeekBadge() {
+        let image = favorite.tab?.displayPeekFavicon
+        peekFaviconImageView.image = image
+        peekBadgeView.isHidden = image == nil
+    }
+
+    /// Subscribes to the backing tab's `$peekFavicon`, which carries both the
+    /// download that follows a relaunch (`BrowserTab.downloadPeekFavicon`) and
+    /// the live peek's favicon mirrored by `BrowserWindowController` — so the
+    /// badge tracks the tab in every window and space page, not only the one
+    /// hosting the peek. The main-thread hop is load-bearing: `@Published`
+    /// emits before the property is stored, and `displayPeekFavicon` re-reads it.
+    private func bindPeekFavicon() {
+        guard let tab = favorite.tab else {
+            peekSubscription = nil
+            return
+        }
+        peekSubscription = tab.$peekFavicon
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyPeekBadge()
+            }
+    }
+
+    /// CGColor doesn't track appearance changes — re-resolve on theme switches.
+    private func updatePeekBadgeColors() {
+        peekBadgeView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        peekBadgeView.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.15).cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            updatePeekBadgeColors()
+            updateBackground()
+        }
+    }
+
+    /// The favicon and peek chip are decorative: the tile owns every click, drag
+    /// and context menu. A plain `NSView` chip would otherwise become the hit
+    /// view and, being non-opaque, report `mouseDownCanMoveWindow == true` —
+    /// turning a click on the badge corner into a window drag.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
     }
 
     private func updateBackground() {

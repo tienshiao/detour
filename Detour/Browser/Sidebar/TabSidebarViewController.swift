@@ -971,6 +971,16 @@ class TabSidebarViewController: NSViewController {
         spacePages[activePageIndex].updateFavoriteSelection(selectedTabID: selectedTabID)
     }
 
+    /// Refreshes the peek badge on every page's tile for `tabID`, if the tab
+    /// hosts a favourite. Pages of spaces sharing a profile each render their
+    /// own tile for the same favourite, and a mid-swipe refresh must land on
+    /// the incoming page too.
+    func refreshFavoriteTile(forTabID tabID: UUID) {
+        for page in spacePages {
+            page.refreshFavoriteTile(forTabID: tabID)
+        }
+    }
+
     func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
         rebuildAllSpaceButtons()
         rebuildPages()

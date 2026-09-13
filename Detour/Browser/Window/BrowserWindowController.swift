@@ -2220,13 +2220,21 @@ class BrowserWindowController: NSWindowController {
     private func observePeekTab(_ peekTab: BrowserTab, for host: BrowserTab) {
         peekTabSubscriptions.removeAll()
 
+        // The favicon may already have landed while the peek UI was hidden (a
+        // tab switch drops these subscriptions and `dropFirst` below skips the
+        // subscribe-time replay), so mirror it now.
+        if mirrorPeekFavicon(from: peekTab, to: host) {
+            reloadSelectedTabSidebarCell()
+        }
+
         peekTab.$favicon
             .dropFirst()
             .removeDuplicates(by: ===)
             .receive(on: RunLoop.main)
             .sink { [weak self, weak host] _ in
-                host?.peekFaviconURL = peekTab.faviconURL
-                self?.reloadSelectedTabSidebarCell()
+                guard let self, let host else { return }
+                self.mirrorPeekFavicon(from: peekTab, to: host)
+                self.reloadSelectedTabSidebarCell()
             }
             .store(in: &peekTabSubscriptions)
 
@@ -2242,12 +2250,34 @@ class BrowserWindowController: NSWindowController {
             .store(in: &peekTabSubscriptions)
     }
 
+    /// Mirrors the live peek's favicon onto the host: `peekFaviconURL` so the
+    /// parked peek restores with it, and `peekFavicon` so every sidebar
+    /// representation of the host — tab rows via `TabStore`'s per-tab
+    /// subscriptions, favourite tiles via their own — observes the change in
+    /// any window or space page, not only the one hosting the peek. A nil
+    /// favicon (mid-navigation, or a page without one) is not mirrored, so the
+    /// image and URL stay in lockstep and the previous icon holds until the
+    /// new page supplies one. Returns whether anything changed.
+    @discardableResult
+    private func mirrorPeekFavicon(from peekTab: BrowserTab, to host: BrowserTab) -> Bool {
+        guard let favicon = peekTab.favicon, favicon !== host.peekFavicon else { return false }
+        host.peekFaviconURL = peekTab.faviconURL
+        host.peekFavicon = favicon
+        return true
+    }
+
+    /// Re-renders the selected tab's sidebar representation — a pinned row, a
+    /// normal tab row, or otherwise a favourite tile — so peek-driven state
+    /// (the peek favicon badge) tracks the live tab without a reselect. The
+    /// tile refresh is a no-op when no favourite is backed by the tab.
     private func reloadSelectedTabSidebarCell() {
         guard let selectedTabID, let space = activeSpace else { return }
         if let pinnedIdx = space.pinnedEntries.firstIndex(where: { $0.tab?.id == selectedTabID }) {
             tabSidebar.reloadPinnedEntry(at: pinnedIdx)
         } else if let tabIdx = space.tabs.firstIndex(where: { $0.id == selectedTabID }) {
             tabSidebar.reloadTab(at: tabIdx)
+        } else {
+            tabSidebar.refreshFavoriteTile(forTabID: selectedTabID)
         }
     }
 
@@ -2267,6 +2297,19 @@ class BrowserWindowController: NSWindowController {
         }
 
         hidePeekUI()
+
+        // A fresh peek to a different page than the parked one: an orphaned
+        // peek tab (closePeekOverlay no-ops while the overlay is hidden, and a
+        // released web view skips the reuse branch above) goes down with its
+        // parked favicon, so the badge can't show the previous peek's icon
+        // while the new page loads — or persist it if that page has none.
+        if url != tab.peekURL {
+            if let orphan = tab.peekTab {
+                orphan.webView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+                orphan.teardown()
+            }
+            tab.clearPeekState()
+        }
 
         let config = space.makeWebViewConfiguration()
         let newPeekTab = BrowserTab(configuration: config)

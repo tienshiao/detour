@@ -106,6 +106,10 @@ class SpacePageView: NSView {
         favoritesBar.updateSelection(selectedTabID: selectedTabID)
     }
 
+    func refreshFavoriteTile(forTabID tabID: UUID) {
+        favoritesBar.refreshTile(forTabID: tabID)
+    }
+
     func setDragSessionActive(_ active: Bool) {
         favoritesBar.showDropZone(active)
     }
