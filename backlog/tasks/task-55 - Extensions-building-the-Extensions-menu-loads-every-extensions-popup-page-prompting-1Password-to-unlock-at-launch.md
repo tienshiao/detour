@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-13 08:45'
-updated_date: '2026-09-13 10:06'
+updated_date: '2026-09-13 17:31'
 labels:
   - bug
   - extensions
@@ -28,8 +28,10 @@ Observed 2026-09-13: on a fresh launch with 1Password locked in the desktop app,
 - [x] #1 The Extensions menu item is still enabled for extensions that declare a popup (via action.presentsPopup or the manifest default_popup) and disabled otherwise
 - [x] #2 Unit test with a popup-declaring test extension asserts the menu decision does not touch popupWebView (e.g. the popup web view stays nil / the popup page's load hook is not hit until presented)
 - [x] #3 Popup web views are read only from the explicit present paths (user click, browser.action.openPopup)
-- [ ] #4 Launching Detour and opening a second window with 1Password enabled and locked does not create or load any extension popup web view, and no unlock prompt appears until the user opens the popup
+- [x] #4 Launching Detour and opening a second window with 1Password enabled and locked does not create or load any extension popup web view, and no unlock prompt appears until the user opens the popup
 <!-- AC:END -->
+
+
 
 ## Implementation Plan
 
