@@ -291,6 +291,36 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(fake.calls.map(\.step), ["extension"], "the store removal is never attempted")
     }
 
+    // MARK: - Session save removal (TASK-33)
+
+    /// The runtime path where the session save removes profile rows: a launch
+    /// whose saved session has no spaces never loads the saved profiles, creates
+    /// a new Default profile, and the first save drops the rows it did not load.
+    /// Those profiles are not live, so their data removal is recorded and runs
+    /// at the next launch; the profiles the store holds are never touched.
+    func testSessionSaveRemovingUnloadedProfilesRecordsTheirDataRemoval() async throws {
+        let db = try makeDatabase()
+        let orphan = Profile(name: "Saved, never loaded")
+        db.saveProfile(orphan.toRecord())
+        let fake = FakeRemover()
+        let store = TabStore(appDB: db, profileDataRemover: fake.remover, profileDataRemovalRetryDelays: [0.01])
+
+        XCTAssertNil(store.restoreSession(), "precondition: no saved spaces, so no profiles are loaded")
+        store.ensureDefaultSpace()
+        store.saveNow()
+
+        let liveIDs = Set(store.profiles.map(\.id))
+        XCTAssertFalse(db.loadProfiles().contains { $0.id == orphan.id.uuidString })
+        XCTAssertEqual(pendingIDs(db), [orphan.id.uuidString])
+        XCTAssertTrue(fake.calls.isEmpty, "the session save only records the removal")
+
+        let outcomes = await store.retryPendingProfileDataRemovals().value
+
+        XCTAssertEqual(outcomes, [orphan.id: .removed])
+        XCTAssertEqual(fake.removedIDs, [orphan.id])
+        XCTAssertTrue(fake.removedIDs.isDisjoint(with: liveIDs))
+    }
+
     // MARK: - Real WebKit
 
     private var webKitDirectory: URL {

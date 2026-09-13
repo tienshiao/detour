@@ -75,41 +75,53 @@ struct AppDatabase {
         }
     }
 
-    /// Deletes the profile row and every row keyed by its id (TASK-31), in one
-    /// transaction: per-profile extension state, the `runtime.onInstalled`
-    /// ledger, favourites and the content blocker whitelist. `favorite`,
-    /// `profileExtension` and `contentBlockerWhitelist` also cascade from the
-    /// profile row, but only while foreign keys are enforced, and
-    /// `extensionInstalledEvent` has no foreign key at all, so each is deleted
-    /// explicitly. Rows keyed by extension alone (`extension`, `extensionStorage`,
-    /// `extensionPermission`) are shared by every profile and are left alone.
-    /// Nothing is deleted while a space still references the profile.
-    ///
-    /// The same transaction records a pending removal of the profile's on-disk
-    /// WebKit data (TASK-32, `ProfileDataRemoval`), so a removal that has not
-    /// succeeded when the app quits is retried at the next launch.
+    /// Deletes the profile (see `deleteProfileRows`) unless a space still
+    /// references it.
     ///
     /// Returns whether the profile row was deleted: false when a space still
     /// references it, when there was no such row, or when the write failed.
     @discardableResult
     func deleteProfile(id: String) -> Bool {
         performWrite("delete profile", default: false) { db in
-            // Guard: don't delete if any spaces reference it
-            let count = try SpaceRecord.filter(Column("profileID") == id).fetchCount(db)
-            guard count == 0 else {
-                log.error("Cannot delete profile \(id): \(count) space(s) still reference it")
-                return false
+            try Self.deleteProfileRows(ids: [id], in: db).contains(id)
+        }
+    }
+
+    /// The one way a profile row is deleted (`deleteProfile`, and `saveProfiles`
+    /// for profiles missing from the saved set), run inside the caller's write
+    /// transaction. For each id that no space references it deletes every row
+    /// keyed by the id (TASK-31) — per-profile extension state, the
+    /// `runtime.onInstalled` ledger, favourites and the content blocker
+    /// whitelist — then the profile row, and records a pending removal of the
+    /// profile's on-disk WebKit data (TASK-32, `ProfileDataRemoval`) if there was
+    /// a row, so the data is removed even if the app quits first.
+    ///
+    /// `favorite`, `profileExtension` and `contentBlockerWhitelist` also cascade
+    /// from the profile row, but only while foreign keys are enforced, and
+    /// `extensionInstalledEvent` has no foreign key at all, so each is deleted
+    /// explicitly. Rows keyed by extension alone (`extension`, `extensionStorage`,
+    /// `extensionPermission`) are shared by every profile and are left alone.
+    /// An id a space still references is skipped entirely.
+    ///
+    /// Returns the ids whose profile row was deleted.
+    private static func deleteProfileRows(ids: [String], in db: GRDB.Database) throws -> [String] {
+        var deletedIDs: [String] = []
+        for id in ids {
+            let spaceCount = try SpaceRecord.filter(Column("profileID") == id).fetchCount(db)
+            guard spaceCount == 0 else {
+                log.error("Cannot delete profile \(id): \(spaceCount) space(s) still reference it")
+                continue
             }
             try ProfileExtensionRecord.filter(Column("profileID") == id).deleteAll(db)
             try ExtensionInstalledEventRecord.filter(Column("profileID") == id).deleteAll(db)
             try FavoriteRecord.filter(Column("profileID") == id).deleteAll(db)
             try ContentBlockerWhitelistRecord.filter(Column("profileID") == id).deleteAll(db)
-            let deleted = try ProfileRecord.filter(Column("id") == id).deleteAll(db) > 0
-            if deleted {
-                try Self.recordPendingProfileDataRemoval(profileID: id, in: db)
+            if try ProfileRecord.filter(Column("id") == id).deleteAll(db) > 0 {
+                try recordPendingProfileDataRemoval(profileID: id, in: db)
+                deletedIDs.append(id)
             }
-            return deleted
         }
+        return deletedIDs
     }
 
     // MARK: - Pending profile data removals (TASK-32)
@@ -147,11 +159,22 @@ struct AppDatabase {
 
     // MARK: - Session
 
+    /// Saves `records` as the complete set of profiles, in one transaction. A
+    /// stored profile missing from the set is deleted with its per-profile rows
+    /// and gets a pending data removal (`deleteProfileRows`), unless a space still
+    /// references it, in which case it is kept.
+    ///
+    /// The pending removal is only recorded here; it runs at the next launch,
+    /// which re-checks the profile table. TabStore saves every profile it holds
+    /// (every non-Private profile plus the built-in Private one), so a row missing
+    /// from the set is one no live profile of that store owns: a profile
+    /// `deleteProfile` could not delete, or the saved profiles of a launch whose
+    /// session had no spaces and so never loaded them.
     func saveProfiles(_ records: [ProfileRecord]) {
         performWrite("save profiles") { db in
-            // Delete profiles not in the new set
-            let ids = records.map { $0.id }
-            try ProfileRecord.filter(!ids.contains(Column("id"))).deleteAll(db)
+            let savedIDs = Set(records.map(\.id))
+            let removedIDs = try String.fetchAll(db, sql: "SELECT id FROM profile").filter { !savedIDs.contains($0) }
+            _ = try Self.deleteProfileRows(ids: removedIDs, in: db)
             for record in records {
                 try record.save(db)
             }

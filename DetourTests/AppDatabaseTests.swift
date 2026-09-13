@@ -263,10 +263,10 @@ final class AppDatabaseTests: XCTestCase {
         let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
         db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
 
-        // Now try to save only p2 (which should delete testProfileID, but FK prevents it)
+        // Now try to save only p2 (which would delete testProfileID, but a space references it)
         db.saveProfiles([p2])
 
-        // The profile should still be in the DB because the FK constraint blocked deletion
+        // The profile should still be in the DB because the space guard kept it
         let profiles = db.loadProfiles()
         XCTAssertEqual(profiles.count, 2, "Profile referenced by a space should not be deleted by saveProfiles")
     }
@@ -419,5 +419,58 @@ final class AppDatabaseTests: XCTestCase {
 
         db.clearPendingProfileDataRemoval(profileID: "profile-2")
         XCTAssertEqual(db.pendingProfileDataRemovals(), [])
+    }
+
+    // MARK: - saveProfiles removal (TASK-33)
+
+    func testSaveProfilesRemovesAMissingProfileWithItsPerProfileRows() throws {
+        let incognitoID = TabStore.incognitoProfileID.uuidString
+        for foreignKeysEnabled in [true, false] {
+            let label = "foreign keys \(foreignKeysEnabled ? "on" : "off")"
+            let db = try makeDatabaseWithPerProfileRows(foreignKeysEnabled: foreignKeysEnabled)
+            // A stored Private profile row missing from the set goes too, but its
+            // store is non-persistent, so it gets no pending data removal.
+            db.saveProfile(makeProfile(id: incognitoID, name: "Private"))
+
+            db.saveProfiles([makeProfile(id: "profile-2", name: "Second, renamed")])
+
+            XCTAssertEqual(db.loadProfiles().map(\.id), ["profile-2"], label)
+            XCTAssertEqual(db.loadProfiles().first?.name, "Second, renamed", "the saved set is saved (\(label))")
+            for table in perProfileTables {
+                XCTAssertEqual(try rowCount(table, profileID: testProfileID, in: db), 0,
+                               "\(table) rows of the removed profile are deleted (\(label))")
+                XCTAssertEqual(try rowCount(table, profileID: "profile-2", in: db), 1,
+                               "\(table) rows of a saved profile are untouched (\(label))")
+            }
+            for table in extensionKeyedTables {
+                XCTAssertEqual(try rowCount(table, in: db), 1, "\(table) is untouched (\(label))")
+            }
+            XCTAssertEqual(db.pendingProfileDataRemovals(), [testProfileID],
+                           "the removed profile's data removal is pending; the Private profile's is not (\(label))")
+        }
+    }
+
+    func testSaveProfilesKeepsAMissingProfileASpaceReferencesAndSavesTheRest() throws {
+        for foreignKeysEnabled in [true, false] {
+            let label = "foreign keys \(foreignKeysEnabled ? "on" : "off")"
+            let db = try makeDatabaseWithPerProfileRows(foreignKeysEnabled: foreignKeysEnabled)
+            db.saveProfile(makeProfile(id: "profile-3", name: "Third"))
+            let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
+            db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
+
+            db.saveProfiles([makeProfile(id: "profile-2", name: "Second, renamed")])
+
+            XCTAssertEqual(Set(db.loadProfiles().map(\.id)), [testProfileID, "profile-2"],
+                           "the referenced profile is kept, the unreferenced one removed (\(label))")
+            XCTAssertEqual(db.loadProfiles().first { $0.id == "profile-2" }?.name, "Second, renamed",
+                           "the kept profile does not fail the rest of the save (\(label))")
+            for table in perProfileTables {
+                XCTAssertEqual(try rowCount(table, profileID: testProfileID, in: db), 1,
+                               "\(table) rows of the referenced profile are kept (\(label))")
+                XCTAssertEqual(try rowCount(table, profileID: "profile-2", in: db), 1, label)
+            }
+            XCTAssertEqual(db.pendingProfileDataRemovals(), ["profile-3"],
+                           "only the removed profile gets a pending data removal (\(label))")
+        }
     }
 }
