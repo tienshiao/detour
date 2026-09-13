@@ -87,6 +87,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// and tests. Dropped with the state entry.
     private var keepAlivePingCounts: [KeepAlivePortKey: Int] = [:]
 
+    /// Keep-alive ports accepted for each extension, for diagnostics and tests: a
+    /// count that keeps climbing means contexts are taking the port from each
+    /// other. Unlike the ping count it outlives an idle state (a replaced port
+    /// passes through one) and is dropped only when the context unloads.
+    private var keepAlivePortOpenCounts: [KeepAlivePortKey: Int] = [:]
+
     /// The real native messaging hosts currently connected for each extension, keyed
     /// by host identity (TASK-16). The keep-alive count is derived from this registry
     /// rather than from a flag captured in each connection's closures: those closures
@@ -162,6 +168,19 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// every other native-host failure — a rejected `sendNativeMessage` promise /
     /// `runtime.lastError`, or a port disconnected with that error.
     static let nativeHostForbiddenMessage = "Access to the specified native messaging host is forbidden."
+
+    /// The disconnect reason on a keep-alive port evicted by a newer one from the
+    /// same extension (see the `.polyfillHost` case of the `connectUsing` delegate
+    /// method). `ExtensionAPIPolyfill.nativePortKeepAliveJS` embeds the same string
+    /// and stops, instead of reconnecting, when its port ends with it.
+    static let keepAliveSupersededMessage = "Detour keep-alive port superseded by a newer one"
+
+    /// The message type Detour sends on an evicted keep-alive port just before
+    /// disconnecting it: WebKit does not deliver a native disconnect's error to
+    /// an established port's `onDisconnect` (neither `port.error` nor
+    /// `runtime.lastError`; measured 2026-09-13), so this is how the polyfill
+    /// learns the reason.
+    static let keepAliveSupersededType = "keepalive-superseded"
 
     static func nativeHostForbiddenError() -> NSError {
         NSError(domain: "DetourExtension", code: -1,
@@ -490,6 +509,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // first also means each host's own release callback finds nothing to release.
         let hosts = liveNativeHosts.removeValue(forKey: key) ?? [:]
         applyKeepAlive(.contextUnloaded, for: key)
+        keepAlivePortOpenCounts.removeValue(forKey: key)
         if let port = keepAlivePorts.removeValue(forKey: key) {
             port.disconnect(throwing: nil)
             log.info("Keep-alive port closed for \(extensionID, privacy: .public) (context unloaded)")
@@ -660,6 +680,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Pings received on the extension's keep-alive port so far. Tests only.
     func keepAlivePingCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
         keepAlivePingCounts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)] ?? 0
+    }
+
+    /// Keep-alive ports accepted for the extension since its context loaded. Tests only.
+    func keepAlivePortOpenCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
+        keepAlivePortOpenCounts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)] ?? 0
     }
 
     /// Real native messaging hosts currently registered as live for the extension.
@@ -1883,20 +1908,37 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             // last one exits (TASK-16), and WebKit counts the background's pings on it
             // as the activity that defers the unload. One port per extension per
             // controller: the background only ever holds one, so a second replaces
-            // (and closes) the first rather than accumulating. Nothing here can tell
-            // which web view opened the port: a top-level extension page navigated to
-            // the background document's path also passes the polyfill's gate, and its
-            // port would evict the real background's. TASK-66 closed the same hole for
-            // runtime.onInstalled with `ExtensionPageHostRegistry`, but that needs the
-            // sending web view, which a native-message port never carries.
+            // (and closes) the first rather than accumulating.
+            //
+            // The newest port wins, and the context that held the old one stops: it
+            // is told `keepAliveSupersededType` just before the disconnect (WebKit
+            // does not hand the disconnect error to an established port, so the
+            // error alone never reaches it) and does not reconnect until its next
+            // start. Reconnecting would evict the newer port, whose context would
+            // reconnect and evict it back, about once a second forever.
+            //
+            // Residual limit: nothing here can tell which web view opened the port.
+            // A top-level extension page navigated to the background document's path
+            // also passes the polyfill's gate, and its port takes the keep-alive from
+            // the real background, which then stays stopped until it restarts.
+            // TASK-66 closed the same hole for runtime.onInstalled with
+            // `ExtensionPageHostRegistry`, but that needs the sending web view, which
+            // a native-message port never carries.
             let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
             if let previous = keepAlivePorts.removeValue(forKey: key) {
-                previous.disconnect(throwing: nil)
+                // Sent before the disconnect on the same port, so the polyfill has
+                // it by the time its onDisconnect runs.
+                previous.sendMessage(["type": Self.keepAliveSupersededType], completionHandler: { _ in })
+                previous.disconnect(throwing: NSError(
+                    domain: "DetourExtension", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: Self.keepAliveSupersededMessage]))
+                log.info("Keep-alive port for \(extID, privacy: .public) superseded by a newer one")
                 // Disarm the state with the old port so the new one (which starts
                 // disarmed) is re-armed below rather than silently left idle.
                 applyKeepAlive(.portClosed, for: key)
             }
             keepAlivePorts[key] = port
+            keepAlivePortOpenCounts[key, default: 0] += 1
             port.messageHandler = { [weak self] message, _ in
                 guard let self,
                       let body = message as? [String: Any],

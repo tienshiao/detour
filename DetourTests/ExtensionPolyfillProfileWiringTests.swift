@@ -1733,6 +1733,142 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(report["installDetail"] as? String, "no-nativeMessaging-permission")
     }
 
+    // MARK: - TASK-62: a second keep-alive port supersedes the first
+
+    /// The background script for the contest below. Every context running it —
+    /// the real background page and a tab at the background path alike — stamps
+    /// its own keep-alive status into the origin's `localStorage` under its own
+    /// instance key, so both can be read from either one without messaging (a
+    /// `runtime.sendMessage` could be answered by either context at this path).
+    private static let keepAliveContestBackgroundJS = """
+        const instance = Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+        globalThis.__detourKeepAliveInstance = instance;
+        function beat() {
+            const keepAlive = globalThis.__detourNativePortKeepAlive;
+            try {
+                localStorage.setItem('__detourKeepAliveBeat:' + instance, JSON.stringify({
+                    instance: instance,
+                    at: Date.now(),
+                    installMode: keepAlive ? keepAlive.installMode : 'missing',
+                    installDetail: keepAlive ? keepAlive.installDetail : 'missing'
+                }));
+            } catch (e) {}
+        }
+        beat();
+        setInterval(beat, 250);
+        """
+
+    /// Every context's latest keep-alive beat, keyed by instance, read through
+    /// `webView` (any page of the extension's origin).
+    private func keepAliveBeats(from webView: WKWebView) async throws -> [String: [String: Any]] {
+        let raw = try await webView.callAsyncJavaScript("""
+            const beats = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key || key.indexOf('__detourKeepAliveBeat:') !== 0) continue;
+                try { beats[key.slice('__detourKeepAliveBeat:'.length)] = JSON.parse(localStorage.getItem(key)); } catch (e) {}
+            }
+            return JSON.stringify(beats);
+            """, arguments: [:], contentWorld: .page)
+        let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: Any]])
+    }
+
+    /// A tab navigated to the background document's path passes the polyfill's
+    /// background gate and opens its own keep-alive port, which replaces the real
+    /// background page's (one port per extension per controller). Before the fix
+    /// the evicted context reconnected, evicting the other in turn, and the two
+    /// took the port from each other forever. Now the newest port wins and the
+    /// evicted context stops (`installDetail` 'superseded') until its next start.
+    func testASupersededKeepAlivePortStopsInsteadOfReconnecting() async throws {
+        let id = measurementExtensionID("task62-superseded")
+        let ext = try await makeBackgroundPageExtension(
+            .scripts, id: id, permissions: ["nativeMessaging"],
+            backgroundJS: Self.keepAliveContestBackgroundJS)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let profile = makeProfile("TASK-62 Superseded Keep-alive")
+        _ = profile.extensionController
+        // A short reconnect base, so a context that did reconnect would do so many
+        // times inside the observation window.
+        prependUserScript("globalThis.__detourKeepAliveReconnectBaseMs = 100;", to: profile)
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let controller = profile.extensionController
+        let configuration = try XCTUnwrap(context.webViewConfiguration,
+                                          "webViewConfiguration is nil — context not loaded in a controller")
+
+        context.loadBackgroundContent { _ in }
+        try await waitUntil("the real background page to open its keep-alive port", timeout: 30) {
+            ExtensionManager.shared.keepAliveStateForTesting(
+                controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        XCTAssertEqual(ExtensionManager.shared.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: ext.id), 1, "precondition: only the background holds a port")
+
+        let space = addSpace(for: profile, name: "TASK-62 Superseded Keep-alive Space")
+        let backgroundPagePath = ExtensionPolyfillHandler.generatedBackgroundPagePath
+        let tab = TabStore.shared.addExtensionTab(
+            in: space,
+            url: context.baseURL.appendingPathComponent(String(backgroundPagePath.dropFirst())),
+            configuration: configuration)
+        let tabView = try XCTUnwrap(tab.webView)
+        var tabInstance = ""
+        try await waitUntil("the extension tab to run the background script", timeout: 20) {
+            guard tabView.isLoading == false, tabView.url?.path == backgroundPagePath else { return false }
+            let instance = try? await tabView.callAsyncJavaScript(
+                "return globalThis.__detourKeepAliveInstance || '';", arguments: [:], contentWorld: .page)
+            tabInstance = instance as? String ?? ""
+            return !tabInstance.isEmpty
+        }
+
+        func tabKeepAlive() async throws -> [String: Any] {
+            let raw = try await tabView.callAsyncJavaScript("""
+                const keepAlive = globalThis.__detourNativePortKeepAlive;
+                return JSON.stringify({
+                    contextKind: globalThis.__detourContextKind || 'none',
+                    installMode: keepAlive ? keepAlive.installMode : 'missing',
+                    installDetail: keepAlive ? keepAlive.installDetail : 'missing'
+                });
+                """, arguments: [:], contentWorld: .page)
+            let json = try XCTUnwrap(raw as? String)
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        }
+        func backgroundKeepAlive() async throws -> [String: Any]? {
+            try await keepAliveBeats(from: tabView).first { $0.key != tabInstance }?.value
+        }
+
+        try await waitUntil("a second keep-alive port to connect", timeout: 20) {
+            ExtensionManager.shared.keepAlivePortOpenCountForTesting(
+                controller: controller, extensionID: ext.id) >= 2
+        }
+
+        // The observation window: a context that reconnected after being evicted
+        // would open a new port every ~100 ms here.
+        try await Task.sleep(nanoseconds: 5_000_000_000)
+
+        let tabState = try await tabKeepAlive()
+        let backgroundBeat = try await backgroundKeepAlive()
+        let backgroundState = try XCTUnwrap(backgroundBeat, "no heartbeat from the real background page")
+        XCTAssertEqual(tabState["contextKind"] as? String, "background-page",
+                       "precondition: the polyfill cannot tell this tab from the background page")
+
+        let states = [tabState, backgroundState]
+        let superseded = states.filter {
+            $0["installDetail"] as? String == "superseded" && $0["installMode"] as? String == "none"
+        }
+        let holding = states.filter { $0["installMode"] as? String == "port" }
+        XCTAssertEqual(superseded.count, 1, "exactly one context must stop as superseded: tab \(tabState), background \(backgroundState)")
+        XCTAssertEqual(holding.count, 1, "the other context must hold the port: tab \(tabState), background \(backgroundState)")
+        XCTAssertEqual(ExtensionManager.shared.keepAliveStateForTesting(
+            controller: controller, extensionID: ext.id)?.portOpen, true, "Detour must still hold a port")
+
+        let opens = ExtensionManager.shared.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: ext.id)
+        XCTAssertLessThanOrEqual(opens, 2,
+                                 "an evicted context must not reconnect and take the port back (\(opens) ports opened)")
+    }
+
     // MARK: - TASK-29: runtime.onInstalled in extension pages and Private
 
     /// ExtensionManager wakes a worker for an owed onInstalled in a regular profile

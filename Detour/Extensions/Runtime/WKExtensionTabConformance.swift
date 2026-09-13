@@ -3,7 +3,7 @@ import WebKit
 
 /// Every browser window's controller, in `NSApp.windows` order — the single
 /// enumeration `BrowserTab.window(for:)` and the move seam's window hooks
-/// (`ExtensionTabLifecycle.windowShowingSpace` / `windowListing`) both resolve
+/// (`ExtensionTabLifecycle.windowShowingTab` / `windowListing`) both resolve
 /// through, so they can never disagree about which windows exist.
 func extensionBrowserWindows() -> [BrowserWindowController] {
     NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
@@ -20,6 +20,14 @@ extension BrowserTab: WKWebExtensionTab {
     }
 
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
+        extensionWindow()
+    }
+
+    /// The window extensions are told this tab is in — what `window(for:)`
+    /// answers every context with. Also asked directly by a space move, before it
+    /// mutates anything, to name the window the tab is leaving
+    /// (`ExtensionTabLifecycle.windowShowingTab`).
+    func extensionWindow() -> BrowserWindowController? {
         let controllers = extensionBrowserWindows()
         // The window that currently shows this tab.
         if let wc = controllers.first(where: { $0.selectedTabID == id }) { return wc }

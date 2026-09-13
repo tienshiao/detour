@@ -97,7 +97,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// The move seam's window hooks, saved so tearDown restores the production
     /// `NSApp.windows` lookups (TASK-61).
-    private var previousWindowShowingSpace: ((UUID) -> (any WKWebExtensionWindow)?)!
+    private var previousWindowShowingTab: ((BrowserTab) -> (any WKWebExtensionWindow)?)!
     private var previousWindowListing: ((BrowserTab) -> (any WKWebExtensionWindow)?)!
 
     override func setUp() {
@@ -105,10 +105,10 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         notifier = RecordingNotifier()
         previousNotifier = ExtensionTabLifecycle.notifier
         ExtensionTabLifecycle.notifier = notifier
-        previousWindowShowingSpace = ExtensionTabLifecycle.windowShowingSpace
+        previousWindowShowingTab = ExtensionTabLifecycle.windowShowingTab
         previousWindowListing = ExtensionTabLifecycle.windowListing
         // No real windows in this suite: a test that wants one installs it.
-        ExtensionTabLifecycle.windowShowingSpace = { _ in nil }
+        ExtensionTabLifecycle.windowShowingTab = { _ in nil }
         ExtensionTabLifecycle.windowListing = { _ in nil }
     }
 
@@ -129,16 +129,17 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
         ExtensionTabLifecycle.notifier = previousNotifier
-        ExtensionTabLifecycle.windowShowingSpace = previousWindowShowingSpace
+        ExtensionTabLifecycle.windowShowingTab = previousWindowShowingTab
         ExtensionTabLifecycle.windowListing = previousWindowListing
         super.tearDown()
     }
 
-    /// Installs `window` as the window showing `spaceID` (and as the window
-    /// listing any tab), the way a real `BrowserWindowController` on that space
-    /// would answer both hooks.
+    /// Installs `window` as the window every tab on `spaceID` is in (and as the
+    /// window listing any tab), the way a real `BrowserWindowController` on that
+    /// space would answer both hooks. The move asks before it mutates anything,
+    /// so the tab's `spaceID` still names the space it is leaving.
     private func showSpace(_ spaceID: UUID, in window: StubWindow) {
-        ExtensionTabLifecycle.windowShowingSpace = { $0 == spaceID ? window : nil }
+        ExtensionTabLifecycle.windowShowingTab = { tab in tab.spaceID == spaceID ? window : nil }
         ExtensionTabLifecycle.windowListing = { _ in window }
     }
 
@@ -401,7 +402,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// The source space was shown by nobody but the destination is on screen —
     /// the attach half is real, so the move is announced with a nil old window
-    /// (WebKit reads that as `tabs.onMoved` in the tab's current window).
+    /// (WebKit reads that as a tab moving from no open window: `tabs.onAttached`
+    /// to its current window, and no `onDetached` or `onMoved`).
     func testMoveIntoAShownSpaceAnnouncesAMoveWithNoOldWindow() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle Shown B", emoji: "🅱️",
@@ -410,7 +412,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         createdTabs.append(tab)
         let window = StubWindow()
         // Only the destination is shown: nothing answers for the source space.
-        ExtensionTabLifecycle.windowShowingSpace = { $0 == destination.id ? window : nil }
+        ExtensionTabLifecycle.windowShowingTab = { tab in tab.spaceID == destination.id ? window : nil }
         ExtensionTabLifecycle.windowListing = { _ in window }
 
         XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.space, to: destination))
@@ -419,6 +421,42 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertEqual(moves(for: tab).map(\.oldWindowIsNil), [true])
         XCTAssertEqual(moves(for: tab).map(\.fromIndex), [0],
                        "best effort from the source space's own sections")
+    }
+
+    /// The old window is asked of the *moved tab*, before the move: with two
+    /// windows on the source space, only the tab can say which one extensions
+    /// were told it lives in (`BrowserTab.extensionWindow()` prefers the window
+    /// it is selected in), and "the first window on the space" named the wrong
+    /// one. This suite has no real windows to exercise that rule, so it pins the
+    /// inputs instead: both moves hand the hook the tab itself, still in the
+    /// space it is leaving, and pass its answer on as the old window.
+    func testMovesAskTheMovedTabForItsOldWindowBeforeMoving() throws {
+        let f = try makeFixture()
+        let destination = f.store.addSpace(name: "Lifecycle Asked B", emoji: "🅱️",
+                                           colorHex: "FF9500", profileID: f.profile.id)
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        let pinnedTab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(contentsOf: [tab, pinnedTab])
+        f.store.pinTab(id: pinnedTab.id, in: f.space)
+        let entry = try XCTUnwrap(f.space.pinnedEntries.first { $0.tab === pinnedTab })
+
+        var asked: [(tab: BrowserTab, spaceID: UUID?)] = []
+        let window = StubWindow()
+        ExtensionTabLifecycle.windowShowingTab = { asked.append((tab: $0, spaceID: $0.spaceID)); return window }
+        ExtensionTabLifecycle.windowListing = { _ in nil }
+        notifier.records.removeAll()
+
+        XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.space, to: destination))
+        XCTAssertTrue(f.store.movePinnedEntry(id: entry.id, from: f.space, to: destination))
+
+        XCTAssertEqual(asked.count, 2, "one question per move")
+        XCTAssertTrue(asked.first?.tab === tab, "moveTab must ask about the moved tab")
+        XCTAssertTrue(asked.last?.tab === pinnedTab, "movePinnedEntry must ask about the entry's tab")
+        XCTAssertEqual(asked.map(\.spaceID), [f.space.id, f.space.id],
+                       "asked before the move, while the tab is still in the space it leaves")
+        XCTAssertEqual(moves(for: tab).map(\.oldWindowIsNil), [false],
+                       "the hook's answer is the old window WebKit is told")
+        XCTAssertEqual(moves(for: pinnedTab).map(\.oldWindowIsNil), [false])
     }
 
     // MARK: - Favourite property changes

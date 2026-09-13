@@ -2419,8 +2419,9 @@ class TabStore {
     /// leaving — `BrowserWindowController.extensionTabs`, the same enumeration
     /// `tabs(for:)` reports. Must be read *before* the move mutates anything.
     ///
-    /// With no window on the source space there is no such enumeration, so this
-    /// falls back to the space's own sections in window order (pinned, then
+    /// With no old window (`ExtensionTabLifecycle.windowShowingTab` placed the
+    /// tab in none) there is no such enumeration, so this falls back to the
+    /// space's own sections in window order (pinned, then
     /// normal). That is a best effort: favourites belong to the profile and a
     /// live peek is interleaved by the window, and neither can be ordered
     /// without one — but a window-less source only ever produces the `onAttached`
@@ -2437,7 +2438,7 @@ class TabStore {
     /// Tells the contexts a same-profile "Move to Space" happened, once the tab
     /// is in the destination container (`ExtensionTabLifecycle.didMove`).
     ///
-    /// Skipped when no window showed the source space *and* none lists the tab
+    /// Skipped when the tab was in no window before the move *and* none lists it
     /// now: `tabs.onDetached`/`onAttached`/`onMoved` all name a window, so with
     /// no window on either side there is no event either half could describe —
     /// and the tab is already reported open wherever it is. A window arriving on
@@ -2479,7 +2480,7 @@ class TabStore {
         // Resolved before the move mutates anything: both name where the tab is
         // *leaving* from (TASK-61).
         let sameProfile = source.profileID == destination.profileID
-        let oldWindow = ExtensionTabLifecycle.windowShowingSpace(source.id)
+        let oldWindow = ExtensionTabLifecycle.windowShowingTab(tab)
         let fromIndex = extensionMoveIndex(of: tab, leaving: source, shownBy: oldWindow)
 
         source.tabs.remove(at: index)
@@ -2555,7 +2556,7 @@ class TabStore {
         // As in `moveTab`: where the tab is leaving from, read before the move
         // mutates anything (TASK-61).
         let sameProfile = source.profileID == destination.profileID
-        let oldWindow = ExtensionTabLifecycle.windowShowingSpace(source.id)
+        let oldWindow = entry.tab.flatMap { ExtensionTabLifecycle.windowShowingTab($0) }
         let fromIndex = entry.tab.map { extensionMoveIndex(of: $0, leaving: source, shownBy: oldWindow) } ?? 0
 
         let savedFolderID = entry.folderID

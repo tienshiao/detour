@@ -111,8 +111,9 @@ final class WKExtensionTabLifecycleNotifier: ExtensionTabLifecycleNotifying {
 /// not a close and a re-open either (extensions would drop every per-tab port
 /// and frame map for a tab that never went away); it is announced as the move it
 /// is, via `didMove`, which WebKit turns into `tabs.onMoved` when the old window
-/// is the tab's current one (or nil) and into `tabs.onDetached` + `onAttached`
-/// when it differs.
+/// is the tab's current one, into `tabs.onDetached` + `onAttached` when it
+/// differs, and into `onAttached` alone when it is nil (moving from no open
+/// window).
 ///
 /// A move *between profiles* is the other case and stays a close + re-open:
 /// `didOpen` closes a tab it finds registered elsewhere, and a profile swap
@@ -122,13 +123,13 @@ enum ExtensionTabLifecycle {
     /// Replaced by tests; the production value forwards to real contexts.
     static var notifier: any ExtensionTabLifecycleNotifying = WKExtensionTabLifecycleNotifier()
 
-    /// The window a space is currently shown by, if any — the rule
-    /// `BrowserTab.window(for:)` falls back on, asked of a space rather than of
-    /// a tab so a move can resolve the window it is *leaving* before mutating.
-    /// Replaced by tests, which have no real windows.
-    static var windowShowingSpace: (UUID) -> (any WKWebExtensionWindow)? = { spaceID in
-        extensionBrowserWindows().first { $0.activeSpaceID == spaceID }
-    }
+    /// The window extensions currently believe `tab` is in
+    /// (`BrowserTab.extensionWindow()`). A move resolves it *before* it mutates
+    /// anything, so it is the same answer `window(for:)` gave the contexts — the
+    /// window the tab is leaving. Not "the first window on the source space":
+    /// with two windows on that space, the tab belongs to the one it is selected
+    /// (or peeked, or listed) in. Replaced by tests, which have no real windows.
+    static var windowShowingTab: (BrowserTab) -> (any WKWebExtensionWindow)? = { $0.extensionWindow() }
 
     /// Any window that lists `tab` right now, resolved through the same
     /// controllers and the same enumeration as `window(for:)`. Replaced by tests.
@@ -271,14 +272,17 @@ enum ExtensionTabLifecycle {
 
     /// `tab` just changed space inside one profile (the space-move rule above):
     /// same tab, same web view, same contexts, so the registration stands and
-    /// what is announced is the move itself. `oldWindow` is the window that was
-    /// showing the space it left — nil when none was — and `fromIndex` the index
-    /// it held in that window's tab enumeration before the move.
+    /// what is announced is the move itself. `oldWindow` is the window extensions
+    /// were told the tab was in before the move (`windowShowingTab`) — nil when
+    /// none was — and `fromIndex` the index it held in that window's tab
+    /// enumeration before the move.
     ///
-    /// WebKit reads it as `tabs.onMoved` when `oldWindow` is the tab's current
-    /// window or nil, and as `tabs.onDetached` + `tabs.onAttached` when it is a
-    /// different one; the tab's current window is whatever `window(for:)`
-    /// resolves *after* the move, so call this only once the tab is in the
+    /// WebKit's contract for `didMoveTab(_:fromIndex:inWindow:)`: a nil
+    /// `oldWindow` means the tab is moving from no open window, so it is only
+    /// attached (`tabs.onAttached`); the tab's current window means it stayed
+    /// put (`tabs.onMoved`); a different window means `tabs.onDetached` from that
+    /// one + `tabs.onAttached` to the current one. The tab's current window is
+    /// whatever `window(for:)` resolves *after* the move, so call this only once the tab is in the
     /// destination container — handling the event resolves that window and the
     /// tab's new index. No-op for a tab no context was told about (a dormant
     /// pinned entry's sleeping tab, an incognito tab).

@@ -1638,7 +1638,11 @@ struct ExtensionAPIPolyfill {
     /// If Detour drops the port the worker reconnects with a capped backoff,
     /// disarmed; Detour re-sends `keepalive-start` on the new port if hosts are
     /// still connected (`NativeHostKeepAliveState`), so the worker never has to
-    /// remember anything across a reconnect.
+    /// remember anything across a reconnect. The one exception is a port Detour
+    /// replaced with a newer one from another context of the same extension: it
+    /// sends `ExtensionManager.keepAliveSupersededType` first, and the context
+    /// stops (`installDetail` 'superseded') instead of reconnecting, so two
+    /// contexts cannot take the port from each other forever.
     ///
     /// Installed in background contexts of extensions that declare
     /// `nativeMessaging` only: an extension that cannot open a native port has
@@ -1675,6 +1679,10 @@ struct ExtensionAPIPolyfill {
         const DEFAULT_PING_INTERVAL_MS = 45000;
         const DEFAULT_RECONNECT_BASE_MS = 1000;
         const MAX_RECONNECT_MS = 30000;
+        // What Detour sends on, and disconnects, a keep-alive port a newer one
+        // replaced (ExtensionManager.keepAliveSupersededMessage).
+        const SUPERSEDED_TYPE = '\(ExtensionManager.keepAliveSupersededType)';
+        const SUPERSEDED_MESSAGE = '\(ExtensionManager.keepAliveSupersededMessage)';
         const pingIntervalMs = (typeof g.__detourKeepAlivePingIntervalMs === 'number' && g.__detourKeepAlivePingIntervalMs > 0)
             ? g.__detourKeepAlivePingIntervalMs : DEFAULT_PING_INTERVAL_MS;
         const reconnectBaseMs = (typeof g.__detourKeepAliveReconnectBaseMs === 'number' && g.__detourKeepAliveReconnectBaseMs > 0)
@@ -1692,7 +1700,8 @@ struct ExtensionAPIPolyfill {
         // Why, for diagnostics: '' | 'not-a-background-context' |
         // 'persistent-background-page' | 'no-nativeMessaging-permission' |
         // 'no-runtime' | 'no-connectNative:<typeof>' | 'connect-failed: <message>' |
-        // 'disconnected'.
+        // 'disconnected' | 'superseded' (a newer keep-alive port replaced this
+        // one; nothing reconnects until the context starts again).
         let installDetail = '';
 
         function clearPingTimer() {
@@ -1718,6 +1727,23 @@ struct ExtensionAPIPolyfill {
                 if (port !== target) return;
                 postPing(target);
             }, pingIntervalMs);
+        }
+
+        // Whatever reason the runtime gives for `target`'s disconnect, or ''.
+        function disconnectMessage(target, disconnected) {
+            const sources = [
+                function() { return disconnected && disconnected.error; },
+                function() { return target.error; },
+                function() { return g.chrome && g.chrome.runtime && g.chrome.runtime.lastError; },
+                function() { return g.browser && g.browser.runtime && g.browser.runtime.lastError; }
+            ];
+            for (const source of sources) {
+                try {
+                    const error = source();
+                    if (error) return String(error.message !== undefined ? error.message : error);
+                } catch (e) {}
+            }
+            return '';
         }
 
         function scheduleReconnect() {
@@ -1765,19 +1791,36 @@ struct ExtensionAPIPolyfill {
 
             // Detour drives the pings; a reconnected port always starts disarmed and
             // is re-armed by Detour if hosts are still connected.
+            // Set when Detour says a newer keep-alive port replaced this one.
+            let superseded = false;
             try {
                 opened.onMessage.addListener(function(message) {
                     if (port !== opened || !message) return;
                     if (message.type === 'keepalive-start') arm(opened);
                     else if (message.type === 'keepalive-stop') disarm();
+                    else if (message.type === SUPERSEDED_TYPE) superseded = true;
                 });
             } catch (e) {}
             try {
-                opened.onDisconnect.addListener(function() {
+                opened.onDisconnect.addListener(function(disconnected) {
                     if (port !== opened) return;
                     port = null;
                     disarm();
                     installMode = 'none';
+                    // Another context of this extension (a tab navigated to the
+                    // background document's path passes the gate below too) took
+                    // the one keep-alive port Detour holds per extension. Stop
+                    // until the next start: reconnecting would evict that context,
+                    // whose own reconnect would evict this one, forever (TASK-62
+                    // review). The reason arrives as a message sent just before the
+                    // disconnect — WebKit delivers the error Detour disconnects with
+                    // neither on the port nor in runtime.lastError (measured
+                    // 2026-09-13) — and the error is checked too in case a WebKit
+                    // build starts delivering it.
+                    if (superseded || disconnectMessage(opened, disconnected).indexOf(SUPERSEDED_MESSAGE) !== -1) {
+                        installDetail = 'superseded';
+                        return;
+                    }
                     installDetail = 'disconnected';
                     scheduleReconnect();
                 });
