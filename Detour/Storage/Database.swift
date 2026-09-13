@@ -167,6 +167,45 @@ struct AppDatabase {
         }
     }
 
+    // MARK: - WebKit storage identifiers (TASK-36)
+
+    /// Records that this data directory is about to create persistent WebKit
+    /// storage (a website data store and extension controller) under
+    /// `identifier` for `profileID`. Only isolated data directories record; see
+    /// `WebKitStorageScope`.
+    func recordWebKitStorageIdentifier(_ identifier: UUID, profileID: UUID) {
+        performWrite("record WebKit storage identifier") { db in
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO webKitStorageIdentifier (identifier, profileID, createdAt) VALUES (?, ?, ?)",
+                arguments: [identifier.uuidString, profileID.uuidString, Date().timeIntervalSince1970]
+            )
+        }
+    }
+
+    /// Identifiers this data directory recorded, oldest first.
+    func recordedWebKitStorageIdentifiers() -> [UUID] {
+        performRead("load WebKit storage identifiers", default: []) { db in
+            try String.fetchAll(db, sql: "SELECT identifier FROM webKitStorageIdentifier ORDER BY createdAt, identifier")
+                .compactMap(UUID.init(uuidString:))
+        }
+    }
+
+    /// The profile `identifier` was recorded for, or nil when it is not recorded.
+    func recordedWebKitStorageProfileID(for identifier: UUID) -> UUID? {
+        performRead("look up WebKit storage identifier", default: nil) { db in
+            try String.fetchOne(db, sql: "SELECT profileID FROM webKitStorageIdentifier WHERE identifier = ?",
+                                arguments: [identifier.uuidString])
+                .flatMap(UUID.init(uuidString:))
+        }
+    }
+
+    func forgetWebKitStorageIdentifier(_ identifier: UUID) {
+        performWrite("forget WebKit storage identifier") { db in
+            try db.execute(sql: "DELETE FROM webKitStorageIdentifier WHERE identifier = ?",
+                           arguments: [identifier.uuidString])
+        }
+    }
+
     // MARK: - Session
 
     /// Saves `records` as the complete set of profiles, in one transaction. A
@@ -655,6 +694,18 @@ struct AppDatabase {
             try db.create(table: "pendingProfileDataRemoval") { t in
                 t.primaryKey("profileID", .text)
                 t.column("requestedAt", .double).notNull()
+            }
+        }
+
+        migrator.registerMigration("v12") { db in
+            // TASK-36: WebKit storage identifiers an isolated data directory
+            // (DETOUR_DATA_DIR other than "Detour") created, so it can remove
+            // exactly what it created from the WebKit directory it shares with
+            // the production app. The default data directory records nothing.
+            try db.create(table: "webKitStorageIdentifier") { t in
+                t.primaryKey("identifier", .text)
+                t.column("profileID", .text).notNull()
+                t.column("createdAt", .double).notNull()
             }
         }
 

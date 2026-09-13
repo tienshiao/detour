@@ -5,9 +5,11 @@ import os
 private let log = Logger(subsystem: "com.detourbrowser.mac", category: "profiles")
 
 /// Removes a deleted profile's on-disk WebKit data (TASK-32): the
-/// `WKWebsiteDataStore` for the profile id (cookies, local storage, IndexedDB,
-/// caches, service workers) and the storage of the profile's
-/// `WKWebExtensionController`, which is configured with the same identifier.
+/// `WKWebsiteDataStore` for the profile's WebKit storage identifier (cookies,
+/// local storage, IndexedDB, caches, service workers) and the storage of the
+/// profile's `WKWebExtensionController`, which is configured with the same
+/// identifier. The identifier is the profile id in the default data directory
+/// and derived from the data directory elsewhere (`WebKitStorageScope`, TASK-36).
 ///
 /// WebKit behaviour this relies on, measured on macOS 26 (Xcode 26.3 SDK):
 /// - `WKWebsiteDataStore.remove(forIdentifier:)` fails with "Data store is in
@@ -35,20 +37,18 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "profiles
 final class ProfileDataRemoval {
 
     /// The WebKit side, injectable so tests can simulate failures and successes
-    /// without touching real data stores.
+    /// without touching real data stores. Both closures take the WebKit storage
+    /// identifier (`WebKitStorageScope.identifier(forProfile:)`), which is the
+    /// profile id only in the default data directory.
     struct Remover {
         /// Removes the extension controller data kept for the identifier.
         var removeExtensionData: @MainActor (UUID) async throws -> Void
         /// Removes the website data store for the identifier.
         var removeWebsiteDataStore: @MainActor (UUID) async throws -> Void
 
-        /// Set when on-disk removal is skipped because the app runs in this
-        /// isolated data directory (see `forCurrentDataDirectory`). The closures
-        /// are then never called.
-        var skippedDataDirectory: String? = nil
-
-        /// The real WebKit calls. Only for the default data directory, or for a
-        /// test that removes identifiers it created itself.
+        /// The real WebKit calls. `ProfileDataRemoval` and
+        /// `WebKitStorageScope.removeRecordedStorage` decide which identifiers
+        /// reach them.
         static let webKit = Remover(
             removeExtensionData: { identifier in
                 try await ProfileDataRemoval.removeWebKitExtensionControllerData(identifier: identifier)
@@ -57,42 +57,6 @@ final class ProfileDataRemoval {
                 try await WKWebsiteDataStore.remove(forIdentifier: identifier)
             }
         )
-
-        /// The remover the app uses by default, and the one place that decides
-        /// whether on-disk removal may run at all.
-        ///
-        /// WebKit keys identifier stores and extension controller directories by
-        /// bundle id (`~/Library/WebKit/<bundle id>/`), not by Detour's data
-        /// directory, so every `DETOUR_DATA_DIR` shares them. The removal guard
-        /// can only consult the current data directory's profile table, so a run
-        /// on an isolated copy of the production data (say `DetourVerify`) that
-        /// deletes a profile would pass the guard and wipe the production
-        /// profile's cookies and extension storage. Only the default data
-        /// directory ("Detour", or `DETOUR_DATA_DIR` unset) gets `.webKit`; any
-        /// other gets a remover that removes nothing and logs that once.
-        static func forCurrentDataDirectory(
-            environment: [String: String] = ProcessInfo.processInfo.environment
-        ) -> Remover {
-            let name = detourDataDirectoryName(environment: environment)
-            guard name != defaultDetourDataDirectoryName else { return .webKit }
-            logSkippedDataDirectoryOnce(name)
-            return Remover(
-                removeExtensionData: { _ in },
-                removeWebsiteDataStore: { _ in },
-                skippedDataDirectory: name
-            )
-        }
-
-        private static let skipLogLock = NSLock()
-        private nonisolated(unsafe) static var loggedSkippedDataDirectories = Set<String>()
-
-        private static func logSkippedDataDirectoryOnce(_ name: String) {
-            skipLogLock.lock()
-            let isFirst = loggedSkippedDataDirectories.insert(name).inserted
-            skipLogLock.unlock()
-            guard isFirst else { return }
-            log.notice("On-disk profile data removal is skipped in isolated data dir \(name, privacy: .public): the WebKit directory is shared with other data dirs")
-        }
     }
 
     enum Outcome: Equatable {
@@ -104,10 +68,10 @@ final class ProfileDataRemoval {
         /// row is cleared: it can never become removable.
         case refusedLiveProfile
         /// Nothing was removed because the app runs in an isolated data
-        /// directory whose profile table cannot vouch for the shared WebKit
-        /// directory. The pending row is cleared: this data directory can never
-        /// remove it, so retrying every launch would be pointless.
-        case skippedIsolatedDataDirectory
+        /// directory that never recorded creating WebKit storage for this
+        /// profile (TASK-36), so there is nothing of its own to remove. The
+        /// pending row is cleared: retrying every launch would be pointless.
+        case skippedUnrecordedStorage
         /// Every attempt failed, or the profile table could not be read. The
         /// pending row stays for the next launch.
         case failed(String)
@@ -118,15 +82,21 @@ final class ProfileDataRemoval {
     private let appDB: AppDatabase
     private let remover: Remover
     private let retryDelays: [TimeInterval]
+    private let storageScope: WebKitStorageScope
 
     /// Ids of the profiles alive in memory (`TabStore.profiles`). Checked, with
     /// the profile table, before every removal attempt.
     var inMemoryProfileIDs: () -> Set<UUID> = { [] }
 
-    init(appDB: AppDatabase, remover: Remover = .webKit, retryDelays: [TimeInterval] = defaultRetryDelays) {
+    /// `storageScope` names each profile's WebKit identifier and, outside the
+    /// default data directory, holds the records that gate removal. It is the
+    /// process's data directory unless a test injects another.
+    init(appDB: AppDatabase, remover: Remover = .webKit, retryDelays: [TimeInterval] = defaultRetryDelays,
+         storageScope: WebKitStorageScope = .current) {
         self.appDB = appDB
         self.remover = remover
         self.retryDelays = retryDelays
+        self.storageScope = storageScope
     }
 
     /// Removes the data of a profile that has just been deleted. The caller has
@@ -197,12 +167,20 @@ final class ProfileDataRemoval {
     /// The only caller of the remover. Removal is refused for a live profile,
     /// re-checked before every WebKit call; in-use failures are retried with
     /// `retryDelays`.
+    ///
+    /// The WebKit identifier comes from `storageScope`. In the default data
+    /// directory it is the profile id. An isolated data directory shares the
+    /// WebKit directory with the production app, so it removes only storage it
+    /// recorded creating, under an identifier derived from its own name
+    /// (`WebKitStorageScope.refusalToRemove`), and forgets the record after.
     @MainActor
     private func remove(_ id: UUID, recordKey: String) async -> Outcome {
-        if let dataDirectory = remover.skippedDataDirectory {
-            log.info("Skipping on-disk data removal of profile \(id.uuidString, privacy: .public) in isolated data dir \(dataDirectory, privacy: .public)")
+        let identifier = storageScope.identifier(forProfile: id)
+        let isolated = !storageScope.isDefaultDataDirectory
+        if isolated, storageScope.registry.recordedWebKitStorageProfileID(for: identifier) == nil {
+            log.info("Profile \(id.uuidString, privacy: .public) never created WebKit storage in data dir \(self.storageScope.dataDirectoryName, privacy: .public); nothing to remove")
             appDB.clearPendingProfileDataRemoval(profileID: recordKey)
-            return .skippedIsolatedDataDirectory
+            return .skippedUnrecordedStorage
         }
         var extensionDataRemoved = false
         var lastFailure = "not attempted"
@@ -213,12 +191,15 @@ final class ProfileDataRemoval {
             }
             do {
                 if !extensionDataRemoved {
-                    if let refusal = refusal(for: id, recordKey: recordKey) { return refusal }
-                    try await remover.removeExtensionData(id)
+                    if let refusal = refusal(for: id, identifier: identifier, recordKey: recordKey) { return refusal }
+                    try await remover.removeExtensionData(identifier)
                     extensionDataRemoved = true
                 }
-                if let refusal = refusal(for: id, recordKey: recordKey) { return refusal }
-                try await remover.removeWebsiteDataStore(id)
+                if let refusal = refusal(for: id, identifier: identifier, recordKey: recordKey) { return refusal }
+                try await remover.removeWebsiteDataStore(identifier)
+                if isolated {
+                    storageScope.registry.forgetWebKitStorageIdentifier(identifier)
+                }
                 appDB.clearPendingProfileDataRemoval(profileID: recordKey)
                 log.info("Removed on-disk data of deleted profile \(id.uuidString, privacy: .public)")
                 return .removed
@@ -231,8 +212,16 @@ final class ProfileDataRemoval {
         return .failed(lastFailure)
     }
 
-    /// The outcome to stop with when `id` must not be removed, or nil to go on.
-    private func refusal(for id: UUID, recordKey: String) -> Outcome? {
+    /// The outcome to stop with when `id` (whose storage is `identifier`) must
+    /// not be removed, or nil to go on. When an isolated data directory's storage
+    /// guard refuses (say, the production profile table is unreadable), the row
+    /// stays pending.
+    private func refusal(for id: UUID, identifier: UUID, recordKey: String) -> Outcome? {
+        if !storageScope.isDefaultDataDirectory,
+           let reason = storageScope.refusalToRemove(identifier: identifier) {
+            log.error("Not removing data of profile \(id.uuidString, privacy: .public): \(reason, privacy: .public)")
+            return .failed(reason)
+        }
         switch removability(of: id) {
         case .removable:
             return nil

@@ -330,12 +330,14 @@ class TabStore {
     private let profileDataRemoval: ProfileDataRemoval
 
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
-         profileDataRemover: ProfileDataRemoval.Remover = .forCurrentDataDirectory(),
-         profileDataRemovalRetryDelays: [TimeInterval] = ProfileDataRemoval.defaultRetryDelays) {
+         profileDataRemover: ProfileDataRemoval.Remover = .webKit,
+         profileDataRemovalRetryDelays: [TimeInterval] = ProfileDataRemoval.defaultRetryDelays,
+         webKitStorageScope: WebKitStorageScope = .current) {
         self.appDB = appDB
         self.historyDB = historyDB
         self.profileDataRemoval = ProfileDataRemoval(
-            appDB: appDB, remover: profileDataRemover, retryDelays: profileDataRemovalRetryDelays)
+            appDB: appDB, remover: profileDataRemover, retryDelays: profileDataRemovalRetryDelays,
+            storageScope: webKitStorageScope)
         profileDataRemoval.inMemoryProfileIDs = { [weak self] in
             Set(self?.profiles.map(\.id) ?? [])
         }
@@ -937,8 +939,11 @@ class TabStore {
                     tab: backingTab
                 )
                 if backingTab == nil {
-                    favorite.onFaviconDownloaded = { [weak self, weak favorite] in
-                        guard let self, let favorite else { return }
+                    // The profile is captured weakly: it holds this favourite, so a
+                    // strong capture is a cycle that keeps a deleted profile (and its
+                    // website data store and extension controller) alive (TASK-36).
+                    favorite.onFaviconDownloaded = { [weak self, weak favorite, weak profile] in
+                        guard let self, favorite != nil, let profile else { return }
                         self.notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
                     }
                 }

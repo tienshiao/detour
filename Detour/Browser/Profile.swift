@@ -139,11 +139,19 @@ class Profile {
     var isMalwareFilterEnabled: Bool
     var favorites: [Favorite] = []
 
+    /// The identifier of this profile's persistent website data store and
+    /// extension controller: the profile id in the default data directory, an
+    /// identifier derived from the data directory elsewhere (TASK-36).
+    var webKitStorageIdentifier: UUID {
+        WebKitStorageScope.current.identifier(forProfile: id)
+    }
+
     lazy var dataStore: WKWebsiteDataStore = {
         if isIncognito {
             return .nonPersistent()
         }
-        return WKWebsiteDataStore(forIdentifier: id)
+        return WKWebsiteDataStore(
+            forIdentifier: WebKitStorageScope.current.identifierForCreatingStorage(forProfile: id))
     }()
 
     // MARK: - Extension Controller
@@ -158,7 +166,8 @@ class Profile {
         if isIncognito {
             config = .nonPersistent()
         } else {
-            config = WKWebExtensionController.Configuration(identifier: id)
+            config = WKWebExtensionController.Configuration(
+                identifier: WebKitStorageScope.current.identifierForCreatingStorage(forProfile: id))
         }
         config.defaultWebsiteDataStore = dataStore
 

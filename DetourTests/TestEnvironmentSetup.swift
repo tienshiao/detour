@@ -1,4 +1,5 @@
 import XCTest
+import WebKit
 @testable import Detour
 
 /// Cleans the test database once before any tests run.
@@ -42,14 +43,70 @@ private final class TestObserver: NSObject, XCTestObservation {
         cleanTestExtensions()
         resetTabStore()
         clearPendingProfileDataRemovals()
+        // The profiles TabStore.shared restored are live; leave their storage.
+        removeRecordedWebKitStorage(phase: "start", excludingProfileIDs: Set(TabStore.shared.profiles.map(\.id)))
         assertCleanState()
     }
 
+    func testBundleDidFinish(_ testBundle: Bundle) {
+        guard !WebKitStorageScope.current.isDefaultDataDirectory else { return }
+        // Release what tests left in the shared store, and the persistent WebKit
+        // objects of the profiles it keeps (the test data directory's default
+        // profile creates a store and controller during the run), so none of
+        // that storage is in use any more. Then remove all the WebKit storage
+        // this data directory recorded. WebKit refuses a store something still
+        // uses; that storage stays recorded and goes at the next run's start.
+        for profile in TabStore.shared.profiles {
+            profile.unloadAllExtensions()
+        }
+        // Undo actions capture the spaces (and so the profiles) they act on.
+        TabStore.shared.undoManager.removeAllActions()
+        resetTabStore()
+        for profile in TabStore.shared.profiles where !profile.isIncognito {
+            profile.extensionController = WKWebExtensionController(configuration: .nonPersistent())
+            profile.dataStore = .nonPersistent()
+        }
+        removeRecordedWebKitStorage(phase: "end", excludingProfileIDs: [])
+    }
+
+    /// Removes the persistent WebKit storage (identifier data stores and
+    /// extension controller directories under the production app's
+    /// `~/Library/WebKit/<bundle id>/`) that this test data directory recorded
+    /// creating (TASK-36), except that of `excludingProfileIDs`.
+    /// `WebKitStorageScope.removeRecordedStorage` refuses anything not recorded
+    /// here, not derived from this data directory's name, or equal to a
+    /// production profile id. Never runs in the default data directory.
+    private func removeRecordedWebKitStorage(phase: String, excludingProfileIDs liveProfileIDs: Set<UUID>) {
+        let scope = WebKitStorageScope.current
+        guard !scope.isDefaultDataDirectory else { return }
+        let recorded = scope.registry.recordedWebKitStorageIdentifiers().count
+        let started = Date()
+        var report: WebKitStorageScope.CleanupReport?
+        Task { @MainActor in
+            // WebKit reports a store in use for about 0.25 s after its last web
+            // view goes; the default retries cover that. A store still in use
+            // after them is held by a leaked object and waits for the next run.
+            report = await scope.removeRecordedStorage(excludingProfileIDs: liveProfileIDs)
+        }
+        let deadline = Date().addingTimeInterval(60)
+        while report == nil, Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        guard let report else {
+            print("⚠️  WebKit storage cleanup (\(phase)) did not finish within 60 s")
+            return
+        }
+        print("✓ WebKit storage cleanup (\(phase)): \(recorded) recorded, \(report.removed.count) removed, \(report.kept.count) kept, \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
+        for (identifier, reason) in report.kept.sorted(by: { $0.key.uuidString < $1.key.uuidString }).prefix(10) {
+            print("    kept \(identifier.uuidString): \(reason)")
+        }
+    }
+
     /// Profile data removals recorded by earlier runs (TASK-32) are never retried
-    /// in the test host — AppDelegate skips the launch retry there, because the
-    /// host shares the production app's WebKit data directory — so drop the rows
-    /// rather than let the table grow across runs. Database rows only; no
-    /// WebKit data is touched.
+    /// in the test host — AppDelegate skips the launch retry there — so drop the
+    /// rows rather than let the table grow across runs. Database rows only; the
+    /// storage those profiles created is recorded separately and removed by
+    /// `removeRecordedWebKitStorage`.
     private func clearPendingProfileDataRemovals() {
         for profileID in AppDatabase.shared.pendingProfileDataRemovals() {
             AppDatabase.shared.clearPendingProfileDataRemoval(profileID: profileID)

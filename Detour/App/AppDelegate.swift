@@ -21,9 +21,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Remove the on-disk data of profiles deleted in an earlier run whose
         // removal did not finish (TASK-32). This must come before anything that
         // creates a profile's data store or extension controller: the window,
-        // the extension manager's window-focus handler and restoreSession. Not
-        // in the XCTest host: it shares this bundle id, and so the WebKit data
-        // directory, with the production app.
+        // the extension manager's window-focus handler and restoreSession. An
+        // isolated data directory removes only storage it recorded creating
+        // (TASK-36). Not in the XCTest host, as a second defence: its data
+        // directory's leftovers are cleaned by the test bundle instead.
         if !Self.isRunningUnitTests {
             TabStore.shared.retryPendingProfileDataRemovals()
         }

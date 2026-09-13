@@ -276,7 +276,13 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         // --- Set up controller with polyfill handler ---
 
         let wkExt = try await WKWebExtension(resourceBaseURL: tempDir)
-        let config = WKWebExtensionController.Configuration(identifier: UUID())
+        // A persistent controller and store like a profile's, under an
+        // identifier the test data directory records, so the bundle cleanup
+        // removes both (TASK-36). The store is the in-use probe that keeps a
+        // live controller's directory from being removed.
+        let storageIdentifier = WebKitStorageScope.current.identifierForCreatingStorage(forProfile: UUID())
+        let config = WKWebExtensionController.Configuration(identifier: storageIdentifier)
+        config.defaultWebsiteDataStore = WKWebsiteDataStore(forIdentifier: storageIdentifier)
 
         // The handler attributes senders through its profile's loaded contexts,
         // so the profile has to exist before it. It lives for the whole suite
