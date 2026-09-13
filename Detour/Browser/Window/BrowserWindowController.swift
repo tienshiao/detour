@@ -13,8 +13,9 @@ class BrowserWindowController: NSWindowController {
     var sidebarItem: NSSplitViewItem!
     private var contentItem: NSSplitViewItem!
     private var sidebarCollapseObservation: NSKeyValueObservation?
-    private var sidebarAutoHides = false
-    private var sidebarOpenedByHover = false
+    /// Sidebar mode (pinned vs auto-hidden) and hover state; see
+    /// `SidebarVisibilityState`. Mutated only through `handleSidebarEvent`.
+    private(set) var sidebarVisibility = SidebarVisibilityState()
     private var sidebarHoverGraceActive = false
     private var autoHideWorkItem: DispatchWorkItem?
 
@@ -511,18 +512,29 @@ class BrowserWindowController: NSWindowController {
 
         sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, change in
             guard let self, let collapsed = change.newValue else { return }
+            // Attributes the change (own toggle/hover vs divider drag or
+            // autosave restore) and lets the mode follow external changes.
+            self.handleSidebarEvent(.collapsedChanged(collapsed))
             if collapsed {
-                self.sidebarOpenedByHover = false
                 self.setTrafficLightsHidden(true, animated: false)
             } else {
                 self.setTrafficLightsHidden(false, animated: true)
             }
         }
 
+        // Loading the split view applies the autosave, which can restore a
+        // collapsed sidebar; that arrives through the KVO observer above.
         splitViewController.view.frame = window?.contentView?.bounds ?? .zero
         splitViewController.view.autoresizingMask = [.width, .height]
         window?.contentView?.addSubview(splitViewController.view)
         window?.contentView?.wantsLayer = true
+
+        // Safety net in case the restore happened without a KVO notification:
+        // adopt the restored state so the mode matches what is on screen.
+        handleSidebarEvent(.restored(isCollapsed: sidebarItem.isCollapsed))
+        if sidebarItem.isCollapsed {
+            setTrafficLightsHidden(true, animated: false)
+        }
 
         setupEdgeHoverTracking()
     }
@@ -577,22 +589,34 @@ class BrowserWindowController: NSWindowController {
     }
 
     func toggleSidebarAutoHide() {
-        autoHideWorkItem?.cancel()
-        autoHideWorkItem = nil
-        sidebarOpenedByHover = false
-        sidebarAutoHides.toggle()
+        handleSidebarEvent(.toggle(isCollapsed: sidebarItem.isCollapsed))
+    }
 
-        if #available(macOS 26.0, *) {
-            contentItem.automaticallyAdjustsSafeAreaInsets = sidebarAutoHides
-        }
-
-        if sidebarAutoHides {
-            if !sidebarItem.isCollapsed {
-                splitViewController.toggleSidebar(nil)
-            }
-        } else {
-            if sidebarItem.isCollapsed {
-                splitViewController.toggleSidebar(nil)
+    /// Runs a sidebar visibility event through the pure reducer and applies
+    /// its actions. Safe to re-enter: `setCollapsed` fires the `isCollapsed`
+    /// KVO synchronously, but the state (including `expectedCollapsed`) is
+    /// already updated, so the nested event is attributed to this window and
+    /// yields no actions.
+    private func handleSidebarEvent(_ event: SidebarVisibilityState.Event) {
+        let actions = sidebarVisibility.reduce(event)
+        for action in actions {
+            switch action {
+            case .setSafeAreaAdjusts(let adjusts):
+                if #available(macOS 26.0, *) {
+                    contentItem.automaticallyAdjustsSafeAreaInsets = adjusts
+                }
+            case .setCollapsed(let collapsed):
+                if sidebarItem.isCollapsed != collapsed {
+                    splitViewController.toggleSidebar(nil)
+                }
+            case .cancelAutoHide:
+                autoHideWorkItem?.cancel()
+                autoHideWorkItem = nil
+            case .startHoverGrace:
+                sidebarHoverGraceActive = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.sidebarHoverGraceActive = false
+                }
             }
         }
     }
@@ -600,14 +624,9 @@ class BrowserWindowController: NSWindowController {
     override func mouseEntered(with event: NSEvent) {
         guard let userInfo = event.trackingArea?.userInfo,
               let zone = userInfo["zone"] as? String else { return }
-        if zone == "edge" && sidebarAutoHides && sidebarItem.isCollapsed {
-            sidebarOpenedByHover = true
-            sidebarHoverGraceActive = true
-            splitViewController.toggleSidebar(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.sidebarHoverGraceActive = false
-            }
-        } else if zone == "sidebar" && sidebarOpenedByHover {
+        if zone == "edge" {
+            handleSidebarEvent(.hoverReveal(isCollapsed: sidebarItem.isCollapsed))
+        } else if zone == "sidebar" && sidebarVisibility.openedByHover {
             autoHideWorkItem?.cancel()
             autoHideWorkItem = nil
         }
@@ -616,11 +635,10 @@ class BrowserWindowController: NSWindowController {
     override func mouseExited(with event: NSEvent) {
         guard let userInfo = event.trackingArea?.userInfo,
               let zone = userInfo["zone"] as? String else { return }
-        if zone == "sidebar" && sidebarOpenedByHover && !sidebarHoverGraceActive {
+        if zone == "sidebar" && sidebarVisibility.openedByHover && !sidebarHoverGraceActive {
             let workItem = DispatchWorkItem { [weak self] in
-                guard let self, self.sidebarOpenedByHover else { return }
-                self.sidebarOpenedByHover = false
-                self.splitViewController.toggleSidebar(nil)
+                guard let self else { return }
+                self.handleSidebarEvent(.hoverHide(isCollapsed: self.sidebarItem.isCollapsed))
             }
             autoHideWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
