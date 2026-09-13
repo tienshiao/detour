@@ -3,10 +3,11 @@ id: TASK-58
 title: >-
   Favourites: a live favourite moved back into the tab list or pinned section
   keeps a stale spaceID
-status: To Do
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-13 17:31'
+updated_date: '2026-09-13 19:00'
 labels:
   - bug
   - favorites
@@ -28,8 +29,28 @@ Fix: set tab.spaceID = space.id on the live branch of both restore paths (or rou
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 After restoreFavoriteAsTab and restoreFavoriteAsPinned move a live favourite tab into space B, tab.spaceID == B.id
-- [ ] #2 A live favourite tab that was activated in space A, moved to space B, then slept and woken builds its web view from space B configuration, including when space A was deleted in between
-- [ ] #3 Session save after the move records the tab under space B
-- [ ] #4 Unit tests cover both restore paths for the stale spaceID, plus the delete-source-space wake case
+- [x] #1 After restoreFavoriteAsTab and restoreFavoriteAsPinned move a live favourite tab into space B, tab.spaceID == B.id
+- [x] #2 A live favourite tab that was activated in space A, moved to space B, then slept and woken builds its web view from space B configuration, including when space A was deleted in between
+- [x] #3 Session save after the move records the tab under space B
+- [x] #4 Unit tests cover both restore paths for the stale spaceID, plus the delete-source-space wake case
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. In TabStore.restoreFavoriteAsTab (live branch) and restoreFavoriteAsPinned (fav.tab != nil) set tab.spaceID = space.id before the tab is listed, or route the live tab through insertTab / a shared placement helper. Document on BrowserTab.spaceID what it means for a favourite backing tab (the space it was activated in or detached from; favourites belong to a profile, not a space).
+2. Audit the other live-tab hand-offs (detachTab / detachPinnedEntry -> addFavorite, activateFavorite, the TASK-54 selection restore) and subscribeToTab(spaceID:) for what the spaceID argument is used for; fix any that would keep a stale value.
+3. Tests (new FavoriteRestoreSpaceIDTests or in ExtensionPageFavoriteTests): activate a favourite in space A, restore it into space B via both paths, assert tab.spaceID == B.id; sleep + wake and assert the web view configuration is B (websiteDataStore identity of B.profile) including when A was deleted in between; the session save records the tab under B.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Both live restore paths adopt the destination space (TabStore.adoptSpace sets spaceID; review simplified subscribeToTab to read tab.spaceID at visit time so no re-subscribe is needed). BrowserTab.spaceID documented for favourite backing tabs. Review also fixed the neighbouring case the implementation flagged: deleteSpace now rehomes favourite tabs bound to the deleted space onto another space of the profile or returns them to dormant tiles, and the restore paths refuse a space of another profile. FavoriteSpaceHandoffTests, verified non-vacuous by reverting the fix.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A live favourite restored into another space takes that space as its spaceID, so sleep/wake and history attribution use the right space even after the source space is deleted. Verified by FavoriteSpaceHandoffTests and the favourites suites.
+<!-- SECTION:FINAL_SUMMARY:END -->

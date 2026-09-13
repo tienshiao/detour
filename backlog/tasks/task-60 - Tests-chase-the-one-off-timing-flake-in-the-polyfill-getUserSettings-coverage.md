@@ -1,10 +1,11 @@
 ---
 id: TASK-60
 title: 'Tests: chase the one-off timing flake in the polyfill getUserSettings coverage'
-status: To Do
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-13 17:31'
+updated_date: '2026-09-13 19:29'
 labels:
   - tests
   - extensions
@@ -24,7 +25,26 @@ First reproduce: loop the two suites (xcodebuild -only-testing with -test-iterat
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The failing test and assertion are identified from a reproduced failure, and the cause is recorded in the task notes
-- [ ] #2 The two polyfill getUserSettings suites pass 50 consecutive iterations after the fix
-- [ ] #3 No retry loop or sleep is added to the tests; a readiness wait, if needed, keys on a real signal such as __detourPolyfillDiag.loaded
+- [x] #1 The failing test and assertion are identified from a reproduced failure, and the cause is recorded in the task notes
+- [x] #2 The two polyfill getUserSettings suites pass 50 consecutive iterations after the fix
+- [x] #3 No retry loop or sleep is added to the tests; a readiness wait, if needed, keys on a real signal such as __detourPolyfillDiag.loaded
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reproduce: run the three candidate tests (ExtensionPolyfillTests/testActionGetUserSettingsStub, testActionGetUserSettingsNotReplacedWhenNative, ExtensionPolyfillIntegrationTests/testGapFillingModulesInRealExtensionContext) with xcodebuild -test-iterations 50 -run-tests-until-failure and capture the failing assertion and __detourPolyfillDiag.
+2. If it reproduces, fix the cause (a readiness wait keyed on __detourPolyfillDiag.loaded, or an injection-order fix), then re-run 50 iterations green. If it does not reproduce in 50 iterations, record that in the notes and stop; the user decides whether to keep the task open.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Reproduced at iteration 4/50: ExtensionPolyfillIntegrationTests.testGapFillingModulesInRealExtensionContext, line 540, typeof chrome.action.getUserSettings was undefined while the install marker still read polyfill. Cause is a product bug, not a test race: chrome.action is [MainWorldOnly, Dynamic] in WebKit, so every read returns the wrapper from a weak cache; nothing held the patched wrapper, the first GC collected it and the next read minted a fresh wrapper without getUserSettings (the hazard docs/chrome-runtime-patching.md already records for chrome.runtime). Proven with a WeakRef plus forced allocation: 5/5 collected. Affects production feature detection from long-lived pages (1Password). Fix: actionUserSettingsJS holds a strong root to the patched wrapper (globalThis.__detourActionNamespace) and verifies a fresh read sees the patch; same hold on the native+onAuthRequired path of chrome.webRequest. New guard testActionGetUserSettingsSurvivesGarbageCollection forces a collection and asserts the API survives (fails 3/3 without the root). 200/200 iterations green after the fix; ExtensionPolyfillTests 10x 1400/1400. Pre-existing and unrelated: ExtensionPolyfillIntegrationTests.testContentScriptFrameHellosReachTheWorker fails 9/10 under -test-iterations (not repetition-safe) on the unmodified tree; not filed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The one-off getUserSettings failure was a real bug: the polyfilled chrome.action wrapper was garbage-collected and re-minted without the patch. The polyfill now roots the patched wrapper; a GC-forcing test guards it, and the rule is documented in docs/chrome-runtime-patching.md. 200/200 iterations green.
+<!-- SECTION:FINAL_SUMMARY:END -->
