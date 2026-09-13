@@ -19,6 +19,14 @@ class ExtensionTabObserver: TabStoreObserver {
         ExtensionTabLifecycle.didClose(tab)
     }
 
+    /// A detach is a section hand-off inside one profile, not a close: the tab
+    /// keeps its web view and its registration, and the section it lands in
+    /// announces whatever the move changed (TASK-59). Overriding the default
+    /// forwarding to `tabStoreDidRemoveTab` — which *is* a close — is what keeps
+    /// a drag onto the favourites bar from firing `tabs.onRemoved` +
+    /// `tabs.onCreated` for a tab that never went away.
+    func tabStoreDidDetachTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
+
     /// A profile created mid-session gets its enabled extensions (TASK-27).
     func tabStoreDidAddProfile(_ profile: Profile) {
         ExtensionManager.shared.profileWasAdded(profile)

@@ -22,6 +22,10 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         let event: Event
         let tabID: UUID
         let profileID: UUID
+        /// The properties named by a `.change` event; empty for every other
+        /// event. Lets a section move assert *which* property it announced
+        /// (TASK-59) rather than just that something changed.
+        let properties: WKWebExtension.TabChangedProperties
         /// Whether some container the window enumeration reads already held the
         /// tab when the event was reported — a space's tabs or pinned tabs, the
         /// profile's favourites, or a peek of one of those. The contexts can
@@ -48,21 +52,22 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
         func didOpen(_ tab: BrowserTab, in profile: Profile, contexts: [WKWebExtensionContext]?) {
             records.append(Record(event: .open, tabID: tab.id, profileID: profile.id,
-                                  listed: isListed(tab, in: profile)))
+                                  properties: [], listed: isListed(tab, in: profile)))
         }
         func didClose(_ tab: BrowserTab, in profile: Profile) {
             records.append(Record(event: .close, tabID: tab.id, profileID: profile.id,
-                                  listed: false))
+                                  properties: [], listed: false))
         }
         func didActivate(_ tab: BrowserTab, previousActiveTab: BrowserTab?, in profile: Profile,
                          contexts: [WKWebExtensionContext]?) {
             records.append(Record(event: .activate, tabID: tab.id, profileID: profile.id,
-                                  listed: false))
+                                  properties: [], listed: false))
         }
         func didChangeProperties(_ tab: BrowserTab, in profile: Profile,
                                  properties: WKWebExtension.TabChangedProperties) {
             records.append(Record(event: .change, tabID: tab.id, profileID: profile.id,
-                                  listed: false))
+                                  properties: properties,
+                                  listed: isListed(tab, in: profile)))
         }
     }
 
@@ -72,6 +77,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// Lent to `TabStore.shared` by `sharedStoreSpace()`, taken back in tearDown.
     private var sharedSpaceIDs: [UUID] = []
     private var sharedProfiles: [Profile] = []
+    /// Throwaway extension bundles written by `makeUnloadedContext()`.
+    private var temporaryDirectories: [URL] = []
 
     override func setUp() {
         super.setUp()
@@ -88,8 +95,14 @@ final class ExtensionTabLifecycleTests: XCTestCase {
             TabStore.shared.forceRemoveSpace(id: id)
         }
         sharedSpaceIDs.removeAll()
-        for profile in sharedProfiles { TabStore.shared.forceRemoveProfile(id: profile.id) }
+        for profile in sharedProfiles {
+            for favorite in profile.favorites { favorite.tab?.teardown() }
+            TabStore.shared.forceRemoveProfile(id: profile.id)
+        }
         sharedProfiles.removeAll()
+        TabStore.shared.undoManager.removeAllActions()
+        for dir in temporaryDirectories { try? FileManager.default.removeItem(at: dir) }
+        temporaryDirectories.removeAll()
         ExtensionTabLifecycle.notifier = previousNotifier
         super.tearDown()
     }
@@ -108,6 +121,17 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// open, so "reported exactly once, and only once listed" is one assertion.
     private func listedAtOpen(_ tab: BrowserTab) -> [Bool] {
         notifier.records.filter { $0.tabID == tab.id && $0.event == .open }.map(\.listed)
+    }
+
+    /// The properties each `.change` event named, in order (TASK-59).
+    private func changedProperties(for tab: BrowserTab) -> [WKWebExtension.TabChangedProperties] {
+        notifier.records.filter { $0.tabID == tab.id && $0.event == .change }.map(\.properties)
+    }
+
+    /// Whether the tab was enumerable at each of its change events — a property
+    /// change resolves the tab's window and index just like an open does.
+    private func listedAtChange(_ tab: BrowserTab) -> [Bool] {
+        notifier.records.filter { $0.tabID == tab.id && $0.event == .change }.map(\.listed)
     }
 
     // MARK: - Fixture
@@ -202,9 +226,11 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertTrue(f.profile.favorites.isEmpty)
     }
 
-    /// Dragging a tab onto the favourites bar detaches it (which reports it
-    /// closed) and re-homes the same live tab under the favourite.
-    func testDetachThenAddFavoriteClosesAndReopensTheSameTab() throws {
+    /// Dragging a tab onto the favourites bar detaches it and re-homes the same
+    /// live tab under the favourite. Same profile, same web view, and the pinned
+    /// flag was false on both sides — so the contexts hear nothing at all
+    /// (TASK-59); the tab they already know is simply still open.
+    func testDetachThenAddFavoriteKeepsTheTabOpenSilently() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -213,7 +239,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         f.store.detachTab(id: tab.id, from: f.space)
         f.store.addFavorite(from: tab, profileID: f.profile.id)
 
-        XCTAssertEqual(events(for: tab), [.open, .close, .open])
+        XCTAssertEqual(events(for: tab), [.open],
+                       "a same-profile section move is a hand-off, not a close and re-open")
         XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
         XCTAssertTrue(f.profile.favorites.first?.tab === tab)
     }
@@ -365,8 +392,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         f.store.detachTab(id: tab.id, from: f.space)
         f.store.addFavorite(from: tab, profileID: f.profile.id)
 
-        XCTAssertEqual(listedAtOpen(tab), [true, true],
-                       "both opens name a tab the window already enumerates")
+        XCTAssertEqual(listedAtOpen(tab), [true],
+                       "the one open names a tab the window already enumerates")
     }
 
     func testFavoriteBackedByAndPeekHostLookups() throws {
@@ -389,6 +416,216 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertTrue(f.store.tab(hostingPeek: favoritePeek) === favoriteTab)
 
         XCTAssertNil(f.store.tab(hostingPeek: makeLiveTab()), "an unhosted tab has no host")
+    }
+
+    // MARK: - Section moves (TASK-59)
+
+    /// The rule: a live tab moving between the tab list, the pinned section and
+    /// the favourites bar of one profile keeps its registration, and the
+    /// contexts hear exactly one `.pinned` change when the flag flips — nothing
+    /// when it does not. Six moves, all of them below.
+
+    func testPinningATabAnnouncesThePinnedFlagAndKeepsTheRegistration() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+        XCTAssertFalse(f.store.isPinned(tab), "precondition: a normal tab is unpinned")
+
+        f.store.pinTab(id: tab.id, in: f.space)
+
+        XCTAssertEqual(events(for: tab), [.open, .change], "no close and re-open")
+        XCTAssertEqual(changedProperties(for: tab), [.pinned])
+        XCTAssertEqual(listedAtChange(tab), [true],
+                       "the entry holds the tab before the contexts hear about the flip")
+        XCTAssertTrue(f.store.isPinned(tab))
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+    }
+
+    func testUnpinningATabAnnouncesThePinnedFlag() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+        f.store.pinTab(id: tab.id, in: f.space)
+
+        XCTAssertTrue(f.store.unpinTab(id: tab.id, in: f.space))
+
+        XCTAssertEqual(events(for: tab), [.open, .change, .change])
+        XCTAssertEqual(changedProperties(for: tab), [.pinned, .pinned])
+        XCTAssertEqual(listedAtChange(tab), [true, true])
+        XCTAssertFalse(f.store.isPinned(tab))
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+    }
+
+    /// Pin's undo is `unpinTab`, so it announces through the same function.
+    func testPinUndoAnnouncesTheFlipBack() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+
+        f.store.undoManager.removeAllActions()
+        f.store.pinTab(id: tab.id, in: f.space)
+        f.store.undoManager.undo()
+
+        XCTAssertFalse(f.store.isPinned(tab), "Undo Pin Tab unpinned it")
+        XCTAssertEqual(changedProperties(for: tab), [.pinned, .pinned])
+        XCTAssertEqual(events(for: tab).filter { $0 != .change }, [.open], "a hand-off both ways")
+    }
+
+    /// Unpin's undo re-pins inline instead of calling `pinTab`, so it has to
+    /// announce for itself.
+    func testUnpinUndoAnnouncesTheFlipBack() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+        f.store.pinTab(id: tab.id, in: f.space)
+
+        f.store.undoManager.removeAllActions()
+        XCTAssertTrue(f.store.unpinTab(id: tab.id, in: f.space))
+        f.store.undoManager.undo()
+
+        XCTAssertTrue(f.store.isPinned(tab), "Undo Unpin Tab re-pinned it")
+        XCTAssertEqual(changedProperties(for: tab), [.pinned, .pinned, .pinned])
+        XCTAssertEqual(events(for: tab).filter { $0 != .change }, [.open])
+    }
+
+    /// A move that cannot happen announces nothing: `unpinTab` on a tab that is
+    /// not pinned changes no flag.
+    func testRefusedUnpinAnnouncesNothing() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+
+        XCTAssertFalse(f.store.unpinTab(id: tab.id, in: f.space))
+
+        XCTAssertEqual(events(for: tab), [.open])
+    }
+
+    /// Tab list <-> favourites: the flag is false on both sides, so neither
+    /// direction announces anything.
+    func testTabListToFavoritesAndBackAnnounceNothing() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+
+        f.store.detachTab(id: tab.id, from: f.space)
+        f.store.addFavorite(from: tab, profileID: f.profile.id)
+        XCTAssertFalse(f.store.isPinned(tab))
+        XCTAssertEqual(events(for: tab), [.open])
+
+        let favorite = try XCTUnwrap(f.profile.favorites.first)
+        XCTAssertTrue(f.store.restoreFavoriteAsTab(id: favorite.id, profileID: f.profile.id,
+                                                   in: f.space, at: 0))
+
+        XCTAssertEqual(events(for: tab), [.open], "still the same open tab, still unpinned")
+        XCTAssertFalse(f.store.isPinned(tab))
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+    }
+
+    /// Pinned entry -> favourites, as the sidebar drop does it: detach the
+    /// entry, then home the same live tab under a favourite.
+    func testPinnedEntryToFavoritesAnnouncesThePinnedFlag() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+        f.store.pinTab(id: tab.id, in: f.space)
+        let entry = try XCTUnwrap(f.space.pinnedEntries.first { $0.tab === tab })
+
+        let detached = try XCTUnwrap(f.store.detachPinnedEntry(id: entry.id, from: f.space))
+        f.store.addFavorite(from: detached, profileID: f.profile.id, wasPinned: true)
+
+        XCTAssertEqual(events(for: tab), [.open, .change, .change],
+                       "pin, then the move out of the pinned section — no close")
+        XCTAssertEqual(changedProperties(for: tab), [.pinned, .pinned])
+        XCTAssertEqual(listedAtChange(tab), [true, true],
+                       "the favourite holds the tab before the flip is announced")
+        XCTAssertFalse(f.store.isPinned(tab), "a favourite tile is not pinned")
+        XCTAssertTrue(f.profile.favorites.first?.tab === tab)
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+    }
+
+    /// Favourites -> pinned section: the live backing tab becomes the new
+    /// entry's, so the flag flips on.
+    func testFavoriteToPinnedAnnouncesThePinnedFlag() throws {
+        let f = try makeFixture()
+        let (favorite, tab) = try liveFavorite(in: f)
+        XCTAssertFalse(f.store.isPinned(tab))
+
+        XCTAssertTrue(f.store.restoreFavoriteAsPinned(id: favorite.id, profileID: f.profile.id,
+                                                      in: f.space, at: 0))
+
+        XCTAssertEqual(events(for: tab), [.open, .change])
+        XCTAssertEqual(changedProperties(for: tab), [.pinned])
+        XCTAssertEqual(listedAtChange(tab), [true])
+        XCTAssertTrue(f.store.isPinned(tab))
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+    }
+
+    /// A pinned split moves as a block, and both members' flags flip (§12).
+    func testPinningAndUnpinningASplitAnnouncesBothMembers() throws {
+        let f = try makeFixture()
+        let left = f.store.addTab(in: f.space, url: favoriteURL)
+        let right = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(contentsOf: [left, right])
+        let groupID = UUID()
+        for tab in [left, right] {
+            tab.splitGroupID = groupID
+            tab.splitFraction = 0.5
+        }
+
+        f.store.pinSplitGroup(groupID: groupID, in: f.space)
+        XCTAssertTrue(f.store.isPinned(left))
+        XCTAssertTrue(f.store.isPinned(right))
+        XCTAssertEqual(changedProperties(for: left), [.pinned])
+        XCTAssertEqual(changedProperties(for: right), [.pinned])
+
+        XCTAssertTrue(f.store.unpinSplitGroup(groupID: groupID, toGapIndex: 0, in: f.space))
+
+        XCTAssertFalse(f.store.isPinned(left))
+        XCTAssertFalse(f.store.isPinned(right))
+        XCTAssertEqual(events(for: left), [.open, .change, .change])
+        XCTAssertEqual(events(for: right), [.open, .change, .change])
+        XCTAssertEqual(changedProperties(for: left), [.pinned, .pinned])
+        XCTAssertEqual(changedProperties(for: right), [.pinned, .pinned])
+    }
+
+    /// What the flag itself answers, through the conformance WebKit calls. The
+    /// context is a real one so the signature is exercised as WebKit uses it;
+    /// it is never loaded into a controller, because `isPinned(for:)` answers
+    /// from the store and ignores which context is asking.
+    func testIsPinnedForContextFollowsTheSection() async throws {
+        let (space, _) = sharedStoreSpace()
+        let context = try await makeUnloadedContext()
+        let tab = TabStore.shared.addTab(in: space, url: favoriteURL)
+        createdTabs.append(tab)
+
+        XCTAssertFalse(tab.isPinned(for: context), "a normal tab is unpinned")
+
+        TabStore.shared.pinTab(id: tab.id, in: space)
+        XCTAssertTrue(tab.isPinned(for: context), "tabs.query({pinned: true}) must find it")
+
+        XCTAssertTrue(TabStore.shared.unpinTab(id: tab.id, in: space))
+        XCTAssertFalse(tab.isPinned(for: context))
+
+        TabStore.shared.detachTab(id: tab.id, from: space)
+        TabStore.shared.addFavorite(from: tab, profileID: space.profileID)
+        XCTAssertFalse(tab.isPinned(for: context), "a favourite tile is not pinned")
+        XCTAssertNotNil(TabStore.shared.favorite(backedBy: tab),
+                        "and tabs.get still resolves it: it is still an open tab")
+    }
+
+    /// A `WKWebExtensionContext` over a throwaway manifest, for conformance
+    /// methods that take a context and don't consult it.
+    private func makeUnloadedContext() async throws -> WKWebExtensionContext {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lifecycle-pinned-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        temporaryDirectories.append(dir)
+        let manifest = """
+        {"manifest_version": 3, "name": "Pinned Flag", "version": "1.0"}
+        """
+        try manifest.write(to: dir.appendingPathComponent("manifest.json"),
+                           atomically: true, encoding: .utf8)
+        return WKWebExtensionContext(for: try await WKWebExtension(resourceBaseURL: dir))
     }
 
     // MARK: - Placement (TASK-52)

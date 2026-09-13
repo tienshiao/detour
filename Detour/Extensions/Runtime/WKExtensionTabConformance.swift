@@ -51,6 +51,18 @@ extension BrowserTab: WKWebExtensionTab {
         isMuted
     }
 
+    /// Pinned means "the live backing tab of a pinned entry" — the sidebar's
+    /// pinned section, in any space (a tab can be pinned in a space its own
+    /// `spaceID` no longer names, and a favourite backing tab belongs to a
+    /// profile rather than a space, so the question is asked of the store, not
+    /// of `self`). Without this WebKit defaults every tab to unpinned, so
+    /// `tabs.query({pinned: true})` answered nothing and a pin looked like no
+    /// change at all (TASK-59). `ExtensionTabLifecycle.didChangePinned` announces
+    /// each flip.
+    func isPinned(for context: WKWebExtensionContext) -> Bool {
+        TabStore.shared.isPinned(self)
+    }
+
     func activate(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
         guard let spaceID else {
             completionHandler(nil)

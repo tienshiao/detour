@@ -83,6 +83,21 @@ final class WKExtensionTabLifecycleNotifier: ExtensionTabLifecycleNotifying {
 /// the space: favourite and Peek tabs belong to a profile without living in any
 /// space, and a tab whose configuration carries no controller runs no extension
 /// code and is deliberately never reported.
+///
+/// **The section-move rule (TASK-59).** Moving a live tab between the tab list,
+/// the pinned section and the favourites bar of one profile is a hand-off, not a
+/// close: the tab keeps the web view WebKit already maps and stays registered,
+/// so no `didClose`/`didOpen` pair is sent (`TabStore.detachTab` reports a
+/// detach, which this seam deliberately ignores; `didPlace` is silent for an
+/// already-registered tab). What the contexts are told instead is whatever the
+/// move actually changed — today that is the pinned flag, via
+/// `didChangePinned`, at each of the four hand-offs that flip it (pin, unpin,
+/// pinned -> favourite, favourite -> pinned). A move that leaves the flag alone
+/// (tab list <-> favourites) announces nothing.
+///
+/// A move *between profiles* is the other case and stays a close + re-open:
+/// `didOpen` closes a tab it finds registered elsewhere, and a profile swap
+/// closes its tabs explicitly (`TabStore.updateSpace`).
 enum ExtensionTabLifecycle {
 
     /// Replaced by tests; the production value forwards to real contexts.
@@ -204,6 +219,21 @@ enum ExtensionTabLifecycle {
     static func didChangeProperties(_ tab: BrowserTab, in profile: Profile,
                                     properties: WKWebExtension.TabChangedProperties) {
         notifier.didChangeProperties(tab, in: profile, properties: properties)
+    }
+
+    /// `tab` just crossed into or out of the pinned section (the section-move
+    /// rule above): same tab, same web view, same profile, so the registration
+    /// stands and the one thing extensions can observe — the flag
+    /// `BrowserTab.isPinned(for:)` answers, which drives `tabs.query({pinned})`
+    /// — is announced on its own (TASK-59).
+    ///
+    /// Call it *after* the tab is in the container it moved into: handling the
+    /// change resolves the tab's window and index, which a tab in no section
+    /// cannot answer. No-op for a tab no context was told about (a dormant entry
+    /// that just materialized a sleeping tab, an incognito tab).
+    static func didChangePinned(_ tab: BrowserTab) {
+        guard let profile = tab.extensionRegisteredProfile else { return }
+        didChangeProperties(tab, in: profile, properties: .pinned)
     }
 }
 

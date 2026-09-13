@@ -20,6 +20,14 @@ extension Notification.Name {
 protocol TabStoreObserver: AnyObject {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space)
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space)
+    /// A live tab left `space.tabs` *without being closed* — handed off to
+    /// another section of the same profile (today: dragged onto the favourites
+    /// bar, `detachTab`). Views want the same thing they do for a removal, so
+    /// the default forwards to `tabStoreDidRemoveTab`; only an observer for
+    /// which "gone from this list" and "closed" differ implements it — the
+    /// extension seam, which must not report a hand-off as a closed tab
+    /// (TASK-59).
+    func tabStoreDidDetachTab(_ tab: BrowserTab, at index: Int, in space: Space)
     func tabStoreDidReorderTabs(in space: Space)
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space)
     /// Split divider fraction changed — no structural change (structural split
@@ -52,6 +60,9 @@ protocol TabStoreObserver: AnyObject {
 extension TabStoreObserver {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
+    func tabStoreDidDetachTab(_ tab: BrowserTab, at index: Int, in space: Space) {
+        tabStoreDidRemoveTab(tab, at: index, in: space)
+    }
     func tabStoreDidReorderTabs(in space: Space) {}
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
     func tabStoreDidUpdateSplitLayout(in space: Space) {}
@@ -1024,17 +1035,27 @@ class TabStore {
         for (i, fav) in profile.favorites.enumerated() { fav.sortOrder = i }
     }
 
-    func addFavorite(from tab: BrowserTab, profileID: UUID, at index: Int? = nil) {
+    /// Homes a live tab under a new favourite — the drop end of dragging a tab
+    /// or a live pinned entry onto the favourites bar. The caller detaches the
+    /// tab from its old section first (`detachTab` / `detachPinnedEntry`).
+    ///
+    /// Nothing about the tab changes: it keeps its web view, its profile and its
+    /// registration with the extension contexts across the move (the detach is a
+    /// hand-off, not a close, and the `favorites` didSet's `didPlace` is silent
+    /// for an already-registered tab — TASK-52/59). So the contexts are told only
+    /// what the move actually changed: `wasPinned` says the tab was a pinned
+    /// entry's backing tab a moment ago and is not one now, which flips the flag
+    /// `tabs.query({pinned})` reads.
+    func addFavorite(from tab: BrowserTab, profileID: UUID, at index: Int? = nil, wasPinned: Bool = false) {
         guard let url = tab.url, let profile = profiles.first(where: { $0.id == profileID }) else { return }
 
         let favorite = Favorite(url: url, title: tab.title, faviconURL: tab.faviconURL, sortOrder: 0, tab: tab)
         let insertAt = min(index ?? profile.favorites.count, profile.favorites.count)
         profile.favorites.insert(favorite, at: insertAt)
         reindexFavorites(profile)
-        // The tab was just detached from its section, which reported it closed to
-        // the extension contexts. It is still live and still running content
-        // scripts; the insert above re-opens it under the favourite — the
-        // `favorites` didSet reports it once it is listed (TASK-52).
+        // After the favourite lists the tab: handling the change resolves the
+        // tab's window and index (TASK-59).
+        if wasPinned { ExtensionTabLifecycle.didChangePinned(tab) }
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
     }
@@ -1129,6 +1150,17 @@ class TabStore {
             }
         }
         return nil
+    }
+
+    /// Whether `tab` is the live backing tab of a pinned entry — the pinned flag
+    /// extensions read (`BrowserTab.isPinned(for:)`), and the one the section
+    /// moves announce when it flips (TASK-59).
+    ///
+    /// Asked of every space, not of `tab.spaceID`: a favourite's backing tab
+    /// belongs to a profile rather than a space, and a tab can be listed by a
+    /// space its own `spaceID` does not name.
+    func isPinned(_ tab: BrowserTab) -> Bool {
+        spaces.contains { space in space.pinnedEntries.contains { $0.tab === tab } }
     }
 
     /// The tab hosting `peek` as its Peek, in any section: a space's normal or
@@ -1300,6 +1332,9 @@ class TabStore {
 
         let insertAt = min(pinnedIndex, space.pinnedEntries.count)
         space.pinnedEntries.insert(entry, at: insertAt)
+        // A live favourite's tab is now a pinned entry's backing tab: the
+        // registration stands, the pinned flag flipped (TASK-59).
+        if let tab = entry.tab { ExtensionTabLifecycle.didChangePinned(tab) }
         notifyObservers { $0.tabStoreDidInsertPinnedEntry(entry, at: insertAt, in: space) }
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
@@ -1882,11 +1917,15 @@ class TabStore {
 
     /// Detaches a tab from a space without closing or archiving it.
     /// Used when moving a tab to become a favorite's backing tab.
+    ///
+    /// Reported as a detach, not a removal: the extension contexts keep a
+    /// hand-off registered (TASK-59), while every view sees the same thing it
+    /// does for a removal through the protocol's default forwarding.
     func detachTab(id: UUID, from space: Space) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs.remove(at: index)
         leaveSplitGroup(tab, in: space)
-        notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: space) }
+        notifyObservers { $0.tabStoreDidDetachTab(tab, at: index, in: space) }
         scheduleSave()
     }
 
@@ -2451,6 +2490,10 @@ class TabStore {
             entry.splitFraction = fraction
             space.pinnedEntries.append(entry)
         }
+        // Both members crossed into the pinned section; announced once the pair
+        // is whole, so a context resolving the tabs sees the finished group
+        // (TASK-59).
+        for tab in members { ExtensionTabLifecycle.didChangePinned(tab) }
 
         registerUndo(actionName: "Pin Split") { [weak self] in
             self?.unpinSplitGroup(groupID: groupID, toGapIndex: firstIndex, in: space)
@@ -2519,6 +2562,9 @@ class TabStore {
             tab.splitGroupID = groupID
             tab.splitFraction = fraction
         }
+        // Both members left the pinned section (TASK-59); a member this call
+        // just materialized is unregistered, so its announcement is a no-op.
+        for tab in tabs { ExtensionTabLifecycle.didChangePinned(tab) }
 
         registerUndo(actionName: "Unpin Split") { [weak self] in
             guard let self else { return }
@@ -2789,6 +2835,10 @@ class TabStore {
         )
         let insertAt = min(destinationIndex ?? space.pinnedEntries.count, space.pinnedEntries.count)
         space.pinnedEntries.insert(entry, at: insertAt)
+        // Same tab, same web view, same profile, new section: the extension
+        // contexts keep it open and hear only that the pinned flag flipped
+        // (TASK-59). Undo goes through `unpinTab`, which announces the flip back.
+        ExtensionTabLifecycle.didChangePinned(tab)
         let savedTabIndex = index
         registerUndo(actionName: "Pin Tab") { [weak self] in
             self?.unpinTab(id: entry.id, in: space, at: savedTabIndex)
@@ -2849,6 +2899,10 @@ class TabStore {
             groupIDs: space.tabs.map(\.splitGroupID)
         )
         space.tabs.insert(tab, at: insertAt)
+        // The flag flipped the other way (TASK-59). A tab this call just
+        // materialized from a dormant entry has no web view and no registration,
+        // so this is a no-op for it.
+        ExtensionTabLifecycle.didChangePinned(tab)
         registerUndo(actionName: "Unpin Tab") { [weak self] in
             guard let self else { return }
             // Re-pin: remove from tabs, create entry, insert at original pinned position
@@ -2865,6 +2919,9 @@ class TabStore {
             )
             let reInsertAt = min(savedPinnedIndex, space.pinnedEntries.count)
             space.pinnedEntries.insert(reEntry, at: reInsertAt)
+            // This undo re-pins inline rather than calling `pinTab`, so it
+            // announces the flip itself (TASK-59).
+            ExtensionTabLifecycle.didChangePinned(tab)
             self.rejoinPinnedSplit(reEntry, membership: membership, in: space)
             self.registerUndo(actionName: "Unpin Tab") { [weak self] in
                 self?.unpinTab(id: reEntry.id, in: space, at: tabIndex)

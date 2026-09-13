@@ -466,7 +466,7 @@ extension BrowserWindowController: TabSidebarDelegate {
             if entry.tab != nil {
                 // Live: the backing tab moves as it is.
                 if let tab = store.detachPinnedEntry(id: entry.id, from: space) {
-                    store.addFavorite(from: tab, profileID: profileID, at: index)
+                    store.addFavorite(from: tab, profileID: profileID, at: index, wasPinned: true)
                     if wasSelected { selectTab(id: tab.id) }
                 }
             } else {

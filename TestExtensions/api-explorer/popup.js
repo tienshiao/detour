@@ -22,7 +22,7 @@ function sendBg(message) {
 
 function formatTabs(tabs) {
   return tabs.map(t =>
-    `[${t.id}] ${t.active ? '●' : '○'} ${t.title || '(no title)'}\n    ${t.url || ''}`
+    `[${t.id}] ${t.active ? '●' : '○'}${t.pinned ? ' 📌' : ''} ${t.title || '(no title)'}\n    ${t.url || ''}`
   ).join('\n');
 }
 
@@ -57,6 +57,18 @@ document.getElementById('btn-query-all').addEventListener('click', async () => {
   try {
     const { tabs } = await sendBg({ type: 'queryTabs', queryInfo: {} });
     showResult('res-query-all', formatTabs(tabs));
+  } catch (e) {
+    showResult('res-query-all', e.message, true);
+  }
+});
+
+// Only the tabs in the sidebar's pinned section. Pinning, unpinning, or dragging
+// a pinned tab onto the favourites bar changes this list without closing the tab
+// (the pinned flag is announced on its own — TASK-59).
+document.getElementById('btn-query-pinned').addEventListener('click', async () => {
+  try {
+    const { tabs } = await sendBg({ type: 'queryTabs', queryInfo: { pinned: true } });
+    showResult('res-query-all', tabs.length ? formatTabs(tabs) : 'No pinned tabs');
   } catch (e) {
     showResult('res-query-all', e.message, true);
   }
