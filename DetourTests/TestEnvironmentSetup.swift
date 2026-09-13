@@ -41,7 +41,19 @@ private final class TestObserver: NSObject, XCTestObservation {
 
         cleanTestExtensions()
         resetTabStore()
+        clearPendingProfileDataRemovals()
         assertCleanState()
+    }
+
+    /// Profile data removals recorded by earlier runs (TASK-32) are never retried
+    /// in the test host — AppDelegate skips the launch retry there, because the
+    /// host shares the production app's WebKit data directory — so drop the rows
+    /// rather than let the table grow across runs. Database rows only; no
+    /// WebKit data is touched.
+    private func clearPendingProfileDataRemovals() {
+        for profileID in AppDatabase.shared.pendingProfileDataRemovals() {
+            AppDatabase.shared.clearPendingProfileDataRemoval(profileID: profileID)
+        }
     }
 
     private func cleanTestExtensions() {

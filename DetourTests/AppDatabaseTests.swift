@@ -400,4 +400,24 @@ final class AppDatabaseTests: XCTestCase {
             XCTAssertEqual(try rowCount(table, in: db), 1, "\(table) is untouched")
         }
     }
+
+    // MARK: - Pending profile data removal (TASK-32)
+
+    func testDeleteProfileRecordsAPendingDataRemovalOnlyWhenItDeletes() throws {
+        let db = try makeDatabaseWithPerProfileRows()
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
+        db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
+
+        XCTAssertFalse(db.deleteProfile(id: testProfileID), "refused: a space references it")
+        XCTAssertEqual(db.pendingProfileDataRemovals(), [], "a refused delete records nothing")
+
+        XCTAssertTrue(db.deleteProfile(id: "profile-2"))
+        XCTAssertEqual(db.pendingProfileDataRemovals(), ["profile-2"])
+
+        XCTAssertFalse(db.deleteProfile(id: "profile-2"), "no such row any more")
+        XCTAssertEqual(db.pendingProfileDataRemovals(), ["profile-2"], "recorded once")
+
+        db.clearPendingProfileDataRemoval(profileID: "profile-2")
+        XCTAssertEqual(db.pendingProfileDataRemovals(), [])
+    }
 }

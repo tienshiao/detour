@@ -326,9 +326,19 @@ class TabStore {
     /// In-memory dedup cache for history: "url|spaceID" -> timestamp
     private var recentHistoryWrites: [String: TimeInterval] = [:]
 
-    init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared) {
+    /// Removes deleted profiles' on-disk WebKit data (TASK-32).
+    private let profileDataRemoval: ProfileDataRemoval
+
+    init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
+         profileDataRemover: ProfileDataRemoval.Remover = .webKit,
+         profileDataRemovalRetryDelays: [TimeInterval] = ProfileDataRemoval.defaultRetryDelays) {
         self.appDB = appDB
         self.historyDB = historyDB
+        self.profileDataRemoval = ProfileDataRemoval(
+            appDB: appDB, remover: profileDataRemover, retryDelays: profileDataRemovalRetryDelays)
+        profileDataRemoval.inMemoryProfileIDs = { [weak self] in
+            Set(self?.profiles.map(\.id) ?? [])
+        }
     }
 
     // MARK: - Undo Helpers
@@ -380,15 +390,56 @@ class TabStore {
         NotificationCenter.default.post(name: .init("UserAgentDidChange"), object: nil, userInfo: ["profileID": profile.id])
     }
 
-    func deleteProfile(id: UUID) {
-        guard id != Self.incognitoProfileID else { return }
-        guard profiles.filter({ !$0.isIncognito }).count > 1 else { return }
+    /// Deletes a profile no space uses, with its rows (TASK-31) and its on-disk
+    /// WebKit data (TASK-32). The order matters: `WKWebsiteDataStore.remove`
+    /// fails while anything still uses the store, so first everything holding
+    /// the profile's store or extension controller is torn down, then the
+    /// `Profile` is dropped, and only then is the removal attempted, on a later
+    /// main-actor turn. The pending removal is recorded in the transaction that
+    /// deletes the profile row, so a removal that fails (or never runs because
+    /// the app quits) is retried at the next launch.
+    ///
+    /// Returns the removal task, or nil when nothing was deleted.
+    @discardableResult
+    func deleteProfile(id: UUID) -> Task<ProfileDataRemoval.Outcome, Never>? {
+        guard id != Self.incognitoProfileID else { return nil }
+        guard profiles.filter({ !$0.isIncognito }).count > 1 else { return nil }
         let hasSpaces = spaces.contains { $0.profileID == id && !$0.isIncognito }
-        guard !hasSpaces else { return }
-        profiles.first { $0.id == id }?.unloadAllExtensions()
+        guard !hasSpaces else { return nil }
+
+        // A space moved off this profile less than a save interval ago still
+        // references it in the database, which would refuse the row delete.
+        saveNow()
+
+        let profile = self.profile(withID: id)
+        if let profile {
+            // Favourites are per profile, and a live favourite's backing tab can
+            // outlive the space it was opened in (deleteSpace does not touch it),
+            // so its web view may still be using this profile's store.
+            for favorite in profile.favorites {
+                guard let tab = favorite.tab else { continue }
+                tabSubscriptions.removeValue(forKey: tab.id)
+                tab.teardown()
+                favorite.tab = nil
+            }
+            // Extension contexts: background content, offscreen documents,
+            // keep-alive ports, native hosts and relayed WebSockets.
+            profile.unloadAllExtensions()
+        }
+
+        let deleted = appDB.deleteProfile(id: id.uuidString)
         profiles.removeAll { $0.id == id }
-        appDB.deleteProfile(id: id.uuidString)
         scheduleSave()
+        guard deleted else { return nil }
+        return profileDataRemoval.removeDataOfDeletedProfile(id: id, released: profile)
+    }
+
+    /// Retries the on-disk data removals of profiles deleted in an earlier run
+    /// (TASK-32). Call at launch, before anything creates a profile's data store
+    /// or extension controller.
+    @discardableResult
+    func retryPendingProfileDataRemovals() -> Task<[UUID: ProfileDataRemoval.Outcome], Never> {
+        profileDataRemoval.retryPendingRemovals()
     }
 
     /// Removes a profile by ID without guards.

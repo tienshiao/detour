@@ -5,12 +5,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     private var windowControllers: [BrowserWindowController] = []
 
+    /// Whether this process is the XCTest host (the test runner injects
+    /// `XCTest*` variables into the app it launches).
+    static var isRunningUnitTests: Bool {
+        ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
 
         // Initialize databases before restoring session
         _ = AppDatabase.shared
         _ = HistoryDatabase.shared
+
+        // Remove the on-disk data of profiles deleted in an earlier run whose
+        // removal did not finish (TASK-32). This must come before anything that
+        // creates a profile's data store or extension controller: the window,
+        // the extension manager's window-focus handler and restoreSession. Not
+        // in the XCTest host: it shares this bundle id, and so the WebKit data
+        // directory, with the production app.
+        if !Self.isRunningUnitTests {
+            TabStore.shared.retryPendingProfileDataRemovals()
+        }
+
         // Prune old history off the launch critical path. expireOldVisits() is
         // already a fire-and-forget async write; defer the call itself so the
         // full-table anti-join is not even scheduled until after first paint.

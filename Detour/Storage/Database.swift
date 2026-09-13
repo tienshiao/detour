@@ -84,19 +84,64 @@ struct AppDatabase {
     /// explicitly. Rows keyed by extension alone (`extension`, `extensionStorage`,
     /// `extensionPermission`) are shared by every profile and are left alone.
     /// Nothing is deleted while a space still references the profile.
-    func deleteProfile(id: String) {
-        performWrite("delete profile") { db in
+    ///
+    /// The same transaction records a pending removal of the profile's on-disk
+    /// WebKit data (TASK-32, `ProfileDataRemoval`), so a removal that has not
+    /// succeeded when the app quits is retried at the next launch.
+    ///
+    /// Returns whether the profile row was deleted: false when a space still
+    /// references it, when there was no such row, or when the write failed.
+    @discardableResult
+    func deleteProfile(id: String) -> Bool {
+        performWrite("delete profile", default: false) { db in
             // Guard: don't delete if any spaces reference it
             let count = try SpaceRecord.filter(Column("profileID") == id).fetchCount(db)
             guard count == 0 else {
                 log.error("Cannot delete profile \(id): \(count) space(s) still reference it")
-                return
+                return false
             }
             try ProfileExtensionRecord.filter(Column("profileID") == id).deleteAll(db)
             try ExtensionInstalledEventRecord.filter(Column("profileID") == id).deleteAll(db)
             try FavoriteRecord.filter(Column("profileID") == id).deleteAll(db)
             try ContentBlockerWhitelistRecord.filter(Column("profileID") == id).deleteAll(db)
-            try ProfileRecord.filter(Column("id") == id).deleteAll(db)
+            let deleted = try ProfileRecord.filter(Column("id") == id).deleteAll(db) > 0
+            if deleted {
+                try Self.recordPendingProfileDataRemoval(profileID: id, in: db)
+            }
+            return deleted
+        }
+    }
+
+    // MARK: - Pending profile data removals (TASK-32)
+
+    /// Records that a deleted profile's on-disk WebKit data (its
+    /// `WKWebsiteDataStore` and its extension controller storage, both keyed by
+    /// the profile id) still has to be removed. Never recorded for the built-in
+    /// Private profile, whose store and controller are non-persistent.
+    static func recordPendingProfileDataRemoval(profileID: String, in db: GRDB.Database) throws {
+        guard UUID(uuidString: profileID) != TabStore.incognitoProfileID else { return }
+        try db.execute(
+            sql: "INSERT OR IGNORE INTO pendingProfileDataRemoval (profileID, requestedAt) VALUES (?, ?)",
+            arguments: [profileID, Date().timeIntervalSince1970]
+        )
+    }
+
+    func recordPendingProfileDataRemoval(profileID: String) {
+        performWrite("record pending profile data removal") { db in
+            try Self.recordPendingProfileDataRemoval(profileID: profileID, in: db)
+        }
+    }
+
+    /// Profile ids whose data removal has not succeeded yet, oldest first.
+    func pendingProfileDataRemovals() -> [String] {
+        performRead("load pending profile data removals", default: []) { db in
+            try String.fetchAll(db, sql: "SELECT profileID FROM pendingProfileDataRemoval ORDER BY requestedAt, profileID")
+        }
+    }
+
+    func clearPendingProfileDataRemoval(profileID: String) {
+        performWrite("clear pending profile data removal") { db in
+            try db.execute(sql: "DELETE FROM pendingProfileDataRemoval WHERE profileID = ?", arguments: [profileID])
         }
     }
 
@@ -567,6 +612,17 @@ struct AppDatabase {
             // spelled out so this migration cannot change meaning later.
             try db.execute(sql: "DELETE FROM extensionInstalledEvent WHERE profileID = ?",
                            arguments: ["00000000-0000-0000-0000-000000000001"])
+        }
+
+        migrator.registerMigration("v11") { db in
+            // TASK-32: deleted profiles whose on-disk WebKit data (the
+            // WKWebsiteDataStore and extension controller storage for the profile
+            // id) has not been removed yet. No foreign key: the profile row is
+            // already gone when a row is added here.
+            try db.create(table: "pendingProfileDataRemoval") { t in
+                t.primaryKey("profileID", .text)
+                t.column("requestedAt", .double).notNull()
+            }
         }
 
         return migrator
