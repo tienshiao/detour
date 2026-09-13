@@ -162,6 +162,27 @@ class BrowserTab: NSObject {
 
     private var faviconCancellables = Set<AnyCancellable>()
     private var lastAttemptedURL: URL?
+    /// Set from `wake()` until the fresh web view reports its first real URL.
+    /// While it is set the URL observer ignores the web view's nil URL so `url`
+    /// survives the wake; it is deliberately *not* `lastAttemptedURL`, which
+    /// means "a navigation this tab asked for" and drives the error page (TASK-45).
+    private var awaitingFirstURL = false
+    /// Set from `wake()` when the fresh web view is handed the tab's cached
+    /// session state, until a navigation commits, a user `load()` replaces the
+    /// session, or the web view is released. While it is set a provisional
+    /// failure keeps the restored session — no error page, and the persisted
+    /// title stays — because nothing was asked for: the load that fails is the
+    /// restore itself, whether WebKit started it or `loadIfStalled()` kicked it
+    /// (TASK-45). `awaitingFirstURL` cannot stand in for this: the kick reports
+    /// its URL synchronously, and the URL observer then also records it as
+    /// `lastAttemptedURL`.
+    private var restoringSession = false
+    private static let blankURL = URL(string: "about:blank")!
+    /// Whether the web view shows no page at all: it never navigated, or it fell
+    /// back to `about:blank` after a provisional failure with nothing committed.
+    private var webViewShowsNothing: Bool {
+        webView?.url == nil || webView?.url == Self.blankURL
+    }
     private var processTerminationCount = 0
     private var lastProcessTerminationAt: Date?
     private var navigationPending = false
@@ -344,10 +365,21 @@ class BrowserTab: NSObject {
         webView.publisher(for: \.url)
             .sink { [weak self] url in
                 guard let self else { return }
-                if let url, !self.navigationPending, url.scheme != ErrorPage.scheme { self.lastAttemptedURL = url }
+                if url != nil { self.awaitingFirstURL = false }
+                // A session restore that fails before committing leaves the web
+                // view on about:blank; that is not a page this tab is showing,
+                // and must not become its URL or its retry target (TASK-45).
+                let blankAfterFailedRestore = self.restoringSession && url == Self.blankURL
+                if let url, !self.navigationPending, url.scheme != ErrorPage.scheme, !blankAfterFailedRestore {
+                    self.lastAttemptedURL = url
+                }
                 if url?.scheme == ErrorPage.scheme { return }
+                // A freshly woken web view emits nil before it has loaded anything —
+                // keep the restored/pending URL (TASK-45).
+                if url == nil, self.awaitingFirstURL { return }
                 // After cancellation, webView URL reverts to nil — keep showing the attempted URL.
                 if url == nil, self.lastAttemptedURL != nil { return }
+                if blankAfterFailedRestore { return }
                 self.url = url
             }
             .store(in: &faviconCancellables)
@@ -461,6 +493,10 @@ class BrowserTab: NSObject {
         // the flag true on a tab with no web view (sticky sidebar indicator, and
         // `sleepStaleTabs` would never auto-sleep the tab again).
         isPlayingAudio = false
+        // Scoped to the web view being released: a stale flag would make the
+        // *next* web view's cancellation look like a wake (TASK-45).
+        awaitingFirstURL = false
+        restoringSession = false
         faviconCancellables.removeAll()
         webView.removeFromSuperview()
         webViewContainer?.removeFromSuperview()
@@ -559,29 +595,37 @@ class BrowserTab: NSObject {
         let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
         self.webView = Self.makeWebView(configuration: wakeConfiguration(in: space))
 
-        // An extension page on a pending origin — restored from the previous
-        // launch before its extension's context loaded (TASK-24) — is left
-        // unloaded: its origin is dead and this web view cannot load the scheme.
-        // `Profile.resolvePendingExtensionPages` rebuilds the tab against the
-        // context once it loads, finding it by `url`, which must therefore
-        // survive the empty web view: the URL observer installed below replaces
-        // `url` with the web view's nil URL unless there is an attempted URL.
+        // The URL observer installed below replaces `url` with the fresh web
+        // view's nil URL on its very first emission, which would lose:
         //
-        // The same observer would also clear `url` before the load below reads it
-        // for a tab that has never had a web view — one created sleeping, like an
-        // extension page from `TabStore.makeTab(loading:)` (TASK-28): its first
-        // emission is the new web view's nil URL. Seeding the attempted URL keeps it.
+        //  - an extension page on a pending origin — restored from the previous
+        //    launch before its extension's context loaded (TASK-24) — which is
+        //    left unloaded below because its origin is dead, and which
+        //    `Profile.resolvePendingExtensionPages` finds again *by `url`*;
+        //  - the URL of a tab that has never had a web view — one created
+        //    sleeping, like an extension page from `TabStore.makeTab(loading:)`
+        //    (TASK-28) — before the load below reads it.
+        //
+        // `awaitingFirstURL` makes the observer ignore that nil until the web
+        // view reports a real URL. It replaces seeding `lastAttemptedURL` here,
+        // which also told `didFailProvisionalNavigation` that the user asked for
+        // this navigation — so a restored tab whose wake failed offline got an
+        // error page over its just-restored session (TASK-45).
+        awaitingFirstURL = true
         let awaitingExtensionContext = space?.profile?.isAwaitingExtensionContext(url) == true
-        if awaitingExtensionContext || lastAttemptedURL == nil { lastAttemptedURL = url }
+        let restoredState = awaitingExtensionContext
+            ? nil : cachedInteractionState.flatMap(Self.unarchiveInteractionState)
+        // Decided before the observers below run `updateTitle()` on their first
+        // emission: while a session is being restored the persisted title stays.
+        restoringSession = restoredState != nil
 
         applyUserAgent()
         setupObservers()
 
         if awaitingExtensionContext {
             // Nothing to load until the context does.
-        } else if let cachedInteractionState,
-           let state = Self.unarchiveInteractionState(cachedInteractionState) {
-            webView?.interactionState = state
+        } else if let restoredState {
+            webView?.interactionState = restoredState
         } else if let url {
             webView?.load(URLRequest(url: url))
         }
@@ -651,9 +695,24 @@ class BrowserTab: NSObject {
         return cachedInteractionState
     }
 
+    /// Starts the tab's own URL in a woken web view that never began loading —
+    /// `claimWebView`'s safety net for a restore that did not navigate, or a web
+    /// content process that died while unparented. Unlike `load(_:)` this is not
+    /// a navigation the user asked for: it leaves `lastAttemptedURL`,
+    /// `navigationPending`, title and favicon alone, so a restored session whose
+    /// kick fails offline is kept rather than replaced by an error page (TASK-45).
+    func loadIfStalled() {
+        guard let webView, webView.url == nil, !webView.isLoading, let url else { return }
+        webView.load(URLRequest(url: url))
+    }
+
     func load(_ url: URL, typed: Bool = false) {
         nextVisitIsTyped = typed
         if isSleeping { wake() }
+        // The user (or a caller acting for them) asked for this page: it
+        // replaces whatever session was being restored, and a failure now earns
+        // the error page.
+        restoringSession = false
         lastAttemptedURL = url
         self.url = url
         blockedCount = 0
@@ -681,12 +740,18 @@ class BrowserTab: NSObject {
 
     func reload() {
         if isSleeping { wake() }
+        // The user asked for this page again: a failure from here on earns the
+        // error page even if the session restore never committed (TASK-45).
+        restoringSession = false
         if webView?.url?.scheme == ErrorPage.scheme {
             let retryURL = lastAttemptedURL
                 ?? webView?.url.flatMap { ErrorPage.originalURL(from: $0) }
             if let retryURL { load(retryURL) }
-        } else if webView?.url == nil, let lastAttemptedURL {
-            load(lastAttemptedURL)
+        } else if webViewShowsNothing, let retryURL = lastAttemptedURL ?? url {
+            // `url` is the fallback for a restored tab whose wake never
+            // committed a navigation — nothing was "attempted" then (TASK-45),
+            // but the user asking to reload must still retry the page.
+            load(retryURL)
         } else {
             webView?.reload()
         }
@@ -694,12 +759,17 @@ class BrowserTab: NSObject {
 
     func didCommitNavigation() {
         navigationPending = false
+        restoringSession = false
         blockedCount = 0
         updateTitle()
     }
 
     func didFailProvisionalNavigation(error: Error) {
-        guard let lastAttemptedURL else { return }
+        // The restore of a cached session dying before it commits is not a
+        // failed request of the user's: keep the session, title and favicon
+        // (TASK-45). `reload()` goes through `load(_:)`, so retrying it still
+        // shows the error page on failure.
+        guard !restoringSession, let lastAttemptedURL else { return }
         showErrorPage(for: lastAttemptedURL, error: error)
     }
 
@@ -722,7 +792,13 @@ class BrowserTab: NSObject {
             title = strippedScheme(lastAttemptedURL)
         } else if let webTitle = webView?.title, !webTitle.isEmpty {
             title = webTitle
-        } else if let displayURL = webView?.url ?? lastAttemptedURL {
+        } else if restoringSession {
+            // The persisted title outranks the raw URL of a session still being
+            // restored; a commit clears the flag and re-derives it (TASK-45).
+        } else if let displayURL = webView?.url ?? lastAttemptedURL ?? url {
+            // `url` is the fallback for a woken web view that has nothing to
+            // report — an extension page waiting for its context — now that
+            // `wake()` no longer seeds `lastAttemptedURL` (TASK-45).
             title = strippedScheme(displayURL)
         } else if !isSleeping {
             title = "New Tab"

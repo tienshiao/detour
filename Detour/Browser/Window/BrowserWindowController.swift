@@ -938,12 +938,12 @@ class BrowserWindowController: NSWindowController {
         }
         // Safety net: a claimed webview with no content — its load never
         // started, or its web content process died while unparented — hosts
-        // as a dead white pane. Kick a load of the tab's last known URL.
+        // as a dead white pane. Kick a load of the tab's last known URL. Not
+        // `load(_:)`: this is nobody's request, and a restored session whose
+        // kick fails offline must stay restored rather than get an error page
+        // (TASK-45).
         for member in members {
-            if let webView = member.webView, webView.url == nil, !webView.isLoading,
-               let url = member.url {
-                member.load(url)
-            }
+            member.loadIfStalled()
         }
     }
 
