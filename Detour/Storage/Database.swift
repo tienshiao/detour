@@ -63,6 +63,9 @@ struct AppDatabase {
     }
 
     private func performRead<T>(_ label: String, default defaultValue: T, _ work: (GRDB.Database) throws -> T) -> T {
+        #if DEBUG
+        Self.countRead(label)
+        #endif
         do {
             return try dbQueue.read(work)
         } catch {
@@ -70,6 +73,38 @@ struct AppDatabase {
             return defaultValue
         }
     }
+
+    #if DEBUG
+    // MARK: - Read Counters (tests only)
+
+    /// How many read transactions `performRead` has run under each label since
+    /// the last reset. Lets a test pin down a query count — e.g. TASK-46, one
+    /// enabled-state read per profile at startup no matter how many extensions
+    /// are installed — so per-row reads cannot creep back in unnoticed.
+    /// Reads happen off the main thread too, so the table is lock-guarded.
+    private static let readCountsLock = NSLock()
+    private static var readCounts: [String: Int] = [:]
+
+    private static func countRead(_ label: String) {
+        readCountsLock.lock()
+        readCounts[label, default: 0] += 1
+        readCountsLock.unlock()
+    }
+
+    static func resetReadCounts() {
+        readCountsLock.lock()
+        readCounts.removeAll()
+        readCountsLock.unlock()
+    }
+
+    /// Reads run under `label` — the string `performRead` was called with — since
+    /// the last `resetReadCounts()`.
+    static func readCount(_ label: String) -> Int {
+        readCountsLock.lock()
+        defer { readCountsLock.unlock() }
+        return readCounts[label] ?? 0
+    }
+    #endif
 
     // MARK: - Profiles
 
@@ -991,10 +1026,15 @@ struct AppDatabase {
 
     // MARK: - Per-Profile Extension State
 
+    /// `performRead` labels for the two enabled-state queries, so a test can
+    /// count them by label without hard-coding the strings (TASK-46).
+    static let isExtensionEnabledReadLabel = "check extension enabled for profile"
+    static let enabledExtensionIDsReadLabel = "load enabled extension IDs for profile"
+
     /// Check if an extension is enabled for a specific profile.
     /// True if globally enabled AND (no per-profile row OR row.isEnabled).
     func isExtensionEnabled(extensionID: String, profileID: String) -> Bool {
-        performRead("check extension enabled for profile", default: false) { db in
+        performRead(Self.isExtensionEnabledReadLabel, default: false) { db in
             // Check global enabled first
             guard let ext = try ExtensionRecord.filter(Column("id") == extensionID).fetchOne(db),
                   ext.isEnabled else {
@@ -1066,16 +1106,23 @@ struct AppDatabase {
     }
 
     /// Returns the set of extension IDs that are globally enabled and not disabled for this profile.
+    ///
+    /// The same rule as `isExtensionEnabled(extensionID:profileID:)`, in one
+    /// query: globally enabled AND (no per-profile row OR row.isEnabled). An id
+    /// with no `extension` row is in neither answer. Ids only — neither row is
+    /// decoded as a record, so the `extension` table's `manifestJSON` blob is
+    /// never read for this answer (TASK-46).
     func enabledExtensionIDs(for profileID: String) -> Set<String> {
-        performRead("load enabled extension IDs for profile", default: []) { db in
-            let globallyEnabled = try ExtensionRecord
-                .filter(Column("isEnabled") == true)
-                .fetchAll(db)
-            let disabledForProfile = try ProfileExtensionRecord
+        performRead(Self.enabledExtensionIDsReadLabel, default: []) { db in
+            let disabledIDs = try ProfileExtensionRecord
                 .filter(Column("profileID") == profileID && Column("isEnabled") == false)
-                .fetchAll(db)
-            let disabledIDs = Set(disabledForProfile.map(\.extensionID))
-            return Set(globallyEnabled.map(\.id).filter { !disabledIDs.contains($0) })
+                .select(Column("extensionID"), as: String.self)
+                .fetchSet(db)
+            return try ExtensionRecord
+                .filter(Column("isEnabled") == true)
+                .select(Column("id"), as: String.self)
+                .fetchSet(db)
+                .subtracting(disabledIDs)
         }
     }
 }

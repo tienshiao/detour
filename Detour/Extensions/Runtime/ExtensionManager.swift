@@ -272,12 +272,16 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Load enabled extensions into each profile's controller
         // (notifyExistingTabs is called inside loadExtensionsIntoProfile after contexts are registered).
         // From here on a newly added profile is loaded as it is added (profileWasAdded).
+        // Drop anything cached before the extensions existed *first*, so each
+        // profile's set is read fresh by the load below and then stays cached for
+        // the UI reads that follow the notification (the pinned toolbar icons
+        // read it on extensionsDidChangeNotification).
         hasLoadedInstalledExtensions = true
+        invalidateEnabledExtensionsCache()
         for profile in TabStore.shared.profiles {
             loadExtensionsIntoProfile(profile)
         }
 
-        invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
@@ -287,9 +291,17 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func loadExtensionsIntoProfile(_ profile: Profile) {
         log.info("Loading extensions for profile \(profile.name, privacy: .public)")
 
+        // The whole enabled set in one query rather than one read per installed
+        // extension (TASK-46), and shared with the UI's reads through
+        // `enabledIDsCache`. `enabledExtensionIDs(for:)` encodes the same rule as
+        // `isEnabled(extensionID:inProfile:)` and every writer of either flag
+        // invalidates the cache, so the decision below is the one
+        // `reconcileExtensionContext` would have read for itself.
+        let enabledIDs = enabledExtensionIDs(for: profile.id)
+
         // Load all contexts. Background content loads on demand when needed.
         for ext in extensions {
-            reconcileExtensionContext(ext, in: profile)
+            reconcileExtensionContext(ext, in: profile, shouldLoad: enabledIDs.contains(ext.id))
             wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
         }
 
@@ -719,16 +731,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     /// Extensions enabled in the profile, by `isEnabled(extensionID:inProfile:)`.
     func enabledExtensions(for profileID: UUID) -> [WebExtension] {
-        let ids: Set<String>
-        if let cached = enabledIDsCache[profileID] {
-            ids = cached
-        } else {
-            // The whole set in one query: `enabledExtensionIDs(for:)` and
-            // `isEnabled(extensionID:inProfile:)` must keep encoding the same rule.
-            ids = AppDatabase.shared.enabledExtensionIDs(for: profileID.uuidString)
-            enabledIDsCache[profileID] = ids
-        }
+        let ids = enabledExtensionIDs(for: profileID)
         return extensions.filter { ids.contains($0.id) }
+    }
+
+    /// The profile's enabled extension ids, cached until either flag is written.
+    ///
+    /// The whole set in one query: `enabledExtensionIDs(for:)` and
+    /// `isEnabled(extensionID:inProfile:)` must keep encoding the same rule. The
+    /// cached set is still what `isEnabled(extensionID:inProfile:)` would answer
+    /// now, because every writer of either flag invalidates it
+    /// (`setEnabled(id:enabled:)`, `setEnabled(id:profileID:enabled:)`, install,
+    /// uninstall). Nonisolated like its callers' reads, which are all on the main
+    /// thread today.
+    private func enabledExtensionIDs(for profileID: UUID) -> Set<String> {
+        if let cached = enabledIDsCache[profileID] { return cached }
+        let ids = AppDatabase.shared.enabledExtensionIDs(for: profileID.uuidString)
+        enabledIDsCache[profileID] = ids
+        return ids
     }
 
     func invalidateEnabledExtensionsCache() {
@@ -1015,7 +1035,23 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @MainActor
     @discardableResult
     private func reconcileExtensionContext(_ ext: WebExtension, in profile: Profile) -> ContextReconciliation {
-        let shouldLoad = isEnabled(extensionID: ext.id, inProfile: profile.id)
+        reconcileExtensionContext(ext, in: profile,
+                                  shouldLoad: isEnabled(extensionID: ext.id, inProfile: profile.id))
+    }
+
+    /// `reconcileExtensionContext(_:in:)` with the rule already evaluated, for a
+    /// caller that resolved a whole profile's enabled set in one query
+    /// (`loadExtensionsIntoProfile`, TASK-46). `shouldLoad` must be what
+    /// `isEnabled(extensionID:inProfile:)` would answer *now*: pass only a
+    /// decision read after the last write to either flag, never one carried
+    /// across a toggle. A set taken from `enabledIDsCache` qualifies — every
+    /// writer of either flag invalidates that cache
+    /// (`setEnabled(id:enabled:)`, `setEnabled(id:profileID:enabled:)`, install,
+    /// uninstall) — but a set held across a toggle in a local does not.
+    @MainActor
+    @discardableResult
+    private func reconcileExtensionContext(_ ext: WebExtension, in profile: Profile,
+                                           shouldLoad: Bool) -> ContextReconciliation {
         switch (shouldLoad, profile.extensionContext(for: ext.id)) {
         case (true, nil):
             _ = profile.loadExtensionContext(ext)
