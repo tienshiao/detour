@@ -546,6 +546,75 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(result?["privacyType"] as? String, "undefined")
     }
 
+    /// `chrome.action` is `[MainWorldOnly, Dynamic]`, so every read hands back the
+    /// action wrapper from WebKit's *weak* wrapper cache: before TASK-60 the first
+    /// garbage collection after the polyfill ran collected the wrapper it had
+    /// patched, and the next read minted a fresh one with `getUserSettings` gone —
+    /// a failure that surfaced only as a rare flake in
+    /// `testGapFillingModulesInRealExtensionContext`. Two guards: the deterministic
+    /// one is that the root the polyfill keeps (`__detourHeldWrappers.action`) is
+    /// the object `chrome.action` answers with; the measured one churns garbage
+    /// until a control `WeakRef` is cleared and reads the API back afterwards.
+    /// The control is a young object, which an eden collection can clear without
+    /// touching the older wrapper, so the root check is what guards a deletion of
+    /// the hold; the churn guards the mechanism itself. The churn escalates each
+    /// round on purpose: after the rest of the suite has grown the heap, a flat
+    /// 1M allocations a round went 10 rounds without a collection (2026-09-13).
+    func testActionGetUserSettingsSurvivesGarbageCollection() async throws {
+        let wv = try await makeExtensionWebView()
+        let install = try await eval("return __detourPolyfillDiag.apis.actionGetUserSettings;", in: wv) as? String
+        if install == "native" {
+            throw XCTSkip("WebKit vends chrome.action.getUserSettings natively; nothing was patched, so there is no root to guard")
+        }
+        XCTAssertEqual(install, "polyfill", "unexpected action.getUserSettings install mode")
+
+        let result = try await evalJSON("""
+            const before = typeof chrome.action.getUserSettings;
+            const heldBefore = __detourHeldWrappers.action === chrome.action;
+            // Unreachable the moment it is created: once a collection runs, the
+            // WeakRef is cleared, which is the proof that one did.
+            const control = new WeakRef({ marker: 'control' });
+            let collected = false;
+            let rounds = 0;
+            while (!collected && rounds < 10) {
+                rounds += 1;
+                for (let i = 0; i < 20 * rounds; i++) {
+                    const junk = [];
+                    for (let k = 0; k < 50000; k++) junk.push({ i: i, k: k, s: 'x' + k });
+                }
+                await new Promise(resolve => setTimeout(resolve, 25));
+                collected = control.deref() === undefined;
+            }
+            // Read the API back rather than calling it blind, so losing the patch
+            // reports as the assertion below and not as an opaque TypeError.
+            const after = typeof chrome.action.getUserSettings;
+            const heldAfter = __detourHeldWrappers.action === chrome.action;
+            const settings = after === 'function' ? await chrome.action.getUserSettings() : null;
+            return JSON.stringify({
+                before: before,
+                heldBefore: heldBefore,
+                collected: collected,
+                rounds: rounds,
+                after: after,
+                heldAfter: heldAfter,
+                isOnToolbar: settings ? settings.isOnToolbar : null
+            });
+        """, in: wv) as? [String: Any]
+
+        XCTAssertEqual(result?["before"] as? String, "function")
+        XCTAssertEqual(result?["heldBefore"] as? Bool, true,
+                       "the polyfill must root the very wrapper chrome.action answers with")
+        XCTAssertEqual(result?["collected"] as? Bool, true,
+                       "no collection observed in \(result?["rounds"] ?? "nil") rounds, so the read-back below "
+                       + "proves nothing — churn more garbage")
+        XCTAssertEqual(result?["after"] as? String, "function",
+                       "the patch on WebKit's weakly cached chrome.action wrapper did not survive a collection")
+        XCTAssertEqual(result?["heldAfter"] as? Bool, true,
+                       "after a collection chrome.action must still be the rooted, patched wrapper")
+        XCTAssertEqual(result?["isOnToolbar"] as? Bool, true,
+                       "getUserSettings must still answer after a collection, not just exist")
+    }
+
     // MARK: - Polyfill Guards
 
     func testPolyfillCanBeRerunWithoutBreaking() async throws {

@@ -905,7 +905,13 @@ document.getElementById('btn-refresh-log').click();
   try {
     const { _polyfillDiag } = await chrome.storage.local.get('_polyfillDiag');
     if (_polyfillDiag) {
-      const lines = Object.entries(_polyfillDiag).map(([k, v]) => `${k}: ${v}`);
+      // `apis` is a nested object; flatten it so each install marker is legible
+      // instead of rendering as `apis: [object Object]`.
+      const lines = Object.entries(_polyfillDiag).flatMap(([k, v]) =>
+        (v && typeof v === 'object' && !Array.isArray(v))
+          ? Object.entries(v).map(([k2, v2]) => `${k}.${k2}: ${typeof v2 === 'object' ? JSON.stringify(v2) : v2}`)
+          : [`${k}: ${v}`]
+      );
       const el = document.getElementById('res-event-log');
       if (el) {
         el.textContent = '--- Polyfill Diagnostics ---\n' + lines.join('\n') + '\n\n' + (el.textContent || '');

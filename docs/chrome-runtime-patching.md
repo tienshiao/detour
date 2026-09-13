@@ -211,6 +211,40 @@ Pinning a *different* object under `chrome.runtime` (Option 1 with a proxy inste
 wrapper) is accepted by `defineProperty` but ignored on reads: the static getter keeps returning
 the native runtime. Option 1 only works because it pins the *same* wrapper WebKit vends.
 
+### Members inside a [MainWorldOnly, Dynamic] sub-namespace: patchable, but only while held
+
+A member *inside* one of the Level 1 namespaces above (`chrome.action.getUserSettings`,
+`chrome.webRequest.onAuthRequired`) can be patched in place — the wrapper takes the own property
+and reads through `chrome.action` keep returning it, *as long as that wrapper is still alive*.
+Two separate things are true of an own property on `chrome` for these namespaces, and they must
+not be conflated:
+
+- **Precedence.** While WebKit vends the namespace, the class's `getProperty` callback wins over an
+  own property on `chrome`, so a pin cannot change *which* object a read returns (it hands back the
+  wrapper from the same weak cache as `chrome.runtime`). When WebKit vends nothing — `chrome.webRequest`
+  on macOS 26 — there is nothing to shadow and the own property is read normally, which is how the
+  full `webRequest` stub works.
+- **Lifetime.** A shadowed own property is still a strong JS reference, so it keeps the wrapper —
+  and the weak cache entry — alive, and the callback keeps handing back the patched object. That is
+  what `webNavigationJS`'s `Object.defineProperty(chrome, 'webNavigation', { value: nav })` does; it
+  is load-bearing and must not be removed as a no-op.
+
+Without any root the patch lives exactly as long as the wrapper does: the first garbage collection
+collects it, the next read mints a fresh wrapper, and the member is gone with no error anywhere
+(measured 2026-09-13, TASK-60 — the polyfill's `getUserSettings` disappeared after ~1M JS
+allocations, and a `WeakRef` to the patched wrapper read back `undefined`).
+
+Any strong reference works. The polyfill's shared form is `__detourHoldWrapper(name, wrapper)` in
+`ExtensionAPIPolyfill.preambleJS`, which stores the wrapper in the non-enumerable, non-writable
+`globalThis.__detourHeldWrappers` (so `__detourHeldWrappers.action === chrome.action` can be asserted,
+and extension code enumerating or clearing globals cannot drop a root). `actionUserSettingsJS` and
+the native-namespace path of `webRequestStubJS` root through it, then re-read the namespace and
+check the patch is what it answers with; if not, they release the root and record
+`polyfill-not-visible` / `native+onAuthRequired-not-visible` in `__detourPolyfillDiag.apis`.
+`ExtensionPolyfillIntegrationTests.testActionGetUserSettingsSurvivesGarbageCollection` asserts the
+root identity and forces a collection (churning garbage until a control `WeakRef` clears) to read
+the API back afterwards.
+
 ### Bottom line
 
 Patch members in place on the native wrappers where the IDL allows it (Option 1), accept that

@@ -108,6 +108,7 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.privacy = globalThis.__detourPrivacyInstall; } catch(e) { __detourPolyfillDiag.apis.privacy = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.webRequest = globalThis.__detourWebRequestInstall; } catch(e) { __detourPolyfillDiag.apis.webRequest = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.actionGetUserSettings = globalThis.__detourActionUserSettingsInstall; } catch(e) { __detourPolyfillDiag.apis.actionGetUserSettings = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.heldWrappers = Object.keys(globalThis.__detourHeldWrappers).join(','); } catch(e) { __detourPolyfillDiag.heldWrappers = 'error: ' + e.message; }
         // Whether WebKit vends webNavigation.getAllFrames/getFrame natively, as
         // observed *before* the polyfill patched anything (TASK-4).
         try { __detourPolyfillDiag.apis.webNavigationFrames = globalThis.__detourWebNavFrames; } catch(e) { __detourPolyfillDiag.apis.webNavigationFrames = 'error: ' + e.message; }
@@ -152,6 +153,29 @@ struct ExtensionAPIPolyfill {
                     console.warn('[Detour polyfill] Cannot define chrome.' + prop + ':', e2.message);
                 }
             }
+        };
+
+        // Strong roots for native namespace wrappers a module patched a member
+        // onto. `[MainWorldOnly, Dynamic]` namespaces (chrome.action,
+        // chrome.webRequest, ...) are vended from a weak wrapper cache, so the
+        // patch lives only as long as something holds the wrapper: the first
+        // garbage collection otherwise drops it and the next read mints a fresh,
+        // unpatched one (TASK-60, docs/chrome-runtime-patching.md). Keyed so the
+        // diag and tests can check `__detourHeldWrappers.action === chrome.action`;
+        // non-enumerable and non-writable so extension code that enumerates or
+        // clears globals cannot drop a root. `webNavigationJS` roots its wrapper
+        // as an own property on `chrome` instead, which works the same way.
+        if (!g.__detourHeldWrappers) {
+            Object.defineProperty(g, '__detourHeldWrappers', {
+                value: {}, writable: false, configurable: true, enumerable: false
+            });
+        }
+        g.__detourHoldWrapper = function(name, wrapper) {
+            g.__detourHeldWrappers[name] = wrapper;
+            return wrapper;
+        };
+        g.__detourReleaseWrapper = function(name) {
+            delete g.__detourHeldWrappers[name];
         };
 
         // Event emitter factory
@@ -2098,16 +2122,34 @@ struct ExtensionAPIPolyfill {
         try {
             const emitter = () => __detourMakeEventEmitter([]);
 
-            if (chrome.webRequest && typeof chrome.webRequest === 'object') {
-                const onAuthRequired = chrome.webRequest.onAuthRequired;
-                if (onAuthRequired && typeof onAuthRequired.addListener === 'function') {
-                    install = 'native';
+            const webRequest = chrome.webRequest;
+            if (webRequest && typeof webRequest === 'object') {
+                const onAuthRequired = webRequest.onAuthRequired;
+                if (webRequest._detourPolyfill) {
+                    // A second run in the same realm sees the namespace the first
+                    // run created: keep reporting it as ours, not as WebKit's.
+                    install = 'polyfill';
+                } else if (onAuthRequired && typeof onAuthRequired.addListener === 'function') {
+                    install = onAuthRequired._detourPolyfill ? 'native+onAuthRequired' : 'native';
                 } else {
-                    __detourDefine(chrome.webRequest, 'onAuthRequired', emitter());
-                    install = 'native+onAuthRequired';
+                    const stub = emitter();
+                    stub._detourPolyfill = true;
+                    __detourDefine(webRequest, 'onAuthRequired', stub);
+                    // Weakly cached wrapper: root it, then check the patch is what
+                    // a fresh read answers with (see __detourHoldWrapper).
+                    __detourHoldWrapper('webRequest', webRequest);
+                    const again = chrome.webRequest;
+                    if (again && again.onAuthRequired === stub) {
+                        install = 'native+onAuthRequired';
+                    } else {
+                        __detourReleaseWrapper('webRequest');
+                        console.warn('[Detour polyfill] chrome.webRequest.onAuthRequired stub is not visible through chrome.webRequest');
+                        install = 'native+onAuthRequired-not-visible';
+                    }
                 }
             } else if (__detourManifestPermissions().indexOf('webRequest') !== -1) {
                 __detourDefine(chrome, 'webRequest', {
+                    _detourPolyfill: true,
                     onAuthRequired: emitter(),
                     onBeforeRequest: emitter(),
                     onBeforeSendHeaders: emitter(),
@@ -2144,22 +2186,43 @@ struct ExtensionAPIPolyfill {
     /// implementation is left alone, and `chrome.action` itself is never
     /// created: outside a page with an `action` manifest key its absence is the
     /// correct answer.
+    ///
+    /// `chrome.action` is a weakly cached `[MainWorldOnly, Dynamic]` wrapper, so
+    /// the patched wrapper is rooted through `__detourHoldWrapper` (TASK-60,
+    /// docs/chrome-runtime-patching.md) and a fresh read then checks the patch is
+    /// what `chrome.action` answers with: `polyfill-not-visible` if it is not.
     private static let actionUserSettingsJS = """
     (function() {
         const g = globalThis;
         const chrome = g.chrome;
         let install = 'no-action';
         try {
-            if (chrome.action && typeof chrome.action === 'object') {
-                if (typeof chrome.action.getUserSettings === 'function') {
-                    install = 'native';
+            const action = chrome.action;
+            if (action && typeof action === 'object') {
+                const existing = action.getUserSettings;
+                if (typeof existing === 'function') {
+                    // A second run in the same realm sees its own stub: keep
+                    // reporting it as the polyfill, not as WebKit's.
+                    install = existing._detourPolyfill ? 'polyfill' : 'native';
                 } else {
-                    __detourDefine(chrome.action, 'getUserSettings', function(callback) {
+                    const getUserSettings = function(callback) {
                         const settings = { isOnToolbar: true };
                         if (typeof callback === 'function') { callback(settings); return; }
                         return Promise.resolve(settings);
-                    });
-                    install = 'polyfill';
+                    };
+                    getUserSettings._detourPolyfill = true;
+                    __detourDefine(action, 'getUserSettings', getUserSettings);
+                    __detourHoldWrapper('action', action);
+                    const again = chrome.action;
+                    if (again && again.getUserSettings === getUserSettings) {
+                        install = 'polyfill';
+                    } else {
+                        // Nothing reads the object we patched: drop the root
+                        // rather than keep a dead wrapper alive, and say so.
+                        __detourReleaseWrapper('action');
+                        console.warn('[Detour polyfill] chrome.action.getUserSettings patch is not visible through chrome.action');
+                        install = 'polyfill-not-visible';
+                    }
                 }
             }
         } catch (e) {

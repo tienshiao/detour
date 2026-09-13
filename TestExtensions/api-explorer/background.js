@@ -582,8 +582,20 @@ async function handleMessage(message) {
     }
 
     case 'actionGetUserSettings': {
-      const settings = await chrome.action.getUserSettings();
-      return { settings, install: globalThis.__detourActionUserSettingsInstall };
+      // Feature-detect before calling, so a missing method (polyfill dropped
+      // after a collection, or `polyfill-not-visible`) still reports the
+      // install marker instead of throwing it away with the TypeError.
+      const hasAction = typeof chrome.action === 'object';
+      const hasGetUserSettings = hasAction && typeof chrome.action.getUserSettings === 'function';
+      const held = !!(globalThis.__detourHeldWrappers && globalThis.__detourHeldWrappers.action === chrome.action);
+      const settings = hasGetUserSettings ? await chrome.action.getUserSettings() : null;
+      return {
+        hasAction,
+        hasGetUserSettings,
+        held,
+        settings,
+        install: globalThis.__detourActionUserSettingsInstall,
+      };
     }
 
     case 'captureVisibleTab': {
