@@ -1244,9 +1244,25 @@ class TabStore {
                                                       availability: ExtensionAvailability(appDB: appDB)))
     }
 
+    /// Rehomes an existing live tab onto `space` — for the paths that place a
+    /// tab that already exists and so cannot go through `insertTab` (the
+    /// favourite restores, TASK-58).
+    ///
+    /// Both halves of "which space is this tab's" have to move together:
+    /// `spaceID`, which `BrowserTab.wake()` resolves its configuration through
+    /// and which the per-space lookups key on, and the tab's subscription, whose
+    /// captured space id is what its history visits are recorded under.
+    /// Re-subscribing replaces the previous cancellables, which cancels them.
+    private func adoptSpace(_ space: Space, for tab: BrowserTab) {
+        tab.spaceID = space.id
+        subscribeToTab(tab, spaceID: space.id)
+    }
+
     /// Moves a favorite back into the tab list, removing it from favorites.
     ///
-    /// A live favourite's backing tab moves as it is. A dormant one gets a new tab
+    /// A live favourite's backing tab moves as it is, rehomed onto `space`
+    /// (`adoptSpace`) — it belongs to this space now, not to whichever one it was
+    /// activated in (TASK-58). A dormant one gets a new tab
     /// from `makeTab(loading:)` — an extension page is created sleeping, so wake
     /// builds it from its context's configuration — on its URL rehomed onto the
     /// extension's live origin (TASK-34). A dormant page of a disabled or
@@ -1261,6 +1277,7 @@ class TabStore {
         let tab: BrowserTab
         if let liveTab = fav.tab {
             tab = liveTab
+            adoptSpace(space, for: tab)
         } else {
             let page = dormantTilePage(url: fav.url, in: profile)
             guard dormantTileDropTargets(page).contains(.tabList),
@@ -1284,7 +1301,8 @@ class TabStore {
 
     /// Moves a favorite back into the pinned section, removing it from favorites.
     ///
-    /// A live favourite's backing tab moves as it is. A dormant one becomes a
+    /// A live favourite's backing tab moves as it is, rehomed onto `space`
+    /// (`adoptSpace`, TASK-58). A dormant one becomes a
     /// dormant entry whose home page is the favourite's URL rehomed (TASK-34): an
     /// enabled extension's page onto its live origin, a disabled one's kept with
     /// its origin registered as pending for a later enable. A dormant page of an
@@ -1297,8 +1315,9 @@ class TabStore {
         let fav = profile.favorites[favIdx]
 
         let pinnedURL: URL
-        if fav.tab != nil {
+        if let liveTab = fav.tab {
             pinnedURL = fav.url
+            adoptSpace(space, for: liveTab)
         } else {
             let page = dormantTilePage(url: fav.url, in: profile)
             guard dormantTileDropTargets(page).contains(.pinned),

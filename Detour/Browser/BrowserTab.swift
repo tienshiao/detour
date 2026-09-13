@@ -83,6 +83,18 @@ class BrowserTab: NSObject {
     @Published var estimatedProgress: Double = 0
     @Published var favicon: NSImage?
     private(set) var faviconURL: URL?
+    /// The space this tab belongs to. `wake()` resolves it to pick the
+    /// configuration a new web view is built from, the profile and history
+    /// lookups below go through it, and the session save and history visits are
+    /// recorded under it. Every path that places a tab in a space sets it:
+    /// `TabStore.insertTab` on creation, and `TabStore.adoptSpace` for a live
+    /// tab moved in from another section (the favourite restores).
+    ///
+    /// For a favourite's backing tab it names the space the favourite was
+    /// activated in — favourites belong to a *profile* and show in every space
+    /// that shares it, so a favourite has no space of its own; its tab simply
+    /// keeps the space it was brought to life in until it is moved into a
+    /// section, which rehomes it onto that space (TASK-58).
     var spaceID: UUID?
     var parentID: UUID?
     /// The profile whose `WKWebExtensionContext`s were told this tab is open
