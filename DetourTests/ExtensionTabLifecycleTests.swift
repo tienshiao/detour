@@ -418,6 +418,82 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertNil(f.store.tab(hostingPeek: makeLiveTab()), "an unhosted tab has no host")
     }
 
+    // MARK: - Parked peeks (TASK-57)
+
+    /// A host tab with a live, registered Peek.
+    private func hostWithLivePeek(in f: Fixture) -> (host: BrowserTab, peek: BrowserTab) {
+        let host = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(host)
+        let peek = BrowserTab(configuration: f.space.makeWebViewConfiguration())
+        createdTabs.append(peek)
+        host.peekTab = peek
+        XCTAssertEqual(events(for: peek), [.open], "precondition: the peek is registered")
+        return (host, peek)
+    }
+
+    /// Parking a Peek is closing it: it is never woken as the same object, so a
+    /// registered parked peek would be a phantom open tab with no web view.
+    func testHostSleepClosesItsParkedPeek() throws {
+        let f = try makeFixture()
+        let (host, peek) = hostWithLivePeek(in: f)
+
+        host.sleep(force: true)
+
+        XCTAssertEqual(events(for: peek), [.open, .close])
+        XCTAssertNil(peek.extensionRegisteredProfile)
+        XCTAssertNil(peek.webView, "the peek released its web view with the host")
+        XCTAssertTrue(host.peekTab === peek, "the host keeps the reference the badge reads")
+        XCTAssertEqual(events(for: host), [.open], "the host is asleep, not closed")
+
+        // `showPeekOverlay` tears the orphan down when the host is next peeked.
+        peek.teardown()
+        XCTAssertEqual(events(for: peek), [.open, .close], "close is idempotent")
+    }
+
+    func testHostRetargetClosesItsParkedPeek() throws {
+        let f = try makeFixture()
+        let (host, peek) = hostWithLivePeek(in: f)
+
+        host.retarget(to: URL(string: "webkit-extension://fresh-origin/options.html")!)
+
+        XCTAssertEqual(events(for: peek), [.open, .close])
+        XCTAssertNil(peek.extensionRegisteredProfile)
+        XCTAssertNil(peek.webView)
+        XCTAssertTrue(host.peekTab === peek)
+    }
+
+    /// The gate: a non-forced sleep spares a peek that is playing audio, and a
+    /// peek that kept its web view is still a reachable page.
+    func testHostSleepKeepsAPeekThatKeptItsWebView() throws {
+        let f = try makeFixture()
+        let (host, peek) = hostWithLivePeek(in: f)
+        peek.isPlayingAudio = true
+
+        host.sleep()
+
+        XCTAssertNotNil(peek.webView, "an audible peek does not release its web view")
+        XCTAssertEqual(events(for: peek), [.open], "so it stays an open tab")
+        XCTAssertTrue(peek.extensionRegisteredProfile === f.profile)
+    }
+
+    /// A peek parked by the previous session (`peekURL` restored, no peek tab) has
+    /// nothing to close and must stay that way.
+    func testHostSleepWithASessionRestoredParkedPeekReportsNothing() throws {
+        let f = try makeFixture()
+        let host = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(host)
+        host.peekURL = URL(string: "https://peek.example.org/article")
+        host.peekFaviconURL = URL(string: "https://peek.example.org/favicon.ico")
+        XCTAssertNil(host.peekTab, "precondition: parked by a restore, no peek object")
+
+        host.sleep(force: true)
+
+        XCTAssertEqual(events(for: host), [.open])
+        XCTAssertTrue(notifier.records.allSatisfy { $0.event != .close }, "nothing was closed")
+        XCTAssertEqual(host.peekURL?.absoluteString, "https://peek.example.org/article",
+                       "the parked state the badge and a re-present need is untouched")
+    }
+
     // MARK: - Section moves (TASK-59)
 
     /// The rule: a live tab moving between the tab list, the pinned section and

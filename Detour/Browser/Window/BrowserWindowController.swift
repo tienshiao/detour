@@ -2342,12 +2342,15 @@ class BrowserWindowController: NSWindowController {
         hidePeekUI()
 
         // Whatever peek object the host still holds goes down before it is
-        // replaced: a parked one (web view released by the host's sleep) is still
-        // registered with the extension contexts, and dropping it silently would
-        // leave a phantom open tab behind (TASK-50). Only a fresh peek to a
-        // *different* page than the parked one also drops the parked state
-        // (favicon, URL), so the badge can't show the previous peek's icon while the
-        // new page loads — or persist it if that page has none.
+        // replaced: one that still has a web view (a hidden peek, or a live peek
+        // whose page differs from the one asked for) is still registered with the
+        // extension contexts, and dropping it silently would leave a phantom open
+        // tab behind (TASK-50). A peek the host parked was closed at that point
+        // and `teardown` is idempotent, so it sends nothing twice (TASK-57).
+        // Only a fresh peek to a *different* page than the parked one also drops
+        // the parked state (favicon, URL), so the badge can't show the previous
+        // peek's icon while the new page loads — or persist it if that page has
+        // none.
         if let orphan = tab.peekTab {
             orphan.webView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
             orphan.teardown()

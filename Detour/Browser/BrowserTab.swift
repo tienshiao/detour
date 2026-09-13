@@ -532,6 +532,7 @@ class BrowserTab: NSObject {
         if let peek = peekTab {
             savePeekStateForPersistence()
             peek.sleep(force: force)
+            parkPeek(peek)
         }
 
         if let state = webView.interactionState {
@@ -545,6 +546,29 @@ class BrowserTab: NSObject {
         estimatedProgress = 0
         canGoBack = false
         canGoForward = false
+    }
+
+    /// Closes a peek that `sleep` / `retarget` just parked, to the extension
+    /// contexts (TASK-57).
+    ///
+    /// A parked peek's sleep is a close in every sense the contexts care about:
+    /// unlike a sleeping tab, it is never woken as the same object.
+    /// `showPeekOverlay` always builds a *new* `BrowserTab` and tears the parked
+    /// one down, so leaving it registered would show extensions a phantom open
+    /// tab with no web view — listed by `tabs.query` and window tab lists, and
+    /// unreachable by `tabs.sendMessage` — from the host's sleep until it is next
+    /// peeked or torn down.
+    ///
+    /// The host keeps its `peekTab` reference: the tile and sidebar badge read it
+    /// through `displayPeekFavicon` (TASK-47), and the parked `peekURL` /
+    /// `peekInteractionState` saved a moment ago are what a re-present restores.
+    ///
+    /// Gated on the peek having actually released its web view: a non-forced
+    /// sleep spares a peek that is playing audio, and such a peek is still a
+    /// live, reachable page the contexts must keep.
+    private func parkPeek(_ peek: BrowserTab) {
+        guard peek.webView == nil else { return }
+        ExtensionTabLifecycle.didClose(peek)
     }
 
     /// Rehomes the tab onto `url`, discarding the page it is currently showing.
@@ -569,6 +593,7 @@ class BrowserTab: NSObject {
         if let peek = peekTab {
             savePeekStateForPersistence()
             peek.sleep(force: true)
+            parkPeek(peek)
         }
         releaseWebView()
         cachedInteractionState = nil
