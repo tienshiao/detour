@@ -125,6 +125,11 @@ final class ExtensionPageRehostTests: XCTestCase {
         let tab = TabStore.shared.addExtensionTab(in: space, url: pageURL, configuration: config)
         XCTAssertEqual(tab.webView?.url, pageURL,
                        "precondition: the tab should be showing the extension page")
+        // The placement rule reads the profile off the web view's own
+        // configuration (TASK-52), so this is also the assertion that a loaded
+        // context's configuration carries its controller.
+        XCTAssertNotNil(tab.extensionRegisteredProfile,
+                        "placing the page in space.tabs reports it to the contexts")
         return (tab, pageURL)
     }
 

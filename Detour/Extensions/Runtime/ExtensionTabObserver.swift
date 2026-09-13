@@ -10,12 +10,10 @@ import WebKit
 /// never produce an indexed store update, and activations are announced by the
 /// window that owns them (`announceExtensionActiveTabIfChanged`, TASK-51) — a
 /// store mutation cannot tell which window's active tab changed.
+/// Nor are *opens*: a tab is reported when it becomes enumerable, by the
+/// `didSet` on the container it enters (TASK-52) — an insert notification is one
+/// creation path among several, and the off-list ones never produce one.
 class ExtensionTabObserver: TabStoreObserver {
-
-    func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space) {
-        guard let profile = space.profile else { return }
-        ExtensionTabLifecycle.didOpen(tab, in: profile)
-    }
 
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {
         ExtensionTabLifecycle.didClose(tab)

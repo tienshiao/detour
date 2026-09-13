@@ -10,7 +10,11 @@ class PinnedEntry {
     var onFaviconDownloaded: (() -> Void)?
     var folderID: UUID?
     var sortOrder: Int
-    var tab: BrowserTab?       // nil = dormant
+    /// nil = dormant. A tab arriving here is enumerable, so it is reported open
+    /// (TASK-52, see `ExtensionTabLifecycle`).
+    var tab: BrowserTab? {
+        didSet { tab.map(ExtensionTabLifecycle.didPlace) }
+    }
     /// Pinned split membership (see split-tabs-design.md §12). While pinned,
     /// the group lives ONLY here — the backing tab's `splitGroupID` stays nil.
     var splitGroupID: UUID?

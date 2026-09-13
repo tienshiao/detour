@@ -168,7 +168,7 @@ Extensions can be toggled globally (`AppDatabase.setEnabled`) or per-profile (`A
 
 ### Tab Events
 
-`ExtensionTabObserver` implements `TabStoreObserver` and notifies all extension contexts of tab lifecycle events via `WKWebExtensionContext`:
+Tab lifecycle events reach the contexts through `ExtensionTabLifecycle` (`WKWebExtensionContext` calls). Opens follow the *placement rule* (TASK-52): a tab is reported the moment it enters a container the window enumeration reads (`Space.tabs`, `Space.pinnedEntries`, `Profile.favorites`, `BrowserTab.peekTab` — each has a `didSet` calling `didPlace`), and again when `wake()` builds a new web view. Closes still come from `ExtensionTabObserver` (`TabStoreObserver.tabStoreDidRemoveTab`) and from `BrowserTab.teardown()`:
 
 - `didOpenTab()` / `didCloseTab()`
 - `didChangeTabProperties()` (URL, title, loading state)

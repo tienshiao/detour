@@ -11,7 +11,11 @@ class Favorite {
     /// registered last, leaving the other windows on the globe (TASK-53).
     @Published var favicon: NSImage?
     var sortOrder: Int
-    var tab: BrowserTab?       // nil = dormant
+    /// nil = dormant. A tab arriving here is enumerable, so it is reported open
+    /// (TASK-52, see `ExtensionTabLifecycle`).
+    var tab: BrowserTab? {
+        didSet { tab.map(ExtensionTabLifecycle.didPlace) }
+    }
 
     var isLive: Bool { tab != nil }
 

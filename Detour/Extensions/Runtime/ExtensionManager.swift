@@ -1219,9 +1219,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// Find the profile that owns a given controller.
+    /// The profile that owns a controller — the registry `Profile` fills when it
+    /// builds one, not a scan of the store: a scan force-builds every profile's
+    /// lazy `extensionController` (and so its persistent storage, data store and
+    /// polyfill handler) just to compare, and misses a controller whose profile
+    /// has left `TabStore.shared`.
     private func profile(for controller: WKWebExtensionController) -> Profile? {
-        TabStore.shared.profiles.first { $0.extensionController === controller }
+        Profile.profile(owning: controller)
     }
 
     /// Find a space belonging to the profile that owns a controller.

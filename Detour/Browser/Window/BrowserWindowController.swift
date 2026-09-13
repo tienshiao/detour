@@ -927,28 +927,38 @@ class BrowserWindowController: NSWindowController {
     private static let ownedScriptHandlerNames = ["linkHover", BlockedResourceTracker.messageName, "editableFieldFocus"]
 
     /// Wake a sleeping split member alongside the focused pane, mirroring the
-    /// wake path in `selectTab` (including the extension open notify that
-    /// `notifyExistingTabs` skipped while the tab slept). Guards on the missing
-    /// webView rather than `isSleeping` so a tab that lost its webView without
-    /// being flagged asleep is also rebuilt instead of hosting as an empty pane
-    /// (`wake()` re-guards, so a live webView is never replaced).
+    /// wake path in `selectTab`. Guards on the missing webView rather than
+    /// `isSleeping` so a tab that lost its webView without being flagged asleep
+    /// is also rebuilt instead of hosting as an empty pane (`wake()` re-guards,
+    /// so a live webView is never replaced). `wake()` itself reports the new
+    /// web view open (TASK-52); this only re-announces the activation that
+    /// `notifyExistingTabs` skipped while the tab slept.
     ///
-    /// The re-open is unconditional, but the activation is only for the focused
-    /// pane: waking a split *partner* must not tell WebKit the unfocused pane
-    /// is active (the tracker dedupes by identity, so it would never correct
-    /// it — e.g. `windowDidBecomeKey` → `claimWebView` → `wakeIfNeeded(partner)`
-    /// or `refreshSplitHostingIfNeeded`). For the focused pane it stays a direct
-    /// announcement, not one through the tracker: a re-opened web view is
-    /// re-announced regardless of whether the active tab changed.
+    /// The activation is only for the focused pane: waking a split *partner*
+    /// must not tell WebKit the unfocused pane is active (the tracker dedupes
+    /// by identity, so it would never correct it — e.g. `windowDidBecomeKey` →
+    /// `claimWebView` → `wakeIfNeeded(partner)` or `refreshSplitHostingIfNeeded`).
+    /// For the focused pane it stays a direct announcement, not one through the
+    /// tracker: a re-opened web view is re-announced regardless of whether the
+    /// active tab changed (TASK-51).
     private func wakeIfNeeded(_ tab: BrowserTab) {
         guard tab.webView == nil else { return }
         tab.wake()
-        if let space = activeSpace, let profile = space.profile {
-            ExtensionTabLifecycle.didOpen(tab, in: profile)
-            if tab === selectedTab {
-                ExtensionTabLifecycle.didActivate(tab, in: profile)
-            }
-        }
+        guard tab === selectedTab, let profile = activeSpace?.profile else { return }
+        ExtensionTabLifecycle.didActivate(tab, in: profile)
+    }
+
+    /// A hosted web view built from a profile's configuration runs extension
+    /// content scripts, so the tab behind it must be one the contexts were told
+    /// about — the placement rule in `ExtensionTabLifecycle` (TASK-52). Debug
+    /// only: in release an unregistered tab merely loses `sender.tab`.
+    private func assertExtensionRegistered(_ tab: BrowserTab, _ what: @autoclosure () -> String) {
+        // The same predicate the placement rule uses: a controller whose profile
+        // is gone is deliberately never reported, so it must not trip this.
+        guard let controller = tab.webView?.configuration.webExtensionController,
+              Profile.profile(owning: controller) != nil else { return }
+        assert(tab.extensionRegisteredProfile != nil,
+               "\(what()) hosts an extension-controller web view no context was told about (TASK-52)")
     }
 
     private func claimWebView(for tab: BrowserTab) {
@@ -958,6 +968,7 @@ class BrowserWindowController: NSWindowController {
         // that pass.
         for member in members {
             wakeIfNeeded(member)
+            assertExtensionRegistered(member, "the claimed pane \(member.id)")
         }
         if members.count == 2 {
             claimSplitWebViews(members: members, focused: tab)
@@ -2232,7 +2243,7 @@ class BrowserWindowController: NSWindowController {
         guard peekOverlayView == nil, let tab = selectedTab else { return }
         if let existingPeek = tab.peekTab, let peekWebView = existingPeek.webView {
             claimPeekWebView(peekWebView)
-            presentPeekWebView(peekWebView, clickPoint: nil, animate: false)
+            presentPeekWebView(peekWebView, for: existingPeek, clickPoint: nil, animate: false)
             observePeekTab(existingPeek, for: tab)
         } else if let peekURL = tab.peekURL {
             showPeekOverlay(url: peekURL, clickPoint: nil, interactionState: tab.peekInteractionState)
@@ -2316,7 +2327,7 @@ class BrowserWindowController: NSWindowController {
             } else {
                 hidePeekUI()
                 claimPeekWebView(peekWebView)
-                presentPeekWebView(peekWebView, clickPoint: clickPoint, animate: true)
+                presentPeekWebView(peekWebView, for: existingPeek, clickPoint: clickPoint, animate: true)
                 observePeekTab(existingPeek, for: tab)
                 return
             }
@@ -2344,22 +2355,18 @@ class BrowserWindowController: NSWindowController {
         guard let peekWebView = newPeekTab.webView else { return }
         claimPeekWebView(peekWebView)
         peekWebView.allowsBackForwardNavigationGestures = true
-        tab.peekTab = newPeekTab
         // The peek's web view comes from the profile's configuration, so the
         // extension controller injects content scripts into it. Without a
         // didOpenTab the page is not a known tab and every runtime.sendMessage
-        // from it fails with "tab not found" (TASK-50). No spaceID is set on a
-        // peek tab — that would change its user-agent resolution — so it is
-        // reported against the space's profile directly. Reported after the host
-        // points at it, so the contexts can place it. `teardown()` closes it.
-        if let profile = space.profile {
-            ExtensionTabLifecycle.didOpen(newPeekTab, in: profile)
-        }
+        // from it fails with "tab not found" (TASK-50). The assignment below is
+        // the peek's placement — it is enumerated right after its host — so it
+        // reports itself (TASK-52). `teardown()` closes it.
+        tab.peekTab = newPeekTab
         reloadSelectedTabSidebarCell()
 
         observePeekTab(newPeekTab, for: tab)
 
-        presentPeekWebView(peekWebView, clickPoint: clickPoint, animate: true)
+        presentPeekWebView(peekWebView, for: newPeekTab, clickPoint: clickPoint, animate: true)
 
         // Restore from interaction state if available, otherwise load URL
         if let interactionState,
@@ -2379,7 +2386,9 @@ class BrowserWindowController: NSWindowController {
     }
 
     /// Sets up peek overlay chrome and adds the peek webview to the view hierarchy.
-    private func presentPeekWebView(_ peekWebView: WKWebView, clickPoint: CGPoint?, animate: Bool) {
+    private func presentPeekWebView(_ peekWebView: WKWebView, for peek: BrowserTab,
+                                    clickPoint: CGPoint?, animate: Bool) {
+        assertExtensionRegistered(peek, "the presented peek \(peek.id)")
         let overlay = PeekOverlayView(clickPoint: clickPoint)
         overlay.translatesAutoresizingMaskIntoConstraints = false
         overlay.onClose = { [weak self] in
@@ -2499,8 +2508,8 @@ class BrowserWindowController: NSWindowController {
         // Clear peek state on original tab. The peek BrowserTab is dropped here
         // while its web view lives on inside the new tab below, so close it
         // first: two open tabs sharing one web view would leave WebKit mapping
-        // the page to the dead one (TASK-50). The new tab is reported open by
-        // insertTab → tabStoreDidInsertTab.
+        // the page to the dead one (TASK-50). The new tab reports itself when
+        // `addTab` places it in `space.tabs` (TASK-52).
         peekTabSubscriptions.removeAll()
         ExtensionTabLifecycle.didClose(oldPeekTab)
         selectedTab?.clearPeekState()

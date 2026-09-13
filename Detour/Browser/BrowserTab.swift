@@ -112,7 +112,11 @@ class BrowserTab: NSObject {
     private var cachedInteractionState: Data?
 
     // MARK: - Peek State
-    var peekTab: BrowserTab?
+    /// A live peek is enumerated right after its host, so pointing at it here is
+    /// what reports it open (TASK-52, see `ExtensionTabLifecycle`).
+    var peekTab: BrowserTab? {
+        didSet { peekTab.map(ExtensionTabLifecycle.didPlace) }
+    }
     var peekURL: URL?
     var peekInteractionState: Data?
     var peekFaviconURL: URL?
@@ -634,11 +638,12 @@ class BrowserTab: NSObject {
         cachedInteractionState = nil
 
         // Notify extension contexts that this tab is now available.
-        // WKWebExtension needs didOpenTab to associate the new webView
-        // with this tab for content script messaging.
-        if let profile = space?.profile {
-            ExtensionTabLifecycle.didOpen(self, in: profile)
-        }
+        // WKWebExtension needs didOpenTab to associate the *new* webView with
+        // this tab for content script messaging, so a placed tab is re-reported
+        // on every wake. The profile comes from the configuration the web view
+        // was actually built from, which for an extension page is the context's,
+        // not the space's (TASK-52).
+        ExtensionTabLifecycle.didCreateWebView(for: self)
     }
 
     /// The configuration a fresh web view for this tab must be built from.

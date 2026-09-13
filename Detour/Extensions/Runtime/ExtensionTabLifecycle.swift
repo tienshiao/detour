@@ -60,6 +60,29 @@ final class WKExtensionTabLifecycleNotifier: ExtensionTabLifecycleNotifying {
 }
 
 /// Static front door for the seam. Tests swap `notifier` for a recorder.
+///
+/// **The placement rule (TASK-52).** A tab is reported open the moment it
+/// becomes *enumerable* — when it enters one of the containers
+/// `extensionWindowTabs` reads (`Space.tabs`, `Space.pinnedEntries` /
+/// `PinnedEntry.tab`, `Profile.favorites` / `Favorite.tab`, `BrowserTab.peekTab`)
+/// while carrying a web view built from a profile's configuration — and again
+/// when an already-placed tab builds a new web view (`wake()`). Each of those
+/// containers has a one-line `didSet` calling `didPlace`; no creation path
+/// reports a tab itself, so there is exactly one rule to keep true instead of
+/// one call per way a tab can come into being.
+///
+/// The ordering that rule buys: `didOpenTab` fires `tabs.onCreated`, whose
+/// parameters resolve `window(for:)` and that window's tab list, so the tab must
+/// already be listed when it is reported. A container's `didSet` runs *after*
+/// the mutation, so it is — which is why placement, not construction, is the
+/// trigger (registering inside `BrowserTab.init` would report a tab nothing can
+/// place yet).
+///
+/// The profile comes from the web view's own
+/// `configuration.webExtensionController` (`Profile.profile(owning:)`), not from
+/// the space: favourite and Peek tabs belong to a profile without living in any
+/// space, and a tab whose configuration carries no controller runs no extension
+/// code and is deliberately never reported.
 enum ExtensionTabLifecycle {
 
     /// Replaced by tests; the production value forwards to real contexts.
@@ -77,9 +100,60 @@ enum ExtensionTabLifecycle {
     /// Also installs the tab's property observers, so its url/title/loading
     /// changes reach the contexts for as long as it stays registered.
     static func didOpen(_ tab: BrowserTab, in profile: Profile, contexts: [WKWebExtensionContext]? = nil) {
+        // A tab re-reported under a different profile (its web view was rebuilt
+        // from a new configuration after a profile swap) leaves the old
+        // profile's contexts first, or they keep a phantom tab nothing closes.
+        if let previous = tab.extensionRegisteredProfile, previous !== profile {
+            didClose(tab)
+        }
         tab.extensionRegisteredProfile = profile
         installPropertyObservers(on: tab)
         notifier.didOpen(tab, in: profile, contexts: contexts)
+    }
+
+    /// The profile whose extension controller built `tab`'s web view — nil for a
+    /// tab with no web view (dormant tile, sleeping tab, parked peek), for a
+    /// configuration carrying no controller (a test configuration, a space with
+    /// no usable profile), and for a controller whose profile is gone.
+    private static func owningProfile(of tab: BrowserTab) -> Profile? {
+        guard let controller = tab.webView?.configuration.webExtensionController else { return nil }
+        return Profile.profile(owning: controller)
+    }
+
+    /// `tab` just entered a container the window enumeration reads — report it
+    /// open if it is a live extension-controller tab nobody has reported yet
+    /// (TASK-52). Silent otherwise, so the container hooks can be unconditional.
+    static func didPlace(_ tab: BrowserTab) {
+        guard tab.extensionRegisteredProfile == nil, let profile = owningProfile(of: tab) else { return }
+        didOpen(tab, in: profile)
+    }
+
+    /// A container's whole contents after a mutation. `didPlace` is already
+    /// silent for a registered tab, so the hook passes the list as-is rather
+    /// than diffing against `oldValue` (which would copy the array on every
+    /// insert, remove and reorder just to find the newcomers).
+    static func didPlace(listed tabs: [BrowserTab]) {
+        for tab in tabs { didPlace(tab) }
+    }
+
+    /// `space` just entered `TabStore.spaces`. Its live tabs were placed while
+    /// the space was detached (session restore, Undo Delete Space), so they were
+    /// reported when no window could list them; re-announce them now that one
+    /// can — like `didCreateWebView`, this bypasses the registered guard.
+    static func didList(_ space: Space) {
+        for tab in space.tabs + space.pinnedTabs {
+            didCreateWebView(for: tab)
+        }
+    }
+
+    /// An already-placed tab built a *new* web view (`BrowserTab.wake()`). Unlike
+    /// `didPlace` this re-opens a tab that is already registered: WebKit maps a
+    /// tab to a particular web view, so the new one has to be announced or the
+    /// contexts keep the released view (TASK-52). Silent when the tab has no web
+    /// view or the configuration carries no controller.
+    static func didCreateWebView(for tab: BrowserTab) {
+        guard let profile = owningProfile(of: tab) else { return }
+        didOpen(tab, in: profile)
     }
 
     /// Property changes are observed on the tab itself rather than through

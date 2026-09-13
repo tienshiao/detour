@@ -137,7 +137,12 @@ class Profile {
     var isEasyPrivacyEnabled: Bool
     var isEasyListCookieEnabled: Bool
     var isMalwareFilterEnabled: Bool
-    var favorites: [Favorite] = []
+    /// A favourite's backing tab is enumerable the moment the favourite is here,
+    /// so that is when the extension contexts are told (TASK-52, see
+    /// `ExtensionTabLifecycle`).
+    var favorites: [Favorite] = [] {
+        didSet { ExtensionTabLifecycle.didPlace(listed: favoriteTabs) }
+    }
 
     /// The favourites' live backing tabs — favourites are per-profile and live
     /// outside every space's tab list.
@@ -208,8 +213,31 @@ class Profile {
 
         let controller = WKWebExtensionController(configuration: config)
         controller.delegate = ExtensionManager.shared
+        Self.profilesByController.setObject(self, forKey: controller)
         return controller
-    }()
+    }() {
+        // A controller assigned from outside (tests swap in a non-persistent
+        // one) must resolve too, or the placement rule silently skips every tab
+        // on this profile. `didSet` does not run for the lazy initializer's own
+        // value, so that path registers itself above.
+        didSet { Self.profilesByController.setObject(self, forKey: extensionController) }
+    }
+
+    /// Every controller built above, back to the profile that owns it, so a web
+    /// view can be traced to its profile through
+    /// `configuration.webExtensionController` — the lookup the placement rule in
+    /// `ExtensionTabLifecycle` uses to decide which contexts to tell about a tab
+    /// (TASK-52). Weak on both sides: an entry disappears with either object,
+    /// and a private `TabStore` in a test resolves exactly like the shared one
+    /// because its profiles build their controllers here too.
+    private static let profilesByController =
+        NSMapTable<WKWebExtensionController, Profile>(keyOptions: .weakMemory, valueOptions: .weakMemory)
+
+    /// The profile whose `extensionController` is `controller`, or nil once that
+    /// profile is gone.
+    static func profile(owning controller: WKWebExtensionController) -> Profile? {
+        profilesByController.object(forKey: controller)
+    }
 
     /// Extension contexts loaded in this profile's controller. ExtensionID → context.
     var extensionContexts: [String: WKWebExtensionContext] = [:]

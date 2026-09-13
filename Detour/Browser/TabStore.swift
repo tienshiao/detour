@@ -74,8 +74,14 @@ class Space {
     var name: String
     var emoji: String
     var colorHex: String
-    var tabs: [BrowserTab] = []
-    var pinnedEntries: [PinnedEntry] = []
+    /// Entering either list makes a tab enumerable by the window, which is when
+    /// the extension contexts are told (TASK-52, see `ExtensionTabLifecycle`).
+    var tabs: [BrowserTab] = [] {
+        didSet { ExtensionTabLifecycle.didPlace(listed: tabs) }
+    }
+    var pinnedEntries: [PinnedEntry] = [] {
+        didSet { ExtensionTabLifecycle.didPlace(listed: pinnedTabs) }
+    }
     var pinnedFolders: [PinnedFolder] = []
     var selectedTabID: UUID?
     var profileID: UUID
@@ -353,7 +359,17 @@ class TabStore {
     private let historyDB: HistoryDatabase
 
     private(set) var profiles: [Profile] = []
-    private(set) var spaces: [Space] = []
+    /// A space's tabs become enumerable by a window only once the space is here:
+    /// session restore and Undo Delete Space fill `space.tabs` while the space is
+    /// still detached, so their live tabs were reported before any window could
+    /// list them. Re-announce them now (TASK-52, see `ExtensionTabLifecycle`).
+    private(set) var spaces: [Space] = [] {
+        didSet {
+            for space in spaces where !oldValue.contains(where: { $0 === space }) {
+                ExtensionTabLifecycle.didList(space)
+            }
+        }
+    }
 
     var nonIncognitoSpaces: [Space] { spaces.filter { !$0.isIncognito } }
 
@@ -1016,11 +1032,9 @@ class TabStore {
         profile.favorites.insert(favorite, at: insertAt)
         reindexFavorites(profile)
         // The tab was just detached from its section, which reported it closed to
-        // the extension contexts (TASK-50). It is still live and still running
-        // content scripts, so re-open it under the favourite — after it is
-        // listed, so the contexts can place it (`tabs(for:)` enumerates
-        // `profile.favoriteTabs`).
-        ExtensionTabLifecycle.didOpen(tab, in: profile)
+        // the extension contexts. It is still live and still running content
+        // scripts; the insert above re-opens it under the favourite — the
+        // `favorites` didSet reports it once it is listed (TASK-52).
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
     }
@@ -1065,12 +1079,12 @@ class TabStore {
               let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
 
         let tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
-        fav.tab = tab
         // A favourite's tab never enters space.tabs, so no insert notification
         // reports it — but its web view is built from the profile's
         // configuration and runs content scripts, which need the tab to be known
-        // to the contexts or every runtime.sendMessage fails (TASK-50).
-        ExtensionTabLifecycle.didOpen(tab, in: profile)
+        // to the contexts or every runtime.sendMessage fails (TASK-50). The
+        // assignment below is its placement, and reports it (TASK-52).
+        fav.tab = tab
         subscribeToTab(tab, spaceID: space.id)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
@@ -1671,13 +1685,15 @@ class TabStore {
             // rebinds like any other.
             var liveTabs = space.tabs
             liveTabs.append(contentsOf: space.pinnedEntries.compactMap(\.tab))
-            for tab in liveTabs where tab.webView != nil {
+            for tab in liveTabs {
                 // The tab was reported open to the OLD profile's contexts; sleeping
                 // does not close it, and the wake below re-registers it under the new
                 // profile — so close it here or the old profile keeps a phantom open
-                // tab that can never be closed (TASK-50).
+                // tab that can never be closed (TASK-50). A tab that is already
+                // asleep is still registered, so the close is not gated on the
+                // web view (didClose is a no-op for an unregistered tab).
                 ExtensionTabLifecycle.didClose(tab)
-                tab.sleep(force: true)
+                if tab.webView != nil { tab.sleep(force: true) }
             }
 
             // The OLD profile's favorites can hold live backing tabs bound to this
