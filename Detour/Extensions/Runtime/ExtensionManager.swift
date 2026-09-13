@@ -1466,6 +1466,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     ) {
         // This delegate is for extension-initiated opens (browser.action.openPopup()).
         // User toolbar clicks use userGesturePerformed + manual popup presentation.
+        // Explicit present path: the extension called browser.action.openPopup(),
+        // so creating and loading the popup web view here is intended (TASK-55).
         guard let popupWebView = action.popupWebView,
               let extID = extensionIDFromContext(extensionContext) else {
             completionHandler(nil)

@@ -55,6 +55,8 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
 
         let action = context.action(for: tab)
 
+        // Explicit present path: the user clicked the toolbar button, so creating
+        // and loading the popup web view here is what they asked for (TASK-55).
         if let action, action.presentsPopup, let webView = action.popupWebView {
             webView.reload()
             presentPopupWebView(webView)

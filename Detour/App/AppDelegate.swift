@@ -506,8 +506,14 @@ extension AppDelegate: NSMenuDelegate {
 
         for (i, ext) in profileExtensions.enumerated() {
             let displayName = ExtensionManager.shared.displayName(for: ext.id)
-            let hasPopup = ExtensionManager.shared.context(for: ext.id)?.action(for: nil)?.popupWebView != nil
-                || ext.manifest.action?.defaultPopup != nil
+            // Never read `action.popupWebView` here: it is created lazily, so the
+            // read itself loads the extension's popup page — and `menuNeedsUpdate`
+            // fires on every key-equivalent dispatch, not just when the menu opens
+            // (TASK-55). The decision goes through a protocol that cannot see it.
+            let hasPopup = ExtensionMenuPopupDecision.hasPopup(
+                action: ExtensionManager.shared.context(for: ext.id)?.action(for: nil),
+                manifestDefaultPopup: ext.manifest.action?.defaultPopup
+            )
             let item = NSMenuItem(
                 title: displayName,
                 action: hasPopup ? #selector(extensionMenuClicked(_:)) : nil,
