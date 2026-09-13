@@ -737,6 +737,28 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v13") { db in
+            // TASK-44: drop every nativeMessaging denial saved before TASK-25 made
+            // such a row enforceable. The old Settings switch showed OFF across
+            // relaunches and pushed a context-level denial for the session, but
+            // native-host dispatch never read the row — so it is not a decision to
+            // lose native messaging, and honouring it now would silently start
+            // refusing every real host on upgrade (1Password's desktop-app unlock
+            // first of all). Long-form rationale:
+            // docs/1password-integration-plan.md, next to the TASK-25 decision.
+            //
+            // The literals are ExtensionPermissionType.apiPermission.rawValue (0)
+            // and ExtensionPermissionRecord.nativeMessagingKey; `status <> 0` is
+            // "not ExtensionPermissionStatus.granted.rawValue", i.e. every row the
+            // readers treat as a denial — `permissionStatus` / `statusByKey` fail
+            // closed to `.denied` on an unrecognised status. All spelled out so
+            // renaming or renumbering those enums cannot change what is deleted.
+            try db.execute(sql: """
+                DELETE FROM extensionPermission
+                WHERE permissionType = 0 AND permissionKey = 'nativeMessaging' AND status <> 0
+                """)
+        }
+
         return migrator
     }
 

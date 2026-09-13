@@ -215,4 +215,79 @@ final class ExtensionDatabaseTests: XCTestCase {
         let ids = db.enabledExtensionIDs(for: "profile-1")
         XCTAssertTrue(ids.isEmpty)
     }
+
+    // MARK: - Migration v13: pre-TASK-25 nativeMessaging denials (TASK-44)
+
+    /// A nativeMessaging denial saved before TASK-25 enforced it was shown as OFF
+    /// and denied on the loaded contexts, but was never read at native-host
+    /// dispatch — so v13 deletes it on upgrade, and with it any row whose status
+    /// the enum does not define (those read as a denial: the readers fail closed).
+    /// Nothing else goes: neither a grant on the same key nor a denial on another
+    /// apiPermission key. The fixtures go through `ExtensionPermissionRecord`, so a
+    /// renamed key or renumbered status breaks this test instead of passing against
+    /// the migration's own hard-coded literals.
+    func testMigrationV13ClearsOnlyPreEnforcementNativeMessagingDenials() throws {
+        let dbQueue = try DatabaseQueue(configuration: Configuration()) // in-memory
+        try AppDatabase.migrator.migrate(dbQueue, upTo: "v12")
+        // v13 changes no schema, so the v12 tables already hold every fixture.
+        try dbQueue.write { db in
+            for id in ["ext-denied-nm", "ext-granted-nm", "ext-bogus-nm"] {
+                try db.execute(sql: """
+                    INSERT INTO "extension" (id, name, version, manifestJSON, basePath, isEnabled, installedAt)
+                    VALUES (?, 'Ext', '1.0', x'7b7d', '/tmp/ext', 1, 0)
+                    """, arguments: [id])
+            }
+            // The row TASK-44 is about: the Settings switch flipped off before the
+            // decision was enforced anywhere.
+            try ExtensionPermissionRecord(
+                extensionID: "ext-denied-nm", key: ExtensionPermissionRecord.nativeMessagingKey,
+                type: .apiPermission, status: .denied).insert(db)
+            // A grant on the same key must survive.
+            try ExtensionPermissionRecord(
+                extensionID: "ext-granted-nm", key: ExtensionPermissionRecord.nativeMessagingKey,
+                type: .apiPermission, status: .granted).insert(db)
+            // A denial on any other apiPermission key must survive: those were
+            // always enforced.
+            try ExtensionPermissionRecord(
+                extensionID: "ext-denied-nm", key: "cookies",
+                type: .apiPermission, status: .denied).insert(db)
+            // A status outside the enum reads as a denial (`permissionStatus` /
+            // `statusByKey` fail closed), so it must go too. Only raw SQL can
+            // write one.
+            try db.execute(sql: """
+                INSERT INTO extensionPermission (extensionID, permissionKey, permissionType, status, grantedAt)
+                VALUES ('ext-bogus-nm', ?, ?, 7, 0)
+                """, arguments: [ExtensionPermissionRecord.nativeMessagingKey,
+                                 ExtensionPermissionType.apiPermission.rawValue])
+        }
+
+        let db = try AppDatabase(dbQueue: dbQueue)
+
+        let rows = try dbQueue.read { db in
+            try ExtensionPermissionRecord
+                .order(Column("extensionID"), Column("permissionKey"))
+                .fetchAll(db)
+        }
+        XCTAssertEqual(
+            rows.map { "\($0.extensionID)/\($0.permissionKey)/\($0.status)" },
+            ["ext-denied-nm/cookies/\(ExtensionPermissionStatus.denied.rawValue)",
+             "ext-granted-nm/\(ExtensionPermissionRecord.nativeMessagingKey)/\(ExtensionPermissionStatus.granted.rawValue)"],
+            "only non-granted nativeMessaging rows may be deleted, and the survivors' statuses stay intact"
+        )
+
+        // v13 clears the old rows once: a denial saved after it was made against
+        // enforcement, and re-opening the database (which re-runs the migrator)
+        // must not clear it.
+        db.saveExtension(sampleRecord(id: "ext-post-upgrade"))
+        db.savePermission(ExtensionPermissionRecord(
+            extensionID: "ext-post-upgrade", key: ExtensionPermissionRecord.nativeMessagingKey,
+            type: .apiPermission, status: .denied))
+        let reopened = try AppDatabase(dbQueue: dbQueue)
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: "com.example.host", manifestPermissions: ["nativeMessaging"],
+            savedDecision: reopened.permissionStatus(
+                extensionID: "ext-post-upgrade",
+                key: ExtensionPermissionRecord.nativeMessagingKey,
+                type: .apiPermission)), .deniedByUser)
+    }
 }

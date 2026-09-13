@@ -64,6 +64,20 @@ What remains, in priority order:
     native host (`1Password-BrowserSupport`, above), so with the switch off the extension cannot unlock,
     fill or save (and the keep-alive has no host to arm for). Turning the switch back on lifts the
     block immediately; the extension reconnects on its next attempt.
+- **Decision (TASK-44, 2026-09-13): nativeMessaging denials saved before TASK-25 are cleared once by
+  migration v13; only denials made after that are enforced.** Before TASK-25 the switch was not
+  inert: flipping it off saved the denied row, and the Settings row then read OFF on every relaunch
+  (`apiPermissionIsOn` shows the nativeMessaging switch ON unless a denial is saved) while the
+  toggle also pushed `.deniedExplicitly` for the key onto every loaded `WKWebExtensionContext`,
+  breaking that extension's `chrome.*` polyfill bridge for the rest of the session — until the next
+  launch, where `loadExtensionContext` re-granted `nativeMessaging` unconditionally and skipped the
+  saved row. What the row never did was reach native-host dispatch: `nativeHostAccess` consulted
+  only the manifest, so the user never lost a native host by it and the row cannot be read as a
+  decision to give one up. Honouring those rows on upgrade would silently refuse every real host
+  (1Password's desktop-app unlock first of all) with no prompt, so migration v13 deletes every saved
+  `nativeMessaging` API-permission decision that is not a grant (a status the enum does not define
+  reads as a denial, so it goes too). A denial saved after the upgrade was made against enforcement
+  and blocks real hosts exactly as above.
 - BrowserSupport logs (one file per host process, grep for `Detour`):
   `~/Library/Group Containers/2BUA8C4S2C.com.1password/Library/Application Support/1Password/Data/logs/BrowserSupport/`.
 
