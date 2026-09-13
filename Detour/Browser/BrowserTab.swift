@@ -536,8 +536,13 @@ class BrowserTab: NSObject {
         // context once it loads, finding it by `url`, which must therefore
         // survive the empty web view: the URL observer installed below replaces
         // `url` with the web view's nil URL unless there is an attempted URL.
+        //
+        // The same observer would also clear `url` before the load below reads it
+        // for a tab that has never had a web view — one created sleeping, like an
+        // extension page from `TabStore.makeTab(loading:)` (TASK-28): its first
+        // emission is the new web view's nil URL. Seeding the attempted URL keeps it.
         let awaitingExtensionContext = space?.profile?.isAwaitingExtensionContext(url) == true
-        if awaitingExtensionContext { lastAttemptedURL = url }
+        if awaitingExtensionContext || lastAttemptedURL == nil { lastAttemptedURL = url }
 
         applyUserAgent()
         setupObservers()

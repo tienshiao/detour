@@ -1168,6 +1168,7 @@ class TabStore {
             let splitGroupID: UUID?
             let splitFraction: Double?
             let isSelected: Bool
+            let extensionID: String?
         }
         struct EntrySnapshot {
             let id: UUID
@@ -1182,6 +1183,7 @@ class TabStore {
             // must be snapshotted here — the backing tab's splitGroupID is nil.
             let splitGroupID: UUID?
             let splitFraction: Double?
+            let extensionID: String?
         }
         struct FolderSnapshot {
             let id: UUID
@@ -1205,7 +1207,8 @@ class TabStore {
                 peekFaviconURL: tab.peekFaviconURL,
                 splitGroupID: tab.splitGroupID,
                 splitFraction: tab.splitFraction,
-                isSelected: space.selectedTabID == tab.id
+                isSelected: space.selectedTabID == tab.id,
+                extensionID: space.profile?.extensionID(forPageURL: tab.url)
             )
         }
 
@@ -1221,7 +1224,8 @@ class TabStore {
                 sortOrder: entry.sortOrder,
                 backingTab: entry.tab.map(snapshot),
                 splitGroupID: entry.splitGroupID,
-                splitFraction: entry.splitFraction
+                splitFraction: entry.splitFraction,
+                extensionID: space.profile?.extensionID(forPageURL: entry.pinnedURL)
             )
         }
         let savedFolders: [FolderSnapshot] = space.pinnedFolders.map { folder in
@@ -1258,10 +1262,25 @@ class TabStore {
             restored.selectedTabID = savedSelectedTabID
 
             // Rebuild a tab from its snapshot: selected tab live (displays
-            // immediately), the rest sleeping — mirroring restoreSession.
-            func rebuild(_ s: TabSnapshot) -> BrowserTab {
+            // immediately), the rest sleeping — mirroring restoreSession. As there,
+            // an extension page (TASK-28) comes back sleeping on its extension's
+            // live origin without its interaction state, and one whose extension
+            // was disabled or uninstalled since does not come back (nil).
+            var droppedTabIDs = Set<UUID>()
+            func rebuild(_ s: TabSnapshot) -> BrowserTab? {
+                let page = self.classifyCapturedPage(url: s.url, extensionID: s.extensionID, in: restored)
                 let tab: BrowserTab
-                if s.isSelected {
+                if page != .notExtensionPage {
+                    guard let extensionPageTab = self.restoredTab(
+                        id: s.id, url: s.url, title: s.title, faviconURL: s.faviconURL,
+                        interactionState: nil, page: page, in: restored
+                    ) else {
+                        droppedTabIDs.insert(s.id)
+                        return nil
+                    }
+                    tab = extensionPageTab
+                    tab.lastDeselectedAt = s.isSelected ? nil : s.lastDeselectedAt ?? Date()
+                } else if s.isSelected {
                     tab = BrowserTab(
                         id: s.id,
                         title: s.title,
@@ -1295,8 +1314,10 @@ class TabStore {
             }
 
             for s in savedTabs {
-                restored.tabs.append(rebuild(s))
+                if let tab = rebuild(s) { restored.tabs.append(tab) }
             }
+            // A dropped tab's split partner is left a lone tab.
+            sanitizeSplitGroups(restored.tabs)
             for f in savedFolders {
                 restored.pinnedFolders.append(PinnedFolder(
                     id: f.id, name: f.name, parentFolderID: f.parentFolderID,
@@ -1304,10 +1325,15 @@ class TabStore {
                 ))
             }
             for e in savedEntries {
-                let backing = e.backingTab.map(rebuild)
+                // A backing tab that is not rebuilt leaves the entry dormant.
+                let backing = e.backingTab.flatMap(rebuild)
                 let entry = PinnedEntry(
                     id: e.id,
-                    pinnedURL: e.pinnedURL,
+                    pinnedURL: self.rehomedTileURL(
+                        e.pinnedURL,
+                        page: self.classifyCapturedPage(url: e.pinnedURL, extensionID: e.extensionID, in: restored),
+                        in: restored
+                    ),
                     pinnedTitle: e.pinnedTitle,
                     faviconURL: e.faviconURL,
                     favicon: e.favicon,
@@ -1333,6 +1359,10 @@ class TabStore {
                     }
                 }
                 restored.pinnedEntries.append(entry)
+            }
+            if let selectedID = savedSelectedTabID, droppedTabIDs.contains(selectedID) {
+                restored.selectedTabID = restored.tabs.first?.id
+                    ?? restored.pinnedEntries.first(where: { $0.tab != nil })?.tab?.id
             }
 
             let insertAt = min(savedIndex, self.spaces.count)
@@ -1600,6 +1630,9 @@ class TabStore {
         let tabFaviconURL = tab.faviconURL?.absoluteString
         let tabParentID = tab.parentID
         let tabSplitFraction = tab.splitFraction
+        // The page's durable identity if it is an extension page (TASK-24): its
+        // origin can die before an undo or reopen (a context reload, a disable).
+        let tabExtensionID = space.profile?.extensionID(forPageURL: tab.url)
         let closedSplitGroup = splitGroup(containing: tab.id, in: space)
         let splitPartnerID = closedSplitGroup?.members.first { $0.id != tab.id }?.id
         // Partner sits left of the closing tab iff the closing tab wasn't the first member.
@@ -1617,7 +1650,7 @@ class TabStore {
                 interactionState: stateData,
                 sortOrder: index,
                 archivedAt: archivedAt?.timeIntervalSince1970,
-                extensionID: space.profile?.extensionID(forPageURL: tab.url)
+                extensionID: tabExtensionID
             )
             appDB.pushClosedTab(record)
             closedTabStack.insert(record, at: 0)
@@ -1636,15 +1669,17 @@ class TabStore {
         if undoable, archivedAt == nil {
             registerUndo(actionName: "Close Tab") { [weak self] in
                 guard let self else { return }
-                let restored = BrowserTab(
-                    id: UUID(),
+                // An extension page comes back on its extension's live origin. One
+                // whose extension was disabled or uninstalled since cannot come back
+                // at all (TASK-28): the undo does nothing, and leaves the closed-tab
+                // record to Reopen Closed Tab, which skips or discards it.
+                guard let restored = self.restoredTab(
+                    url: tabURL.flatMap { URL(string: $0) },
                     title: tabTitle,
-                    archivedInteractionState: stateData,
-                    fallbackURL: tabURL.flatMap { URL(string: $0) },
                     faviconURL: tabFaviconURL.flatMap { URL(string: $0) },
-                    configuration: space.makeWebViewConfiguration()
-                )
-                restored.spaceID = space.id
+                    interactionState: stateData,
+                    extensionID: tabExtensionID, in: space
+                ) else { return }
                 restored.parentID = tabParentID
                 let insertAt: Int
                 // Rejoin the split if the partner is still an ungrouped normal tab.
@@ -1946,6 +1981,7 @@ class TabStore {
             let faviconURL: String?
             let interactionState: Data?
             let parentID: UUID?
+            let extensionID: String?
         }
 
         var snapshots: [MemberSnapshot] = []
@@ -1958,7 +1994,8 @@ class TabStore {
                 url: member.url?.absoluteString,
                 faviconURL: member.faviconURL?.absoluteString,
                 interactionState: member.currentInteractionStateData(),
-                parentID: member.parentID
+                parentID: member.parentID,
+                extensionID: space.profile?.extensionID(forPageURL: member.url)
             )
             snapshots.append(snapshot)
             if !space.isIncognito {
@@ -1972,7 +2009,7 @@ class TabStore {
                     interactionState: snapshot.interactionState,
                     sortOrder: index,
                     archivedAt: nil,
-                    extensionID: space.profile?.extensionID(forPageURL: member.url)
+                    extensionID: snapshot.extensionID
                 )
                 appDB.pushClosedTab(record)
                 closedTabStack.insert(record, at: 0)
@@ -1991,21 +2028,31 @@ class TabStore {
 
         registerUndo(actionName: "Close Both Splits") { [weak self] in
             guard let self else { return }
+            // A member on a page of an extension disabled or uninstalled since the
+            // close cannot come back (TASK-28). It stays closed, its closed-tab
+            // record left to Reopen Closed Tab's rules, and the other member comes
+            // back on its own: a split needs both panes.
+            let rebuilt: [(snapshot: MemberSnapshot, tab: BrowserTab)] = snapshots
+                .sorted(by: { $0.index < $1.index })
+                .compactMap { snapshot in
+                    self.restoredTab(
+                        url: snapshot.url.flatMap { URL(string: $0) },
+                        title: snapshot.title,
+                        faviconURL: snapshot.faviconURL.flatMap { URL(string: $0) },
+                        interactionState: snapshot.interactionState,
+                        extensionID: snapshot.extensionID, in: space
+                    ).map { (snapshot, $0) }
+                }
+            guard !rebuilt.isEmpty else { return }
+            let rejoinsSplit = rebuilt.count == snapshots.count
             let newGroupID = UUID()
             var restoredFirst: BrowserTab?
-            for snapshot in snapshots.sorted(by: { $0.index < $1.index }) {
-                let restored = BrowserTab(
-                    id: UUID(),
-                    title: snapshot.title,
-                    archivedInteractionState: snapshot.interactionState,
-                    fallbackURL: snapshot.url.flatMap { URL(string: $0) },
-                    faviconURL: snapshot.faviconURL.flatMap { URL(string: $0) },
-                    configuration: space.makeWebViewConfiguration()
-                )
-                restored.spaceID = space.id
+            for (snapshot, restored) in rebuilt {
                 restored.parentID = snapshot.parentID
-                restored.splitGroupID = newGroupID
-                restored.splitFraction = fraction
+                if rejoinsSplit {
+                    restored.splitGroupID = newGroupID
+                    restored.splitFraction = fraction
+                }
                 let insertAt: Int
                 if let first = restoredFirst,
                    let firstIndex = space.tabs.firstIndex(where: { $0.id == first.id }) {
@@ -2025,8 +2072,14 @@ class TabStore {
                 self.appDB.deleteClosedTab(tabID: snapshot.tabID)
                 self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
             }
-            self.registerUndo(actionName: "Close Both Splits") { [weak self] in
-                self?.closeSplitGroup(groupID: newGroupID, in: space)
+            if rejoinsSplit {
+                self.registerUndo(actionName: "Close Both Splits") { [weak self] in
+                    self?.closeSplitGroup(groupID: newGroupID, in: space)
+                }
+            } else if let lone = restoredFirst {
+                self.registerUndo(actionName: "Close Tab") { [weak self] in
+                    self?.closeTab(id: lone.id, in: space)
+                }
             }
             if let restoredFirst {
                 NotificationCenter.default.post(name: .tabRestoredByUndo, object: nil,
@@ -2347,13 +2400,13 @@ class TabStore {
     /// when the window displays the tab (TASK-24). A restored page whose context
     /// has not loaded yet stays unloaded until `resolvePendingExtensionPages`
     /// moves it.
-    private func makeTab(loading url: URL, title: String, faviconURL: URL?, in space: Space) -> BrowserTab {
+    private func makeTab(id: UUID = UUID(), loading url: URL, title: String, faviconURL: URL?, in space: Space) -> BrowserTab {
         if isExtensionPageURL(url) {
-            return BrowserTab(id: UUID(), title: title, url: url, faviconURL: faviconURL,
+            return BrowserTab(id: id, title: title, url: url, faviconURL: faviconURL,
                               cachedInteractionState: nil, spaceID: space.id)
         }
         let tab = BrowserTab(
-            id: UUID(),
+            id: id,
             title: title,
             archivedInteractionState: nil,
             fallbackURL: url,
@@ -2501,6 +2554,7 @@ class TabStore {
         let tabURL = tab?.url
         let tabTitle = tab?.title
         let tabFaviconURL = tab?.faviconURL
+        let tabExtensionID = space.profile?.extensionID(forPageURL: tabURL ?? entry.pinnedURL)
 
         // Cache favicon before discarding tab
         if let tab {
@@ -2526,15 +2580,22 @@ class TabStore {
                 guard let idx = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
                 let entry = space.pinnedEntries[idx]
                 guard entry.tab == nil else { return }  // Already live
-                let restored = BrowserTab(
-                    id: UUID(),
+                // With no URL captured the tab reopens the entry's home page, which
+                // a context reload may have moved since: identify it as it is now.
+                let url = tabURL ?? entry.pinnedURL
+                let extensionID = tabURL == nil
+                    ? space.profile?.extensionID(forPageURL: url) ?? tabExtensionID
+                    : tabExtensionID
+                // An extension page comes back on its live origin. One whose
+                // extension was disabled or uninstalled since cannot come back: the
+                // undo does nothing and the entry stays dormant (TASK-28).
+                guard let restored = self.restoredTab(
+                    url: url,
                     title: tabTitle ?? entry.pinnedTitle,
-                    archivedInteractionState: stateData,
-                    fallbackURL: tabURL ?? entry.pinnedURL,
                     faviconURL: tabFaviconURL ?? entry.faviconURL,
-                    configuration: space.makeWebViewConfiguration()
-                )
-                restored.spaceID = space.id
+                    interactionState: stateData,
+                    extensionID: extensionID, in: space
+                ) else { return }
                 entry.tab = restored
                 self.subscribeToTab(restored, spaceID: space.id)
                 self.registerUndo(actionName: "Close Tab") { [weak self] in
@@ -2779,16 +2840,103 @@ class TabStore {
         }
     }
 
-    /// What a closed-tab record's page is now (TASK-24). Only an extension page
-    /// consults the database.
+    /// What a closed-tab record's page is now (TASK-24).
     private func closedTabPage(_ record: ClosedTabRecord, in space: Space) -> PersistedExtensionPage {
-        let url = record.url.flatMap { URL(string: $0) }
+        classifyCapturedPage(url: record.url.flatMap { URL(string: $0) }, extensionID: record.extensionID, in: space)
+    }
+
+    // MARK: - Rebuilding closed tabs (TASK-24, TASK-28)
+
+    /// What a page captured earlier — a closed-tab record, or the state an undo
+    /// closure captured at close time — is now, judged by the extension id
+    /// captured with it (`Profile.extensionID(forPageURL:)` at that moment)
+    /// against the extensions installed and enabled in `space`'s profile. Only
+    /// an extension page consults the database.
+    private func classifyCapturedPage(url: URL?, extensionID: String?, in space: Space) -> PersistedExtensionPage {
         guard isExtensionPageURL(url) else { return .notExtensionPage }
         return classifyPersistedExtensionPage(
-            url: url, extensionID: record.extensionID,
+            url: url, extensionID: extensionID,
             installedExtensionIDs: appDB.installedExtensionIDs(),
             enabledExtensionIDs: space.profile.map { appDB.enabledExtensionIDs(for: $0.id.uuidString) } ?? []
         )
+    }
+
+    /// Where a captured page of an installed extension (`page.pendingOrigin`)
+    /// opens now. Its origin may be dead: saved by a previous launch, or the
+    /// context was reloaded (or disabled) since. With the extension's context
+    /// loaded the URL is rewritten onto its current base; otherwise the origin is
+    /// registered as pending, so `resolvePendingExtensionPages` moves the page
+    /// once the context loads and `BrowserTab.wake` leaves it unloaded until then.
+    private func liveExtensionPageURL(_ url: URL, extensionID: String, originHost: String, in space: Space) -> URL {
+        guard let profile = space.profile else { return url }
+        guard let context = profile.extensionContext(for: extensionID) else {
+            profile.registerPendingExtensionOrigin(host: originHost, extensionID: extensionID)
+            return url
+        }
+        guard let oldBase = extensionOriginBaseURL(host: originHost) else { return url }
+        return rewriteExtensionPageURL(url, from: oldBase, to: context.baseURL) ?? url
+    }
+
+    /// A captured tile URL (a pinned entry's home page) brought back: an enabled
+    /// extension's page moves to its live origin, and a disabled one's origin is
+    /// registered as pending so a later enable moves it — what restore does for
+    /// the tiles it keeps. Anything else is returned as it is.
+    private func rehomedTileURL(_ url: URL, page: PersistedExtensionPage, in space: Space) -> URL {
+        switch page {
+        case .restorable(let extensionID, let originHost):
+            return liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: space)
+        case .disabled(let extensionID, let originHost):
+            space.profile?.registerPendingExtensionOrigin(host: originHost, extensionID: extensionID)
+            return url
+        case .notExtensionPage, .unavailable:
+            return url
+        }
+    }
+
+    /// Rebuilds a tab that was closed, from what was captured when it closed:
+    /// for Reopen Closed Tab and the close undos. `page` is `classifyCapturedPage`
+    /// of `url` now.
+    ///
+    /// - An ordinary page comes back live, from the space configuration and its
+    ///   interaction state (back/forward list), as it always has.
+    /// - An enabled extension's page comes back *sleeping* on the extension's
+    ///   live origin (`liveExtensionPageURL`) without its interaction state, whose
+    ///   back/forward list is on the old origin; `BrowserTab.wake` builds it from
+    ///   the context's configuration, the only one that can load the scheme.
+    /// - A disabled or uninstalled extension's page returns nil: there is nothing
+    ///   that could show it, and a blank tab is worse than none.
+    private func restoredTab(
+        id: UUID = UUID(), url: URL?, title: String, faviconURL: URL?, interactionState: Data?,
+        page: PersistedExtensionPage, in space: Space
+    ) -> BrowserTab? {
+        switch page {
+        case .notExtensionPage:
+            let tab = BrowserTab(
+                id: id,
+                title: title,
+                archivedInteractionState: interactionState,
+                fallbackURL: url,
+                faviconURL: faviconURL,
+                configuration: space.makeWebViewConfiguration()
+            )
+            tab.spaceID = space.id
+            return tab
+        case .restorable(let extensionID, let originHost):
+            guard let url else { return nil }
+            let liveURL = liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: space)
+            return makeTab(id: id, loading: liveURL, title: title, faviconURL: faviconURL, in: space)
+        case .disabled, .unavailable:
+            return nil
+        }
+    }
+
+    /// `restoredTab` for a page captured with `extensionID`, classified now.
+    private func restoredTab(
+        url: URL?, title: String, faviconURL: URL?, interactionState: Data?,
+        extensionID: String?, in space: Space
+    ) -> BrowserTab? {
+        restoredTab(url: url, title: title, faviconURL: faviconURL, interactionState: interactionState,
+                    page: classifyCapturedPage(url: url, extensionID: extensionID, in: space), in: space)
     }
 
     @discardableResult
@@ -2823,39 +2971,15 @@ class TabStore {
         // may sit above this one.
         appDB.deleteClosedTab(tabID: record.tabID)
 
-        let recordURL = record.url.flatMap { URL(string: $0) }
-        let tab: BrowserTab
-        if case .restorable(let extensionID, let host) = page, let recordURL {
-            // The record's origin may be a dead one (a previous launch, or a
-            // context reloaded since the close). Rewritten onto the extension's
-            // current context, or — when the context has not loaded yet —
-            // registered as a pending origin for `resolvePendingExtensionPages` to
-            // move. The interaction state is dropped either way: its back/forward
-            // list is on the old origin.
-            var url = recordURL
-            if let profile = space.profile {
-                if let context = profile.extensionContext(for: extensionID) {
-                    if let oldBase = extensionOriginBaseURL(host: host),
-                       let rewritten = rewriteExtensionPageURL(recordURL, from: oldBase, to: context.baseURL) {
-                        url = rewritten
-                    }
-                } else {
-                    profile.registerPendingExtensionOrigin(host: host, extensionID: extensionID)
-                }
-            }
-            tab = makeTab(loading: url, title: record.title,
-                          faviconURL: record.faviconURL.flatMap { URL(string: $0) }, in: space)
-        } else {
-            tab = BrowserTab(
-                id: UUID(),
-                title: record.title,
-                archivedInteractionState: record.interactionState,
-                fallbackURL: recordURL,
-                faviconURL: record.faviconURL.flatMap { URL(string: $0) },
-                configuration: space.makeWebViewConfiguration()
-            )
-            tab.spaceID = space.id
-        }
+        // The candidate is an ordinary page or a restorable one, so this builds a
+        // tab; an extension page lands on its live origin (`restoredTab`).
+        guard let tab = restoredTab(
+            url: record.url.flatMap { URL(string: $0) },
+            title: record.title,
+            faviconURL: record.faviconURL.flatMap { URL(string: $0) },
+            interactionState: record.interactionState,
+            page: page, in: space
+        ) else { return nil }
 
         let insertionIndex = snappedToSplitGroupBoundary(
             min(record.sortOrder, space.tabs.count),
