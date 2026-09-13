@@ -34,9 +34,7 @@ class ExtensionTabObserver: TabStoreObserver {
     /// Dispatch a tab activation event. Called externally when tab selection changes.
     func dispatchActivated(tabID: UUID, spaceID: UUID) {
         guard let space = store.space(withID: spaceID), let profile = space.profile,
-              let tab = space.tabs.first(where: { $0.id == tabID })
-                ?? space.pinnedTabs.first(where: { $0.id == tabID })
-                ?? profile.favoriteTabs.first(where: { $0.id == tabID }) else {
+              let tab = space.displayableTab(id: tabID) else {
             return
         }
         ExtensionTabLifecycle.didActivate(tab, in: profile)

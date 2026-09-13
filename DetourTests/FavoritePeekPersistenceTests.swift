@@ -128,4 +128,36 @@ final class FavoritePeekPersistenceTests: XCTestCase {
         XCTAssertEqual(restored.peekInteractionState, peekState)
         XCTAssertEqual(restored.peekFaviconURL, peekFaviconURL)
     }
+
+    /// A favourite's backing tab selected at quit is the tab the launch selects
+    /// again (TASK-54): it is in no space list, so restore must keep pointing at
+    /// it rather than falling back to the first pinned or normal tab.
+    func testSelectedFavoriteBackingTabSurvivesRestore() throws {
+        let db = try makeDatabase()
+        let store1 = TabStore(appDB: db)
+        let profile1 = store1.addProfile(name: "Default")
+        let space1 = store1.addSpace(name: "Main", emoji: "🌐", colorHex: "007AFF", profileID: profile1.id)
+
+        // A pinned tab the old fallback would have selected instead.
+        let pinned = makeSleepingTab(spaceID: space1.id, url: "https://pinned.example.com/home")
+        space1.tabs.append(pinned)
+        store1.pinTab(id: pinned.id, in: space1)
+
+        let favTab = makeSleepingTab(spaceID: space1.id, url: "https://fav.example.com/home")
+        store1.addFavorite(from: favTab, profileID: profile1.id)
+        space1.selectedTabID = favTab.id
+        store1.saveNow()
+
+        let store2 = TabStore(appDB: db)
+        let restored = try XCTUnwrap(store2.restoreSession())
+
+        XCTAssertEqual(restored.spaceID, space1.id)
+        XCTAssertEqual(restored.tabID, favTab.id, "the launch selects the favourite, not the pinned tab")
+        let space2 = try XCTUnwrap(store2.spaces.first { $0.id == space1.id })
+        XCTAssertEqual(space2.selectedTabID, favTab.id)
+        let profile2 = try XCTUnwrap(store2.profiles.first { $0.id == profile1.id })
+        XCTAssertEqual(profile2.favorites.first?.tab?.id, favTab.id)
+        // And the window's rule agrees, from the space it was handed.
+        XCTAssertEqual(space2.tabToSelectOnEntry()?.id, favTab.id)
+    }
 }

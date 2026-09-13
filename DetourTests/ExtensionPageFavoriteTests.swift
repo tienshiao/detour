@@ -314,6 +314,99 @@ final class ExtensionPageFavoriteTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canUndo, "a refused unpin registers no undo")
     }
 
+    // MARK: - Refused tiles explain themselves (TASK-37)
+
+    /// A dormant pinned entry on `url`, created while the extension is still
+    /// enabled — a move into the pinned section is refused otherwise.
+    private func dormantEntry(_ url: URL, title: String = "Entry", in f: Fixture) throws -> PinnedEntry {
+        let favorite = try dormantFavorite(url, title: title, in: f)
+        XCTAssertTrue(f.store.restoreFavoriteAsPinned(id: favorite.id, profileID: f.profile.id,
+                                                      in: f.space, at: f.space.pinnedEntries.count))
+        let entry = try XCTUnwrap(f.space.pinnedEntries.last)
+        XCTAssertNil(entry.tab, "precondition: dormant")
+        return entry
+    }
+
+    /// Clicking or unpinning a disabled extension's tile is refused, and the
+    /// store names the extension so the window can say why nothing happened.
+    func testDisabledExtensionTilesRefuseAndNameTheExtension() async throws {
+        let f = try await makeFixture("RefusalDisabled")
+        let entryURL = try extensionPageURL("options.html?refuse=entry", on: f.context.baseURL)
+        let favURL = try extensionPageURL("options.html?refuse=fav", on: f.context.baseURL)
+        let entry = try dormantEntry(entryURL, in: f)
+        let favorite = try dormantFavorite(favURL, in: f)
+        ExtensionManager.shared.setEnabled(id: f.ext.id, profileID: f.profile.id, enabled: false)
+
+        XCTAssertFalse(f.store.activatePinnedEntry(id: entry.id, in: f.space))
+        XCTAssertFalse(f.store.unpinTab(id: entry.id, in: f.space))
+        XCTAssertFalse(f.store.activateFavorite(id: favorite.id, profileID: f.profile.id, in: f.space))
+        XCTAssertEqual(f.space.pinnedEntries.map(\.id), [entry.id], "the entry stays pinned")
+        XCTAssertNil(entry.tab)
+        XCTAssertNil(favorite.tab)
+        XCTAssertTrue(f.space.tabs.isEmpty, "no dead tab")
+
+        let name = ExtensionManager.shared.displayName(for: f.ext.id)
+        XCTAssertEqual(f.store.dormantTileRefusal(url: entry.pinnedURL, in: f.profile),
+                       .extensionDisabled(name: name))
+        XCTAssertEqual(f.store.dormantTileRefusal(url: favorite.url, in: f.profile),
+                       .extensionDisabled(name: name))
+        XCTAssertTrue(DormantTileRefusal.extensionDisabled(name: name).message.contains(name))
+    }
+
+    /// An extension uninstalled mid-session keeps refusing rather than dropping
+    /// its tiles: the tile stays put (the next restore drops it, TASK-24) and the
+    /// refusal explains that the extension is gone. It names no extension —
+    /// nothing installed claims the origin any more.
+    func testUninstalledExtensionTilesRefuseAndSayTheExtensionIsGone() async throws {
+        let f = try await makeFixture("RefusalGone")
+        let entryURL = try extensionPageURL("options.html?gone=entry", on: f.context.baseURL)
+        let favURL = try extensionPageURL("options.html?gone=fav", on: f.context.baseURL)
+        let entry = try dormantEntry(entryURL, in: f)
+        let favorite = try dormantFavorite(favURL, in: f)
+        ExtensionManager.shared.uninstall(id: f.ext.id)
+
+        XCTAssertFalse(f.store.activatePinnedEntry(id: entry.id, in: f.space))
+        XCTAssertFalse(f.store.unpinTab(id: entry.id, in: f.space))
+        XCTAssertFalse(f.store.activateFavorite(id: favorite.id, profileID: f.profile.id, in: f.space))
+        XCTAssertEqual(f.space.pinnedEntries.map(\.id), [entry.id], "the tile is kept, not dropped")
+        XCTAssertEqual(entry.pinnedURL, entryURL)
+        XCTAssertEqual(f.profile.favorites.map(\.id), [favorite.id])
+        XCTAssertTrue(f.space.tabs.isEmpty, "no dead tab")
+
+        XCTAssertEqual(f.store.dormantTileRefusal(url: entry.pinnedURL, in: f.profile),
+                       .extensionUnavailable)
+        XCTAssertEqual(f.store.dormantTileRefusal(url: favorite.url, in: f.profile),
+                       .extensionUnavailable)
+    }
+
+    /// The ordinary paths are untouched: the tile becomes a tab and there is
+    /// nothing to explain.
+    func testOrdinaryTilesActivateAndUnpinWithNoRefusal() async throws {
+        let f = try await makeFixture("RefusalOrdinary")
+        let entryURL = try XCTUnwrap(URL(string: "https://example.com/entry"))
+        let unpinURL = try XCTUnwrap(URL(string: "https://example.com/unpin"))
+        let favURL = try XCTUnwrap(URL(string: "https://example.com/fav"))
+        let extensionEntryURL = try extensionPageURL("options.html?ok=entry", on: f.context.baseURL)
+        let entry = try dormantEntry(entryURL, in: f)
+        let unpinEntry = try dormantEntry(unpinURL, in: f)
+        let extensionEntry = try dormantEntry(extensionEntryURL, in: f)
+        let favorite = try dormantFavorite(favURL, in: f)
+
+        XCTAssertTrue(f.store.activatePinnedEntry(id: entry.id, in: f.space))
+        XCTAssertEqual(entry.tab?.url, entryURL)
+        XCTAssertTrue(f.store.activatePinnedEntry(id: extensionEntry.id, in: f.space),
+                      "an enabled extension's tile still activates")
+        XCTAssertNotNil(extensionEntry.tab)
+        XCTAssertTrue(f.store.unpinTab(id: unpinEntry.id, in: f.space))
+        XCTAssertEqual(f.space.tabs.map(\.url), [unpinURL], "the unpinned entry lands in the tab list")
+        XCTAssertTrue(f.store.activateFavorite(id: favorite.id, profileID: f.profile.id, in: f.space))
+        XCTAssertEqual(favorite.tab?.url, favURL)
+
+        for url in [entryURL, unpinURL, favURL, extensionEntryURL] {
+            XCTAssertNil(f.store.dormantTileRefusal(url: url, in: f.profile))
+        }
+    }
+
     // MARK: - Ordinary pages
 
     func testOrdinaryFavoritesMoveUnchanged() async throws {

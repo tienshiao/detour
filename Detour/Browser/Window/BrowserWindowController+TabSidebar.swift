@@ -71,11 +71,14 @@ extension BrowserWindowController: TabSidebarDelegate {
             // Dormant — activate the pinned entry and select the new tab
             let entryID = entry.id
             DispatchQueue.main.async { [weak self] in
-                guard let self, let space = self.activeSpace else { return }
-                self.store.activatePinnedEntry(id: entryID, in: space)
-                if let entry = space.pinnedEntries.first(where: { $0.id == entryID }),
-                   let tab = entry.tab {
+                guard let self, let space = self.activeSpace,
+                      let entry = space.pinnedEntries.first(where: { $0.id == entryID }) else { return }
+                self.store.activatePinnedEntry(id: entry.id, in: space)
+                if let tab = entry.tab {
                     self.selectTab(id: tab.id)
+                } else {
+                    // The tile stays dormant; the click did nothing visible (TASK-37).
+                    self.showDormantTileRefusal(urls: [entry.pinnedURL])
                 }
             }
         }
@@ -112,12 +115,16 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragPinnedTabToUnpin entryID: UUID, toGapIndex gapIndex: Int) {
-        guard let space = activeSpace else { return }
+        guard let space = activeSpace,
+              let entry = space.pinnedEntries.first(where: { $0.id == entryID }) else { return }
         // Harmless for non-split unpins: the separation-context guards fail
         // and the defer clears the flag.
         animateNextSplitSeparation = true
         defer { animateNextSplitSeparation = false }
-        store.unpinTab(id: entryID, in: space, at: gapIndex)
+        if !store.unpinTab(id: entry.id, in: space, at: gapIndex) {
+            // The entry stayed pinned; the drop did nothing visible (TASK-37).
+            showDormantTileRefusal(urls: [entry.pinnedURL])
+        }
     }
 
     func tabSidebarDidRequestSwitchToSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
@@ -290,7 +297,11 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinTabAt index: Int) {
         guard let space = activeSpace, index >= 0, index < space.pinnedEntries.count else { return }
-        store.unpinTab(id: space.pinnedEntries[index].id, in: space)
+        let entry = space.pinnedEntries[index]
+        if !store.unpinTab(id: entry.id, in: space) {
+            // The entry stayed pinned; the menu command did nothing (TASK-37).
+            showDormantTileRefusal(urls: [entry.pinnedURL])
+        }
     }
 
     func tabSidebarSpacesForContextMenu(_ sidebar: TabSidebarViewController) -> [(id: UUID, name: String, emoji: String, isCurrent: Bool)] {
@@ -330,7 +341,11 @@ extension BrowserWindowController: TabSidebarDelegate {
             } else if let firstDormantEntry = space.pinnedEntries.first {
                 store.activatePinnedEntry(id: firstDormantEntry.id, in: space)
                 if let tab = firstDormantEntry.tab { selectTab(id: tab.id) }
-                else { deselectAllTabs() }
+                else {
+                    // A refused tile explains itself (TASK-37).
+                    deselectAllTabs()
+                    showDormantTileRefusal(urls: [firstDormantEntry.pinnedURL])
+                }
             } else {
                 deselectAllTabs()
             }
@@ -384,7 +399,11 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestUnpinSplitGroup groupID: UUID, toGapIndex gapIndex: Int) {
         guard let space = activeSpace else { return }
-        store.unpinSplitGroup(groupID: groupID, toGapIndex: gapIndex, in: space)
+        // Either member's page can refuse the whole group, so offer both URLs.
+        let memberURLs = store.pinnedSplitEntries(groupID: groupID, in: space).map(\.pinnedURL)
+        if !store.unpinSplitGroup(groupID: groupID, toGapIndex: gapIndex, in: space) {
+            showDormantTileRefusal(urls: memberURLs)
+        }
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestSeparatePinnedSplit groupID: UUID) {
@@ -455,7 +474,11 @@ extension BrowserWindowController: TabSidebarDelegate {
                 // extension is refused (TASK-34), and the entry then stays pinned.
                 guard store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
                                                  faviconURL: entry.faviconURL, favicon: entry.favicon,
-                                                 profileID: profileID, at: index) else { return }
+                                                 profileID: profileID, at: index) else {
+                    // The tile snapped back; the drop did nothing visible (TASK-37).
+                    showDormantTileRefusal(urls: [entry.pinnedURL])
+                    return
+                }
                 _ = store.detachPinnedEntry(id: entry.id, from: space)
                 if wasSelected { deselectAllTabs() }
             }
@@ -501,11 +524,27 @@ extension BrowserWindowController: TabSidebarDelegate {
         guard let space = activeSpace, let profile = space.profile else { return nil }
         guard index >= 0, index < profile.favorites.count else { return nil }
         let fav = profile.favorites[index]
-        if fav.tab == nil {
-            store.activateFavorite(id: fav.id, profileID: profile.id, in: space)
+        if fav.tab == nil, !store.activateFavorite(id: fav.id, profileID: profile.id, in: space) {
+            // The tile stays dormant; the click did nothing visible (TASK-37).
+            showDormantTileRefusal(urls: [fav.url])
+            return nil
         }
         guard fav.tab != nil else { return nil }
         return fav
+    }
+
+    /// Explains a refused dormant tile (TASK-37). The store leaves a tile whose
+    /// extension is disabled or uninstalled exactly where it was, so a click,
+    /// drop or menu command that did nothing needs a reason. Shows the first of
+    /// `urls` that has one; silent when none does (nothing was refused for this
+    /// reason). Only user-driven paths call it — a click, a drop, a menu
+    /// command, or the selection a close leaves behind; the store's own
+    /// activations (waking a split partner, restore) stay silent.
+    func showDormantTileRefusal(urls: [URL]) {
+        let profile = activeSpace?.profile
+        guard let refusal = urls.lazy.compactMap({ self.store.dormantTileRefusal(url: $0, in: profile) }).first
+        else { return }
+        toastManager.show(message: refusal.message)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toTabGapIndex gapIndex: Int) {

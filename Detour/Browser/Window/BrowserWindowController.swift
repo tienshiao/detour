@@ -129,9 +129,7 @@ class BrowserWindowController: NSWindowController {
 
     var selectedTab: BrowserTab? {
         guard let selectedTabID else { return nil }
-        return activeSpace?.pinnedEntries.first { $0.tab?.id == selectedTabID }?.tab
-            ?? activeSpace?.profile?.favorites.first { $0.tab?.id == selectedTabID }?.tab
-            ?? currentTabs.first { $0.id == selectedTabID }
+        return activeSpace?.displayableTab(id: selectedTabID)
     }
 
     var displayTab: BrowserTab? {
@@ -330,12 +328,10 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
-    /// Whether an ID resolves to a tab this window could display — mirrors the
-    /// guard in `selectTab(id:)`.
+    /// Whether an ID resolves to a tab this window could display — the same
+    /// lookup the guard in `selectTab(id:)` uses.
     private func displayableTab(id: UUID) -> Bool {
-        (activeSpace?.pinnedEntries.contains { $0.tab?.id == id } ?? false)
-            || (activeSpace?.profile?.favorites.contains { $0.tab?.id == id } ?? false)
-            || currentTabs.contains { $0.id == id }
+        activeSpace?.displayableTab(id: id) != nil
     }
 
     @objc private func handleExtensionPopupOpenURL(_ notification: Notification) {
@@ -398,14 +394,10 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: id)
 
         if selectTab {
-            // Restore the new space's selected tab
-            if let savedTabID = space.selectedTabID,
-               space.tabs.contains(where: { $0.id == savedTabID }) || space.pinnedEntries.contains(where: { $0.tab?.id == savedTabID }) {
-                self.selectTab(id: savedTabID)
-            } else if let firstLivePinnedTab = space.pinnedEntries.first(where: { $0.tab != nil })?.tab {
-                self.selectTab(id: firstLivePinnedTab.id)
-            } else if let firstTab = space.tabs.first {
-                self.selectTab(id: firstTab.id)
+            // Restore the new space's selected tab — including a favourite's
+            // backing tab, which lives on the profile (TASK-54).
+            if let tab = space.tabToSelectOnEntry() {
+                self.selectTab(id: tab.id)
             } else {
                 deselectAllTabs()
             }
@@ -807,10 +799,7 @@ class BrowserWindowController: NSWindowController {
     // MARK: - Tab Selection & WebView Ownership
 
     func selectTab(id: UUID) {
-        let isPinnedTab = activeSpace?.pinnedEntries.contains(where: { $0.tab?.id == id }) ?? false
-        let isFavoriteTab = activeSpace?.profile?.favorites.contains(where: { $0.tab?.id == id }) ?? false
-        let isNormalTab = currentTabs.contains(where: { $0.id == id })
-        guard isPinnedTab || isFavoriteTab || isNormalTab else { return }
+        guard let tab = activeSpace?.displayableTab(id: id) else { return }
 
         dismissCommandPalette()
 
@@ -852,7 +841,6 @@ class BrowserWindowController: NSWindowController {
             )
         }
 
-        guard let tab = selectedTab else { return }
         // A pinned split wakes BOTH sides: activate a dormant partner entry
         // (the pinned analog of the sleeping-member wake below) so the group
         // resolves to two live panes before hosting.
@@ -887,7 +875,7 @@ class BrowserWindowController: NSWindowController {
                 tabSidebar.selectedPinnedTabIndex = index
             } else if let index = currentTabs.firstIndex(where: { $0.id == id }) {
                 tabSidebar.selectedTabIndex = index
-            } else if isFavoriteTab {
+            } else {
                 // Favorite tabs aren't in the table — deselect any table row
                 tabSidebar.tableView.deselectAll(nil)
             }
@@ -2125,7 +2113,11 @@ class BrowserWindowController: NSWindowController {
             else if let firstDormantEntry = space.pinnedEntries.first {
                 store.activatePinnedEntry(id: firstDormantEntry.id, in: space)
                 if let tab = firstDormantEntry.tab { selectTab(id: tab.id) }
-                else { deselectAllTabs() }
+                else {
+                    // A refused tile explains itself (TASK-37).
+                    deselectAllTabs()
+                    showDormantTileRefusal(urls: [firstDormantEntry.pinnedURL])
+                }
             }
             else { deselectAllTabs() }
         }

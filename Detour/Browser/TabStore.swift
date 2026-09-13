@@ -85,6 +85,29 @@ class Space {
 
     var pinnedTabs: [BrowserTab] { pinnedEntries.compactMap(\.tab) }
 
+    /// The tab with `id` a window on this space can display, resolved in the
+    /// window's own order: a pinned entry's backing tab, then the profile's
+    /// favourite backing tab, then a normal tab. Nil when no section holds it.
+    ///
+    /// The one place the "is this a tab of this space" predicate lives: a
+    /// favourite's backing tab hangs off the *profile*, outside `tabs` and
+    /// `pinnedEntries`, and a copy of the test that forgets that silently drops
+    /// a selected favourite (TASK-54).
+    func displayableTab(id: UUID) -> BrowserTab? {
+        pinnedEntries.first { $0.tab?.id == id }?.tab
+            ?? profile?.favorites.first { $0.tab?.id == id }?.tab
+            ?? tabs.first { $0.id == id }
+    }
+
+    /// The tab a window selects on entering — or returning to — this space:
+    /// the saved selection while it still resolves to a displayable tab
+    /// (a favourite's backing tab included, TASK-54), else the first live
+    /// pinned tab, else the first normal tab. Nil for an empty space, which
+    /// the window then shows deselected.
+    func tabToSelectOnEntry() -> BrowserTab? {
+        selectedTabID.flatMap { displayableTab(id: $0) } ?? pinnedTabs.first ?? tabs.first
+    }
+
     var color: NSColor {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
@@ -1057,13 +1080,17 @@ class TabStore {
     /// (TASK-34): a disabled or uninstalled extension's page cannot become a tab,
     /// which would wake blank on a pending or dead origin, so the favourite is
     /// left dormant instead.
-    func activateFavorite(id: UUID, profileID: UUID, in space: Space) {
+    ///
+    /// Returns whether the favourite gained a backing tab; a caller acting on a
+    /// click shows `dormantTileRefusal(url:in:)` when it did not (TASK-37).
+    @discardableResult
+    func activateFavorite(id: UUID, profileID: UUID, in space: Space) -> Bool {
         guard let profile = profiles.first(where: { $0.id == profileID }),
               let fav = profile.favorites.first(where: { $0.id == id }),
-              fav.tab == nil else { return }
+              fav.tab == nil else { return false }
         let page = dormantTilePage(url: fav.url, in: profile)
         guard dormantTileDropTargets(page).contains(.tabList),
-              let url = rehomedTileURL(fav.url, page: page, in: profile) else { return }
+              let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
 
         let tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
         fav.tab = tab
@@ -1075,6 +1102,7 @@ class TabStore {
         subscribeToTab(tab, spaceID: space.id)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
+        return true
     }
 
     /// Removes a favorite outright. A live backing tab goes with it — the tab is
@@ -1153,6 +1181,36 @@ class TabStore {
         case .notExtensionPage, .restorable: return .all
         case .disabled: return .pinned
         case .unavailable: return []
+        }
+    }
+
+    /// Why a dormant tile on `url` cannot become a tab (TASK-37), for the hint
+    /// shown when the user's click or unpin is refused. Nil when it can — an
+    /// ordinary page, or an enabled extension's — so a caller may ask
+    /// unconditionally after a mutation returned false.
+    ///
+    /// The same classification the refusal itself uses (`dormantTilePage`):
+    /// `.disabled` is an installed extension that is off, `.unavailable` one
+    /// that is not installed. A legacy page carries the unknown-id sentinel,
+    /// which names no extension and can never be enabled — unavailable, not off.
+    func dormantTileRefusal(url: URL, in profile: Profile?) -> DormantTileRefusal? {
+        switch dormantTilePage(url: url, in: profile) {
+        case .notExtensionPage, .restorable:
+            return nil
+        case .disabled(let extensionID, _):
+            guard extensionID != ExtensionPageURL.unknownExtensionID else {
+                return .extensionUnavailable
+            }
+            // Only a loaded extension has a display name; `displayName(for:)`
+            // hands back the raw id otherwise (the classification is DB-based,
+            // so it answers before `loadInstalledExtensions` has run).
+            let name = ExtensionManager.shared.extension(withID: extensionID)
+                .map { _ in ExtensionManager.shared.displayName(for: extensionID) }
+            return .extensionDisabled(name: name)
+        case .unavailable:
+            // Nothing installed can claim the origin — `.unavailable` means the
+            // id is absent from the installed set — so there is no name to show.
+            return .extensionUnavailable
         }
     }
 
@@ -2417,9 +2475,13 @@ class TabStore {
     /// entries leave the pinned section and their tabs land adjacent at the
     /// (snapped) gap with the group restored. A dormant member materializes a
     /// tab exactly like `unpinTab`.
-    func unpinSplitGroup(groupID: UUID, toGapIndex: Int? = nil, in space: Space) {
+    ///
+    /// Returns whether the group was unpinned; a refused unpin shows
+    /// `dormantTileRefusal(url:in:)` where the user asked for it (TASK-37).
+    @discardableResult
+    func unpinSplitGroup(groupID: UUID, toGapIndex: Int? = nil, in space: Space) -> Bool {
         let entries = pinnedSplitEntries(groupID: groupID, in: space)
-        guard entries.count == 2 else { return }
+        guard entries.count == 2 else { return false }
         let fraction = entries.first?.splitFraction ?? 0.5
         let savedFolderID = entries[0].folderID
         // The sibling that follows the pair at its level: the undo re-places
@@ -2449,7 +2511,7 @@ class TabStore {
                     tabSubscriptions.removeValue(forKey: tab.id)
                     tab.teardown()
                 }
-                return
+                return false
             }
             materialized.append(tab)
             tabs.append(tab)
@@ -2484,6 +2546,7 @@ class TabStore {
         }
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
         scheduleSave()
+        return true
     }
 
     /// "Separate Tabs" on a pinned split: dissolves the group; the entries stay
@@ -2773,13 +2836,16 @@ class TabStore {
         scheduleSave()
     }
 
-    func unpinTab(id: UUID, in space: Space, at destinationIndex: Int? = nil) {
-        guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
+    /// Returns whether the entry was unpinned; a refused unpin shows
+    /// `dormantTileRefusal(url:in:)` where the user asked for it (TASK-37).
+    @discardableResult
+    func unpinTab(id: UUID, in space: Space, at destinationIndex: Int? = nil) -> Bool {
+        guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return false }
         let entry = space.pinnedEntries[index]
         // Resolve the backing tab before anything is mutated: a dormant page that
         // cannot become a tab (a disabled or uninstalled extension's) leaves the
         // entry pinned exactly as it was (TASK-34).
-        guard let tab = entry.tab ?? materializeDormantEntry(entry, in: space) else { return }
+        guard let tab = entry.tab ?? materializeDormantEntry(entry, in: space) else { return false }
         space.pinnedEntries.remove(at: index)
         let savedFolderID = entry.folderID
         let savedSortOrder = entry.sortOrder
@@ -2820,6 +2886,7 @@ class TabStore {
         }
         notifyObservers { $0.tabStoreDidUnpinTab(entry, fromIndex: index, toIndex: insertAt, in: space) }
         scheduleSave()
+        return true
     }
 
     /// `undoable: false` skips the undo registration — see `closeTab`.
@@ -2945,16 +3012,23 @@ class TabStore {
         scheduleSave()
     }
 
-    func activatePinnedEntry(id: UUID, in space: Space) {
-        guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
+    /// Gives a dormant pinned entry a live backing tab (clicking the tile).
+    ///
+    /// Returns whether the entry gained one; a caller acting on a click shows
+    /// `dormantTileRefusal(url:in:)` when it did not (TASK-37). False also for
+    /// an entry that was already live, which needs no hint.
+    @discardableResult
+    func activatePinnedEntry(id: UUID, in space: Space) -> Bool {
+        guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return false }
         let entry = space.pinnedEntries[index]
-        guard entry.tab == nil else { return }  // Already live
+        guard entry.tab == nil else { return false }  // Already live
         // A page that cannot become a tab leaves the entry dormant, unchanged
         // and unannounced (TASK-34).
-        guard let tab = materializeDormantEntry(entry, in: space) else { return }
+        guard let tab = materializeDormantEntry(entry, in: space) else { return false }
         entry.tab = tab
         notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
         scheduleSave()
+        return true
     }
 
     // MARK: - Pinned Folder Mutations
