@@ -71,14 +71,23 @@ final class MoveTabToSpaceTests: XCTestCase {
     }
 
     /// A private store with two profiles: two spaces on one, one on the other.
-    private func makeFixture() throws -> Fixture {
+    ///
+    /// `manualUndoGrouping` switches the undo manager's event grouping off
+    /// before the first registration, for a test that undoes a sequence a step
+    /// at a time; every mutation then has to go through `act`.
+    private func makeFixture(manualUndoGrouping: Bool = false) throws -> Fixture {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
+        if manualUndoGrouping {
+            store.undoManager.groupsByEvent = false
+            store.undoManager.beginUndoGrouping()
+        }
         let profile = store.addProfile(name: "Move")
         let other = store.addProfile(name: "Move Other")
         let a = store.addSpace(name: "A", emoji: "🅰️", colorHex: "007AFF", profileID: profile.id)
         let b = store.addSpace(name: "B", emoji: "🅱️", colorHex: "FF9500", profileID: profile.id)
         let c = store.addSpace(name: "C", emoji: "🇨", colorHex: "34C759", profileID: other.id)
+        if manualUndoGrouping { store.undoManager.endUndoGrouping() }
         store.undoManager.removeAllActions()
         return Fixture(db: db, store: store, profile: profile, other: other, a: a, b: b, c: c)
     }
@@ -96,6 +105,17 @@ final class MoveTabToSpaceTests: XCTestCase {
         sharedSpaceIDs.append(contentsOf: [a.id, b.id, c.id])
         store.undoManager.removeAllActions()
         return (store, profile, other, a, b, c)
+    }
+
+    /// Runs one user action as its own undo group, so a sequence can be undone a
+    /// step at a time. The store's undo manager groups by event, which a test
+    /// body never turns, so a sequence would otherwise pile into one group and a
+    /// single undo would run all of it — switch `groupsByEvent` off before the
+    /// first registration and put every mutation through here.
+    private func act(_ store: TabStore, _ body: () -> Void) {
+        store.undoManager.beginUndoGrouping()
+        body()
+        store.undoManager.endUndoGrouping()
     }
 
     /// A minimal MV3 extension with an options page, registered with the shared
@@ -231,6 +251,32 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(f.store.undoManager.redoActionName, "Move to Space", "and redo moves it away again")
     }
 
+    /// A moved tab arrives as a root tab — the tab it was opened from stays
+    /// behind — and coming home means coming back under that tab, while it is
+    /// still there.
+    func testUndoRestoresTheParentLinkTheMoveCut() throws {
+        let f = try makeFixture()
+        let parent = f.store.addTab(in: f.a, url: pageURL)
+        let child = f.store.addTab(in: f.a, url: pageURL, parentID: parent.id)
+        createdTabs.append(contentsOf: [parent, child])
+        XCTAssertEqual(child.parentID, parent.id, "precondition: opened from `parent`")
+
+        XCTAssertTrue(f.store.moveTab(id: child.id, from: f.a, to: f.b))
+        XCTAssertNil(child.parentID, "the parent did not come along, so it arrives as a root tab")
+
+        f.store.undoManager.undo()
+
+        XCTAssertEqual(child.parentID, parent.id, "home again under the tab it was opened from")
+
+        // The reverse move registered the redo, and captured the cut link (nil)
+        // as *its* saved parent — so the chain must keep restoring the original
+        // rather than propagating that nil.
+        f.store.undoManager.redo()
+        XCTAssertNil(child.parentID, "moved away again")
+        f.store.undoManager.undo()
+        XCTAssertEqual(child.parentID, parent.id, "and restored again")
+    }
+
     /// The store resolves both spaces by id when the undo actually runs, so a
     /// space deleted in between leaves the tab where it is instead of crashing
     /// or resurrecting a dead space.
@@ -256,6 +302,24 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.a, to: f.b))
 
         XCTAssertEqual(f.a.selectedTabID, stay.id)
+    }
+
+    /// The store's fallback picks what a window entering the space would
+    /// (`tabToSelectOnEntry`), so the two agree — and that prefers the first
+    /// live pinned tab to the first normal tab.
+    func testMovingTheSelectedTabFallsBackToTheSourcesFirstLivePinnedTab() throws {
+        let f = try makeFixture()
+        let pinned = f.store.addTab(in: f.a, url: pageURL)
+        let stay = f.store.addTab(in: f.a, url: pageURL)
+        let tab = f.store.addTab(in: f.a, url: pageURL)
+        createdTabs.append(contentsOf: [pinned, stay, tab])
+        f.store.pinTab(id: pinned.id, in: f.a)
+        f.a.selectedTabID = tab.id
+
+        XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.a, to: f.b))
+
+        XCTAssertEqual(f.a.selectedTabID, pinned.id,
+                       "the live pinned tab wins over the normal tab that also stayed")
     }
 
     // MARK: - Split members
@@ -354,6 +418,51 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(entry.sortOrder, sortOrder)
     }
 
+    /// Undo Delete Space rebuilds a space's pinned entries as fresh objects of
+    /// the same ids (TASK-40), so the move's undo has to resolve the entry by id
+    /// in the destination it finds at undo time — the instance it captured is an
+    /// orphan by then, and mutating it would leave the listed entry behind.
+    func testUndoOfAPinnedMoveAfterUndoDeleteSpaceActsOnTheRebuiltEntry() throws {
+        let f = try makeFixture(manualUndoGrouping: true)
+        var createdFolder: PinnedFolder?
+        var createdEntry: PinnedEntry?
+        act(f.store) {
+            let folder = f.store.addPinnedFolder(name: "Work", in: f.a)
+            createdFolder = folder
+            // A tile, not a live entry: Undo Delete Space rebuilds a live
+            // entry's backing tab as well, and this store's profile has no
+            // throwaway WebKit objects to rebuild it with.
+            f.store.pinURL(pageURL, title: "Filed", faviconURL: nil, in: f.a)
+            createdEntry = f.a.pinnedEntries.first
+            if let createdEntry {
+                f.store.movePinnedTabToFolder(tabID: createdEntry.id, folderID: folder.id, in: f.a)
+            }
+        }
+        let folderID = try XCTUnwrap(createdFolder?.id)
+        let entry = try XCTUnwrap(createdEntry)
+        XCTAssertEqual(entry.folderID, folderID, "precondition: inside a folder")
+        let sortOrder = entry.sortOrder
+        f.store.undoManager.removeAllActions()
+
+        act(f.store) { XCTAssertTrue(f.store.movePinnedEntry(id: entry.id, from: f.a, to: f.b)) }
+        act(f.store) { f.store.deleteSpace(id: f.b.id) }
+        XCTAssertNil(f.store.space(withID: f.b.id), "precondition: the destination is gone")
+
+        f.store.undoManager.undo()  // Undo Delete Space
+        let restored = try XCTUnwrap(f.store.space(withID: f.b.id))
+        let rebuiltEntry = try XCTUnwrap(restored.pinnedEntries.first)
+        XCTAssertEqual(rebuiltEntry.id, entry.id)
+        XCTAssertFalse(rebuiltEntry === entry, "precondition: the rebuild replaced the entry object")
+
+        f.store.undoManager.undo()  // Undo Move to Space
+
+        let returned = try XCTUnwrap(f.a.pinnedEntries.first { $0.id == entry.id })
+        XCTAssertEqual(returned.folderID, folderID, "the rebuilt entry went home into its folder")
+        XCTAssertEqual(returned.sortOrder, sortOrder)
+        XCTAssertFalse(restored.pinnedEntries.contains { $0.id == entry.id },
+                       "and left the destination")
+    }
+
     /// A pinned split is two entries; moving one is the pinned mirror of moving
     /// one normal split member, and the pair dissolves (§12).
     func testMovingOnePinnedSplitMemberDissolvesThePinnedSplit() throws {
@@ -419,6 +528,51 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(tab.spaceID, f.c.id)
     }
 
+    // MARK: - The host's peek
+
+    /// A peek is an overlay on its host, not a page the destination profile has
+    /// to claim: an ordinary peek URL needs nothing from over there, so it
+    /// travels with the host untouched.
+    func testCrossProfileMoveKeepsAnOrdinaryPeekURLAndParksThePeek() throws {
+        let f = try makeFixture()
+        let peekURL = URL(string: "http://127.0.0.1:1/peek")!
+        let tab = sleepingTab(pageURL, in: f.a)
+        f.a.tabs.append(tab)
+        createdTabs.append(tab)
+        tab.peekURL = peekURL
+        tab.peekInteractionState = Data("peek".utf8)
+
+        XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.a, to: f.c))
+
+        XCTAssertEqual(tab.peekURL, peekURL, "the peek came along")
+        XCTAssertEqual(tab.peekInteractionState, Data("peek".utf8), "with its saved session")
+        XCTAssertNil(tab.peekTab, "and nothing live behind the sleeping host")
+    }
+
+    /// A peek the destination profile cannot show is dropped, not a reason to
+    /// refuse: the move is about the tab's own page, and that one loads fine.
+    func testCrossProfileMoveDropsAnExtensionPeekTheDestinationCannotShow() async throws {
+        let ext = try await makeExtension()
+        let f = makeSharedFixture("ExtPeekDropped")
+        _ = f.profile.extensionController
+        let context = try loadTestContext(ext, in: f.profile)
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: f.other.id, enabled: false)
+        XCTAssertNil(f.other.extensionContext(for: ext.id), "precondition: off in the destination profile")
+        let peeked = try extensionPageURL("options.html?peek=dropped", on: context.baseURL)
+        let tab = f.store.addTab(in: f.a, url: pageURL)
+        createdTabs.append(tab)
+        tab.peekURL = peeked
+        tab.peekInteractionState = Data("peek".utf8)
+
+        XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.a, to: f.c),
+                      "the tab's own page is ordinary, so the move goes ahead")
+
+        XCTAssertEqual(f.c.tabs.map(\.id), [tab.id])
+        XCTAssertNil(tab.peekURL, "the peek had nowhere to load over here, so it is gone")
+        XCTAssertNil(tab.peekInteractionState)
+        XCTAssertNil(tab.peekTab)
+    }
+
     // MARK: - Extension pages (AC #2)
 
     /// Within one profile an extension page keeps everything: the same tab, the
@@ -462,11 +616,21 @@ final class MoveTabToSpaceTests: XCTestCase {
         let tab = f.store.addExtensionTab(in: f.a, url: url,
                                           configuration: try XCTUnwrap(source.webViewConfiguration))
         createdTabs.append(tab)
+        // Its peek is on the same doomed origin, and is rehomed the same way.
+        let peeked = try extensionPageURL("options.html?peek=cross", on: source.baseURL)
+        let expectedPeek = try XCTUnwrap(rewriteExtensionPageURL(peeked, from: source.baseURL,
+                                                                 to: destination.baseURL))
+        tab.peekURL = peeked
+        tab.peekInteractionState = Data("peek".utf8)
 
+        XCTAssertTrue(f.store.canMoveTab(id: tab.id, from: f.a, to: f.c))
         XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.a, to: f.c))
 
         XCTAssertTrue(f.c.tabs.first === tab, "the same tab, not a rebuilt one")
         XCTAssertEqual(tab.url, expected, "retargeted onto the destination profile's origin")
+        XCTAssertEqual(tab.peekURL, expectedPeek, "and so is the peek it carries")
+        XCTAssertNil(tab.peekInteractionState,
+                     "whose saved back/forward list also lived on the old origin")
         XCTAssertTrue(tab.isSleeping, "left for wake to pick the destination context's configuration")
         XCTAssertNil(tab.currentInteractionStateData(),
                      "its back/forward list lived on the old origin, so it is discarded")
@@ -498,6 +662,12 @@ final class MoveTabToSpaceTests: XCTestCase {
         createdTabs.append(tab)
         let webView = try XCTUnwrap(tab.webView)
 
+        XCTAssertFalse(f.store.canMoveTab(id: tab.id, from: f.a, to: f.c),
+                       "the window can ask before it settles anything")
+        XCTAssertEqual(f.store.moveTabRefusal(id: tab.id, from: f.a, to: f.c),
+                       .extensionDisabled(name: ExtensionManager.shared.displayName(for: ext.id)),
+                       "and is handed the *destination* profile's reason — the source profile, where "
+                       + "the extension is on and the page loads, has none")
         XCTAssertFalse(f.store.moveTab(id: tab.id, from: f.a, to: f.c))
 
         XCTAssertEqual(f.a.tabs.map(\.id), [tab.id], "the tab did not move")
@@ -506,8 +676,10 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(tab.url, url)
         XCTAssertEqual(tab.spaceID, f.a.id)
         XCTAssertFalse(f.store.undoManager.canUndo, "a refused move registers no undo")
-        XCTAssertNotNil(f.store.dormantTileRefusal(url: url, in: f.other),
-                        "the window has a reason to show")
+        XCTAssertEqual(f.store.dormantTileRefusal(url: url, in: f.other), .extensionUnavailable,
+                       "classifying the bare URL in the destination profile cannot even resolve the "
+                       + "extension id — nothing there serves the origin — so only the move, which "
+                       + "asks the source profile for the id, reaches the better reason")
     }
 
     /// A dormant tile *may* wait on a pending origin — that is what a disabled
@@ -524,6 +696,9 @@ final class MoveTabToSpaceTests: XCTestCase {
         f.store.pinURL(url, title: "Options", faviconURL: nil, in: f.a)
         let entry = try XCTUnwrap(f.a.pinnedEntries.first)
 
+        XCTAssertTrue(f.store.canMovePinnedEntry(id: entry.id, from: f.a, to: f.c),
+                      "a tile may wait, so this is allowed where the tab move is refused")
+        XCTAssertNil(f.store.movePinnedEntryRefusal(id: entry.id, from: f.a, to: f.c))
         XCTAssertTrue(f.store.movePinnedEntry(id: entry.id, from: f.a, to: f.c))
 
         XCTAssertEqual(f.c.pinnedEntries.map(\.id), [entry.id], "still pinned, still dormant")
@@ -550,6 +725,9 @@ final class MoveTabToSpaceTests: XCTestCase {
         let entry = try XCTUnwrap(f.a.pinnedEntries.first)
         ExtensionManager.shared.uninstall(id: ext.id)
 
+        XCTAssertFalse(f.store.canMovePinnedEntry(id: entry.id, from: f.a, to: f.c))
+        XCTAssertEqual(f.store.movePinnedEntryRefusal(id: entry.id, from: f.a, to: f.c),
+                       .extensionUnavailable, "with the reason the window shows")
         XCTAssertFalse(f.store.movePinnedEntry(id: entry.id, from: f.a, to: f.c))
 
         XCTAssertEqual(f.a.pinnedEntries.map(\.id), [entry.id], "the tile is kept where it was")
@@ -557,6 +735,34 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertTrue(f.c.pinnedEntries.isEmpty)
         XCTAssertFalse(f.store.undoManager.canUndo)
         XCTAssertEqual(f.store.dormantTileRefusal(url: url, in: f.other), .extensionUnavailable)
+    }
+
+    // MARK: - Asking before moving
+
+    /// `canMoveTab` answers what `moveTab` would do without touching anything,
+    /// which is what lets the window settle its own selection only once the move
+    /// is certain instead of putting it back after a refusal.
+    func testCanMoveTabAndRefusalAgreeWithMoveTab() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.a, url: pageURL)
+        createdTabs.append(tab)
+        let webView = try XCTUnwrap(tab.webView)
+
+        XCTAssertFalse(f.store.canMoveTab(id: tab.id, from: f.a, to: f.a), "the same space is no move")
+        XCTAssertNil(f.store.moveTabRefusal(id: tab.id, from: f.a, to: f.a),
+                     "and its page is not the reason, so there is nothing to explain")
+        XCTAssertFalse(f.store.canMoveTab(id: UUID(), from: f.a, to: f.b), "nor is an unknown tab")
+        XCTAssertNil(f.store.moveTabRefusal(id: UUID(), from: f.a, to: f.b))
+
+        XCTAssertTrue(f.store.canMoveTab(id: tab.id, from: f.a, to: f.c),
+                      "an ordinary page crosses profiles")
+        XCTAssertNil(f.store.moveTabRefusal(id: tab.id, from: f.a, to: f.c))
+
+        XCTAssertEqual(f.a.tabs.map(\.id), [tab.id], "and asking moved nothing")
+        XCTAssertTrue(f.c.tabs.isEmpty)
+        XCTAssertTrue(tab.webView === webView, "nor slept the tab")
+        XCTAssertEqual(tab.spaceID, f.a.id)
+        XCTAssertFalse(f.store.undoManager.canUndo)
     }
 
     // MARK: - Refused up front

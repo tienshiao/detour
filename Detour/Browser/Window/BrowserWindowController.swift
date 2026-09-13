@@ -2117,10 +2117,24 @@ class BrowserWindowController: NSWindowController {
         guard let space = activeSpace, index < space.pinnedEntries.count else { return }
         let entry = space.pinnedEntries[index]
         // Settle selection BEFORE discarding the backing tab, mirroring
-        // closeTab(at:wasSelected:). Closing the focused pane of a pinned split
-        // leaves its still-live partner on screen, so select the partner rather
-        // than blanking the window — closePinnedTab keeps the group intact (the
-        // closed member just goes dormant). Otherwise deselect.
+        // closeTab(at:wasSelected:).
+        settleSelectionLeaving(pinnedEntry: entry, in: space)
+        // Always make dormant (discard backing tab)
+        store.closePinnedTab(id: entry.id, in: space)
+    }
+
+    /// Moves selection off `entry`'s backing tab, which is about to stop being
+    /// this window's selection — by closing (`closePinnedTab(at:)`, which makes
+    /// the entry dormant) or by moving to another space (TASK-38).
+    ///
+    /// Leaving the focused pane of a pinned split leaves its still-live partner
+    /// on screen, so select the partner rather than blanking the window: a close
+    /// keeps the group intact (the closed member just goes dormant), and a move
+    /// dissolves it but the partner is still there. Otherwise deselect — unlike
+    /// a normal tab (`settleSelectionLeaving(tabAt:in:)`) a pinned entry's own
+    /// row stays in the sidebar after a close, so there is no neighbour to
+    /// advance to.
+    func settleSelectionLeaving(pinnedEntry entry: PinnedEntry, in space: Space) {
         if let groupID = entry.splitGroupID,
            let partnerTab = store.pinnedSplitEntries(groupID: groupID, in: space)
                .first(where: { $0.id != entry.id })?.tab {
@@ -2128,8 +2142,6 @@ class BrowserWindowController: NSWindowController {
         } else {
             deselectAllTabs()
         }
-        // Always make dormant (discard backing tab)
-        store.closePinnedTab(id: entry.id, in: space)
     }
 
     func closeTab(at index: Int, wasSelected: Bool) {

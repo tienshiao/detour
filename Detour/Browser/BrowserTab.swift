@@ -571,7 +571,12 @@ class BrowserTab: NSObject {
     /// The close is gated on the peek having actually released its web view: a
     /// non-forced sleep spares an audible peek, which is still a live, reachable
     /// page the contexts must keep.
-    private func parkPeek(force: Bool) {
+    ///
+    /// Idempotent, and callable on a host that has no web view of its own:
+    /// `sleep` parks the peek only while releasing the host's web view, so a
+    /// path that must not leave a peek live behind a sleeping host (a move
+    /// across profiles, `TabStore.carry`) parks it directly.
+    func parkPeek(force: Bool) {
         guard let peek = peekTab else { return }
         savePeekStateForPersistence()
         peek.sleep(force: force)

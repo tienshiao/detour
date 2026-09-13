@@ -1440,23 +1440,30 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                        "the worker must get Detour's install exactly once, and not WebKit's as well")
     }
 
-    // MARK: - TASK-43: runtime.onInstalled in an MV3 background page
+    // MARK: - TASK-43: runtime.onInstalled in a background page
 
-    /// The two shapes of MV3 background content WebKit runs as a page rather
-    /// than a service worker, with the path WebKit loads each at — measured
-    /// against a real context by the probe these tests grew out of, and
-    /// re-asserted here so a WebKit change that moves the generated page fails
-    /// the suite rather than silently costing every such extension its event.
+    /// The shapes of background content WebKit runs as a page rather than a
+    /// service worker, with the path WebKit loads each at — measured against a
+    /// real context by the probe these tests grew out of, and re-asserted here so
+    /// a WebKit change that moves the generated page fails the suite rather than
+    /// silently costing every such extension its event.
     private enum BackgroundPage {
         /// `background.scripts`: WebKit hosts them in a page it generates.
         case scripts
         /// `background.page`: the author's own page, at its manifest path.
         case page
+        /// The same page declared './bg.html' — a spelling Chrome accepts, so
+        /// the polyfill has to *resolve* the manifest path against the extension
+        /// root rather than compare it with a leading slash bolted on (which
+        /// would make '/./bg.html' and classify the real background page as an
+        /// ordinary one, suppressing its event for good).
+        case dotSlashPage
 
         var manifestEntry: String {
             switch self {
             case .scripts: return #"{"scripts": ["background.js"], "persistent": false}"#
             case .page: return #"{"page": "bg.html", "persistent": false}"#
+            case .dotSlashPage: return #"{"page": "./bg.html", "persistent": false}"#
             }
         }
 
@@ -1464,14 +1471,25 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         var pathname: String {
             switch self {
             case .scripts: return "/_generated_background_page.html"
-            case .page: return "/bg.html"
+            case .page, .dotSlashPage: return "/bg.html"
+            }
+        }
+
+        /// Names the profile and extension a leg builds — two shapes load their
+        /// background page at the same path, so the path cannot do it.
+        var label: String {
+            switch self {
+            case .scripts: return "scripts"
+            case .page: return "page"
+            case .dotSlashPage: return "dot-slash-page"
             }
         }
 
         var ownFiles: [String: String] {
             switch self {
             case .scripts: return [:]
-            case .page: return ["bg.html": "<html><body><script src=\"background.js\"></script></body></html>"]
+            case .page, .dotSlashPage:
+                return ["bg.html": "<html><body><script src=\"background.js\"></script></body></html>"]
             }
         }
     }
@@ -1516,6 +1534,9 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             mode: status ? status.mode : 'none',
             contextKind: status ? status.contextKind : 'none',
             detail: status ? status.detail : 'none',
+            // The content-script responder is background-context-only too, so a
+            // background page must have installed it (TASK-43).
+            contentBridge: globalThis.__detourContentBridge || 'none',
             claimCount: status ? status.claimCount : -1,
             listenerCount: status ? status.listenerCount : -1,
             loads: loads,
@@ -1609,6 +1630,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                 hasPolyfill: typeof status === 'object',
                 mode: status ? status.mode : 'none',
                 contextKind: status ? status.contextKind : 'none',
+                contentBridge: globalThis.__detourContentBridge || 'none',
                 claimCount: status ? status.claimCount : -1,
                 framed: globalThis.__detourFramedStatus || null
             });
@@ -1625,6 +1647,13 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         try await assertBackgroundPageGetsTheInstallExactlyOnce(.page)
     }
 
+    /// The same `background.page`, declared './bg.html': a relative spelling
+    /// Chrome accepts, which the polyfill must resolve against the extension root
+    /// to recognise the page WebKit loads at /bg.html as the background context.
+    func testBackgroundPageDeclaredWithARelativePathGetsRuntimeOnInstalledOnce() async throws {
+        try await assertBackgroundPageGetsTheInstallExactlyOnce(.dotSlashPage)
+    }
+
     /// AC #1 and AC #2 for an MV3 extension with no service worker: its
     /// background *page* is woken by the production path
     /// (`wakeForPendingInstalledEvent`, which before TASK-43 declined to wake
@@ -1633,7 +1662,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// while an ordinary extension page of the same extension stays `suppressed`
     /// and claims nothing.
     private func assertBackgroundPageGetsTheInstallExactlyOnce(_ shape: BackgroundPage) async throws {
-        let id = "oninstalled-bgpage-\(UUID().uuidString.prefix(8))"
+        let id = "oninstalled-bgpage-\(shape.label)-\(UUID().uuidString.prefix(8))"
         let ext = try await makeBackgroundPageExtension(shape, id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
 
@@ -1644,7 +1673,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertNil(ext.manifest.background?.serviceWorker, "precondition: no service worker")
         XCTAssertEqual(ext.manifest.background?.hasBackgroundContent, true)
 
-        let profile = makeProfile("onInstalled Background Page \(shape.pathname)")
+        let profile = makeProfile("onInstalled Background Page \(shape.label)")
         _ = profile.extensionController
         _ = profile.loadExtensionContext(ext)
         let context = try XCTUnwrap(profile.extensionContexts[ext.id])
@@ -1671,6 +1700,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(report["mode"] as? String, "detour")
         XCTAssertEqual(report["contextKind"] as? String, "background-page")
         XCTAssertEqual(report["detail"] as? String, "")
+        XCTAssertEqual(report["contentBridge"] as? String, "installed:background-page",
+                       "content scripts' polyfill round trips need a responder in the background page")
         XCTAssertEqual(report["claimCount"] as? Int, 1, "the background page claims once")
         XCTAssertEqual(report["allReceived"] as? [[String: String]], [["reason": "install"]],
                        "the background page must get Detour's install exactly once")
@@ -1691,6 +1722,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(pageStatus["hasPolyfill"] as? Bool, true)
         XCTAssertEqual(pageStatus["mode"] as? String, "suppressed")
         XCTAssertEqual(pageStatus["contextKind"] as? String, "page")
+        XCTAssertEqual(pageStatus["contentBridge"] as? String, "skipped:page",
+                       "an ordinary extension page must not register a second content-script responder")
         XCTAssertEqual(pageStatus["claimCount"] as? Int, 0, "an ordinary page must never claim")
     }
 

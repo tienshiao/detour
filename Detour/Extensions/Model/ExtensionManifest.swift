@@ -96,15 +96,17 @@ struct ExtensionManifest: Codable {
         }
     }
 
-    /// The extension's background content. MV3 has three shapes and WebKit runs
-    /// all three (measured for TASK-43, see `ExtensionAPIPolyfill`): a
-    /// `service_worker`, a Safari-style list of `scripts` WebKit hosts in a page
-    /// it generates, or an explicit `page`.
+    /// The extension's background content. Three shapes, and WebKit runs all
+    /// three (measured for TASK-43, see `ExtensionAPIPolyfill`): a
+    /// `service_worker`, a list of `scripts` WebKit hosts in a page it generates,
+    /// or an explicit `page`. `scripts`/`page` are MV2's shapes, which MV3 also
+    /// accepts — nothing here (or in the polyfill) reads `manifest_version`, so
+    /// an MV2 extension's background is treated the same way, as in Chrome.
     struct Background: Codable {
         let serviceWorker: String?
-        /// Safari-style MV3 background scripts. WebKit hosts them in a page it
-        /// generates at `_generated_background_page.html`, relative to the
-        /// context's base URL.
+        /// Background scripts (MV2's shape, also accepted in MV3). WebKit hosts
+        /// them in a page it generates at `_generated_background_page.html`,
+        /// relative to the context's base URL.
         let scripts: [String]?
         /// An explicit background page, loaded at its manifest-declared path.
         let page: String?

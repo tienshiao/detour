@@ -245,49 +245,43 @@ extension BrowserWindowController: TabSidebarDelegate {
     /// The store refuses a move whose page the destination profile cannot serve
     /// (an extension not installed or not enabled there) and leaves everything
     /// where it was; that is the one case with nothing to see, so it is
-    /// explained like any other refused tile (TASK-37).
+    /// explained like any other refused tile (TASK-37) — classified against the
+    /// *destination* profile, the one that cannot serve the page, which is what
+    /// `moveTabRefusal` / `movePinnedEntryRefusal` do.
+    ///
+    /// The store is asked BEFORE the window touches anything. Settling selection
+    /// is not free — it can wake a dormant pinned tile, and refuse to, with its
+    /// own toast — so a refused move must not have run it: there is nothing to
+    /// put back if it never happened. Only once the move is certain is selection
+    /// settled (ahead of the move, as for a close, so the removal notification
+    /// does not advance it with a blunter pick).
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMoveTabAt index: Int, isPinned: Bool, toSpaceID: UUID) {
         guard let srcSpace = activeSpace, let dstSpace = store.space(withID: toSpaceID),
               srcSpace.id != dstSpace.id else { return }
-        // Selection is settled before the move, as for a close: the removal
-        // notification would otherwise advance it with a blunter pick. A refused
-        // move puts it back — nothing left the window after all.
-        let previousSelection = selectedTabID
         if isPinned {
             guard index >= 0, index < srcSpace.pinnedEntries.count else { return }
             let entry = srcSpace.pinnedEntries[index]
-            // Either the page it is on or its home page can be the one the
-            // destination profile cannot serve; the toast picks whichever has a
-            // reason.
-            let urls = [entry.tab?.url, entry.pinnedURL].compactMap { $0 }
-            let wasSelected = entry.tab?.id == selectedTabID
-            if wasSelected {
-                // As closePinnedTab(at:): the still-live partner of a pinned
-                // split keeps the window on the split rather than blanking it.
-                if let groupID = entry.splitGroupID,
-                   let partnerTab = store.pinnedSplitEntries(groupID: groupID, in: srcSpace)
-                       .first(where: { $0.id != entry.id })?.tab {
-                    selectTab(id: partnerTab.id)
-                } else {
-                    deselectAllTabs()
+            guard store.canMovePinnedEntry(id: entry.id, from: srcSpace, to: dstSpace) else {
+                if let refusal = store.movePinnedEntryRefusal(id: entry.id, from: srcSpace, to: dstSpace) {
+                    toastManager.show(message: refusal.message)
                 }
-            }
-            guard store.movePinnedEntry(id: entry.id, from: srcSpace, to: dstSpace) else {
-                if wasSelected, let previousSelection { selectTab(id: previousSelection) }
-                showDormantTileRefusal(urls: urls)
                 return
             }
+            if entry.tab?.id == selectedTabID {
+                settleSelectionLeaving(pinnedEntry: entry, in: srcSpace)
+            }
+            store.movePinnedEntry(id: entry.id, from: srcSpace, to: dstSpace)
         } else {
             guard index >= 0, index < srcSpace.tabs.count else { return }
             let tab = srcSpace.tabs[index]
-            let url = tab.url
-            let wasSelected = tab.id == selectedTabID
-            if wasSelected { settleSelectionLeaving(tabAt: index, in: srcSpace) }
-            guard store.moveTab(id: tab.id, from: srcSpace, to: dstSpace) else {
-                if wasSelected, let previousSelection { selectTab(id: previousSelection) }
-                if let url { showDormantTileRefusal(urls: [url]) }
+            guard store.canMoveTab(id: tab.id, from: srcSpace, to: dstSpace) else {
+                if let refusal = store.moveTabRefusal(id: tab.id, from: srcSpace, to: dstSpace) {
+                    toastManager.show(message: refusal.message)
+                }
                 return
             }
+            if tab.id == selectedTabID { settleSelectionLeaving(tabAt: index, in: srcSpace) }
+            store.moveTab(id: tab.id, from: srcSpace, to: dstSpace)
         }
     }
 
@@ -489,7 +483,7 @@ extension BrowserWindowController: TabSidebarDelegate {
         if isPinned, let entry = space.pinnedEntries.first(where: { $0.id == tabID }), entry.tab == nil {
             // Dormant: add the favourite first. A page of an uninstalled
             // extension is refused (TASK-34), and the entry then stays pinned.
-            let wasSelected = entry.tab?.id == selectedTabID
+            // A dormant entry has no backing tab, so it cannot be the selection.
             guard store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
                                              faviconURL: entry.faviconURL, favicon: entry.favicon,
                                              profileID: profileID, at: index) else {
@@ -498,7 +492,6 @@ extension BrowserWindowController: TabSidebarDelegate {
                 return
             }
             _ = store.detachPinnedEntry(id: entry.id, from: space)
-            if wasSelected { deselectAllTabs() }
             return
         }
 

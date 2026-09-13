@@ -116,6 +116,11 @@ struct ExtensionAPIPolyfill {
         // Whether runtime.onInstalled is Detour's (TASK-22) or still WebKit's, and why.
         try { __detourPolyfillDiag.apis.runtimeOnInstalled = globalThis.__detourRuntimeOnInstalled.mode + ' [' + globalThis.__detourRuntimeOnInstalled.contextKind + ']' + (globalThis.__detourRuntimeOnInstalled.detail ? ' (' + globalThis.__detourRuntimeOnInstalled.detail + ')' : ''); } catch(e) { __detourPolyfillDiag.apis.runtimeOnInstalled = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.webSocket =globalThis.__detourWebSocketRelay ? globalThis.__detourWebSocketRelay.mode : 'native'; } catch(e) { __detourPolyfillDiag.apis.webSocket = 'error: ' + e.message; }
+        // Whether this context is the one answering content scripts' polyfill
+        // round trips (the background worker or background page), and how the
+        // preamble classified it (TASK-43).
+        try { __detourPolyfillDiag.contextKind = globalThis.__detourContextKind; } catch(e) { __detourPolyfillDiag.contextKind = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.contentBridge = globalThis.__detourContentBridge; } catch(e) { __detourPolyfillDiag.apis.contentBridge = 'error: ' + e.message; }
         } catch(e) {
         __detourPolyfillDiag.error = e.message || String(e);
         __detourPolyfillDiag.stack = e.stack || '';
@@ -164,22 +169,104 @@ struct ExtensionAPIPolyfill {
             };
         }
 
-        // The permissions the manifest declares, or [] when they cannot be read
-        // (no chrome.runtime.getManifest, a manifest without a permissions
-        // array, or a throw). Modules that must stay absent unless the
-        // extension asked for them — chrome.privacy, chrome.webRequest — gate
-        // on this, the way Chrome leaves an undeclared namespace out entirely.
-        if (!g.__detourManifestPermissions) {
-            g.__detourManifestPermissions = function() {
+        // The manifest WebKit reports for this extension, or null when it cannot
+        // be read (no chrome.runtime.getManifest, nothing object-shaped back, or
+        // a throw). The one guarded read every module that branches on the
+        // manifest shares.
+        if (!g.__detourManifest) {
+            g.__detourManifest = function() {
                 try {
                     const runtime = g.chrome && g.chrome.runtime;
                     if (runtime && typeof runtime.getManifest === 'function') {
                         const manifest = runtime.getManifest();
-                        if (manifest && Array.isArray(manifest.permissions)) return manifest.permissions;
+                        if (manifest && typeof manifest === 'object') return manifest;
                     }
                 } catch(e) {}
+                return null;
+            };
+        }
+
+        // The permissions the manifest declares, or [] when they cannot be read
+        // (no readable manifest, or one without a permissions array). Modules
+        // that must stay absent unless the extension asked for them —
+        // chrome.privacy, chrome.webRequest — gate on this, the way Chrome
+        // leaves an undeclared namespace out entirely.
+        if (!g.__detourManifestPermissions) {
+            g.__detourManifestPermissions = function() {
+                const manifest = g.__detourManifest();
+                if (manifest && Array.isArray(manifest.permissions)) return manifest.permissions;
                 return [];
             };
+        }
+
+        // MARK: Which context is this? (TASK-43)
+        //
+        // 'worker' | 'background-page' | 'page', decided once here so every
+        // module that has to know whether it is running in the extension's
+        // background context asks the same question and gets the same answer:
+        // `ServiceWorkerGlobalScope` alone would call an extension's background
+        // page an ordinary page, and then nothing background-only would install
+        // in the (MV2, or MV3 `background.scripts`/`page`) extensions WebKit
+        // runs as a page rather than a worker.
+        //
+        // WebKit's name for the page it generates to host a `background.scripts`
+        // list (measured: such a background context loads at
+        // `webkit-extension://<uuid>/_generated_background_page.html`).
+        const generatedBackgroundPagePath = '/_generated_background_page.html';
+
+        // The path of the extension's background document, or '' when the
+        // manifest declares none (or cannot be read): `background.page` is the
+        // author's own path, a `background.scripts` list lives in WebKit's
+        // generated page. Read from the manifest WebKit reports, so no
+        // per-extension substitution into this shared polyfill is needed.
+        const backgroundDocumentPath = function() {
+            const manifest = g.__detourManifest();
+            const background = manifest ? manifest.background : null;
+            if (!background || typeof background !== 'object') return '';
+            if (typeof background.page === 'string' && background.page !== '') {
+                // Resolved against the extension *root*, because that is what a
+                // manifest path is relative to, and resolving gets the spellings
+                // Chrome also accepts right: './bg.html' and 'my page.html' are
+                // loaded at '/bg.html' and '/my%20page.html', which a leading
+                // slash alone would not match. Not `location.href`: an ordinary
+                // page at /pages/bg.html must not pass for a manifest 'bg.html'.
+                try {
+                    const root = g.location.protocol + '//' + g.location.host + '/';
+                    const resolved = new URL(background.page, root);
+                    // An absolute URL somewhere else is not this extension's
+                    // background page, whatever its path looks like.
+                    if (resolved.protocol !== g.location.protocol || resolved.host !== g.location.host) return '';
+                    return resolved.pathname;
+                } catch (e) {}
+                return background.page.charAt(0) === '/' ? background.page : '/' + background.page;
+            }
+            if (Array.isArray(background.scripts) && background.scripts.length > 0) {
+                return generatedBackgroundPagePath;
+            }
+            return '';
+        };
+
+        // Is this document the extension's background page? Only the top-level
+        // document of the background path counts: an extension page could iframe
+        // that same path, and an iframe must not pass for the real background
+        // context. The two free reads come first so a worker or an ordinary page
+        // never pays for the manifest read.
+        const isBackgroundPage = function() {
+            try {
+                if (!g.window || g.window.top !== g.window) return false;
+            } catch (e) {
+                return false;
+            }
+            let pathname = '';
+            try { pathname = g.location ? g.location.pathname : ''; } catch (e) {}
+            if (pathname === '') return false;
+            return pathname === backgroundDocumentPath();
+        };
+
+        if (!g.__detourContextKind) {
+            g.__detourContextKind = typeof ServiceWorkerGlobalScope !== 'undefined'
+                ? 'worker'
+                : (isBackgroundPage() ? 'background-page' : 'page');
         }
 
         // The chrome/browser runtime whose `connectNative` can be called, for the
@@ -475,17 +562,19 @@ struct ExtensionAPIPolyfill {
     /// restarted one, a racing one — gets `{}`. Listeners registered after the
     /// claim settled get nothing, as in Chrome.
     ///
-    /// **Which context claims** (TASK-43). A service worker, and the background
-    /// *page* of an MV3 extension that declares `background.scripts` or
-    /// `background.page` — WebKit runs those as a non-persistent page, not a
-    /// worker, so `ServiceWorkerGlobalScope` alone would leave such an extension
-    /// with no claiming context at all and its `onInstalled` suppressed for good.
-    /// The page is recognised from the manifest WebKit itself reports
-    /// (`chrome.runtime.getManifest().background`) against `location.pathname`,
-    /// both measured in a real context (`ExtensionPolyfillProfileWiringTests`):
-    /// `background.scripts` loads at `<baseURL>/_generated_background_page.html`
-    /// (`generatedBackgroundPagePath` below — WebKit generates that page to host
-    /// the scripts) and `background.page` at its own manifest path, e.g.
+    /// **Which context claims** (TASK-43). A service worker, and a background
+    /// *page*: an extension declaring `background.scripts` or `background.page`
+    /// (MV2's shapes, which MV3 also accepts — nothing here reads
+    /// `manifest_version`, as in Chrome) runs its background as a non-persistent
+    /// page, not a worker, so `ServiceWorkerGlobalScope` alone would leave such an
+    /// extension with no claiming context at all and its `onInstalled` suppressed
+    /// for good. Which context this is comes from `g.__detourContextKind`, decided
+    /// once in `preambleJS` from the manifest WebKit itself reports
+    /// (`chrome.runtime.getManifest().background`, resolved against the extension
+    /// root) against `location.pathname`, both measured in a real context
+    /// (`ExtensionPolyfillProfileWiringTests`): `background.scripts` loads at
+    /// `<baseURL>/_generated_background_page.html` (WebKit generates that page to
+    /// host the scripts) and `background.page` at its own manifest path, e.g.
     /// `<baseURL>/bg.html`. Only the top-level document qualifies, so an
     /// extension page that iframes the background page's path cannot claim the
     /// event out from under it.
@@ -515,11 +604,6 @@ struct ExtensionAPIPolyfill {
         let lastDispatched = null;
         let claimCount = 0;
         let contextKind = 'page';
-
-        // WebKit's name for the page it generates to host an MV3
-        // `background.scripts` list (TASK-43, measured: such a background context
-        // loads at `webkit-extension://<uuid>/_generated_background_page.html`).
-        const generatedBackgroundPagePath = '/_generated_background_page.html';
 
         function readEvent() {
             try {
@@ -588,47 +672,6 @@ struct ExtensionAPIPolyfill {
             }, function() { return null; });
         }
 
-        // The path of the extension's background document, or '' when the
-        // manifest declares none (or cannot be read): `background.page` is the
-        // author's own path, a `background.scripts` list lives in WebKit's
-        // generated page. Read from the manifest WebKit reports, so no
-        // per-extension substitution into this shared polyfill is needed.
-        function backgroundDocumentPath() {
-            let background = null;
-            try {
-                const runtime = g.chrome && g.chrome.runtime;
-                if (runtime && typeof runtime.getManifest === 'function') {
-                    const manifest = runtime.getManifest();
-                    background = manifest ? manifest.background : null;
-                }
-            } catch (e) {}
-            if (!background || typeof background !== 'object') return '';
-            if (typeof background.page === 'string' && background.page !== '') {
-                return background.page.charAt(0) === '/' ? background.page : '/' + background.page;
-            }
-            if (Array.isArray(background.scripts) && background.scripts.length > 0) {
-                return generatedBackgroundPagePath;
-            }
-            return '';
-        }
-
-        // Is this document the extension's background page (TASK-43)? Only the
-        // top-level document of the background path counts: an extension page
-        // could iframe that same path, and an iframe must not claim the event
-        // out from under the real background context.
-        function isBackgroundPage() {
-            const path = backgroundDocumentPath();
-            if (path === '') return false;
-            try {
-                if (!g.window || g.window.top !== g.window) return false;
-            } catch (e) {
-                return false;
-            }
-            let pathname = '';
-            try { pathname = g.location ? g.location.pathname : ''; } catch (e) {}
-            return pathname === path;
-        }
-
         // A worker claims on the next task; a background page waits for its
         // parser-inserted scripts to have run, since a timer can fire while the
         // parser is still yielding and Chrome likewise requires a background
@@ -649,11 +692,14 @@ struct ExtensionAPIPolyfill {
         }
 
         function install() {
-            const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined'
-                || g.__detourForceRuntimeOnInstalled === true;
-            // Which context this is, whatever happens to the patch below, so the
-            // diagnostics describe it even when the event was left to WebKit.
-            contextKind = isWorker ? 'worker' : (isBackgroundPage() ? 'background-page' : 'page');
+            // Which context this is (the preamble decided once, for every
+            // background-only module), whatever happens to the patch below, so
+            // the diagnostics describe it even when the event was left to
+            // WebKit. `__detourForceRuntimeOnInstalled` makes a test context a
+            // worker for onInstalled alone, as it always did.
+            const kind = g.__detourContextKind || 'page';
+            const isWorker = kind === 'worker' || g.__detourForceRuntimeOnInstalled === true;
+            contextKind = isWorker ? 'worker' : kind;
             const isBackground = contextKind !== 'page';
             const event = readEvent();
             if (!event || typeof event !== 'object') {
@@ -722,14 +768,37 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - Content polyfill bridge
 
-    /// Message listener in the service worker that bridges polyfill requests from
-    /// content scripts (which can't access webkit.messageHandlers) through to the
-    /// native polyfill handler via __detourPolyfillRequest.
+    /// Message listener in the extension's background context that bridges
+    /// polyfill requests from content scripts (which can't access
+    /// webkit.messageHandlers) through to the native polyfill handler via
+    /// __detourPolyfillRequest.
+    ///
+    /// Installed in whichever context is the background one — a service worker or
+    /// a background page (`g.__detourContextKind`, TASK-43). A `ServiceWorkerGlobalScope`
+    /// check alone left an extension whose background is a page with no responder
+    /// at all, so its content scripts' `i18n.detectLanguage` fell back to 'und'
+    /// and their `webNavigation` onHistoryStateUpdated/onReferenceFragmentUpdated
+    /// relays were dropped. An ordinary extension page (popup, options) must not
+    /// register one: two responders would both answer the same message.
+    ///
+    /// `globalThis.__detourContentBridge` says what happened, for the diagnostics
+    /// and the tests: `installed:<kind>`, `skipped:page`, or `no-onMessage`.
     private static let contentPolyfillBridgeJS = """
     (function() {
-        if (typeof ServiceWorkerGlobalScope === 'undefined') return;
+        const g = globalThis;
+        const kind = g.__detourContextKind || 'page';
+        if (kind === 'page') {
+            g.__detourContentBridge = 'skipped:page';
+            return;
+        }
+        let onMessage = null;
+        try { onMessage = g.chrome && g.chrome.runtime && g.chrome.runtime.onMessage; } catch (e) {}
+        if (!onMessage || typeof onMessage.addListener !== 'function') {
+            g.__detourContentBridge = 'no-onMessage';
+            return;
+        }
 
-        chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+        onMessage.addListener(function(message, sender, sendResponse) {
             if (message && message._detourDetectLanguage) {
                 __detourPolyfillRequest('i18n.detectLanguage', { text: message.text })
                     .then(function(result) { sendResponse(result); })
@@ -749,12 +818,13 @@ struct ExtensionAPIPolyfill {
                 };
                 const eventName = message._detourWebNavType === 'referenceFragmentUpdated'
                     ? 'onReferenceFragmentUpdated' : 'onHistoryStateUpdated';
-                if (typeof globalThis.__extensionDispatchWebNavEvent === 'function') {
-                    globalThis.__extensionDispatchWebNavEvent(eventName, details);
+                if (typeof g.__extensionDispatchWebNavEvent === 'function') {
+                    g.__extensionDispatchWebNavEvent(eventName, details);
                 }
                 return false;
             }
         });
+        g.__detourContentBridge = 'installed:' + kind;
     })();
     """
 
@@ -1551,6 +1621,11 @@ struct ExtensionAPIPolyfill {
     /// nothing to keep alive, and an idle port would still cost it WebKit's 30 s
     /// idle unload (a background with open ports is unloaded on the 2-minute
     /// inactive-ports rule instead) plus a retained port in Detour.
+    ///
+    /// A background *page* (`background.scripts` / `background.page`) is
+    /// deliberately not covered yet: the measurement behind this — posting on the
+    /// port resets WebKit's inactive-ports timer — was taken for a worker only,
+    /// and a page's unload rules have not been probed (follow-up).
     ///
     /// `__detourKeepAlivePingIntervalMs`
     /// and `__detourKeepAliveReconnectBaseMs` (both read once at install) shorten

@@ -1143,8 +1143,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private static let useModuleBundler = false
 
     /// A service worker gets no user scripts, so the polyfill is written next to
-    /// it and imported from its top. An MV3 *background page*
-    /// (`background.scripts` / `background.page`) needs nothing here: it is a
+    /// it and imported from its top. A *background page* (MV2, or MV3
+    /// `background.scripts` / `background.page`) needs nothing here: it is a
     /// web view built from the extension controller's configuration, so the
     /// polyfill user script `Profile.extensionController` installs runs in it at
     /// document start like in any other extension page (verified for TASK-43).

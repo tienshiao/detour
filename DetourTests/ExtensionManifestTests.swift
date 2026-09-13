@@ -81,7 +81,8 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertTrue(background.hasBackgroundContent)
     }
 
-    /// A Safari-style MV3 background script list, which WebKit runs as a page.
+    /// A background script list — MV2's shape, also accepted in MV3 — which
+    /// WebKit runs as a page.
     func testBackgroundScriptsAreDecoded() throws {
         let manifest = try parse("""
         {
@@ -108,6 +109,25 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertNil(background.scripts)
         XCTAssertEqual(background.page, "bg.html")
         XCTAssertTrue(background.hasBackgroundContent)
+    }
+
+    /// `manifest_version` is not part of the question: an MV2 extension's
+    /// `background.scripts`/`page` is background content too, and is woken for
+    /// `runtime.onInstalled` the same way (as in Chrome). Nothing in
+    /// `hasBackgroundContent` — or in the polyfill that classifies the context —
+    /// reads the manifest version, and this pins that.
+    func testMV2BackgroundContentIsRecognisedLikeMV3() throws {
+        for entry in [#"{"scripts": ["background.js"], "persistent": false}"#, #"{"page": "bg.html"}"#] {
+            let manifest = try parse("""
+            {
+                "manifest_version": 2, "name": "Legacy", "version": "1.0",
+                "background": \(entry)
+            }
+            """)
+            XCTAssertEqual(manifest.manifestVersion, 2)
+            let background = try XCTUnwrap(manifest.background, "background: \(entry)")
+            XCTAssertTrue(background.hasBackgroundContent, "background: \(entry)")
+        }
     }
 
     /// A `background` entry that declares nothing runnable — and an empty

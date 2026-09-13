@@ -63,16 +63,8 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
         store.undoManager.endUndoGrouping()
     }
 
-    private func makeSleepingTab(title: String = "Tab", spaceID: UUID) -> BrowserTab {
-        BrowserTab(
-            id: UUID(),
-            title: title,
-            url: URL(string: "https://example.com/"),
-            faviconURL: nil,
-            cachedInteractionState: nil,
-            spaceID: spaceID
-        )
-    }
+    /// The page every sleeping tab below is built on (`sleepingTab`).
+    private let exampleURL = URL(string: "https://example.com/")!
 
     /// Releases the web views an undone Close Tab rebuilds live.
     private func teardownTabs(of space: Space?) {
@@ -86,8 +78,8 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     func testUndoDeleteSpaceRestoresTheSameSpaceObject() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
-        let tab = makeSleepingTab(spaceID: space.id)
-        let pinned = makeSleepingTab(title: "Pinned", spaceID: space.id)
+        let tab = sleepingTab(exampleURL, in: space)
+        let pinned = sleepingTab(exampleURL, title: "Pinned", in: space)
         space.tabs.append(contentsOf: [tab, pinned])
         var folderID: UUID?
         act(f.store) {
@@ -124,8 +116,8 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     func testUndoCloseTabAfterUndoDeleteSpaceRestoresIntoTheListedSpace() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
-        let keep = makeSleepingTab(title: "Keep", spaceID: space.id)
-        let closing = makeSleepingTab(title: "Closed", spaceID: space.id)
+        let keep = sleepingTab(exampleURL, title: "Keep", in: space)
+        let closing = sleepingTab(exampleURL, title: "Closed", in: space)
         space.tabs.append(contentsOf: [keep, closing])
 
         act(f.store) { f.store.closeTab(id: closing.id, in: space) }
@@ -156,7 +148,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     func testUndoPinTabAfterUndoDeleteSpaceUnpinsInTheListedSpace() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
-        let tab = makeSleepingTab(spaceID: space.id)
+        let tab = sleepingTab(exampleURL, in: space)
         space.tabs.append(tab)
 
         act(f.store) { f.store.pinTab(id: tab.id, in: space) }
@@ -184,7 +176,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     func testUndoUnpinTabAfterUndoDeleteSpaceRepinsInTheListedSpace() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
-        let tab = makeSleepingTab(spaceID: space.id)
+        let tab = sleepingTab(exampleURL, in: space)
         space.tabs.append(tab)
         act(f.store) { f.store.pinTab(id: tab.id, in: space) }
         f.store.undoManager.removeAllActions()
@@ -258,7 +250,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     func testUndoCloseTabWithoutADeleteStillRestoresTheTab() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
-        let tab = makeSleepingTab(spaceID: space.id)
+        let tab = sleepingTab(exampleURL, in: space)
         space.tabs.append(tab)
 
         act(f.store) { f.store.closeTab(id: tab.id, in: space) }
@@ -275,7 +267,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     func testRedoDeleteSpaceThenUndoAgainRestoresTheSpaceOnce() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
-        let tab = makeSleepingTab(spaceID: space.id)
+        let tab = sleepingTab(exampleURL, in: space)
         space.tabs.append(tab)
 
         act(f.store) { f.store.deleteSpace(id: f.spaceID) }
