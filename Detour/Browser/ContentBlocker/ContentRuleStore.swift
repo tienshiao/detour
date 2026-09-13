@@ -4,11 +4,56 @@ import os
 
 private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-blocker")
 
+/// Where the content blocker keeps its compiled rule lists, downloaded filter
+/// list text and bookkeeping defaults (TASK-36).
+///
+/// WebKit's default rule list store lives in
+/// `~/Library/WebKit/<bundle id>/ContentRuleLists/`, and the standard defaults
+/// domain is the bundle id's, so both are shared by every process with the
+/// production app's bundle id: the test host and isolated `DETOUR_DATA_DIR` runs
+/// would compile into, and refresh, the production app's lists. The default
+/// data directory keeps exactly what it used before; any other data directory
+/// gets its own store, cache and defaults suite.
+struct ContentBlockerStorage {
+    let ruleListStore: WKContentRuleListStore
+    let filterListCacheDirectory: URL
+    let defaults: UserDefaults
+
+    /// The storage of this process's data directory.
+    static let current = forDataDirectory(named: WebKitStorageScope.currentDataDirectoryName)
+
+    static func forDataDirectory(named name: String) -> ContentBlockerStorage {
+        let dataDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(name, isDirectory: true)
+        let cacheDirectory = dataDirectory.appendingPathComponent("ContentBlocker", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+
+        guard name != defaultDetourDataDirectoryName else {
+            return ContentBlockerStorage(
+                ruleListStore: .default(), filterListCacheDirectory: cacheDirectory, defaults: .standard)
+        }
+        let ruleListDirectory = dataDirectory.appendingPathComponent("ContentRuleLists", isDirectory: true)
+        try? FileManager.default.createDirectory(at: ruleListDirectory, withIntermediateDirectories: true)
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.detourbrowser.mac"
+        return ContentBlockerStorage(
+            ruleListStore: WKContentRuleListStore(url: ruleListDirectory),
+            filterListCacheDirectory: cacheDirectory,
+            defaults: UserDefaults(suiteName: "\(bundleIdentifier).\(name)") ?? .standard
+        )
+    }
+}
+
 class ContentRuleStore {
-    private let ruleListStore = WKContentRuleListStore.default()!
+    private let ruleListStore: WKContentRuleListStore
+    private let defaults: UserDefaults
     private var compiledLists: [String: WKContentRuleList] = [:]
     private(set) var compiledRuleCounts: [String: Int] = [:]
     private let maxRulesPerList = 150_000
+
+    init(storage: ContentBlockerStorage = .current) {
+        ruleListStore = storage.ruleListStore
+        defaults = storage.defaults
+    }
 
     func lookupOrCompile(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
         // Try cached in-memory first
@@ -23,7 +68,7 @@ class ContentRuleStore {
                 self?.compiledLists[identifier] = list
                 // Restore compiled count from UserDefaults (saved during prior compilation)
                 let key = "ContentBlocker.\(identifier).compiledRuleCount"
-                if let count = UserDefaults.standard.object(forKey: key) as? Int {
+                if let count = self?.defaults.object(forKey: key) as? Int {
                     self?.compiledRuleCounts[identifier] = count
                 }
                 completion(list)
@@ -63,7 +108,7 @@ class ContentRuleStore {
             if let list {
                 self?.compiledLists[identifier] = list
                 self?.compiledRuleCounts[identifier] = rules.count
-                UserDefaults.standard.set(rules.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
+                self?.defaults.set(rules.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
             }
             completion(list)
         }
@@ -130,7 +175,7 @@ class ContentRuleStore {
                     log.info("Fallback compile succeeded for \(identifier, privacy: .public)")
                     self?.compiledLists[identifier] = list
                     self?.compiledRuleCounts[identifier] = cleaned.count
-                    UserDefaults.standard.set(cleaned.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
+                    self?.defaults.set(cleaned.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
                 }
                 completion(list)
             }

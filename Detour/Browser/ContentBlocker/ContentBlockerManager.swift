@@ -12,9 +12,12 @@ extension Notification.Name {
 class ContentBlockerManager {
     static let shared = ContentBlockerManager()
 
-    let ruleStore = ContentRuleStore()
+    let ruleStore = ContentRuleStore(storage: .current)
     let parser = EasyListParser()
     let whitelist: ContentBlockerWhitelist
+    /// Fetch bookkeeping (etag, last fetch, rule counts): the standard defaults
+    /// in the default data directory, the data directory's own suite elsewhere.
+    private let defaults = ContentBlockerStorage.current.defaults
 
     struct FilterList {
         let identifier: String
@@ -34,9 +37,9 @@ class ContentBlockerManager {
 
     private init() {
         whitelist = ContentBlockerWhitelist(ruleStore: ruleStore)
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        cacheDir = appSupport.appendingPathComponent("Detour/ContentBlocker", isDirectory: true)
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        // Detour/ContentBlocker in the default data directory, as before; an
+        // isolated data directory downloads into its own (TASK-36).
+        cacheDir = ContentBlockerStorage.current.filterListCacheDirectory
     }
 
     private var pendingLookups = 0
@@ -114,7 +117,7 @@ class ContentBlockerManager {
     /// Number of rules parsed from the filter list text.
     func parsedRuleCount(for identifier: String) -> Int? {
         let key = "ContentBlocker.\(identifier).ruleCount"
-        return UserDefaults.standard.object(forKey: key) as? Int
+        return defaults.object(forKey: key) as? Int
     }
 
     /// Number of rules actually compiled and active in WebKit.
@@ -124,7 +127,7 @@ class ContentBlockerManager {
 
     func lastFetchDate(for identifier: String) -> Date? {
         let key = "ContentBlocker.\(identifier).lastFetch"
-        return UserDefaults.standard.object(forKey: key) as? Date
+        return defaults.object(forKey: key) as? Date
     }
 
     func isCompiled(identifier: String) -> Bool {
@@ -154,10 +157,10 @@ class ContentBlockerManager {
 
             // Clear UserDefaults keys
             let id = list.identifier
-            UserDefaults.standard.removeObject(forKey: "ContentBlocker.\(id).ruleCount")
-            UserDefaults.standard.removeObject(forKey: "ContentBlocker.\(id).compiledRuleCount")
-            UserDefaults.standard.removeObject(forKey: "ContentBlocker.\(id).lastFetch")
-            UserDefaults.standard.removeObject(forKey: "ContentBlocker.\(id).etag")
+            defaults.removeObject(forKey: "ContentBlocker.\(id).ruleCount")
+            defaults.removeObject(forKey: "ContentBlocker.\(id).compiledRuleCount")
+            defaults.removeObject(forKey: "ContentBlocker.\(id).lastFetch")
+            defaults.removeObject(forKey: "ContentBlocker.\(id).etag")
         }
 
         postStatusChange()
@@ -183,7 +186,7 @@ class ContentBlockerManager {
 
         let result = parser.parse(text: text)
         log.info("Compiling \(list.identifier, privacy: .public) from cache: \(result.rules.count) rules (\(result.skippedCount) skipped)")
-        UserDefaults.standard.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
+        defaults.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
 
         ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
             if compiled != nil {
@@ -202,10 +205,10 @@ class ContentBlockerManager {
         // Add conditional fetch headers
         let etagKey = "ContentBlocker.\(list.identifier).etag"
         let lastFetchKey = "ContentBlocker.\(list.identifier).lastFetch"
-        if let etag = UserDefaults.standard.string(forKey: etagKey) {
+        if let etag = defaults.string(forKey: etagKey) {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
         }
-        if let lastFetch = UserDefaults.standard.object(forKey: lastFetchKey) as? Date {
+        if let lastFetch = defaults.object(forKey: lastFetchKey) as? Date {
             let formatter = DateFormatter()
             formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
             formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -233,7 +236,7 @@ class ContentBlockerManager {
 
             if httpResponse.statusCode == 304 {
                 log.info("\(list.identifier, privacy: .public) not modified")
-                UserDefaults.standard.set(Date(), forKey: lastFetchKey)
+                self.defaults.set(Date(), forKey: lastFetchKey)
                 self.refreshingIdentifiers.remove(list.identifier)
                 self.postStatusChange()
                 return
@@ -252,14 +255,14 @@ class ContentBlockerManager {
 
             // Save ETag and timestamp
             if let etag = httpResponse.value(forHTTPHeaderField: "ETag") {
-                UserDefaults.standard.set(etag, forKey: etagKey)
+                self.defaults.set(etag, forKey: etagKey)
             }
-            UserDefaults.standard.set(Date(), forKey: lastFetchKey)
+            self.defaults.set(Date(), forKey: lastFetchKey)
 
             // Parse and compile
             let result = self.parser.parse(text: text)
             log.info("Parsed \(list.identifier, privacy: .public): \(result.rules.count) rules (\(result.skippedCount) skipped)")
-            UserDefaults.standard.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
+            self.defaults.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
 
             DispatchQueue.main.async {
                 self.ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
@@ -276,7 +279,7 @@ class ContentBlockerManager {
 
     private func refreshIfNeeded(list: FilterList) {
         let lastFetchKey = "ContentBlocker.\(list.identifier).lastFetch"
-        if let lastFetch = UserDefaults.standard.object(forKey: lastFetchKey) as? Date,
+        if let lastFetch = defaults.object(forKey: lastFetchKey) as? Date,
            Date().timeIntervalSince(lastFetch) < fetchInterval {
             return
         }

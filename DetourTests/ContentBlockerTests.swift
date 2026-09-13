@@ -5,11 +5,67 @@ import WebKit
 final class ContentBlockerTests: XCTestCase {
 
     private let parser = EasyListParser()
-    private let ruleListStore = WKContentRuleListStore.default()!
+    /// The test data directory's own rule list store, never the production
+    /// app's `~/Library/WebKit/<bundle id>/ContentRuleLists/` (TASK-36).
+    private let ruleListStore = ContentBlockerStorage.current.ruleListStore
 
-    private var cacheDir: URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("Detour/ContentBlocker", isDirectory: true)
+    /// Downloaded filter list text, read only: the test data directory's cache,
+    /// or else the production app's.
+    private func cachedFilterListFile(_ identifier: String) -> URL {
+        let own = ContentBlockerStorage.current.filterListCacheDirectory.appendingPathComponent("\(identifier).txt")
+        if FileManager.default.fileExists(atPath: own.path) { return own }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("\(defaultDetourDataDirectoryName)/ContentBlocker/\(identifier).txt")
+    }
+
+    // MARK: - Storage per data directory (TASK-36)
+
+    /// The default data directory keeps WebKit's default rule list store, the
+    /// standard defaults and Detour/ContentBlocker, exactly as before.
+    func testTheDefaultDataDirectoryKeepsTheSharedContentBlockerStorage() {
+        let storage = ContentBlockerStorage.forDataDirectory(named: defaultDetourDataDirectoryName)
+        XCTAssertTrue(storage.ruleListStore === WKContentRuleListStore.default())
+        XCTAssertTrue(storage.defaults === UserDefaults.standard)
+        XCTAssertEqual(storage.filterListCacheDirectory.standardizedFileURL.path,
+                       FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                           .appendingPathComponent("Detour/ContentBlocker").standardizedFileURL.path)
+    }
+
+    /// Any other data directory, like the test host's, gets its own rule list
+    /// store, defaults suite and filter list cache inside the data directory.
+    func testAnIsolatedDataDirectoryGetsItsOwnContentBlockerStorage() throws {
+        let name = WebKitStorageScope.currentDataDirectoryName
+        guard name != defaultDetourDataDirectoryName else {
+            throw XCTSkip("DETOUR_DATA_DIR is unset or \"Detour\"")
+        }
+        let storage = ContentBlockerStorage.current
+        XCTAssertFalse(storage.ruleListStore === WKContentRuleListStore.default())
+        XCTAssertFalse(storage.defaults === UserDefaults.standard)
+        XCTAssertEqual(storage.filterListCacheDirectory.standardizedFileURL.path,
+                       detourDataDirectory().appendingPathComponent("ContentBlocker").standardizedFileURL.path)
+
+        // A list compiled here lands in the data directory, not in WebKit's
+        // shared ContentRuleLists directory.
+        let identifier = "task36-probe-\(UUID().uuidString.prefix(8))"
+        let compiled = expectation(description: "compile")
+        storage.ruleListStore.compileContentRuleList(
+            forIdentifier: identifier,
+            encodedContentRuleList: #"[{"trigger":{"url-filter":"task36"},"action":{"type":"block"}}]"#
+        ) { list, error in
+            XCTAssertNotNil(list, "\(String(describing: error))")
+            compiled.fulfill()
+        }
+        wait(for: [compiled], timeout: 30)
+        let ownDirectory = detourDataDirectory().appendingPathComponent("ContentRuleLists")
+        let sharedDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WebKit/\(Bundle.main.bundleIdentifier ?? "")/ContentRuleLists")
+        let fileName = "ContentRuleList-\(identifier)"
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ownDirectory.appendingPathComponent(fileName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sharedDirectory.appendingPathComponent(fileName).path))
+
+        let removed = expectation(description: "remove")
+        storage.ruleListStore.removeContentRuleList(forIdentifier: identifier) { _ in removed.fulfill() }
+        wait(for: [removed], timeout: 30)
     }
 
     // MARK: - Parser unit tests
@@ -95,7 +151,7 @@ final class ContentBlockerTests: XCTestCase {
     // MARK: - Helpers
 
     private func compileFilterList(identifier: String, name: String) throws {
-        let textFile = cacheDir.appendingPathComponent("\(identifier).txt")
+        let textFile = cachedFilterListFile(identifier)
         guard FileManager.default.fileExists(atPath: textFile.path) else {
             throw XCTSkip("\(name) not cached at \(textFile.path) — run the app first to download it")
         }
@@ -127,6 +183,9 @@ final class ContentBlockerTests: XCTestCase {
 
                 wait(for: [compileExp], timeout: 120)
                 XCTAssertNotNil(fallbackList, "\(name) chunk \(index) failed even with fallback: \(error.localizedDescription)")
+                let removeExp = expectation(description: "Remove fallback \(name) chunk \(index)")
+                ruleListStore.removeContentRuleList(forIdentifier: "fallback-\(chunkID)") { _ in removeExp.fulfill() }
+                wait(for: [removeExp], timeout: 30)
             }
         }
     }
