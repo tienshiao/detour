@@ -93,7 +93,7 @@ struct AppDatabase {
     @discardableResult
     func deleteProfile(id: String) -> Bool {
         performWrite("delete profile", default: false) { db in
-            try Self.deleteProfileRows(ids: [id], in: db).contains(id)
+            try Self.deleteProfileRows(ids: [id], in: db, recordingPendingDataRemoval: true).contains(id)
         }
     }
 
@@ -102,9 +102,14 @@ struct AppDatabase {
     /// transaction. For each id that no space references it deletes every row
     /// keyed by the id (TASK-31) — per-profile extension state, the
     /// `runtime.onInstalled` ledger, favourites and the content blocker
-    /// whitelist — then the profile row, and records a pending removal of the
-    /// profile's on-disk WebKit data (TASK-32, `ProfileDataRemoval`) if there was
-    /// a row, so the data is removed even if the app quits first.
+    /// whitelist — then the profile row.
+    ///
+    /// `recordingPendingDataRemoval` also records a pending removal of the
+    /// profile's on-disk WebKit data (TASK-32, `ProfileDataRemoval`) for every id
+    /// whose row went, so the data is removed even if the app quits first. Only
+    /// `deleteProfile` — an explicit "delete this profile" — passes true; the
+    /// `saveProfiles` sweep passes false, because its set of live profiles can be
+    /// incomplete.
     ///
     /// `favorite`, `profileExtension` and `contentBlockerWhitelist` also cascade
     /// from the profile row, but only while foreign keys are enforced, and
@@ -114,7 +119,8 @@ struct AppDatabase {
     /// An id a space still references is skipped entirely.
     ///
     /// Returns the ids whose profile row was deleted.
-    private static func deleteProfileRows(ids: [String], in db: GRDB.Database) throws -> [String] {
+    private static func deleteProfileRows(ids: [String], in db: GRDB.Database,
+                                          recordingPendingDataRemoval: Bool) throws -> [String] {
         var deletedIDs: [String] = []
         for id in ids {
             let spaceCount = try SpaceRecord.filter(Column("profileID") == id).fetchCount(db)
@@ -127,7 +133,9 @@ struct AppDatabase {
             try FavoriteRecord.filter(Column("profileID") == id).deleteAll(db)
             try ContentBlockerWhitelistRecord.filter(Column("profileID") == id).deleteAll(db)
             if try ProfileRecord.filter(Column("id") == id).deleteAll(db) > 0 {
-                try recordPendingProfileDataRemoval(profileID: id, in: db)
+                if recordingPendingDataRemoval {
+                    try recordPendingProfileDataRemoval(profileID: id, in: db)
+                }
                 deletedIDs.append(id)
             }
         }
@@ -209,21 +217,23 @@ struct AppDatabase {
     // MARK: - Session
 
     /// Saves `records` as the complete set of profiles, in one transaction. A
-    /// stored profile missing from the set is deleted with its per-profile rows
-    /// and gets a pending data removal (`deleteProfileRows`), unless a space still
-    /// references it, in which case it is kept.
+    /// stored profile missing from the set has its rows dropped with it
+    /// (`deleteProfileRows`, TASK-33), unless a space still references it, in
+    /// which case it is kept.
     ///
-    /// The pending removal is only recorded here; it runs at the next launch,
-    /// which re-checks the profile table. TabStore saves every profile it holds
-    /// (every non-Private profile plus the built-in Private one), so a row missing
-    /// from the set is one no live profile of that store owns: a profile
-    /// `deleteProfile` could not delete, or the saved profiles of a launch whose
-    /// session had no spaces and so never loaded them.
+    /// The sweep drops rows only — it never arms an on-disk data removal, as it
+    /// did not before TASK-33. `records` is what TabStore holds in memory, which
+    /// is not proof of what the user deleted: a launch that could not load the
+    /// profiles (a read error, or a caller that saves before restoring) passes a
+    /// set missing profiles that are very much alive, and removing their
+    /// `WKWebsiteDataStore` would irreversibly wipe real cookies, logins and
+    /// extension storage. Only the explicit `deleteProfile` path records the
+    /// pending removal (TASK-32).
     func saveProfiles(_ records: [ProfileRecord]) {
         performWrite("save profiles") { db in
             let savedIDs = Set(records.map(\.id))
             let removedIDs = try String.fetchAll(db, sql: "SELECT id FROM profile").filter { !savedIDs.contains($0) }
-            _ = try Self.deleteProfileRows(ids: removedIDs, in: db)
+            _ = try Self.deleteProfileRows(ids: removedIDs, in: db, recordingPendingDataRemoval: false)
             for record in records {
                 try record.save(db)
             }
@@ -649,6 +659,24 @@ struct AppDatabase {
                 try db.alter(table: table) { t in
                     t.add(column: "extensionID", .text)
                 }
+            }
+            // Rows saved before the column existed have no id, and a NULL id on
+            // an extension page is the marker for "the extension was uninstalled
+            // since" — restore drops those tiles and closed-tab records. Without
+            // this back-fill, upgrading Detour would silently delete every
+            // extension-page pin and favourite the user already had. The
+            // sentinel classifies as a disabled extension's page instead
+            // (`classifyPersistedExtensionPage`): kept, but never restored as a
+            // live tab, since nothing can tell which extension it belonged to.
+            for (table, urlColumn) in [("tab", "url"), ("pinnedTab", "pinnedURL"),
+                                       ("favorite", "url"), ("closedTab", "url")] {
+                try db.execute(
+                    sql: """
+                        UPDATE "\(table)" SET extensionID = ?
+                        WHERE extensionID IS NULL AND lower("\(urlColumn)") LIKE 'webkit-extension://%'
+                        """,
+                    arguments: [ExtensionPageURL.unknownExtensionID]
+                )
             }
         }
 

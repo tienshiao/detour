@@ -9,6 +9,13 @@ import Foundation
 /// and the polyfill bridge no longer recognises the origin.
 enum ExtensionPageURL {
     static let scheme = "webkit-extension"
+
+    /// The extension id recorded for an extension page saved before Detour
+    /// recorded ids at all (the migration v8 back-fill, TASK-24). No real
+    /// extension has this id — ids are manifest-key hashes — so it can never
+    /// collide with an installed one, and it keeps such a row distinguishable
+    /// from a NULL id, which means "the extension was uninstalled since".
+    static let unknownExtensionID = "unknown"
 }
 
 /// Whether `url` is an extension page served from `host`, i.e. the host of some
@@ -86,10 +93,16 @@ enum PersistedExtensionPage: Equatable {
     /// now, but a later enable can: bookmark-like tiles (pinned entries,
     /// favourites) and closed-tab records keep it, while open tabs on it are
     /// dropped — what a mid-session disable does.
+    ///
+    /// A legacy page — one saved before ids were recorded, carrying
+    /// `ExtensionPageURL.unknownExtensionID` from the v8 back-fill — is this
+    /// too: its tiles and closed-tab records are kept, its tabs are not
+    /// restored, and its origin is registered as pending under the unknown id so
+    /// saves round-trip it. Nothing ever enables that id, so it simply stays
+    /// dormant rather than being silently deleted.
     case disabled(extensionID: String, originHost: String)
     /// An extension page that can never load again: its extension is not
-    /// installed, or the row predates the saved id. Dropped at restore rather
-    /// than restored as a blank tab.
+    /// installed. Dropped at restore rather than restored as a blank tab.
     case unavailable
 }
 
@@ -102,6 +115,13 @@ func classifyPersistedExtensionPage(
     installedExtensionIDs: Set<String>, enabledExtensionIDs: Set<String>
 ) -> PersistedExtensionPage {
     guard let url, isExtensionPageURL(url), let host = url.host else { return .notExtensionPage }
+    // A page saved before Detour recorded ids: no extension owns the sentinel,
+    // so it is never installed — but it is not "uninstalled since" either, and
+    // dropping the user's tiles on a version upgrade would be data loss. Treat
+    // it as a disabled extension's page: kept, never re-enabled.
+    if extensionID == ExtensionPageURL.unknownExtensionID {
+        return .disabled(extensionID: ExtensionPageURL.unknownExtensionID, originHost: host.lowercased())
+    }
     guard let extensionID, !extensionID.isEmpty, installedExtensionIDs.contains(extensionID) else {
         return .unavailable
     }

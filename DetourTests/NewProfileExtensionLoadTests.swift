@@ -82,28 +82,14 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// Write an extension to a temp directory, register it in ExtensionManager and
     /// save its DB row as globally enabled — what an installed extension looks like.
-    private func installTestExtension(named name: String, manifest: String,
-                                      files: [String: String]) async throws -> WebExtension {
-        let id = "new-profile-\(name)-\(UUID().uuidString.prefix(8))"
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-test-\(id)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        tempDirs.append(dir)
-        try manifest.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
-        for (file, contents) in files {
-            try contents.write(to: dir.appendingPathComponent(file), atomically: true, encoding: .utf8)
-        }
-
-        let wkExt = try await WKWebExtension(resourceBaseURL: dir)
-        let parsed = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
-        let ext = WebExtension(id: id, manifest: parsed, basePath: dir)
-        ext.wkExtension = wkExt
+    private func installFixtureExtension(named name: String, manifest: String,
+                                         files: [String: String]) async throws -> WebExtension {
+        let ext = try await makeTestExtension(id: "new-profile-\(name)-\(UUID().uuidString.prefix(8))",
+                                              manifestJSON: manifest, files: files)
+        tempDirs.append(ext.basePath)
         ExtensionManager.shared.extensions.append(ext)
-        registeredExtensionIDs.append(id)
-        AppDatabase.shared.saveExtension(ExtensionRecord(
-            id: id, name: parsed.name, version: parsed.version,
-            manifestJSON: manifest.data(using: .utf8)!, basePath: dir.path,
-            isEnabled: true, installedAt: Date().timeIntervalSince1970
-        ))
+        registeredExtensionIDs.append(ext.id)
+        installTestExtension(ext, in: AppDatabase.shared, manifestJSON: Data(manifest.utf8))
         ExtensionManager.shared.invalidateEnabledExtensionsCache()
         return ext
     }
@@ -111,7 +97,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
     /// An extension with an action and a content script on test.example.com, and
     /// no background content.
     private func installContentScriptExtension() async throws -> WebExtension {
-        try await installTestExtension(named: "content", manifest: """
+        try await installFixtureExtension(named: "content", manifest: """
         {
             "manifest_version": 3,
             "name": "New Profile Content Script Test",
@@ -246,7 +232,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
             return true;
         });
         """
-        let ext = try await installTestExtension(named: "worker", manifest: """
+        let ext = try await installFixtureExtension(named: "worker", manifest: """
         {
             "manifest_version": 3,
             "name": "New Profile Worker Test",

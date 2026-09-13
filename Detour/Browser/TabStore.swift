@@ -416,13 +416,15 @@ class TabStore {
     }
 
     /// Deletes a profile no space uses, with its rows (TASK-31) and its on-disk
-    /// WebKit data (TASK-32). The order matters: `WKWebsiteDataStore.remove`
-    /// fails while anything still uses the store, so first everything holding
-    /// the profile's store or extension controller is torn down, then the
-    /// `Profile` is dropped, and only then is the removal attempted, on a later
-    /// main-actor turn. The pending removal is recorded in the transaction that
-    /// deletes the profile row, so a removal that fails (or never runs because
-    /// the app quits) is retried at the next launch.
+    /// WebKit data (TASK-32). The order matters twice over. The row delete goes
+    /// first and nothing is touched unless it succeeded, so a refused or failed
+    /// delete leaves the profile whole. Then, because `WKWebsiteDataStore.remove`
+    /// fails while anything still uses the store, everything holding the
+    /// profile's store or extension controller is torn down and the `Profile` is
+    /// dropped, and only then is the removal attempted, on a later main-actor
+    /// turn. The pending removal is recorded in the transaction that deletes the
+    /// profile row, so a removal that fails (or never runs because the app quits)
+    /// is retried at the next launch.
     ///
     /// Returns the removal task, or nil when nothing was deleted.
     @discardableResult
@@ -431,6 +433,18 @@ class TabStore {
         guard profiles.filter({ !$0.isIncognito }).count > 1 else { return nil }
         let hasSpaces = spaces.contains { $0.profileID == id && !$0.isIncognito }
         guard !hasSpaces else { return nil }
+
+        // A space moved off this profile less than a save interval ago still
+        // references it in the database, which would refuse the row delete.
+        saveNow()
+
+        // Nothing is torn down until the row delete has actually happened: it
+        // returns false for a write error or a space row that still references
+        // the profile, and a half-deleted profile — gone from memory and flagged
+        // deleted, but with its row and its on-disk data kept and no pending
+        // removal — is unrecoverable.
+        let deleted = appDB.deleteProfile(id: id.uuidString)
+        guard deleted else { return nil }
 
         // Undo actions can bring back what referenced this profile: Delete
         // Space and Edit Space rebuild or re-home a space onto a captured
@@ -441,10 +455,6 @@ class TabStore {
         // releases the Profile those closures retain, so its store is no
         // longer in use when the removal below runs.
         undoManager.removeAllActions()
-
-        // A space moved off this profile less than a save interval ago still
-        // references it in the database, which would refuse the row delete.
-        saveNow()
 
         let profile = self.profile(withID: id)
         if let profile {
@@ -462,11 +472,9 @@ class TabStore {
             profile.unloadAllExtensions()
         }
 
-        let deleted = appDB.deleteProfile(id: id.uuidString)
         profile?.isDeleted = true
         profiles.removeAll { $0.id == id }
         scheduleSave()
-        guard deleted else { return nil }
         return profileDataRemoval.removeDataOfDeletedProfile(id: id, released: profile)
     }
 
@@ -655,9 +663,14 @@ class TabStore {
 
     /// Restores session. Returns (activeSpaceID, selectedTabID) for the window to use.
     func restoreSession() -> (spaceID: UUID, tabID: UUID?)? {
-        guard let session = appDB.loadSession() else { return nil }
-
-        // Load profiles first
+        // Load profiles first — before the session, and whether or not there is
+        // one. `loadSession` returns nil whenever the space table is empty (the
+        // last persistent space deleted while a Private window is open) and on
+        // any read error; a save then writes only the profiles this store holds,
+        // and `saveProfiles` sweeps every stored profile missing from that set.
+        // A launch that never loaded them must not look like a launch that
+        // deleted them (TASK-32/TASK-33): holding them costs nothing when there
+        // is no session to restore.
         let profileRecords = appDB.loadProfiles()
         for record in profileRecords {
             if let profile = Profile.from(record: record) {
@@ -667,6 +680,8 @@ class TabStore {
 
         // Ensure the built-in incognito profile exists
         ensureIncognitoProfile()
+
+        guard let session = appDB.loadSession() else { return nil }
 
         // Extension pages (TASK-24). A persisted webkit-extension:// URL names an
         // origin that died with the previous launch's context; the extension id
@@ -682,24 +697,13 @@ class TabStore {
         // contexts load asynchronously after this returns, and
         // `Profile.resolvePendingExtensionPages` moves the pages onto them then
         // (or on the enable, for a disabled extension).
-        let installedExtensionIDs = appDB.installedExtensionIDs()
-        var enabledExtensionIDsByProfile: [UUID: Set<String>] = [:]
+        // One availability for the whole restore: it reads the installed set, and
+        // each profile's enabled set, once.
+        let availability = ExtensionAvailability(appDB: appDB)
         var droppedTabIDs = Set<UUID>()
         func persistedPage(_ urlString: String?, extensionID: String?, in profile: Profile?) -> PersistedExtensionPage {
-            let url = urlString.flatMap { URL(string: $0) }
-            guard isExtensionPageURL(url) else { return .notExtensionPage }
-            var enabled: Set<String> = []
-            if let profile {
-                if let cached = enabledExtensionIDsByProfile[profile.id] {
-                    enabled = cached
-                } else {
-                    enabled = appDB.enabledExtensionIDs(for: profile.id.uuidString)
-                    enabledExtensionIDsByProfile[profile.id] = enabled
-                }
-            }
-            return classifyPersistedExtensionPage(url: url, extensionID: extensionID,
-                                                  installedExtensionIDs: installedExtensionIDs,
-                                                  enabledExtensionIDs: enabled)
+            classifyCapturedPage(url: urlString.flatMap { URL(string: $0) }, extensionID: extensionID,
+                                 in: profile, availability: availability)
         }
         /// Registers the pending origin of a page that is being kept.
         func keep(_ page: PersistedExtensionPage, in profile: Profile?) {
@@ -1037,7 +1041,7 @@ class TabStore {
     func addFavoriteFromEntry(url: URL, title: String, faviconURL: URL?, favicon: NSImage?,
                               profileID: UUID, at index: Int) -> Bool {
         guard let profile = profiles.first(where: { $0.id == profileID }),
-              let url = rehomedTileURL(url, page: dormantFavoritePage(url: url, in: profile), in: profile)
+              let url = rehomedTileURL(url, page: dormantTilePage(url: url, in: profile), in: profile)
         else { return false }
 
         let favorite = Favorite(url: url, title: title, faviconURL: faviconURL, sortOrder: 0)
@@ -1050,12 +1054,21 @@ class TabStore {
         return true
     }
 
+    /// Gives a dormant favourite a live backing tab (clicking the tile).
+    ///
+    /// A dormant extension page is gated exactly as a move out of the bar is
+    /// (TASK-34): a disabled or uninstalled extension's page cannot become a tab,
+    /// which would wake blank on a pending or dead origin, so the favourite is
+    /// left dormant instead.
     func activateFavorite(id: UUID, profileID: UUID, in space: Space) {
         guard let profile = profiles.first(where: { $0.id == profileID }),
               let fav = profile.favorites.first(where: { $0.id == id }),
               fav.tab == nil else { return }
+        let page = dormantTilePage(url: fav.url, in: profile)
+        guard dormantTileDropTargets(page).contains(.tabList),
+              let url = rehomedTileURL(fav.url, page: page, in: profile) else { return }
 
-        let tab = makeTab(loading: fav.url, title: fav.title, faviconURL: fav.faviconURL, in: space)
+        let tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
         fav.tab = tab
         subscribeToTab(tab, spaceID: space.id)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
@@ -1084,16 +1097,18 @@ class TabStore {
         scheduleSave()
     }
 
-    /// What a dormant favourite's (or other dormant tile's) page is now (TASK-34),
-    /// judged by the extension claiming its origin in `profile`: the loaded
-    /// context serving it, or the id registered for its pending origin
-    /// (`Profile.extensionID(forPageURL:)`). A favourite holds no extension id in
-    /// memory and needs none: a context reload rewrites its URL
-    /// (`retargetExtensionPages`), and a restore or a disable registers its
+    /// What a dormant tile's page is now (TASK-34) — a favourite's URL, or a
+    /// dormant pinned entry's home page — judged by the extension claiming its
+    /// origin in `profile`: the loaded context serving it, or the id registered
+    /// for its pending origin (`Profile.extensionID(forPageURL:)`). A tile holds
+    /// no extension id in memory and needs none: a context reload rewrites its
+    /// URL (`retargetExtensionPages`), and a restore or a disable registers its
     /// origin as pending. Only an uninstall forgets the origin, which leaves no
     /// id and so classifies as `.unavailable`.
-    private func dormantFavoritePage(url: URL, in profile: Profile) -> PersistedExtensionPage {
-        classifyCapturedPage(url: url, extensionID: profile.extensionID(forPageURL: url), in: profile)
+    private func dormantTilePage(url: URL, in profile: Profile?,
+                                 availability: ExtensionAvailability? = nil) -> PersistedExtensionPage {
+        classifyCapturedPage(url: url, extensionID: profile?.extensionID(forPageURL: url), in: profile,
+                             availability: availability)
     }
 
     /// Where a dormant tile on `page` may move (TASK-34). An ordinary page and an
@@ -1116,7 +1131,9 @@ class TabStore {
         guard let profile = profiles.first(where: { $0.id == profileID }),
               let fav = profile.favorites.first(where: { $0.id == id }) else { return [] }
         if fav.tab != nil { return .all }
-        return dormantTileDropTargets(dormantFavoritePage(url: fav.url, in: profile))
+        // Called from drop validation, per mouse move: read the availability once.
+        return dormantTileDropTargets(dormantTilePage(url: fav.url, in: profile,
+                                                      availability: ExtensionAvailability(appDB: appDB)))
     }
 
     /// Moves a favorite back into the tab list, removing it from favorites.
@@ -1137,7 +1154,7 @@ class TabStore {
         if let liveTab = fav.tab {
             tab = liveTab
         } else {
-            let page = dormantFavoritePage(url: fav.url, in: profile)
+            let page = dormantTilePage(url: fav.url, in: profile)
             guard dormantTileDropTargets(page).contains(.tabList),
                   let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
             tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
@@ -1175,7 +1192,7 @@ class TabStore {
         if fav.tab != nil {
             pinnedURL = fav.url
         } else {
-            let page = dormantFavoritePage(url: fav.url, in: profile)
+            let page = dormantTilePage(url: fav.url, in: profile)
             guard dormantTileDropTargets(page).contains(.pinned),
                   let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
             pinnedURL = url
@@ -1433,8 +1450,11 @@ class TabStore {
             // live origin without its interaction state, and one whose extension
             // was disabled or uninstalled since does not come back (nil).
             var droppedTabIDs = Set<UUID>()
+            // One availability for the whole rebuild, like a restore.
+            let availability = ExtensionAvailability(appDB: self.appDB)
             func rebuild(_ s: TabSnapshot) -> BrowserTab? {
-                let page = self.classifyCapturedPage(url: s.url, extensionID: s.extensionID, in: restored)
+                let page = self.classifyCapturedPage(url: s.url, extensionID: s.extensionID, in: restored,
+                                                     availability: availability)
                 let tab: BrowserTab
                 if page != .notExtensionPage {
                     guard let extensionPageTab = self.restoredTab(
@@ -1494,7 +1514,8 @@ class TabStore {
                 // An entry whose home page belongs to an extension uninstalled
                 // since is dropped with its backing tab, as restore drops it
                 // (TASK-30); a lone split partner is dissolved below.
-                guard let pinnedURL = self.rehomedTileURL(e.pinnedURL, extensionID: e.extensionID, in: restored) else {
+                guard let pinnedURL = self.rehomedTileURL(e.pinnedURL, extensionID: e.extensionID, in: restored,
+                                                         availability: availability) else {
                     if let backingTabID = e.backingTab?.id { droppedTabIDs.insert(backingTabID) }
                     continue
                 }
@@ -1670,9 +1691,12 @@ class TabStore {
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
     }
 
+    /// The profile a new default space goes on. The built-in Private profile is
+    /// never it: `restoreSession` loads (or mints) it before any default one
+    /// exists, so `profiles.first` can be Private on a session-less launch.
     @discardableResult
     private func ensureDefaultProfile() -> Profile {
-        if let existing = profiles.first { return existing }
+        if let existing = profiles.first(where: { !$0.isIncognito }) { return existing }
         let profile = Profile(name: "Default")
         profiles.append(profile)
         appDB.saveProfile(profile.toRecord())
@@ -2371,12 +2395,32 @@ class TabStore {
                                                 excluding: Set(entries.map(\.id)), in: space)
             .first { $0.sortOrder > pairMaxOrder }?.id
 
+        // Both members' tabs first: if either dormant page cannot become a tab
+        // (a disabled or uninstalled extension's), the whole group stays pinned
+        // untouched rather than half-unpinned (TASK-34).
         var tabs: [BrowserTab] = []
+        var materialized: [BrowserTab] = []
+        for entry in entries {
+            if let live = entry.tab {
+                tabs.append(live)
+                continue
+            }
+            guard let tab = materializeDormantEntry(entry, in: space) else {
+                // Discard a sibling materialized a moment ago: bailing must leave
+                // no subscribed tab behind either.
+                for tab in materialized {
+                    tabSubscriptions.removeValue(forKey: tab.id)
+                    tab.teardown()
+                }
+                return
+            }
+            materialized.append(tab)
+            tabs.append(tab)
+        }
         for entry in entries {
             space.pinnedEntries.removeAll { $0.id == entry.id }
             entry.splitGroupID = nil
             entry.splitFraction = nil
-            tabs.append(entry.tab ?? materializeDormantEntry(entry, in: space))
         }
 
         let insertAt = snappedToSplitGroupBoundary(
@@ -2569,8 +2613,17 @@ class TabStore {
     /// Materializes a dormant pinned entry into a live, subscribed tab loading
     /// the pinned URL. The caller decides the entry's fate: keep it live
     /// (`entry.tab = tab`) or remove it (the unpin paths).
-    private func materializeDormantEntry(_ entry: PinnedEntry, in space: Space) -> BrowserTab {
-        let tab = makeTab(loading: entry.pinnedURL, title: entry.pinnedTitle, faviconURL: entry.faviconURL, in: space)
+    ///
+    /// Returns nil for an extension page that cannot become a tab (TASK-34): a
+    /// disabled — or uninstalled, or legacy — extension's page would wake blank
+    /// on a pending or dead origin, and the next restore would drop it. The
+    /// entry must then stay dormant, so every caller has to bail *before*
+    /// mutating anything.
+    private func materializeDormantEntry(_ entry: PinnedEntry, in space: Space) -> BrowserTab? {
+        let page = dormantTilePage(url: entry.pinnedURL, in: space.profile)
+        guard dormantTileDropTargets(page).contains(.tabList),
+              let url = rehomedTileURL(entry.pinnedURL, page: page, in: space) else { return nil }
+        let tab = makeTab(loading: url, title: entry.pinnedTitle, faviconURL: entry.faviconURL, in: space)
         subscribeToTab(tab, spaceID: space.id)
         return tab
     }
@@ -2685,7 +2738,12 @@ class TabStore {
 
     func unpinTab(id: UUID, in space: Space, at destinationIndex: Int? = nil) {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
-        let entry = space.pinnedEntries.remove(at: index)
+        let entry = space.pinnedEntries[index]
+        // Resolve the backing tab before anything is mutated: a dormant page that
+        // cannot become a tab (a disabled or uninstalled extension's) leaves the
+        // entry pinned exactly as it was (TASK-34).
+        guard let tab = entry.tab ?? materializeDormantEntry(entry, in: space) else { return }
+        space.pinnedEntries.remove(at: index)
         let savedFolderID = entry.folderID
         let savedSortOrder = entry.sortOrder
         let savedPinnedIndex = index
@@ -2695,7 +2753,6 @@ class TabStore {
         entry.splitGroupID = nil
         entry.splitFraction = nil
         dissolvePinnedSplit(around: id, groupID: membership?.groupID, in: space)
-        let tab = entry.tab ?? materializeDormantEntry(entry, in: space)
         let insertAt = snappedToSplitGroupBoundary(
             min(destinationIndex ?? 0, space.tabs.count),
             groupIDs: space.tabs.map(\.splitGroupID)
@@ -2855,7 +2912,10 @@ class TabStore {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
         let entry = space.pinnedEntries[index]
         guard entry.tab == nil else { return }  // Already live
-        entry.tab = materializeDormantEntry(entry, in: space)
+        // A page that cannot become a tab leaves the entry dormant, unchanged
+        // and unannounced (TASK-34).
+        guard let tab = materializeDormantEntry(entry, in: space) else { return }
+        entry.tab = tab
         notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: index, in: space) }
         scheduleSave()
     }
@@ -3026,9 +3086,12 @@ class TabStore {
 
     func canReopenClosedTab(in space: Space) -> Bool {
         let spaceIDString = space.id.uuidString
+        // Menu validation: one availability for the whole scan, which can reach
+        // every record in the stack.
+        let availability = ExtensionAvailability(appDB: appDB)
         return closedTabStack.contains { record in
             guard record.spaceID == spaceIDString else { return false }
-            switch closedTabPage(record, in: space) {
+            switch closedTabPage(record, in: space, availability: availability) {
             case .notExtensionPage, .restorable: return true
             case .disabled, .unavailable: return false
             }
@@ -3036,29 +3099,72 @@ class TabStore {
     }
 
     /// What a closed-tab record's page is now (TASK-24).
-    private func closedTabPage(_ record: ClosedTabRecord, in space: Space) -> PersistedExtensionPage {
-        classifyCapturedPage(url: record.url.flatMap { URL(string: $0) }, extensionID: record.extensionID, in: space)
+    private func closedTabPage(_ record: ClosedTabRecord, in space: Space,
+                               availability: ExtensionAvailability? = nil) -> PersistedExtensionPage {
+        classifyCapturedPage(url: record.url.flatMap { URL(string: $0) }, extensionID: record.extensionID,
+                             in: space, availability: availability)
     }
 
     // MARK: - Rebuilding closed tabs (TASK-24, TASK-28)
 
-    /// What a page captured earlier — a closed-tab record, or the state an undo
-    /// closure captured at close time — is now, judged by the extension id
-    /// captured with it (`Profile.extensionID(forPageURL:)` at that moment)
-    /// against the extensions installed and enabled in `profile`. Only an
-    /// extension page consults the database.
-    private func classifyCapturedPage(url: URL?, extensionID: String?, in profile: Profile?) -> PersistedExtensionPage {
-        guard isExtensionPageURL(url) else { return .notExtensionPage }
-        return classifyPersistedExtensionPage(
-            url: url, extensionID: extensionID,
-            installedExtensionIDs: appDB.installedExtensionIDs(),
-            enabledExtensionIDs: profile.map { appDB.enabledExtensionIDs(for: $0.id.uuidString) } ?? []
-        )
+    /// The installed and per-profile enabled extension sets, read from the
+    /// database at most once each and then held for the length of one operation
+    /// (a restore, a menu validation, a drop, a reopen).
+    ///
+    /// Classification is a hot path — validating Reopen Closed Tab scans up to
+    /// 100 records, and drop validation runs per mouse move — and each
+    /// classification otherwise opens two read transactions. Behaviour is
+    /// unchanged: nothing installs, enables or disables an extension in the
+    /// middle of one of these operations. Ordinary URLs never touch the database.
+    private final class ExtensionAvailability {
+        private let appDB: AppDatabase
+        private var installed: Set<String>?
+        private var enabledByProfile: [UUID: Set<String>] = [:]
+
+        init(appDB: AppDatabase) { self.appDB = appDB }
+
+        func classify(url: URL?, extensionID: String?, in profile: Profile?) -> PersistedExtensionPage {
+            guard isExtensionPageURL(url) else { return .notExtensionPage }
+            let installedIDs: Set<String>
+            if let installed {
+                installedIDs = installed
+            } else {
+                installedIDs = appDB.installedExtensionIDs()
+                installed = installedIDs
+            }
+            var enabled: Set<String> = []
+            if let profile {
+                if let cached = enabledByProfile[profile.id] {
+                    enabled = cached
+                } else {
+                    enabled = appDB.enabledExtensionIDs(for: profile.id.uuidString)
+                    enabledByProfile[profile.id] = enabled
+                }
+            }
+            return classifyPersistedExtensionPage(url: url, extensionID: extensionID,
+                                                  installedExtensionIDs: installedIDs,
+                                                  enabledExtensionIDs: enabled)
+        }
+    }
+
+    /// What a page captured earlier — a closed-tab record, a dormant tile's URL,
+    /// or the state an undo closure captured at close time — is now, judged by
+    /// the extension id captured with it (`Profile.extensionID(forPageURL:)` at
+    /// that moment) against the extensions installed and enabled in `profile`.
+    /// Only an extension page consults the database.
+    ///
+    /// Pass an `availability` shared by every classification of one operation;
+    /// the default reads the database afresh, for a lone call.
+    private func classifyCapturedPage(url: URL?, extensionID: String?, in profile: Profile?,
+                                      availability: ExtensionAvailability? = nil) -> PersistedExtensionPage {
+        (availability ?? ExtensionAvailability(appDB: appDB))
+            .classify(url: url, extensionID: extensionID, in: profile)
     }
 
     /// `classifyCapturedPage` against `space`'s profile.
-    private func classifyCapturedPage(url: URL?, extensionID: String?, in space: Space) -> PersistedExtensionPage {
-        classifyCapturedPage(url: url, extensionID: extensionID, in: space.profile)
+    private func classifyCapturedPage(url: URL?, extensionID: String?, in space: Space,
+                                      availability: ExtensionAvailability? = nil) -> PersistedExtensionPage {
+        classifyCapturedPage(url: url, extensionID: extensionID, in: space.profile, availability: availability)
     }
 
     /// Where a captured page of an installed extension (`page.pendingOrigin`)
@@ -3109,8 +3215,10 @@ class TabStore {
     }
 
     /// `rehomedTileURL` for a tile URL captured with `extensionID`, classified now.
-    private func rehomedTileURL(_ url: URL, extensionID: String?, in space: Space) -> URL? {
-        rehomedTileURL(url, page: classifyCapturedPage(url: url, extensionID: extensionID, in: space), in: space)
+    private func rehomedTileURL(_ url: URL, extensionID: String?, in space: Space,
+                                availability: ExtensionAvailability? = nil) -> URL? {
+        rehomedTileURL(url, page: classifyCapturedPage(url: url, extensionID: extensionID, in: space,
+                                                       availability: availability), in: space)
     }
 
     /// Rebuilds a tab that was closed, from what was captured when it closed:
@@ -3170,10 +3278,11 @@ class TabStore {
         // it can be reopened after the extension is enabled again.
         var candidate: (index: Int, record: ClosedTabRecord, page: PersistedExtensionPage)?
         var index = 0
+        let availability = ExtensionAvailability(appDB: appDB)
         scan: while index < closedTabStack.count {
             let record = closedTabStack[index]
             guard record.spaceID == spaceIDString else { index += 1; continue }
-            let page = closedTabPage(record, in: space)
+            let page = closedTabPage(record, in: space, availability: availability)
             switch page {
             case .unavailable:
                 closedTabStack.remove(at: index)

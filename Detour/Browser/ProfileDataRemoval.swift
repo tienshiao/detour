@@ -191,11 +191,11 @@ final class ProfileDataRemoval {
             }
             do {
                 if !extensionDataRemoved {
-                    if let refusal = refusal(for: id, identifier: identifier, recordKey: recordKey) { return refusal }
+                    if let refusal = try refusal(for: id, identifier: identifier, recordKey: recordKey) { return refusal }
                     try await remover.removeExtensionData(identifier)
                     extensionDataRemoved = true
                 }
-                if let refusal = refusal(for: id, identifier: identifier, recordKey: recordKey) { return refusal }
+                if let refusal = try refusal(for: id, identifier: identifier, recordKey: recordKey) { return refusal }
                 try await remover.removeWebsiteDataStore(identifier)
                 if isolated {
                     storageScope.registry.forgetWebKitStorageIdentifier(identifier)
@@ -212,11 +212,22 @@ final class ProfileDataRemoval {
         return .failed(lastFailure)
     }
 
+    /// A profile table that could not be read for the removability check. Thrown
+    /// rather than returned so the attempt fails like an in-use store and the
+    /// retry loop tries again after its next delay: the read failure is very
+    /// likely transient (a busy database), and returning `.failed` from inside the
+    /// loop would spend the launch's remaining attempts on it.
+    private struct ProfileTableUnreadable: LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
+    }
+
     /// The outcome to stop with when `id` (whose storage is `identifier`) must
     /// not be removed, or nil to go on. When an isolated data directory's storage
     /// guard refuses (say, the production profile table is unreadable), the row
-    /// stays pending.
-    private func refusal(for id: UUID, identifier: UUID, recordKey: String) -> Outcome? {
+    /// stays pending. Throws `ProfileTableUnreadable` when removability could not
+    /// be decided, so the caller retries the attempt instead of giving up.
+    private func refusal(for id: UUID, identifier: UUID, recordKey: String) throws -> Outcome? {
         if !storageScope.isDefaultDataDirectory,
            let reason = storageScope.refusalToRemove(identifier: identifier) {
             log.error("Not removing data of profile \(id.uuidString, privacy: .public): \(reason, privacy: .public)")
@@ -230,8 +241,7 @@ final class ProfileDataRemoval {
             appDB.clearPendingProfileDataRemoval(profileID: recordKey)
             return .refusedLiveProfile
         case .unknown(let reason):
-            log.error("Not removing data of profile \(id.uuidString, privacy: .public): \(reason, privacy: .public)")
-            return .failed(reason)
+            throw ProfileTableUnreadable(reason: reason)
         }
     }
 

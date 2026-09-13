@@ -689,6 +689,108 @@ document.getElementById('btn-oninstalled-history').addEventListener('click', asy
   } catch (e) { showResult('res-oninstalled', e.message, true); }
 });
 
+// --- Callback form / runtime.lastError ---
+// The promise-backed polyfill APIs (idle, notifications, history, management,
+// fontSettings, search, offscreen) also take a trailing callback. In that form
+// Chrome never rejects: on failure the callback runs with no result while
+// `chrome.runtime.lastError` is `{ message }`, lastError is gone again once the
+// callback returns, and a failure the callback never read is reported as
+// "Unchecked runtime.lastError: ...". These buttons exercise that path
+// (Detour: `__detourSettle` in ExtensionAPIPolyfill.swift).
+//
+// The failing calls pass `null` as a notification id: Detour's handler answers
+// "notificationId required" for anything that is not a string, so the failure is
+// deterministic and has no side effect. (`management.setEnabled` is NOT a failure
+// case here — Detour deliberately answers it with a logged no-op success.)
+
+function describeLastError() {
+  const err = chrome.runtime.lastError;
+  if (err === undefined) return 'undefined';
+  if (err === null) return 'null';
+  return err.message ? `{ message: "${err.message}" }` : String(err);
+}
+
+// Which path the polyfill took to set lastError: 'js' (redefined on the runtime
+// object), 'native-relay' (bounced through sendNativeMessage) or 'console'.
+function callbackSettleMode() {
+  const status = globalThis.__detourCallbackLastError;
+  return status ? status.lastMode : '(no Detour polyfill)';
+}
+
+document.getElementById('btn-lasterror-fail').addEventListener('click', () => {
+  const lines = ['chrome.notifications.update(null, {...}, cb) — expected to fail'];
+  const returned = chrome.notifications.update(null, { title: 'nope' }, function () {
+    lines.push(`in callback: args=${arguments.length}, result=${String(arguments[0])}`);
+    lines.push(`in callback: lastError = ${describeLastError()}`);
+    // Queued for after the callback returns: the polyfill restores the original
+    // lastError there, so this must no longer report a message.
+    setTimeout(() => {
+      lines.push(`after callback returned: lastError = ${describeLastError()}`);
+      lines.push(`settle mode: ${callbackSettleMode()}`);
+      showResult('res-lasterror', lines.join('\n'), true);
+    }, 0);
+  });
+  lines.push(`returned with a callback: ${String(returned)} (Chrome returns undefined)`);
+  showResult('res-lasterror', lines.join('\n'));
+});
+
+document.getElementById('btn-lasterror-unchecked').addEventListener('click', () => {
+  let fired = false;
+  let argsLength = -1;
+  // Deliberately never reads chrome.runtime.lastError, so the failure is
+  // unchecked and must be reported as a console warning.
+  chrome.notifications.clear(null, function () {
+    fired = true;
+    argsLength = arguments.length;
+  });
+  showResult('res-lasterror', 'chrome.notifications.clear(null, cb) — waiting for the callback...');
+  setTimeout(() => {
+    showResult('res-lasterror', [
+      'chrome.notifications.clear(null, cb) with a callback that ignores lastError',
+      `callback fired: ${fired} (args=${argsLength})`,
+      `lastError now: ${describeLastError()}`,
+      `settle mode: ${callbackSettleMode()}`,
+      'expected in the console: Unchecked runtime.lastError: notificationId required'
+    ].join('\n'), true);
+  }, 300);
+});
+
+document.getElementById('btn-lasterror-success').addEventListener('click', () => {
+  const lines = ['chrome.management.getSelf(cb) — expected to succeed'];
+  const returned = chrome.management.getSelf(function (info) {
+    lines.push(`in callback: args=${arguments.length}, lastError = ${describeLastError()}`);
+    lines.push(`result: ${info ? `${info.name} ${info.version} (${info.id})` : String(info)}`);
+    showResult('res-lasterror', lines.join('\n'));
+  });
+  lines.push(`returned with a callback: ${String(returned)} (Chrome returns undefined)`);
+  showResult('res-lasterror', lines.join('\n'));
+});
+
+document.getElementById('btn-lasterror-noresult').addEventListener('click', () => {
+  // setEnabled is one of the `passResult: false` APIs: on success its callback
+  // fires with no arguments at all, not with `undefined` passed in.
+  const lines = ['chrome.management.setEnabled(<self>, true, cb) — no-op success, no result'];
+  chrome.management.setEnabled(chrome.runtime.id, true, function () {
+    lines.push(`in callback: args=${arguments.length} (expected 0), lastError = ${describeLastError()}`);
+    showResult('res-lasterror', lines.join('\n'));
+  });
+  showResult('res-lasterror', lines.join('\n'));
+});
+
+document.getElementById('btn-lasterror-worker').addEventListener('click', async () => {
+  try {
+    const { probes, lastErrorAfter } = await sendBg({ type: 'callbackFormProbe' });
+    const lines = probes.map(p => {
+      if (p.threw) return `${p.label}\n    threw: ${p.threw}`;
+      if (p.timedOut) return `${p.label}\n    ${p.timedOut}`;
+      return `${p.label}\n    args=${p.argsLength}, result=${JSON.stringify(p.result)}`
+        + `, lastError=${p.lastError}, mode=${p.mode}`;
+    });
+    lines.push(`after the callbacks returned: lastError = ${lastErrorAfter}`);
+    showResult('res-lasterror', ['service worker:', ...lines].join('\n'));
+  } catch (e) { showResult('res-lasterror', e.message, true); }
+});
+
 // --- History ---
 document.getElementById('btn-history-search').addEventListener('click', async () => {
   try {

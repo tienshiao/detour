@@ -558,4 +558,69 @@ final class ExtensionPageRehostTests: XCTestCase {
         ExtensionManager.shared.uninstall(id: ext.id)
         XCTAssertTrue(profile.pendingExtensionOrigins.isEmpty, "an uninstall forgets it")
     }
+
+    /// An unpacked source directory for `ExtensionManager.install`, plus a public
+    /// key: the id is derived from the key, so installing the same source twice
+    /// derives the same id and the second install takes the replace path.
+    private func makeInstallSource(named name: String) throws -> (source: URL, publicKey: Data) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-test-install-\(name)-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        tempDirs.append(dir)
+
+        let manifestJSON = """
+        {
+            "manifest_version": 3,
+            "name": "Page Rehost Install \(name)",
+            "version": "1.0.0",
+            "options_ui": { "page": "options.html" }
+        }
+        """
+        try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"),
+                               atomically: true, encoding: .utf8)
+        try "<html><body>options</body></html>"
+            .write(to: dir.appendingPathComponent("options.html"),
+                   atomically: true, encoding: .utf8)
+        return (dir, Data("detour-test-key-\(name)".utf8))
+    }
+
+    /// A reinstall unloads the old context synchronously and only loads the
+    /// replacement in a Task, so between the two the tiles left on the old origin
+    /// are served by nothing. The origin has to stay pending across that window,
+    /// or a save in it (the 1 s debounce, or a quit) writes no extension id and
+    /// the next restore classifies the tile unavailable and deletes it.
+    func testReinstallKeepsTheOldOriginPendingWhileTheReplacementLoads() async throws {
+        let (source, publicKey) = try makeInstallSource(named: "reinstall")
+        let profile = makeProfile("Rehost Reinstall Profile")
+        let space = makeSpace("Rehost Reinstall", in: profile)
+        _ = profile.extensionController
+
+        let ext = try ExtensionManager.shared.install(from: source, publicKey: publicKey)
+        registeredExtensionIDs.append(ext.id)
+        await waitUntil("the first install to load its context") {
+            profile.extensionContexts[ext.id] != nil
+        }
+        let first = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let (tab, pageURL) = try openExtensionPage(first, in: space, path: "options.html?keep=1")
+        TabStore.shared.pinTab(id: tab.id, in: space)
+        let entry = try XCTUnwrap(space.pinnedEntries.first)
+
+        let replacement = try ExtensionManager.shared.install(from: source, publicKey: publicKey)
+        XCTAssertEqual(replacement.id, ext.id, "precondition: the same key derives the same id")
+        // Synchronously, before the replacement's Task has run: the old context
+        // is gone and only the pending origin can still name the extension.
+        XCTAssertNil(profile.extensionContexts[ext.id],
+                     "precondition: the reinstall unloaded the old context")
+        XCTAssertEqual(profile.extensionID(forPageURL: entry.pinnedURL), ext.id,
+                       "the tile on the old origin keeps its identity while the replacement loads")
+
+        await waitUntil("the replacement context to load") { profile.extensionContexts[ext.id] != nil }
+        let second = try XCTUnwrap(profile.extensionContexts[ext.id])
+        XCTAssertEqual(entry.pinnedURL,
+                       rewriteExtensionPageURL(pageURL, from: first.baseURL, to: second.baseURL),
+                       "and is moved onto the replacement's origin once it is loaded")
+        await waitUntil("the pending origin to be resolved") { profile.pendingExtensionOrigins.isEmpty }
+
+        ExtensionManager.shared.uninstall(id: ext.id)
+    }
 }

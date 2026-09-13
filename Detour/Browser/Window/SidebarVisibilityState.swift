@@ -32,11 +32,11 @@ struct SidebarVisibilityState: Equatable {
         case hoverReveal(isCollapsed: Bool)
         /// The hover auto-hide delay elapsed after the pointer left the sidebar.
         case hoverHide(isCollapsed: Bool)
-        /// `sidebarItem.isCollapsed` changed (KVO), from any source.
+        /// `sidebarItem.isCollapsed` changed (KVO), from any source. Also sent
+        /// once right after setup, in case the split view autosave restored a
+        /// collapsed sidebar without a KVO notification: with `expectedCollapsed`
+        /// still at its initial `false`, that restore is adopted as external.
         case collapsedChanged(Bool)
-        /// Initial sync after setup: the split view autosave may already have
-        /// restored a collapsed sidebar before the KVO observer existed.
-        case restored(isCollapsed: Bool)
     }
 
     enum Action: Equatable {
@@ -89,10 +89,6 @@ struct SidebarVisibilityState: Equatable {
                 return []
             }
             return adoptExternal(collapsed: collapsed)
-
-        case .restored(let isCollapsed):
-            guard isCollapsed != expectedCollapsed || isCollapsed != autoHides else { return [] }
-            return adoptExternal(collapsed: isCollapsed)
         }
     }
 

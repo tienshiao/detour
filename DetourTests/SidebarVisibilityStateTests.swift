@@ -189,7 +189,9 @@ final class SidebarVisibilityStateTests: XCTestCase {
     func testRestoredCollapsedAtLaunchStartsInAutoHideMode() {
         var h = Harness()
         h.isCollapsed = true
-        h.send(.restored(isCollapsed: true))
+        // The setup-time sync, or the restore's own KVO: either way the first
+        // observation disagrees with `expectedCollapsed` and is adopted.
+        h.send(.collapsedChanged(true))
         XCTAssertTrue(h.state.autoHides)
         XCTAssertEqual(h.safeAreaAdjusts, true)
         h.hoverReveal()
@@ -202,13 +204,13 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     func testRestoredExpandedAtLaunchIsANoOp() {
         var s = SidebarVisibilityState()
-        XCTAssertEqual(s.reduce(.restored(isCollapsed: false)), [])
+        XCTAssertEqual(s.reduce(.collapsedChanged(false)), [])
         XCTAssertEqual(s, SidebarVisibilityState())
     }
 
     func testLateAutosaveRestoreViaKVOAdoptsMode() {
         var h = Harness()
-        h.send(.restored(isCollapsed: false))
+        h.send(.collapsedChanged(false))
         h.externalCollapse(true)
         XCTAssertTrue(h.state.autoHides)
     }
@@ -362,7 +364,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
 
         // Second "launch": observer first, then load the view, as the controller does.
         // The observer stays registered until the restore has landed: AppKit may apply
-        // the autosave during a later layout pass, after the `.restored` sync, and then
+        // the autosave during a later layout pass, after the setup-time sync, and then
         // only the KVO path sees it — the same as in the window controller.
         let (window, svc, item) = makeSplit()
         defer {
@@ -380,7 +382,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         defer { observation.invalidate() }
         window.contentView?.addSubview(svc.view)
         svc.view.frame = window.contentView!.bounds
-        _ = state.reduce(.restored(isCollapsed: item.isCollapsed))
+        _ = state.reduce(.collapsedChanged(item.isCollapsed))
         svc.view.layoutSubtreeIfNeeded()
         _ = spin(timeout: 5) { item.isCollapsed }
 

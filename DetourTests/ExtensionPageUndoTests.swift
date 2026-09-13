@@ -51,40 +51,14 @@ final class ExtensionPageUndoTests: XCTestCase {
 
     /// A minimal MV3 extension with an options page and no background content.
     private func makeExtension() async throws -> WebExtension {
-        let id = "page-undo-\(UUID().uuidString.prefix(8))"
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-test-\(id)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        tempDirs.append(dir)
-        let manifestJSON = """
-        {
-            "manifest_version": 3,
-            "name": "Page Undo Test",
-            "version": "1.0.0",
-            "options_ui": { "page": "options.html" }
-        }
-        """
-        try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
-        try "<html><body>options</body></html>"
-            .write(to: dir.appendingPathComponent("options.html"), atomically: true, encoding: .utf8)
-
-        let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
-        let ext = WebExtension(id: id, manifest: manifest, basePath: dir)
-        ext.wkExtension = try await WKWebExtension(resourceBaseURL: dir)
+        let ext = try await makeOptionsPageTestExtension(idPrefix: "page-undo", name: "Page Undo Test")
+        tempDirs.append(ext.basePath)
         return ext
     }
 
-    private func install(_ ext: WebExtension, in db: AppDatabase) {
-        db.saveExtension(ExtensionRecord(
-            id: ext.id, name: ext.manifest.name, version: ext.manifest.version,
-            manifestJSON: Data("{}".utf8), basePath: ext.basePath.path,
-            isEnabled: true, installedAt: Date().timeIntervalSince1970
-        ))
-    }
-
     private func loadContext(_ ext: WebExtension, in profile: Profile) throws -> WKWebExtensionContext {
-        _ = profile.loadExtensionContext(ext)
         loadedProfiles.append(profile)
-        return try XCTUnwrap(profile.extensionContext(for: ext.id), "the context should load")
+        return try loadTestContext(ext, in: profile)
     }
 
     /// Unloads and loads the context again: WebKit gives it a new origin.
@@ -94,15 +68,6 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertNotEqual(newBase.host?.lowercased(), oldBase.host?.lowercased(),
                           "precondition: the reloaded context has a new origin")
         return newBase
-    }
-
-    private func sleepingTab(_ url: URL, title: String = "Page", in space: Space) -> BrowserTab {
-        BrowserTab(id: UUID(), title: title, url: url, faviconURL: nil,
-                   cachedInteractionState: nil, spaceID: space.id)
-    }
-
-    private func pageURL(_ path: String, on base: URL) throws -> URL {
-        try XCTUnwrap(URL(string: path, relativeTo: base)?.absoluteURL)
     }
 
     private struct Fixture {
@@ -117,7 +82,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     private func makeFixture() async throws -> Fixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let ext = try await makeExtension()
-        install(ext, in: db)
+        installTestExtension(ext, in: db)
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Undo")
         let space = store.addSpace(name: "Undo", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
@@ -135,7 +100,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
-        let url = try pageURL("options.html?next=https%3A%2F%2Fa.example%2F#section", on: f.base)
+        let url = try extensionPageURL("options.html?next=https%3A%2F%2Fa.example%2F#section", on: f.base)
         let web = sleepingTab(webURL, in: f.space)
         let page = sleepingTab(url, title: "Options", in: f.space)
         f.space.tabs.append(contentsOf: [web, page])
@@ -167,7 +132,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     func testUndoCloseTabAfterAContextReloadUsesTheNewBase() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
-        let url = try pageURL("options.html?q=1#frag", on: f.base)
+        let url = try extensionPageURL("options.html?q=1#frag", on: f.base)
         let page = sleepingTab(url, in: f.space)
         f.space.tabs.append(page)
 
@@ -191,7 +156,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     func testUndoCloseTabWithTheContextNotLoadedWaitsOnAPendingOrigin() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
-        let url = try pageURL("options.html", on: f.base)
+        let url = try extensionPageURL("options.html", on: f.base)
         let page = sleepingTab(url, in: f.space)
         f.space.tabs.append(page)
 
@@ -213,7 +178,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     func testUndoCloseTabOfADisabledExtensionRestoresNothingAndKeepsTheRecord() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
-        let url = try pageURL("options.html", on: f.base)
+        let url = try extensionPageURL("options.html", on: f.base)
         let page = sleepingTab(url, in: f.space)
         f.space.tabs.append(page)
 
@@ -235,7 +200,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     func testUndoCloseTabOfAnUninstalledExtensionRestoresNothing() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
-        let page = sleepingTab(try pageURL("options.html", on: f.base), in: f.space)
+        let page = sleepingTab(try extensionPageURL("options.html", on: f.base), in: f.space)
         f.space.tabs.append(page)
 
         f.store.undoManager.removeAllActions()
@@ -285,7 +250,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
-        let extURL = try pageURL("options.html#split", on: f.base)
+        let extURL = try extensionPageURL("options.html#split", on: f.base)
         let web = sleepingTab(webURL, in: f.space)
         let page = sleepingTab(extURL, in: f.space)
         let groupID = UUID()
@@ -318,7 +283,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         defer { teardownTabs(f) }
         let before = sleepingTab(URL(string: "https://before.example/")!, in: f.space)
         f.space.tabs.append(before)
-        let extURL = try pageURL("options.html", on: f.base)
+        let extURL = try extensionPageURL("options.html", on: f.base)
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
         let page = sleepingTab(extURL, in: f.space)
         let web = sleepingTab(webURL, in: f.space)
@@ -352,7 +317,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         defer { teardownTabs(f) }
         let groupID = UUID()
         for query in ["a=1", "b=2"] {
-            let member = sleepingTab(try pageURL("options.html?\(query)", on: f.base), in: f.space)
+            let member = sleepingTab(try extensionPageURL("options.html?\(query)", on: f.base), in: f.space)
             member.splitGroupID = groupID
             member.splitFraction = 0.5
             f.space.tabs.append(member)
@@ -375,7 +340,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     func testUndoClosePinnedEntryTabAfterAContextReloadUsesTheNewBase() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
-        let url = try pageURL("options.html?pinned=1", on: f.base)
+        let url = try extensionPageURL("options.html?pinned=1", on: f.base)
         let page = sleepingTab(url, in: f.space)
         f.space.tabs.append(page)
         f.store.pinTab(id: page.id, in: f.space)
@@ -400,7 +365,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     func testUndoClosePinnedEntryTabOfADisabledExtensionLeavesTheEntryDormant() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
-        let page = sleepingTab(try pageURL("options.html", on: f.base), in: f.space)
+        let page = sleepingTab(try extensionPageURL("options.html", on: f.base), in: f.space)
         f.space.tabs.append(page)
         f.store.pinTab(id: page.id, in: f.space)
         let entry = try XCTUnwrap(f.space.pinnedEntries.first)
@@ -437,7 +402,7 @@ final class ExtensionPageUndoTests: XCTestCase {
 
     func testUndoDeletePinnedEntryAfterAContextReloadActivatesOnTheNewBase() async throws {
         let ext = try await makeExtension()
-        install(ext, in: AppDatabase.shared)
+        installTestExtension(ext, in: AppDatabase.shared)
         sharedExtensionIDs.append(ext.id)
         let store = TabStore.shared
         let profile = store.addProfile(name: "Delete-shared")
@@ -446,7 +411,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         sharedSpaceIDs.append(space.id)
         _ = profile.extensionController
         let base = try loadContext(ext, in: profile).baseURL
-        let url = try pageURL("options.html?deleted=1#frag", on: base)
+        let url = try extensionPageURL("options.html?deleted=1#frag", on: base)
         let entry = try XCTUnwrap(pinnedEntries([url], in: space, store: store).first)
 
         store.undoManager.removeAllActions()
@@ -476,7 +441,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     func testUndoDeletePinnedEntryOfADisabledExtensionRestoresItDormantForALaterEnable() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
-        let url = try pageURL("options.html?disabled=1", on: f.base)
+        let url = try extensionPageURL("options.html?disabled=1", on: f.base)
         let entry = try XCTUnwrap(pinnedEntries([url], in: f.space, store: f.store).first)
 
         f.store.undoManager.removeAllActions()
@@ -504,7 +469,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
-        let entries = pinnedEntries([webURL, try pageURL("options.html", on: f.base)],
+        let entries = pinnedEntries([webURL, try extensionPageURL("options.html", on: f.base)],
                                     split: true, in: f.space, store: f.store)
         XCTAssertEqual(entries.count, 2)
 
@@ -555,14 +520,14 @@ final class ExtensionPageUndoTests: XCTestCase {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let other = try await makeExtension()
-        install(other, in: f.db)
+        installTestExtension(other, in: f.db)
         let otherBase = try loadContext(other, in: f.profile).baseURL
 
         let space2 = f.store.addSpace(name: "Two", emoji: "2️⃣", colorHex: "FF0000", profileID: f.profile.id)
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
         let pinnedWebURL = try XCTUnwrap(URL(string: "https://pinned.example/"))
-        let goneURL = try pageURL("options.html?gone=1", on: otherBase)
-        let disabledURL = try pageURL("options.html?disabled=1", on: f.base)
+        let goneURL = try extensionPageURL("options.html?gone=1", on: otherBase)
+        let disabledURL = try extensionPageURL("options.html?disabled=1", on: f.base)
 
         let web = sleepingTab(webURL, in: space2)
         space2.tabs.append(web)
@@ -599,13 +564,13 @@ final class ExtensionPageUndoTests: XCTestCase {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let other = try await makeExtension()
-        install(other, in: f.db)
+        installTestExtension(other, in: f.db)
         let otherBase = try loadContext(other, in: f.profile).baseURL
 
         let space2 = f.store.addSpace(name: "Two", emoji: "2️⃣", colorHex: "FF0000", profileID: f.profile.id)
-        let extURL = try pageURL("options.html?kept=1", on: f.base)
-        let goneURL = try pageURL("options.html?gone=1", on: otherBase)
-        let pinnedURL = try pageURL("options.html?pinned=1", on: f.base)
+        let extURL = try extensionPageURL("options.html?kept=1", on: f.base)
+        let goneURL = try extensionPageURL("options.html?gone=1", on: otherBase)
+        let pinnedURL = try extensionPageURL("options.html?pinned=1", on: f.base)
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
 
         let kept = sleepingTab(extURL, in: space2)
@@ -650,7 +615,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     /// context's configuration and loads on the live origin.
     func testUndoneExtensionPageWakesOntoTheLiveOrigin() async throws {
         let ext = try await makeExtension()
-        install(ext, in: AppDatabase.shared)
+        installTestExtension(ext, in: AppDatabase.shared)
         sharedExtensionIDs.append(ext.id)
         let store = TabStore.shared
         let profile = store.addProfile(name: "Undo-shared")
@@ -659,7 +624,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         sharedSpaceIDs.append(space.id)
         _ = profile.extensionController
         let base = try loadContext(ext, in: profile).baseURL
-        let url = try pageURL("options.html?wake=1", on: base)
+        let url = try extensionPageURL("options.html?wake=1", on: base)
         let page = sleepingTab(url, in: space)
         space.tabs.append(page)
 

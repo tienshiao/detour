@@ -588,14 +588,15 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertNil(restoredProfile, "nothing but the store retains a restored profile")
     }
 
-    // MARK: - Session save removal (TASK-33)
+    // MARK: - Session-less launch (TASK-32, TASK-33)
 
-    /// The runtime path where the session save removes profile rows: a launch
-    /// whose saved session has no spaces never loads the saved profiles, creates
-    /// a new Default profile, and the first save drops the rows it did not load.
-    /// Those profiles are not live, so their data removal is recorded and runs
-    /// at the next launch; the profiles the store holds are never touched.
-    func testSessionSaveRemovingUnloadedProfilesRecordsTheirDataRemoval() async throws {
+    /// `loadSession` returns nil whenever the space table is empty — deleting the
+    /// last persistent space while a Private window is open gets there — and on
+    /// any read error. Such a launch must still load every saved profile: a store
+    /// that had not would sweep their rows out at the first save (`saveProfiles`)
+    /// and, while that sweep armed data removals, irreversibly wipe the user's
+    /// cookies, logins and extension storage at the launch after that.
+    func testSessionLessLaunchKeepsSavedProfilesAndRemovesNoData() async throws {
         let db = try makeDatabase()
         let orphan = Profile(name: "Saved, never loaded")
         db.saveProfile(orphan.toRecord())
@@ -603,20 +604,19 @@ final class ProfileDataRemovalTests: XCTestCase {
         let store = TabStore(appDB: db, profileDataRemover: fake.remover, profileDataRemovalRetryDelays: [0.01],
                              webKitStorageScope: defaultDirectoryScope(db))
 
-        XCTAssertNil(store.restoreSession(), "precondition: no saved spaces, so no profiles are loaded")
+        XCTAssertNil(store.restoreSession(), "precondition: no saved spaces, so there is no session to restore")
         store.ensureDefaultSpace()
         store.saveNow()
 
-        let liveIDs = Set(store.profiles.map(\.id))
-        XCTAssertFalse(db.loadProfiles().contains { $0.id == orphan.id.uuidString })
-        XCTAssertEqual(pendingIDs(db), [orphan.id.uuidString])
-        XCTAssertTrue(fake.calls.isEmpty, "the session save only records the removal")
+        XCTAssertTrue(store.profiles.contains { $0.id == orphan.id }, "the saved profile is held in memory")
+        XCTAssertTrue(db.loadProfiles().contains { $0.id == orphan.id.uuidString }, "so its row survives the save")
+        XCTAssertEqual(pendingIDs(db), [], "and no data removal is scheduled")
+        XCTAssertTrue(fake.calls.isEmpty)
 
         let outcomes = await store.retryPendingProfileDataRemovals().value
 
-        XCTAssertEqual(outcomes, [orphan.id: .removed])
-        XCTAssertEqual(fake.removedIDs, [orphan.id])
-        XCTAssertTrue(fake.removedIDs.isDisjoint(with: liveIDs))
+        XCTAssertEqual(outcomes, [:])
+        XCTAssertTrue(fake.removedIDs.isEmpty)
     }
 
     // MARK: - Real WebKit

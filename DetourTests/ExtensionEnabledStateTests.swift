@@ -58,42 +58,13 @@ final class ExtensionEnabledStateTests: XCTestCase {
     /// A minimal MV3 extension with an options page and no background content,
     /// installed (DB row) as globally enabled.
     private func makeTestExtension(named name: String) async throws -> WebExtension {
-        let id = "enabled-state-\(name)-\(UUID().uuidString.prefix(8))"
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-test-\(id)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        tempDirs.append(dir)
-
-        let manifestJSON = """
-        {
-            "manifest_version": 3,
-            "name": "Enabled State Test \(name)",
-            "version": "1.0.0",
-            "options_ui": { "page": "options.html" }
-        }
-        """
-        try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"),
-                               atomically: true, encoding: .utf8)
-        try "<html><body>options</body></html>"
-            .write(to: dir.appendingPathComponent("options.html"),
-                   atomically: true, encoding: .utf8)
-
-        let wkExt = try await WKWebExtension(resourceBaseURL: dir)
-        let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
-        let ext = WebExtension(id: id, manifest: manifest, basePath: dir)
-        ext.wkExtension = wkExt
+        let ext = try await makeOptionsPageTestExtension(idPrefix: "enabled-state-\(name)",
+                                                         name: "Enabled State Test \(name)")
+        tempDirs.append(ext.basePath)
         ExtensionManager.shared.extensions.append(ext)
-        registeredExtensionIDs.append(id)
-
-        AppDatabase.shared.saveExtension(ExtensionRecord(
-            id: id,
-            name: manifest.name,
-            version: manifest.version,
-            manifestJSON: manifestJSON.data(using: .utf8)!,
-            basePath: dir.path,
-            isEnabled: true,
-            installedAt: Date().timeIntervalSince1970
-        ))
+        registeredExtensionIDs.append(ext.id)
+        installTestExtension(ext, in: AppDatabase.shared,
+                             manifestJSON: try testExtensionManifestData(ext))
         return ext
     }
 

@@ -522,6 +522,40 @@ final class TabStoreTests: XCTestCase {
         XCTAssertNotNil(fav.tab?.webView,
                         "a favorite tab bound to a different space on the old profile must stay live")
     }
+
+    // MARK: - Session-less launch (TASK-32/TASK-33)
+
+    /// `loadSession` returns nil whenever the space table is empty — deleting the
+    /// last persistent space while a Private window is open gets there — and on
+    /// any read error. Such a launch must still hold every stored profile, or the
+    /// next save sweeps them out of the database and (before this fix) armed the
+    /// removal of their on-disk cookies, logins and extension storage.
+    func testSessionLessLaunchKeepsStoredProfilesAndRemovesNoData() throws {
+        let db = try makeDatabase()
+        let profileIDs = [UUID().uuidString, UUID().uuidString]
+        for (index, id) in profileIDs.enumerated() {
+            db.saveProfile(ProfileRecord(id: id, name: "Profile \(index)", userAgentMode: 0, customUserAgent: nil,
+                                         archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0,
+                                         searchSuggestionsEnabled: true, isPerTabIsolation: false,
+                                         isAdBlockingEnabled: true, isEasyListEnabled: true,
+                                         isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true,
+                                         isMalwareFilterEnabled: true))
+        }
+        XCTAssertNil(db.loadSession(), "precondition: no spaces were saved")
+
+        let store = TabStore(appDB: db)
+        XCTAssertNil(store.restoreSession(), "no session to restore")
+        XCTAssertEqual(Set(store.profiles.map(\.id.uuidString)).intersection(profileIDs), Set(profileIDs),
+                       "both stored profiles are held in memory")
+
+        store.ensureDefaultSpace()
+        store.saveNow()
+
+        XCTAssertEqual(Set(db.loadProfiles().map(\.id)).intersection(profileIDs), Set(profileIDs),
+                       "both profile rows survive the save")
+        XCTAssertEqual(db.pendingProfileDataRemovals(), [],
+                       "a launch that restored nothing must never schedule a profile's data removal")
+    }
 }
 
 // MARK: - Mock Observer

@@ -724,7 +724,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         if let cached = enabledIDsCache[profileID] {
             ids = cached
         } else {
-            ids = Set(extensions.map(\.id).filter { isEnabled(extensionID: $0, inProfile: profileID) })
+            // The whole set in one query: `enabledExtensionIDs(for:)` and
+            // `isEnabled(extensionID:inProfile:)` must keep encoding the same rule.
+            ids = AppDatabase.shared.enabledExtensionIDs(for: profileID.uuidString)
             enabledIDsCache[profileID] = ids
         }
         return extensions.filter { ids.contains($0.id) }
@@ -743,8 +745,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     func pinnedExtensions(for profileID: UUID) -> [WebExtension] {
         let pinnedIDs = AppDatabase.shared.pinnedExtensionIDs(for: profileID.uuidString)
+        let enabledIDs = Set(enabledExtensions(for: profileID).map(\.id))
         return pinnedIDs.compactMap { id in extensions.first { $0.id == id } }
-            .filter { isEnabled(extensionID: $0.id, inProfile: profileID) }
+            .filter { enabledIDs.contains($0.id) }
     }
 
     /// Build an icon image for an extension, compositing badge text from WKWebExtension.Action.
@@ -864,6 +867,16 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             for profile in TabStore.shared.profiles {
                 if let oldBase = profile.unloadExtension(id: ext.id) {
                     oldBasesByProfile[profile.id] = oldBase
+                    // The origin is pending for as long as the replacement takes
+                    // to load: the dormant tiles (pinned entries, favourites)
+                    // left on it keep their identity meanwhile, so a save in that
+                    // window still writes their extension id rather than dropping
+                    // them at the next restore. `retargetExtensionPages` below —
+                    // or `resolvePendingExtensionPages`, whichever runs first —
+                    // moves them once the replacement is loaded.
+                    if let host = oldBase.host, !host.isEmpty {
+                        profile.registerPendingExtensionOrigin(host: host, extensionID: ext.id)
+                    }
                 }
             }
             extensions.remove(at: existingIdx)
@@ -933,9 +946,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             } catch {
                 log.error("Failed to load WKWebExtension after install: \(error.localizedDescription, privacy: .public)")
                 // The old contexts are already unloaded; nothing will replace
-                // them, so the pages they served can only be dead.
+                // them, so the pages they served can only be dead. The extension
+                // is still installed, though, so the origin stays pending and the
+                // tiles stay dormant on it — they keep their identity for the next
+                // successful load, exactly as a disable leaves them.
                 for profile in TabStore.shared.profiles {
-                    closeExtensionPages(in: profile, from: oldBasesByProfile[profile.id])
+                    closePagesOfUnloadedExtension(ext.id, in: profile,
+                                                  unloadedBase: oldBasesByProfile[profile.id],
+                                                  uninstalling: false)
                 }
             }
         }

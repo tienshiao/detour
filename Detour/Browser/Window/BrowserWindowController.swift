@@ -512,14 +512,7 @@ class BrowserWindowController: NSWindowController {
 
         sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, change in
             guard let self, let collapsed = change.newValue else { return }
-            // Attributes the change (own toggle/hover vs divider drag or
-            // autosave restore) and lets the mode follow external changes.
-            self.handleSidebarEvent(.collapsedChanged(collapsed))
-            if collapsed {
-                self.setTrafficLightsHidden(true, animated: false)
-            } else {
-                self.setTrafficLightsHidden(false, animated: true)
-            }
+            self.sidebarCollapsedStateChanged(collapsed, animated: true)
         }
 
         // Loading the split view applies the autosave, which can restore a
@@ -530,13 +523,21 @@ class BrowserWindowController: NSWindowController {
         window?.contentView?.wantsLayer = true
 
         // Safety net in case the restore happened without a KVO notification:
-        // adopt the restored state so the mode matches what is on screen.
-        handleSidebarEvent(.restored(isCollapsed: sidebarItem.isCollapsed))
-        if sidebarItem.isCollapsed {
-            setTrafficLightsHidden(true, animated: false)
-        }
+        // adopt the restored state so the mode matches what is on screen. The
+        // reducer ignores it when the observer above already saw the restore.
+        sidebarCollapsedStateChanged(sidebarItem.isCollapsed, animated: false)
 
         setupEdgeHoverTracking()
+    }
+
+    /// Mirrors the sidebar's collapsed state into the reducer — which attributes
+    /// the change (own toggle/hover vs divider drag or autosave restore) and
+    /// lets the mode follow external ones — and into the traffic lights, which
+    /// are hidden while the sidebar is collapsed. The `isCollapsed` observer and
+    /// the setup-time sync both go through here, so the two never disagree.
+    private func sidebarCollapsedStateChanged(_ collapsed: Bool, animated: Bool) {
+        handleSidebarEvent(.collapsedChanged(collapsed))
+        setTrafficLightsHidden(collapsed, animated: animated)
     }
 
     private func setTrafficLightsHidden(_ hidden: Bool, animated: Bool) {

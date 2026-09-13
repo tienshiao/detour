@@ -284,6 +284,98 @@ func unregisterProbeTab(_ probe: (window: ProbeExtensionWindow, tab: ProbeExtens
     context.didCloseWindow(probe.window)
 }
 
+// MARK: - Extension fixtures
+
+/// The `options.html` the minimal fixture manifest points at.
+let optionsPageTestFiles: [String: String] = ["options.html": "<html><body>options</body></html>"]
+
+/// The minimal MV3 manifest the extension-page suites build on: an options page
+/// and no background content.
+func optionsPageManifestJSON(name: String) -> String {
+    """
+    {
+        "manifest_version": 3,
+        "name": "\(name)",
+        "version": "1.0.0",
+        "options_ui": { "page": "options.html" }
+    }
+    """
+}
+
+/// Write an unpacked extension into `directory` — by default a fresh temp
+/// directory named after `id` — and return it with its `WKWebExtension` loaded.
+/// The caller owns that directory (`ext.basePath`) and is responsible for
+/// removing it in tearDown; it is deliberately not registered anywhere, so a
+/// suite decides for itself what "installed" means for it.
+@MainActor
+func makeTestExtension(id: String, manifestJSON: String, files: [String: String] = [:],
+                       in directory: URL? = nil) async throws -> WebExtension {
+    let dir = directory ?? FileManager.default.temporaryDirectory
+        .appendingPathComponent("detour-test-\(id)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"),
+                           atomically: true, encoding: .utf8)
+    for (file, contents) in files {
+        try contents.write(to: dir.appendingPathComponent(file), atomically: true, encoding: .utf8)
+    }
+
+    let wkExt = try await WKWebExtension(resourceBaseURL: dir)
+    let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
+    let ext = WebExtension(id: id, manifest: manifest, basePath: dir)
+    ext.wkExtension = wkExt
+    return ext
+}
+
+/// `makeTestExtension` for the minimal options-page fixture. The id is
+/// `idPrefix` plus a random suffix, so two fixtures never collide.
+@MainActor
+func makeOptionsPageTestExtension(idPrefix: String, name: String) async throws -> WebExtension {
+    try await makeTestExtension(id: "\(idPrefix)-\(UUID().uuidString.prefix(8))",
+                                manifestJSON: optionsPageManifestJSON(name: name),
+                                files: optionsPageTestFiles)
+}
+
+/// The manifest.json `ext` was built from, as it is on disk — what a suite that
+/// wants a real manifest blob in the DB row saves.
+func testExtensionManifestData(_ ext: WebExtension) throws -> Data {
+    try Data(contentsOf: ext.basePath.appendingPathComponent("manifest.json"))
+}
+
+/// Save `ext` as an installed, globally enabled extension. `manifestJSON`
+/// defaults to an empty object, for the suites that never read the blob back.
+@MainActor
+func installTestExtension(_ ext: WebExtension, in db: AppDatabase,
+                          manifestJSON: Data = Data("{}".utf8)) {
+    db.saveExtension(ExtensionRecord(
+        id: ext.id, name: ext.manifest.name, version: ext.manifest.version,
+        manifestJSON: manifestJSON, basePath: ext.basePath.path,
+        isEnabled: true, installedAt: Date().timeIntervalSince1970
+    ))
+}
+
+/// Load `ext`'s context into `profile` and return it. The caller is responsible
+/// for unloading it in tearDown.
+@MainActor
+func loadTestContext(_ ext: WebExtension, in profile: Profile) throws -> WKWebExtensionContext {
+    _ = profile.loadExtensionContext(ext)
+    return try XCTUnwrap(profile.extensionContext(for: ext.id), "the context should load")
+}
+
+/// A tab as a restore or an undo builds one: never woken, so it has no web view
+/// and nothing has loaded its URL yet.
+@MainActor
+func sleepingTab(_ url: URL, title: String = "Page", in space: Space) -> BrowserTab {
+    BrowserTab(id: UUID(), title: title, url: url, faviconURL: nil,
+               cachedInteractionState: nil, spaceID: space.id)
+}
+
+/// An extension page URL, resolved against a context's base URL. An escaped
+/// query and a fragment must both survive a rehost untouched, so tests build
+/// them here rather than by string concatenation.
+func extensionPageURL(_ path: String, on base: URL) throws -> URL {
+    try XCTUnwrap(URL(string: path, relativeTo: base)?.absoluteURL)
+}
+
 // MARK: - One-shot flag
 
 /// One-shot flag guarding a continuation that several callbacks can reach.

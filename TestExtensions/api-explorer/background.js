@@ -636,6 +636,45 @@ async function handleMessage(message) {
       return { success: true };
     }
 
+    // Callback form / runtime.lastError, run in the service worker.
+    // Same `__detourSettle` path the popup exercises, but on the worker's own
+    // runtime object — which may take a different route to lastError (see
+    // globalThis.__detourCallbackLastError.lastMode: 'js', 'native-relay' or
+    // 'console'). chrome.offscreen is worker-only, so its `passResult: false`
+    // callback (fires with zero arguments on success) can only be tried here.
+    case 'callbackFormProbe': {
+      const probe = (label, run) => new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ label, timedOut: 'callback did not fire within 3s' }), 3000);
+        try {
+          run(function () {
+            clearTimeout(timer);
+            const err = chrome.runtime.lastError;
+            resolve({
+              label,
+              argsLength: arguments.length,
+              result: arguments.length ? arguments[0] : undefined,
+              lastError: err ? (err.message || String(err)) : String(err),
+              mode: globalThis.__detourCallbackLastError
+                ? globalThis.__detourCallbackLastError.lastMode
+                : '(no Detour polyfill)'
+            });
+          });
+        } catch (e) {
+          clearTimeout(timer);
+          resolve({ label, threw: e.message || String(e) });
+        }
+      });
+
+      const probes = [
+        // Success, passResult: false — closing with no document open is a no-op.
+        await probe('offscreen.closeDocument(cb)', (cb) => chrome.offscreen.closeDocument(cb)),
+        // Deterministic failure: a null id is answered with "notificationId required".
+        await probe('notifications.clear(null, cb)', (cb) => chrome.notifications.clear(null, cb))
+      ];
+      const err = chrome.runtime.lastError;
+      return { probes, lastErrorAfter: err ? (err.message || String(err)) : String(err) };
+    }
+
     case 'sessionStorageTest': {
       await chrome.storage.session.set({ testKey: message.value || 'hello' });
       const result = await chrome.storage.session.get('testKey');

@@ -428,8 +428,7 @@ final class AppDatabaseTests: XCTestCase {
         for foreignKeysEnabled in [true, false] {
             let label = "foreign keys \(foreignKeysEnabled ? "on" : "off")"
             let db = try makeDatabaseWithPerProfileRows(foreignKeysEnabled: foreignKeysEnabled)
-            // A stored Private profile row missing from the set goes too, but its
-            // store is non-persistent, so it gets no pending data removal.
+            // A stored Private profile row missing from the set goes too.
             db.saveProfile(makeProfile(id: incognitoID, name: "Private"))
 
             db.saveProfiles([makeProfile(id: "profile-2", name: "Second, renamed")])
@@ -445,8 +444,9 @@ final class AppDatabaseTests: XCTestCase {
             for table in extensionKeyedTables {
                 XCTAssertEqual(try rowCount(table, in: db), 1, "\(table) is untouched (\(label))")
             }
-            XCTAssertEqual(db.pendingProfileDataRemovals(), [testProfileID],
-                           "the removed profile's data removal is pending; the Private profile's is not (\(label))")
+            XCTAssertEqual(db.pendingProfileDataRemovals(), [],
+                           "the sweep drops rows only: it must never arm an on-disk data removal, because the "
+                           + "saved set can be missing profiles that were simply not loaded (\(label))")
         }
     }
 
@@ -469,8 +469,52 @@ final class AppDatabaseTests: XCTestCase {
                                "\(table) rows of the referenced profile are kept (\(label))")
                 XCTAssertEqual(try rowCount(table, profileID: "profile-2", in: db), 1, label)
             }
-            XCTAssertEqual(db.pendingProfileDataRemovals(), ["profile-3"],
-                           "only the removed profile gets a pending data removal (\(label))")
+            XCTAssertEqual(db.pendingProfileDataRemovals(), [],
+                           "the sweep never removes a profile's on-disk data, deleted row or not (\(label))")
+        }
+    }
+
+    // MARK: - Migration v8 back-fill (TASK-24)
+
+    /// v8 adds the extension id column as NULL everywhere, and a NULL id on an
+    /// extension page means "uninstalled since", which restore drops. Rows saved
+    /// before the column existed are back-filled with the sentinel instead, so an
+    /// upgrade keeps the user's extension-page pins, favourites and closed tabs.
+    func testMigrationV8TagsPreExistingExtensionPagesWithTheUnknownID() throws {
+        let dbQueue = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(dbQueue, upTo: "v7")
+        try dbQueue.write { db in
+            try db.execute(sql: "INSERT INTO profile (id, name) VALUES ('p1', 'Default')")
+            try db.execute(sql: """
+                INSERT INTO space (id, name, emoji, colorHex, sortOrder, profileID)
+                VALUES ('s1', 'Home', 'H', '007AFF', 0, 'p1')
+                """)
+            for (id, url) in [("t1", "webkit-extension://ABC/x.html"), ("t2", "https://example.com/")] {
+                try db.execute(sql: "INSERT INTO tab (id, spaceID, url, title, sortOrder) VALUES (?, 's1', ?, 'T', 0)",
+                               arguments: [id, url])
+            }
+            for (id, url) in [("p-ext", "webkit-extension://abc/x.html"), ("p-web", "https://example.com/")] {
+                try db.execute(sql: """
+                    INSERT INTO pinnedTab (id, spaceID, pinnedURL, pinnedTitle, sortOrder)
+                    VALUES (?, 's1', ?, 'P', 0)
+                    """, arguments: [id, url])
+            }
+        }
+
+        _ = try AppDatabase(dbQueue: dbQueue)
+
+        try dbQueue.read { db in
+            for (table, id) in [("tab", "t1"), ("pinnedTab", "p-ext")] {
+                XCTAssertEqual(try String.fetchOne(db, sql: "SELECT extensionID FROM \(table) WHERE id = ?",
+                                                   arguments: [id]),
+                               ExtensionPageURL.unknownExtensionID,
+                               "\(table): an extension page saved before the column existed is tagged, not dropped")
+            }
+            for (table, id) in [("tab", "t2"), ("pinnedTab", "p-web")] {
+                XCTAssertNil(try String.fetchOne(db, sql: "SELECT extensionID FROM \(table) WHERE id = ?",
+                                                  arguments: [id]),
+                             "\(table): an ordinary URL keeps a NULL id")
+            }
         }
     }
 }

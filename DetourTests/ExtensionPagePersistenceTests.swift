@@ -47,51 +47,15 @@ final class ExtensionPagePersistenceTests: XCTestCase {
 
     /// A minimal MV3 extension with an options page and no background content.
     private func makeExtension() async throws -> WebExtension {
-        let id = "page-persist-\(UUID().uuidString.prefix(8))"
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-test-\(id)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        tempDirs.append(dir)
-        let manifestJSON = """
-        {
-            "manifest_version": 3,
-            "name": "Page Persistence Test",
-            "version": "1.0.0",
-            "options_ui": { "page": "options.html" }
-        }
-        """
-        try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
-        try "<html><body>options</body></html>"
-            .write(to: dir.appendingPathComponent("options.html"), atomically: true, encoding: .utf8)
-
-        let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
-        let ext = WebExtension(id: id, manifest: manifest, basePath: dir)
-        ext.wkExtension = try await WKWebExtension(resourceBaseURL: dir)
+        let ext = try await makeOptionsPageTestExtension(idPrefix: "page-persist",
+                                                         name: "Page Persistence Test")
+        tempDirs.append(ext.basePath)
         return ext
     }
 
-    private func install(_ ext: WebExtension, in db: AppDatabase) {
-        db.saveExtension(ExtensionRecord(
-            id: ext.id, name: ext.manifest.name, version: ext.manifest.version,
-            manifestJSON: Data("{}".utf8), basePath: ext.basePath.path,
-            isEnabled: true, installedAt: Date().timeIntervalSince1970
-        ))
-    }
-
     private func loadContext(_ ext: WebExtension, in profile: Profile) throws -> WKWebExtensionContext {
-        _ = profile.loadExtensionContext(ext)
         loadedProfiles.append(profile)
-        return try XCTUnwrap(profile.extensionContext(for: ext.id), "the context should load")
-    }
-
-    private func sleepingTab(_ url: URL, title: String = "Page", in space: Space) -> BrowserTab {
-        BrowserTab(id: UUID(), title: title, url: url, faviconURL: nil,
-                   cachedInteractionState: nil, spaceID: space.id)
-    }
-
-    /// An extension page URL with an escaped query and a fragment, which must
-    /// both survive the rewrite untouched.
-    private func pageURL(_ path: String, on base: URL) throws -> URL {
-        try XCTUnwrap(URL(string: path, relativeTo: base)?.absoluteURL)
+        return try loadTestContext(ext, in: profile)
     }
 
     private func restoredStore(_ db: AppDatabase) -> TabStore {
@@ -137,11 +101,28 @@ final class ExtensionPagePersistenceTests: XCTestCase {
                        .unavailable, "installation decides, whatever a stale enabled set says")
         XCTAssertEqual(classifyPersistedExtensionPage(url: url, extensionID: nil,
                                                       installedExtensionIDs: ["other"], enabledExtensionIDs: ["other"]),
-                       .unavailable, "a row saved before the extension id was persisted")
+                       .unavailable, "an extension forgotten on uninstall, whose id the last save wrote as NULL")
         XCTAssertEqual(classifyPersistedExtensionPage(url: url, extensionID: "",
                                                       installedExtensionIDs: [""], enabledExtensionIDs: [""]),
                        .unavailable)
         XCTAssertNil(PersistedExtensionPage.unavailable.pendingOrigin)
+    }
+
+    /// A tile saved before Detour recorded ids carries the v8 back-fill sentinel,
+    /// not NULL: the two mean different things. NULL means the extension was
+    /// uninstalled since (the uninstall forgot the origin, so the next save wrote
+    /// no id) and the tile is dropped; the sentinel means the id was never
+    /// recorded, and the tile is kept like a disabled extension's.
+    func testClassifierKeepsALegacyPageAsDisabledRatherThanDroppingIt() {
+        let url = URL(string: "webkit-extension://ABCD/options.html")
+        let page = classifyPersistedExtensionPage(url: url, extensionID: ExtensionPageURL.unknownExtensionID,
+                                                  installedExtensionIDs: ["ext"], enabledExtensionIDs: ["ext"])
+        XCTAssertEqual(page, .disabled(extensionID: "unknown", originHost: "abcd"))
+        XCTAssertEqual(page.pendingOrigin?.extensionID, "unknown",
+                       "its origin is registered as pending, so a save round-trips the sentinel")
+        XCTAssertEqual(classifyPersistedExtensionPage(url: url, extensionID: nil,
+                                                      installedExtensionIDs: ["ext"], enabledExtensionIDs: ["ext"]),
+                       .unavailable, "a NULL id still means uninstalled since")
     }
 
     // MARK: - Round trip
@@ -149,7 +130,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
     func testExtensionPagesSurviveARelaunchInEveryPlaceTheyLive() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
-        install(ext, in: db)
+        installTestExtension(ext, in: db)
 
         // Launch 1: an extension page as a tab, a pinned entry (live, with its
         // backing tab on the page) and a dormant one, a favourite (live and
@@ -159,12 +140,12 @@ final class ExtensionPagePersistenceTests: XCTestCase {
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
 
-        let tabURL = try pageURL("options.html?next=https%3A%2F%2Fa.example%2F#section", on: base1)
-        let pinnedLiveURL = try pageURL("options.html?pinned=live", on: base1)
-        let pinnedDormantURL = try pageURL("options.html?pinned=dormant", on: base1)
-        let favLiveURL = try pageURL("options.html?fav=live", on: base1)
-        let favDormantURL = try pageURL("options.html?fav=dormant", on: base1)
-        let closedURL = try pageURL("options.html?closed=1", on: base1)
+        let tabURL = try extensionPageURL("options.html?next=https%3A%2F%2Fa.example%2F#section", on: base1)
+        let pinnedLiveURL = try extensionPageURL("options.html?pinned=live", on: base1)
+        let pinnedDormantURL = try extensionPageURL("options.html?pinned=dormant", on: base1)
+        let favLiveURL = try extensionPageURL("options.html?fav=live", on: base1)
+        let favDormantURL = try extensionPageURL("options.html?fav=dormant", on: base1)
+        let closedURL = try extensionPageURL("options.html?closed=1", on: base1)
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
 
         let tab = sleepingTab(tabURL, title: "Options", in: space1)
@@ -263,13 +244,13 @@ final class ExtensionPagePersistenceTests: XCTestCase {
     func testIdentitySurvivesASaveBeforeTheContextLoads() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
-        install(ext, in: db)
+        installTestExtension(ext, in: db)
 
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Persist")
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
-        let url = try pageURL("options.html#early-quit", on: base1)
+        let url = try extensionPageURL("options.html#early-quit", on: base1)
         space1.tabs.append(sleepingTab(url, in: space1))
         store1.saveNow()
         profile1.unloadAllExtensions()
@@ -293,13 +274,13 @@ final class ExtensionPagePersistenceTests: XCTestCase {
     func testPagesOfAnExtensionUninstalledWhileClosedAreDropped() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
-        install(ext, in: db)
+        installTestExtension(ext, in: db)
 
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Persist")
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
-        let extURL = try pageURL("options.html", on: base1)
+        let extURL = try extensionPageURL("options.html", on: base1)
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
         let otherWebURL = try XCTUnwrap(URL(string: "https://example.org/"))
 
@@ -382,17 +363,17 @@ final class ExtensionPagePersistenceTests: XCTestCase {
     func testDisabledExtensionsTilesSurviveARelaunchAndResolveWhenEnabled() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
-        install(ext, in: db)
+        installTestExtension(ext, in: db)
 
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Persist")
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
-        let tabURL = try pageURL("options.html?open=1", on: base1)
-        let pinnedURL = try pageURL("options.html?pinned=1", on: base1)
-        let dormantPinnedURL = try pageURL("options.html?pinned=dormant", on: base1)
-        let favURL = try pageURL("options.html?fav=1", on: base1)
-        let closedURL = try pageURL("options.html?closed=1", on: base1)
+        let tabURL = try extensionPageURL("options.html?open=1", on: base1)
+        let pinnedURL = try extensionPageURL("options.html?pinned=1", on: base1)
+        let dormantPinnedURL = try extensionPageURL("options.html?pinned=dormant", on: base1)
+        let favURL = try extensionPageURL("options.html?fav=1", on: base1)
+        let closedURL = try extensionPageURL("options.html?closed=1", on: base1)
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
 
         let openTab = sleepingTab(tabURL, in: space1)
@@ -435,14 +416,13 @@ final class ExtensionPagePersistenceTests: XCTestCase {
         XCTAssertNil(store2.reopenClosedTab(in: space2))
         XCTAssertEqual(store2.closedTabStack.map(\.url), [closedURL.absoluteString])
 
-        // A dormant tile opened while disabled gives a sleeping tab that wake will
-        // leave unloaded (a pending origin), not a crash or a dead load.
+        // A dormant tile of the disabled extension cannot be opened: a tab on its
+        // pending origin would wake blank and be dropped at the next restore, so
+        // the entry is left dormant, unchanged (TASK-34).
         store2.activatePinnedEntry(id: space2.pinnedEntries[1].id, in: space2)
-        let opened = try XCTUnwrap(space2.pinnedEntries[1].tab)
-        XCTAssertTrue(opened.isSleeping)
-        XCTAssertTrue(profile2.isAwaitingExtensionContext(opened.url))
-        opened.teardown()
-        space2.pinnedEntries[1].tab = nil
+        XCTAssertNil(space2.pinnedEntries[1].tab, "no blank tab while the extension is disabled")
+        XCTAssertTrue(profile2.isAwaitingExtensionContext(space2.pinnedEntries[1].pinnedURL),
+                      "it still waits on its pending origin")
 
         // The ids are written back out, and a second relaunch still keeps it all.
         store2.saveNow()
