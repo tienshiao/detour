@@ -114,7 +114,7 @@ struct ExtensionAPIPolyfill {
         // Which WebSocket this context got: the native one (page contexts), the
         // TASK-8 relay, or the TASK-2 guard fallback when there is no relay host.
         // Whether runtime.onInstalled is Detour's (TASK-22) or still WebKit's, and why.
-        try { __detourPolyfillDiag.apis.runtimeOnInstalled = globalThis.__detourRuntimeOnInstalled.mode + (globalThis.__detourRuntimeOnInstalled.detail ? ' (' + globalThis.__detourRuntimeOnInstalled.detail + ')' : ''); } catch(e) { __detourPolyfillDiag.apis.runtimeOnInstalled = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.runtimeOnInstalled = globalThis.__detourRuntimeOnInstalled.mode + ' [' + globalThis.__detourRuntimeOnInstalled.contextKind + ']' + (globalThis.__detourRuntimeOnInstalled.detail ? ' (' + globalThis.__detourRuntimeOnInstalled.detail + ')' : ''); } catch(e) { __detourPolyfillDiag.apis.runtimeOnInstalled = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.webSocket =globalThis.__detourWebSocketRelay ? globalThis.__detourWebSocketRelay.mode : 'native'; } catch(e) { __detourPolyfillDiag.apis.webSocket = 'error: ' + e.message; }
         } catch(e) {
         __detourPolyfillDiag.error = e.message || String(e);
@@ -439,9 +439,9 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - runtime.onInstalled
 
-    /// `chrome.runtime.onInstalled` in the background service worker, delivered by
-    /// Detour rather than WebKit (TASK-22; the rules and the measurement behind them
-    /// are in `RuntimeInstalledEvent`).
+    /// `chrome.runtime.onInstalled` in the extension's background context,
+    /// delivered by Detour rather than WebKit (TASK-22; the rules and the
+    /// measurement behind them are in `RuntimeInstalledEvent`).
     ///
     /// **Suppressing WebKit's event.** WebKit dispatches to the listeners registered
     /// on its native event object, so the only way to keep its spurious `install`
@@ -462,30 +462,49 @@ struct ExtensionAPIPolyfill {
     /// `patch-not-visible` otherwise) and, if not, puts everything back and leaves the
     /// event to WebKit rather than splitting listeners across two lists.
     ///
-    /// **Delivery.** Once per worker start, on a later task (a classic worker has
-    /// registered its top-level listeners by then; a module worker using top-level
-    /// `await` before registering could miss it — Chrome requires synchronous
-    /// registration too), the worker claims the event from Detour
-    /// (`runtime.claimInstalledEvent`). Detour answers `{reason, previousVersion?}` at
-    /// most once per install or version change per profile and advances its ledger in
-    /// the same step, so a second claim — this worker again, a restarted worker, a
-    /// racing one — gets `{}`. Listeners registered after the claim settled get
-    /// nothing, as in Chrome.
+    /// **Delivery.** Once per background-context start, on a later task, the
+    /// context claims the event from Detour (`runtime.claimInstalledEvent`). In a
+    /// worker that is the next task (a classic worker has registered its top-level
+    /// listeners by then; a module worker using top-level `await` before
+    /// registering could miss it — Chrome requires synchronous registration too);
+    /// in a background page it is a task after `DOMContentLoaded`, by which point
+    /// the page's parser-inserted scripts have run (a timer alone can fire while
+    /// the parser is still yielding). Detour answers `{reason, previousVersion?}`
+    /// at most once per install or version change per profile and advances its
+    /// ledger in the same step, so a second claim — this context again, a
+    /// restarted one, a racing one — gets `{}`. Listeners registered after the
+    /// claim settled get nothing, as in Chrome.
     ///
-    /// **Extension pages** (popup, options, extension tabs, offscreen documents: any
-    /// non-worker context the polyfill reaches that has `runtime.onInstalled`) get the
-    /// same shadowing but never claim (TASK-29): mode `suppressed`, listeners kept and
-    /// never called. Otherwise WebKit's own dispatch reaches a page that is listening
-    /// when a background-recovery reload or a disable → enable fires its spurious
-    /// `install`. Detour's event goes to the worker only; in Chrome a page opened
-    /// after the event never sees it either. Measured with a real extension page
+    /// **Which context claims** (TASK-43). A service worker, and the background
+    /// *page* of an MV3 extension that declares `background.scripts` or
+    /// `background.page` — WebKit runs those as a non-persistent page, not a
+    /// worker, so `ServiceWorkerGlobalScope` alone would leave such an extension
+    /// with no claiming context at all and its `onInstalled` suppressed for good.
+    /// The page is recognised from the manifest WebKit itself reports
+    /// (`chrome.runtime.getManifest().background`) against `location.pathname`,
+    /// both measured in a real context (`ExtensionPolyfillProfileWiringTests`):
+    /// `background.scripts` loads at `<baseURL>/_generated_background_page.html`
+    /// (`generatedBackgroundPagePath` below — WebKit generates that page to host
+    /// the scripts) and `background.page` at its own manifest path, e.g.
+    /// `<baseURL>/bg.html`. Only the top-level document qualifies, so an
+    /// extension page that iframes the background page's path cannot claim the
+    /// event out from under it.
+    ///
+    /// **Other extension pages** (popup, options, extension tabs, offscreen
+    /// documents: any non-background context the polyfill reaches that has
+    /// `runtime.onInstalled`) get the same shadowing but never claim (TASK-29):
+    /// mode `suppressed`, listeners kept and never called. Otherwise WebKit's own
+    /// dispatch reaches a page that is listening when a background-recovery reload
+    /// or a disable → enable fires its spurious `install`. Detour's event goes to
+    /// the background context only; in Chrome a page opened after the event never
+    /// sees it either. Measured with a real extension page
     /// (`ExtensionPolyfillProfileWiringTests`): the patched wrapper stays the one
     /// `chrome.runtime.onInstalled` returns, and when WebKit fires `install` to the
     /// page, a listener added through it is not called.
     ///
     /// `__detourForceRuntimeOnInstalled` installs the worker mode outside workers for
-    /// tests. `__detourRuntimeOnInstalled` exposes the mode, a `claim()` that tests
-    /// drive deterministically, and what was dispatched.
+    /// tests. `__detourRuntimeOnInstalled` exposes the mode, which context claimed,
+    /// a `claim()` that tests drive deterministically, and what was dispatched.
     private static let runtimeOnInstalledJS = """
     (function() {
         const g = globalThis;
@@ -495,6 +514,12 @@ struct ExtensionAPIPolyfill {
         let heldEvent = null;
         let lastDispatched = null;
         let claimCount = 0;
+        let contextKind = 'page';
+
+        // WebKit's name for the page it generates to host an MV3
+        // `background.scripts` list (TASK-43, measured: such a background context
+        // loads at `webkit-extension://<uuid>/_generated_background_page.html`).
+        const generatedBackgroundPagePath = '/_generated_background_page.html';
 
         function readEvent() {
             try {
@@ -563,9 +588,73 @@ struct ExtensionAPIPolyfill {
             }, function() { return null; });
         }
 
+        // The path of the extension's background document, or '' when the
+        // manifest declares none (or cannot be read): `background.page` is the
+        // author's own path, a `background.scripts` list lives in WebKit's
+        // generated page. Read from the manifest WebKit reports, so no
+        // per-extension substitution into this shared polyfill is needed.
+        function backgroundDocumentPath() {
+            let background = null;
+            try {
+                const runtime = g.chrome && g.chrome.runtime;
+                if (runtime && typeof runtime.getManifest === 'function') {
+                    const manifest = runtime.getManifest();
+                    background = manifest ? manifest.background : null;
+                }
+            } catch (e) {}
+            if (!background || typeof background !== 'object') return '';
+            if (typeof background.page === 'string' && background.page !== '') {
+                return background.page.charAt(0) === '/' ? background.page : '/' + background.page;
+            }
+            if (Array.isArray(background.scripts) && background.scripts.length > 0) {
+                return generatedBackgroundPagePath;
+            }
+            return '';
+        }
+
+        // Is this document the extension's background page (TASK-43)? Only the
+        // top-level document of the background path counts: an extension page
+        // could iframe that same path, and an iframe must not claim the event
+        // out from under the real background context.
+        function isBackgroundPage() {
+            const path = backgroundDocumentPath();
+            if (path === '') return false;
+            try {
+                if (!g.window || g.window.top !== g.window) return false;
+            } catch (e) {
+                return false;
+            }
+            let pathname = '';
+            try { pathname = g.location ? g.location.pathname : ''; } catch (e) {}
+            return pathname === path;
+        }
+
+        // A worker claims on the next task; a background page waits for its
+        // parser-inserted scripts to have run, since a timer can fire while the
+        // parser is still yielding and Chrome likewise requires a background
+        // page's listeners to be registered by then.
+        function scheduleClaim(isWorker) {
+            const start = function() { setTimeout(claim, 0); };
+            if (isWorker) {
+                start();
+                return;
+            }
+            let readyState = '';
+            try { readyState = g.document ? g.document.readyState : ''; } catch (e) {}
+            if (readyState === 'loading') {
+                g.document.addEventListener('DOMContentLoaded', start, { once: true });
+            } else {
+                start();
+            }
+        }
+
         function install() {
             const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined'
                 || g.__detourForceRuntimeOnInstalled === true;
+            // Which context this is, whatever happens to the patch below, so the
+            // diagnostics describe it even when the event was left to WebKit.
+            contextKind = isWorker ? 'worker' : (isBackgroundPage() ? 'background-page' : 'page');
+            const isBackground = contextKind !== 'page';
             const event = readEvent();
             if (!event || typeof event !== 'object') {
                 detail = 'no-onInstalled';
@@ -603,23 +692,24 @@ struct ExtensionAPIPolyfill {
                 heldEvent = null;
                 return;
             }
-            if (isWorker) {
+            if (isBackground) {
                 mode = 'detour';
-                setTimeout(claim, 0);
+                scheduleClaim(isWorker);
             } else {
-                // An extension page: WebKit's event is hidden here too, and
-                // Detour's goes to the worker alone (TASK-29).
+                // An ordinary extension page: WebKit's event is hidden here too,
+                // and Detour's goes to the background context alone (TASK-29).
                 mode = 'suppressed';
             }
         }
         install();
 
-        if (typeof ServiceWorkerGlobalScope !== 'undefined') {
-            try { console.info('[Detour polyfill] runtime.onInstalled mode: ' + mode + (detail ? ' (' + detail + ')' : '')); } catch (e) {}
+        if (typeof ServiceWorkerGlobalScope !== 'undefined' || mode === 'detour') {
+            try { console.info('[Detour polyfill] runtime.onInstalled mode: ' + mode + ' (' + contextKind + (detail ? ', ' + detail : '') + ')'); } catch (e) {}
         }
 
         g.__detourRuntimeOnInstalled = Object.freeze({
             get mode() { return mode; },
+            get contextKind() { return contextKind; },
             get detail() { return detail; },
             get listenerCount() { return listeners.length; },
             get lastDispatched() { return lastDispatched; },

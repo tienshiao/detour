@@ -328,17 +328,19 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
     }
 
-    /// Start the extension's worker in `profile` when it is still owed a
-    /// `runtime.onInstalled` event, so the event arrives now — right after the
-    /// install or update, or at launch for one a crash or a disabled profile left
-    /// undelivered — rather than whenever something else next wakes the worker.
-    /// Delivery itself is the worker's claim (`RuntimeInstalledEvent`); a context
-    /// without a service worker never claims, so it is not woken, and neither is
-    /// the Private profile's, which is never owed the event (TASK-29).
+    /// Start the extension's background context in `profile` when it is still
+    /// owed a `runtime.onInstalled` event, so the event arrives now — right after
+    /// the install or update, or at launch for one a crash or a disabled profile
+    /// left undelivered — rather than whenever something else next wakes it.
+    /// Delivery itself is that context's claim (`RuntimeInstalledEvent`); an
+    /// extension with no background content at all — no service worker, no
+    /// `background.scripts`/`page` (TASK-43) — never claims, so it is not woken,
+    /// and neither is the Private profile's, which is never owed the event
+    /// (TASK-29).
     func wakeForPendingInstalledEvent(extensionID: String, in profile: Profile) {
         guard let pending = installedEventOwingWake(extensionID: extensionID, in: profile),
               let context = profile.extensionContext(for: extensionID) else { return }
-        log.info("runtime.onInstalled: \(pending.reason.rawValue, privacy: .public) pending for \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public); waking its worker")
+        log.info("runtime.onInstalled: \(pending.reason.rawValue, privacy: .public) pending for \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public); waking its background context")
         context.loadBackgroundContent { error in
             if let error {
                 let nsError = error as NSError
@@ -347,14 +349,19 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
     }
 
-    /// The event `wakeForPendingInstalledEvent` would wake the worker for, or nil
-    /// when it would not wake it. Separate so tests can check the decision without
-    /// starting a worker.
+    /// The event `wakeForPendingInstalledEvent` would wake the background context
+    /// for, or nil when it would not wake it. Separate so tests can check the
+    /// decision without starting anything.
+    ///
+    /// Both `hasBackgroundContent` checks are the same question asked of the two
+    /// sources — WebKit's parse of the extension and Detour's own — and both have
+    /// to agree before a context is woken: Detour's decides only from a manifest
+    /// it could decode, WebKit's from the extension it will actually run.
     func installedEventOwingWake(extensionID: String, in profile: Profile) -> RuntimeInstalledEvent.Details? {
         guard !profile.isIncognito,
               let context = profile.extensionContext(for: extensionID),
               context.webExtension.hasBackgroundContent,
-              self.extension(withID: extensionID)?.manifest.background?.serviceWorker != nil,
+              self.extension(withID: extensionID)?.manifest.background?.hasBackgroundContent == true,
               let version = context.webExtension.version else { return nil }
         return AppDatabase.shared.pendingRuntimeInstalledEvent(
             extensionID: extensionID, profileID: profile.id.uuidString,
@@ -1135,6 +1142,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// invasive. The module-import approach is simpler and less likely to break.
     private static let useModuleBundler = false
 
+    /// A service worker gets no user scripts, so the polyfill is written next to
+    /// it and imported from its top. An MV3 *background page*
+    /// (`background.scripts` / `background.page`) needs nothing here: it is a
+    /// web view built from the extension controller's configuration, so the
+    /// polyfill user script `Profile.extensionController` installs runs in it at
+    /// document start like in any other extension page (verified for TASK-43).
     private func injectServiceWorkerPolyfill(into ext: WebExtension) {
         guard let swFile = ext.manifest.background?.serviceWorker else { return }
         let polyfillFilename = "_detour_polyfill.js"

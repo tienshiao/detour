@@ -64,6 +64,84 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(manifest.icons?["48"], "icon48.png")
     }
 
+    // MARK: - Background content (TASK-43)
+
+    func testServiceWorkerBackgroundHasBackgroundContent() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "SW", "version": "1.0",
+            "background": {"service_worker": "sw.js", "type": "module"}
+        }
+        """)
+        let background = try XCTUnwrap(manifest.background)
+        XCTAssertEqual(background.serviceWorker, "sw.js")
+        XCTAssertNil(background.scripts)
+        XCTAssertNil(background.page)
+        XCTAssertTrue(background.isModule)
+        XCTAssertTrue(background.hasBackgroundContent)
+    }
+
+    /// A Safari-style MV3 background script list, which WebKit runs as a page.
+    func testBackgroundScriptsAreDecoded() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "Scripts", "version": "1.0",
+            "background": {"scripts": ["lib.js", "background.js"], "persistent": false}
+        }
+        """)
+        let background = try XCTUnwrap(manifest.background)
+        XCTAssertNil(background.serviceWorker)
+        XCTAssertEqual(background.scripts, ["lib.js", "background.js"])
+        XCTAssertNil(background.page)
+        XCTAssertTrue(background.hasBackgroundContent)
+    }
+
+    func testBackgroundPageIsDecoded() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "Page", "version": "1.0",
+            "background": {"page": "bg.html", "persistent": false}
+        }
+        """)
+        let background = try XCTUnwrap(manifest.background)
+        XCTAssertNil(background.serviceWorker)
+        XCTAssertNil(background.scripts)
+        XCTAssertEqual(background.page, "bg.html")
+        XCTAssertTrue(background.hasBackgroundContent)
+    }
+
+    /// A `background` entry that declares nothing runnable — and an empty
+    /// `scripts` list or an empty path, which are the same thing — is no
+    /// background content, so nothing is woken for `runtime.onInstalled`.
+    func testBackgroundWithoutAnyContentHasNone() throws {
+        for entry in [#"{}"#, #"{"scripts": []}"#, #"{"page": ""}"#, #"{"service_worker": ""}"#] {
+            let manifest = try parse("""
+            {
+                "manifest_version": 3, "name": "Empty", "version": "1.0",
+                "background": \(entry)
+            }
+            """)
+            let background = try XCTUnwrap(manifest.background, "background: \(entry)")
+            XCTAssertFalse(background.hasBackgroundContent, "background: \(entry)")
+            XCTAssertFalse(background.isModule, "background: \(entry)")
+        }
+    }
+
+    func testRoundTripPreservesBackgroundScriptsAndPage() throws {
+        for entry in [#"{"scripts": ["background.js"]}"#, #"{"page": "bg.html"}"#] {
+            let original = try parse("""
+            {
+                "manifest_version": 3, "name": "Round Trip", "version": "1.0",
+                "background": \(entry)
+            }
+            """)
+            let decoded = try JSONDecoder().decode(ExtensionManifest.self, from: original.toJSONData())
+            XCTAssertEqual(decoded.background?.scripts, original.background?.scripts, "background: \(entry)")
+            XCTAssertEqual(decoded.background?.page, original.background?.page, "background: \(entry)")
+            XCTAssertEqual(decoded.background?.hasBackgroundContent, true, "background: \(entry)")
+        }
+    }
+
     // MARK: - Icon spec
 
     func testIconSpecSingleString() throws {

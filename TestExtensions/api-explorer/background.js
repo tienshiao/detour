@@ -31,12 +31,17 @@ chrome.storage.local.get('onInstalledEvents').then(({ onInstalledEvents = [] }) 
   console.log('[API Explorer] worker start v' + chrome.runtime.getManifest().version
     + ', onInstalled history: ' + JSON.stringify(onInstalledEvents));
 });
-// How Detour's polyfill installed the event in this worker ('detour' when Detour
-// delivers it, 'webkit (reason)' when WebKit's own event was left in place).
+// How Detour's polyfill installed the event in this context ('detour' when
+// Detour delivers it, 'webkit (reason)' when WebKit's own event was left in
+// place) and which context claimed it: 'worker' here, 'background-page' for an
+// MV3 extension whose background content is scripts/a page, 'page' for any
+// other extension page (which never claims).
 {
   const status = globalThis.__detourRuntimeOnInstalled;
   chrome.storage.local.set({
-    onInstalledWorkerMode: status ? status.mode + (status.detail ? ' (' + status.detail + ')' : '') : 'no Detour polyfill'
+    onInstalledWorkerMode: status
+      ? status.mode + ' [' + status.contextKind + ']' + (status.detail ? ' (' + status.detail + ')' : '')
+      : 'no Detour polyfill'
   });
 }
 

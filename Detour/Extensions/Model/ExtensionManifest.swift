@@ -96,17 +96,37 @@ struct ExtensionManifest: Codable {
         }
     }
 
+    /// The extension's background content. MV3 has three shapes and WebKit runs
+    /// all three (measured for TASK-43, see `ExtensionAPIPolyfill`): a
+    /// `service_worker`, a Safari-style list of `scripts` WebKit hosts in a page
+    /// it generates, or an explicit `page`.
     struct Background: Codable {
         let serviceWorker: String?
+        /// Safari-style MV3 background scripts. WebKit hosts them in a page it
+        /// generates at `_generated_background_page.html`, relative to the
+        /// context's base URL.
+        let scripts: [String]?
+        /// An explicit background page, loaded at its manifest-declared path.
+        let page: String?
         let type: String?
 
         enum CodingKeys: String, CodingKey {
             case serviceWorker = "service_worker"
-            case type
+            case scripts, page, type
         }
 
         /// Whether this background script should be loaded as an ES module.
         var isModule: Bool { type == "module" }
+
+        /// Whether the manifest declares background content in any of the three
+        /// shapes — what decides whether there is a background context to wake
+        /// for a pending `runtime.onInstalled` (TASK-43). WebKit's own
+        /// `WKWebExtension.hasBackgroundContent` agrees for each shape.
+        var hasBackgroundContent: Bool {
+            !(serviceWorker ?? "").isEmpty
+                || !(scripts ?? []).isEmpty
+                || !(page ?? "").isEmpty
+        }
     }
 
     struct ContentScript: Codable {

@@ -673,8 +673,10 @@ document.getElementById('btn-refresh-log').addEventListener('click', async () =>
 // Expected in Detour (TASK-22, TASK-29): one 'install' per profile after
 // installing, one 'update' with previousVersion after a version change or a
 // same-version reinstall, nothing for a reload, relaunch or disable/enable, and
-// nothing ever in the Private profile. The popup itself listens too: in Detour its
-// mode is 'suppressed' and it never receives the event (only the worker does).
+// nothing ever in the Private profile. The popup itself listens too: in Detour
+// its mode is 'suppressed' and it never receives the event — only the
+// extension's background context does, whether that is a service worker
+// (contextKind 'worker', as here) or an MV3 background page (TASK-43).
 const popupOnInstalledEvents = [];
 chrome.runtime.onInstalled.addListener((details) => {
   popupOnInstalledEvents.push({ reason: details.reason, previousVersion: details.previousVersion, timestamp: Date.now() });
@@ -689,7 +691,9 @@ document.getElementById('btn-oninstalled-history').addEventListener('click', asy
       return `${time}  ${e.reason}${previous} -> v${e.version}`;
     });
     const status = globalThis.__detourRuntimeOnInstalled;
-    const popupMode = status ? status.mode + (status.detail ? ` (${status.detail})` : '') : 'no Detour polyfill';
+    const popupMode = status
+      ? `${status.mode} [${status.contextKind}]${status.detail ? ` (${status.detail})` : ''}`
+      : 'no Detour polyfill';
     const popupReceived = popupOnInstalledEvents.length
       ? popupOnInstalledEvents.map(e => `${e.reason}${e.previousVersion ? ` from ${e.previousVersion}` : ''}`).join(', ')
       : 'nothing (expected)';

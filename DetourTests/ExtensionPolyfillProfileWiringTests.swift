@@ -1439,4 +1439,359 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(worker["received"] as? [[String: String]], [["reason": "install"]],
                        "the worker must get Detour's install exactly once, and not WebKit's as well")
     }
+
+    // MARK: - TASK-43: runtime.onInstalled in an MV3 background page
+
+    /// The two shapes of MV3 background content WebKit runs as a page rather
+    /// than a service worker, with the path WebKit loads each at — measured
+    /// against a real context by the probe these tests grew out of, and
+    /// re-asserted here so a WebKit change that moves the generated page fails
+    /// the suite rather than silently costing every such extension its event.
+    private enum BackgroundPage {
+        /// `background.scripts`: WebKit hosts them in a page it generates.
+        case scripts
+        /// `background.page`: the author's own page, at its manifest path.
+        case page
+
+        var manifestEntry: String {
+            switch self {
+            case .scripts: return #"{"scripts": ["background.js"], "persistent": false}"#
+            case .page: return #"{"page": "bg.html", "persistent": false}"#
+            }
+        }
+
+        /// Where the background context loads, relative to the context's base URL.
+        var pathname: String {
+            switch self {
+            case .scripts: return "/_generated_background_page.html"
+            case .page: return "/bg.html"
+            }
+        }
+
+        var ownFiles: [String: String] {
+            switch self {
+            case .scripts: return [:]
+            case .page: return ["bg.html": "<html><body><script src=\"background.js\"></script></body></html>"]
+            }
+        }
+    }
+
+    /// The background script both shapes run: it registers its `onInstalled`
+    /// listener at top level (as Chrome requires) and answers a `report` message
+    /// with everything the test needs to see — what it received, and what the
+    /// polyfill made of the context it is in. It carries no polyfill of its own:
+    /// a background page is a web view, so the polyfill user script
+    /// `Profile.extensionController` installs is what must reach it.
+    private static let backgroundPageReporterJS = """
+    // A non-persistent background page can be torn down and started again
+    // (a message to it starts one), so what it received is also written to the
+    // origin's localStorage: `allReceived` is every dispatch this extension's
+    // background context ever got in this profile, which is what "exactly once"
+    // is about, and `loads` says how many instances there have been.
+    const received = [];
+    let loads = 0;
+    try {
+        loads = (Number(localStorage.getItem('__detourLoads')) || 0) + 1;
+        localStorage.setItem('__detourLoads', String(loads));
+    } catch (e) {}
+    function allReceived() {
+        try { return JSON.parse(localStorage.getItem('__detourReceived') || '[]'); } catch (e) { return []; }
+    }
+    chrome.runtime.onInstalled.addListener((details) => {
+        received.push(details);
+        try {
+            const all = allReceived();
+            all.push(details);
+            localStorage.setItem('__detourReceived', JSON.stringify(all));
+        } catch (e) {}
+    });
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (!message || message.type !== 'report') return false;
+        const status = globalThis.__detourRuntimeOnInstalled;
+        sendResponse({
+            href: location.href,
+            pathname: location.pathname,
+            isWorker: typeof ServiceWorkerGlobalScope !== 'undefined',
+            hasPolyfill: typeof status === 'object',
+            mode: status ? status.mode : 'none',
+            contextKind: status ? status.contextKind : 'none',
+            detail: status ? status.detail : 'none',
+            claimCount: status ? status.claimCount : -1,
+            listenerCount: status ? status.listenerCount : -1,
+            loads: loads,
+            received: received,
+            allReceived: allReceived()
+        });
+        return true;
+    });
+    // A background page iframed by another extension page must not claim: it
+    // reports its own view of itself to the embedder instead.
+    if (typeof window !== 'undefined' && window.top !== window) {
+        const framed = globalThis.__detourRuntimeOnInstalled;
+        window.top.postMessage({ __detourFramedStatus: {
+            pathname: location.pathname,
+            mode: framed ? framed.mode : 'none',
+            contextKind: framed ? framed.contextKind : 'none',
+            claimCount: framed ? framed.claimCount : -1
+        } }, '*');
+    }
+    """
+
+    /// An MV3 extension whose background content is a page, registered the way
+    /// an installed one is. `id` lets a test rebuild the same extension at a new
+    /// version; only the newest build stays registered.
+    private func makeBackgroundPageExtension(
+        _ shape: BackgroundPage, id: String, version: String = "1.0.0",
+        extraFiles: [String: String] = [:]
+    ) async throws -> WebExtension {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-test-\(id)-v\(version)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        tempDirs.append(dir)
+
+        try """
+        {
+            "manifest_version": 3,
+            "name": "Background Page Test",
+            "version": "\(version)",
+            "background": \(shape.manifestEntry)
+        }
+        """.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        try "<html><body><div id=\"test\">wiring test page</div></body></html>"
+            .write(to: dir.appendingPathComponent("test.html"), atomically: true, encoding: .utf8)
+        try Self.backgroundPageReporterJS
+            .write(to: dir.appendingPathComponent("background.js"), atomically: true, encoding: .utf8)
+        for (name, contents) in shape.ownFiles.merging(extraFiles, uniquingKeysWith: { _, new in new }) {
+            try contents.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let wkExt = try await WKWebExtension(resourceBaseURL: dir)
+        let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
+        let ext = WebExtension(id: id, manifest: manifest, basePath: dir)
+        ext.wkExtension = wkExt
+        ExtensionManager.shared.extensions.removeAll { $0.id == id }
+        ExtensionManager.shared.extensions.append(ext)
+        if !registeredExtensionIDs.contains(id) { registeredExtensionIDs.append(id) }
+        return ext
+    }
+
+    /// What the background context reports, asked through an extension page of
+    /// the same extension (the only way into it from a test), once the report
+    /// satisfies `until` — the claim is a round trip to native, so a report can
+    /// arrive with the claim counted and its dispatch still in flight.
+    private func reportFromBackgroundContext(
+        page webView: WKWebView, what: String,
+        until: ([String: Any]) -> Bool = { _ in true }
+    ) async throws -> [String: Any] {
+        var report: [String: Any] = [:]
+        try await waitUntil(what, timeout: 20) {
+            let envelope = try await askWorker(from: webView, message: ["type": "report"], timeout: 5)
+            guard let reply = envelope["reply"] as? [String: Any], until(reply) else { return false }
+            report = reply
+            return true
+        }
+        return report
+    }
+
+    /// The report has been dispatched `count` events — the predicate the install
+    /// and update legs wait on.
+    private static func dispatched(_ count: Int) -> ([String: Any]) -> Bool {
+        { ($0["allReceived"] as? [Any])?.count == count }
+    }
+
+    /// What the polyfill made of an ordinary extension page, plus anything an
+    /// iframe of that page reported to it.
+    private func polyfillStatus(ofPage webView: WKWebView) async throws -> [String: Any] {
+        let raw = try await webView.callAsyncJavaScript("""
+            const status = globalThis.__detourRuntimeOnInstalled;
+            return JSON.stringify({
+                pathname: location.pathname,
+                hasPolyfill: typeof status === 'object',
+                mode: status ? status.mode : 'none',
+                contextKind: status ? status.contextKind : 'none',
+                claimCount: status ? status.claimCount : -1,
+                framed: globalThis.__detourFramedStatus || null
+            });
+        """, arguments: [:], contentWorld: .page)
+        let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
+    func testMV3BackgroundScriptsPageGetsRuntimeOnInstalledOnce() async throws {
+        try await assertBackgroundPageGetsTheInstallExactlyOnce(.scripts)
+    }
+
+    func testMV3BackgroundPageGetsRuntimeOnInstalledOnce() async throws {
+        try await assertBackgroundPageGetsTheInstallExactlyOnce(.page)
+    }
+
+    /// AC #1 and AC #2 for an MV3 extension with no service worker: its
+    /// background *page* is woken by the production path
+    /// (`wakeForPendingInstalledEvent`, which before TASK-43 declined to wake
+    /// anything without `background.service_worker`), the polyfill treats that
+    /// page as the claiming context, and the event arrives there exactly once —
+    /// while an ordinary extension page of the same extension stays `suppressed`
+    /// and claims nothing.
+    private func assertBackgroundPageGetsTheInstallExactlyOnce(_ shape: BackgroundPage) async throws {
+        let id = "oninstalled-bgpage-\(UUID().uuidString.prefix(8))"
+        let ext = try await makeBackgroundPageExtension(shape, id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let wkExt = try XCTUnwrap(ext.wkExtension)
+        XCTAssertTrue(wkExt.hasBackgroundContent,
+                      "precondition: WebKit runs this manifest's background content")
+        XCTAssertFalse(wkExt.hasPersistentBackgroundContent)
+        XCTAssertNil(ext.manifest.background?.serviceWorker, "precondition: no service worker")
+        XCTAssertEqual(ext.manifest.background?.hasBackgroundContent, true)
+
+        let profile = makeProfile("onInstalled Background Page \(shape.pathname)")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+
+        XCTAssertEqual(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile),
+                       .init(reason: .install, previousVersion: nil),
+                       "a background page is owed the install like a worker is")
+        // The production wake: it loads the background content, whose polyfill claims.
+        ExtensionManager.shared.wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
+
+        let webView = try await makeExtensionWebView(for: context)
+        let report = try await reportFromBackgroundContext(
+            page: webView, what: "the background page to be dispatched the install",
+            until: Self.dispatched(1))
+        print("TASK-43 background page measurement (\(shape.pathname)): \(report)")
+
+        XCTAssertEqual(report["pathname"] as? String, shape.pathname,
+                       "WebKit loads this shape's background context at \(shape.pathname)")
+        XCTAssertEqual(report["href"] as? String,
+                       context.baseURL.absoluteString + shape.pathname.dropFirst())
+        XCTAssertEqual(report["isWorker"] as? Bool, false, "this is a page, not a worker")
+        XCTAssertEqual(report["hasPolyfill"] as? Bool, true,
+                       "the polyfill user script must reach a background page")
+        XCTAssertEqual(report["mode"] as? String, "detour")
+        XCTAssertEqual(report["contextKind"] as? String, "background-page")
+        XCTAssertEqual(report["detail"] as? String, "")
+        XCTAssertEqual(report["claimCount"] as? Int, 1, "the background page claims once")
+        XCTAssertEqual(report["allReceived"] as? [[String: String]], [["reason": "install"]],
+                       "the background page must get Detour's install exactly once")
+
+        // Nothing is owed any more: every later background-page start claims and
+        // is told nothing, so no second install is ever dispatched.
+        XCTAssertNil(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile),
+                     "the claim advanced the ledger")
+        let again = try await reportFromBackgroundContext(
+            page: webView, what: "the background page to answer again")
+        XCTAssertEqual(again["claimCount"] as? Int, 1)
+        XCTAssertEqual(again["allReceived"] as? [[String: String]], [["reason": "install"]])
+
+        // AC #2: an ordinary extension page of the same extension is suppressed.
+        let pageStatus = try await polyfillStatus(ofPage: webView)
+        print("TASK-43 ordinary page measurement: \(pageStatus)")
+        XCTAssertEqual(pageStatus["pathname"] as? String, "/test.html")
+        XCTAssertEqual(pageStatus["hasPolyfill"] as? Bool, true)
+        XCTAssertEqual(pageStatus["mode"] as? String, "suppressed")
+        XCTAssertEqual(pageStatus["contextKind"] as? String, "page")
+        XCTAssertEqual(pageStatus["claimCount"] as? Int, 0, "an ordinary page must never claim")
+    }
+
+    /// A version change is delivered to the background page as one `update`
+    /// carrying the version the install was delivered for — the same ledger step
+    /// a worker gets, now reaching a page.
+    func testMV3BackgroundPageGetsTheUpdateAfterAVersionChange() async throws {
+        let id = "oninstalled-bgpage-update-\(UUID().uuidString.prefix(8))"
+        let first = try await makeBackgroundPageExtension(.scripts, id: id, version: "1.0.0")
+        defer { AppDatabase.shared.deleteExtension(id: id) }
+
+        let profile = makeProfile("onInstalled Background Page Update")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(first)
+        let firstContext = try XCTUnwrap(profile.extensionContexts[id])
+        ExtensionManager.shared.wakeForPendingInstalledEvent(extensionID: id, in: profile)
+        let installReport = try await reportFromBackgroundContext(
+            page: try await makeExtensionWebView(for: firstContext),
+            what: "the 1.0.0 background page to be dispatched the install",
+            until: Self.dispatched(1))
+        XCTAssertEqual(installReport["allReceived"] as? [[String: String]], [["reason": "install"]])
+
+        // The same extension, rebuilt at a new version and loaded again, the way
+        // an update installs it over the old one.
+        _ = profile.unloadExtension(id: id)
+        let bumped = try await makeBackgroundPageExtension(.scripts, id: id, version: "1.1.0")
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: id)?.manifest.version, "1.1.0")
+        _ = profile.loadExtensionContext(bumped)
+        let secondContext = try XCTUnwrap(profile.extensionContexts[id])
+        XCTAssertEqual(ExtensionManager.shared.installedEventOwingWake(extensionID: id, in: profile),
+                       .init(reason: .update, previousVersion: "1.0.0"))
+        ExtensionManager.shared.wakeForPendingInstalledEvent(extensionID: id, in: profile)
+
+        let updateReport = try await reportFromBackgroundContext(
+            page: try await makeExtensionWebView(for: secondContext),
+            what: "the 1.1.0 background page to be dispatched the update",
+            until: Self.dispatched(2))
+        print("TASK-43 update measurement: \(updateReport)")
+        XCTAssertEqual(updateReport["claimCount"] as? Int, 1)
+        // The origin's localStorage outlives the reload, so this is the whole
+        // history of what this profile's background context was dispatched: the
+        // install for 1.0.0, then exactly one update carrying that version.
+        XCTAssertEqual(updateReport["allReceived"] as? [[String: String]],
+                       [["reason": "install"], ["reason": "update", "previousVersion": "1.0.0"]],
+                       "the background page must get one update carrying the delivered version")
+        XCTAssertNil(ExtensionManager.shared.installedEventOwingWake(extensionID: id, in: profile))
+    }
+
+    /// An extension page that iframes the background page's own path is not the
+    /// background context: it stays `suppressed`, so it cannot consume the
+    /// install the real background page is waiting for.
+    func testAnIframeOfTheBackgroundPagePathDoesNotClaimTheInstalledEvent() async throws {
+        let id = "oninstalled-bgpage-iframe-\(UUID().uuidString.prefix(8))"
+        let ext = try await makeBackgroundPageExtension(
+            .page, id: id,
+            extraFiles: [
+                // MV3's default CSP forbids inline scripts in an extension page,
+                // so the embedder's listener has to be its own file.
+                "embedder.js": """
+                globalThis.__detourFramedStatus = null;
+                window.addEventListener('message', (event) => {
+                    if (event.data && event.data.__detourFramedStatus) {
+                        globalThis.__detourFramedStatus = event.data.__detourFramedStatus;
+                    }
+                });
+                """,
+                "test.html": """
+                <html><body><div id="test">embedder</div>
+                <script src="embedder.js"></script>
+                <iframe src="bg.html"></iframe>
+                </body></html>
+                """
+            ])
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let profile = makeProfile("onInstalled Background Page Iframe")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        ExtensionManager.shared.wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
+
+        let webView = try await makeExtensionWebView(for: context)
+        var framed: [String: Any] = [:]
+        try await waitUntil("the iframed background path to report itself") {
+            let status = try await polyfillStatus(ofPage: webView)
+            guard let reported = status["framed"] as? [String: Any] else { return false }
+            framed = reported
+            return true
+        }
+        print("TASK-43 iframed background path measurement: \(framed)")
+        XCTAssertEqual(framed["pathname"] as? String, "/bg.html")
+        XCTAssertEqual(framed["mode"] as? String, "suppressed",
+                       "an iframe of the background path is not the background context")
+        XCTAssertEqual(framed["contextKind"] as? String, "page")
+        XCTAssertEqual(framed["claimCount"] as? Int, 0)
+
+        // And the real background page still got the install.
+        let report = try await reportFromBackgroundContext(
+            page: webView, what: "the background page to be dispatched the install",
+            until: Self.dispatched(1))
+        XCTAssertEqual(report["contextKind"] as? String, "background-page")
+        XCTAssertEqual(report["allReceived"] as? [[String: String]], [["reason": "install"]])
+    }
 }
