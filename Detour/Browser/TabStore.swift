@@ -39,6 +39,11 @@ protocol TabStoreObserver: AnyObject {
 
     // Favorites notifications
     func tabStoreDidUpdateFavorites(for profile: Profile)
+
+    /// A profile was created and added to `profiles` mid-session (`addProfile`,
+    /// or the built-in Default/Private profile created on demand). Not sent for
+    /// the saved profiles `restoreSession` loads.
+    func tabStoreDidAddProfile(_ profile: Profile)
 }
 
 extension TabStoreObserver {
@@ -56,6 +61,7 @@ extension TabStoreObserver {
     func tabStoreDidUnpinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {}
     func tabStoreDidUpdateFavorites(for profile: Profile) {}
     func tabStoreDidUpdatePinnedFolders(in space: Space) {}
+    func tabStoreDidAddProfile(_ profile: Profile) {}
 }
 
 // MARK: - Space
@@ -364,6 +370,7 @@ class TabStore {
         profiles.append(profile)
         appDB.saveProfile(profile.toRecord())
         scheduleSave()
+        notifyObservers { $0.tabStoreDidAddProfile(profile) }
         return profile
     }
 
@@ -1455,6 +1462,7 @@ class TabStore {
         let profile = Profile(name: "Default")
         profiles.append(profile)
         appDB.saveProfile(profile.toRecord())
+        notifyObservers { $0.tabStoreDidAddProfile(profile) }
         return profile
     }
 
@@ -1468,6 +1476,7 @@ class TabStore {
         let profile = Profile(id: Self.incognitoProfileID, name: "Private", isIncognito: true)
         profiles.append(profile)
         appDB.saveProfile(profile.toRecord())
+        notifyObservers { $0.tabStoreDidAddProfile(profile) }
         return profile
     }
 

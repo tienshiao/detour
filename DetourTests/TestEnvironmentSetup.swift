@@ -33,6 +33,12 @@ private final class TestObserver: NSObject, XCTestObservation {
             print("✓ Test data directory: ~/Library/Application Support/\(dataDir!)/")
         }
 
+        // The test host is the app, so ExtensionManager.initialize has run and a
+        // profile added to TabStore.shared would load every registered extension
+        // (TASK-27). Tests create profiles freely and wire contexts by hand; the
+        // new-profile load tests opt back in (NewProfileExtensionLoadTests).
+        ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = false
+
         cleanTestExtensions()
         resetTabStore()
         assertCleanState()

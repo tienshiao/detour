@@ -243,6 +243,41 @@ final class TabStoreTests: XCTestCase {
                              "Newly pinned entry must have sort order after existing folders")
     }
 
+    // MARK: - Profile added (TASK-27)
+
+    private final class ProfileAddRecorder: TabStoreObserver {
+        var added: [UUID] = []
+        func tabStoreDidAddProfile(_ profile: Profile) { added.append(profile.id) }
+    }
+
+    /// Every path that creates a profile mid-session tells observers, once; that is
+    /// what ExtensionManager loads a new profile's extensions from.
+    func testCreatingAProfileNotifiesObserversOnce() throws {
+        let store = TabStore(appDB: try makeDatabase())
+        let recorder = ProfileAddRecorder()
+        store.addObserver(recorder)
+
+        let added = store.addProfile(name: "Added")
+        XCTAssertEqual(recorder.added, [added.id])
+
+        let incognito = store.ensureIncognitoProfile()
+        store.ensureIncognitoProfile()
+        XCTAssertEqual(recorder.added, [added.id, incognito.id],
+                       "the Private profile is announced when it is created, not when it is looked up")
+    }
+
+    /// The first-launch default profile is announced too.
+    func testDefaultProfileCreationNotifiesObservers() throws {
+        let store = TabStore(appDB: try makeDatabase())
+        let recorder = ProfileAddRecorder()
+        store.addObserver(recorder)
+
+        store.ensureDefaultSpace()
+
+        XCTAssertEqual(recorder.added.count, 1)
+        XCTAssertEqual(recorder.added.first, store.profiles.first?.id)
+    }
+
     // MARK: - Incognito Profile
 
     func testIncognitoProfileIsIncognitoAfterRestore() throws {

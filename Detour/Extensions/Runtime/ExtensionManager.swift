@@ -19,6 +19,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     let tabObserver = ExtensionTabObserver()
 
+    /// Whether a profile created mid-session has its enabled extensions loaded
+    /// right away (`profileWasAdded`). Always on in the app. The unit tests run
+    /// inside the app, so `ExtensionManager.initialize` has registered the
+    /// observer there too; `TestEnvironmentSetup` turns this off so the many
+    /// tests that create profiles through `TabStore.shared.addProfile` and wire
+    /// contexts by hand do not load every registered extension as a side effect.
+    /// Tests of the new-profile path turn it back on for their duration.
+    var loadsExtensionsIntoAddedProfiles = true
+
+    /// Set once `loadInstalledExtensions` reaches its per-profile load. A profile
+    /// added before then is loaded by that loop, so `profileWasAdded` leaves it
+    /// alone (and never loads a half-populated `extensions` list).
+    private(set) var hasLoadedInstalledExtensions = false
+
     /// Stored popup completionHandlers for extension-initiated popups (browser.action.openPopup).
     private var popupCompletionHandlers: [String: ((any Error)?) -> Void] = [:]
 
@@ -262,7 +276,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         // Load enabled extensions into each profile's controller
-        // (notifyExistingTabs is called inside loadExtensionsIntoProfile after contexts are registered)
+        // (notifyExistingTabs is called inside loadExtensionsIntoProfile after contexts are registered).
+        // From here on a newly added profile is loaded as it is added (profileWasAdded).
+        hasLoadedInstalledExtensions = true
         for profile in TabStore.shared.profiles {
             loadExtensionsIntoProfile(profile)
         }
@@ -289,6 +305,21 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // and announces itself once, on wake.
         profile.resolvePendingExtensionPages()
         notifyExistingTabs(for: profile)
+    }
+
+    /// A profile was created mid-session (`TabStore.addProfile`, or the Private
+    /// profile created when the first private window opens). Nothing else loads
+    /// extensions into it before a relaunch, so load them now through the same
+    /// path launch uses: `loadExtensionsIntoProfile` applies the per-profile rule
+    /// (TASK-26), wakes a worker owed `runtime.onInstalled` — a new profile has no
+    /// ledger row, so that is `install` (TASK-22) — and resolves pending pages
+    /// (TASK-24). Once loaded, the per-profile Settings toggles reconcile it like
+    /// any other profile.
+    func profileWasAdded(_ profile: Profile) {
+        guard loadsExtensionsIntoAddedProfiles, hasLoadedInstalledExtensions else { return }
+        MainActor.assumeIsolated {
+            loadExtensionsIntoProfile(profile)
+        }
     }
 
     /// Start the extension's worker in `profile` when it is still owed a

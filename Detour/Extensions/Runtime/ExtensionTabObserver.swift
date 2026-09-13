@@ -25,6 +25,11 @@ class ExtensionTabObserver: TabStoreObserver {
         }
     }
 
+    /// A profile created mid-session gets its enabled extensions (TASK-27).
+    func tabStoreDidAddProfile(_ profile: Profile) {
+        ExtensionManager.shared.profileWasAdded(profile)
+    }
+
     /// Dispatch a tab activation event. Called externally when tab selection changes.
     func dispatchActivated(tabID: UUID, spaceID: UUID) {
         guard let space = TabStore.shared.space(withID: spaceID),
