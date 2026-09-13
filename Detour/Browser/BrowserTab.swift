@@ -36,7 +36,17 @@ final class WebViewContainerView: NSView {
 
 class BrowserTab: NSObject {
     let id: UUID
-    private(set) var webView: WKWebView?
+    private(set) var webView: WKWebView? {
+        didSet {
+            // Every web view a tab holds is one Detour created, so it can never
+            // be an extension's background page however it is navigated
+            // (TASK-66). A class check would miss it: extension tabs adopt a
+            // plain WKWebView (TabStore.addExtensionTab), not a BrowserWebView.
+            // Property observers do not run during init, so the two inits that
+            // take a web view register theirs explicitly.
+            if let webView { ExtensionPageHostRegistry.register(webView) }
+        }
+    }
 
     /// Wraps `webView` so WebKit's docked Web Inspector (a sibling view)
     /// travels with the webView across detach/reattach.
@@ -219,6 +229,7 @@ class BrowserTab: NSObject {
         self.id = id
         self.webView = Self.makeWebView(configuration: configuration)
         super.init()
+        if let webView { ExtensionPageHostRegistry.register(webView) }
         applyUserAgent()
         setupObservers()
         NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange(_:)), name: .init("UserAgentDidChange"), object: nil)
@@ -229,6 +240,7 @@ class BrowserTab: NSObject {
         self.id = id
         self.webView = webView
         super.init()
+        ExtensionPageHostRegistry.register(webView)
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state
         self.url = webView.url

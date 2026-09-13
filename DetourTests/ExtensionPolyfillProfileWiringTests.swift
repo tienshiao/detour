@@ -1883,4 +1883,167 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(report["allReceived"] as? [[String: String]], [["reason": "install"]])
         XCTAssertNil(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile))
     }
+
+    /// What the polyfill and the reporter make of a page, read in that page's own
+    /// web view rather than through a `runtime.sendMessage` round trip — the only
+    /// way to ask a *specific* context when two of them are at the same path.
+    /// `allReceived` is the origin's localStorage, shared by every context of the
+    /// extension in this profile.
+    private func polyfillClaimState(of webView: WKWebView) async throws -> [String: Any] {
+        let raw = try await webView.callAsyncJavaScript("""
+            const status = globalThis.__detourRuntimeOnInstalled;
+            let allReceived = [];
+            try { allReceived = JSON.parse(localStorage.getItem('__detourReceived') || '[]'); } catch (e) {}
+            return JSON.stringify({
+                pathname: location.pathname,
+                hasPolyfill: typeof status === 'object',
+                mode: status ? status.mode : 'none',
+                contextKind: status ? status.contextKind : 'none',
+                claimCount: status ? status.claimCount : -1,
+                lastDispatched: status ? status.lastDispatched : 'none',
+                allReceived: allReceived
+            });
+        """, arguments: [:], contentWorld: .page)
+        let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
+    /// TASK-66, through the production tab path: an extension page *navigated to*
+    /// the background document's own path — `chrome.tabs.create({url:
+    /// chrome.runtime.getURL('_generated_background_page.html')})`, or a page
+    /// setting `location.href` there — is at the path the gate checks, and its own
+    /// polyfill classifies it as a background context, so before TASK-66 it could
+    /// consume its extension's install and leave WebKit's real background page
+    /// with nothing. The tab's web view is one Detour created
+    /// (`ExtensionPageHostRegistry`), which is what the native gate now refuses on.
+    ///
+    /// The tab is opened *before* the wake, so the claim really does race the
+    /// pending install. As in
+    /// `testAnOrdinaryExtensionPageCannotClaimTheInstalledEventThroughTheBridge`,
+    /// the ledger cannot be asserted still-pending at that moment — loading any
+    /// extension web view also starts the background page, whose own legitimate
+    /// claim may land first — so what is pinned is who ended up with the event:
+    /// the tab was dispatched nothing at all, and the extension's background
+    /// context recorded exactly one install.
+    func testAnExtensionTabNavigatedToTheBackgroundPathCannotClaimTheInstalledEvent() async throws {
+        let id = "oninstalled-tab-claim-\(UUID().uuidString.prefix(8))"
+        let ext = try await makeBackgroundPageExtension(.scripts, id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let profile = makeProfile("onInstalled Tab Claim")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let configuration = try XCTUnwrap(context.webViewConfiguration,
+                                          "webViewConfiguration is nil — context not loaded in a controller")
+
+        XCTAssertEqual(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile),
+                       .init(reason: .install, previousVersion: nil),
+                       "precondition: the install is owed and nothing has been woken to take it")
+
+        // A real tab, opened at the background document's path the way an
+        // extension can open one.
+        let space = addSpace(for: profile, name: "onInstalled Tab Claim Space")
+        let backgroundPagePath = ExtensionPolyfillHandler.generatedBackgroundPagePath
+        let tab = TabStore.shared.addExtensionTab(
+            in: space,
+            url: context.baseURL.appendingPathComponent(String(backgroundPagePath.dropFirst())),
+            configuration: configuration)
+        let tabView = try XCTUnwrap(tab.webView)
+        XCTAssertTrue(ExtensionPageHostRegistry.isDetourHosted(tabView),
+                      "precondition: a tab's web view is one Detour hosts")
+        try await waitUntil("the extension tab to load the background document path", timeout: 20) {
+            guard tabView.isLoading == false, tabView.url?.path == backgroundPagePath else { return false }
+            let ready = try? await tabView.callAsyncJavaScript(
+                "return document.readyState === 'complete' && typeof globalThis.__detourPolyfillRequest === 'function';",
+                arguments: [:], contentWorld: .page)
+            return (ready as? Bool) == true
+        }
+
+        // The tab asking for the event directly, as extension code can.
+        let raw = try await tabView.callAsyncJavaScript("""
+            return await globalThis.__detourPolyfillRequest('runtime.claimInstalledEvent', {})
+                .then(r => ({ ok: true, reply: r }), e => ({ ok: false, error: String(e) }));
+        """, arguments: [:], contentWorld: .page)
+        let outcome = try XCTUnwrap(raw as? [String: Any],
+                                    "expected a dictionary, got \(String(describing: raw))")
+        XCTAssertEqual(outcome["ok"] as? Bool, false,
+                       "a tab at the background path must be refused the claim, got \(outcome)")
+        XCTAssertNil(outcome["reply"], "no event may be handed to a tab: \(outcome)")
+
+        // The install reaches the extension's background context, exactly once.
+        // The report round trip can be answered by either context at this path,
+        // so it pins the count; which of the two got it is pinned below by the
+        // tab's own state.
+        ExtensionManager.shared.wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
+        let page = try await makeExtensionWebView(for: context)
+        let report = try await reportFromBackgroundContext(
+            page: page, what: "the background page to be dispatched the install",
+            until: Self.dispatched(1))
+        XCTAssertEqual(report["allReceived"] as? [[String: String]], [["reason": "install"]],
+                       "the background context must get the install exactly once")
+        XCTAssertNil(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile))
+
+        // The tab: its polyfill classified it as a background context and claimed
+        // once on start (and once more above), and every one of those claims was
+        // refused — it dispatched nothing, so the one recorded install belongs to
+        // WebKit's own background page, the only other context running this
+        // script.
+        let tabState = try await polyfillClaimState(of: tabView)
+        XCTAssertEqual(tabState["pathname"] as? String, backgroundPagePath)
+        XCTAssertEqual(tabState["contextKind"] as? String, "background-page",
+                       "precondition: the polyfill cannot tell this tab from the background page")
+        XCTAssertGreaterThanOrEqual(tabState["claimCount"] as? Int ?? -1, 1,
+                                    "precondition: the tab did try to claim")
+        XCTAssertTrue(tabState["lastDispatched"] is NSNull,
+                      "a tab at the background path must never be dispatched an install: \(tabState)")
+        XCTAssertEqual(tabState["allReceived"] as? [[String: String]], [["reason": "install"]],
+                       "exactly one install was recorded across the extension's contexts")
+    }
+
+    // MARK: - TASK-66: the registry of web views Detour hosts
+
+    /// The registry is what tells an extension page Detour is showing from
+    /// WebKit's own background view: every web view Detour creates or presents is
+    /// in it, and a view the host never touched is not.
+    func testExtensionPageHostRegistryHoldsTheViewsDetourCreatesOrPresents() async throws {
+        let ext = try await makeTestExtension()
+        let profile = makeProfile("Host Registry Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let configuration = try XCTUnwrap(context.webViewConfiguration)
+
+        // A tab for an extension page: created by TabStore as a plain WKWebView
+        // (not a BrowserWebView), so only the registry identifies it.
+        let space = addSpace(for: profile, name: "Host Registry Space")
+        let tab = TabStore.shared.addExtensionTab(
+            in: space, url: context.baseURL.appendingPathComponent("test.html"),
+            configuration: configuration)
+        let tabView = try XCTUnwrap(tab.webView)
+        XCTAssertFalse(tabView is BrowserWebView,
+                       "precondition: an extension tab adopts a plain WKWebView, so a class check would miss it")
+        XCTAssertTrue(ExtensionPageHostRegistry.isDetourHosted(tabView))
+
+        // An ordinary tab's web view is hosted too.
+        let ordinary = TabStore.shared.addTab(in: space)
+        XCTAssertTrue(ExtensionPageHostRegistry.isDetourHosted(try XCTUnwrap(ordinary.webView)))
+
+        // An offscreen document, built by the handler through the production path.
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+        let created = expectation(description: "offscreen.createDocument reply")
+        handler.handleNativeMessage(
+            ["type": "offscreen.createDocument", "extensionID": ext.id,
+             "params": ["url": "offscreen.html"]],
+            verifiedExtensionID: ext.id
+        ) { _, _ in created.fulfill() }
+        await fulfillment(of: [created], timeout: 10)
+        let offscreenView = try XCTUnwrap(handler.offscreenHosts[ext.id]?.webView,
+                                          "the offscreen host should hold its web view")
+        XCTAssertTrue(ExtensionPageHostRegistry.isDetourHosted(offscreenView))
+
+        // A web view nobody registered — what WebKit's background page runs in.
+        let unhosted = WKWebView(frame: .zero, configuration: configuration)
+        XCTAssertFalse(ExtensionPageHostRegistry.isDetourHosted(unhosted))
+    }
 }

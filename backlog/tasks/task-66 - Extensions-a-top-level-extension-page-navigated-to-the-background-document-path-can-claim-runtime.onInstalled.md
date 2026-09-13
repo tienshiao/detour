@@ -3,11 +3,11 @@ id: TASK-66
 title: >-
   Extensions: a top-level extension page navigated to the background document
   path can claim runtime.onInstalled
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-13 21:56'
-updated_date: '2026-09-13 22:02'
+updated_date: '2026-09-13 22:17'
 labels:
   - extensions
   - security
@@ -28,10 +28,10 @@ Related: TASK-43 (background page claims), TASK-64 (sender gate, records this an
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An extension page navigated (in a Detour-created tab, popup or options view) to the background document path cannot claim runtime.onInstalled: the claim is refused and logged, the ledger stays pending, and the real background page still receives the event afterwards
-- [ ] #2 Claims from the real background page (background.scripts and background.page shapes) and from a service worker keep working; RuntimeInstalledEventTests, ExtensionPolyfillTests and ExtensionPolyfillProfileWiringTests stay green
-- [ ] #3 Tests cover the refused navigated-page claim (negative) and the accepted background claims (positive), through the production web view path
-- [ ] #4 The TASK-64 doc comment on senderIsBackgroundContext no longer lists this as a known limit
+- [x] #1 An extension page navigated (in a Detour-created tab, popup or options view) to the background document path cannot claim runtime.onInstalled: the claim is refused and logged, the ledger stays pending, and the real background page still receives the event afterwards
+- [x] #2 Claims from the real background page (background.scripts and background.page shapes) and from a service worker keep working; RuntimeInstalledEventTests, ExtensionPolyfillTests and ExtensionPolyfillProfileWiringTests stay green
+- [x] #3 Tests cover the refused navigated-page claim (negative) and the accepted background claims (positive), through the production web view path
+- [x] #4 The TASK-64 doc comment on senderIsBackgroundContext no longer lists this as a known limit
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -42,3 +42,15 @@ Related: TASK-43 (background page claims), TASK-64 (sender gate, records this an
 3. senderIsBackgroundContext refuses a frame claim from a Detour-hosted view even at the background path; the log names the reason. Polyfill-side path classification stays (native gate is the authority).
 4. Tests: unit tests of the gate with isDetourHosted true/false; wiring test through the production path: TabStore.addExtensionTab navigated to /_generated_background_page.html claims and is refused, the ledger stays pending, the real background page then receives the install; existing background/worker claim tests stay green. Drop the known-limit sentence from the TASK-64 doc comment.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented: ExtensionPageHostRegistry (weak NSHashTable) registered from BrowserTab (webView didSet plus both inits, since observers do not run in init; covers addExtensionTab's plain WKWebView), OffscreenDocumentHost.load, and ExtensionPopoverController.presentPopupWebView. PolyfillSender.frame gains isDetourHosted (nil message.webView fails closed); senderIsBackgroundContext refuses a hosted frame before the path check. Tests: unit test over 4 manifest shapes (unhosted accepted, hosted refused); wiring test through TabStore.addExtensionTab navigated to /_generated_background_page.html (claim rejected, tab dispatched nothing, exactly one install recorded across the extension's contexts, so WebKit's background page got it); registry test (extension tab, ordinary tab, offscreen view registered; a fresh WKWebView not). Mutation-checked: removing the guard fails both. 'Ledger still pending before the wake' cannot be asserted because creating any extension web view starts the real background page, whose legitimate claim races; the end state is pinned instead. Full suite: 1129 tests, 0 failures.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A tab, popup, options page or offscreen document navigated to the background document path can no longer claim runtime.onInstalled: Detour registers every web view it creates or presents in ExtensionPageHostRegistry, and the claim gate refuses a frame from a registered view before the path check, leaving WebKit's own background page (the one view Detour never touches) as the only accepted frame sender. Verified with a unit test over all manifest shapes, a production-path wiring test, and a registry test; existing background/worker claim tests unchanged.
+<!-- SECTION:FINAL_SUMMARY:END -->

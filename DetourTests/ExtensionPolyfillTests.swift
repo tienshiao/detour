@@ -2760,7 +2760,11 @@ final class ExtensionPolyfillTests: XCTestCase {
         // it at, so the claim reaches native the way a real background page's
         // does. The shim's own `getManifest` still reports no background, so
         // the polyfill keeps classifying the context from
-        // `__detourForceRuntimeOnInstalled` exactly as before.
+        // `__detourForceRuntimeOnInstalled` exactly as before. The fixture's
+        // web view is a plain WKWebView the test makes and never hands to a
+        // BrowserTab, a popup or an offscreen host, so it is absent from
+        // `ExtensionPageHostRegistry` — exactly like WebKit's real background
+        // view, which is what lets it pass the TASK-66 host check too.
         try reregisterSuiteExtension(background: ["scripts": ["background.js"]])
         return try await makeWebView(
             manifestPermissions: ["history", "management", "privacy", "webRequest", "nativeMessaging"],
@@ -3063,7 +3067,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     func testSenderIsBackgroundContextAcceptsTheGeneratedPageForAServiceWorkerPreferringADocument() throws {
         let background = try decodedBackground(["service_worker": "background.js", "preferred_environment": ["document"]])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true, isDetourHosted: false),
             background: background))
     }
 
@@ -3073,7 +3077,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     func testSenderIsBackgroundContextRefusesAnAlternateEncodingOfTheBackgroundPath() throws {
         let background = try decodedBackground(["page": "bg.html"])
         XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL("/bg%2Ehtml"), isMainFrame: true), background: background))
+            .frame(url: extensionURL("/bg%2Ehtml"), isMainFrame: true, isDetourHosted: false), background: background))
     }
 
     /// POSITIVE: a page name with a space is declared raw in the manifest and
@@ -3081,7 +3085,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     func testSenderIsBackgroundContextAcceptsAPercentEncodedBackgroundPage() throws {
         let background = try decodedBackground(["page": "my page.html"])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL("/my%20page.html"), isMainFrame: true), background: background))
+            .frame(url: extensionURL("/my%20page.html"), isMainFrame: true, isDetourHosted: false), background: background))
     }
 
     /// POSITIVE: `background.scripts` runs in the page WebKit generates, so the
@@ -3089,7 +3093,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     func testSenderIsBackgroundContextAcceptsTheGeneratedPageForBackgroundScripts() throws {
         let background = try decodedBackground(["scripts": ["background.js"], "persistent": false])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true, isDetourHosted: false),
             background: background))
     }
 
@@ -3099,7 +3103,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         for spelling in ["bg.html", "./bg.html"] {
             let background = try decodedBackground(["page": spelling, "persistent": false])
             XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
-                .frame(url: extensionURL("/bg.html"), isMainFrame: true),
+                .frame(url: extensionURL("/bg.html"), isMainFrame: true, isDetourHosted: false),
                 background: background),
                 "'\(spelling)' must resolve to /bg.html")
         }
@@ -3111,9 +3115,9 @@ final class ExtensionPolyfillTests: XCTestCase {
     func testSenderIsBackgroundContextPrefersTheDeclaredPageOverTheGeneratedPath() throws {
         let background = try decodedBackground(["page": "bg.html", "scripts": ["background.js"]])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL("/bg.html"), isMainFrame: true), background: background))
+            .frame(url: extensionURL("/bg.html"), isMainFrame: true, isDetourHosted: false), background: background))
         XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true, isDetourHosted: false),
             background: background),
             "the generated page is not where this extension's background runs")
     }
@@ -3130,7 +3134,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         for shape in shapes {
             let background = try decodedBackground(shape)
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-                .frame(url: extensionURL("/popup.html"), isMainFrame: true), background: background),
+                .frame(url: extensionURL("/popup.html"), isMainFrame: true, isDetourHosted: false), background: background),
                 "a popup must not be the background context for \(shape.keys.sorted())")
         }
     }
@@ -3140,12 +3144,39 @@ final class ExtensionPolyfillTests: XCTestCase {
     func testSenderIsBackgroundContextRefusesAnIframeOfTheBackgroundPath() throws {
         let pageBackground = try decodedBackground(["page": "bg.html"])
         XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL("/bg.html"), isMainFrame: false), background: pageBackground))
+            .frame(url: extensionURL("/bg.html"), isMainFrame: false, isDetourHosted: false), background: pageBackground))
 
         let scriptsBackground = try decodedBackground(["scripts": ["background.js"]])
         XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: false),
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: false, isDetourHosted: false),
             background: scriptsBackground))
+    }
+
+    /// NEGATIVE (TASK-66): a frame in a web view Detour hosts — a tab, the
+    /// action popup, an options page, an offscreen document — is never the
+    /// background context, even at the background document's own path. That is
+    /// the hole a path-only check leaves: a page can navigate itself there
+    /// (`location.href = '/bg.html'`). WebKit's background page runs in the one
+    /// view Detour never creates or presents, so it is unaffected.
+    func testSenderIsBackgroundContextRefusesADetourHostedViewAtTheBackgroundPath() throws {
+        let cases: [(shape: [String: Any], path: String)] = [
+            (["scripts": ["background.js"]], ExtensionPolyfillHandler.generatedBackgroundPagePath),
+            (["service_worker": "background.js", "preferred_environment": ["document"]],
+             ExtensionPolyfillHandler.generatedBackgroundPagePath),
+            (["page": "bg.html"], "/bg.html"),
+            (["page": "bg.html", "scripts": ["background.js"]], "/bg.html")
+        ]
+        for (shape, path) in cases {
+            let background = try decodedBackground(shape)
+            XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .frame(url: extensionURL(path), isMainFrame: true, isDetourHosted: false),
+                background: background),
+                "precondition: an unhosted frame at \(path) is the background context for \(shape.keys.sorted())")
+            XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .frame(url: extensionURL(path), isMainFrame: true, isDetourHosted: true),
+                background: background),
+                "a Detour-hosted page navigated to \(path) must not claim for \(shape.keys.sorted())")
+        }
     }
 
     /// NEGATIVE: a frame whose URL WebKit does not report cannot be matched
@@ -3154,7 +3185,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         for shape in [["scripts": ["background.js"]], ["page": "bg.html"]] as [[String: Any]] {
             let background = try decodedBackground(shape)
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-                .frame(url: nil, isMainFrame: true), background: background))
+                .frame(url: nil, isMainFrame: true, isDetourHosted: false), background: background))
         }
     }
 
@@ -3177,10 +3208,10 @@ final class ExtensionPolyfillTests: XCTestCase {
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
                 .nativeMessage, background: background))
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-                .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+                .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true, isDetourHosted: false),
                 background: background))
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
-                .frame(url: extensionURL("/bg.html"), isMainFrame: true), background: background))
+                .frame(url: extensionURL("/bg.html"), isMainFrame: true, isDetourHosted: false), background: background))
         }
     }
 

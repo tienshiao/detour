@@ -147,8 +147,13 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     enum PolyfillSender: Equatable {
         /// `runtime.sendNativeMessage` from a `WKWebExtensionContext`: no frame.
         case nativeMessage
-        /// `webkit.messageHandlers` from a web view frame.
-        case frame(url: URL?, isMainFrame: Bool)
+        /// `webkit.messageHandlers` from a web view frame. `isDetourHosted` is
+        /// whether the sending web view is one Detour created or presented
+        /// (`ExtensionPageHostRegistry`) — a tab, the action popup, an options
+        /// page or an offscreen document. Only WebKit's background page runs in
+        /// a web view the host never touched, so `false` is what a background
+        /// frame looks like (TASK-66).
+        case frame(url: URL?, isMainFrame: Bool, isDetourHosted: Bool)
 
         /// For the log. A frame's path is in the extension's own bundle, so it
         /// is as public as the extension id.
@@ -156,8 +161,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             switch self {
             case .nativeMessage:
                 return "native message"
-            case .frame(let url, let isMainFrame):
-                return "frame at \(url.flatMap(Self.percentEncodedPath) ?? "(no url)") (main frame: \(isMainFrame))"
+            case .frame(let url, let isMainFrame, let isDetourHosted):
+                return "\(isDetourHosted ? "detour-hosted" : "unhosted") frame at \(url.flatMap(Self.percentEncodedPath) ?? "(no url)") (main frame: \(isMainFrame))"
             }
         }
 
@@ -206,20 +211,30 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// is accepted when the manifest's background may run as a service worker.
     /// Fails closed for a manifest with no background content.
     ///
-    /// Known limits, both inherent to what WebKit tells the host: a frame is
-    /// identified by its path, so a top-level extension page *navigated to*
-    /// the background path passes (the polyfill classifies such a page the
-    /// same way); and `runtime.sendNativeMessage` reaches the host with the
-    /// context only, never the sending frame, so for a service-worker manifest
-    /// an ordinary extension page that calls it directly is indistinguishable
-    /// from the worker. Either can only take its *own* extension's event.
+    /// A frame's path alone would not be enough — a tab or popup *navigated to*
+    /// the background path (`location.href = '/bg.html'`) has that path too, and
+    /// the polyfill classifies such a page as a background context as well. The
+    /// host can tell them apart because `ExtensionPageHostRegistry` holds every
+    /// web view Detour creates or presents, while WebKit's background page is
+    /// the one view a loaded context runs that Detour never touches: so a
+    /// Detour-hosted frame is refused whatever its path (TASK-66).
+    ///
+    /// Known limit, inherent to what WebKit tells the host:
+    /// `runtime.sendNativeMessage` reaches the host with the context only, never
+    /// the sending frame or its web view, so for a service-worker manifest an
+    /// ordinary extension page that calls it directly is indistinguishable from
+    /// the worker. It can only take its *own* extension's event.
     static func senderIsBackgroundContext(_ sender: PolyfillSender,
                                           background: ExtensionManifest.Background?) -> Bool {
         guard let background else { return false }
         switch sender {
         case .nativeMessage:
             return background.mayRunAsServiceWorker
-        case .frame(let url, let isMainFrame):
+        case .frame(let url, let isMainFrame, let isDetourHosted):
+            // A view Detour hosts is a tab, popup, options page or offscreen
+            // document — user-facing extension content, never the background
+            // page, however it was navigated.
+            guard !isDetourHosted else { return false }
             // Only the top-level document qualifies: an extension page can
             // iframe the background page's own path, and that iframe must not
             // pass for the real background context.
@@ -252,7 +267,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
         dispatch(body, verifiedExtensionID: verifiedExtensionID,
                  sender: .frame(url: message.frameInfo.request.url,
-                                isMainFrame: message.frameInfo.isMainFrame),
+                                isMainFrame: message.frameInfo.isMainFrame,
+                                // A message with no web view cannot be shown to
+                                // be WebKit's untouched background view, so it
+                                // fails closed as hosted (TASK-66).
+                                isDetourHosted: message.webView.map(ExtensionPageHostRegistry.isDetourHosted) ?? true),
                  replyHandler: replyHandler)
     }
 

@@ -73,6 +73,10 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
     /// (e.g. `browser.action.openPopup()` from background script).
     func presentPopupWebView(_ webView: WKWebView) {
         self.popupWebView = webView
+        // WebKit builds the popup view, but Detour is what puts it on screen,
+        // so it is a page the user is being shown and never the extension's
+        // background page (TASK-66).
+        ExtensionPageHostRegistry.register(webView)
         webView.uiDelegate = self
 
         // Wait briefly for the extension's JS to render, then measure and present

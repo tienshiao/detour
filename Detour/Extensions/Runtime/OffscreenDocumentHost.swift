@@ -152,6 +152,10 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         config.userContentController.add(self, name: Self.audioBridgeHandler)
 
         let wv = WKWebView(frame: .zero, configuration: config)
+        // Detour created this view, so it is never the extension's background
+        // page even when the offscreen document is loaded from that path
+        // (TASK-66).
+        ExtensionPageHostRegistry.register(wv)
         wv.isInspectable = true
         wv.navigationDelegate = self
         self.webView = wv
