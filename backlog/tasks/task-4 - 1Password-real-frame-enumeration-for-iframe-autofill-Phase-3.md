@@ -3,11 +3,11 @@ id: TASK-4
 title: >-
   1Password: iframe autofill — test the empty-URL hypothesis for
   srcdoc/about:blank frames on a real login page
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-11 22:28'
-updated_date: '2026-09-12 17:30'
+updated_date: '2026-09-13 22:03'
 labels:
   - 1password
   - extensions
@@ -37,7 +37,11 @@ ordinal: 4000
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Build the three-iframe login test page in ExtensionPolyfillIntegrationTests (reuse the LoopbackHTTPServer and the frame-hello probe from testContentScriptFrameHellosReachTheWorker); assert nothing yet — capture getAllFrames output and hello senders per frame and print them. 2. Record the table in the plan doc. 3. Deploy the signed build, try 1Password on the test page and on a real iframe-login site, capture the 1PW-DEBUG log. 4. Confirm or reject the hypothesis; file the fix as a new task or close. Phase A findings (native getAllFrames/getFrame, dead fallbacks deleted in c7bb06f) stand and are not to be redone.
+First half only (AC #2, #3); AC #4/#5 need the signed production build and 1Password unlocked, which only the user can run.
+1. New test in ExtensionPolyfillIntegrationTests: two LoopbackHTTPServers (different ports = different origins) serving a login page with (a) a cross-origin http iframe with a form, (b) a srcdoc iframe with a form, (c) an about:blank iframe populated by script with a form; registered as a probe tab like testContentScriptFrameHellosReachTheWorker.
+2. Collect native webNavigation.getAllFrames({tabId}) rows (url, frameId, parentFrameId) and every frame hello (sender.frameId, url); print one measurement line per frame kind; assert only the stable facts (the http iframe is enumerated and its content script said hello; every hello frame id is in getAllFrames).
+3. Write the table to docs/1password-integration-plan.md under Phase 3: frame kind, URL WebKit reports, Chrome's URL for the same frame (about:srcdoc / about:blank), content script injected yes/no, with the WebKit/macOS build noted.
+4. Leave AC #4/#5 open with a note on what the user must run.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes

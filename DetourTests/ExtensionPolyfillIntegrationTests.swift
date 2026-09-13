@@ -206,6 +206,14 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
                 sendResponse({ hellos: globalThis.__frameHellos || [] });
                 return true;
             }
+            // The whole class shares this worker, so `__frameHellos` outlives
+            // any one probe (and every `-test-iterations` repetition of it). A
+            // probe drops the previous run's records before loading its page.
+            if (message && message.type === 'clearFrameHellos') {
+                globalThis.__frameHellos = [];
+                sendResponse({ cleared: true });
+                return true;
+            }
             // TASK-4: are the observed ids usable for targeting?
             if (message && message.type === 'probeFrameTargeting') {
                 (async () => {
@@ -815,6 +823,11 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         // 2026-09-12), which matters for the Phase-3 registry design too.
         let wv = try await makeExtensionWebView()
         _ = try await askWorker(from: wv, message: ["type": "ping"])
+        // `__frameHellos` lives on the shared worker's globalThis and is never
+        // reset by it, so a previous probe's records are still there. Drop them
+        // before this probe's page loads, or the poll below returns instantly
+        // with hellos from a tab that no longer exists (TASK-65).
+        _ = try await askWorker(from: wv, message: ["type": "clearFrameHellos"])
 
         let config = WKWebViewConfiguration()
         config.webExtensionController = state.controller
@@ -833,10 +846,15 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
         // Subframes finish after the main frame's didFinish; poll for the hellos
         // instead of sleeping blindly.
+        // Belt and braces with the clear above: the loopback port is unique to
+        // this probe, so scoping by it keeps any other tab's hello out of the
+        // poll and out of the assertions below.
+        let probeOrigin = "http://127.0.0.1:\(port)/"
         var hellos: [[String: Any]] = []
         for _ in 0..<40 {
             let reply = try await askWorker(from: wv, message: ["type": "getFrameHellos"])
-            hellos = (reply["reply"] as? [String: Any])?["hellos"] as? [[String: Any]] ?? []
+            let recorded = (reply["reply"] as? [String: Any])?["hellos"] as? [[String: Any]] ?? []
+            hellos = recorded.filter { ($0["url"] as? String)?.hasPrefix(probeOrigin) == true }
             if hellos.count >= 3 { break }
             try await Task.sleep(nanoseconds: 250_000_000)
         }

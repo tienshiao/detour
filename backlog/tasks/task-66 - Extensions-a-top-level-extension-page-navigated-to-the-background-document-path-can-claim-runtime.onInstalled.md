@@ -3,9 +3,11 @@ id: TASK-66
 title: >-
   Extensions: a top-level extension page navigated to the background document
   path can claim runtime.onInstalled
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-13 21:56'
+updated_date: '2026-09-13 22:02'
 labels:
   - extensions
   - security
@@ -31,3 +33,12 @@ Related: TASK-43 (background page claims), TASK-64 (sender gate, records this an
 - [ ] #3 Tests cover the refused navigated-page claim (negative) and the accepted background claims (positive), through the production web view path
 - [ ] #4 The TASK-64 doc comment on senderIsBackgroundContext no longer lists this as a known limit
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Measured: the public WKWebExtensionContext API exposes no background web view (only webViewConfiguration, isLoaded, loadBackgroundContent), so the discriminator is the inverse: every web view Detour itself creates or presents for extension content is known (tab web views held by BrowserTab, including addExtensionTab's plain WKWebView; OffscreenDocumentHost's view; the popup web view ExtensionPopoverController presents), while WebKit's background page view is the one Detour never touches.
+2. Add a weak registry (ExtensionPageHostRegistry, NSHashTable.weakObjects) that those three sites register into; PolyfillSender.frame gains isDetourHosted, set in userContentController(didReceive:) from message.webView (nil web view fails closed).
+3. senderIsBackgroundContext refuses a frame claim from a Detour-hosted view even at the background path; the log names the reason. Polyfill-side path classification stays (native gate is the authority).
+4. Tests: unit tests of the gate with isDetourHosted true/false; wiring test through the production path: TabStore.addExtensionTab navigated to /_generated_background_page.html claims and is refused, the ledger stays pending, the real background page then receives the install; existing background/worker claim tests stay green. Drop the known-limit sentence from the TASK-64 doc comment.
+<!-- SECTION:PLAN:END -->
