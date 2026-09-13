@@ -1325,15 +1325,18 @@ class TabStore {
                 ))
             }
             for e in savedEntries {
+                // An entry whose home page belongs to an extension uninstalled
+                // since is dropped with its backing tab, as restore drops it
+                // (TASK-30); a lone split partner is dissolved below.
+                guard let pinnedURL = self.rehomedTileURL(e.pinnedURL, extensionID: e.extensionID, in: restored) else {
+                    if let backingTabID = e.backingTab?.id { droppedTabIDs.insert(backingTabID) }
+                    continue
+                }
                 // A backing tab that is not rebuilt leaves the entry dormant.
                 let backing = e.backingTab.flatMap(rebuild)
                 let entry = PinnedEntry(
                     id: e.id,
-                    pinnedURL: self.rehomedTileURL(
-                        e.pinnedURL,
-                        page: self.classifyCapturedPage(url: e.pinnedURL, extensionID: e.extensionID, in: restored),
-                        in: restored
-                    ),
+                    pinnedURL: pinnedURL,
                     pinnedTitle: e.pinnedTitle,
                     faviconURL: e.faviconURL,
                     favicon: e.favicon,
@@ -1360,6 +1363,8 @@ class TabStore {
                 }
                 restored.pinnedEntries.append(entry)
             }
+            // A dropped entry's pinned split partner is left a lone entry.
+            sanitizePinnedSplitGroups(entries: restored.pinnedEntries, folders: restored.pinnedFolders)
             if let selectedID = savedSelectedTabID, droppedTabIDs.contains(selectedID) {
                 restored.selectedTabID = restored.tabs.first?.id
                     ?? restored.pinnedEntries.first(where: { $0.tab != nil })?.tab?.id
@@ -2621,6 +2626,9 @@ class TabStore {
         let savedFavicon = entry.favicon
         let savedFolderID = entry.folderID
         let savedSortOrder = entry.sortOrder
+        // The home page's durable identity if it is an extension page (TASK-24):
+        // its origin can die before the undo (a context reload, a disable).
+        let savedExtensionID = space.profile?.extensionID(forPageURL: savedPinnedURL)
         // Deleting a member dissolves its pinned split (the partner entry stays).
         let membership = capturePinnedSplitMembership(of: entry, in: space)
 
@@ -2633,9 +2641,17 @@ class TabStore {
 
         registerUndo(actionName: "Delete Tab") { [weak self] in
             guard let self else { return }
+            // An extension page entry comes back on its extension's live origin,
+            // or dormant on a pending origin if the extension is disabled. One
+            // whose extension was uninstalled since cannot come back (TASK-30):
+            // the undo does nothing, registers no redo, and the split partner
+            // stays dissolved.
+            guard let pinnedURL = self.rehomedTileURL(savedPinnedURL, extensionID: savedExtensionID, in: space) else {
+                return
+            }
             let restored = PinnedEntry(
                 id: id,
-                pinnedURL: savedPinnedURL,
+                pinnedURL: pinnedURL,
                 pinnedTitle: savedPinnedTitle,
                 faviconURL: savedFaviconURL,
                 favicon: savedFavicon,
@@ -2880,17 +2896,26 @@ class TabStore {
     /// A captured tile URL (a pinned entry's home page) brought back: an enabled
     /// extension's page moves to its live origin, and a disabled one's origin is
     /// registered as pending so a later enable moves it — what restore does for
-    /// the tiles it keeps. Anything else is returned as it is.
-    private func rehomedTileURL(_ url: URL, page: PersistedExtensionPage, in space: Space) -> URL {
+    /// the tiles it keeps. An ordinary URL is returned as it is. An uninstalled
+    /// extension's page returns nil: restore drops such a tile, so an undo must
+    /// not bring it back either (TASK-30).
+    private func rehomedTileURL(_ url: URL, page: PersistedExtensionPage, in space: Space) -> URL? {
         switch page {
         case .restorable(let extensionID, let originHost):
             return liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: space)
         case .disabled(let extensionID, let originHost):
             space.profile?.registerPendingExtensionOrigin(host: originHost, extensionID: extensionID)
             return url
-        case .notExtensionPage, .unavailable:
+        case .notExtensionPage:
             return url
+        case .unavailable:
+            return nil
         }
+    }
+
+    /// `rehomedTileURL` for a tile URL captured with `extensionID`, classified now.
+    private func rehomedTileURL(_ url: URL, extensionID: String?, in space: Space) -> URL? {
+        rehomedTileURL(url, page: classifyCapturedPage(url: url, extensionID: extensionID, in: space), in: space)
     }
 
     /// Rebuilds a tab that was closed, from what was captured when it closed:

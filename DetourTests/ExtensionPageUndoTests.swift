@@ -8,6 +8,8 @@ import GRDB
 /// extension page cannot load in the space configuration, and its origin dies
 /// when the extension's context is reloaded, so each undo resolves the page by
 /// the extension id captured at close — as Reopen Closed Tab does (TASK-24).
+/// The undos that restore a pinned entry from its stored home page (Delete Tab,
+/// Delete Space) rehome it by the same rule (TASK-30).
 ///
 /// Most tests use a `TabStore` on an in-memory `AppDatabase` with real
 /// `WKWebExtension` contexts, so a reload hands out the base URL WebKit actually
@@ -415,7 +417,183 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canRedo)
     }
 
+    // MARK: - Pinned entry Delete Tab (TASK-30)
+
+    /// Pins `urls` in order and returns their entries; two URLs form a pinned split.
+    private func pinnedEntries(_ urls: [URL], split: Bool = false, in space: Space, store: TabStore) -> [PinnedEntry] {
+        var entries: [PinnedEntry] = []
+        for url in urls {
+            let tab = sleepingTab(url, in: space)
+            space.tabs.append(tab)
+            store.pinTab(id: tab.id, in: space)
+            if let entry = space.pinnedEntries.first(where: { $0.id == tab.id }) { entries.append(entry) }
+        }
+        if split {
+            let groupID = UUID()
+            for entry in entries { entry.splitGroupID = groupID; entry.splitFraction = 0.4 }
+        }
+        return entries
+    }
+
+    func testUndoDeletePinnedEntryAfterAContextReloadActivatesOnTheNewBase() async throws {
+        let ext = try await makeExtension()
+        install(ext, in: AppDatabase.shared)
+        sharedExtensionIDs.append(ext.id)
+        let store = TabStore.shared
+        let profile = store.addProfile(name: "Delete-shared")
+        sharedProfiles.append(profile)
+        let space = store.addSpace(name: "Delete-shared", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
+        sharedSpaceIDs.append(space.id)
+        _ = profile.extensionController
+        let base = try loadContext(ext, in: profile).baseURL
+        let url = try pageURL("options.html?deleted=1#frag", on: base)
+        let entry = try XCTUnwrap(pinnedEntries([url], in: space, store: store).first)
+
+        store.undoManager.removeAllActions()
+        store.deletePinnedEntry(id: entry.id, in: space)
+        XCTAssertTrue(space.pinnedEntries.isEmpty)
+        let newBase = try reloadContext(ext, in: profile, from: base)
+
+        store.undoManager.undo()
+
+        let restored = try XCTUnwrap(space.pinnedEntries.first)
+        let expected = try XCTUnwrap(rewriteExtensionPageURL(url, from: base, to: newBase))
+        XCTAssertEqual(restored.id, entry.id)
+        XCTAssertEqual(restored.pinnedURL, expected, "the entry comes back on the live origin")
+        XCTAssertNil(restored.tab, "dormant, as Delete Tab's undo always restores it")
+
+        store.activatePinnedEntry(id: restored.id, in: space)
+        let tab = try XCTUnwrap(restored.tab)
+        XCTAssertEqual(tab.url, expected)
+        tab.wake()
+        XCTAssertEqual(tab.webView?.url, expected, "activating it loads the page on the live origin")
+
+        XCTAssertTrue(store.undoManager.canRedo)
+        store.undoManager.redo()
+        XCTAssertTrue(space.pinnedEntries.isEmpty, "redo deletes it again")
+    }
+
+    func testUndoDeletePinnedEntryOfADisabledExtensionRestoresItDormantForALaterEnable() async throws {
+        let f = try await makeFixture()
+        defer { teardownTabs(f) }
+        let url = try pageURL("options.html?disabled=1", on: f.base)
+        let entry = try XCTUnwrap(pinnedEntries([url], in: f.space, store: f.store).first)
+
+        f.store.undoManager.removeAllActions()
+        f.store.deletePinnedEntry(id: entry.id, in: f.space)
+        f.db.setProfileExtensionEnabled(extensionID: f.ext.id, profileID: f.profile.id.uuidString, enabled: false)
+        _ = f.profile.unloadExtension(id: f.ext.id)
+        XCTAssertFalse(f.profile.isAwaitingExtensionContext(url), "precondition: nothing else registered the origin")
+
+        f.store.undoManager.undo()
+
+        let restored = try XCTUnwrap(f.space.pinnedEntries.first)
+        XCTAssertEqual(restored.pinnedURL, url)
+        XCTAssertNil(restored.tab)
+        XCTAssertTrue(f.profile.isAwaitingExtensionContext(url), "its origin is registered as pending")
+        XCTAssertTrue(f.store.undoManager.canRedo)
+
+        // Enabling the extension moves the tile onto the new origin.
+        f.db.setProfileExtensionEnabled(extensionID: f.ext.id, profileID: f.profile.id.uuidString, enabled: true)
+        let newBase = try loadContext(f.ext, in: f.profile).baseURL
+        f.profile.resolvePendingExtensionPages(in: f.store)
+        XCTAssertEqual(restored.pinnedURL, rewriteExtensionPageURL(url, from: f.base, to: newBase))
+    }
+
+    func testUndoDeletePinnedEntryOfAnUninstalledExtensionRestoresNothing() async throws {
+        let f = try await makeFixture()
+        defer { teardownTabs(f) }
+        let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
+        let entries = pinnedEntries([webURL, try pageURL("options.html", on: f.base)],
+                                    split: true, in: f.space, store: f.store)
+        XCTAssertEqual(entries.count, 2)
+
+        f.store.undoManager.removeAllActions()
+        f.store.deletePinnedEntry(id: entries[1].id, in: f.space)
+        XCTAssertNil(entries[0].splitGroupID, "precondition: the delete dissolves the split")
+        _ = f.profile.unloadExtension(id: f.ext.id)
+        f.db.deleteExtension(id: f.ext.id)
+
+        f.store.undoManager.undo()
+
+        XCTAssertEqual(f.space.pinnedEntries.map(\.id), [entries[0].id], "no dead tile")
+        XCTAssertNil(entries[0].splitGroupID, "the partner stays dissolved")
+        XCTAssertNil(entries[0].splitFraction)
+        XCTAssertFalse(f.store.undoManager.canRedo, "nothing was restored, so there is nothing to redo")
+    }
+
+    func testUndoDeletePinnedEntryOfAnOrdinaryPageIsUnchanged() async throws {
+        let f = try await makeFixture()
+        defer { teardownTabs(f) }
+        let urls = [URL(string: "https://a.example/")!, URL(string: "https://b.example/path?q=1")!]
+        let entries = pinnedEntries(urls, split: true, in: f.space, store: f.store)
+        XCTAssertEqual(entries.count, 2)
+
+        f.store.undoManager.removeAllActions()
+        f.store.deletePinnedEntry(id: entries[1].id, in: f.space)
+        XCTAssertNil(entries[0].splitGroupID)
+
+        f.store.undoManager.undo()
+
+        XCTAssertEqual(f.space.pinnedEntries.map(\.id), entries.map(\.id))
+        let restored = f.space.pinnedEntries[1]
+        XCTAssertEqual(restored.pinnedURL, urls[1])
+        XCTAssertNil(restored.tab)
+        XCTAssertNotNil(restored.splitGroupID, "the split is rejoined")
+        XCTAssertEqual(restored.splitGroupID, entries[0].splitGroupID)
+        XCTAssertEqual(restored.splitFraction, 0.4)
+        XCTAssertTrue(f.store.undoManager.canRedo)
+    }
+
     // MARK: - Delete Space
+
+    /// TASK-30: Delete Space's undo restores pinned entries by the same rule as
+    /// Delete Tab's — an uninstalled extension's entry is dropped with its
+    /// backing tab, a disabled one's is kept dormant on a pending origin, and
+    /// the other entries of the space are unaffected.
+    func testUndoDeleteSpaceDropsUninstalledPinnedEntriesAndKeepsDisabledOnes() async throws {
+        let f = try await makeFixture()
+        defer { teardownTabs(f) }
+        let other = try await makeExtension()
+        install(other, in: f.db)
+        let otherBase = try loadContext(other, in: f.profile).baseURL
+
+        let space2 = f.store.addSpace(name: "Two", emoji: "2️⃣", colorHex: "FF0000", profileID: f.profile.id)
+        let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
+        let pinnedWebURL = try XCTUnwrap(URL(string: "https://pinned.example/"))
+        let goneURL = try pageURL("options.html?gone=1", on: otherBase)
+        let disabledURL = try pageURL("options.html?disabled=1", on: f.base)
+
+        let web = sleepingTab(webURL, in: space2)
+        space2.tabs.append(web)
+        let split = pinnedEntries([goneURL, pinnedWebURL], split: true, in: space2, store: f.store)
+        let disabled = try XCTUnwrap(pinnedEntries([disabledURL], in: space2, store: f.store).first)
+        XCTAssertEqual(split.count, 2)
+        let goneTabID = try XCTUnwrap(split[0].tab?.id)
+        space2.selectedTabID = goneTabID
+
+        f.store.undoManager.removeAllActions()
+        f.store.deleteSpace(id: space2.id)
+        _ = f.profile.unloadExtension(id: other.id)
+        f.db.deleteExtension(id: other.id)
+        f.db.setProfileExtensionEnabled(extensionID: f.ext.id, profileID: f.profile.id.uuidString, enabled: false)
+        _ = f.profile.unloadExtension(id: f.ext.id)
+
+        f.store.undoManager.undo()
+
+        let restored = try XCTUnwrap(f.store.space(withID: space2.id))
+        defer { for tab in restored.tabs + restored.pinnedTabs { tab.teardown() } }
+        XCTAssertEqual(restored.pinnedEntries.map(\.id), [split[1].id, disabled.id],
+                       "the uninstalled extension's entry is dropped")
+        XCTAssertFalse(restored.pinnedTabs.contains { $0.id == goneTabID }, "with its backing tab")
+        XCTAssertNil(restored.pinnedEntries[0].splitGroupID, "its split partner is left a lone entry")
+        XCTAssertEqual(restored.pinnedEntries[0].pinnedURL, pinnedWebURL)
+        XCTAssertEqual(restored.pinnedEntries[1].pinnedURL, disabledURL)
+        XCTAssertNil(restored.pinnedEntries[1].tab, "the disabled extension's entry is kept dormant")
+        XCTAssertTrue(f.profile.isAwaitingExtensionContext(disabledURL), "on a pending origin")
+        XCTAssertEqual(restored.tabs.map(\.id), [web.id])
+        XCTAssertEqual(restored.selectedTabID, web.id, "selection moves off the dropped backing tab")
+    }
 
     func testUndoDeleteSpaceRehostsExtensionPagesAndDropsUninstalledOnes() async throws {
         let f = try await makeFixture()
