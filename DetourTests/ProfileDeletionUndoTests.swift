@@ -204,6 +204,9 @@ final class ProfileDeletionUndoTests: XCTestCase {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.doomedID)
         f.store.undoManager.removeAllActions()
+        // The undo holds the space object itself now (TASK-40), so the refusal
+        // must leave that instance detached and empty, not half-rebuilt.
+        let doomedSpace = try XCTUnwrap(f.store.space(withID: spaceID))
         f.store.deleteSpace(id: spaceID)
 
         // Leaves the undo stack in place, unlike deleteProfile.
@@ -213,6 +216,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
         XCTAssertNil(f.store.space(withID: spaceID), "no space is rebuilt for a profile that is gone")
         XCTAssertEqual(f.store.spaces.map(\.id), [f.homeSpaceID])
+        XCTAssertTrue(doomedSpace.tabs.isEmpty, "the retained space is left empty, not repopulated")
         XCTAssertFalse(f.store.undoManager.canRedo, "nothing was restored, so there is nothing to redo")
         XCTAssertNil(f.store.profile(withID: f.doomedID))
         if !WebKitStorageScope.current.isDefaultDataDirectory {

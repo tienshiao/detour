@@ -1556,11 +1556,23 @@ class TabStore {
                 tab.teardown()
             }
         }
+        // The `Space` OBJECT survives the delete: the undo closure below holds it
+        // and re-inserts that same instance, so every undo action registered
+        // before this delete — Close Tab, Move Tab, Pin/Unpin, the pinned entry
+        // and folder actions, all of which captured this instance — keeps acting
+        // on the space the windows actually show once the delete is undone
+        // (TASK-40). Only the contents go: the tabs were just torn down, and undo
+        // repopulates the three lists from the snapshots above.
+        space.tabs.removeAll()
+        space.pinnedEntries.removeAll()
+        space.pinnedFolders.removeAll()
         // Clean up closed tab records for this space (captured above for undo)
         appDB.deleteClosedTabs(spaceID: spaceIDString)
         closedTabStack.removeAll { $0.spaceID == spaceIDString }
 
-        registerUndo(actionName: "Delete Space") { [weak self] in
+        // `space` is captured strongly on purpose: the restored space must BE the
+        // instance the older undo actions closed over (TASK-40).
+        registerUndo(actionName: "Delete Space") { [weak self, space] in
             guard let self else { return }
             // deleteProfile clears the undo stack, so this only guards against
             // an action that outlived it: restoring onto a deleted profile would
@@ -1570,9 +1582,22 @@ class TabStore {
                 log.error("Undo Delete Space skipped: profile \(savedProfileID.uuidString, privacy: .public) of space \(id.uuidString, privacy: .public) no longer exists")
                 return
             }
-            let restored = Space(id: id, name: savedName, emoji: savedEmoji, colorHex: savedColorHex, profileID: savedProfileID)
+            // The same object, reset to the identity it had at the delete: an
+            // Edit Space undone while it was detached could have changed any of
+            // these on the retained instance.
+            let restored = space
+            restored.name = savedName
+            restored.emoji = savedEmoji
+            restored.colorHex = savedColorHex
+            restored.profileID = savedProfileID
             restored.profile = self.profile(withID: savedProfileID)
             restored.selectedTabID = savedSelectedTabID
+            // Defence in depth: the delete emptied these, and nothing can reach a
+            // detached space to refill them (undo is LIFO, so this action always
+            // runs before any older one).
+            restored.tabs.removeAll()
+            restored.pinnedEntries.removeAll()
+            restored.pinnedFolders.removeAll()
 
             // Rebuild a tab from its snapshot: selected tab live (displays
             // immediately), the rest sleeping — mirroring restoreSession. As there,
@@ -2229,10 +2254,17 @@ class TabStore {
         // Undo is a non-archiving removal: the pane never existed as a lone tab,
         // so it must not land in the Cmd+Shift+T closed-tab stack the way
         // closeTab's undo path would put it there.
+        // The id, not the tab: Undo Delete Space rebuilds the space's tabs as
+        // fresh objects of the same ids, so a captured instance would be an
+        // orphan (TASK-40).
+        let newTabID = tab.id
         registerUndo(actionName: "Open in Split") { [weak self] in
-            guard let self,
-                  let index = space.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
-            self.tabSubscriptions.removeValue(forKey: tab.id)
+            guard let self else { return }
+            guard let index = space.tabs.firstIndex(where: { $0.id == newTabID }) else {
+                log.error("Undo Open in Split skipped: tab \(newTabID.uuidString, privacy: .public) is gone")
+                return
+            }
+            self.tabSubscriptions.removeValue(forKey: newTabID)
             let removed = space.tabs.remove(at: index)
             removed.teardown()
             self.leaveSplitGroup(removed, in: space)
@@ -2859,8 +2891,12 @@ class TabStore {
         // (TASK-59). Undo goes through `unpinTab`, which announces the flip back.
         ExtensionTabLifecycle.didChangePinned(tab)
         let savedTabIndex = index
+        // The id, not the entry: Undo Delete Space rebuilds the pinned entries as
+        // fresh objects of the same ids (TASK-40). unpinTab no-ops for an id the
+        // space no longer has.
+        let pinnedEntryID = entry.id
         registerUndo(actionName: "Pin Tab") { [weak self] in
-            self?.unpinTab(id: entry.id, in: space, at: savedTabIndex)
+            self?.unpinTab(id: pinnedEntryID, in: space, at: savedTabIndex)
         }
         notifyObservers { $0.tabStoreDidPinTab(entry, fromIndex: index, toIndex: insertAt, in: space) }
         scheduleSave()
@@ -2922,10 +2958,16 @@ class TabStore {
         // materialized from a dormant entry has no web view and no registration,
         // so this is a no-op for it.
         ExtensionTabLifecycle.didChangePinned(tab)
+        // The id, not the tab: Undo Delete Space rebuilds the space's tabs as
+        // fresh objects of the same ids (TASK-40).
+        let unpinnedTabID = tab.id
         registerUndo(actionName: "Unpin Tab") { [weak self] in
             guard let self else { return }
             // Re-pin: remove from tabs, create entry, insert at original pinned position
-            guard let tabIndex = space.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+            guard let tabIndex = space.tabs.firstIndex(where: { $0.id == unpinnedTabID }) else {
+                log.error("Undo Unpin Tab skipped: tab \(unpinnedTabID.uuidString, privacy: .public) is gone")
+                return
+            }
             let tab = space.tabs.remove(at: tabIndex)
             let reEntry = PinnedEntry(
                 id: tab.id,
@@ -3103,8 +3145,12 @@ class TabStore {
         let maxTabOrder = space.pinnedEntries.map(\.sortOrder).max() ?? -1
         let folder = PinnedFolder(name: name, parentFolderID: parentFolderID, sortOrder: max(maxFolderOrder, maxTabOrder) + 1)
         space.pinnedFolders.append(folder)
+        // The id, not the folder: Undo Delete Space rebuilds the pinned folders as
+        // fresh objects of the same ids (TASK-40). deletePinnedFolder no-ops for an
+        // id the space no longer has.
+        let newFolderID = folder.id
         registerUndo(actionName: "New Folder") { [weak self] in
-            self?.deletePinnedFolder(id: folder.id, in: space)
+            self?.deletePinnedFolder(id: newFolderID, in: space)
         }
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
         scheduleSave()
