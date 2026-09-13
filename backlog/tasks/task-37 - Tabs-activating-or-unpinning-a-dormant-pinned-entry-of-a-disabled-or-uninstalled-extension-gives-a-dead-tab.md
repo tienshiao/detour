@@ -3,10 +3,11 @@ id: TASK-37
 title: >-
   Tabs: activating or unpinning a dormant pinned entry of a disabled or
   uninstalled extension gives a dead tab
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-13 03:21'
+updated_date: '2026-09-13 05:25'
 labels:
   - extensions
   - tabs
@@ -28,3 +29,9 @@ Found by the TASK-34 work. TASK-24 keeps a disabled extension's pinned entries a
 - [ ] #2 A dormant pinned entry of an extension uninstalled mid-session is handled per the chosen rule (dropped or refused) without leaving a dead tab, keeping pinned split invariants valid
 - [ ] #3 Unpin of such entries follows the same rule; tests cover activate and unpin for disabled and uninstalled extensions plus an ordinary entry
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Review fix (session 2026-09-12): TabStore.materializeDormantEntry now returns nil for a dormant entry whose page classifies as disabled/unavailable/legacy (via dormantTilePage + dormantTileDropTargets(.tabList) + rehomedTileURL), and activatePinnedEntry, unpinTab and unpinSplitGroup bail before mutating; activateFavorite gets the same gate. Tests in ExtensionPageFavoriteTests (disabled favourite stays dormant on activate; disabled entry is neither activated nor unpinned, registers no undo). Not done: the visible hint (toast) when activation is refused, and a decision on dropping vs refusing an entry uninstalled mid-session (currently refused, tile stays).
+<!-- SECTION:NOTES:END -->
