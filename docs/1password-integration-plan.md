@@ -446,6 +446,44 @@ API Explorer and test coverage per project convention:
   was already present natively. The polyfill only installs when WebKit lacks it, and the answer
   determines whether this phase is needed at all.
 
+**Frame kinds as WebKit reports them (TASK-4, 2026-09-13)**
+
+Measured by `ExtensionPolyfillIntegrationTests.testFrameKindsAsReportedByNativeGetAllFrames`: a
+login page on one loopback server with three login-form iframes — a cross-origin http one (a second
+loopback server; a different port is a different origin), a `srcdoc` one, and an `about:blank` one
+the parent fills by script after load — registered as a real extension tab, with a `<all_urls>` /
+`all_frames: true` content script that says hello to the worker from every frame it lands in. The
+two frames WebKit reports with an empty URL are told apart by removing one `<iframe>` element at a
+time and diffing the enumeration. Taken on macOS 26.6.2 (build 25G83), WebKit.framework
+21624, Safari 26.6.2.
+
+| frame kind | URL WebKit reports (`getAllFrames`) | Chrome's URL for the same frame | content script injected (hello) | `tabs.sendMessage` with that frameId reached it |
+| --- | --- | --- | --- | --- |
+| top document (http) | `http://127.0.0.1:<portA>/` | same | yes, `frameId` 0 | yes (`pong`) |
+| cross-origin http iframe | `http://127.0.0.1:<portB>/login` | same | yes, `frameId` 30064771073 | yes (`pong`) |
+| `srcdoc` iframe | `""` (empty string) | `about:srcdoc` | no | no |
+| `about:blank` iframe, filled by the parent | `""` (empty string) | `about:blank` | no | no |
+
+All four frames *are* enumerated, each with a distinct `frameId`, `parentFrameId` 0 (the top frame
+reports -1), a `documentId`, and `errorOccurred: 0`; `getFrame({tabId, frameId})` resolves all four,
+returning the same empty `url` for the last two. The fan-out to the two empty-URL frames fails
+silently: the `tabs.sendMessage` callback fires with `undefined` and **no** `chrome.runtime.lastError`,
+so a caller cannot tell "no receiver" from "the receiver answered nothing".
+
+This supports the hypothesis. WebKit hands 1Password two frames per such page that it counts in
+`getAllFrames` but that its URL filter cannot classify (empty string rather than `about:srcdoc` /
+`about:blank`) and that have no content script to answer the fan-out — exactly the shape of
+"[Tabs] Could not collect all frames that were initially found". Note the two halves are separable:
+Chrome only injects into `about:blank` / `about:srcdoc` frames when the content script declares
+`match_about_blank` (matching against the parent's URL), so a script without it is uninjected in
+Chrome too — but Chrome still gives those frames a URL the filter can match. Candidates for the
+follow-up decision, smallest first: (a) report `about:srcdoc` / `about:blank` instead of `""` in
+`tabs` and `webNavigation` results, which fixes the classification and costs nothing else; or
+(b) also inject content scripts into those frames per `match_about_blank` semantics, which is what
+actually lets the fan-out land. (a) alone may be enough to stop the complaint if 1Password skips
+frames it cannot fill; (b) is needed if a login form really does live in a `srcdoc`/`about:blank`
+frame. Deciding between them needs the second half of TASK-4 — real 1Password on the signed build.
+
 ### Phase 4 — Verification and polish (optional)
 
 - Passkeys: confirm the MAIN-world `webauthn-listeners.js` intercepts a real `navigator.credentials`

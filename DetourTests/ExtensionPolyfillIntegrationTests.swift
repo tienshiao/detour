@@ -932,6 +932,313 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
                        "the pong must come from the subframe, not the top frame: \(evidence)")
     }
 
+    /// TASK-4: which *kinds* of frame does WebKit's native frame enumeration
+    /// report, and which of them does a content script actually reach?
+    ///
+    /// 1Password logs "[Tabs] Could not collect all frames that were initially
+    /// found" while filling a login form inside an iframe. It counts frames from
+    /// `webNavigation.getAllFrames({tabId})`, filters them by URL, and fans
+    /// `tabs.sendMessage(tabId, msg, {frameId})` out to each one. A frame that is
+    /// enumerated but carries no URL for that filter — or that has no content
+    /// script to receive the fan-out — is exactly the shape of that complaint, so
+    /// this measures what WebKit answers per frame kind rather than assuming.
+    ///
+    /// The fixture is a login page with three login-form iframes: a cross-origin
+    /// http one (a second loopback server — a different port is a different
+    /// origin), a `srcdoc` one, and an `about:blank` one the parent fills by
+    /// script after load. Only the stable facts are asserted; the srcdoc and
+    /// about:blank rows are the measurement, printed as
+    /// `TASK-4 frame-kind measurement:` lines and attached to the activity.
+    func testFrameKindsAsReportedByNativeGetAllFrames() async throws {
+        // Single-quoted attributes so the same markup can also sit inside a
+        // double-quoted `srcdoc=` attribute and a double-quoted JS string.
+        func loginForm(_ marker: String) -> String {
+            "<form><input name='username' value='\(marker)'>"
+                + "<input type='password' name='password'><button>Sign in</button></form>"
+        }
+
+        // Server B: the cross-origin child. Started first so the top page can
+        // point an iframe at its port.
+        let crossOriginServer = try LoopbackHTTPServer(routes: [
+            "/login": "<html><body><p>cross-origin login</p>\(loginForm("cross-origin-marker"))</body></html>"
+        ])
+        defer { crossOriginServer.stop() }
+        let crossOriginPort = try await crossOriginServer.start()
+
+        let topServer = try LoopbackHTTPServer(routes: [
+            "/": """
+                <html><body><p>top</p>
+                \(loginForm("top-marker"))
+                <iframe id="crossOriginFrame" name="crossOriginFrame"
+                        src="http://127.0.0.1:\(crossOriginPort)/login"></iframe>
+                <iframe id="srcdocFrame" name="srcdocFrame"
+                        srcdoc="<p>srcdoc login</p>\(loginForm("srcdoc-marker"))"></iframe>
+                <iframe id="blankFrame" name="blankFrame"></iframe>
+                <script>
+                window.addEventListener('load', () => {
+                    const frame = document.getElementById('blankFrame');
+                    frame.contentDocument.body.innerHTML =
+                        "<p>about:blank login</p>\(loginForm("blank-marker"))";
+                    document.documentElement.dataset.blankFilled = '1';
+                });
+                </script>
+                </body></html>
+                """
+        ])
+        defer { topServer.stop() }
+        let topPort = try await topServer.start()
+
+        let topOrigin = "http://127.0.0.1:\(topPort)/"
+        let childOrigin = "http://127.0.0.1:\(crossOriginPort)/"
+
+        // Wake the worker before the page loads (a hello sent to a sleeping
+        // worker is never recorded), then drop the previous probe's records —
+        // `__frameHellos` lives on the shared worker and only grows (TASK-65).
+        let wv = try await makeExtensionWebView()
+        _ = try await askWorker(from: wv, message: ["type": "ping"])
+        _ = try await askWorker(from: wv, message: ["type": "clearFrameHellos"])
+
+        let config = WKWebViewConfiguration()
+        config.webExtensionController = state.controller
+        let pageView = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 500), configuration: config)
+
+        // The web view has to be a registered tab *before* it loads, or the
+        // worker sees no tab: content-script messages never arrive and
+        // getAllFrames answers "Tab not found".
+        let probe = registerProbeTab(for: pageView, in: state.context)
+        defer { unregisterProbeTab(probe, in: state.context) }
+
+        try await loadAndWait(pageView, URLRequest(url: URL(string: topOrigin)!))
+
+        // The about:blank frame only has its login form once the parent's load
+        // handler has run.
+        try await waitUntil("the about:blank frame to be filled by its parent") {
+            (try await pageView.evaluateJavaScript(
+                "document.documentElement.dataset.blankFilled === '1'") as? Bool) == true
+        }
+
+        // Which frames say hello is the thing being measured, so the poll must
+        // not stop at an expected count: wait for the first hello, then give the
+        // remaining frames a fixed grace period.
+        var hellos: [[String: Any]] = []
+        var probedTabID: Int?
+        var firstHelloAt: Date?
+        let helloDeadline = Date().addingTimeInterval(10)
+        while Date() < helloDeadline {
+            let reply = try await askWorker(from: wv, message: ["type": "getFrameHellos"])
+            let recorded = ((reply["reply"] as? [String: Any])?["hellos"] as? [[String: Any]]) ?? []
+            // Scope by tab id, not origin: a srcdoc or about:blank frame's hello
+            // may carry no URL this probe could be recognised by. The top
+            // frame's hello is what supplies the id.
+            if probedTabID == nil {
+                probedTabID = recorded.first {
+                    ($0["url"] as? String)?.hasPrefix(topOrigin) == true
+                }?["tabId"] as? Int
+            }
+            if let tabID = probedTabID {
+                hellos = recorded.filter { ($0["tabId"] as? Int) == tabID }
+                if firstHelloAt == nil { firstHelloAt = Date() }
+            }
+            if let first = firstHelloAt, Date().timeIntervalSince(first) >= 3 { break }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        let frameProbe = probedTabID != nil
+            ? try await askWorker(from: wv, message: ["type": "probeWebNavFrames", "tabId": probedTabID!])
+            : try await askWorker(from: wv, message: ["type": "probeWebNavFrames"])
+        let frameReply = frameProbe["reply"] as? [String: Any]
+        let enumeratedFrames = (frameReply?["getAllFrames"] as? [[String: Any]]) ?? []
+        let tabID = probedTabID ?? (frameReply?["probedTabId"] as? Int)
+
+        // Is each enumerated id usable for targeting — does getFrame resolve it,
+        // and does tabs.sendMessage with it find a receiver?
+        var targetingByFrameID: [Int: [String: Any]] = [:]
+        if let tabID {
+            for frame in enumeratedFrames {
+                guard let frameID = frame["frameId"] as? Int else { continue }
+                let answer = try await askWorker(
+                    from: wv,
+                    message: ["type": "probeFrameTargeting", "tabId": tabID, "frameId": frameID],
+                    timeout: 15)
+                targetingByFrameID[frameID] = (answer["reply"] as? [String: Any]) ?? [:]
+            }
+        }
+
+        // If WebKit reports the srcdoc and about:blank frames with the same
+        // (empty) URL, nothing in the row says which is which. Remove one iframe
+        // element at a time and diff the enumeration: the id that disappears
+        // belonged to the element just removed. Runs after every probe above, so
+        // it cannot disturb them.
+        func currentFrameIDs() async throws -> Set<Int> {
+            guard let tabID else { return [] }
+            let answer = try await askWorker(
+                from: wv, message: ["type": "probeWebNavFrames", "tabId": tabID])
+            let rows = ((answer["reply"] as? [String: Any])?["getAllFrames"] as? [[String: Any]]) ?? []
+            return Set(rows.compactMap { $0["frameId"] as? Int })
+        }
+        func removeIFrame(_ elementID: String, from ids: Set<Int>) async throws
+            -> (removed: Int?, remaining: Set<Int>) {
+            _ = try await pageView.evaluateJavaScript(
+                "(() => { const e = document.getElementById('\(elementID)'); if (e) { e.remove(); } return true; })()")
+            var remaining = ids
+            for _ in 0..<12 {
+                try await Task.sleep(nanoseconds: 250_000_000)
+                remaining = try await currentFrameIDs()
+                if remaining.count < ids.count { break }
+            }
+            let gone = ids.subtracting(remaining)
+            return (gone.count == 1 ? gone.first : nil, remaining)
+        }
+
+        let enumeratedIDs = Set(enumeratedFrames.compactMap { $0["frameId"] as? Int })
+        let srcdocRemoval = try await removeIFrame("srcdocFrame", from: enumeratedIDs)
+        let blankRemoval = try await removeIFrame("blankFrame", from: srcdocRemoval.remaining)
+
+        func row(forFrameID frameID: Int?) -> [String: Any]? {
+            guard let frameID else { return nil }
+            return enumeratedFrames.first { ($0["frameId"] as? Int) == frameID }
+        }
+        let topRow = enumeratedFrames.first { ($0["frameId"] as? Int) == 0 }
+        let crossOriginRow = enumeratedFrames.first {
+            ($0["url"] as? String)?.hasPrefix(childOrigin) == true
+        }
+        let srcdocRow = row(forFrameID: srcdocRemoval.removed)
+        let blankRow = row(forFrameID: blankRemoval.removed)
+
+        // One measurement per line: a nested dictionary's default description
+        // spans several lines, which would split a measurement across them.
+        func show(_ value: Any?) -> String {
+            guard let value, !(value is NSNull) else { return "nil" }
+            if let text = value as? String { return text.isEmpty ? "''" : text }
+            return String(describing: value)
+                .split(whereSeparator: { $0.isNewline || $0 == "\t" })
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .joined(separator: " ")
+        }
+        func helloReply(_ frameID: Int) -> [String: Any]? {
+            hellos.first { ($0["frameId"] as? Int) == frameID }
+        }
+        func pongArrived(_ frameID: Int) -> Bool {
+            let sendMessage = targetingByFrameID[frameID]?["sendMessage"] as? [String: Any]
+            return ((sendMessage?["reply"] as? [String: Any])?["type"] as? String) == "pong"
+        }
+        func measurement(_ kind: String, _ frameRow: [String: Any]?) -> String {
+            guard let frameRow, let frameID = frameRow["frameId"] as? Int else {
+                return "kind=\(kind) enumerated=no (not identified in getAllFrames)"
+            }
+            let hello = helloReply(frameID)
+            let targeting = targetingByFrameID[frameID]
+            var parts = [
+                "kind=\(kind)",
+                "enumerated=yes",
+                "url=\(show(frameRow["url"]))",
+                "frameId=\(frameID)",
+                "parentFrameId=\(show(frameRow["parentFrameId"]))",
+                "contentScriptHello=\(hello == nil ? "no" : "yes")",
+                "helloLocation=\(show(hello?["reportedURL"]))",
+                "helloSenderURL=\(show(hello?["url"]))",
+                "sendMessageReached=\(pongArrived(frameID) ? "yes" : "no")"
+            ]
+            parts.append("sendMessage=\(show(targeting?["sendMessage"]))")
+            parts.append("getFrame=\(show(targeting?["getFrame"]))")
+            parts.append("getFrameError=\(show(targeting?["getFrameError"]))")
+            return parts.joined(separator: " ")
+        }
+
+        let measurements = [
+            measurement("top (http)", topRow),
+            measurement("iframe-a cross-origin http", crossOriginRow),
+            measurement("iframe-b srcdoc", srcdocRow),
+            measurement("iframe-c about:blank", blankRow)
+        ]
+        let unclassified = enumeratedFrames.filter { frame in
+            let id = frame["frameId"] as? Int
+            return id != 0
+                && id != (crossOriginRow?["frameId"] as? Int)
+                && id != srcdocRemoval.removed
+                && id != blankRemoval.removed
+        }
+        let evidence = ([
+            "probedTabId=\(show(tabID))",
+            "srcdocFrameId=\(show(srcdocRemoval.removed)) blankFrameId=\(show(blankRemoval.removed))",
+            "rawGetAllFrames=\(enumeratedFrames)",
+            "rawHellos=\(hellos)",
+            "unclassifiedRows=\(unclassified)",
+            "getAllFramesError=\(show(frameReply?["getAllFramesError"]))"
+        ] + measurements).joined(separator: "\n")
+        for line in measurements { print("TASK-4 frame-kind measurement: \(line)") }
+        print("TASK-4 frame-kind measurement: probedTabId=\(show(tabID)) "
+              + "srcdocFrameId=\(show(srcdocRemoval.removed)) blankFrameId=\(show(blankRemoval.removed))")
+        print("TASK-4 frame-kind measurement: rawGetAllFrames=\(enumeratedFrames)")
+        print("TASK-4 frame-kind measurement: rawHellos=\(hellos)")
+        print("TASK-4 frame-kind measurement: unclassifiedRows=\(unclassified)")
+        XCTContext.runActivity(named: "TASK-4 frame-kind measurement") { activity in
+            let attachment = XCTAttachment(string: evidence)
+            attachment.name = "frame-kind measurement"
+            attachment.lifetime = .keepAlways
+            activity.add(attachment)
+        }
+
+        // --- Stable facts only. ---
+
+        // 1. The top frame and the cross-origin http frame are both enumerated
+        //    with a real http URL, at the expected depth.
+        let topFrame = try XCTUnwrap(topRow, "the top frame must be enumerated: \(evidence)")
+        XCTAssertEqual(topFrame["parentFrameId"] as? Int, -1, evidence)
+        XCTAssertTrue((topFrame["url"] as? String)?.hasPrefix(topOrigin) == true,
+                      "the top frame must be enumerated with its http URL: \(evidence)")
+        let crossOriginFrame = try XCTUnwrap(
+            crossOriginRow, "the cross-origin http frame must be enumerated with its URL: \(evidence)")
+        let crossOriginFrameID = try XCTUnwrap(crossOriginFrame["frameId"] as? Int, evidence)
+        XCTAssertNotEqual(crossOriginFrameID, 0, evidence)
+        XCTAssertEqual(crossOriginFrame["parentFrameId"] as? Int, 0, evidence)
+
+        // 2. Both real http frames run a content script that reaches the worker,
+        //    each with its own frame id, and both are reachable by frame id.
+        XCTAssertNotNil(helloReply(0), "the top frame must say hello: \(evidence)")
+        XCTAssertNotNil(helloReply(crossOriginFrameID),
+                        "the cross-origin http frame must say hello: \(evidence)")
+        XCTAssertTrue(pongArrived(0),
+                      "tabs.sendMessage must reach the top frame by frame id: \(evidence)")
+        XCTAssertTrue(pongArrived(crossOriginFrameID),
+                      "tabs.sendMessage must reach the cross-origin frame by frame id: \(evidence)")
+
+        // 3. Every frame that said hello is enumerated under the same id — the
+        //    invariant 1Password's "frames I found vs frames I reached"
+        //    bookkeeping rests on.
+        let helloFrameIDs = Set(hellos.compactMap { $0["frameId"] as? Int })
+        XCTAssertEqual(helloFrameIDs.count, hellos.count,
+                       "frame ids must be unique per frame: \(evidence)")
+        XCTAssertTrue(helloFrameIDs.isSubset(of: enumeratedIDs),
+                      "every hello's frameId must appear in getAllFrames: \(evidence)")
+
+        // 4. Measured behaviour of the two non-http frame kinds, pinned so a
+        //    WebKit change is noticed rather than silently changing the answer
+        //    this task is based on (macOS 26.0, Safari/WebKit 26.0 —
+        //    see docs/1password-integration-plan.md, Phase 3). These are NOT
+        //    requirements: if WebKit starts reporting about:srcdoc/about:blank
+        //    or injecting content scripts there, that is the fix TASK-4 wants
+        //    and these assertions are what will say so.
+        let srcdocFrame = try XCTUnwrap(
+            srcdocRow, "the srcdoc frame was not identified in getAllFrames: \(evidence)")
+        let blankFrame = try XCTUnwrap(
+            blankRow, "the about:blank frame was not identified in getAllFrames: \(evidence)")
+        for (kind, frame) in [("srcdoc", srcdocFrame), ("about:blank", blankFrame)] {
+            let frameID = try XCTUnwrap(frame["frameId"] as? Int, evidence)
+            // Enumerated — so 1Password counts it — but with no URL for its
+            // URL filter (Chrome reports about:srcdoc / about:blank here).
+            XCTAssertEqual(frame["url"] as? String, "",
+                           "WebKit reports the \(kind) frame with an empty URL: \(evidence)")
+            XCTAssertEqual(frame["parentFrameId"] as? Int, 0, evidence)
+            // ...and no content script runs in it, so the fan-out finds no
+            // receiver there however the frame id is obtained.
+            XCTAssertNil(helloReply(frameID),
+                         "no content script is injected into the \(kind) frame: \(evidence)")
+            XCTAssertFalse(pongArrived(frameID),
+                           "tabs.sendMessage must find no receiver in the \(kind) frame: \(evidence)")
+        }
+    }
+
     // MARK: - TASK-8: WebSocket relay
 
     /// The whole relay, end to end in a real module service worker: `new

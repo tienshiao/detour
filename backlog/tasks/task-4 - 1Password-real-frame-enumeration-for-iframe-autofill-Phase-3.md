@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-11 22:28'
-updated_date: '2026-09-13 22:03'
+updated_date: '2026-09-13 22:15'
 labels:
   - 1password
   - extensions
@@ -28,8 +28,8 @@ ordinal: 4000
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 _polyfillDiag records whether webNavigation.getAllFrames and getFrame were provided natively by WebKit
-- [ ] #2 A test page (served by the LoopbackHTTPServer used in ExtensionPolyfillIntegrationTests) with a login form inside (a) a cross-origin http iframe, (b) a srcdoc iframe, (c) an about:blank iframe populated by script, records what native getAllFrames({tabId}) returns for each frame (url, frameId, parentFrameId) and whether the content script ran there (a frame hello reaches the worker with that sender.frameId)
-- [ ] #3 The result is written to docs/1password-integration-plan.md as a table: frame kind, URL WebKit reports, Chrome's URL for the same frame (about:srcdoc / about:blank), content script injected yes/no, with the WebKit build noted
+- [x] #2 A test page (served by the LoopbackHTTPServer used in ExtensionPolyfillIntegrationTests) with a login form inside (a) a cross-origin http iframe, (b) a srcdoc iframe, (c) an about:blank iframe populated by script, records what native getAllFrames({tabId}) returns for each frame (url, frameId, parentFrameId) and whether the content script ran there (a frame hello reaches the worker with that sender.frameId)
+- [x] #3 The result is written to docs/1password-integration-plan.md as a table: frame kind, URL WebKit reports, Chrome's URL for the same frame (about:srcdoc / about:blank), content script injected yes/no, with the WebKit build noted
 - [ ] #4 With the signed production build (scripts/deploy-1password-test.sh) 1Password is tried on the same test page and on at least one real site whose login form is inside an iframe; the 1PW-DEBUG log for each attempt is captured, and whether 'Could not collect all frames that were initially found' appears is recorded per frame kind
 - [ ] #5 The hypothesis is confirmed or rejected in the notes. If confirmed, a follow-up task describes the smallest fix (candidates: report about:srcdoc / about:blank for empty-URL frames in the tabs/webNavigation results, or inject the content script into those frames via the manifest's match_about_blank / all_frames semantics) with the file map; if rejected, the note names the next hypothesis and this task is closed
 <!-- AC:END -->
@@ -52,4 +52,6 @@ Phase A result (2026-09-12, macOS 26): _polyfillDiag.apis.webNavigationFrames re
 Code review (medium) of Phase A: deleting the polyfill's getAllFrames/getFrame fallbacks and their native handler cases (dead in production; the native fallback fabricated phantom frame records, so a WebKit regression would degrade silently instead of failing loudly); diag stored as an object; docstring aligned with the intentional native pin; LoopbackHTTPServer reads the full request head and cleans up on a failed start. Declined: pre-recovery-origin extension pages being rejected after a context reload is TASK-14; recovery re-triggering after the 10-minute window is the documented retry design. Decision needed from the user: close TASK-4 (registry not needed) or repurpose it to chase the empty-URL hypothesis against a real 1Password session; AC #2-#7 describe the registry and are left unchecked.
 
 Repurposed 2026-09-12 on the user's decision: the worker-side frame registry (old AC #2-#7) is dropped because Phase A proved WebKit's native getAllFrames/getFrame already return the right ids. The task now chases the remaining unexplained symptom, 1Password's 'Could not collect all frames that were initially found', with the hypothesis that WebKit reports url '' for srcdoc / data: / about:blank frames (Chrome reports about:srcdoc etc.) and injects no content script into them, so 1Password's URL filter drops frames it saw or its fan-out has no receiver there.
+
+First half done 2026-09-13: ExtensionPolyfillIntegrationTests.testFrameKindsAsReportedByNativeGetAllFrames measures a login page with a cross-origin http iframe, a srcdoc iframe and a script-filled about:blank iframe. Result (macOS 26.6.2, WebKit 21624): all four frames are enumerated by native getAllFrames with distinct ids and parentFrameId 0, but the srcdoc and about:blank frames report url '' (Chrome: about:srcdoc / about:blank), get no content script (no hello), and tabs.sendMessage with their frameId fails silently (callback fires with undefined and no lastError). Table and candidate fixes written to docs/1password-integration-plan.md under Phase 3. Repetition-safe (3 iterations of the class green). AC #4/#5 remain for the user: deploy the signed build (scripts/deploy-1password-test.sh --log), try 1Password on the test page and a real iframe-login site, capture 1PW-DEBUG per frame kind, then decide between fix (a) report about:srcdoc/about:blank and (b) inject per match_about_blank.
 <!-- SECTION:NOTES:END -->
