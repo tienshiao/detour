@@ -146,8 +146,18 @@ class Profile {
         WebKitStorageScope.current.identifier(forProfile: id)
     }
 
+    /// Set by `TabStore.deleteProfile` when the profile leaves the store; its
+    /// on-disk WebKit storage is being removed (TASK-32). Anything still holding
+    /// the object must not use it, and its lazy store and controller are never
+    /// created as persistent storage after this (TASK-35).
+    var isDeleted = false
+
     lazy var dataStore: WKWebsiteDataStore = {
         if isIncognito {
+            return .nonPersistent()
+        }
+        if isDeleted {
+            log.error("Data store requested for deleted profile \(self.id.uuidString, privacy: .public); using a non-persistent store")
             return .nonPersistent()
         }
         return WKWebsiteDataStore(
@@ -164,6 +174,9 @@ class Profile {
     lazy var extensionController: WKWebExtensionController = {
         let config: WKWebExtensionController.Configuration
         if isIncognito {
+            config = .nonPersistent()
+        } else if isDeleted {
+            log.error("Extension controller requested for deleted profile \(self.id.uuidString, privacy: .public); using a non-persistent controller")
             config = .nonPersistent()
         } else {
             config = WKWebExtensionController.Configuration(

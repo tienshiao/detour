@@ -2,6 +2,9 @@ import Foundation
 import AppKit
 import Combine
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "profiles")
 
 extension Notification.Name {
     static let tabRestoredByUndo = Notification.Name("tabRestoredByUndo")
@@ -86,9 +89,26 @@ class Space {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
 
-    /// Data store is delegated to the profile.
+    /// The profile whose website data store and extension controller this
+    /// space's web views use, or nil when it is missing or was deleted.
+    /// Every live space has one: `deleteProfile` refuses a profile a space uses.
+    /// A space rebuilt for a profile deleted since (TASK-35) must not bring back
+    /// that profile's storage, which `deleteProfile` removes from disk.
+    var usableProfile: Profile? {
+        guard let profile, !profile.isDeleted else { return nil }
+        return profile
+    }
+
+    /// Data store is delegated to the profile. A space without a usable profile
+    /// (TASK-35) gets a throwaway non-persistent store rather than a crash or a
+    /// fresh identifier store for a deleted profile; callers are expected to
+    /// have refused such a space before building a web view for it.
     var dataStore: WKWebsiteDataStore {
-        profile!.dataStore
+        guard let profile = usableProfile else {
+            log.error("Space \(self.id.uuidString, privacy: .public) has no usable profile (\(self.profileID.uuidString, privacy: .public) is missing or deleted); using a non-persistent data store")
+            return .nonPersistent()
+        }
+        return profile.dataStore
     }
 
     init(id: UUID = UUID(), name: String, emoji: String, colorHex: String, profileID: UUID) {
@@ -103,13 +123,16 @@ class Space {
     /// When per-tab isolation is enabled, each call gets its own non-persistent store.
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
+        let profile = usableProfile
         if profile?.isPerTabIsolation == true {
             config.websiteDataStore = .nonPersistent()
         } else {
             config.websiteDataStore = dataStore
         }
 
-        // Wire this profile's extension controller so content scripts inject automatically
+        // Wire this profile's extension controller so content scripts inject automatically.
+        // None for a space without a usable profile: a deleted profile's
+        // controller would recreate its extension storage (TASK-35).
         config.webExtensionController = profile?.extensionController
 
         // Register favicon scheme handler so extension iframes (e.g., Vomnibar) can
@@ -409,6 +432,16 @@ class TabStore {
         let hasSpaces = spaces.contains { $0.profileID == id && !$0.isIncognito }
         guard !hasSpaces else { return nil }
 
+        // Undo actions can bring back what referenced this profile: Delete
+        // Space and Edit Space rebuild or re-home a space onto a captured
+        // profile id, and others capture spaces, which hold their profile
+        // strongly. Profile deletion happens in Settings, outside the browsing
+        // undo flow, and UndoManager cannot drop only the actions that
+        // reference one profile, so the whole stack goes (TASK-35). This also
+        // releases the Profile those closures retain, so its store is no
+        // longer in use when the removal below runs.
+        undoManager.removeAllActions()
+
         // A space moved off this profile less than a save interval ago still
         // references it in the database, which would refuse the row delete.
         saveNow()
@@ -430,6 +463,7 @@ class TabStore {
         }
 
         let deleted = appDB.deleteProfile(id: id.uuidString)
+        profile?.isDeleted = true
         profiles.removeAll { $0.id == id }
         scheduleSave()
         guard deleted else { return nil }
@@ -1381,6 +1415,14 @@ class TabStore {
 
         registerUndo(actionName: "Delete Space") { [weak self] in
             guard let self else { return }
+            // deleteProfile clears the undo stack, so this only guards against
+            // an action that outlived it: restoring onto a deleted profile would
+            // bring back its removed storage (TASK-35). Nothing is restored and
+            // no redo is registered.
+            guard self.profile(withID: savedProfileID) != nil else {
+                log.error("Undo Delete Space skipped: profile \(savedProfileID.uuidString, privacy: .public) of space \(id.uuidString, privacy: .public) no longer exists")
+                return
+            }
             let restored = Space(id: id, name: savedName, emoji: savedEmoji, colorHex: savedColorHex, profileID: savedProfileID)
             restored.profile = self.profile(withID: savedProfileID)
             restored.selectedTabID = savedSelectedTabID
@@ -1518,6 +1560,11 @@ class TabStore {
 
     func updateSpace(id: UUID, name: String, emoji: String, colorHex: String, profileID: UUID) {
         guard let space = space(withID: id) else { return }
+        // A space is never moved onto a profile that does not exist (TASK-35).
+        guard space.profileID == profileID || profile(withID: profileID) != nil else {
+            log.error("Edit Space refused: profile \(profileID.uuidString, privacy: .public) does not exist")
+            return
+        }
         let oldName = space.name
         let oldEmoji = space.emoji
         let oldColorHex = space.colorHex
@@ -1586,7 +1633,15 @@ class TabStore {
             )
         }
         registerUndo(actionName: "Edit Space") { [weak self] in
-            self?.updateSpace(id: id, name: oldName, emoji: oldEmoji, colorHex: oldColorHex, profileID: oldProfileID)
+            guard let self else { return }
+            // As for Delete Space (TASK-35): never move the space back onto a
+            // profile deleted since. The space stays as it is, and no redo is
+            // registered.
+            guard self.profile(withID: oldProfileID) != nil else {
+                log.error("Undo Edit Space skipped: profile \(oldProfileID.uuidString, privacy: .public) of space \(id.uuidString, privacy: .public) no longer exists")
+                return
+            }
+            self.updateSpace(id: id, name: oldName, emoji: oldEmoji, colorHex: oldColorHex, profileID: oldProfileID)
         }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
