@@ -57,6 +57,8 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didDoubleClickFavoriteAt index: Int)
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toTabGapIndex gapIndex: Int)
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toPinnedAt pinnedIndex: Int)
+    /// The sections the favourite may be dropped into (TASK-34).
+    func tabSidebar(_ sidebar: TabSidebarViewController, dropTargetsForFavorite favoriteID: UUID) -> FavoriteDropTargets
 
     // Folder operations
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID)
@@ -100,6 +102,7 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didDoubleClickFavoriteAt index: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toTabGapIndex gapIndex: Int) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragFavorite favoriteID: UUID, toPinnedAt pinnedIndex: Int) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, dropTargetsForFavorite favoriteID: UUID) -> FavoriteDropTargets { .all }
     func tabSidebar(_ sidebar: TabSidebarViewController, didTogglePinnedFolder folderID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNewFolderIn parentFolderID: UUID?) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRenamePinnedFolder folderID: UUID, newName: String) {}
@@ -1857,9 +1860,11 @@ extension TabSidebarViewController: NSTableViewDataSource {
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         let kind: SidebarDragKind
         let sourceItemID: UUID?
+        var favoriteTargets = FavoriteDropTargets.all
         if let favorite = localFavoritePayload(from: info) {
             kind = .favorite
             sourceItemID = favorite.favoriteID
+            favoriteTargets = delegate?.tabSidebar(self, dropTargetsForFavorite: favorite.favoriteID) ?? []
         } else if let payload = localDragPayload(from: info) {
             kind = SidebarDragKind(payload.kind)
             sourceItemID = payload.itemID
@@ -1873,7 +1878,8 @@ extension TabSidebarViewController: NSTableViewDataSource {
             operation: dropOperation == .on ? .on : .above,
             items: flattenedPinnedItems,
             tabItems: tabItems,
-            dropZone: dropZone(for: info, tableView: tableView, row: row, dropOperation: dropOperation)
+            dropZone: dropZone(for: info, tableView: tableView, row: row, dropOperation: dropOperation),
+            favoriteTargets: favoriteTargets
         )
         if case .acceptIntoSplit = validation {} else { hideSplitDropOverlay() }
         switch validation {
@@ -2046,6 +2052,10 @@ extension TabSidebarViewController: NSTableViewDataSource {
         guard let favoriteIndex = favBar.index(ofFavoriteID: payload.favoriteID),
               let destination = sidebarDropDestination(row: destRow, operation: operation, items: flattenedPinnedItems)
         else { return false }
+        // A final drop can arrive before a retargeted proposal: re-check that the
+        // favourite may enter this section (TASK-34) rather than trusting validation.
+        let targets = delegate?.tabSidebar(self, dropTargetsForFavorite: payload.favoriteID) ?? []
+        guard targets.contains(favoriteDropSection(destination: destination)) else { return false }
 
         let animOrigin: NSPoint? = favBar.tileFrame(at: favoriteIndex).map { frame in
             tableView.convert(NSPoint(x: frame.midX, y: frame.midY), from: favBar)

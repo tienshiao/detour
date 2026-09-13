@@ -208,10 +208,25 @@ func splitRowDragKind(forX x: CGFloat, rowWidth: CGFloat, indent: CGFloat = 0) -
 
 // MARK: - Drop Resolution
 
+/// The sidebar sections a dragged favourite may move into (TASK-34). A live
+/// favourite and a dormant ordinary page may enter both. A dormant extension
+/// page is judged by its extension (`TabStore.favoriteDropTargets`): a disabled
+/// one may only become a dormant pinned entry, because a tab on its pending
+/// origin could not load and the next restore would drop it. An uninstalled one
+/// may go nowhere, so the favourite stays where it is.
+struct FavoriteDropTargets: OptionSet, Equatable {
+    let rawValue: Int
+    static let tabList = FavoriteDropTargets(rawValue: 1 << 0)
+    static let pinned = FavoriteDropTargets(rawValue: 1 << 1)
+    static let all: FavoriteDropTargets = [.tabList, .pinned]
+}
+
 /// Validation for `tableView(_:validateDrop:...)`: decides whether a drag of `kind`
 /// may drop at (`row`, `operation`) and whether the indicator should be retargeted.
 /// `dropZone` is the pointer's position within the row (`.on` proposals only) —
 /// it decides between a split-edge drop and a middle-band reorder retarget.
+/// `favoriteTargets` (favourite drags only) rejects a drop into a section the
+/// dragged favourite may not enter.
 func validateSidebarDrop(
     kind: SidebarDragKind,
     sourceItemID: UUID?,
@@ -219,7 +234,53 @@ func validateSidebarDrop(
     operation: SidebarDropOperation,
     items: [PinnedItem],
     tabItems: [TabListItem] = [],
-    dropZone: RowDropZone? = nil
+    dropZone: RowDropZone? = nil,
+    favoriteTargets: FavoriteDropTargets = .all
+) -> SidebarDropValidation {
+    let validation = sectionAgnosticSidebarDropValidation(
+        kind: kind, sourceItemID: sourceItemID, row: row, operation: operation,
+        items: items, tabItems: tabItems, dropZone: dropZone
+    )
+    guard kind == .favorite else { return validation }
+    let section: FavoriteDropTargets
+    switch validation {
+    case .reject:
+        return .reject
+    case .retargetToPinnedGap:
+        section = .pinned
+    case .retargetToNormalTabGap, .acceptIntoSplit:
+        section = .tabList
+    case .accept:
+        section = favoriteDropSection(row: row)
+    }
+    return favoriteTargets.contains(section) ? validation : .reject
+}
+
+/// The section a favourite dropped on `row` enters: the tab list for the New Tab
+/// and normal-tab rows, the pinned section for the rows above them.
+func favoriteDropSection(row: SidebarRow) -> FavoriteDropTargets {
+    switch row {
+    case .newTab, .normalTab: return .tabList
+    case .topSpacer, .pinnedItem, .separator: return .pinned
+    }
+}
+
+/// The section a favourite dropped at `destination` enters.
+func favoriteDropSection(destination: SidebarDropDestination) -> FavoriteDropTargets {
+    switch destination {
+    case .beforeNormalTab, .intoSplit: return .tabList
+    case .beforePinnedItem, .intoFolder: return .pinned
+    }
+}
+
+private func sectionAgnosticSidebarDropValidation(
+    kind: SidebarDragKind,
+    sourceItemID: UUID?,
+    row: SidebarRow,
+    operation: SidebarDropOperation,
+    items: [PinnedItem],
+    tabItems: [TabListItem],
+    dropZone: RowDropZone?
 ) -> SidebarDropValidation {
     switch operation {
     case .on:

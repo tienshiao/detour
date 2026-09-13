@@ -444,13 +444,19 @@ extension BrowserWindowController: TabSidebarDelegate {
         if isPinned {
             guard let entry = space.pinnedEntries.first(where: { $0.id == tabID }) else { return }
             let wasSelected = entry.tab?.id == selectedTabID
-            if let tab = store.detachPinnedEntry(id: entry.id, from: space) {
-                store.addFavorite(from: tab, profileID: profileID, at: index)
-                if wasSelected { selectTab(id: tab.id) }
+            if entry.tab != nil {
+                // Live: the backing tab moves as it is.
+                if let tab = store.detachPinnedEntry(id: entry.id, from: space) {
+                    store.addFavorite(from: tab, profileID: profileID, at: index)
+                    if wasSelected { selectTab(id: tab.id) }
+                }
             } else {
-                store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
-                                           faviconURL: entry.faviconURL, favicon: entry.favicon,
-                                           profileID: profileID, at: index)
+                // Dormant: add the favourite first. A page of an uninstalled
+                // extension is refused (TASK-34), and the entry then stays pinned.
+                guard store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
+                                                 faviconURL: entry.faviconURL, favicon: entry.favicon,
+                                                 profileID: profileID, at: index) else { return }
+                _ = store.detachPinnedEntry(id: entry.id, from: space)
                 if wasSelected { deselectAllTabs() }
             }
         } else {
@@ -500,7 +506,7 @@ extension BrowserWindowController: TabSidebarDelegate {
         guard let space = activeSpace, let profile = space.profile,
               let fav = profile.favorites.first(where: { $0.id == favoriteID }) else { return }
         let wasSelected = fav.tab?.id == selectedTabID
-        store.restoreFavoriteAsTab(id: favoriteID, profileID: profile.id, in: space, at: gapIndex)
+        guard store.restoreFavoriteAsTab(id: favoriteID, profileID: profile.id, in: space, at: gapIndex) else { return }
         if wasSelected {
             let insertAt = min(gapIndex, space.tabs.count - 1)
             if insertAt >= 0 { selectTab(id: space.tabs[insertAt].id) }
@@ -515,10 +521,15 @@ extension BrowserWindowController: TabSidebarDelegate {
         // pinned entry, which may be an unrelated earlier tab.
         let draggedTabID = fav.tab?.id
         let wasSelected = draggedTabID == selectedTabID
-        store.restoreFavoriteAsPinned(id: favoriteID, profileID: profile.id, in: space, at: pinnedIndex)
+        guard store.restoreFavoriteAsPinned(id: favoriteID, profileID: profile.id, in: space, at: pinnedIndex) else { return }
         if wasSelected, let draggedTabID {
             selectTab(id: draggedTabID)
         }
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, dropTargetsForFavorite favoriteID: UUID) -> FavoriteDropTargets {
+        guard let profile = activeSpace?.profile else { return [] }
+        return store.favoriteDropTargets(id: favoriteID, profileID: profile.id)
     }
 
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {

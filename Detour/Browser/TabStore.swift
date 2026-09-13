@@ -939,9 +939,16 @@ class TabStore {
         scheduleSave()
     }
 
+    /// Adds a dormant favourite from a dormant tile (a pinned entry dragged to the
+    /// favourites bar). Its URL is rehomed like any tile's (TASK-34); a page of an
+    /// uninstalled extension is refused — returns false and adds nothing — so the
+    /// caller can leave the entry where it is.
+    @discardableResult
     func addFavoriteFromEntry(url: URL, title: String, faviconURL: URL?, favicon: NSImage?,
-                              profileID: UUID, at index: Int) {
-        guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
+                              profileID: UUID, at index: Int) -> Bool {
+        guard let profile = profiles.first(where: { $0.id == profileID }),
+              let url = rehomedTileURL(url, page: dormantFavoritePage(url: url, in: profile), in: profile)
+        else { return false }
 
         let favorite = Favorite(url: url, title: title, faviconURL: faviconURL, sortOrder: 0)
         favorite.favicon = favicon
@@ -950,6 +957,7 @@ class TabStore {
         reindexFavorites(profile)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
+        return true
     }
 
     func activateFavorite(id: UUID, profileID: UUID, in space: Space) {
@@ -986,28 +994,67 @@ class TabStore {
         scheduleSave()
     }
 
-    /// Moves a favorite back into the tab list, removing it from favorites.
-    func restoreFavoriteAsTab(id: UUID, profileID: UUID, in space: Space, at tabIndex: Int) {
+    /// What a dormant favourite's (or other dormant tile's) page is now (TASK-34),
+    /// judged by the extension claiming its origin in `profile`: the loaded
+    /// context serving it, or the id registered for its pending origin
+    /// (`Profile.extensionID(forPageURL:)`). A favourite holds no extension id in
+    /// memory and needs none: a context reload rewrites its URL
+    /// (`retargetExtensionPages`), and a restore or a disable registers its
+    /// origin as pending. Only an uninstall forgets the origin, which leaves no
+    /// id and so classifies as `.unavailable`.
+    private func dormantFavoritePage(url: URL, in profile: Profile) -> PersistedExtensionPage {
+        classifyCapturedPage(url: url, extensionID: profile.extensionID(forPageURL: url), in: profile)
+    }
+
+    /// Where a dormant tile on `page` may move (TASK-34). An ordinary page and an
+    /// enabled extension's page may go anywhere. A disabled extension's page may
+    /// only stay a dormant tile (a pinned entry): as a tab it would sit unloaded
+    /// on its pending origin, and the next restore drops open tabs of a disabled
+    /// extension. An uninstalled extension's page may go nowhere.
+    private func dormantTileDropTargets(_ page: PersistedExtensionPage) -> FavoriteDropTargets {
+        switch page {
+        case .notExtensionPage, .restorable: return .all
+        case .disabled: return .pinned
+        case .unavailable: return []
+        }
+    }
+
+    /// The sidebar sections favourite `id` may be dragged into now (TASK-34),
+    /// for the sidebar's drop validation. A live favourite may go anywhere: its
+    /// backing tab moves as it is.
+    func favoriteDropTargets(id: UUID, profileID: UUID) -> FavoriteDropTargets {
         guard let profile = profiles.first(where: { $0.id == profileID }),
-              let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return }
-        let fav = profile.favorites.remove(at: favIdx)
-        reindexFavorites(profile)
+              let fav = profile.favorites.first(where: { $0.id == id }) else { return [] }
+        if fav.tab != nil { return .all }
+        return dormantTileDropTargets(dormantFavoritePage(url: fav.url, in: profile))
+    }
+
+    /// Moves a favorite back into the tab list, removing it from favorites.
+    ///
+    /// A live favourite's backing tab moves as it is. A dormant one gets a new tab
+    /// from `makeTab(loading:)` — an extension page is created sleeping, so wake
+    /// builds it from its context's configuration — on its URL rehomed onto the
+    /// extension's live origin (TASK-34). A dormant page of a disabled or
+    /// uninstalled extension is refused (`favoriteDropTargets`): nothing moves,
+    /// the favourite stays, and this returns false.
+    @discardableResult
+    func restoreFavoriteAsTab(id: UUID, profileID: UUID, in space: Space, at tabIndex: Int) -> Bool {
+        guard let profile = profiles.first(where: { $0.id == profileID }),
+              let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return false }
+        let fav = profile.favorites[favIdx]
 
         let tab: BrowserTab
         if let liveTab = fav.tab {
             tab = liveTab
         } else {
-            tab = BrowserTab(
-                id: UUID(),
-                title: fav.title,
-                archivedInteractionState: nil,
-                fallbackURL: fav.url,
-                faviconURL: fav.faviconURL,
-                configuration: space.makeWebViewConfiguration()
-            )
-            tab.spaceID = space.id
+            let page = dormantFavoritePage(url: fav.url, in: profile)
+            guard dormantTileDropTargets(page).contains(.tabList),
+                  let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
+            tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
             subscribeToTab(tab, spaceID: space.id)
         }
+        profile.favorites.remove(at: favIdx)
+        reindexFavorites(profile)
 
         let insertAt = snappedToSplitGroupBoundary(
             min(tabIndex, space.tabs.count),
@@ -1017,20 +1064,40 @@ class TabStore {
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertAt, in: space) }
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
+        return true
     }
 
     /// Moves a favorite back into the pinned section, removing it from favorites.
-    func restoreFavoriteAsPinned(id: UUID, profileID: UUID, in space: Space, at pinnedIndex: Int) {
+    ///
+    /// A live favourite's backing tab moves as it is. A dormant one becomes a
+    /// dormant entry whose home page is the favourite's URL rehomed (TASK-34): an
+    /// enabled extension's page onto its live origin, a disabled one's kept with
+    /// its origin registered as pending for a later enable. A dormant page of an
+    /// uninstalled extension is refused: nothing moves, the favourite stays, and
+    /// this returns false.
+    @discardableResult
+    func restoreFavoriteAsPinned(id: UUID, profileID: UUID, in space: Space, at pinnedIndex: Int) -> Bool {
         guard let profile = profiles.first(where: { $0.id == profileID }),
-              let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return }
-        let fav = profile.favorites.remove(at: favIdx)
+              let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return false }
+        let fav = profile.favorites[favIdx]
+
+        let pinnedURL: URL
+        if fav.tab != nil {
+            pinnedURL = fav.url
+        } else {
+            let page = dormantFavoritePage(url: fav.url, in: profile)
+            guard dormantTileDropTargets(page).contains(.pinned),
+                  let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
+            pinnedURL = url
+        }
+        profile.favorites.remove(at: favIdx)
         reindexFavorites(profile)
 
         let maxEntryOrder = space.pinnedEntries.map(\.sortOrder).max() ?? -1
         let maxFolderOrder = space.pinnedFolders.map(\.sortOrder).max() ?? -1
         let entry = PinnedEntry(
             id: UUID(),
-            pinnedURL: fav.url,
+            pinnedURL: pinnedURL,
             pinnedTitle: fav.title,
             faviconURL: fav.faviconURL,
             sortOrder: max(maxEntryOrder, maxFolderOrder) + 1,
@@ -1053,6 +1120,7 @@ class TabStore {
         notifyObservers { $0.tabStoreDidInsertPinnedEntry(entry, at: insertAt, in: space) }
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
+        return true
     }
 
     func reorderFavorite(from sourceIndex: Int, to destinationIndex: Int, profileID: UUID) {
@@ -2866,15 +2934,20 @@ class TabStore {
     /// What a page captured earlier — a closed-tab record, or the state an undo
     /// closure captured at close time — is now, judged by the extension id
     /// captured with it (`Profile.extensionID(forPageURL:)` at that moment)
-    /// against the extensions installed and enabled in `space`'s profile. Only
-    /// an extension page consults the database.
-    private func classifyCapturedPage(url: URL?, extensionID: String?, in space: Space) -> PersistedExtensionPage {
+    /// against the extensions installed and enabled in `profile`. Only an
+    /// extension page consults the database.
+    private func classifyCapturedPage(url: URL?, extensionID: String?, in profile: Profile?) -> PersistedExtensionPage {
         guard isExtensionPageURL(url) else { return .notExtensionPage }
         return classifyPersistedExtensionPage(
             url: url, extensionID: extensionID,
             installedExtensionIDs: appDB.installedExtensionIDs(),
-            enabledExtensionIDs: space.profile.map { appDB.enabledExtensionIDs(for: $0.id.uuidString) } ?? []
+            enabledExtensionIDs: profile.map { appDB.enabledExtensionIDs(for: $0.id.uuidString) } ?? []
         )
+    }
+
+    /// `classifyCapturedPage` against `space`'s profile.
+    private func classifyCapturedPage(url: URL?, extensionID: String?, in space: Space) -> PersistedExtensionPage {
+        classifyCapturedPage(url: url, extensionID: extensionID, in: space.profile)
     }
 
     /// Where a captured page of an installed extension (`page.pendingOrigin`)
@@ -2883,8 +2956,8 @@ class TabStore {
     /// loaded the URL is rewritten onto its current base; otherwise the origin is
     /// registered as pending, so `resolvePendingExtensionPages` moves the page
     /// once the context loads and `BrowserTab.wake` leaves it unloaded until then.
-    private func liveExtensionPageURL(_ url: URL, extensionID: String, originHost: String, in space: Space) -> URL {
-        guard let profile = space.profile else { return url }
+    private func liveExtensionPageURL(_ url: URL, extensionID: String, originHost: String, in profile: Profile?) -> URL {
+        guard let profile else { return url }
         guard let context = profile.extensionContext(for: extensionID) else {
             profile.registerPendingExtensionOrigin(host: originHost, extensionID: extensionID)
             return url
@@ -2893,24 +2966,35 @@ class TabStore {
         return rewriteExtensionPageURL(url, from: oldBase, to: context.baseURL) ?? url
     }
 
-    /// A captured tile URL (a pinned entry's home page) brought back: an enabled
-    /// extension's page moves to its live origin, and a disabled one's origin is
-    /// registered as pending so a later enable moves it — what restore does for
-    /// the tiles it keeps. An ordinary URL is returned as it is. An uninstalled
-    /// extension's page returns nil: restore drops such a tile, so an undo must
-    /// not bring it back either (TASK-30).
-    private func rehomedTileURL(_ url: URL, page: PersistedExtensionPage, in space: Space) -> URL? {
+    /// `liveExtensionPageURL` in `space`'s profile.
+    private func liveExtensionPageURL(_ url: URL, extensionID: String, originHost: String, in space: Space) -> URL {
+        liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: space.profile)
+    }
+
+    /// A captured tile URL (a pinned entry's home page, a favourite's URL) brought
+    /// back or moved: an enabled extension's page moves to its live origin, and a
+    /// disabled one's origin is registered as pending so a later enable moves it —
+    /// what restore does for the tiles it keeps. An ordinary URL is returned as it
+    /// is. An uninstalled extension's page returns nil: restore drops such a tile,
+    /// so an undo must not bring it back (TASK-30) and a move must not carry it
+    /// anywhere (TASK-34).
+    private func rehomedTileURL(_ url: URL, page: PersistedExtensionPage, in profile: Profile?) -> URL? {
         switch page {
         case .restorable(let extensionID, let originHost):
-            return liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: space)
+            return liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: profile)
         case .disabled(let extensionID, let originHost):
-            space.profile?.registerPendingExtensionOrigin(host: originHost, extensionID: extensionID)
+            profile?.registerPendingExtensionOrigin(host: originHost, extensionID: extensionID)
             return url
         case .notExtensionPage:
             return url
         case .unavailable:
             return nil
         }
+    }
+
+    /// `rehomedTileURL` in `space`'s profile.
+    private func rehomedTileURL(_ url: URL, page: PersistedExtensionPage, in space: Space) -> URL? {
+        rehomedTileURL(url, page: page, in: space.profile)
     }
 
     /// `rehomedTileURL` for a tile URL captured with `extensionID`, classified now.

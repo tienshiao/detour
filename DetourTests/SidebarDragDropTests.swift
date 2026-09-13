@@ -108,6 +108,44 @@ final class SidebarDragDropTests: XCTestCase {
                        .retargetToPinnedGap(index: items.count))
     }
 
+    /// TASK-34: a favourite that may only enter some sections (a disabled
+    /// extension's page: pinned only; an uninstalled one's: nowhere).
+    func testValidateFavoriteRespectsItsDropTargets() {
+        let (items, _, _, _) = standardTree()
+        func validate(_ row: SidebarRow, _ operation: SidebarDropOperation,
+                      _ targets: FavoriteDropTargets) -> SidebarDropValidation {
+            validateSidebarDrop(kind: .favorite, sourceItemID: UUID(), row: row, operation: operation,
+                                items: items, favoriteTargets: targets)
+        }
+        let cases: [(SidebarRow, SidebarDropOperation, SidebarDropValidation, FavoriteDropTargets)] = [
+            (.topSpacer, .above, .retargetToPinnedGap(index: 0), .pinned),
+            (.pinnedItem(index: 1), .above, .accept, .pinned),
+            (.pinnedItem(index: 0), .on, .accept, .pinned),
+            (.separator, .above, .retargetToPinnedGap(index: items.count), .pinned),
+            (.newTab, .above, .retargetToNormalTabGap(index: 0), .tabList),
+            (.normalTab(index: 0), .above, .accept, .tabList),
+        ]
+        for (row, operation, accepted, section) in cases {
+            XCTAssertEqual(validate(row, operation, .all), accepted, "\(row) with every target")
+            XCTAssertEqual(validate(row, operation, section), accepted, "\(row) with its own section")
+            XCTAssertEqual(validate(row, operation, FavoriteDropTargets.all.subtracting(section)), .reject,
+                           "\(row) without its section")
+            XCTAssertEqual(validate(row, operation, []), .reject, "\(row) with no target")
+        }
+        // Non-favourite drags ignore the targets.
+        XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: UUID(), row: .pinnedItem(index: 1),
+                                           operation: .above, items: items, favoriteTargets: []),
+                       .accept)
+    }
+
+    func testFavoriteDropSectionOfADestination() {
+        XCTAssertEqual(favoriteDropSection(destination: .beforeNormalTab(gapIndex: 0)), .tabList)
+        XCTAssertEqual(favoriteDropSection(destination: .beforePinnedItem(flatIndex: 0)), .pinned)
+        XCTAssertEqual(favoriteDropSection(destination: .intoFolder(folderID: UUID())), .pinned)
+        XCTAssertEqual(favoriteDropSection(row: .newTab), .tabList)
+        XCTAssertEqual(favoriteDropSection(row: .separator), .pinned)
+    }
+
     // MARK: - sidebarDropDestination
 
     func testDestinationNormalization() {
