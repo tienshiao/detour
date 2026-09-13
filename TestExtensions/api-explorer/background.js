@@ -157,8 +157,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
-  console.log('[API Explorer] tabs.onActivated', activeInfo.tabId);
-  appendLog({ event: 'tabs.onActivated', tabId: activeInfo.tabId });
+  console.log('[API Explorer] tabs.onActivated', activeInfo.tabId, 'previous:', activeInfo.previousTabId);
+  appendLog({ event: 'tabs.onActivated', tabId: activeInfo.tabId, previousTabId: activeInfo.previousTabId });
 });
 
 // --- WebNavigation events ---

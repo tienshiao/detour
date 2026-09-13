@@ -46,7 +46,10 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         self.positioningRect = positioningRect
         self.preferredEdge = preferredEdge
 
-        let tab = (NSApp.keyWindow?.windowController as? BrowserWindowController)?.selectedTab
+        // The page the user is looking at, which is a presented Peek when one
+        // is up — so an activeTab grant and the popup's own tab both name the
+        // peek, not the host behind it (TASK-51).
+        let tab = (NSApp.keyWindow?.windowController as? BrowserWindowController)?.extensionActiveTab
 
         // Record the user gesture so activeTab permission grants work.
         if let tab {

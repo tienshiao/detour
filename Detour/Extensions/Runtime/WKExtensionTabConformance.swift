@@ -15,6 +15,11 @@ extension BrowserTab: WKWebExtensionTab {
         let controllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
         // The window that currently shows this tab.
         if let wc = controllers.first(where: { $0.selectedTabID == id }) { return wc }
+        // A presented Peek belongs to the window presenting it: two windows on
+        // the same space both *list* the host's live peek, so the membership
+        // fallback below could pick the one that is not showing it and WebKit
+        // would then compute `isActive` against the wrong window (TASK-51).
+        if let wc = controllers.first(where: { $0.extensionActiveTab === self }) { return wc }
         // Otherwise any window that lists it — the same enumeration as `tabs(for:)`,
         // so a tab is never listed by a window it does not belong to: a favourite
         // (per-profile, listed by every window on the profile) and a Peek (no
@@ -91,7 +96,7 @@ extension BrowserTab: WKWebExtensionTab {
         }
         if let host = store.tab(hostingPeek: self) {
             let controllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
-            if let wc = controllers.first(where: { $0.selectedTab === host && $0.peekOverlayView != nil }) {
+            if let wc = controllers.first(where: { $0.extensionActiveTab === self }) {
                 wc.closePeekOverlay()
             } else {
                 // Hidden or parked: no overlay to animate away.

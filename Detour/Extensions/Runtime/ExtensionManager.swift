@@ -172,7 +172,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     static let extensionsDidChangeNotification = Notification.Name("ExtensionManagerExtensionsDidChange")
     static let tabShouldSelectNotification = Notification.Name("extensionTabShouldSelect")
-    static let tabActivatedNotification = Notification.Name("extensionTabActivated")
     static let popupOpenURLNotification = Notification.Name("extensionPopupOpenURL")
     static let openOptionsPageNotification = Notification.Name("extensionOpenOptionsPage")
     static let extensionActionDidChangeNotification = Notification.Name("extensionActionDidChange")
@@ -192,11 +191,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         TabStore.shared.addObserver(tabObserver)
-
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleTabActivated(_:)),
-            name: Self.tabActivatedNotification, object: nil
-        )
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowDidBecomeKey(_:)),
@@ -707,7 +701,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             for context in contexts {
                 context.didFocusWindow(focusedWC)
             }
-            if let activeTab = focusedWC.selectedTab {
+            // What the window reports as active, so a context loading over a
+            // presented peek is told about the peek, not the host (TASK-51).
+            if let activeTab = focusedWC.extensionActiveTab {
                 ExtensionTabLifecycle.didActivate(activeTab, in: profile, contexts: contexts)
             }
         }
@@ -1094,15 +1090,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
-
-    // MARK: - Tab Activation
-
-    @objc private func handleTabActivated(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let tabID = info["tabID"] as? UUID,
-              let spaceID = info["spaceID"] as? UUID else { return }
-        tabObserver.dispatchActivated(tabID: tabID, spaceID: spaceID)
-    }
 
     // MARK: - Service Worker Polyfill Injection
 

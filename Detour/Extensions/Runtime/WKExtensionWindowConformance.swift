@@ -18,8 +18,11 @@ extension BrowserWindowController: WKWebExtensionWindow {
         extensionTabs
     }
 
+    /// The presented Peek while one is up, otherwise the selected tab
+    /// (TASK-51) — `tabs.query({active: true})` must never name a page hidden
+    /// behind the overlay.
     func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? {
-        selectedTab
+        extensionActiveTab
     }
 
     func isPrivate(for context: WKWebExtensionContext) -> Bool {

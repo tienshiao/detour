@@ -41,7 +41,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
             records.append(Record(event: .close, tabID: tab.id, profileID: profile.id,
                                   listedAsFavorite: false))
         }
-        func didActivate(_ tab: BrowserTab, in profile: Profile, contexts: [WKWebExtensionContext]?) {
+        func didActivate(_ tab: BrowserTab, previousActiveTab: BrowserTab?, in profile: Profile,
+                         contexts: [WKWebExtensionContext]?) {
             records.append(Record(event: .activate, tabID: tab.id, profileID: profile.id,
                                   listedAsFavorite: false))
         }
@@ -97,7 +98,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Lifecycle")
         let space = store.addSpace(name: "Lifecycle", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
-        let observer = ExtensionTabObserver(store: store)
+        let observer = ExtensionTabObserver()
         store.addObserver(observer)
         notifier.records.removeAll()
         return Fixture(store: store, profile: profile, space: space, observer: observer)
@@ -239,27 +240,6 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 
         XCTAssertEqual(events(for: tab), [.open, .close])
-    }
-
-    // MARK: - Activation dispatch
-
-    func testDispatchActivatedResolvesAFavoriteTab() throws {
-        let f = try makeFixture()
-        let (_, tab) = try liveFavorite(in: f)
-
-        f.observer.dispatchActivated(tabID: tab.id, spaceID: f.space.id)
-
-        XCTAssertEqual(events(for: tab), [.open, .activate])
-    }
-
-    func testDispatchActivatedResolvesANormalTab() throws {
-        let f = try makeFixture()
-        let tab = f.store.addTab(in: f.space, url: favoriteURL)
-        createdTabs.append(tab)
-
-        f.observer.dispatchActivated(tabID: tab.id, spaceID: f.space.id)
-
-        XCTAssertEqual(events(for: tab), [.open, .activate])
     }
 
     // MARK: - Negative cases

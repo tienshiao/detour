@@ -17,7 +17,8 @@ import WebKit
 protocol ExtensionTabLifecycleNotifying: AnyObject {
     func didOpen(_ tab: BrowserTab, in profile: Profile, contexts: [WKWebExtensionContext]?)
     func didClose(_ tab: BrowserTab, in profile: Profile)
-    func didActivate(_ tab: BrowserTab, in profile: Profile, contexts: [WKWebExtensionContext]?)
+    func didActivate(_ tab: BrowserTab, previousActiveTab: BrowserTab?, in profile: Profile,
+                     contexts: [WKWebExtensionContext]?)
     func didChangeProperties(_ tab: BrowserTab, in profile: Profile,
                              properties: WKWebExtension.TabChangedProperties)
 }
@@ -43,9 +44,10 @@ final class WKExtensionTabLifecycleNotifier: ExtensionTabLifecycleNotifying {
         }
     }
 
-    func didActivate(_ tab: BrowserTab, in profile: Profile, contexts: [WKWebExtensionContext]?) {
+    func didActivate(_ tab: BrowserTab, previousActiveTab: BrowserTab?, in profile: Profile,
+                     contexts: [WKWebExtensionContext]?) {
         for context in targets(profile, contexts) {
-            context.didActivateTab(tab, previousActiveTab: nil)
+            context.didActivateTab(tab, previousActiveTab: previousActiveTab)
         }
     }
 
@@ -115,8 +117,14 @@ enum ExtensionTabLifecycle {
         notifier.didClose(tab, in: profile)
     }
 
-    static func didActivate(_ tab: BrowserTab, in profile: Profile, contexts: [WKWebExtensionContext]? = nil) {
-        notifier.didActivate(tab, in: profile, contexts: contexts)
+    /// `previousActiveTab` is the tab the window was showing before, so
+    /// extensions see the handover rather than an isolated activation (TASK-51).
+    /// It is nil for a re-announcement that isn't a change of active tab — a
+    /// woken pane, or a context being told about the tab that was already
+    /// active when it loaded.
+    static func didActivate(_ tab: BrowserTab, previousActiveTab: BrowserTab? = nil,
+                            in profile: Profile, contexts: [WKWebExtensionContext]? = nil) {
+        notifier.didActivate(tab, previousActiveTab: previousActiveTab, in: profile, contexts: contexts)
     }
 
     static func didChangeProperties(_ tab: BrowserTab, in profile: Profile,

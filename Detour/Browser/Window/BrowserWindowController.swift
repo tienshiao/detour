@@ -101,6 +101,9 @@ class BrowserWindowController: NSWindowController {
     var contextMenuLinkAction: ContextMenuLinkAction = .none
 
     var peekOverlayView: PeekOverlayView?
+    /// Funnels this window's activation announcements to the extension
+    /// contexts, deduped by identity (TASK-51).
+    private let extensionActiveTabTracker = ExtensionActiveTabTracker()
     private var peekTabSubscriptions = Set<AnyCancellable>()
     private var displayTabSubscriptions = Set<AnyCancellable>()
     private var peekWebViewTopConstraint: NSLayoutConstraint?
@@ -134,6 +137,21 @@ class BrowserWindowController: NSWindowController {
 
     var displayTab: BrowserTab? {
         selectedTab?.peekTab ?? selectedTab
+    }
+
+    /// The tab extensions see as active — the presented Peek while one is up,
+    /// otherwise the selected tab (TASK-51). `selectedTabID` is unaffected: it
+    /// still names the focused pane / the peek's host; only what extensions
+    /// call "active" follows the overlay. See `extensionActiveTab(selected:peekPresented:)`.
+    var extensionActiveTab: BrowserTab? {
+        Detour.extensionActiveTab(selected: selectedTab, peekPresented: peekOverlayView != nil)
+    }
+
+    /// Tell the extension contexts about this window's active tab when it has
+    /// changed (TASK-51). Every path that can change it funnels through here;
+    /// the tracker drops the repeats.
+    func announceExtensionActiveTabIfChanged() {
+        extensionActiveTabTracker.announce(extensionActiveTab, in: activeSpace?.profile)
     }
 
     private static let frameAutosaveName = "BrowserWindow"
@@ -832,15 +850,6 @@ class BrowserWindowController: NSWindowController {
         activeTabSubscriptions.removeAll()
         dragHandle.isHidden = false
 
-        // Notify extensions of tab activation
-        if let spaceID = activeSpaceID {
-            NotificationCenter.default.post(
-                name: ExtensionManager.tabActivatedNotification,
-                object: nil,
-                userInfo: ["tabID": id, "spaceID": spaceID]
-            )
-        }
-
         // A pinned split wakes BOTH sides: activate a dormant partner entry
         // (the pinned analog of the sleeping-member wake below) so the group
         // resolves to two live panes before hosting.
@@ -895,6 +904,15 @@ class BrowserWindowController: NSWindowController {
 
         // Restore peek overlay if the incoming tab has one
         restorePeekOverlayIfNeeded()
+
+        // Last, so a switch onto a tab with a saved peek announces the peek
+        // once instead of host-then-peek: the restore's own announce (in
+        // `presentPeekWebView`) has already fired with the correct handover and
+        // this call dedupes to nothing. With no peek it is the single
+        // announcement — and it still runs after the members are woken and
+        // claimed, so a freshly woken tab is reported open before it is
+        // reported active (TASK-51).
+        announceExtensionActiveTabIfChanged()
     }
 
     /// The selected tab's split partners (both panes, visual order) — or just
@@ -909,17 +927,27 @@ class BrowserWindowController: NSWindowController {
     private static let ownedScriptHandlerNames = ["linkHover", BlockedResourceTracker.messageName, "editableFieldFocus"]
 
     /// Wake a sleeping split member alongside the focused pane, mirroring the
-    /// wake path in `selectTab` (including the extension open/activate notify
-    /// that `notifyExistingTabs` skipped while the tab slept). Guards on the
-    /// missing webView rather than `isSleeping` so a tab that lost its webView
-    /// without being flagged asleep is also rebuilt instead of hosting as an
-    /// empty pane (`wake()` re-guards, so a live webView is never replaced).
+    /// wake path in `selectTab` (including the extension open notify that
+    /// `notifyExistingTabs` skipped while the tab slept). Guards on the missing
+    /// webView rather than `isSleeping` so a tab that lost its webView without
+    /// being flagged asleep is also rebuilt instead of hosting as an empty pane
+    /// (`wake()` re-guards, so a live webView is never replaced).
+    ///
+    /// The re-open is unconditional, but the activation is only for the focused
+    /// pane: waking a split *partner* must not tell WebKit the unfocused pane
+    /// is active (the tracker dedupes by identity, so it would never correct
+    /// it — e.g. `windowDidBecomeKey` → `claimWebView` → `wakeIfNeeded(partner)`
+    /// or `refreshSplitHostingIfNeeded`). For the focused pane it stays a direct
+    /// announcement, not one through the tracker: a re-opened web view is
+    /// re-announced regardless of whether the active tab changed.
     private func wakeIfNeeded(_ tab: BrowserTab) {
         guard tab.webView == nil else { return }
         tab.wake()
         if let space = activeSpace, let profile = space.profile {
             ExtensionTabLifecycle.didOpen(tab, in: profile)
-            ExtensionTabLifecycle.didActivate(tab, in: profile)
+            if tab === selectedTab {
+                ExtensionTabLifecycle.didActivate(tab, in: profile)
+            }
         }
     }
 
@@ -1707,13 +1735,8 @@ class BrowserWindowController: NSWindowController {
         }
         reloadSelectedTabSidebarCell()
 
-        if let spaceID = activeSpaceID {
-            NotificationCenter.default.post(
-                name: ExtensionManager.tabActivatedNotification,
-                object: nil,
-                userInfo: ["tabID": member.id, "spaceID": spaceID]
-            )
-        }
+        // Pane focus is an activation as far as extensions are concerned (TASK-51).
+        announceExtensionActiveTabIfChanged()
 
         // A saved peek on this pane stays dormant while the pane is unfocused;
         // focusing it restores the peek, matching tab-switch behavior.
@@ -2013,11 +2036,17 @@ class BrowserWindowController: NSWindowController {
 
     func deselectAllTabs() {
         removeSplitRevealOverlay()
+        // Before the selection is cleared: `hidePeekUI` resolves the presented
+        // peek through `selectedTab?.peekTab?.webView`, so afterwards it would
+        // find nothing to unclaim.
+        hidePeekUI()
         selectedTabID = nil
         activeSpace?.selectedTabID = nil
         activeTabSubscriptions.removeAll()
         displayTabSubscriptions.removeAll()
-        hidePeekUI()
+        // Nothing is active: clears the tracker so the next selection is
+        // announced with no previous tab rather than a stale one (TASK-51).
+        announceExtensionActiveTabIfChanged()
         dragHandle.isHidden = true
         removeContentViews()
         let hasTabs = !(activeSpace?.tabs.isEmpty ?? true) || !(activeSpace?.pinnedEntries.isEmpty ?? true)
@@ -2163,6 +2192,13 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
+    /// Takes the peek off screen without destroying it (tab switch, space
+    /// switch, ownership loss, window close).
+    ///
+    /// Announces nothing to the extension contexts (TASK-51): every caller
+    /// either selects another tab, deselects everything, or stops showing live
+    /// content at all (ownership handed to another window, window closing), and
+    /// each of those announces — or is another window's business.
     private func hidePeekUI() {
         guard peekOverlayView != nil else { return }
         peekTabSubscriptions.removeAll()
@@ -2401,6 +2437,9 @@ class BrowserWindowController: NSWindowController {
 
         peekOverlayView = overlay
         bindDisplayTab()
+        // The presented peek is now the window's extension-visible active tab
+        // (TASK-51). Present, re-present and restore all land here.
+        announceExtensionActiveTabIfChanged()
 
         // Focus the peek so keyboard input (space, arrows, Esc) targets it
         // immediately instead of the tab's webview behind the overlay.
@@ -2421,6 +2460,8 @@ class BrowserWindowController: NSWindowController {
         store.scheduleSave()
         peekOverlayView = nil
         bindDisplayTab()
+        // Activation reverts to the host behind the overlay (TASK-51).
+        announceExtensionActiveTabIfChanged()
         overlay.animateClose {
             overlay.removeFromSuperview()
         }

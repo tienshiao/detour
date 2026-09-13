@@ -173,8 +173,9 @@ container).
 
 **Focused pane.** `selectedTabID` always identifies a *specific member* (the
 focused pane), never the group — so the address bar, nav buttons, find bar,
-`displayTab`, peek, and extension `tabActivatedNotification` all keep their
-existing single-tab semantics untouched. Selecting the split row from the
+`displayTab`, peek, and the extension-visible active tab all keep their
+existing single-tab semantics untouched (pane focus announces through
+`announceExtensionActiveTabIfChanged()`, TASK-51). Selecting the split row from the
 sidebar selects the group's remembered-focused member (last focused; default
 left). Focus moves between panes when a pane's webview becomes first responder
 — `BrowserWebView` (subclass already exists) overrides `becomeFirstResponder()`
@@ -331,22 +332,39 @@ Behavior:
   extension-visible *because* they're real tabs in `space.tabs`; peek tabs are
   not, and today are invisible to the WKWebExtension layer. Peek should get
   fully functional extensions too. Known work items:
-  - Call `context.didOpenTab(peekTab)` on every extension context when the
-    peek webview is created (mirror of `BrowserTab.wake()`), and the
+  - DONE (TASK-50): `context.didOpenTab(peekTab)` on every extension context
+    when the peek webview is created (mirror of `BrowserTab.wake()`), and the
     corresponding close notification when the peek is dismissed/discarded —
     without this, content-script messaging (e.g. 1Password fill) has no tab
-    binding.
-  - Include `peekTab`s in whatever enumerates tabs for the extension adapter
-    (the nav-callback resolver `tab(owning:)` already does this — the
-    extension side needs the same treatment).
-  - Decide active-tab semantics: while a peek is open, `displayTab` is the
-    peek, so extension "active tab" (toolbar popups, `activeTab` grants)
-    should probably target the peek; revert on close.
+    binding. Every such notification now goes through the
+    `ExtensionTabLifecycle` seam.
+  - DONE (TASK-50): `peekTab`s are included in what enumerates tabs for the
+    extension adapter (`extensionWindowTabs`, shared by `tabs(for:)` and
+    `notifyExistingTabs`), matching the nav-callback resolver `tab(owning:)`.
+  - DECIDED (TASK-51): **a presented peek is the window's extension-visible
+    active tab.** `activeTab(for:)`, the toolbar popup's `userGesturePerformed`
+    /`action(for:)` and `notifyExistingTabs` all read
+    `BrowserWindowController.extensionActiveTab` = the presented peek when one
+    is up (overlay present *and* the peek has a web view), else `selectedTab`.
+    `selectedTabID` is unchanged by this — it still names the focused pane / the
+    peek's host. Announcements funnel through
+    `announceExtensionActiveTabIfChanged()`, which dedupes by identity in
+    `ExtensionActiveTabTracker` and reports `didActivateTab(tab,
+    previousActiveTab:)`; it is called at the end of `selectTab` — after the
+    members are woken and claimed (so open precedes activate) *and* after the
+    peek restore, so a switch onto a peeked tab announces the peek once rather
+    than host-then-peek — pane focus
+    (`browserWebViewDidBecomeFirstResponder`), `presentPeekWebView` (present,
+    re-present and restore) and `closePeekOverlay`, and with no tab from
+    `deselectAllTabs`. `hidePeekUI` announces nothing: every caller selects
+    another tab, deselects, or closes the window right after. `expandPeekToNewTab`
+    hands over through the new tab's `selectTab`.
   - `expandPeekToNewTab()` must hand over without a spurious close/reopen pair.
   - Per the repo rule: corresponding tests + API Explorer coverage when the
     extension surface changes.
-- **Extensions**: both panes are real tabs → `tabs` API enumerates both; focus
-  changes post `tabActivatedNotification` as today. No new extension API surface
+- **Extensions**: both panes are real tabs → `tabs` API enumerates both; pane
+  focus announces the new active tab through
+  `announceExtensionActiveTabIfChanged()` (TASK-51). No new extension API surface
   in v1 (so no API Explorer/test updates required yet).
 - **Sleep/archive**: guarded via group-aware selected check (§4).
 - **Profile swap / favorites rebinding**: members are plain normal tabs; existing
