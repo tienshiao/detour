@@ -38,6 +38,11 @@ struct WebKitStorageScope {
     /// while the process runs.
     static let currentDataDirectoryName = detourDataDirectoryName()
 
+    /// Whether this process runs in the production data directory. Unlike the
+    /// instance property it needs no registry, so it can be asked before the
+    /// database exists (AppDelegate decides whether to start Sparkle with it).
+    static let currentIsDefaultDataDirectory = currentDataDirectoryName == defaultDetourDataDirectoryName
+
     /// The scope of this process's data directory.
     static var current: WebKitStorageScope {
         WebKitStorageScope(dataDirectoryName: currentDataDirectoryName, registry: .shared)

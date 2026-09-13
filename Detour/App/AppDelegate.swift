@@ -1,8 +1,12 @@
 import AppKit
 import Sparkle
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "app")
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: AppDelegate.startsUpdater, updaterDelegate: nil, userDriverDelegate: nil)
     private var windowControllers: [BrowserWindowController] = []
 
     /// Whether this process is the XCTest host (the test runner injects
@@ -11,8 +15,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
     }
 
+    /// Whether Sparkle's updater may run in this process (TASK-41).
+    ///
+    /// Sparkle keeps its schedule and check results in `SU*` keys of the bundle
+    /// id's standard defaults domain — the production app's. The XCTest host and
+    /// isolated `DETOUR_DATA_DIR` runs share that bundle id, so an updater
+    /// started there would schedule or perform checks on the production app's
+    /// behalf and record them in its domain. Only a real run in the default data
+    /// directory starts the updater; when it does not, the "Check for Updates…"
+    /// item is left out of the menu entirely, so nothing can start a check by
+    /// hand either. Both inputs are process-constant, hence the `let`.
+    static let startsUpdater: Bool =
+        !AppDelegate.isRunningUnitTests && WebKitStorageScope.currentIsDefaultDataDirectory
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
+
+        if !Self.startsUpdater {
+            // Say so once at launch: a run that silently never checks for
+            // updates is otherwise indistinguishable from one that does (TASK-41).
+            let reason = Self.isRunningUnitTests
+                ? "XCTest host"
+                : "data directory \(WebKitStorageScope.currentDataDirectoryName)"
+            log.notice("Sparkle updater not started: \(reason, privacy: .public); Check for Updates… is unavailable")
+        }
 
         // Initialize databases before restoring session
         _ = AppDatabase.shared
@@ -244,10 +270,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Detour", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        appMenu.addItem(.separator())
-        let checkForUpdatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
-        checkForUpdatesItem.target = updaterController
-        appMenu.addItem(checkForUpdatesItem)
+        // Not added at all when the updater did not start (TASK-41), so nothing
+        // can reach it — and no separator is left standing where it would have been.
+        if Self.startsUpdater {
+            appMenu.addItem(.separator())
+            let checkForUpdatesItem = NSMenuItem(
+                title: "Check for Updates…",
+                action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                keyEquivalent: "")
+            checkForUpdatesItem.target = updaterController
+            appMenu.addItem(checkForUpdatesItem)
+        }
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())

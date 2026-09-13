@@ -8,6 +8,8 @@ extension Notification.Name {
 
 class BrowserWindowController: NSWindowController {
     private let splitViewController = NSSplitViewController()
+    /// The split view hosting the sidebar and content split items — what tests reach for.
+    var sidebarSplitView: NSSplitView { splitViewController.splitView }
     let tabSidebar = TabSidebarViewController()
     let contentContainerView = NSView()
     var sidebarItem: NSSplitViewItem!
@@ -154,7 +156,11 @@ class BrowserWindowController: NSWindowController {
         extensionActiveTabTracker.announce(extensionActiveTab, in: activeSpace?.profile)
     }
 
-    private static let frameAutosaveName = "BrowserWindow"
+    /// Autosave names of the window frame and of the sidebar split view. Scoped
+    /// to the data directory so only a default-data-directory run touches the
+    /// keys the production app restores from (TASK-41).
+    static let frameAutosaveName = UserDefaultsScope.autosaveName("BrowserWindow")
+    static let splitViewAutosaveName = UserDefaultsScope.autosaveName("BrowserSplitView")
 
     convenience init(incognito: Bool) {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -518,7 +524,7 @@ class BrowserWindowController: NSWindowController {
         contentItem = NSSplitViewItem(viewController: contentVC)
         splitViewController.addSplitViewItem(contentItem)
 
-        splitViewController.splitView.autosaveName = "BrowserSplitView"
+        splitViewController.splitView.autosaveName = BrowserWindowController.splitViewAutosaveName
 
         sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, change in
             guard let self, let collapsed = change.newValue else { return }

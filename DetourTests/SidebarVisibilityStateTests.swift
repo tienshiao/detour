@@ -226,14 +226,19 @@ final class SidebarVisibilityStateTests: XCTestCase {
 @MainActor
 final class BrowserWindowSidebarModeTests: XCTestCase {
 
-    private static let autosaveKey = "NSSplitView Subview Frames BrowserSplitView"
+    /// The split view autosave key this process actually writes: the name is
+    /// scoped to the data directory since TASK-41, so hard-coding the unscoped
+    /// "BrowserSplitView" would guard a key the host never touches.
+    private static let autosaveKey =
+        "NSSplitView Subview Frames \(BrowserWindowController.splitViewAutosaveName)"
     private var savedAutosave: Any?
     private var controller: BrowserWindowController?
 
     override func setUp() {
         super.setUp()
-        // The test host shares the app's defaults domain; never let a collapse
-        // here leak into the real app's split view autosave.
+        // The test host shares the app's defaults domain — and in the default
+        // data directory the scoped key is the production one — so never let a
+        // collapse here leak into the app's split view autosave.
         savedAutosave = UserDefaults.standard.object(forKey: Self.autosaveKey)
     }
 
@@ -252,18 +257,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
     private func makeController() throws -> (BrowserWindowController, NSSplitView) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
-        func findSplitView(in view: NSView) -> NSSplitView? {
-            for sub in view.subviews {
-                if let split = sub as? NSSplitView, split.subviews.contains(wc.tabSidebar.view)
-                    || split.arrangedSubviews.contains(where: { wc.tabSidebar.view.isDescendant(of: $0) }) {
-                    return split
-                }
-                if let found = findSplitView(in: sub) { return found }
-            }
-            return nil
-        }
-        let root = try XCTUnwrap(wc.window?.contentView?.superview ?? wc.window?.contentView)
-        let splitView = try XCTUnwrap(findSplitView(in: root), "window's sidebar split view")
+        let splitView = wc.sidebarSplitView
         splitView.autosaveName = nil
         wc.window?.orderFront(nil)
         splitView.layoutSubtreeIfNeeded()
