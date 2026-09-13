@@ -65,6 +65,16 @@ final class ExtensionMenuPopupDecisionTests: XCTestCase {
     private var createdProfiles: [Profile] = []
     private var beaconServer: LoopbackHTTPServer?
 
+    /// Profiles whose extension controller once hosted a popup web view are
+    /// kept alive for the rest of the test process. The popup lives in the
+    /// controller's own configuration, so releasing the profile makes its
+    /// `WKProcessPool` die with the popup's web process — and WebKit traps
+    /// (`MessageReceiverMap::invalidate` from `~WebProcessPool`) when that
+    /// happens inside an IPC dispatch, taking the whole test host down in
+    /// whichever suite runs next. The context is still unloaded and the store
+    /// row removed; only the object outlives the test.
+    private static var retainedProfiles: [Profile] = []
+
     override func tearDown() async throws {
         beaconServer?.stop()
         beaconServer = nil
@@ -72,6 +82,7 @@ final class ExtensionMenuPopupDecisionTests: XCTestCase {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
             AppDatabase.shared.deleteProfile(id: profile.id.uuidString)
+            Self.retainedProfiles.append(profile)
         }
         createdProfiles.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
@@ -127,5 +138,8 @@ final class ExtensionMenuPopupDecisionTests: XCTestCase {
         let popupWebView = action?.popupWebView
         XCTAssertNotNil(popupWebView, "reading popupWebView should create the popup web view")
         try await waitUntil("the popup page to load") { !server.requestedPaths.isEmpty }
+        // Done with the popup: close it before the context is unloaded, as the
+        // popover does when the user dismisses it.
+        action?.closePopup()
     }
 }

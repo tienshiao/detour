@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-13 08:45'
-updated_date: '2026-09-13 09:12'
+updated_date: '2026-09-13 10:06'
 labels:
   - bug
   - extensions
@@ -45,6 +45,8 @@ Observed 2026-09-13: on a fresh launch with 1Password locked in the desktop app,
 
 <!-- SECTION:NOTES:BEGIN -->
 Cause confirmed: menuNeedsUpdate runs on every key-equivalent dispatch, and the menu read WKWebExtension.Action.popupWebView (lazily creates + loads the popup). Fix: ExtensionMenuPopupDecision.hasPopup over a narrow ExtensionActionPopupDeclaring protocol (presentsPopup only), so the decision cannot reach popupWebView by type. Audit: popupWebView is read only in ExtensionPopoverController.show (user click) and ExtensionManager.presentActionPopup (browser.action.openPopup). Tests: spy decision cases + an integration test with a popup-declaring extension whose popup.html beacons a loopback server (img beacon; inline fetch is blocked by the MV3 page CSP) — the menu decision triggers no load, an explicit popupWebView read does. Review moved LoopbackHTTPServer into ExtensionTestSupport for reuse. Review noted a follow-up: implementing menuHasKeyEquivalent(_:for:target:action:) would stop the per-keypress rebuild entirely, but needs the Spaces menu's static shortcuts handled — not filed. AC #4 is a manual check with 1Password locked.
+
+Follow-up after the full suite: the integration test's popup web view lives in the extension controller's own configuration, and releasing the test profile in tearDown freed that WKProcessPool from inside an IPC dispatch — WebKit traps in MessageReceiverMap::invalidate (~WebProcessPool) and the test host crashed in the next suite (ExtensionPageFavoriteTests), so xcodebuild reported TEST FAILED with 0 failures and ~100 tests skipped. The test now closes the popup (action.closePopup()) and retains torn-down profiles for the life of the test process. Full suite: 991 tests, 0 failures.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
