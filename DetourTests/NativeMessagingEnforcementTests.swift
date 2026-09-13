@@ -434,4 +434,80 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         XCTAssertEqual(ExtensionManager.shared.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen, true)
         XCTAssertEqual(ExtensionManager.shared.webSocketRelayCountForTesting(controller: controller, extensionID: ext.id), 1)
     }
+
+    // MARK: - A saved denial survives reinstall and update (TASK-63)
+
+    /// The whole install path: a denial made in Settings after the extension is
+    /// installed must outlive both a reinstall of the same version and an update
+    /// that re-declares the permission, while a permission the update newly
+    /// declares is still recorded as granted.
+    func testSavedDenialSurvivesReinstallAndUpdate() async throws {
+        let source = try makeTempDir("task63-source")
+        // A manifest key pins the id, so every install is the same extension.
+        let key = Data("detour-task63-\(UUID().uuidString)".utf8).base64EncodedString()
+        func writeManifest(version: String, permissions: [String]) throws {
+            let list = permissions.map { "\"\($0)\"" }.joined(separator: ", ")
+            try """
+            {
+                "manifest_version": 3,
+                "name": "Declared Permission Test",
+                "version": "\(version)",
+                "key": "\(key)",
+                "permissions": [\(list)],
+                "host_permissions": ["https://example.com/*"]
+            }
+            """.write(to: source.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        }
+        try writeManifest(version: "1.0.0", permissions: ["nativeMessaging", "storage"])
+
+        let db = AppDatabase.shared
+        let first = try ExtensionManager.shared.install(from: source)
+        registeredExtensionIDs.append(first.id)
+        defer { ExtensionManager.shared.uninstall(id: first.id) }
+        // install finishes loading on a later main-actor turn; let it, so the
+        // installs' loads never interleave with each other or with the uninstall.
+        try await waitUntil("the first install to load") { first.wkExtension != nil }
+
+        let hostPattern = "https://example.com/*"
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "nativeMessaging", type: .apiPermission), .granted)
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "storage", type: .apiPermission), .granted)
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: hostPattern, type: .matchPattern), .granted)
+
+        // The user turns both off in Settings.
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: first.id, key: "nativeMessaging", type: .apiPermission, granted: false)
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: first.id, key: hostPattern, type: .matchPattern, granted: false)
+
+        // Reinstalling the same version re-declares everything; the decisions stand.
+        let second = try ExtensionManager.shared.install(from: source)
+        XCTAssertEqual(second.id, first.id)
+        try await waitUntil("the reinstall to load") { second.wkExtension != nil }
+
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "nativeMessaging", type: .apiPermission),
+                       .denied, "a reinstall must not resurrect the nativeMessaging denial")
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: hostPattern, type: .matchPattern),
+                       .denied, "nor a host-pattern denial")
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "storage", type: .apiPermission),
+                       .granted, "an untouched permission is still granted")
+        XCTAssertEqual(ExtensionManager.nativeHostAccess(
+            hostName: "com.example.host",
+            manifestPermissions: second.manifest.permissions ?? [],
+            savedDecision: db.permissionStatus(extensionID: first.id, key: "nativeMessaging", type: .apiPermission)),
+            .deniedByUser, "the enforcement point still reads the denial after the reinstall")
+
+        // An update that declares a new permission: the new key is granted, the
+        // re-declared denials still stand.
+        try writeManifest(version: "1.1.0", permissions: ["nativeMessaging", "storage", "alarms"])
+        let third = try ExtensionManager.shared.install(from: source)
+        XCTAssertEqual(third.id, first.id)
+        try await waitUntil("the update to load") { third.wkExtension != nil }
+
+        XCTAssertEqual(third.manifest.version, "1.1.0")
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "alarms", type: .apiPermission),
+                       .granted, "a newly declared permission has no saved decision, so it is granted")
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "nativeMessaging", type: .apiPermission),
+                       .denied, "an update must not resurrect the denial either")
+        XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: hostPattern, type: .matchPattern), .denied)
+    }
 }

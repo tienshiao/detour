@@ -915,8 +915,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         extensions.append(ext)
 
-        // Save all declared permissions as granted in the DB so they're
-        // restored on subsequent launches without re-prompting.
+        // Record every declared permission in the DB so it is restored on
+        // subsequent launches without re-prompting. Declared permissions are
+        // granted only where no decision is saved yet: an existing decision — a
+        // denial made in Settings (TASK-25, TASK-44) above all — survives a
+        // reinstall and an update (TASK-63), while a permission an update newly
+        // declares has no row and so is still recorded as granted.
         var permRecords: [ExtensionPermissionRecord] = []
         for perm in ext.manifest.permissions ?? [] {
             permRecords.append(ExtensionPermissionRecord(
@@ -929,7 +933,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             ))
         }
         if !permRecords.isEmpty {
-            AppDatabase.shared.savePermissions(permRecords)
+            AppDatabase.shared.recordDeclaredPermissions(permRecords)
         }
 
         // Inject polyfills before WKWebExtension reads the files

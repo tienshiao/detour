@@ -1827,4 +1827,60 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(report["contextKind"] as? String, "background-page")
         XCTAssertEqual(report["allReceived"] as? [[String: String]], [["reason": "install"]])
     }
+
+    /// TASK-64: an ordinary extension page cannot take the install by calling
+    /// the polyfill's own request bridge directly. The polyfill never claims
+    /// from such a page, but nothing stops extension code from posting the
+    /// request itself, so the *native* side refuses it: the page is told no and
+    /// is handed no event, and the install goes to the real background context
+    /// exactly once.
+    ///
+    /// The claim is fired with the install still pending — the background
+    /// context is only woken afterwards. It cannot be asserted *at that moment*
+    /// that the ledger is still pending, because loading any extension web view
+    /// also starts the background page, whose own (legitimate) claim races this
+    /// one; that a refused claim leaves the ledger alone is pinned
+    /// deterministically by
+    /// `ExtensionPolyfillTests.testClaimInstalledEventThroughTheNativeBridgeIsRefusedWithoutABackgroundContext`.
+    /// What this test pins is the end state: the page got nothing, the
+    /// background context got the one install.
+    func testAnOrdinaryExtensionPageCannotClaimTheInstalledEventThroughTheBridge() async throws {
+        let id = "oninstalled-page-claim-\(UUID().uuidString.prefix(8))"
+        let ext = try await makeBackgroundPageExtension(.scripts, id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let profile = makeProfile("onInstalled Page Claim")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+
+        // The install is owed, and nothing has been woken to take it yet.
+        XCTAssertEqual(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile),
+                       .init(reason: .install, previousVersion: nil),
+                       "precondition: the install is owed")
+
+        // An ordinary extension page of the same extension, asking directly.
+        let webView = try await makeExtensionWebView(for: context)
+        let raw = try await webView.callAsyncJavaScript("""
+            return await globalThis.__detourPolyfillRequest('runtime.claimInstalledEvent', {})
+                .then(r => ({ ok: true, reply: r }), e => ({ ok: false, error: String(e) }));
+        """, arguments: [:], contentWorld: .page)
+        let outcome = try XCTUnwrap(raw as? [String: Any],
+                                    "expected a dictionary, got \(String(describing: raw))")
+        XCTAssertEqual(outcome["ok"] as? Bool, false,
+                       "an ordinary extension page's claim must be rejected, got \(outcome)")
+        XCTAssertNil(outcome["reply"], "no event may be handed to an ordinary page: \(outcome)")
+
+        // The install the page tried to take reaches the background context
+        // (woken by the production path if its own start has not already done
+        // so), exactly once.
+        ExtensionManager.shared.wakeForPendingInstalledEvent(extensionID: ext.id, in: profile)
+        let report = try await reportFromBackgroundContext(
+            page: webView, what: "the background page to be dispatched the install",
+            until: Self.dispatched(1))
+        XCTAssertEqual(report["contextKind"] as? String, "background-page")
+        XCTAssertEqual(report["claimCount"] as? Int, 1)
+        XCTAssertEqual(report["allReceived"] as? [[String: String]], [["reason": "install"]])
+        XCTAssertNil(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile))
+    }
 }

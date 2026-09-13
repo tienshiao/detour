@@ -73,7 +73,13 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// different starting environment (e.g. a native `chrome.action`).
     ///
     /// Every view is tracked in `createdWebViews` and unregistered in tearDown.
-    private func makeWebView(manifestPermissions: [String], shimExtras: String = "") async throws -> WKWebView {
+    /// `baseURL` is what the page loads at: its scheme and host are what the
+    /// handler attributes the sender by, and its *path* is what the
+    /// background-context-only requests are matched against (TASK-64), so a
+    /// fixture standing in for the background context loads at the background
+    /// document's path.
+    private func makeWebView(manifestPermissions: [String], shimExtras: String = "",
+                             baseURL: URL = URL(string: "https://test.example.com")!) async throws -> WKWebView {
         let permissionsJSON = String(
             decoding: try JSONSerialization.data(withJSONObject: manifestPermissions), as: UTF8.self
         )
@@ -152,7 +158,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         let created = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
         createdWebViews.append(created)
         try await loadHTMLStringAndWait(created, html: "<html><body>test</body></html>",
-                                        baseURL: URL(string: "https://test.example.com")!)
+                                        baseURL: baseURL)
         return created
     }
 
@@ -176,14 +182,18 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// management) can be exercised. Tracked in `registeredExtensionIDs` and
     /// removed in tearDown. Mirrors the WebExtension construction used by
     /// WKExtensionIntegrationTests, but builds the manifest in-memory.
+    /// `background`, when given, is the manifest's `background` entry — needed
+    /// by the background-context-only requests (TASK-64).
     @discardableResult
-    private func registerExtension(id: String, permissions: [String]) throws -> WebExtension {
-        let manifestDict: [String: Any] = [
+    private func registerExtension(id: String, permissions: [String],
+                                   background: [String: Any]? = nil) throws -> WebExtension {
+        var manifestDict: [String: Any] = [
             "manifest_version": 3,
             "name": "Polyfill Permission Test",
             "version": "1.0.0",
             "permissions": permissions
         ]
+        if let background { manifestDict["background"] = background }
         let data = try JSONSerialization.data(withJSONObject: manifestDict)
         let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
         let ext = WebExtension(id: id, manifest: manifest,
@@ -2744,6 +2754,14 @@ final class ExtensionPolyfillTests: XCTestCase {
         """
         let install = eventExpression
             ?? "globalThis.__shimInstalledEvent = globalThis.__makeNativeInstalledEvent(); globalThis.chrome.runtime.onInstalled = globalThis.__shimInstalledEvent;"
+        // This fixture stands in for the extension's background context, the
+        // only one allowed to claim the event (TASK-64): register the manifest
+        // background that makes one, and load the page at the path WebKit runs
+        // it at, so the claim reaches native the way a real background page's
+        // does. The shim's own `getManifest` still reports no background, so
+        // the polyfill keeps classifying the context from
+        // `__detourForceRuntimeOnInstalled` exactly as before.
+        try reregisterSuiteExtension(background: ["scripts": ["background.js"]])
         return try await makeWebView(
             manifestPermissions: ["history", "management", "privacy", "webRequest", "nativeMessaging"],
             shimExtras: """
@@ -2752,7 +2770,18 @@ final class ExtensionPolyfillTests: XCTestCase {
             globalThis.__makeNativeInstalledEvent = \(makeEvent);
             \(force ? "globalThis.__detourForceRuntimeOnInstalled = true;" : "")
             \(install)
-            """)
+            """,
+            baseURL: URL(string: "https://test.example.com\(ExtensionPolyfillHandler.generatedBackgroundPagePath)")!)
+    }
+
+    /// Re-register the suite's extension (setUp's permissions) with the given
+    /// manifest `background`, for the background-context-only requests
+    /// (TASK-64). tearDown removes the registration by id.
+    private func reregisterSuiteExtension(background: [String: Any]) throws {
+        ExtensionManager.shared.extensions.removeAll { $0.id == "test-polyfill-extension" }
+        try registerExtension(id: "test-polyfill-extension",
+                              permissions: ["history", "management", "privacy"],
+                              background: background)
     }
 
     /// Put the ledger row for the suite's extension in the suite's profile at
@@ -2993,11 +3022,215 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "an own method the event already had must be put back, not deleted")
     }
 
+    // MARK: - TASK-64: only the background context may claim runtime.onInstalled
+
+    /// A manifest's `background` entry, decoded the way a real manifest's is.
+    private func decodedBackground(_ entry: [String: Any]?) throws -> ExtensionManifest.Background? {
+        var manifestDict: [String: Any] = [
+            "manifest_version": 3, "name": "Claim Gate Test", "version": "1.0.0"
+        ]
+        if let entry { manifestDict["background"] = entry }
+        let data = try JSONSerialization.data(withJSONObject: manifestDict)
+        return try JSONDecoder().decode(ExtensionManifest.self, from: data).background
+    }
+
+    /// A URL in an extension's own origin, as `frameInfo.request.url` carries it.
+    private func extensionURL(_ path: String) -> URL {
+        URL(string: "webkit-extension://8A5B1C2D-3E4F-5061-7283-94A5B6C7D8E9\(path)")!
+    }
+
+    /// POSITIVE: the worker's native-message bridge is the background context
+    /// exactly when the manifest declares a service worker.
+    func testSenderIsBackgroundContextAcceptsTheServiceWorkersNativeMessage() throws {
+        let background = try decodedBackground(["service_worker": "background.js"])
+        XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(.nativeMessage, background: background))
+    }
+
+    /// POSITIVE: a `scripts` list WebKit is asked to host in a worker
+    /// (`preferred_environment`, string or list) reaches the handler over the
+    /// native-message bridge like any worker, and is the background context.
+    func testSenderIsBackgroundContextAcceptsANativeMessageForScriptsPreferringAServiceWorker() throws {
+        for preferred in ["service_worker", ["service_worker", "document"]] as [Any] {
+            let background = try decodedBackground(["scripts": ["background.js"], "preferred_environment": preferred])
+            XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(.nativeMessage, background: background),
+                          "preferred_environment \(preferred) hosts the scripts in a worker")
+        }
+    }
+
+    /// POSITIVE: a `service_worker` WebKit is asked to host in a document
+    /// (`preferred_environment: document`) loads in the generated page, so the
+    /// top-level frame at that path is the background context.
+    func testSenderIsBackgroundContextAcceptsTheGeneratedPageForAServiceWorkerPreferringADocument() throws {
+        let background = try decodedBackground(["service_worker": "background.js", "preferred_environment": ["document"]])
+        XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+            background: background))
+    }
+
+    /// NEGATIVE: an alternate spelling of the background path (`bg%2Ehtml` for
+    /// `bg.html`) is not the path WebKit serves the page at, so it is refused —
+    /// the gate compares the percent-encoded path, as the polyfill does.
+    func testSenderIsBackgroundContextRefusesAnAlternateEncodingOfTheBackgroundPath() throws {
+        let background = try decodedBackground(["page": "bg.html"])
+        XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL("/bg%2Ehtml"), isMainFrame: true), background: background))
+    }
+
+    /// POSITIVE: a page name with a space is declared raw in the manifest and
+    /// served percent-encoded; the two must meet.
+    func testSenderIsBackgroundContextAcceptsAPercentEncodedBackgroundPage() throws {
+        let background = try decodedBackground(["page": "my page.html"])
+        XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL("/my%20page.html"), isMainFrame: true), background: background))
+    }
+
+    /// POSITIVE: `background.scripts` runs in the page WebKit generates, so the
+    /// top-level frame at that generated path is the background context.
+    func testSenderIsBackgroundContextAcceptsTheGeneratedPageForBackgroundScripts() throws {
+        let background = try decodedBackground(["scripts": ["background.js"], "persistent": false])
+        XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+            background: background))
+    }
+
+    /// POSITIVE: an explicit `background.page`, in both the plain and the
+    /// './'-prefixed spelling Chrome accepts — both load at /bg.html.
+    func testSenderIsBackgroundContextAcceptsADeclaredBackgroundPage() throws {
+        for spelling in ["bg.html", "./bg.html"] {
+            let background = try decodedBackground(["page": spelling, "persistent": false])
+            XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .frame(url: extensionURL("/bg.html"), isMainFrame: true),
+                background: background),
+                "'\(spelling)' must resolve to /bg.html")
+        }
+    }
+
+    /// `page` wins over `scripts` when a manifest declares both, as the
+    /// polyfill's own `contextKind` decides it: the declared page is the
+    /// background context and the generated path is not.
+    func testSenderIsBackgroundContextPrefersTheDeclaredPageOverTheGeneratedPath() throws {
+        let background = try decodedBackground(["page": "bg.html", "scripts": ["background.js"]])
+        XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL("/bg.html"), isMainFrame: true), background: background))
+        XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+            background: background),
+            "the generated page is not where this extension's background runs")
+    }
+
+    /// NEGATIVE: an ordinary extension page (a popup, an options page, an
+    /// extension tab) is never the background context, whatever shape the
+    /// manifest's background has.
+    func testSenderIsBackgroundContextRefusesAnOrdinaryExtensionPage() throws {
+        let shapes: [[String: Any]] = [
+            ["service_worker": "background.js"],
+            ["scripts": ["background.js"]],
+            ["page": "bg.html"]
+        ]
+        for shape in shapes {
+            let background = try decodedBackground(shape)
+            XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .frame(url: extensionURL("/popup.html"), isMainFrame: true), background: background),
+                "a popup must not be the background context for \(shape.keys.sorted())")
+        }
+    }
+
+    /// NEGATIVE: an extension page that iframes the background path is at that
+    /// path but is not the top-level document, so it must not claim.
+    func testSenderIsBackgroundContextRefusesAnIframeOfTheBackgroundPath() throws {
+        let pageBackground = try decodedBackground(["page": "bg.html"])
+        XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL("/bg.html"), isMainFrame: false), background: pageBackground))
+
+        let scriptsBackground = try decodedBackground(["scripts": ["background.js"]])
+        XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+            .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: false),
+            background: scriptsBackground))
+    }
+
+    /// NEGATIVE: a frame whose URL WebKit does not report cannot be matched
+    /// against a path, so it fails closed.
+    func testSenderIsBackgroundContextRefusesAFrameWithNoURL() throws {
+        for shape in [["scripts": ["background.js"]], ["page": "bg.html"]] as [[String: Any]] {
+            let background = try decodedBackground(shape)
+            XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .frame(url: nil, isMainFrame: true), background: background))
+        }
+    }
+
+    /// NEGATIVE: a page-backed background always reaches the handler through
+    /// `webkit.messageHandlers`, never through the native-message bridge, so a
+    /// native-message claim for such a manifest is refused.
+    func testSenderIsBackgroundContextRefusesANativeMessageForAPageBackedBackground() throws {
+        for shape in [["scripts": ["background.js"]], ["page": "bg.html"]] as [[String: Any]] {
+            let background = try decodedBackground(shape)
+            XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .nativeMessage, background: background),
+                "a background page does not use the native-message bridge (\(shape.keys.sorted()))")
+        }
+    }
+
+    /// NEGATIVE: a manifest with no background content at all has no claiming
+    /// context, so every sender is refused.
+    func testSenderIsBackgroundContextRefusesEverySenderWithoutBackgroundContent() throws {
+        for background in [try decodedBackground(nil), try decodedBackground([:])] {
+            XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .nativeMessage, background: background))
+            XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true),
+                background: background))
+            XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
+                .frame(url: extensionURL("/bg.html"), isMainFrame: true), background: background))
+        }
+    }
+
+    /// Re-register the suite's extension with a background `service_worker`, so
+    /// its native-message claims count as coming from the background context
+    /// (TASK-64). setUp registers a manifest with no background at all, which
+    /// the claim gate refuses. tearDown removes the registration by id.
+    private func registerWithServiceWorkerBackground() throws {
+        try reregisterSuiteExtension(background: ["service_worker": "background.js"])
+    }
+
+    /// NEGATIVE (TASK-64): the native-message bridge is the *worker's* path, so a
+    /// claim on it is only the background context when the manifest declares a
+    /// service worker. With setUp's background-less manifest the claim is
+    /// refused — and refused without touching the ledger, so the same claim
+    /// delivers the install once the manifest does declare one.
+    func testClaimInstalledEventThroughTheNativeBridgeIsRefusedWithoutABackgroundContext() async throws {
+        try setInstalledLedger(version: nil)
+        defer { try? setInstalledLedger(version: nil) }
+
+        func claim() async -> (Any?, (any Error)?) {
+            await withCheckedContinuation { continuation in
+                handler.handleNativeMessage(["type": "runtime.claimInstalledEvent", "params": [String: Any]()],
+                                            verifiedExtensionID: "test-polyfill-extension") { result, error in
+                    continuation.resume(returning: (result, error))
+                }
+            }
+        }
+        let (refusedResult, refusedError) = await claim()
+        XCTAssertNil(refusedResult)
+        XCTAssertNotNil(refusedError,
+                        "an extension with no background content may not claim the install")
+
+        // The refusal left the ledger pending: the real background context
+        // still gets its install.
+        try registerWithServiceWorkerBackground()
+        let (result, error) = await claim()
+        XCTAssertNil(error)
+        XCTAssertEqual(result as? [String: String], ["reason": "install"],
+                       "the refused claim must not have advanced the ledger")
+    }
+
     /// The native side of the claim, as the worker reaches it: of two claims for
     /// the same version exactly the first delivers.
     func testClaimInstalledEventThroughTheNativeBridgeDeliversOnce() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
+        // Only the background context may claim (TASK-64); on this path that
+        // means a manifest with a service worker.
+        try registerWithServiceWorkerBackground()
 
         func claim() async -> Any? {
             await withCheckedContinuation { continuation in
@@ -3020,6 +3253,9 @@ final class ExtensionPolyfillTests: XCTestCase {
     func testClaimInstalledEventThroughTheNativeBridgeAnswersNothingInThePrivateProfile() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
+        // Only the background context may claim (TASK-64); on this path that
+        // means a manifest with a service worker.
+        try registerWithServiceWorkerBackground()
         let privateID = TabStore.incognitoProfileID.uuidString
         func clearPrivateRows() throws {
             _ = try AppDatabase.shared.dbQueue.write { db in

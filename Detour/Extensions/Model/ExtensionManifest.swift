@@ -111,14 +111,54 @@ struct ExtensionManifest: Codable {
         /// An explicit background page, loaded at its manifest-declared path.
         let page: String?
         let type: String?
+        /// `preferred_environment` (the WECG unified background shape, WebKit
+        /// since Safari 18.4): the environments to try, in order — a `scripts`
+        /// list can be hosted in a service worker, and a `service_worker` in a
+        /// document. A single string or an array in the manifest; always an
+        /// array here.
+        let preferredEnvironment: [String]?
 
         enum CodingKeys: String, CodingKey {
             case serviceWorker = "service_worker"
             case scripts, page, type
+            case preferredEnvironment = "preferred_environment"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            serviceWorker = try container.decodeIfPresent(String.self, forKey: .serviceWorker)
+            scripts = try container.decodeIfPresent([String].self, forKey: .scripts)
+            page = try container.decodeIfPresent(String.self, forKey: .page)
+            type = try container.decodeIfPresent(String.self, forKey: .type)
+            if let list = try? container.decodeIfPresent([String].self, forKey: .preferredEnvironment) {
+                preferredEnvironment = list
+            } else if let single = try? container.decodeIfPresent(String.self, forKey: .preferredEnvironment) {
+                preferredEnvironment = [single]
+            } else {
+                preferredEnvironment = nil
+            }
         }
 
         /// Whether this background script should be loaded as an ES module.
         var isModule: Bool { type == "module" }
+
+        /// Whether WebKit may host this background in a service worker: a
+        /// declared `service_worker`, or a `scripts` list whose
+        /// `preferred_environment` asks for one. The environment a worker's
+        /// requests reach the polyfill handler through (TASK-64).
+        var mayRunAsServiceWorker: Bool {
+            if !(serviceWorker ?? "").isEmpty { return true }
+            return !(scripts ?? []).isEmpty && (preferredEnvironment ?? []).contains("service_worker")
+        }
+
+        /// Whether WebKit may host this background in the page it generates
+        /// (`_generated_background_page.html`): a `scripts` list, or a
+        /// `service_worker` whose `preferred_environment` asks for a document.
+        /// An explicit `page` is its own document and is not this.
+        var mayRunInGeneratedPage: Bool {
+            if !(scripts ?? []).isEmpty { return true }
+            return !(serviceWorker ?? "").isEmpty && (preferredEnvironment ?? []).contains("document")
+        }
 
         /// Whether the manifest declares background content in any of the three
         /// shapes — what decides whether there is a background context to wake

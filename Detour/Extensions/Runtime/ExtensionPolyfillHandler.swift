@@ -140,6 +140,95 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         consoleLimiter.forget(extensionID)
     }
 
+    // MARK: - Sender
+
+    /// How a polyfill request reached the handler, for the few requests that
+    /// are background-context-only (TASK-64).
+    enum PolyfillSender: Equatable {
+        /// `runtime.sendNativeMessage` from a `WKWebExtensionContext`: no frame.
+        case nativeMessage
+        /// `webkit.messageHandlers` from a web view frame.
+        case frame(url: URL?, isMainFrame: Bool)
+
+        /// For the log. A frame's path is in the extension's own bundle, so it
+        /// is as public as the extension id.
+        var logDescription: String {
+            switch self {
+            case .nativeMessage:
+                return "native message"
+            case .frame(let url, let isMainFrame):
+                return "frame at \(url.flatMap(Self.percentEncodedPath) ?? "(no url)") (main frame: \(isMainFrame))"
+            }
+        }
+
+        /// The URL's path as WebKit serves it — percent-encoded, which is what
+        /// the polyfill compares too (`location.pathname`), so both gates see
+        /// one spelling of a path.
+        static func percentEncodedPath(_ url: URL) -> String? {
+            URLComponents(url: url.standardized, resolvingAgainstBaseURL: false)?.percentEncodedPath
+        }
+    }
+
+    /// WebKit's path for the page it generates to host a `background.scripts`
+    /// list, relative to the context's base URL (measured for TASK-43; the
+    /// polyfill's `preambleJS` hardcodes the same path).
+    static let generatedBackgroundPagePath = "/_generated_background_page.html"
+
+    /// The (percent-encoded) path the extension's background *document* loads
+    /// at, or nil when the manifest declares no document shape. `page` wins over
+    /// `scripts` when both are declared, as in the polyfill.
+    private static func backgroundDocumentPath(_ background: ExtensionManifest.Background) -> String? {
+        if let page = background.page, !page.isEmpty {
+            // Resolved against the extension *root*, because that is what a
+            // manifest path is relative to: Chrome accepts './bg.html' and
+            // 'my page.html', which WebKit loads at '/bg.html' and
+            // '/my%20page.html'. The host is a placeholder — only the path is
+            // compared, and the sender's origin was already attributed to this
+            // extension by the entry point.
+            guard let root = extensionOriginBaseURL(host: "x"),
+                  let resolved = URL(string: page, relativeTo: root)?.absoluteURL else { return nil }
+            // An absolute URL pointing somewhere else is not this extension's
+            // background page, whatever its path looks like.
+            guard isExtensionPage(resolved, ofOriginHost: "x") else { return nil }
+            return PolyfillSender.percentEncodedPath(resolved)
+        }
+        if background.mayRunInGeneratedPage {
+            return generatedBackgroundPagePath
+        }
+        return nil
+    }
+
+    /// Whether `sender` is the extension's background context, the only context
+    /// allowed to claim `runtime.onInstalled` (TASK-64). Mirrors the polyfill's
+    /// own `contextKind` decision (ExtensionAPIPolyfill `preambleJS`): a frame
+    /// sender must be the top-level document at the background document's
+    /// path; a native-message sender (no frame: the worker's only transport)
+    /// is accepted when the manifest's background may run as a service worker.
+    /// Fails closed for a manifest with no background content.
+    ///
+    /// Known limits, both inherent to what WebKit tells the host: a frame is
+    /// identified by its path, so a top-level extension page *navigated to*
+    /// the background path passes (the polyfill classifies such a page the
+    /// same way); and `runtime.sendNativeMessage` reaches the host with the
+    /// context only, never the sending frame, so for a service-worker manifest
+    /// an ordinary extension page that calls it directly is indistinguishable
+    /// from the worker. Either can only take its *own* extension's event.
+    static func senderIsBackgroundContext(_ sender: PolyfillSender,
+                                          background: ExtensionManifest.Background?) -> Bool {
+        guard let background else { return false }
+        switch sender {
+        case .nativeMessage:
+            return background.mayRunAsServiceWorker
+        case .frame(let url, let isMainFrame):
+            // Only the top-level document qualifies: an extension page can
+            // iframe the background page's own path, and that iframe must not
+            // pass for the real background context.
+            guard isMainFrame, let url,
+                  let documentPath = backgroundDocumentPath(background) else { return false }
+            return PolyfillSender.percentEncodedPath(url) == documentPath
+        }
+    }
+
     // MARK: - Entry Points
 
     /// Entry point for web view contexts (popup, options) via WKScriptMessageHandlerWithReply.
@@ -161,7 +250,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(nil, "Unrecognized extension origin")
             return
         }
-        dispatch(body, verifiedExtensionID: verifiedExtensionID, replyHandler: replyHandler)
+        dispatch(body, verifiedExtensionID: verifiedExtensionID,
+                 sender: .frame(url: message.frameInfo.request.url,
+                                isMainFrame: message.frameInfo.isMainFrame),
+                 replyHandler: replyHandler)
     }
 
     /// The trustworthy extension identity for a message from an extension web
@@ -209,7 +301,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     func handleNativeMessage(_ body: [String: Any], verifiedExtensionID: String, replyHandler: @escaping (Any?, (any Error)?) -> Void) {
         let type = body["type"] as? String ?? "(unknown)"
         log.debug("Native message bridge: \(type, privacy: .public)")
-        dispatch(body, verifiedExtensionID: verifiedExtensionID) { result, errorString in
+        dispatch(body, verifiedExtensionID: verifiedExtensionID, sender: .nativeMessage) { result, errorString in
             if let errorString, type == Self.lastErrorRelayType {
                 // The relay fails by design, and the original failure was
                 // already logged where it happened; its text is extension-
@@ -233,8 +325,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// `verifiedExtensionID` is the sender's identity as established by the
     /// entry point (frame origin for web views, `WKWebExtensionContext` for
     /// workers); both entry points reject before calling this when they cannot
-    /// establish one, so the body's `extensionID` is never trusted.
-    private func dispatch(_ body: [String: Any], verifiedExtensionID extensionID: String, replyHandler: @escaping (Any?, String?) -> Void) {
+    /// establish one, so the body's `extensionID` is never trusted. `sender` is
+    /// how the request arrived (a frame, or the worker's native-message
+    /// bridge), which the background-context-only requests need on top of the
+    /// identity (TASK-64).
+    private func dispatch(_ body: [String: Any], verifiedExtensionID extensionID: String,
+                          sender: PolyfillSender, replyHandler: @escaping (Any?, String?) -> Void) {
         guard let type = body["type"] as? String else {
             // Values and foreign key names are extension data (storage values,
             // message payloads) that must not land in the log.
@@ -517,12 +613,27 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
         // MARK: - runtime.onInstalled
         case "runtime.claimInstalledEvent":
-            // The worker polyfill asks once per worker start (TASK-22). The
-            // version is the one this profile's context actually runs; the
+            // The background polyfill asks once per background-context start
+            // (TASK-22, TASK-43). Only the background context may ask: the
+            // claim advances the ledger, so a popup, options page, extension
+            // tab or an iframe of the background path calling
+            // `__detourPolyfillRequest` directly would otherwise consume its
+            // own extension's install and the real background context would
+            // never get it (TASK-64). Verified identity is not enough — every
+            // one of those contexts has it — so the *sender* is checked
+            // against the manifest's background shape, and the refusal returns
+            // before the ledger call so the event stays pending.
+            let registered = ExtensionManager.shared.extension(withID: extensionID)
+            guard Self.senderIsBackgroundContext(sender, background: registered?.manifest.background) else {
+                log.warning("runtime.claimInstalledEvent: refusing a claim from \(extensionID, privacy: .public) (\(sender.logDescription, privacy: .public)); only the background context may claim")
+                replyHandler(nil, "runtime.claimInstalledEvent: only the background context may claim the event")
+                return
+            }
+            // The version is the one this profile's context actually runs; the
             // manifest is the fallback for a context this profile does not hold.
             guard let profile,
                   let version = profile.extensionContext(for: extensionID)?.webExtension.version
-                    ?? ExtensionManager.shared.extension(withID: extensionID)?.manifest.version else {
+                    ?? registered?.manifest.version else {
                 replyHandler([:] as [String: Any], nil)
                 return
             }

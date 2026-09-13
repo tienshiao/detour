@@ -973,16 +973,35 @@ struct AppDatabase {
 
     // MARK: - Extension Permissions
 
+    /// A user decision (prompt or Settings): replaces any saved row for the key.
     func savePermission(_ record: ExtensionPermissionRecord) {
-        performWrite("save extension permission") { db in
-            try record.save(db)
+        savePermissions([record])
+    }
+
+    /// User decisions (prompt or Settings): each replaces any saved row for its key.
+    func savePermissions(_ records: [ExtensionPermissionRecord]) {
+        writePermissions(records, label: "save extension permissions") { try $0.save($1) }
+    }
+
+    /// Records manifest-declared permissions without touching a saved decision:
+    /// a row that already exists (granted or denied, by prompt or in Settings)
+    /// is left as is; only keys with no row yet are inserted. Install/update
+    /// use this (TASK-63); a user decision goes through `savePermission(s)`.
+    ///
+    /// The insert ignores a conflict on the table's composite primary key
+    /// (extensionID, permissionKey, permissionType), so a conflict is exactly
+    /// "this key already has a decision".
+    func recordDeclaredPermissions(_ records: [ExtensionPermissionRecord]) {
+        writePermissions(records, label: "record declared extension permissions") {
+            try $0.insert($1, onConflict: .ignore)
         }
     }
 
-    func savePermissions(_ records: [ExtensionPermissionRecord]) {
-        performWrite("save extension permissions") { db in
+    private func writePermissions(_ records: [ExtensionPermissionRecord], label: String,
+                                  _ write: (ExtensionPermissionRecord, GRDB.Database) throws -> Void) {
+        performWrite(label) { db in
             for record in records {
-                try record.save(db)
+                try write(record, db)
             }
         }
     }

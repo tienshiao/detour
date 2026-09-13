@@ -52,9 +52,10 @@ What remains, in priority order:
   specified native messaging host is forbidden." The denial takes effect on the loaded context with
   no relaunch, and hosts already running are torn down at once (process killed, port disconnected,
   keep-alive released, a pending one-shot reply rejected). No saved row, or a grant, means allowed
-  (install saves every declared permission as granted). Rationale: the switch has been in Settings
-  since native messaging landed and read as a real control; persisting the decision while ignoring
-  it (the state TASK-19 left) was worse than either enforcing it or removing the row.
+  (install records a declared permission as granted only where no decision is saved yet, TASK-63).
+  Rationale: the switch has been in Settings since native messaging landed and read as a real
+  control; persisting the decision while ignoring it (the state TASK-19 left) was worse than either
+  enforcing it or removing the row.
   - **Detour's built-in hosts are exempt, by design.** `detourPolyfill` (the service-worker polyfill
     bridge and the keep-alive port) and `detourWebSocketRelay` (TASK-8) are Detour's own transport,
     not the user-facing capability, and are decided by host name before the saved decision is read.
@@ -77,7 +78,9 @@ What remains, in priority order:
   (1Password's desktop-app unlock first of all) with no prompt, so migration v13 deletes every saved
   `nativeMessaging` API-permission decision that is not a grant (a status the enum does not define
   reads as a denial, so it goes too). A denial saved after the upgrade was made against enforcement
-  and blocks real hosts exactly as above.
+  and blocks real hosts exactly as above. Since TASK-63 it also survives: reinstalling or updating
+  the extension no longer resets it, because install only records declared permissions for keys
+  with no saved decision.
 - BrowserSupport logs (one file per host process, grep for `Detour`):
   `~/Library/Group Containers/2BUA8C4S2C.com.1password/Library/Application Support/1Password/Data/logs/BrowserSupport/`.
 

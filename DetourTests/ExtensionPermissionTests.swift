@@ -114,6 +114,92 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(status, .granted)
     }
 
+    // MARK: - Declared permissions vs saved decisions (TASK-63)
+
+    /// Install and update record the manifest's permissions through
+    /// `recordDeclaredPermissions`, which must never overwrite a decision the
+    /// user already made — a denial turned off in Settings above all.
+    func testRecordDeclaredPermissionsKeepsASavedAPIDenial() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermission(samplePermission(key: "nativeMessaging", status: .denied))
+
+        db.recordDeclaredPermissions([samplePermission(key: "nativeMessaging", status: .granted)])
+
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "nativeMessaging", type: .apiPermission),
+                       .denied, "a reinstall must not resurrect a denied permission")
+        XCTAssertEqual(db.loadPermissions(extensionID: "ext-1").count, 1, "no duplicate row is inserted")
+    }
+
+    /// The same for a host pattern: a denied match-pattern row survives the
+    /// manifest re-declaring it.
+    func testRecordDeclaredPermissionsKeepsASavedMatchPatternDenial() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermission(samplePermission(key: "https://example.com/*", type: .matchPattern, status: .denied))
+
+        db.recordDeclaredPermissions([
+            samplePermission(key: "https://example.com/*", type: .matchPattern, status: .granted),
+        ])
+
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "https://example.com/*", type: .matchPattern),
+                       .denied)
+    }
+
+    /// A permission an update newly declares has no saved decision, so it is
+    /// still recorded as granted — alongside the keys that keep theirs.
+    func testRecordDeclaredPermissionsInsertsKeysWithNoSavedDecision() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermission(samplePermission(key: "nativeMessaging", status: .denied))
+
+        db.recordDeclaredPermissions([
+            samplePermission(key: "nativeMessaging", status: .granted),
+            samplePermission(key: "storage", status: .granted),
+            samplePermission(key: "alarms", status: .granted),
+            samplePermission(key: "https://new.example/*", type: .matchPattern, status: .granted),
+        ])
+
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "nativeMessaging", type: .apiPermission), .denied)
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "storage", type: .apiPermission), .granted)
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "alarms", type: .apiPermission), .granted)
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "https://new.example/*", type: .matchPattern),
+                       .granted)
+        XCTAssertEqual(db.loadPermissions(extensionID: "ext-1").count, 4)
+    }
+
+    /// An existing grant is left exactly as it was — the row is not rewritten,
+    /// so its `grantedAt` still dates the decision rather than the last install.
+    func testRecordDeclaredPermissionsLeavesAnExistingGrantUntouched() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        var original = samplePermission(key: "tabs", status: .granted)
+        original.grantedAt = 1_000
+        db.savePermission(original)
+
+        var redeclared = samplePermission(key: "tabs", status: .granted)
+        redeclared.grantedAt = 2_000
+        db.recordDeclaredPermissions([redeclared])
+
+        let loaded = db.loadPermissions(extensionID: "ext-1")
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.status, ExtensionPermissionStatus.granted.rawValue)
+        XCTAssertEqual(loaded.first?.grantedAt, 1_000, "the stored row is kept, not rewritten")
+    }
+
+    /// The prompt and Settings path keeps overwriting: only install/update go
+    /// through `recordDeclaredPermissions`.
+    func testSavePermissionsStillOverwritesASavedDecision() throws {
+        let db = try makeDatabase()
+        db.saveExtension(sampleExtension())
+        db.savePermission(samplePermission(key: "nativeMessaging", status: .denied))
+
+        db.savePermissions([samplePermission(key: "nativeMessaging", status: .granted)])
+
+        XCTAssertEqual(db.permissionStatus(extensionID: "ext-1", key: "nativeMessaging", type: .apiPermission),
+                       .granted, "a user decision replaces the saved one")
+    }
+
     // MARK: - URL-keyed decisions (TASK-11)
 
     /// A decision recorded by the site-access prompt for one specific URL is a
