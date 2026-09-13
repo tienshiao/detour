@@ -187,9 +187,11 @@ native function: the read-back equals neither the value just written nor the pre
 is no JS-side way to wrap it. Assume the same for the other `[Dynamic]` runtime members listed
 above. The native-port keep-alive stopped trying: it now only *calls* `connectNative` to open its
 port and Detour tells it when to ping, since the native side knows when a real host is connected
-(TASK-16; `ExtensionAPIPolyfill.nativePortKeepAliveJS` reports `installMode: 'port'` in a worker
-whose manifest declares `nativeMessaging`, and `'none'` / `'no-nativeMessaging-permission'`
-otherwise — an extension that cannot open a native port has nothing to keep alive).
+(TASK-16; `ExtensionAPIPolyfill.nativePortKeepAliveJS` reports `installMode: 'port'` in a
+background context — a worker or a non-persistent background page (TASK-62) — whose manifest
+declares `nativeMessaging`, and `'none'` with `installDetail` `'not-a-background-context'`,
+`'no-nativeMessaging-permission'` or `'persistent-background-page'` otherwise — an extension that
+cannot open a native port, or a page WebKit never unloads, has nothing to keep alive).
 
 `chrome.runtime.lastError` is unwritable the same way (probed 2026-09-12, TASK-23, in both an
 extension page and a module service worker, with `chrome.runtime` already pinned). It reports as

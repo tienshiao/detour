@@ -20,6 +20,9 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
     private var previousLastActiveSpaceID: UUID?
+    /// Fake native messaging hosts installed by a test (TASK-62); torn down —
+    /// env var restored, every spawned process killed — after every test.
+    private var fakeNativeHosts: [FakeNativeMessagingHost] = []
 
     override func setUp() async throws {
         try await super.setUp()
@@ -50,6 +53,11 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
         }
         registeredExtensionIDs.removeAll()
+        // LIFO: each fixture restores the env var it captured at init, so the last one created must restore first.
+        for host in fakeNativeHosts.reversed() {
+            host.tearDown()
+        }
+        fakeNativeHosts.removeAll()
         for dir in tempDirs {
             try? FileManager.default.removeItem(at: dir)
         }
@@ -1279,6 +1287,452 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(state()?.portOpen, true)
     }
 
+    // MARK: - TASK-62: the native-port keep-alive in a background *page*
+
+    /// The long legs run for minutes each, so they only run when asked for:
+    /// `DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1`. The install-decision tests below
+    /// them are fast and always run.
+    private var measuringBackgroundPageUnload: Bool {
+        ProcessInfo.processInfo.environment["DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD"] == "1"
+    }
+
+    /// The background script the TASK-62 legs run.
+    ///
+    /// It stamps a heartbeat into the extension origin's `localStorage` twice a
+    /// second, so an ordinary extension page of that same origin can watch whether
+    /// the background context is still running *without* messaging it — a message
+    /// wakes a background page, which would destroy the measurement. `loads`
+    /// counts page starts the way the TASK-43 reporter does, so a second load is
+    /// proof an unload happened.
+    ///
+    /// `nativeHost` makes it hold one real native messaging port, open and silent,
+    /// the way 1Password's background holds its helpers'. What the polyfill's own
+    /// keep-alive made of the context is reported next to it.
+    private static func measurementBackgroundJS(nativeHost: String? = nil) -> String {
+        let host = nativeHost.map { "'\($0)'" } ?? "null"
+        return """
+        const NATIVE_HOST = \(host);
+
+        let loads = 0;
+        try {
+            loads = (Number(localStorage.getItem('__detourLoads')) || 0) + 1;
+            localStorage.setItem('__detourLoads', String(loads));
+        } catch (e) {}
+        const startedAt = Date.now();
+        const state = { nativePort: 'none' };
+
+        function status() {
+            const keepAlive = globalThis.__detourNativePortKeepAlive;
+            return {
+                loads: loads,
+                at: Date.now(),
+                aliveMs: Date.now() - startedAt,
+                isWorker: typeof ServiceWorkerGlobalScope !== 'undefined',
+                contextKind: globalThis.__detourContextKind || 'none',
+                nativePort: state.nativePort,
+                installMode: keepAlive ? keepAlive.installMode : 'missing',
+                installDetail: keepAlive ? keepAlive.installDetail : 'missing',
+                armed: keepAlive ? keepAlive.armed : false
+            };
+        }
+
+        function beat() {
+            try { localStorage.setItem('__detourHeartbeat', JSON.stringify(status())); } catch (e) {}
+        }
+
+        if (NATIVE_HOST) {
+            try {
+                const nativePort = chrome.runtime.connectNative(NATIVE_HOST);
+                state.nativePort = 'open';
+                nativePort.onDisconnect.addListener(() => { state.nativePort = 'disconnected'; beat(); });
+                // Held on the global so nothing collects the port under us.
+                globalThis.__detourMeasurementNativePort = nativePort;
+            } catch (e) {
+                state.nativePort = 'error: ' + (e && e.message ? e.message : e);
+            }
+        }
+
+        beat();
+        setInterval(beat, 500);
+
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message || message.type !== 'report') return false;
+            sendResponse(status());
+            return true;
+        });
+        """
+    }
+
+    /// An id for a measurement extension, minted before the extension exists so a
+    /// fake native host can be installed for it first (its manifest lists the
+    /// allowed origin by extension id).
+    private func measurementExtensionID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8).lowercased())"
+    }
+
+    /// An extension whose background content is the measurement script above.
+    private func makeMeasurementExtension(
+        id: String,
+        permissions: [String] = ["nativeMessaging"],
+        manifestVersion: Int = 3,
+        persistent: Bool? = false,
+        nativeHost: String? = nil
+    ) async throws -> WebExtension {
+        try await makeBackgroundPageExtension(
+            .scripts, id: id,
+            permissions: permissions, manifestVersion: manifestVersion, persistent: persistent,
+            backgroundJS: Self.measurementBackgroundJS(nativeHost: nativeHost))
+    }
+
+    /// Put `source` in front of the polyfill user script that
+    /// `Profile.extensionController` installed, so it runs at document start
+    /// *before* the polyfill and can set the globals the polyfill reads once at
+    /// install. `WKUserContentController` only appends, so the scripts already
+    /// there are removed and added again behind this one — as fresh
+    /// `WKUserScript`s, because WebKit traps (`EXC_BREAKPOINT` inside
+    /// `WebUserContentControllerProxy::addUserScript`) if the very same script
+    /// object is added twice. Every script here is a page-world one, which is all
+    /// `Profile.extensionController` installs; `WKUserScript` does not expose the
+    /// world it was made in, so a non-page-world script could not be rebuilt.
+    ///
+    /// The scripts are snapshotted into plain Swift values *before* anything is
+    /// mutated: `userScripts` bridges to a live view of the controller's scripts,
+    /// so iterating it while adding grew the very array being iterated and the
+    /// loop never ended (a test host went from 337 MB to 36 GB in 90 s).
+    private func prependUserScript(_ source: String, to profile: Profile) {
+        let ucc = profile.extensionController.configuration.webViewConfiguration.userContentController
+        let existing: [(source: String, injectionTime: WKUserScriptInjectionTime, mainFrameOnly: Bool)] =
+            ucc.userScripts.map { ($0.source, $0.injectionTime, $0.isForMainFrameOnly) }
+        guard existing.count < 64 else {
+            XCTFail("unexpectedly many user scripts (\(existing.count)); refusing to rebuild them")
+            return
+        }
+        guard existing.contains(where: { $0.source == ExtensionAPIPolyfill.polyfillJS }) else {
+            XCTFail("this must be the user content controller Profile added the polyfill to")
+            return
+        }
+        ucc.removeAllUserScripts()
+        ucc.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart,
+                                       forMainFrameOnly: false))
+        for script in existing {
+            ucc.addUserScript(WKUserScript(source: script.source,
+                                           injectionTime: script.injectionTime,
+                                           forMainFrameOnly: script.mainFrameOnly))
+        }
+        let rebuilt = ucc.userScripts.count
+        XCTAssertEqual(rebuilt, existing.count + 1, "the rebuilt user scripts must be the snapshot plus one")
+        XCTAssertEqual(ucc.userScripts.first?.source, source, "the prepended script must run first")
+    }
+
+    /// The background context's last heartbeat, read out of the extension
+    /// origin's `localStorage` through an ordinary extension page — the same
+    /// origin, so nothing here touches (or wakes) the background context.
+    private func backgroundHeartbeat(from webView: WKWebView) async throws -> [String: Any]? {
+        let raw = try await webView.callAsyncJavaScript(
+            "return localStorage.getItem('__detourHeartbeat');", arguments: [:], contentWorld: .page)
+        guard let json = raw as? String,
+              let beat = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        else { return nil }
+        return beat
+    }
+
+    private struct BackgroundPageLifetime {
+        /// The heartbeat stopped advancing: WebKit unloaded the page.
+        let unloaded: Bool
+        /// Seconds from the page's own start to the last heartbeat it wrote.
+        let lastAliveSeconds: Double
+        /// That last heartbeat, whatever it says about ports and the keep-alive.
+        let lastBeat: [String: Any]
+    }
+
+    /// Watch the background context's heartbeat until it stops advancing for
+    /// `stallFor` seconds (WebKit unloaded the page) or `limit` elapses.
+    private func watchBackgroundPage(
+        _ label: String, from webView: WKWebView, limit: TimeInterval, stallFor: TimeInterval = 6
+    ) async throws -> BackgroundPageLifetime {
+        try await waitUntil("\(label): the background page's first heartbeat", timeout: 30) {
+            try await self.backgroundHeartbeat(from: webView) != nil
+        }
+        let firstBeat = try await backgroundHeartbeat(from: webView)
+        var lastBeat = try XCTUnwrap(firstBeat, "\(label): no heartbeat to watch")
+        var lastAdvance = Date()
+        var lastReport = Date()
+        let deadline = Date().addingTimeInterval(limit)
+
+        while Date() < deadline {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let beat = try await backgroundHeartbeat(from: webView) else { continue }
+            if (beat["at"] as? Double ?? 0) > (lastBeat["at"] as? Double ?? 0) {
+                lastBeat = beat
+                lastAdvance = Date()
+            } else if Date().timeIntervalSince(lastAdvance) >= stallFor {
+                let alive = (lastBeat["aliveMs"] as? Double ?? 0) / 1000
+                print("TASK-62 measurement [\(label)]: heartbeat stopped at +\(String(format: "%.1f", alive)) s — \(lastBeat)")
+                return BackgroundPageLifetime(unloaded: true, lastAliveSeconds: alive, lastBeat: lastBeat)
+            }
+            if Date().timeIntervalSince(lastReport) >= 15 {
+                lastReport = Date()
+                print("TASK-62 measurement [\(label)]: still beating at +\(String(format: "%.1f", (lastBeat["aliveMs"] as? Double ?? 0) / 1000)) s — \(lastBeat)")
+            }
+        }
+        let alive = (lastBeat["aliveMs"] as? Double ?? 0) / 1000
+        print("TASK-62 measurement [\(label)]: still beating at +\(String(format: "%.1f", alive)) s after the \(limit) s limit — \(lastBeat)")
+        return BackgroundPageLifetime(unloaded: false, lastAliveSeconds: alive, lastBeat: lastBeat)
+    }
+
+    /// Profile + loaded context + an ordinary extension page to observe from, with
+    /// the background content started through the production wake.
+    private func startMeasurement(
+        _ ext: WebExtension, profileName: String, prepending source: String? = nil
+    ) async throws -> (profile: Profile, context: WKWebExtensionContext, page: WKWebView) {
+        let profile = makeProfile(profileName)
+        _ = profile.extensionController
+        if let source { prependUserScript(source, to: profile) }
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        context.loadBackgroundContent { error in
+            if let error { print("TASK-62 measurement: loadBackgroundContent failed: \(error)") }
+        }
+        return (profile, context, page)
+    }
+
+    /// Leg (a): a non-persistent background page with no port at all — the
+    /// extension declares no `nativeMessaging`, so the keep-alive installs nothing
+    /// and the page holds nothing open. WebKit's 30 s idle unload, and the control
+    /// that says the heartbeat's own `localStorage` writes are not what keeps a
+    /// page alive.
+    func testMeasureIdleBackgroundPageUnload() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let ext = try await makeMeasurementExtension(
+            id: measurementExtensionID("task62-idle"), permissions: [])
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let started = try await startMeasurement(ext, profileName: "TASK-62 Idle Page")
+
+        let life = try await watchBackgroundPage("a: idle, no port", from: started.page, limit: 120)
+        XCTAssertTrue(life.unloaded, "WebKit must unload an idle non-persistent background page")
+        XCTAssertEqual(life.lastBeat["nativePort"] as? String, "none")
+        XCTAssertEqual(life.lastBeat["installDetail"] as? String, "no-nativeMessaging-permission",
+                       "this leg must hold no port at all, the keep-alive's included")
+
+        // The message that asks for a report wakes the page again: a second load
+        // is independent proof the first one really went away.
+        let report = try await reportFromBackgroundContext(page: started.page, what: "the woken page")
+        print("TASK-62 measurement [a: idle, no port]: report after waking: \(report)")
+        XCTAssertEqual(report["loads"] as? Int, 2, "the report must have woken a second page")
+    }
+
+    /// Leg (b): the same page holding one real native messaging port, open and
+    /// silent, and nothing posting on any port. The polyfill's own keep-alive port
+    /// is kept out of the way by pre-defining the shared native-runtime resolver
+    /// to report none — the one seam that stops the keep-alive opening a port
+    /// without touching production code — so this leg measures WebKit alone.
+    func testMeasureBackgroundPageUnloadHoldingASilentNativePort() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let id = measurementExtensionID("task62-port")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(id: id, nativeHost: host.name)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let started = try await startMeasurement(
+            ext, profileName: "TASK-62 Silent Native Port",
+            prepending: """
+            globalThis.__detourResolveNativeRuntime = function() {
+                return { runtime: null, detail: 'no-runtime' };
+            };
+            """)
+        let controller = started.profile.extensionController
+
+        try await waitUntil("the fake host to be spawned for the background page", timeout: 30) {
+            ExtensionManager.shared.liveNativeHostCountForTesting(
+                controller: controller, extensionID: ext.id) == 1 && host.processCount() == 1
+        }
+
+        let life = try await watchBackgroundPage(
+            "b: silent native port", from: started.page, limit: 300)
+        print("TASK-62 measurement [b: silent native port]: unloaded=\(life.unloaded) at +\(life.lastAliveSeconds) s; live hosts now \(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id)), host processes \(host.processCount())")
+        // Measured 2026-09-13: unloaded at +120.0 s, 2 minutes after load (the page
+        // never posted anything), past the 30 s idle unload of leg (a). The port's
+        // onDisconnect fired during the teardown — the last heartbeat says
+        // 'disconnected' — and Detour killed the host with it.
+        XCTAssertTrue(life.unloaded,
+                      "a silent native port alone must not keep the page past the inactive-ports unload")
+        XCTAssertGreaterThan(life.lastAliveSeconds, 60,
+                             "an open port must move the page off the 30 s idle unload")
+        XCTAssertEqual(life.lastBeat["installDetail"] as? String, "no-runtime",
+                       "the polyfill's own keep-alive port must be out of the way for this leg")
+        try await waitUntil("the native host to go away with the page", timeout: 15) {
+            ExtensionManager.shared.liveNativeHostCountForTesting(
+                controller: controller, extensionID: ext.id) == 0 && host.processCount() == 0
+        }
+    }
+
+    /// Leg (c): the same page, same silent native port, plus the production
+    /// keep-alive — the polyfill opens its `detourPolyfill` port and Detour arms
+    /// it because a real native host is connected, so the page posts a ping every
+    /// `__detourKeepAlivePingIntervalMs` (15 s here). If pings defer a page unload
+    /// the way they defer a worker's, this page outlives leg (b). Measured
+    /// 2026-09-13: still running at +300.9 s, host connected, 21 pings received.
+    func testMeasureBackgroundPageWithTheKeepAliveArmed() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let id = measurementExtensionID("task62-keepalive")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(id: id, nativeHost: host.name)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let started = try await startMeasurement(
+            ext, profileName: "TASK-62 Armed Keep-alive",
+            prepending: "globalThis.__detourKeepAlivePingIntervalMs = 15000;")
+        let controller = started.profile.extensionController
+
+        try await waitUntil("the fake host to be spawned for the background page", timeout: 30) {
+            ExtensionManager.shared.liveNativeHostCountForTesting(
+                controller: controller, extensionID: ext.id) == 1 && host.processCount() == 1
+        }
+        try await waitUntil("Detour to arm the background page's keep-alive", timeout: 30) {
+            ExtensionManager.shared.keepAliveStateForTesting(
+                controller: controller, extensionID: ext.id)?.armed == true
+        }
+
+        let life = try await watchBackgroundPage(
+            "c: keep-alive armed", from: started.page, limit: 300)
+        print("TASK-62 measurement [c: keep-alive armed]: unloaded=\(life.unloaded) at +\(life.lastAliveSeconds) s; pings received by Detour: \(ExtensionManager.shared.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id))")
+        XCTAssertFalse(life.unloaded,
+                       "the armed keep-alive must hold the background page past leg (b)'s unload")
+        XCTAssertEqual(life.lastBeat["armed"] as? Bool, true)
+        XCTAssertEqual(life.lastBeat["nativePort"] as? String, "open")
+        XCTAssertEqual(host.processCount(), 1, "the native host must still be connected")
+        XCTAssertGreaterThanOrEqual(
+            ExtensionManager.shared.keepAlivePingCountForTesting(
+                controller: controller, extensionID: ext.id), 2)
+    }
+
+    /// The helper legs (b) and (c) depend on, run fast and on its own: the
+    /// prepended script runs before the polyfill (it sees no keep-alive status
+    /// yet) and the polyfill still runs after it, with nothing duplicated.
+    func testPrependedUserScriptRunsBeforeThePolyfill() async throws {
+        let ext = try await makeMeasurementExtension(id: measurementExtensionID("task62-prepend"))
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let profile = makeProfile("TASK-62 Prepend")
+        prependUserScript(
+            "globalThis.__detourTask62SawPolyfill = typeof globalThis.__detourNativePortKeepAlive;",
+            to: profile)
+        let ucc = profile.extensionController.configuration.webViewConfiguration.userContentController
+        XCTAssertEqual(ucc.userScripts.filter { $0.source == ExtensionAPIPolyfill.polyfillJS }.count, 1,
+                       "the polyfill must be installed exactly once after the rebuild")
+
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        let raw = try await page.callAsyncJavaScript("""
+            return JSON.stringify({
+                sawPolyfill: globalThis.__detourTask62SawPolyfill || 'not-run',
+                polyfillNow: typeof globalThis.__detourNativePortKeepAlive
+            });
+            """, arguments: [:], contentWorld: .page)
+        let report = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(try XCTUnwrap(raw as? String).utf8)) as? [String: String])
+        XCTAssertEqual(report["sawPolyfill"], "undefined", "the prepended script must run first")
+        XCTAssertEqual(report["polyfillNow"], "object", "the polyfill must still run after it")
+    }
+
+    // MARK: - TASK-62: which contexts install the keep-alive
+
+    /// What the polyfill's keep-alive made of a background context, asked through
+    /// an ordinary page of the same extension.
+    private func keepAliveReport(_ ext: WebExtension, profileName: String,
+                                 wakeBackground: Bool = true) async throws -> [String: Any] {
+        let profile = makeProfile(profileName)
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        if wakeBackground {
+            context.loadBackgroundContent { _ in }
+        }
+        return try await reportFromBackgroundContext(
+            page: page, what: "the background context's keep-alive report")
+    }
+
+    /// A non-persistent `background.scripts` page that declares `nativeMessaging`
+    /// installs the keep-alive, exactly as a service worker does.
+    func testKeepAliveInstallsInANonPersistentBackgroundPage() async throws {
+        let ext = try await makeMeasurementExtension(id: measurementExtensionID("task62-install-page"))
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let report = try await keepAliveReport(ext, profileName: "TASK-62 Install Page")
+        print("TASK-62 install decision (non-persistent page): \(report)")
+        XCTAssertEqual(report["isWorker"] as? Bool, false)
+        XCTAssertEqual(report["contextKind"] as? String, "background-page")
+        XCTAssertEqual(report["installMode"] as? String, "port")
+        XCTAssertEqual(report["installDetail"] as? String, "")
+    }
+
+    /// A *persistent* MV2 background page is never unloaded, so it has nothing to
+    /// keep alive and must not hold a port in Detour for nothing.
+    func testKeepAliveIsNotInstalledInAPersistentBackgroundPage() async throws {
+        let ext = try await makeMeasurementExtension(
+            id: measurementExtensionID("task62-install-persistent"),
+            manifestVersion: 2, persistent: nil)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let wkExt = try XCTUnwrap(ext.wkExtension)
+        XCTAssertTrue(wkExt.hasPersistentBackgroundContent,
+                      "precondition: WebKit runs this manifest's background persistently")
+
+        let report = try await keepAliveReport(ext, profileName: "TASK-62 Install Persistent")
+        print("TASK-62 install decision (persistent MV2 page): \(report)")
+        XCTAssertEqual(report["contextKind"] as? String, "background-page")
+        XCTAssertEqual(report["installMode"] as? String, "none")
+        XCTAssertEqual(report["installDetail"] as? String, "persistent-background-page")
+    }
+
+    /// An extension page that is not the background context installs nothing:
+    /// Detour keeps one keep-alive port per extension, so a popup or options page
+    /// opening its own would evict the background's.
+    func testKeepAliveIsNotInstalledInAnOrdinaryExtensionPage() async throws {
+        let ext = try await makeMeasurementExtension(id: measurementExtensionID("task62-install-ordinary"))
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let profile = makeProfile("TASK-62 Install Ordinary Page")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+
+        let status = try await page.callAsyncJavaScript("""
+            const keepAlive = globalThis.__detourNativePortKeepAlive;
+            return JSON.stringify({
+                contextKind: globalThis.__detourContextKind,
+                installMode: keepAlive ? keepAlive.installMode : 'missing',
+                installDetail: keepAlive ? keepAlive.installDetail : 'missing'
+            });
+            """, arguments: [:], contentWorld: .page)
+        let report = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(try XCTUnwrap(status as? String).utf8)) as? [String: Any])
+        print("TASK-62 install decision (ordinary extension page): \(report)")
+        XCTAssertEqual(report["contextKind"] as? String, "page")
+        XCTAssertEqual(report["installMode"] as? String, "none")
+        XCTAssertEqual(report["installDetail"] as? String, "not-a-background-context")
+    }
+
+    /// A background page whose extension cannot ever have a native host holds no
+    /// port either — the permission gate is unchanged by the context relaxation.
+    func testKeepAliveIsNotInstalledInABackgroundPageWithoutNativeMessaging() async throws {
+        let ext = try await makeMeasurementExtension(
+            id: measurementExtensionID("task62-install-nopermission"), permissions: [])
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let report = try await keepAliveReport(ext, profileName: "TASK-62 Install No Permission")
+        print("TASK-62 install decision (page without nativeMessaging): \(report)")
+        XCTAssertEqual(report["contextKind"] as? String, "background-page")
+        XCTAssertEqual(report["installMode"] as? String, "none")
+        XCTAssertEqual(report["installDetail"] as? String, "no-nativeMessaging-permission")
+    }
+
     // MARK: - TASK-29: runtime.onInstalled in extension pages and Private
 
     /// ExtensionManager wakes a worker for an owed onInstalled in a regular profile
@@ -1459,11 +1913,17 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         /// ordinary one, suppressing its event for good).
         case dotSlashPage
 
-        var manifestEntry: String {
+        var manifestEntry: String { manifestEntry(persistent: false) }
+
+        /// The `background` entry, with `persistent` set to `persistent` or left
+        /// out entirely when it is nil — which is how a *persistent* MV2
+        /// background page is spelled (TASK-62).
+        func manifestEntry(persistent: Bool?) -> String {
+            let flag = persistent.map { ", \"persistent\": \($0)" } ?? ""
             switch self {
-            case .scripts: return #"{"scripts": ["background.js"], "persistent": false}"#
-            case .page: return #"{"page": "bg.html", "persistent": false}"#
-            case .dotSlashPage: return #"{"page": "./bg.html", "persistent": false}"#
+            case .scripts: return #"{"scripts": ["background.js"]"# + flag + "}"
+            case .page: return #"{"page": "bg.html""# + flag + "}"
+            case .dotSlashPage: return #"{"page": "./bg.html""# + flag + "}"
             }
         }
 
@@ -1561,8 +2021,18 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// An MV3 extension whose background content is a page, registered the way
     /// an installed one is. `id` lets a test rebuild the same extension at a new
     /// version; only the newest build stays registered.
+    ///
+    /// `permissions`, `manifestVersion`, `persistent` and `backgroundJS` are the
+    /// TASK-62 knobs: an extension that declares `nativeMessaging`, a persistent
+    /// MV2 page (`manifestVersion: 2`, `persistent: nil` — the key left out, which
+    /// is what makes an MV2 background persistent), and a background script other
+    /// than the onInstalled reporter.
     private func makeBackgroundPageExtension(
         _ shape: BackgroundPage, id: String, version: String = "1.0.0",
+        permissions: [String] = [],
+        manifestVersion: Int = 3,
+        persistent: Bool? = false,
+        backgroundJS: String? = nil,
         extraFiles: [String: String] = [:]
     ) async throws -> WebExtension {
         let dir = FileManager.default.temporaryDirectory
@@ -1570,17 +2040,20 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         tempDirs.append(dir)
 
+        let permissionsJSON = String(
+            decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
         try """
         {
-            "manifest_version": 3,
+            "manifest_version": \(manifestVersion),
             "name": "Background Page Test",
             "version": "\(version)",
-            "background": \(shape.manifestEntry)
+            "permissions": \(permissionsJSON),
+            "background": \(shape.manifestEntry(persistent: persistent))
         }
         """.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
         try "<html><body><div id=\"test\">wiring test page</div></body></html>"
             .write(to: dir.appendingPathComponent("test.html"), atomically: true, encoding: .utf8)
-        try Self.backgroundPageReporterJS
+        try (backgroundJS ?? Self.backgroundPageReporterJS)
             .write(to: dir.appendingPathComponent("background.js"), atomically: true, encoding: .utf8)
         for (name, contents) in shape.ownFiles.merging(extraFiles, uniquingKeysWith: { _, new in new }) {
             try contents.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)

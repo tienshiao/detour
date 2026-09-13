@@ -207,6 +207,84 @@ func postRawPolyfillEnvelope(
     return (dict["result"], dict["error"] as? String)
 }
 
+// MARK: - Fake native messaging host
+
+/// Run a command line tool and capture its stdout.
+@discardableResult
+func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = arguments
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do { try process.run() } catch { return (-1, "") }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+}
+
+/// A stand-in native messaging host: a shell script that `exec`s
+/// `sleep <token>` and reads nothing, so a test gets a real host process that
+/// stays connected and silent. `token` is unique per fixture, so a stray process
+/// from another run — or another agent's — can never be counted, or killed, by
+/// this one.
+///
+/// Creating one points `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` (honored in Debug
+/// builds only) at its directory; `tearDown()` restores that variable, kills
+/// every process the fixture spawned and removes the directory. Call it from the
+/// test's own tearDown: nothing this spawns may outlive the test.
+final class FakeNativeMessagingHost {
+
+    /// The host name an extension passes to `connectNative` / `sendNativeMessage`.
+    let name: String
+    /// The `sleep` argument that identifies this fixture's processes.
+    let sleepToken: String
+
+    private let dir: URL
+    private let previousHostsDir: String?
+
+    init(name: String = "com.detour.fake_host_test", allowing extensionIDs: [String]) throws {
+        self.name = name
+        self.sleepToken = String(Int.random(in: 300_000...899_999))
+        self.previousHostsDir = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"]
+        self.dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-test-fake-host-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let script = dir.appendingPathComponent("fake-host.sh")
+        try "#!/bin/sh\nexec sleep \(sleepToken)\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let manifest: [String: Any] = [
+            "name": name,
+            "description": "Detour test fake native messaging host",
+            "path": script.path,
+            "type": "stdio",
+            "allowed_origins": extensionIDs.map { "chrome-extension://\($0)/" },
+        ]
+        try JSONSerialization.data(withJSONObject: manifest)
+            .write(to: dir.appendingPathComponent("\(name).json"))
+        setenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR", dir.path, 1)
+    }
+
+    /// How many of this fixture's host processes are alive right now.
+    func processCount() -> Int {
+        runTool("/usr/bin/pgrep", ["-f", "sleep \(sleepToken)"])
+            .output.split(separator: "\n").filter { !$0.isEmpty }.count
+    }
+
+    func tearDown() {
+        if let previousHostsDir {
+            setenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR", previousHostsDir, 1)
+        } else {
+            unsetenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR")
+        }
+        runTool("/usr/bin/pkill", ["-f", "sleep \(sleepToken)"])
+        try? FileManager.default.removeItem(at: dir)
+    }
+}
+
 // MARK: - Minimal tab/window conformances
 
 /// A window WebKit will accept for a bare WKWebView. `BrowserWindowController`

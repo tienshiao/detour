@@ -314,17 +314,22 @@ try {
 
 // --- Native port keep-alive probe ---
 // In an extension that declares `nativeMessaging`, the polyfill opens one idle
-// port to the 'detourPolyfill' host at worker start and Detour arms it —
+// port to the 'detourPolyfill' host at background start and Detour arms it —
 // `armed`/`active` flip to true — while a real native messaging host is connected
-// for that extension (TASK-16). This one does NOT declare the permission, so it can
-// never have a host and the keep-alive installs nothing: expect installMode 'none'
-// with installDetail 'no-nativeMessaging-permission'. This only reports that state;
-// opening a 'detourPolyfill' port here would evict a keep-alive port if there were
-// one, since Detour keeps one per extension.
+// for that extension (TASK-16). Since TASK-62 that is any background context, a
+// service worker or a non-persistent background page, so `contextKind` is reported
+// next to the decision: 'worker' and 'background-page' are eligible, 'page' gets
+// installDetail 'not-a-background-context' and a persistent MV2 page
+// 'persistent-background-page'. This extension does NOT declare the permission, so
+// it can never have a host and the keep-alive installs nothing: expect installMode
+// 'none' with installDetail 'no-nativeMessaging-permission'. This only reports that
+// state; opening a 'detourPolyfill' port here would evict a keep-alive port if
+// there were one, since Detour keeps one per extension.
 
 const keepAlive = globalThis.__detourNativePortKeepAlive;
 appendLog({
   event: 'nativePortKeepAlive',
+  contextKind: globalThis.__detourContextKind,
   connectNativeType: typeof chrome.runtime.connectNative,
   keepAlive: keepAlive ? {
     installMode: keepAlive.installMode,

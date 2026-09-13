@@ -275,10 +275,11 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
      extension has since been reloaded cannot disarm a keep-alive a *new* host is holding up. A
      control message that fails to send clears `armed` and is retried a second later while it is
      still wanted (`controlSendFailed` / `reconcile`).
-   - While armed the worker posts `{type: "keepalive"}` on that port immediately and then every
-     45 s. If Detour drops the port the worker reconnects with a capped backoff (1 s, doubling, 30 s
-     max), disarmed, and Detour re-arms the new port from `portOpened` if hosts are still connected,
-     so the worker never has to remember anything.
+   - While armed the background (a worker, or since TASK-62 a non-persistent background page)
+     posts `{type: "keepalive"}` on that port immediately and then every 45 s. If Detour drops the
+     port the background reconnects with a capped backoff (1 s, doubling, 30 s max), disarmed, and
+     Detour re-arms the new port from `portOpened` if hosts are still connected, so the background
+     never has to remember anything.
 
    Why this works, measured: WebKit unloads the background 30 s after a load/wake, but while the
    background has open ports the unload is deferred until 2 minutes after the last message the
@@ -286,6 +287,23 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    a message: the TASK-2 harness (2026-09-11 18:14) held a native port for 3 minutes with pings
    flowing and saw no unload, then an idle unload 30 s after release and a clean restart on the
    next alarm.
+
+   **Background pages, measured 2026-09-13 (TASK-62).** A non-persistent `background.scripts` page
+   follows the same two timers, so the keep-alive now installs there too (a persistent MV2 page is
+   never unloaded and is skipped: `installDetail: 'persistent-background-page'`). Observed from an
+   ordinary extension page reading a 0.5 s heartbeat the background page writes to the shared
+   `localStorage` (so nothing messages, and wakes, the page), in
+   `ExtensionPolyfillProfileWiringTests` with `DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1`:
+
+   | Leg | Result |
+   |-----|--------|
+   | (a) idle page, no port (no `nativeMessaging`, so no keep-alive port either) | last heartbeat +29.7 s; the next message started a second page (`loads` 1 → 2) |
+   | (b) page holds one real native port to a silent fake host, polyfill port suppressed | survived the 30 s idle unload; unloaded at +120.0 s (2 minutes after load, nothing ever posted), the port closed and Detour killed the host |
+   | (c) as (b) with the real keep-alive installed and armed by that host, pings every 15 s | still running at +300.9 s, host connected, 21 pings received |
+
+   Side observation from the first run of leg (a): a page that declares `nativeMessaging` but has no
+   host holds the keep-alive's idle port, and that alone moved it off the 30 s unload onto the
+   2-minute path (unloaded at ~120 s) — the cost the permission gate exists to avoid.
 
    **History — 2026-09-11 22:40 (TASK-15): the worker-side detection this replaces was inert, and
    its first version broke the popup.** The original design wrapped `runtime.connectNative` in the

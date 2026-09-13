@@ -23,16 +23,8 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
     private var webViews: [WKWebView] = []
-    private var previousHostsDir: String?
-    /// The fake host's `sleep` argument: unique per test so a stray process from
-    /// another run (or another agent) can never be counted, or killed, by this one.
-    private var sleepToken = ""
-
-    override func setUp() async throws {
-        try await super.setUp()
-        previousHostsDir = getenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR").map { String(cString: $0) }
-        sleepToken = String(Int.random(in: 300_000...899_999))
-    }
+    /// The shared fake-host fixture, if this test installed one (at most one per test).
+    private var fakeHost: FakeNativeMessagingHost?
 
     override func tearDown() {
         webViews.removeAll()
@@ -49,13 +41,10 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             AppDatabase.shared.deleteExtension(id: id)
         }
         registeredExtensionIDs.removeAll()
-        if let previousHostsDir {
-            setenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR", previousHostsDir, 1)
-        } else {
-            unsetenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR")
-        }
-        // Belt and braces: nothing this test spawned may outlive it.
-        _ = runTool("/usr/bin/pkill", ["-f", "sleep \(sleepToken)"])
+        // Restores the env var, kills the host processes and removes its directory:
+        // nothing this test spawned may outlive it.
+        fakeHost?.tearDown()
+        fakeHost = nil
         for dir in tempDirs {
             try? FileManager.default.removeItem(at: dir)
         }
@@ -73,23 +62,11 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         return dir
     }
 
-    /// Install the silent fake host for `extensionID` and point the host search at it.
-    private func installFakeHost(allowing extensionID: String) throws {
-        let dir = try makeTempDir("nm-hosts")
-        let script = dir.appendingPathComponent("fake-host.sh")
-        try "#!/bin/sh\nexec sleep \(sleepToken)\n".write(to: script, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-
-        let manifest: [String: Any] = [
-            "name": Self.hostName,
-            "description": "TASK-25 fake host",
-            "path": script.path,
-            "type": "stdio",
-            "allowed_origins": ["chrome-extension://\(extensionID)/"],
-        ]
-        try JSONSerialization.data(withJSONObject: manifest)
-            .write(to: dir.appendingPathComponent("\(Self.hostName).json"))
-        setenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR", dir.path, 1)
+    /// Install the silent fake host for `extensionIDs` (one manifest may list several
+    /// origins) and point the host search at it. Torn down in this suite's tearDown.
+    private func installFakeHost(allowing extensionIDs: [String]) throws {
+        let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs)
+        fakeHost = host
     }
 
     /// An MV3 extension declaring nativeMessaging, with one page to run calls from,
@@ -146,25 +123,8 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             extensionID: ext.id, key: "nativeMessaging", type: .apiPermission, status: status))
     }
 
-    @discardableResult
-    private func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return (-1, "") }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
-    }
-
     /// Fake host processes currently alive for this test.
-    private func fakeHostProcessCount() -> Int {
-        let result = runTool("/usr/bin/pgrep", ["-f", "sleep \(sleepToken)"])
-        return result.output.split(separator: "\n").filter { !$0.isEmpty }.count
-    }
+    private func fakeHostProcessCount() -> Int { fakeHost?.processCount() ?? 0 }
 
     /// Evaluate `body` (an async function body returning a JSON-able value) in the page.
     private func evalJSON(_ body: String, in webView: WKWebView,
@@ -221,7 +181,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// spawns nothing.
     func testDeniedNativeMessagingRejectsSendNativeMessageWithoutSpawning() async throws {
         let ext = try await makeExtension()
-        try installFakeHost(allowing: ext.id)
+        try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
         let loaded = try await load(ext, profileName: "NM Denied Send Profile")
 
@@ -238,7 +198,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// forbidden error and no process is spawned or registered.
     func testDeniedNativeMessagingRefusesConnectNativeWithoutSpawning() async throws {
         let ext = try await makeExtension()
-        try installFakeHost(allowing: ext.id)
+        try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
         let loaded = try await load(ext, profileName: "NM Denied Connect Profile")
 
@@ -267,7 +227,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// reconnect is refused — all on the same loaded context.
     func testAbsentDecisionAllowsConnectNativeAndDenialDisconnectsIt() async throws {
         let ext = try await makeExtension()
-        try installFakeHost(allowing: ext.id)
+        try installFakeHost(allowing: [ext.id])
         let loaded = try await load(ext, profileName: "NM Absent Connect Profile")
         let controller = loaded.profile.extensionController
 
@@ -309,7 +269,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// hanging.
     func testGrantedDecisionAllowsSendNativeMessageAndDenialRejectsThePendingReply() async throws {
         let ext = try await makeExtension()
-        try installFakeHost(allowing: ext.id)
+        try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .granted)
         let loaded = try await load(ext, profileName: "NM Granted Send Profile")
 
@@ -343,7 +303,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// Re-granting from Settings lifts the block on the same loaded context.
     func testRegrantingLiftsTheBlockWithoutReload() async throws {
         let ext = try await makeExtension()
-        try installFakeHost(allowing: ext.id)
+        try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
         let loaded = try await load(ext, profileName: "NM Regrant Profile")
         let controller = loaded.profile.extensionController
@@ -364,15 +324,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         let denied = try await makeExtension()
         let other = try await makeExtension()
         // One host manifest may list both origins.
-        let dir = try makeTempDir("nm-hosts-shared")
-        let script = dir.appendingPathComponent("fake-host.sh")
-        try "#!/bin/sh\nexec sleep \(sleepToken)\n".write(to: script, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-        try JSONSerialization.data(withJSONObject: [
-            "name": Self.hostName, "path": script.path, "type": "stdio",
-            "allowed_origins": ["chrome-extension://\(denied.id)/", "chrome-extension://\(other.id)/"],
-        ] as [String: Any]).write(to: dir.appendingPathComponent("\(Self.hostName).json"))
-        setenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR", dir.path, 1)
+        try installFakeHost(allowing: [denied.id, other.id])
 
         let loadedDenied = try await load(denied, profileName: "NM Scope Denied Profile")
         let loadedOther = try await load(other, profileName: "NM Scope Other Profile")

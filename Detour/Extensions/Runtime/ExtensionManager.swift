@@ -466,7 +466,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     /// Drop every port Detour holds for the extension in `controller`'s profile:
-    /// the worker's keep-alive port and any relayed WebSockets. Called from
+    /// the background's keep-alive port and any relayed WebSockets. Called from
     /// `Profile.unloadExtension` so a reload, disable or uninstall does not strand
     /// a retained port or leave a socket running for a context that is gone.
     func closeExtensionPorts(for extensionID: String, in controller: WKWebExtensionController) {
@@ -593,7 +593,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     /// Feed an event to the extension's keep-alive state machine and carry out what
-    /// it asks for on the worker's keep-alive port (TASK-16). Main-thread only:
+    /// it asks for on the background's keep-alive port (TASK-16). Main-thread only:
     /// every caller is a delegate callback or a native-host callback dispatched to
     /// the main queue.
     private func applyKeepAlive(_ event: NativeHostKeepAliveState.Event, for key: KeepAlivePortKey) {
@@ -1875,14 +1875,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         case .polyfillHost:
             guard let extID = verifiedExtensionID() else { return }
             // The polyfill's keep-alive port (see ExtensionAPIPolyfill.nativePortKeepAliveJS):
-            // accept it without spawning anything and hold it until the worker closes it
-            // or its context unloads. The worker opens it idle at startup and never
-            // decides anything itself — Detour arms it (`keepalive-start`) while a real
-            // native messaging host is connected for this extension and disarms it when
-            // the last one exits (TASK-16), and WebKit counts the worker's pings on it
-            // as the background activity that defers the unload. One port per extension
-            // per controller: a worker only ever holds one, so a second replaces (and
-            // closes) the first rather than accumulating.
+            // accept it without spawning anything and hold it until the background
+            // context (a worker or a non-persistent background page, TASK-62) closes
+            // it or unloads. The background opens it idle at startup and never decides
+            // anything itself — Detour arms it (`keepalive-start`) while a real native
+            // messaging host is connected for this extension and disarms it when the
+            // last one exits (TASK-16), and WebKit counts the background's pings on it
+            // as the activity that defers the unload. One port per extension per
+            // controller: the background only ever holds one, so a second replaces
+            // (and closes) the first rather than accumulating. Nothing here can tell
+            // which web view opened the port: a top-level extension page navigated to
+            // the background document's path also passes the polyfill's gate, and its
+            // port would evict the real background's. TASK-66 closed the same hole for
+            // runtime.onInstalled with `ExtensionPageHostRegistry`, but that needs the
+            // sending web view, which a native-message port never carries.
             let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
             if let previous = keepAlivePorts.removeValue(forKey: key) {
                 previous.disconnect(throwing: nil)

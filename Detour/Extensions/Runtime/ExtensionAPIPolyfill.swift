@@ -1640,21 +1640,34 @@ struct ExtensionAPIPolyfill {
     /// still connected (`NativeHostKeepAliveState`), so the worker never has to
     /// remember anything across a reconnect.
     ///
-    /// Installed in service worker contexts of extensions that declare
+    /// Installed in background contexts of extensions that declare
     /// `nativeMessaging` only: an extension that cannot open a native port has
     /// nothing to keep alive, and an idle port would still cost it WebKit's 30 s
     /// idle unload (a background with open ports is unloaded on the 2-minute
     /// inactive-ports rule instead) plus a retained port in Detour.
     ///
-    /// A background *page* (`background.scripts` / `background.page`) is
-    /// deliberately not covered yet: the measurement behind this — posting on the
-    /// port resets WebKit's inactive-ports timer — was taken for a worker only,
-    /// and a page's unload rules have not been probed (follow-up).
+    /// A background *page* (`background.scripts` / `background.page`) counts as a
+    /// background context here too (TASK-62). Measured 2026-09-13 on a
+    /// non-persistent `background.scripts` page
+    /// (`ExtensionPolyfillProfileWiringTests`, the `DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD`
+    /// legs): idle with no port, WebKit unloaded it ~30 s after load (last
+    /// heartbeat +29.7 s); holding one real native messaging port, open and
+    /// silent, it survived the 30 s idle unload and was unloaded on the
+    /// inactive-ports path at +120.0 s, the port closing and Detour killing the
+    /// native host with it — the same two timers as a worker; with this keep-alive
+    /// installed and armed by that host (pings every 15 s in the test, 21
+    /// received) it was still running at +300.9 s with its host connected. So a
+    /// page needs this exactly as much as a worker does, and the pings defer its
+    /// unload the same way.
+    ///
+    /// A *persistent* MV2 page (`manifest_version` < 3 with `background.persistent`
+    /// not `false`) is skipped: WebKit never unloads it, so there is nothing to
+    /// keep alive and a port would be retained in Detour for nothing.
     ///
     /// `__detourKeepAlivePingIntervalMs`
     /// and `__detourKeepAliveReconnectBaseMs` (both read once at install) shorten
     /// the timers for tests, and `__detourForceNativePortKeepAlive` installs it
-    /// outside workers for tests.
+    /// outside a background context for tests.
     private static let nativePortKeepAliveJS = """
     (function() {
         const g = globalThis;
@@ -1676,7 +1689,8 @@ struct ExtensionAPIPolyfill {
         let reconnectAttempts = 0;
         // 'port' (a port is open) | 'none'.
         let installMode = 'none';
-        // Why, for diagnostics: '' | 'not-a-worker' | 'no-nativeMessaging-permission' |
+        // Why, for diagnostics: '' | 'not-a-background-context' |
+        // 'persistent-background-page' | 'no-nativeMessaging-permission' |
         // 'no-runtime' | 'no-connectNative:<typeof>' | 'connect-failed: <message>' |
         // 'disconnected'.
         let installDetail = '';
@@ -1770,27 +1784,49 @@ struct ExtensionAPIPolyfill {
             } catch (e) {}
         }
 
-        // Workers only: this exists to hold the *background worker* alive, and
-        // Detour keeps one keep-alive port per extension, so a popup or options
-        // page would otherwise open its own and evict the worker's.
-        // `__detourForceNativePortKeepAlive` installs it outside workers for tests.
+        // The background context only: this exists to hold the *background* alive,
+        // and Detour keeps one keep-alive port per extension, so a popup or options
+        // page would otherwise open its own and evict the background's. A worker
+        // and a non-persistent background page are both unloaded and both kept by
+        // the pings (measured, TASK-62 — see the doc comment); a *persistent* MV2
+        // page is never unloaded and has nothing to keep alive.
+        // `__detourForceNativePortKeepAlive` installs it anywhere, for tests.
         //
         // And only for extensions that declare `nativeMessaging`: nothing else can
         // ever have a native host, so for them the port would only ever sit idle —
-        // at the cost of moving the worker off WebKit's 30 s idle unload onto the
-        // 2-minute inactive-ports path and holding a port per worker in Detour for
-        // nothing.
+        // at the cost of moving the background off WebKit's 30 s idle unload onto
+        // the 2-minute inactive-ports path and holding a port per background in
+        // Detour for nothing.
         const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
-        if (!isWorker && g.__detourForceNativePortKeepAlive !== true) {
-            installDetail = 'not-a-worker';
+        const isBackgroundPage = g.__detourContextKind === 'background-page';
+        // MV2's `background.persistent` defaults to true, so a persistent page is
+        // any pre-MV3 background the manifest did not explicitly mark false — the
+        // same rule WebKit's `hasPersistentBackgroundContent` applies to a page
+        // (a boolean `persistent` wins, else persistent iff manifest_version < 3).
+        // An unreadable manifest counts as non-persistent: MV3 is the common case
+        // and a keep-alive port on a page that never unloads costs only the port.
+        // A function, not a value: only a background page that declares
+        // `nativeMessaging` pays the manifest read.
+        const isPersistentBackgroundPage = function() {
+            if (!isBackgroundPage) return false;
+            const manifest = g.__detourManifest();
+            if (!manifest || !(Number(manifest.manifest_version) < 3)) return false;
+            const background = manifest.background;
+            return !(background && typeof background === 'object' && background.persistent === false);
+        };
+        const forced = g.__detourForceNativePortKeepAlive === true;
+        if (!forced && !isWorker && !isBackgroundPage) {
+            installDetail = 'not-a-background-context';
         } else if (g.__detourManifestPermissions().indexOf('nativeMessaging') === -1) {
             installDetail = 'no-nativeMessaging-permission';
+        } else if (!forced && isPersistentBackgroundPage()) {
+            installDetail = 'persistent-background-page';
         } else {
             connect();
         }
-        if (isWorker) {
-            // One line per worker start, through the console bridge, so the path a
-            // real worker took is visible in the unified log.
+        if (isWorker || isBackgroundPage) {
+            // One line per background start, through the console bridge, so the
+            // path a real background context took is visible in the unified log.
             try { console.info('[Detour polyfill] native port keep-alive install mode: ' + installMode + (installDetail ? ' (' + installDetail + ')' : '')); } catch (e) {}
         }
 

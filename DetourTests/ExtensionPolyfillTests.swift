@@ -1861,10 +1861,12 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "no port may be opened for an extension that cannot use native messaging")
     }
 
-    /// Only the background worker holds a keep-alive port: Detour keeps one per
+    /// Only the background context holds a keep-alive port: Detour keeps one per
     /// extension, so a popup or options page opening its own would evict the
-    /// worker's. Page contexts install nothing at all.
-    func testKeepAliveIsNotInstalledOutsideAWorker() async throws {
+    /// background's. Ordinary page contexts install nothing at all — and since
+    /// TASK-62 a background *page* is a background context, which this fixture's
+    /// page is not: its manifest declares no `background` entry at all.
+    func testKeepAliveIsNotInstalledOutsideABackgroundContext() async throws {
         let pageView = try await makeWebView(
             manifestPermissions: ["history"],
             // Runs after the shim set the flag and before the polyfill reads it.
@@ -1872,7 +1874,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         let status = try await keepAliveStatus(on: pageView)
         XCTAssertEqual(status["installMode"] as? String, "none")
-        XCTAssertEqual(status["installDetail"] as? String, "not-a-worker")
+        XCTAssertEqual(status["installDetail"] as? String, "not-a-background-context")
         XCTAssertEqual(status["armed"] as? Bool, false)
         XCTAssertEqual(status["applications"] as? [String], [],
                        "a page context must not open a port to Detour")
