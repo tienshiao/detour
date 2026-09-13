@@ -87,9 +87,9 @@ final class WKExtensionTabLifecycleNotifier: ExtensionTabLifecycleNotifying {
 /// **The section-move rule (TASK-59).** Moving a live tab between the tab list,
 /// the pinned section and the favourites bar of one profile is a hand-off, not a
 /// close: the tab keeps the web view WebKit already maps and stays registered,
-/// so no `didClose`/`didOpen` pair is sent (`TabStore.detachTab` reports a
-/// detach, which this seam deliberately ignores; `didPlace` is silent for an
-/// already-registered tab). What the contexts are told instead is whatever the
+/// so no `didClose`/`didOpen` pair is sent (closes come only from
+/// `BrowserTab.teardown`, which a detach never calls; `didPlace` is silent for
+/// an already-registered tab). What the contexts are told instead is whatever the
 /// move actually changed — today that is the pinned flag, via
 /// `didChangePinned`, at each of the four hand-offs that flip it (pin, unpin,
 /// pinned -> favourite, favourite -> pinned). A move that leaves the flag alone

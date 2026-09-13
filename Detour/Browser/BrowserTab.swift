@@ -86,15 +86,14 @@ class BrowserTab: NSObject {
     /// The space this tab belongs to. `wake()` resolves it to pick the
     /// configuration a new web view is built from, the profile and history
     /// lookups below go through it, and the session save and history visits are
-    /// recorded under it. Every path that places a tab in a space sets it:
-    /// `TabStore.insertTab` on creation, and `TabStore.adoptSpace` for a live
-    /// tab moved in from another section (the favourite restores).
+    /// recorded under it — so it must always name a live space of the tab's
+    /// profile.
     ///
-    /// For a favourite's backing tab it names the space the favourite was
-    /// activated in — favourites belong to a *profile* and show in every space
-    /// that shares it, so a favourite has no space of its own; its tab simply
-    /// keeps the space it was brought to life in until it is moved into a
-    /// section, which rehomes it onto that space (TASK-58).
+    /// A favourite's backing tab has no space of its own (favourites belong to a
+    /// *profile* and show in every space that shares it): it keeps the space it
+    /// was brought to life in until a section move rehomes it onto the space it
+    /// was dropped in, or that space is deleted and `TabStore` moves it onto
+    /// another of the profile's (TASK-58).
     var spaceID: UUID?
     var parentID: UUID?
     /// The profile whose `WKWebExtensionContext`s were told this tab is open
@@ -541,11 +540,7 @@ class BrowserTab: NSObject {
             webView.pauseAllMediaPlayback(completionHandler: nil)
         }
 
-        if let peek = peekTab {
-            savePeekStateForPersistence()
-            peek.sleep(force: force)
-            parkPeek(peek)
-        }
+        parkPeek(force: force)
 
         if let state = webView.interactionState {
             cachedInteractionState = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
@@ -560,27 +555,29 @@ class BrowserTab: NSObject {
         canGoForward = false
     }
 
-    /// Closes a peek that `sleep` / `retarget` just parked, to the extension
-    /// contexts (TASK-57).
+    /// Parks this tab's peek — saves its state, sleeps it, and closes it to the
+    /// extension contexts (TASK-57).
     ///
-    /// A parked peek's sleep is a close in every sense the contexts care about:
-    /// unlike a sleeping tab, it is never woken as the same object.
-    /// `showPeekOverlay` always builds a *new* `BrowserTab` and tears the parked
-    /// one down, so leaving it registered would show extensions a phantom open
-    /// tab with no web view — listed by `tabs.query` and window tab lists, and
-    /// unreachable by `tabs.sendMessage` — from the host's sleep until it is next
-    /// peeked or torn down.
+    /// The state has to be captured *before* the sleep, or a later save restores
+    /// the peek to its open-time URL.
     ///
-    /// The host keeps its `peekTab` reference: the tile and sidebar badge read it
-    /// through `displayPeekFavicon` (TASK-47), and the parked `peekURL` /
-    /// `peekInteractionState` saved a moment ago are what a re-present restores.
+    /// A parked peek's sleep is a close as far as the contexts are concerned: it
+    /// is never woken as the same object — `showPeekOverlay` builds a *new*
+    /// `BrowserTab` and tears the parked one down — so leaving it registered
+    /// would be a phantom open tab with no web view. The host keeps its
+    /// `peekTab` reference regardless: the badge reads it through
+    /// `displayPeekFavicon`.
     ///
-    /// Gated on the peek having actually released its web view: a non-forced
-    /// sleep spares a peek that is playing audio, and such a peek is still a
-    /// live, reachable page the contexts must keep.
-    private func parkPeek(_ peek: BrowserTab) {
-        guard peek.webView == nil else { return }
-        ExtensionTabLifecycle.didClose(peek)
+    /// The close is gated on the peek having actually released its web view: a
+    /// non-forced sleep spares an audible peek, which is still a live, reachable
+    /// page the contexts must keep.
+    private func parkPeek(force: Bool) {
+        guard let peek = peekTab else { return }
+        savePeekStateForPersistence()
+        peek.sleep(force: force)
+        if peek.webView == nil {
+            ExtensionTabLifecycle.didClose(peek)
+        }
     }
 
     /// Rehomes the tab onto `url`, discarding the page it is currently showing.
@@ -599,14 +596,7 @@ class BrowserTab: NSObject {
     /// window (or by none).
     func retarget(to url: URL) {
         webView?.pauseAllMediaPlayback(completionHandler: nil)
-        // As in `sleep(force:)`: a tab that has released its web view must not
-        // keep a live peek web view behind it, and the peek's state has to be
-        // captured first or a later save restores the peek to its open-time URL.
-        if let peek = peekTab {
-            savePeekStateForPersistence()
-            peek.sleep(force: true)
-            parkPeek(peek)
-        }
+        parkPeek(force: true)
         releaseWebView()
         cachedInteractionState = nil
 

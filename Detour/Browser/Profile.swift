@@ -633,11 +633,17 @@ class Profile {
                 // activated in — a window on any of the profile's spaces may be
                 // displaying it.
                 affectedSpaceIDs.formUnion(profileSpaces.map(\.id))
-            case .peek(let host, _):
+            case .peek(let host, let peek):
                 // The peek is rebuilt from the host's persisted `peekURL` (its web
                 // view is gone), so that must point at the new origin too. The
                 // window that shows the host re-presents the overlay on re-select.
                 host.peekURL = rewritten
+                // The retarget above released the peek's web view, so it is a
+                // parked peek now and must be closed to the contexts just as the
+                // host's own sleep/retarget closes one (TASK-57) — otherwise they
+                // keep a registered tab with no web view until the host is next
+                // peeked. `didClose` is idempotent and a no-op if unregistered.
+                ExtensionTabLifecycle.didClose(peek)
                 retargetedTabIDs.insert(host.id)
                 if let spaceID = host.spaceID { affectedSpaceIDs.insert(spaceID) }
                 else { affectedSpaceIDs.formUnion(profileSpaces.map(\.id)) }

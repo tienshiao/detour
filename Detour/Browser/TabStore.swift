@@ -19,15 +19,11 @@ extension Notification.Name {
 
 protocol TabStoreObserver: AnyObject {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space)
+    /// `tab` left `space.tabs` — closed, or handed off to another section of
+    /// the same profile (`detachTab`). This is a list change, not a close: a
+    /// closed tab was torn down before the notification, and the teardown is
+    /// what reports the close (`BrowserTab.teardown`).
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space)
-    /// A live tab left `space.tabs` *without being closed* — handed off to
-    /// another section of the same profile (today: dragged onto the favourites
-    /// bar, `detachTab`). Views want the same thing they do for a removal, so
-    /// the default forwards to `tabStoreDidRemoveTab`; only an observer for
-    /// which "gone from this list" and "closed" differ implements it — the
-    /// extension seam, which must not report a hand-off as a closed tab
-    /// (TASK-59).
-    func tabStoreDidDetachTab(_ tab: BrowserTab, at index: Int, in space: Space)
     func tabStoreDidReorderTabs(in space: Space)
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space)
     /// Split divider fraction changed — no structural change (structural split
@@ -60,9 +56,6 @@ protocol TabStoreObserver: AnyObject {
 extension TabStoreObserver {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
-    func tabStoreDidDetachTab(_ tab: BrowserTab, at index: Int, in space: Space) {
-        tabStoreDidRemoveTab(tab, at: index, in: space)
-    }
     func tabStoreDidReorderTabs(in space: Space) {}
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space) {}
     func tabStoreDidUpdateSplitLayout(in space: Space) {}
@@ -814,7 +807,7 @@ class TabStore {
                 tab.splitGroupID = tabRecord.splitGroupID.flatMap { UUID(uuidString: $0) }
                 tab.splitFraction = tabRecord.splitFraction
                 space.tabs.append(tab)
-                self.subscribeToTab(tab, spaceID: spaceID)
+                self.subscribeToTab(tab)
             }
             sanitizeSplitGroups(space.tabs)
 
@@ -896,7 +889,7 @@ class TabStore {
                     backingTab?.spaceID = spaceID
                     backingTab?.applyPersistedPeekState(from: tabRecord)
                     if let tab = backingTab {
-                        self.subscribeToTab(tab, spaceID: spaceID)
+                        self.subscribeToTab(tab)
                     }
                 }
 
@@ -982,7 +975,7 @@ class TabStore {
                     backingTab?.spaceID = hostSpace.id
                     backingTab?.applyPersistedPeekState(from: tabRecord)
                     if let tab = backingTab {
-                        self.subscribeToTab(tab, spaceID: hostSpace.id)
+                        self.subscribeToTab(tab)
                     }
                 }
 
@@ -1035,27 +1028,58 @@ class TabStore {
         for (i, fav) in profile.favorites.enumerated() { fav.sortOrder = i }
     }
 
-    /// Homes a live tab under a new favourite — the drop end of dragging a tab
-    /// or a live pinned entry onto the favourites bar. The caller detaches the
-    /// tab from its old section first (`detachTab` / `detachPinnedEntry`).
+    /// Moves a live tab out of `space` — its tab list, or the pinned section
+    /// where `id` names a pinned entry with a backing tab — under a new favourite
+    /// of `profileID`: the drop end of dragging onto the favourites bar. Returns
+    /// whether the tab moved.
+    ///
+    /// Refused, changing nothing, for a tab with no URL to favourite (a blank
+    /// new tab) or a pinned entry with no live tab (`addFavoriteFromEntry` is
+    /// the dormant path). The URL check runs *before* the detach: a detached
+    /// tab that then fails to be listed would sit in no section at all, still
+    /// live and still registered with the extension contexts.
     ///
     /// Nothing about the tab changes: it keeps its web view, its profile and its
     /// registration with the extension contexts across the move (the detach is a
     /// hand-off, not a close, and the `favorites` didSet's `didPlace` is silent
     /// for an already-registered tab — TASK-52/59). So the contexts are told only
-    /// what the move actually changed: `wasPinned` says the tab was a pinned
-    /// entry's backing tab a moment ago and is not one now, which flips the flag
-    /// `tabs.query({pinned})` reads.
-    func addFavorite(from tab: BrowserTab, profileID: UUID, at index: Int? = nil, wasPinned: Bool = false) {
+    /// what the move actually changed: a tab that was a pinned entry's backing
+    /// tab a moment ago is not one now, which flips the flag
+    /// `tabs.query({pinned})` reads — announced once the favourite lists the
+    /// tab, since handling the change resolves its window and index.
+    @discardableResult
+    func moveTabToFavorites(id: UUID, from space: Space, profileID: UUID, at index: Int? = nil) -> Bool {
+        guard profiles.contains(where: { $0.id == profileID }) else { return false }
+        let tab: BrowserTab
+        let wasPinned: Bool
+        if let entry = space.pinnedEntries.first(where: { $0.id == id }) {
+            guard let backing = entry.tab, backing.url != nil else { return false }
+            tab = backing
+            wasPinned = true
+            _ = detachPinnedEntry(id: entry.id, from: space)
+        } else if let listed = space.tabs.first(where: { $0.id == id }) {
+            guard listed.url != nil else { return false }
+            tab = listed
+            wasPinned = false
+            detachTab(id: tab.id, from: space)
+        } else {
+            return false
+        }
+        addFavorite(from: tab, profileID: profileID, at: index)
+        if wasPinned { ExtensionTabLifecycle.didChangePinned(tab) }
+        return true
+    }
+
+    /// Lists an already-detached live tab under a new favourite. The section
+    /// moves go through `moveTabToFavorites`, which detaches and announces;
+    /// this is the listing half on its own.
+    func addFavorite(from tab: BrowserTab, profileID: UUID, at index: Int? = nil) {
         guard let url = tab.url, let profile = profiles.first(where: { $0.id == profileID }) else { return }
 
         let favorite = Favorite(url: url, title: tab.title, faviconURL: tab.faviconURL, sortOrder: 0, tab: tab)
         let insertAt = min(index ?? profile.favorites.count, profile.favorites.count)
         profile.favorites.insert(favorite, at: insertAt)
         reindexFavorites(profile)
-        // After the favourite lists the tab: handling the change resolves the
-        // tab's window and index (TASK-59).
-        if wasPinned { ExtensionTabLifecycle.didChangePinned(tab) }
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
     }
@@ -1106,7 +1130,7 @@ class TabStore {
         // to the contexts or every runtime.sendMessage fails (TASK-50). The
         // assignment below is its placement, and reports it (TASK-52).
         fav.tab = tab
-        subscribeToTab(tab, spaceID: space.id)
+        subscribeToTab(tab)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
         return true
@@ -1246,16 +1270,39 @@ class TabStore {
 
     /// Rehomes an existing live tab onto `space` — for the paths that place a
     /// tab that already exists and so cannot go through `insertTab` (the
-    /// favourite restores, TASK-58).
+    /// favourite restores, TASK-58; a favourite left behind by a space delete).
     ///
-    /// Both halves of "which space is this tab's" have to move together:
-    /// `spaceID`, which `BrowserTab.wake()` resolves its configuration through
-    /// and which the per-space lookups key on, and the tab's subscription, whose
-    /// captured space id is what its history visits are recorded under.
-    /// Re-subscribing replaces the previous cancellables, which cancels them.
+    /// `spaceID` is the one place "which space is this tab's" lives:
+    /// `BrowserTab.wake()` resolves its configuration through it, the per-space
+    /// lookups key on it, and the tab's subscription reads it at visit time, so
+    /// nothing has to be re-subscribed.
     private func adoptSpace(_ space: Space, for tab: BrowserTab) {
         tab.spaceID = space.id
-        subscribeToTab(tab, spaceID: space.id)
+    }
+
+    /// A deleted space leaves behind the live favourite tabs that were brought
+    /// to life in it: favourites belong to the profile, not the space, and their
+    /// tabs live on `Favorite.tab` rather than in any space list, so the delete
+    /// tears nothing of theirs down — but their `spaceID` would name a space
+    /// that no longer resolves, and the next wake would build the page from a
+    /// bare configuration (no data store, no extension controller — TASK-58).
+    /// They move onto another space of the profile, where the tile still shows;
+    /// when none is left the favourite is returned to a dormant tile, as a
+    /// profile swap does (`updateSpace`).
+    private func rehomeFavoriteTabs(boundTo space: Space) {
+        guard let profile = profile(withID: space.profileID) else { return }
+        let bound = profile.favorites.filter { $0.tab?.spaceID == space.id }
+        guard !bound.isEmpty else { return }
+        if let home = spaces.first(where: { $0.profileID == profile.id && $0.id != space.id }) {
+            for fav in bound { adoptSpace(home, for: fav.tab!) }
+        } else {
+            for fav in bound {
+                tabSubscriptions.removeValue(forKey: fav.tab!.id)
+                fav.tab?.teardown()
+                fav.tab = nil
+            }
+        }
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
     }
 
     /// Moves a favorite back into the tab list, removing it from favorites.
@@ -1270,7 +1317,11 @@ class TabStore {
     /// the favourite stays, and this returns false.
     @discardableResult
     func restoreFavoriteAsTab(id: UUID, profileID: UUID, in space: Space, at tabIndex: Int) -> Bool {
-        guard let profile = profiles.first(where: { $0.id == profileID }),
+        // A favourite only moves into a space of its own profile: rehoming its
+        // live tab onto another profile's space would rebuild it, on its next
+        // wake, from that profile's data store and extension controller.
+        guard space.profileID == profileID,
+              let profile = profiles.first(where: { $0.id == profileID }),
               let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return false }
         let fav = profile.favorites[favIdx]
 
@@ -1283,7 +1334,7 @@ class TabStore {
             guard dormantTileDropTargets(page).contains(.tabList),
                   let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
             tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
-            subscribeToTab(tab, spaceID: space.id)
+            subscribeToTab(tab)
         }
         profile.favorites.remove(at: favIdx)
         reindexFavorites(profile)
@@ -1310,7 +1361,9 @@ class TabStore {
     /// this returns false.
     @discardableResult
     func restoreFavoriteAsPinned(id: UUID, profileID: UUID, in space: Space, at pinnedIndex: Int) -> Bool {
-        guard let profile = profiles.first(where: { $0.id == profileID }),
+        // Same profile only — see `restoreFavoriteAsTab`.
+        guard space.profileID == profileID,
+              let profile = profiles.first(where: { $0.id == profileID }),
               let favIdx = profile.favorites.firstIndex(where: { $0.id == id }) else { return false }
         let fav = profile.favorites[favIdx]
 
@@ -1556,6 +1609,7 @@ class TabStore {
                 tab.teardown()
             }
         }
+        rehomeFavoriteTabs(boundTo: space)
         // The `Space` OBJECT survives the delete: the undo closure below holds it
         // and re-inserts that same instance, so every undo action registered
         // before this delete — Close Tab, Move Tab, Pin/Unpin, the pinned entry
@@ -1650,7 +1704,7 @@ class TabStore {
                 tab.splitGroupID = s.splitGroupID
                 tab.splitFraction = s.splitFraction
                 tab.downloadPeekFavicon()
-                self.subscribeToTab(tab, spaceID: restored.id)
+                self.subscribeToTab(tab)
                 return tab
             }
 
@@ -1929,7 +1983,7 @@ class TabStore {
         )
 
         space.tabs.insert(tab, at: insertionIndex)
-        subscribeToTab(tab, spaceID: space.id)
+        subscribeToTab(tab)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
         scheduleSave()
         return insertionIndex
@@ -1962,14 +2016,13 @@ class TabStore {
     /// Detaches a tab from a space without closing or archiving it.
     /// Used when moving a tab to become a favorite's backing tab.
     ///
-    /// Reported as a detach, not a removal: the extension contexts keep a
-    /// hand-off registered (TASK-59), while every view sees the same thing it
-    /// does for a removal through the protocol's default forwarding.
+    /// The tab is not torn down, so the extension contexts keep it registered:
+    /// a hand-off between sections of one profile is not a close (TASK-59).
     func detachTab(id: UUID, from space: Space) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs.remove(at: index)
         leaveSplitGroup(tab, in: space)
-        notifyObservers { $0.tabStoreDidDetachTab(tab, at: index, in: space) }
+        notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: space) }
         scheduleSave()
     }
 
@@ -2074,7 +2127,7 @@ class TabStore {
                     )
                 }
                 space.tabs.insert(restored, at: insertAt)
-                self.subscribeToTab(restored, spaceID: space.id)
+                self.subscribeToTab(restored)
                 // Remove the corresponding closed-tab-stack entry from both the
                 // in-memory stack and the DB. Skipping the DB row would leave it to
                 // be reloaded on next launch, so Cmd+Shift+T would reopen a duplicate.
@@ -2243,7 +2296,7 @@ class TabStore {
         tab.parentID = tabID
         let insertAt = anchorIndex + 1
         space.tabs.insert(tab, at: insertAt)
-        subscribeToTab(tab, spaceID: space.id)
+        subscribeToTab(tab)
 
         let groupID = UUID()
         for member in [anchor, tab] {
@@ -2446,7 +2499,7 @@ class TabStore {
                     restoredFirst = restored
                 }
                 space.tabs.insert(restored, at: insertAt)
-                self.subscribeToTab(restored, spaceID: space.id)
+                self.subscribeToTab(restored)
                 if let stackIdx = self.closedTabStack.firstIndex(where: { $0.tabID == snapshot.tabID }) {
                     self.closedTabStack.remove(at: stackIdx)
                 }
@@ -2613,9 +2666,12 @@ class TabStore {
             tab.splitGroupID = groupID
             tab.splitFraction = fraction
         }
-        // Both members left the pinned section (TASK-59); a member this call
-        // just materialized is unregistered, so its announcement is a no-op.
-        for tab in tabs { ExtensionTabLifecycle.didChangePinned(tab) }
+        // Both members left the pinned section (TASK-59). A member this call just
+        // materialized was first reported by the insert above, already unpinned
+        // — nothing flipped for it (see `unpinTab`).
+        for tab in tabs where !materialized.contains(where: { $0 === tab }) {
+            ExtensionTabLifecycle.didChangePinned(tab)
+        }
 
         registerUndo(actionName: "Unpin Split") { [weak self] in
             guard let self else { return }
@@ -2809,7 +2865,7 @@ class TabStore {
         guard dormantTileDropTargets(page).contains(.tabList),
               let url = rehomedTileURL(entry.pinnedURL, page: page, in: space) else { return nil }
         let tab = makeTab(loading: url, title: entry.pinnedTitle, faviconURL: entry.faviconURL, in: space)
-        subscribeToTab(tab, spaceID: space.id)
+        subscribeToTab(tab)
         return tab
     }
 
@@ -2954,10 +3010,11 @@ class TabStore {
             groupIDs: space.tabs.map(\.splitGroupID)
         )
         space.tabs.insert(tab, at: insertAt)
-        // The flag flipped the other way (TASK-59). A tab this call just
-        // materialized from a dormant entry has no web view and no registration,
-        // so this is a no-op for it.
-        ExtensionTabLifecycle.didChangePinned(tab)
+        // The flag flipped the other way (TASK-59) — for a tab the contexts knew
+        // as pinned. One this call just materialized from a dormant entry was
+        // first reported by the insert above, already unpinned; announcing a
+        // flip for it would be a change to nothing.
+        if entry.tab != nil { ExtensionTabLifecycle.didChangePinned(tab) }
         // The id, not the tab: Undo Delete Space rebuilds the space's tabs as
         // fresh objects of the same ids (TASK-40).
         let unpinnedTabID = tab.id
@@ -3048,7 +3105,7 @@ class TabStore {
                     extensionID: extensionID, in: space
                 ) else { return }
                 entry.tab = restored
-                self.subscribeToTab(restored, spaceID: space.id)
+                self.subscribeToTab(restored)
                 self.registerUndo(actionName: "Close Tab") { [weak self] in
                     self?.closePinnedTab(id: id, in: space)
                 }
@@ -3536,7 +3593,7 @@ class TabStore {
             groupIDs: space.tabs.map(\.splitGroupID)
         )
         space.tabs.insert(tab, at: insertionIndex)
-        subscribeToTab(tab, spaceID: space.id)
+        subscribeToTab(tab)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
         scheduleSave()
         return tab
@@ -3617,7 +3674,10 @@ class TabStore {
 
     // MARK: - Per-Tab Subscriptions
 
-    private func subscribeToTab(_ tab: BrowserTab, spaceID: UUID) {
+    /// The tab's `spaceID` is read when a visit is recorded, not captured here,
+    /// so a tab rehomed onto another space (`adoptSpace`) keeps its
+    /// subscription and records under its current space.
+    private func subscribeToTab(_ tab: BrowserTab) {
         var cancellables = Set<AnyCancellable>()
 
         let notify: (BrowserTab) -> Void = { [weak self] tab in
@@ -3660,7 +3720,7 @@ class TabStore {
             .sink { [weak self, weak tab] isLoading in
                 guard let self, let tab else { return }
                 notify(tab)
-                if !isLoading {
+                if !isLoading, let spaceID = tab.spaceID {
                     self.recordHistoryVisit(tab: tab, spaceID: spaceID)
                 }
             }

@@ -77,8 +77,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// Lent to `TabStore.shared` by `sharedStoreSpace()`, taken back in tearDown.
     private var sharedSpaceIDs: [UUID] = []
     private var sharedProfiles: [Profile] = []
-    /// Throwaway extension bundles written by `makeUnloadedContext()`.
-    private var temporaryDirectories: [URL] = []
+    /// `basePath`s of the throwaway extension fixtures this suite builds.
+    private var tempDirs: [URL] = []
 
     override func setUp() {
         super.setUp()
@@ -101,8 +101,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         }
         sharedProfiles.removeAll()
         TabStore.shared.undoManager.removeAllActions()
-        for dir in temporaryDirectories { try? FileManager.default.removeItem(at: dir) }
-        temporaryDirectories.removeAll()
+        for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
+        tempDirs.removeAll()
         ExtensionTabLifecycle.notifier = previousNotifier
         super.tearDown()
     }
@@ -462,6 +462,30 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertTrue(host.peekTab === peek)
     }
 
+    /// An extension rehost retargets a peek that is itself showing the dead
+    /// origin — `retargetExtensionPages` calls `retarget` on the *peek*, not on
+    /// its host — which releases the peek's web view. That parks it just as the
+    /// host's own sleep does, so the contexts must hear the close there too.
+    func testExtensionRehostClosesARetargetedPeek() throws {
+        let f = try makeFixture()
+        let (host, peek) = hostWithLivePeek(in: f)
+        // The peek's test web view never loaded anything, so `showsExtensionPage`
+        // falls back to `url` — which is what puts it on the dying origin.
+        peek.url = URL(string: "webkit-extension://old-origin/page.html")!
+        XCTAssertEqual(events(for: peek), [.open], "precondition: the peek is registered")
+
+        f.profile.retargetExtensionPages(from: URL(string: "webkit-extension://old-origin/")!,
+                                         to: URL(string: "webkit-extension://new-origin/")!,
+                                         in: f.store)
+
+        XCTAssertEqual(events(for: peek), [.open, .close])
+        XCTAssertNil(peek.webView, "the retarget released the peek's web view")
+        XCTAssertNil(peek.extensionRegisteredProfile)
+        XCTAssertTrue(host.peekTab === peek, "the host keeps the reference the badge reads")
+        XCTAssertEqual(host.peekURL?.host, "new-origin",
+                       "and the parked URL a re-present loads names the new origin")
+    }
+
     /// The gate: a non-forced sleep spares a peek that is playing audio, and a
     /// peek that kept its web view is still a reachable page.
     func testHostSleepKeepsAPeekThatKeptItsWebView() throws {
@@ -583,8 +607,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
 
-        f.store.detachTab(id: tab.id, from: f.space)
-        f.store.addFavorite(from: tab, profileID: f.profile.id)
+        XCTAssertTrue(f.store.moveTabToFavorites(id: tab.id, from: f.space, profileID: f.profile.id))
         XCTAssertFalse(f.store.isPinned(tab))
         XCTAssertEqual(events(for: tab), [.open])
 
@@ -597,8 +620,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
     }
 
-    /// Pinned entry -> favourites, as the sidebar drop does it: detach the
-    /// entry, then home the same live tab under a favourite.
+    /// Pinned entry -> favourites, as the sidebar drop does it: the store moves
+    /// the entry's live tab under a favourite and announces the flip itself.
     func testPinnedEntryToFavoritesAnnouncesThePinnedFlag() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
@@ -606,8 +629,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         f.store.pinTab(id: tab.id, in: f.space)
         let entry = try XCTUnwrap(f.space.pinnedEntries.first { $0.tab === tab })
 
-        let detached = try XCTUnwrap(f.store.detachPinnedEntry(id: entry.id, from: f.space))
-        f.store.addFavorite(from: detached, profileID: f.profile.id, wasPinned: true)
+        XCTAssertTrue(f.store.moveTabToFavorites(id: entry.id, from: f.space, profileID: f.profile.id))
 
         XCTAssertEqual(events(for: tab), [.open, .change, .change],
                        "pin, then the move out of the pinned section — no close")
@@ -689,19 +711,14 @@ final class ExtensionTabLifecycleTests: XCTestCase {
                         "and tabs.get still resolves it: it is still an open tab")
     }
 
-    /// A `WKWebExtensionContext` over a throwaway manifest, for conformance
-    /// methods that take a context and don't consult it.
+    /// A `WKWebExtensionContext` over a throwaway fixture, for conformance
+    /// methods that take a context and don't consult it. Never loaded into a
+    /// profile's controller — the fixture's bundle is removed in tearDown.
     private func makeUnloadedContext() async throws -> WKWebExtensionContext {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lifecycle-pinned-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        temporaryDirectories.append(dir)
-        let manifest = """
-        {"manifest_version": 3, "name": "Pinned Flag", "version": "1.0"}
-        """
-        try manifest.write(to: dir.appendingPathComponent("manifest.json"),
-                           atomically: true, encoding: .utf8)
-        return WKWebExtensionContext(for: try await WKWebExtension(resourceBaseURL: dir))
+        let ext = try await makeOptionsPageTestExtension(idPrefix: "lifecycle-pinned",
+                                                         name: "Pinned Flag")
+        tempDirs.append(ext.basePath)
+        return WKWebExtensionContext(for: try XCTUnwrap(ext.wkExtension))
     }
 
     // MARK: - Placement (TASK-52)

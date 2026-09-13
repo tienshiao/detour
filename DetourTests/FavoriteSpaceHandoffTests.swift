@@ -157,4 +157,77 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
         XCTAssertTrue(webView.configuration.webExtensionController === profile.extensionController,
                       "and with the profile's extension controller, so content scripts inject")
     }
+
+    // MARK: - Space delete
+
+    /// The same stale id without any move: a favourite activated in A is still
+    /// shown in B after A is deleted, so its tab has to belong to B by then.
+    func testDeletingTheSpaceAFavoriteWasActivatedInRehomesItsTab() throws {
+        let f = try makeFixture()
+        let (favorite, tab) = try liveFavorite(in: f.store, profile: f.profile, activatedIn: f.a)
+
+        f.store.deleteSpace(id: f.a.id)
+
+        XCTAssertNil(f.store.space(withID: f.a.id))
+        XCTAssertTrue(favorite.tab === tab, "the favourite stays live")
+        XCTAssertEqual(tab.spaceID, f.b.id, "and its tab moved onto the profile's remaining space")
+        XCTAssertNotNil(tab.webView, "nothing of it was torn down")
+    }
+
+    /// With no space of the profile left to show the tile, the favourite goes
+    /// back to a dormant tile rather than keeping a live web view off-list —
+    /// the same outcome as a profile swap (`updateSpace`).
+    func testDeletingTheLastSpaceOfAProfileReturnsItsLiveFavoritesToDormant() throws {
+        let f = try makeFixture()
+        let other = f.store.addProfile(name: "Other")
+        _ = f.store.addSpace(name: "Other", emoji: "🅾️", colorHex: "000000", profileID: other.id)
+        f.store.deleteSpace(id: f.b.id)
+        let (favorite, tab) = try liveFavorite(in: f.store, profile: f.profile, activatedIn: f.a)
+
+        f.store.deleteSpace(id: f.a.id)
+
+        XCTAssertNil(favorite.tab, "returned to a dormant tile")
+        XCTAssertNil(tab.webView, "its web view was released")
+        XCTAssertTrue(f.profile.favorites.contains { $0.id == favorite.id }, "the favourite itself stays")
+    }
+
+    // MARK: - Guards
+
+    /// A favourite only moves into a space of its own profile: rehoming a live
+    /// tab onto another profile's space would rebuild it, on its next wake, from
+    /// that profile's data store and extension controller.
+    func testRestoreFavoriteRefusesASpaceOfAnotherProfile() throws {
+        let f = try makeFixture()
+        let other = f.store.addProfile(name: "Other")
+        let c = f.store.addSpace(name: "C", emoji: "©️", colorHex: "000000", profileID: other.id)
+        let (favorite, tab) = try liveFavorite(in: f.store, profile: f.profile, activatedIn: f.a)
+
+        XCTAssertFalse(f.store.restoreFavoriteAsTab(id: favorite.id, profileID: f.profile.id, in: c, at: 0))
+        XCTAssertFalse(f.store.restoreFavoriteAsPinned(id: favorite.id, profileID: f.profile.id, in: c, at: 0))
+
+        XCTAssertEqual(tab.spaceID, f.a.id, "nothing moved")
+        XCTAssertTrue(favorite.tab === tab)
+        XCTAssertTrue(c.tabs.isEmpty)
+        XCTAssertTrue(c.pinnedEntries.isEmpty)
+    }
+
+    /// A tab with no URL yet cannot be favourited; the refusal comes *before*
+    /// the detach, so the tab stays in its list instead of being stranded in no
+    /// section (still live, still registered with the extension contexts).
+    func testMoveTabToFavoritesRefusesATabWithNoURLBeforeDetaching() throws {
+        let f = try makeFixture()
+        let tab = f.store.addTab(in: f.a)
+        createdTabs.append(tab)
+        XCTAssertNil(tab.url, "precondition: a blank new tab")
+
+        XCTAssertFalse(f.store.moveTabToFavorites(id: tab.id, from: f.a, profileID: f.profile.id, at: 0))
+
+        XCTAssertTrue(f.a.tabs.contains { $0 === tab }, "still listed where it was")
+        XCTAssertTrue(f.profile.favorites.isEmpty)
+
+        f.store.pinTab(id: tab.id, in: f.a)
+        XCTAssertFalse(f.store.moveTabToFavorites(id: tab.id, from: f.a, profileID: f.profile.id, at: 0))
+        XCTAssertTrue(f.a.pinnedTabs.contains { $0 === tab }, "a pinned one stays pinned")
+        XCTAssertTrue(f.profile.favorites.isEmpty)
+    }
 }

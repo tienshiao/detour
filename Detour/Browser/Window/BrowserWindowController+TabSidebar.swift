@@ -460,35 +460,31 @@ extension BrowserWindowController: TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didDragTabToFavorite tabID: UUID, isPinned: Bool, at index: Int) {
         guard let space = activeSpace, let profileID = space.profile?.id else { return }
 
-        if isPinned {
-            guard let entry = space.pinnedEntries.first(where: { $0.id == tabID }) else { return }
+        if isPinned, let entry = space.pinnedEntries.first(where: { $0.id == tabID }), entry.tab == nil {
+            // Dormant: add the favourite first. A page of an uninstalled
+            // extension is refused (TASK-34), and the entry then stays pinned.
             let wasSelected = entry.tab?.id == selectedTabID
-            if entry.tab != nil {
-                // Live: the backing tab moves as it is.
-                if let tab = store.detachPinnedEntry(id: entry.id, from: space) {
-                    store.addFavorite(from: tab, profileID: profileID, at: index, wasPinned: true)
-                    if wasSelected { selectTab(id: tab.id) }
-                }
-            } else {
-                // Dormant: add the favourite first. A page of an uninstalled
-                // extension is refused (TASK-34), and the entry then stays pinned.
-                guard store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
-                                                 faviconURL: entry.faviconURL, favicon: entry.favicon,
-                                                 profileID: profileID, at: index) else {
-                    // The tile snapped back; the drop did nothing visible (TASK-37).
-                    showDormantTileRefusal(urls: [entry.pinnedURL])
-                    return
-                }
-                _ = store.detachPinnedEntry(id: entry.id, from: space)
-                if wasSelected { deselectAllTabs() }
+            guard store.addFavoriteFromEntry(url: entry.pinnedURL, title: entry.pinnedTitle,
+                                             faviconURL: entry.faviconURL, favicon: entry.favicon,
+                                             profileID: profileID, at: index) else {
+                // The tile snapped back; the drop did nothing visible (TASK-37).
+                showDormantTileRefusal(urls: [entry.pinnedURL])
+                return
             }
-        } else {
-            guard let tab = space.tabs.first(where: { $0.id == tabID }) else { return }
-            let wasSelected = tab.id == selectedTabID
-            store.detachTab(id: tab.id, from: space)
-            store.addFavorite(from: tab, profileID: profileID, at: index)
-            if wasSelected { selectTab(id: tab.id) }
+            _ = store.detachPinnedEntry(id: entry.id, from: space)
+            if wasSelected { deselectAllTabs() }
+            return
         }
+
+        // Live, from either section: the backing tab moves as it is. A refused
+        // move (a tab with no URL yet) leaves the row where it was.
+        let tab = isPinned
+            ? space.pinnedEntries.first(where: { $0.id == tabID })?.tab
+            : space.tabs.first(where: { $0.id == tabID })
+        guard let tab else { return }
+        let wasSelected = tab.id == selectedTabID
+        guard store.moveTabToFavorites(id: tabID, from: space, profileID: profileID, at: index) else { return }
+        if wasSelected { selectTab(id: tab.id) }
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int) {
