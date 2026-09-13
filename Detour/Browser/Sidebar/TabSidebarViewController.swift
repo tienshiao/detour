@@ -2622,8 +2622,11 @@ extension TabSidebarViewController: NSMenuDelegate {
             menu.addItem(dupItem)
         }
 
-        // Move to Space submenu
-        let spaces = delegate?.tabSidebarSpacesForContextMenu(self) ?? []
+        // Move to Space submenu. Never from an incognito window: only
+        // non-incognito spaces are offered, so every move out of here would take
+        // an incognito tab — web view, session history and all — into a
+        // persistent profile (TASK-38). TabStore refuses such a move anyway.
+        let spaces = isIncognito ? [] : (delegate?.tabSidebarSpacesForContextMenu(self) ?? [])
         if spaces.count > 1 {
             let moveItem = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
             let moveMenu = NSMenu()

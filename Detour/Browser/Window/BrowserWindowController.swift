@@ -2137,38 +2137,50 @@ class BrowserWindowController: NSWindowController {
         let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
 
-        // Settle selection BEFORE removing the tab so the removal observer
-        // (tabStoreDidRemoveTab) sees selection already moved off the closing
-        // tab and doesn't also try to advance it.
-        // Closing a split pane (Cmd+W closes the focused pane, not the row)
-        // stays in the split: the surviving partner wins over the generic
-        // adjacent-tab fallback.
-        if wasSelected,
-           let group = store.splitGroup(containing: tabs[index].id, in: space),
-           let partner = group.members.first(where: { $0.id != tabs[index].id }) {
-            selectTab(id: partner.id)
-        } else if wasSelected {
-            let nextID: UUID? = tabCloseSelectionID(
-                closingIndex: index,
-                tabs: tabs.map { ($0.id, $0.parentID) },
-                pinnedTabIDs: Set(space.pinnedEntries.compactMap { $0.tab?.id })
-            )
-            if let nextID { selectTab(id: nextID) }
-            else if let firstLiveEntry = space.pinnedEntries.first(where: { $0.tab != nil }),
-                    let tab = firstLiveEntry.tab { selectTab(id: tab.id) }
-            else if let firstDormantEntry = space.pinnedEntries.first {
-                store.activatePinnedEntry(id: firstDormantEntry.id, in: space)
-                if let tab = firstDormantEntry.tab { selectTab(id: tab.id) }
-                else {
-                    // A refused tile explains itself (TASK-37).
-                    deselectAllTabs()
-                    showDormantTileRefusal(urls: [firstDormantEntry.pinnedURL])
-                }
-            }
-            else { deselectAllTabs() }
-        }
+        if wasSelected { settleSelectionLeaving(tabAt: index, in: space) }
 
         store.closeTab(id: tabs[index].id, in: space)
+    }
+
+    /// Moves selection off the tab at `index`, which is about to leave this
+    /// window's tab list — by closing (`closeTab(at:wasSelected:)`) or by moving
+    /// to another space (TASK-38).
+    ///
+    /// Called BEFORE the tab leaves `space.tabs`, so the removal observer
+    /// (`tabStoreDidRemoveTab`) sees selection already settled and does not also
+    /// try to advance it with its own, blunter pick.
+    ///
+    /// Leaving one pane of a split stays in the split: the surviving partner
+    /// wins over the generic adjacent-tab fallback. Otherwise the next tab is
+    /// the close order's (`tabCloseSelectionID`: a child's parent, else a
+    /// neighbour), then the first live pinned tab, then the first pinned tile —
+    /// which may refuse to wake and then explains itself (TASK-37).
+    func settleSelectionLeaving(tabAt index: Int, in space: Space) {
+        let tabs = space.tabs
+        guard index >= 0, index < tabs.count else { return }
+        if let group = store.splitGroup(containing: tabs[index].id, in: space),
+           let partner = group.members.first(where: { $0.id != tabs[index].id }) {
+            selectTab(id: partner.id)
+            return
+        }
+        let nextID: UUID? = tabCloseSelectionID(
+            closingIndex: index,
+            tabs: tabs.map { ($0.id, $0.parentID) },
+            pinnedTabIDs: Set(space.pinnedEntries.compactMap { $0.tab?.id })
+        )
+        if let nextID { selectTab(id: nextID) }
+        else if let firstLiveEntry = space.pinnedEntries.first(where: { $0.tab != nil }),
+                let tab = firstLiveEntry.tab { selectTab(id: tab.id) }
+        else if let firstDormantEntry = space.pinnedEntries.first {
+            store.activatePinnedEntry(id: firstDormantEntry.id, in: space)
+            if let tab = firstDormantEntry.tab { selectTab(id: tab.id) }
+            else {
+                // A refused tile explains itself (TASK-37).
+                deselectAllTabs()
+                showDormantTileRefusal(urls: [firstDormantEntry.pinnedURL])
+            }
+        }
+        else { deselectAllTabs() }
     }
 
     // MARK: - Pin/Unpin

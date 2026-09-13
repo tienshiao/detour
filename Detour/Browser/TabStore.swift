@@ -2188,6 +2188,212 @@ class TabStore {
         scheduleSave()
     }
 
+    // MARK: - Moving to Another Space (TASK-38)
+
+    /// Where a page a move carries into `destination` opens there, or nil when
+    /// that space's profile cannot show it in `section` (TASK-34).
+    ///
+    /// Only an extension page can be refused, and only across profiles: a
+    /// `webkit-extension://` origin belongs to one profile's loaded context, so
+    /// the URL has to be rewritten onto the destination profile's origin for the
+    /// *same* extension — and that profile may have none. Enabled there gives a
+    /// live origin; installed but disabled gives a pending one, which only a
+    /// dormant tile may wait on (a tab would wake blank and the next restore
+    /// would drop it); not installed gives nothing at all.
+    ///
+    /// An ordinary URL comes back unchanged, without touching the database.
+    private func rehomedMovedPage(_ url: URL, from source: Space, to destination: Space,
+                                  section: FavoriteDropTargets) -> URL? {
+        guard isExtensionPageURL(url) else { return url }
+        let page = classifyCapturedPage(url: url,
+                                        extensionID: source.profile?.extensionID(forPageURL: url),
+                                        in: destination)
+        guard dormantTileDropTargets(page).contains(section) else { return nil }
+        return rehomedTileURL(url, page: page, in: destination)
+    }
+
+    /// Whether a move between these two spaces is allowed to happen at all.
+    ///
+    /// Refuses anything that crosses the incognito boundary: an incognito tab
+    /// carries a live web view and — now that the tab itself moves — its whole
+    /// interaction state, which landing in a persistent profile would write to
+    /// the session database. The sidebar does not offer incognito spaces as
+    /// destinations and hides the menu in an incognito window, so this is the
+    /// invariant behind that, not a case the UI can reach.
+    private func canMove(from source: Space, to destination: Space) -> Bool {
+        source.id != destination.id && source.isIncognito == destination.isIncognito
+    }
+
+    /// Selection the source space keeps after a move took its selected tab away.
+    /// A window on that space settles its own selection first (it knows which
+    /// tab *it* was showing); this is the store-level fallback, so a space no
+    /// window is on does not keep naming a tab that now lives elsewhere.
+    private func settleSelectionAfterMove(of tab: BrowserTab, from source: Space) {
+        guard source.selectedTabID == tab.id else { return }
+        source.selectedTabID = source.tabs.first?.id ?? source.pinnedTabs.first?.id
+    }
+
+    /// Moves the tab `id` from `source` into `destination` — the sidebar's "Move
+    /// to Space" — carrying the tab itself rather than rebuilding it.
+    ///
+    /// Within one profile the tab is only rehomed: same object, same web view,
+    /// so its back/forward list, scroll position and form state all survive.
+    /// Across profiles the web view has to go — it was built from the source
+    /// profile's data store and extension controller, and a configuration is
+    /// only chosen at creation and at `wake()` — so the tab is slept exactly as
+    /// a profile swap sleeps it (`updateSpace`), keeping its interaction state,
+    /// and wakes rebuilt from the destination's configuration.
+    ///
+    /// An extension page crossing profiles is `retarget`ed onto the destination
+    /// profile's origin for its extension, and refused when that profile cannot
+    /// serve it (`rehomedMovedPage`): nothing moves and this returns false, so
+    /// the caller can explain why (`dormantTileRefusal(url:in:)`).
+    ///
+    /// Never a close: no closed-tab record and no Close Tab undo. The single
+    /// "Move to Space" undo moves the tab back to the index it left, resolving
+    /// both spaces by id at undo time. It restores the section and the index,
+    /// not a split group the move dissolved — re-forming one needs the two
+    /// members adjacent, which an index alone cannot promise.
+    @discardableResult
+    func moveTab(id: UUID, from source: Space, to destination: Space,
+                 at destinationIndex: Int? = nil) -> Bool {
+        guard canMove(from: source, to: destination),
+              let index = source.tabs.firstIndex(where: { $0.id == id }) else { return false }
+        let tab = source.tabs[index]
+        let crossProfile = source.profileID != destination.profileID
+
+        // Resolved before anything is mutated: a refused page has to leave the
+        // tab exactly where it was.
+        var retargetURL: URL?
+        if crossProfile, let url = tab.url {
+            guard let rehomed = rehomedMovedPage(url, from: source, to: destination, section: .tabList)
+            else { return false }
+            if rehomed != url { retargetURL = rehomed }
+        }
+
+        source.tabs.remove(at: index)
+        leaveSplitGroup(tab, in: source)
+        // The views want the same redraw as a removal. The extension seam does
+        // not listen to this notification (teardown is its close point), and
+        // the window listing the tab does change, so the contexts see a close
+        // here and the insertion below re-opens it under the destination.
+        notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: source) }
+        ExtensionTabLifecycle.didClose(tab)
+        if crossProfile {
+            if let retargetURL {
+                // Discards the interaction state with the dead origin's
+                // back/forward list, and leaves the tab sleeping on the new URL.
+                tab.retarget(to: retargetURL)
+            } else if tab.webView != nil {
+                tab.sleep(force: true)
+            }
+        }
+        adoptSpace(destination, for: tab)
+        settleSelectionAfterMove(of: tab, from: source)
+        // The tab it was opened from stays behind, so it arrives as a root tab.
+        tab.parentID = nil
+
+        let insertAt = snappedToSplitGroupBoundary(
+            min(destinationIndex ?? destination.tabs.count, destination.tabs.count),
+            groupIDs: destination.tabs.map(\.splitGroupID)
+        )
+        destination.tabs.insert(tab, at: insertAt)
+        notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertAt, in: destination) }
+        registerUndo(actionName: "Move to Space") { [weak self] in
+            guard let self,
+                  let home = self.space(withID: source.id),
+                  let current = self.space(withID: destination.id) else { return }
+            self.moveTab(id: id, from: current, to: home, at: index)
+        }
+        scheduleSave()
+        return true
+    }
+
+    /// Moves the pinned entry `id` from `source` into `destination`, staying
+    /// pinned — the pinned half of "Move to Space".
+    ///
+    /// A live entry's backing tab travels like a normal tab's (see `moveTab`); a
+    /// dormant one stays dormant, its home page rehomed onto the destination
+    /// profile's origin when it is an extension page (TASK-34). A dormant tile
+    /// may wait on a pending origin, so a disabled extension's entry can still
+    /// move; a live one cannot, since its tab has nowhere to wake. Nothing
+    /// installed to claim the origin refuses the move entirely.
+    ///
+    /// Pinned folders belong to their space, so the entry lands at the
+    /// destination's root with a fresh sort order. Its pinned split dissolves
+    /// (both members would have to move together to survive); the undo rejoins
+    /// it if the partner is still an ungrouped sibling, as the unpin undo does.
+    @discardableResult
+    func movePinnedEntry(id: UUID, from source: Space, to destination: Space,
+                         at destinationIndex: Int? = nil) -> Bool {
+        guard canMove(from: source, to: destination),
+              let index = source.pinnedEntries.firstIndex(where: { $0.id == id }) else { return false }
+        let entry = source.pinnedEntries[index]
+        let crossProfile = source.profileID != destination.profileID
+
+        var rehomedHome = entry.pinnedURL
+        var retargetURL: URL?
+        if crossProfile {
+            guard let home = rehomedMovedPage(entry.pinnedURL, from: source, to: destination,
+                                              section: .pinned) else { return false }
+            rehomedHome = home
+            // A live entry additionally needs the page it is *currently* on to be
+            // loadable over there, or its backing tab would wake blank.
+            if let url = entry.tab?.url {
+                guard let rehomed = rehomedMovedPage(url, from: source, to: destination,
+                                                     section: .tabList) else { return false }
+                if rehomed != url { retargetURL = rehomed }
+            }
+        }
+
+        let savedFolderID = entry.folderID
+        let savedSortOrder = entry.sortOrder
+        let membership = capturePinnedSplitMembership(of: entry, in: source)
+        source.pinnedEntries.remove(at: index)
+        entry.splitGroupID = nil
+        entry.splitFraction = nil
+        dissolvePinnedSplit(around: id, groupID: membership?.groupID, in: source)
+        notifyObservers { $0.tabStoreDidRemovePinnedEntry(entry, at: index, in: source) }
+
+        if let tab = entry.tab {
+            ExtensionTabLifecycle.didClose(tab)
+            if crossProfile {
+                if let retargetURL {
+                    tab.retarget(to: retargetURL)
+                } else if tab.webView != nil {
+                    tab.sleep(force: true)
+                }
+            }
+            adoptSpace(destination, for: tab)
+            settleSelectionAfterMove(of: tab, from: source)
+        }
+        entry.pinnedURL = rehomedHome
+        entry.folderID = nil
+        let maxEntryOrder = destination.pinnedEntries.map(\.sortOrder).max() ?? -1
+        let maxFolderOrder = destination.pinnedFolders.map(\.sortOrder).max() ?? -1
+        entry.sortOrder = max(maxEntryOrder, maxFolderOrder) + 1
+
+        let insertAt = min(destinationIndex ?? destination.pinnedEntries.count,
+                           destination.pinnedEntries.count)
+        destination.pinnedEntries.insert(entry, at: insertAt)
+        notifyObservers { $0.tabStoreDidInsertPinnedEntry(entry, at: insertAt, in: destination) }
+        registerUndo(actionName: "Move to Space") { [weak self] in
+            guard let self,
+                  let home = self.space(withID: source.id),
+                  let current = self.space(withID: destination.id),
+                  self.movePinnedEntry(id: id, from: current, to: home, at: index) else { return }
+            // Coming home means coming back to the folder and the sort order the
+            // entry left from, which the move itself deliberately does not keep.
+            entry.folderID = savedFolderID
+            entry.sortOrder = savedSortOrder
+            self.rejoinPinnedSplit(entry, membership: membership, in: home)
+            self.notifyObservers { $0.tabStoreDidReorderPinnedEntries(in: home) }
+            self.scheduleSave()
+        }
+        scheduleSave()
+        return true
+    }
+
     // MARK: - Split Tab Mutations
 
     /// The split group containing `tabID`, if any — normal-tab groups, or a

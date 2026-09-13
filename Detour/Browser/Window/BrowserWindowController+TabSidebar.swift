@@ -236,33 +236,59 @@ extension BrowserWindowController: TabSidebarDelegate {
         selectTab(id: newTab.id)
     }
 
+    /// "Move to Space" moves the tab or pinned entry itself (TASK-38) — it used
+    /// to close it and create a new tab from the URL in the destination, which
+    /// lost the back/forward list, unpinned a pinned entry, left a Close Tab
+    /// undo and a closed-tab record behind, and built an extension page from the
+    /// destination *space's* configuration, which cannot load the scheme at all.
+    ///
+    /// The store refuses a move whose page the destination profile cannot serve
+    /// (an extension not installed or not enabled there) and leaves everything
+    /// where it was; that is the one case with nothing to see, so it is
+    /// explained like any other refused tile (TASK-37).
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMoveTabAt index: Int, isPinned: Bool, toSpaceID: UUID) {
-        guard let srcSpace = activeSpace, let dstSpace = store.space(withID: toSpaceID) else { return }
-        let url: URL?
-        let entryOrTabID: UUID
+        guard let srcSpace = activeSpace, let dstSpace = store.space(withID: toSpaceID),
+              srcSpace.id != dstSpace.id else { return }
+        // Selection is settled before the move, as for a close: the removal
+        // notification would otherwise advance it with a blunter pick. A refused
+        // move puts it back — nothing left the window after all.
+        let previousSelection = selectedTabID
         if isPinned {
             guard index >= 0, index < srcSpace.pinnedEntries.count else { return }
             let entry = srcSpace.pinnedEntries[index]
-            url = entry.tab?.url ?? entry.pinnedURL
-            entryOrTabID = entry.id
+            // Either the page it is on or its home page can be the one the
+            // destination profile cannot serve; the toast picks whichever has a
+            // reason.
+            let urls = [entry.tab?.url, entry.pinnedURL].compactMap { $0 }
+            let wasSelected = entry.tab?.id == selectedTabID
+            if wasSelected {
+                // As closePinnedTab(at:): the still-live partner of a pinned
+                // split keeps the window on the split rather than blanking it.
+                if let groupID = entry.splitGroupID,
+                   let partnerTab = store.pinnedSplitEntries(groupID: groupID, in: srcSpace)
+                       .first(where: { $0.id != entry.id })?.tab {
+                    selectTab(id: partnerTab.id)
+                } else {
+                    deselectAllTabs()
+                }
+            }
+            guard store.movePinnedEntry(id: entry.id, from: srcSpace, to: dstSpace) else {
+                if wasSelected, let previousSelection { selectTab(id: previousSelection) }
+                showDormantTileRefusal(urls: urls)
+                return
+            }
         } else {
             guard index >= 0, index < srcSpace.tabs.count else { return }
             let tab = srcSpace.tabs[index]
-            url = tab.url
-            entryOrTabID = tab.id
-        }
-        guard let url else { return }
-        if isPinned {
-            store.closePinnedTab(id: entryOrTabID, in: srcSpace)
-        } else {
-            let wasSelected = entryOrTabID == selectedTabID
-            if wasSelected {
-                closeTab(at: index, wasSelected: true)
-            } else {
-                store.closeTab(id: entryOrTabID, in: srcSpace)
+            let url = tab.url
+            let wasSelected = tab.id == selectedTabID
+            if wasSelected { settleSelectionLeaving(tabAt: index, in: srcSpace) }
+            guard store.moveTab(id: tab.id, from: srcSpace, to: dstSpace) else {
+                if wasSelected, let previousSelection { selectTab(id: previousSelection) }
+                if let url { showDormantTileRefusal(urls: [url]) }
+                return
             }
         }
-        store.addTab(in: dstSpace, url: url)
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestArchiveTabAt index: Int) {

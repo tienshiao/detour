@@ -245,6 +245,51 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertTrue(f.profile.favorites.first?.tab === tab)
     }
 
+    // MARK: - Moving to another space
+
+    /// "Move to Space" inside one profile keeps the tab and its web view, but
+    /// the *window* listing it changes — and a window's tab list is what
+    /// `tabs.onCreated` / `onRemoved` are about. So unlike a section move within
+    /// one space (silent, TASK-59), this is a close and a re-open (TASK-38),
+    /// with the tab already listed in the destination when it is re-reported.
+    func testMoveTabToAnotherSpaceReportsCloseThenOpen() throws {
+        let f = try makeFixture()
+        let destination = f.store.addSpace(name: "Lifecycle B", emoji: "🅱️",
+                                           colorHex: "FF9500", profileID: f.profile.id)
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+        XCTAssertEqual(events(for: tab), [.open], "precondition: reported once, on creation")
+        let webView = try XCTUnwrap(tab.webView)
+
+        XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.space, to: destination))
+
+        XCTAssertEqual(events(for: tab), [.open, .close, .open])
+        XCTAssertEqual(listedAtOpen(tab), [true, true],
+                       "the destination holds the tab before the contexts hear about it")
+        XCTAssertEqual(Set(profileIDs(for: tab)), [f.profile.id], "the same profile throughout")
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+        XCTAssertTrue(tab.webView === webView, "the same web view WebKit already maps")
+    }
+
+    /// The pinned half of the same rule: the entry moves as it is, so the
+    /// backing tab is closed and re-opened once, under the same profile.
+    func testMovePinnedEntryToAnotherSpaceReportsCloseThenOpen() throws {
+        let f = try makeFixture()
+        let destination = f.store.addSpace(name: "Lifecycle Pinned B", emoji: "🅱️",
+                                           colorHex: "FF9500", profileID: f.profile.id)
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+        f.store.pinTab(id: tab.id, in: f.space)
+        let entry = try XCTUnwrap(f.space.pinnedEntries.first)
+        notifier.records.removeAll()
+
+        XCTAssertTrue(f.store.movePinnedEntry(id: entry.id, from: f.space, to: destination))
+
+        XCTAssertEqual(events(for: tab), [.close, .open])
+        XCTAssertEqual(listedAtOpen(tab), [true])
+        XCTAssertTrue(destination.pinnedEntries.first?.tab === tab)
+    }
+
     // MARK: - Favourite property changes
 
     func testFavoriteTabPropertyChangeReachesTheContexts() throws {
@@ -809,10 +854,12 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertNil(tab.extensionRegisteredProfile)
     }
 
-    /// Moving a tab between two spaces of one profile is a pair of raw list
-    /// mutations — no store API covers it, so no remove notification closes the
-    /// tab. The arrival must not re-open it either: it is still registered, and
-    /// its web view is the one WebKit already maps.
+    /// A tab moved between two spaces by *raw list mutations* — around
+    /// `moveTab(id:from:to:)`, which reports the move properly (see
+    /// `testMoveTabToAnotherSpaceReportsCloseThenOpen`) — produces no remove
+    /// notification, so nothing closes the tab. The arrival must not re-open it
+    /// either: it is still registered, and its web view is the one WebKit
+    /// already maps. This is the placement rule's guard, not a supported move.
     func testMovingATabBetweenSpacesOfOneProfileReportsNothingNew() throws {
         let f = try makeFixture()
         let other = f.store.addSpace(name: "Other", emoji: "🧪", colorHex: "007AFF",
