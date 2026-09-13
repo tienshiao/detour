@@ -2379,17 +2379,16 @@ class TabStore {
     /// keep a source-profile web view under a destination-profile host), then
     /// retargeted or dropped as `planMove` decided.
     ///
-    /// The extension contexts see a close here and the insertion that follows
-    /// re-opens the tab under the destination: the window listing the tab
-    /// changes, and across profiles the contexts themselves do. Chrome and WebKit
-    /// model a tab changing window as a detach/attach pair
-    /// (`WKWebExtensionContext.didMoveTab`); Detour approximates it with
-    /// close/open, so within a profile extensions see `tabs.onRemoved` +
-    /// `tabs.onCreated` for a tab whose web view and content scripts never went
-    /// away (TASK-61 is the move seam).
+    /// Only a move *across profiles* closes the tab for the extension contexts:
+    /// the destination's contexts are different objects, the web view is rebuilt
+    /// from their configuration, and the insertion that follows re-opens the tab
+    /// under the destination profile. Within one profile the tab keeps the web
+    /// view WebKit already maps, so closing it would make extensions drop the
+    /// per-tab state (ports, frame maps) of a tab that never went away — the
+    /// callers announce the move instead, with `announceSpaceMove` (TASK-61).
     private func carry(_ tab: BrowserTab, _ carry: TabCarry, from source: Space, to destination: Space) {
-        ExtensionTabLifecycle.didClose(tab)
         if source.profileID != destination.profileID {
+            ExtensionTabLifecycle.didClose(tab)
             if let retargetURL = carry.retargetURL {
                 // Discards the interaction state with the dead origin's
                 // back/forward list, and leaves the tab sleeping on the new URL.
@@ -2414,6 +2413,39 @@ class TabStore {
         }
         adoptSpace(destination, for: tab)
         settleSelectionAfterMove(of: tab, from: source)
+    }
+
+    /// The index the extension contexts knew `tab` at, in the window it is
+    /// leaving — `BrowserWindowController.extensionTabs`, the same enumeration
+    /// `tabs(for:)` reports. Must be read *before* the move mutates anything.
+    ///
+    /// With no window on the source space there is no such enumeration, so this
+    /// falls back to the space's own sections in window order (pinned, then
+    /// normal). That is a best effort: favourites belong to the profile and a
+    /// live peek is interleaved by the window, and neither can be ordered
+    /// without one — but a window-less source only ever produces the `onAttached`
+    /// half, whose `fromIndex` no extension sees.
+    private func extensionMoveIndex(of tab: BrowserTab, leaving source: Space,
+                                    shownBy oldWindow: (any WKWebExtensionWindow)?) -> Int {
+        if let wc = oldWindow as? BrowserWindowController,
+           let index = wc.extensionTabs.firstIndex(where: { $0 === tab }) {
+            return index
+        }
+        return (source.pinnedTabs + source.tabs).firstIndex { $0 === tab } ?? 0
+    }
+
+    /// Tells the contexts a same-profile "Move to Space" happened, once the tab
+    /// is in the destination container (`ExtensionTabLifecycle.didMove`).
+    ///
+    /// Skipped when no window showed the source space *and* none lists the tab
+    /// now: `tabs.onDetached`/`onAttached`/`onMoved` all name a window, so with
+    /// no window on either side there is no event either half could describe —
+    /// and the tab is already reported open wherever it is. A window arriving on
+    /// the destination later lists it from its first enumeration.
+    private func announceSpaceMove(of tab: BrowserTab, fromIndex: Int,
+                                   oldWindow: (any WKWebExtensionWindow)?) {
+        guard oldWindow != nil || ExtensionTabLifecycle.windowListing(tab) != nil else { return }
+        ExtensionTabLifecycle.didMove(tab, fromIndex: fromIndex, in: oldWindow)
     }
 
     /// Moves the tab `id` from `source` into `destination` — the sidebar's "Move
@@ -2444,11 +2476,18 @@ class TabStore {
                                                  availability: ExtensionAvailability(appDB: appDB))
         else { return false }
 
+        // Resolved before the move mutates anything: both name where the tab is
+        // *leaving* from (TASK-61).
+        let sameProfile = source.profileID == destination.profileID
+        let oldWindow = ExtensionTabLifecycle.windowShowingSpace(source.id)
+        let fromIndex = extensionMoveIndex(of: tab, leaving: source, shownBy: oldWindow)
+
         source.tabs.remove(at: index)
         leaveSplitGroup(tab, in: source)
         // The views want the same redraw as a removal. The extension seam does
-        // not listen to this notification (teardown is its close point); `carry`
-        // tells the contexts.
+        // not listen to this notification (teardown is its close point); across
+        // profiles `carry` closes the tab, and within one the insertion below
+        // announces the move.
         notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: source) }
         carry(tab, plan, from: source, to: destination)
         // The tab it was opened from stays behind, so it arrives as a root tab.
@@ -2461,6 +2500,9 @@ class TabStore {
         )
         destination.tabs.insert(tab, at: insertAt)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertAt, in: destination) }
+        if sameProfile {
+            announceSpaceMove(of: tab, fromIndex: fromIndex, oldWindow: oldWindow)
+        }
         // Ids, not objects: the spaces are resolved at undo time, and the tab by
         // id in the reverse move (Undo Delete Space rebuilds a space's tabs as
         // fresh objects of the same ids — TASK-40).
@@ -2510,6 +2552,12 @@ class TabStore {
                                                  availability: ExtensionAvailability(appDB: appDB))
         else { return false }
 
+        // As in `moveTab`: where the tab is leaving from, read before the move
+        // mutates anything (TASK-61).
+        let sameProfile = source.profileID == destination.profileID
+        let oldWindow = ExtensionTabLifecycle.windowShowingSpace(source.id)
+        let fromIndex = entry.tab.map { extensionMoveIndex(of: $0, leaving: source, shownBy: oldWindow) } ?? 0
+
         let savedFolderID = entry.folderID
         let savedSortOrder = entry.sortOrder
         let membership = capturePinnedSplitMembership(of: entry, in: source)
@@ -2532,6 +2580,9 @@ class TabStore {
                            destination.pinnedEntries.count)
         destination.pinnedEntries.insert(entry, at: insertAt)
         notifyObservers { $0.tabStoreDidInsertPinnedEntry(entry, at: insertAt, in: destination) }
+        if sameProfile, let tab = entry.tab {
+            announceSpaceMove(of: tab, fromIndex: fromIndex, oldWindow: oldWindow)
+        }
         // Ids, not objects: the spaces are resolved at undo time, and so is the
         // entry — Undo Delete Space rebuilds a space's pinned entries as fresh
         // objects of the same ids (TASK-40), so the instance captured here may

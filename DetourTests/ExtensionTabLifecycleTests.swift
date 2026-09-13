@@ -18,7 +18,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     // MARK: - Recording notifier
 
     private struct Record: Equatable, CustomStringConvertible {
-        enum Event: String { case open, close, activate, change }
+        enum Event: String { case open, close, activate, change, move }
         let event: Event
         let tabID: UUID
         let profileID: UUID
@@ -32,6 +32,10 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         /// only place a tab `tabs(for:)` already enumerates, which is exactly
         /// what the placement rule guarantees (TASK-52).
         let listed: Bool
+        /// The index a `.move` event reported the tab leaving from, and whether
+        /// it named an old window at all — nil for every other event (TASK-61).
+        var fromIndex: Int? = nil
+        var oldWindowIsNil: Bool? = nil
 
         var description: String { "\(event.rawValue)(\(tabID.uuidString.prefix(4)))" }
     }
@@ -69,7 +73,18 @@ final class ExtensionTabLifecycleTests: XCTestCase {
                                   properties: properties,
                                   listed: isListed(tab, in: profile)))
         }
+        func didMove(_ tab: BrowserTab, fromIndex: Int, in oldWindow: (any WKWebExtensionWindow)?,
+                     in profile: Profile) {
+            records.append(Record(event: .move, tabID: tab.id, profileID: profile.id,
+                                  properties: [], listed: isListed(tab, in: profile),
+                                  fromIndex: fromIndex, oldWindowIsNil: oldWindow == nil))
+        }
     }
+
+    /// A window stand-in for the move hooks: the suite has no real
+    /// `BrowserWindowController`s, and `didMove` only ever passes the window
+    /// straight through to WebKit.
+    private final class StubWindow: NSObject, WKWebExtensionWindow {}
 
     private var notifier = RecordingNotifier()
     private var previousNotifier: (any ExtensionTabLifecycleNotifying)!
@@ -80,11 +95,21 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// `basePath`s of the throwaway extension fixtures this suite builds.
     private var tempDirs: [URL] = []
 
+    /// The move seam's window hooks, saved so tearDown restores the production
+    /// `NSApp.windows` lookups (TASK-61).
+    private var previousWindowShowingSpace: ((UUID) -> (any WKWebExtensionWindow)?)!
+    private var previousWindowListing: ((BrowserTab) -> (any WKWebExtensionWindow)?)!
+
     override func setUp() {
         super.setUp()
         notifier = RecordingNotifier()
         previousNotifier = ExtensionTabLifecycle.notifier
         ExtensionTabLifecycle.notifier = notifier
+        previousWindowShowingSpace = ExtensionTabLifecycle.windowShowingSpace
+        previousWindowListing = ExtensionTabLifecycle.windowListing
+        // No real windows in this suite: a test that wants one installs it.
+        ExtensionTabLifecycle.windowShowingSpace = { _ in nil }
+        ExtensionTabLifecycle.windowListing = { _ in nil }
     }
 
     override func tearDown() {
@@ -104,7 +129,24 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
         ExtensionTabLifecycle.notifier = previousNotifier
+        ExtensionTabLifecycle.windowShowingSpace = previousWindowShowingSpace
+        ExtensionTabLifecycle.windowListing = previousWindowListing
         super.tearDown()
+    }
+
+    /// Installs `window` as the window showing `spaceID` (and as the window
+    /// listing any tab), the way a real `BrowserWindowController` on that space
+    /// would answer both hooks.
+    private func showSpace(_ spaceID: UUID, in window: StubWindow) {
+        ExtensionTabLifecycle.windowShowingSpace = { $0 == spaceID ? window : nil }
+        ExtensionTabLifecycle.windowListing = { _ in window }
+    }
+
+    /// The `.move` events recorded for `tab`, as (fromIndex, oldWindowIsNil).
+    private func moves(for tab: BrowserTab) -> [(fromIndex: Int, oldWindowIsNil: Bool)] {
+        notifier.records
+            .filter { $0.tabID == tab.id && $0.event == .move }
+            .map { (fromIndex: $0.fromIndex ?? -1, oldWindowIsNil: $0.oldWindowIsNil ?? true) }
     }
 
     /// Only the events for `tab` — the notifier is a process-wide seam, so a
@@ -247,47 +289,136 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     // MARK: - Moving to another space
 
-    /// "Move to Space" inside one profile keeps the tab and its web view, but
-    /// the *window* listing it changes — and a window's tab list is what
-    /// `tabs.onCreated` / `onRemoved` are about. So unlike a section move within
-    /// one space (silent, TASK-59), this is a close and a re-open (TASK-38),
-    /// with the tab already listed in the destination when it is re-reported.
-    func testMoveTabToAnotherSpaceReportsCloseThenOpen() throws {
+    /// "Move to Space" inside one profile keeps the tab, its web view and its
+    /// content scripts; only the *window* listing it changes. So it is neither
+    /// silent (as a section move within one space is, TASK-59) nor a close and a
+    /// re-open (which made extensions drop every per-tab port and frame map,
+    /// TASK-61): it is announced as a move, carrying the index the tab held in
+    /// the window it left.
+    func testMoveTabToAnotherSpaceReportsAMoveNotACloseAndOpen() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle B", emoji: "🅱️",
                                            colorHex: "FF9500", profileID: f.profile.id)
+        // A pinned tab first, so the moved tab's index in the window enumeration
+        // (pinned, then normal) is not trivially 0.
+        let pinned = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(pinned)
+        f.store.pinTab(id: pinned.id, in: f.space)
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
+        let window = StubWindow()
+        showSpace(f.space.id, in: window)
         XCTAssertEqual(events(for: tab), [.open], "precondition: reported once, on creation")
         let webView = try XCTUnwrap(tab.webView)
 
         XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.space, to: destination))
 
-        XCTAssertEqual(events(for: tab), [.open, .close, .open])
-        XCTAssertEqual(listedAtOpen(tab), [true, true],
-                       "the destination holds the tab before the contexts hear about it")
+        XCTAssertEqual(events(for: tab), [.open, .move], "no close for a tab that never went away")
+        XCTAssertEqual(moves(for: tab).map(\.fromIndex), [1], "index 0 is the pinned tab")
+        XCTAssertEqual(moves(for: tab).map(\.oldWindowIsNil), [false],
+                       "the window on the source space is the one it detaches from")
         XCTAssertEqual(Set(profileIDs(for: tab)), [f.profile.id], "the same profile throughout")
-        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile,
+                      "still registered, so its ports and frame maps stand")
         XCTAssertTrue(tab.webView === webView, "the same web view WebKit already maps")
+        XCTAssertTrue(destination.tabs.first === tab)
     }
 
     /// The pinned half of the same rule: the entry moves as it is, so the
-    /// backing tab is closed and re-opened once, under the same profile.
-    func testMovePinnedEntryToAnotherSpaceReportsCloseThenOpen() throws {
+    /// backing tab is announced moved rather than closed and re-opened.
+    func testMovePinnedEntryToAnotherSpaceReportsAMoveNotACloseAndOpen() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle Pinned B", emoji: "🅱️",
                                            colorHex: "FF9500", profileID: f.profile.id)
+        let first = f.store.addTab(in: f.space, url: favoriteURL)
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
-        createdTabs.append(tab)
+        createdTabs.append(contentsOf: [first, tab])
+        f.store.pinTab(id: first.id, in: f.space)
         f.store.pinTab(id: tab.id, in: f.space)
-        let entry = try XCTUnwrap(f.space.pinnedEntries.first)
+        let entry = try XCTUnwrap(f.space.pinnedEntries.first { $0.tab === tab })
+        let webView = try XCTUnwrap(tab.webView)
+        let window = StubWindow()
+        showSpace(f.space.id, in: window)
         notifier.records.removeAll()
 
         XCTAssertTrue(f.store.movePinnedEntry(id: entry.id, from: f.space, to: destination))
 
-        XCTAssertEqual(events(for: tab), [.close, .open])
-        XCTAssertEqual(listedAtOpen(tab), [true])
+        XCTAssertEqual(events(for: tab), [.move])
+        XCTAssertEqual(moves(for: tab).map(\.fromIndex), [1],
+                       "second in the pinned section it left")
+        XCTAssertEqual(moves(for: tab).map(\.oldWindowIsNil), [false])
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+        XCTAssertTrue(tab.webView === webView)
         XCTAssertTrue(destination.pinnedEntries.first?.tab === tab)
+    }
+
+    /// Across profiles the destination's contexts are different objects and the
+    /// web view has to be rebuilt from their configuration, so the move stays a
+    /// close — and the tab re-opens under the *new* profile when it wakes there.
+    func testCrossProfileMoveStillClosesAndReopensUnderTheNewProfile() throws {
+        // On the shared store: `BrowserTab.wake()` resolves its space through
+        // `TabStore.shared`, and the re-open only lands on the wake that rebuilds
+        // the web view from the destination profile's configuration.
+        let (source, profile) = sharedStoreSpace()
+        let other = TabStore.shared.addProfile(name: "Lifecycle Cross Other")
+        sharedProfiles.append(other)
+        let destination = TabStore.shared.addSpace(name: "Lifecycle Cross Other A", emoji: "🇨",
+                                                   colorHex: "34C759", profileID: other.id)
+        sharedSpaceIDs.append(destination.id)
+        let tab = TabStore.shared.addTab(in: source, url: favoriteURL)
+        createdTabs.append(tab)
+        let window = StubWindow()
+        showSpace(source.id, in: window)
+
+        XCTAssertTrue(TabStore.shared.moveTab(id: tab.id, from: source, to: destination))
+        // The carry sleeps the tab (its web view belonged to the old profile), so
+        // the re-open lands on the wake that rebuilds it from the destination's.
+        XCTAssertTrue(tab.isSleeping)
+        tab.wake()
+
+        XCTAssertEqual(events(for: tab), [.open, .close, .open])
+        XCTAssertEqual(profileIDs(for: tab), [profile.id, profile.id, other.id],
+                       "the close names who was told; the re-open names the destination")
+        XCTAssertTrue(moves(for: tab).isEmpty, "a profile change is not a move")
+        XCTAssertTrue(tab.extensionRegisteredProfile === other)
+    }
+
+    /// No window on either space: `onMoved`/`onDetached`/`onAttached` all name a
+    /// window, so there is nothing either half could describe and the move says
+    /// nothing at all. The tab is already reported open wherever it is.
+    func testMoveBetweenUnshownSpacesAnnouncesNothing() throws {
+        let f = try makeFixture()
+        let destination = f.store.addSpace(name: "Lifecycle Unshown B", emoji: "🅱️",
+                                           colorHex: "FF9500", profileID: f.profile.id)
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+
+        XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.space, to: destination))
+
+        XCTAssertEqual(events(for: tab), [.open], "the creation open, and nothing since")
+        XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
+    }
+
+    /// The source space was shown by nobody but the destination is on screen —
+    /// the attach half is real, so the move is announced with a nil old window
+    /// (WebKit reads that as `tabs.onMoved` in the tab's current window).
+    func testMoveIntoAShownSpaceAnnouncesAMoveWithNoOldWindow() throws {
+        let f = try makeFixture()
+        let destination = f.store.addSpace(name: "Lifecycle Shown B", emoji: "🅱️",
+                                           colorHex: "FF9500", profileID: f.profile.id)
+        let tab = f.store.addTab(in: f.space, url: favoriteURL)
+        createdTabs.append(tab)
+        let window = StubWindow()
+        // Only the destination is shown: nothing answers for the source space.
+        ExtensionTabLifecycle.windowShowingSpace = { $0 == destination.id ? window : nil }
+        ExtensionTabLifecycle.windowListing = { _ in window }
+
+        XCTAssertTrue(f.store.moveTab(id: tab.id, from: f.space, to: destination))
+
+        XCTAssertEqual(events(for: tab), [.open, .move])
+        XCTAssertEqual(moves(for: tab).map(\.oldWindowIsNil), [true])
+        XCTAssertEqual(moves(for: tab).map(\.fromIndex), [0],
+                       "best effort from the source space's own sections")
     }
 
     // MARK: - Favourite property changes

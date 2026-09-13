@@ -43,6 +43,8 @@ final class ExtensionActiveTabTests: XCTestCase {
         }
         func didChangeProperties(_ tab: BrowserTab, in profile: Profile,
                                  properties: WKWebExtension.TabChangedProperties) {}
+        func didMove(_ tab: BrowserTab, fromIndex: Int, in oldWindow: (any WKWebExtensionWindow)?,
+                     in profile: Profile) {}
     }
 
     private var notifier = RecordingNotifier()

@@ -1,6 +1,14 @@
 import AppKit
 import WebKit
 
+/// Every browser window's controller, in `NSApp.windows` order — the single
+/// enumeration `BrowserTab.window(for:)` and the move seam's window hooks
+/// (`ExtensionTabLifecycle.windowShowingSpace` / `windowListing`) both resolve
+/// through, so they can never disagree about which windows exist.
+func extensionBrowserWindows() -> [BrowserWindowController] {
+    NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
+}
+
 // MARK: - BrowserTab + WKWebExtensionTab
 
 extension BrowserTab: WKWebExtensionTab {
@@ -12,7 +20,7 @@ extension BrowserTab: WKWebExtensionTab {
     }
 
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
-        let controllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
+        let controllers = extensionBrowserWindows()
         // The window that currently shows this tab.
         if let wc = controllers.first(where: { $0.selectedTabID == id }) { return wc }
         // A presented Peek belongs to the window presenting it: two windows on
@@ -107,8 +115,7 @@ extension BrowserTab: WKWebExtensionTab {
             return
         }
         if let host = store.tab(hostingPeek: self) {
-            let controllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
-            if let wc = controllers.first(where: { $0.extensionActiveTab === self }) {
+            if let wc = extensionBrowserWindows().first(where: { $0.extensionActiveTab === self }) {
                 wc.closePeekOverlay()
             } else {
                 // Hidden or parked: no overlay to animate away.

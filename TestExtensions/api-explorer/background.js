@@ -166,6 +166,39 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
   appendLog({ event: 'tabs.onActivated', tabId: activeInfo.tabId, previousTabId: activeInfo.previousTabId });
 });
 
+// A tab changing space inside one profile: same window -> onMoved, a different
+// one -> onDetached + onAttached (TASK-61).
+chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+  console.log('[API Explorer] tabs.onMoved', tabId, moveInfo.windowId, moveInfo.fromIndex, '->', moveInfo.toIndex);
+  appendLog({
+    event: 'tabs.onMoved',
+    tabId,
+    windowId: moveInfo.windowId,
+    fromIndex: moveInfo.fromIndex,
+    toIndex: moveInfo.toIndex,
+  });
+});
+
+chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
+  console.log('[API Explorer] tabs.onDetached', tabId, detachInfo.oldWindowId, detachInfo.oldPosition);
+  appendLog({
+    event: 'tabs.onDetached',
+    tabId,
+    oldWindowId: detachInfo.oldWindowId,
+    oldPosition: detachInfo.oldPosition,
+  });
+});
+
+chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
+  console.log('[API Explorer] tabs.onAttached', tabId, attachInfo.newWindowId, attachInfo.newPosition);
+  appendLog({
+    event: 'tabs.onAttached',
+    tabId,
+    newWindowId: attachInfo.newWindowId,
+    newPosition: attachInfo.newPosition,
+  });
+});
+
 // --- WebNavigation events ---
 
 chrome.webNavigation.onCommitted.addListener((details) => {

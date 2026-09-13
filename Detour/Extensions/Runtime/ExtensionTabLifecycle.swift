@@ -21,6 +21,8 @@ protocol ExtensionTabLifecycleNotifying: AnyObject {
                      contexts: [WKWebExtensionContext]?)
     func didChangeProperties(_ tab: BrowserTab, in profile: Profile,
                              properties: WKWebExtension.TabChangedProperties)
+    func didMove(_ tab: BrowserTab, fromIndex: Int, in oldWindow: (any WKWebExtensionWindow)?,
+                 in profile: Profile)
 }
 
 /// Production notifier: forwards to the profile's loaded contexts, or to the
@@ -55,6 +57,13 @@ final class WKExtensionTabLifecycleNotifier: ExtensionTabLifecycleNotifying {
                              properties: WKWebExtension.TabChangedProperties) {
         for context in targets(profile, nil) {
             context.didChangeTabProperties(properties, for: tab)
+        }
+    }
+
+    func didMove(_ tab: BrowserTab, fromIndex: Int, in oldWindow: (any WKWebExtensionWindow)?,
+                 in profile: Profile) {
+        for context in targets(profile, nil) {
+            context.didMoveTab(tab, from: fromIndex, in: oldWindow)
         }
     }
 }
@@ -95,6 +104,16 @@ final class WKExtensionTabLifecycleNotifier: ExtensionTabLifecycleNotifying {
 /// pinned -> favourite, favourite -> pinned). A move that leaves the flag alone
 /// (tab list <-> favourites) announces nothing.
 ///
+/// **The space-move rule (TASK-61).** "Move to Space" within one profile is the
+/// same kind of hand-off, one level up: the tab keeps its web view, its content
+/// scripts and its registration, but the *window* listing it changes — and a
+/// window's tab list is what `tabs.onCreated` / `onRemoved` describe. So it is
+/// not a close and a re-open either (extensions would drop every per-tab port
+/// and frame map for a tab that never went away); it is announced as the move it
+/// is, via `didMove`, which WebKit turns into `tabs.onMoved` when the old window
+/// is the tab's current one (or nil) and into `tabs.onDetached` + `onAttached`
+/// when it differs.
+///
 /// A move *between profiles* is the other case and stays a close + re-open:
 /// `didOpen` closes a tab it finds registered elsewhere, and a profile swap
 /// closes its tabs explicitly (`TabStore.updateSpace`).
@@ -102,6 +121,20 @@ enum ExtensionTabLifecycle {
 
     /// Replaced by tests; the production value forwards to real contexts.
     static var notifier: any ExtensionTabLifecycleNotifying = WKExtensionTabLifecycleNotifier()
+
+    /// The window a space is currently shown by, if any — the rule
+    /// `BrowserTab.window(for:)` falls back on, asked of a space rather than of
+    /// a tab so a move can resolve the window it is *leaving* before mutating.
+    /// Replaced by tests, which have no real windows.
+    static var windowShowingSpace: (UUID) -> (any WKWebExtensionWindow)? = { spaceID in
+        extensionBrowserWindows().first { $0.activeSpaceID == spaceID }
+    }
+
+    /// Any window that lists `tab` right now, resolved through the same
+    /// controllers and the same enumeration as `window(for:)`. Replaced by tests.
+    static var windowListing: (BrowserTab) -> (any WKWebExtensionWindow)? = { tab in
+        extensionBrowserWindows().first { wc in wc.extensionTabs.contains { $0 === tab } }
+    }
 
     /// Reports `tab` as open and remembers which profile was told, so the close
     /// side can be a plain `didClose(tab)` from `BrowserTab.teardown()` — the one
@@ -234,6 +267,24 @@ enum ExtensionTabLifecycle {
     static func didChangePinned(_ tab: BrowserTab) {
         guard let profile = tab.extensionRegisteredProfile else { return }
         didChangeProperties(tab, in: profile, properties: .pinned)
+    }
+
+    /// `tab` just changed space inside one profile (the space-move rule above):
+    /// same tab, same web view, same contexts, so the registration stands and
+    /// what is announced is the move itself. `oldWindow` is the window that was
+    /// showing the space it left — nil when none was — and `fromIndex` the index
+    /// it held in that window's tab enumeration before the move.
+    ///
+    /// WebKit reads it as `tabs.onMoved` when `oldWindow` is the tab's current
+    /// window or nil, and as `tabs.onDetached` + `tabs.onAttached` when it is a
+    /// different one; the tab's current window is whatever `window(for:)`
+    /// resolves *after* the move, so call this only once the tab is in the
+    /// destination container — handling the event resolves that window and the
+    /// tab's new index. No-op for a tab no context was told about (a dormant
+    /// pinned entry's sleeping tab, an incognito tab).
+    static func didMove(_ tab: BrowserTab, fromIndex: Int, in oldWindow: (any WKWebExtensionWindow)?) {
+        guard let profile = tab.extensionRegisteredProfile else { return }
+        notifier.didMove(tab, fromIndex: fromIndex, in: oldWindow, in: profile)
     }
 }
 
