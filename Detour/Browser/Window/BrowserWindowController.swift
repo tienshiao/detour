@@ -930,10 +930,8 @@ class BrowserWindowController: NSWindowController {
         guard tab.webView == nil else { return }
         tab.wake()
         if let space = activeSpace, let profile = space.profile {
-            for context in profile.extensionContexts.values {
-                context.didOpenTab(tab)
-                context.didActivateTab(tab, previousActiveTab: nil)
-            }
+            ExtensionTabLifecycle.didOpen(tab, in: profile)
+            ExtensionTabLifecycle.didActivate(tab, in: profile)
         }
     }
 
@@ -2298,16 +2296,18 @@ class BrowserWindowController: NSWindowController {
 
         hidePeekUI()
 
-        // A fresh peek to a different page than the parked one: an orphaned
-        // peek tab (closePeekOverlay no-ops while the overlay is hidden, and a
-        // released web view skips the reuse branch above) goes down with its
-        // parked favicon, so the badge can't show the previous peek's icon
-        // while the new page loads — or persist it if that page has none.
+        // Whatever peek object the host still holds goes down before it is
+        // replaced: a parked one (web view released by the host's sleep) is still
+        // registered with the extension contexts, and dropping it silently would
+        // leave a phantom open tab behind (TASK-50). Only a fresh peek to a
+        // *different* page than the parked one also drops the parked state
+        // (favicon, URL), so the badge can't show the previous peek's icon while the
+        // new page loads — or persist it if that page has none.
+        if let orphan = tab.peekTab {
+            orphan.webView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
+            orphan.teardown()
+        }
         if url != tab.peekURL {
-            if let orphan = tab.peekTab {
-                orphan.webView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-                orphan.teardown()
-            }
             tab.clearPeekState()
         }
 
@@ -2317,6 +2317,16 @@ class BrowserWindowController: NSWindowController {
         claimPeekWebView(peekWebView)
         peekWebView.allowsBackForwardNavigationGestures = true
         tab.peekTab = newPeekTab
+        // The peek's web view comes from the profile's configuration, so the
+        // extension controller injects content scripts into it. Without a
+        // didOpenTab the page is not a known tab and every runtime.sendMessage
+        // from it fails with "tab not found" (TASK-50). No spaceID is set on a
+        // peek tab — that would change its user-agent resolution — so it is
+        // reported against the space's profile directly. Reported after the host
+        // points at it, so the contexts can place it. `teardown()` closes it.
+        if let profile = space.profile {
+            ExtensionTabLifecycle.didOpen(newPeekTab, in: profile)
+        }
         reloadSelectedTabSidebarCell()
 
         observePeekTab(newPeekTab, for: tab)
@@ -2406,7 +2416,9 @@ class BrowserWindowController: NSWindowController {
     }
 
     /// Closes and destroys the peek tab. Used when the user explicitly dismisses.
-    private func closePeekOverlay() {
+    /// Also the close path `BrowserTab.close(for:)` uses when an extension
+    /// removes a presented peek.
+    func closePeekOverlay() {
         guard let overlay = peekOverlayView else { return }
         let tab = selectedTab
         let peekTab = tab?.peekTab
@@ -2444,14 +2456,20 @@ class BrowserWindowController: NSWindowController {
 
     private func expandPeekToNewTab() {
         guard let overlay = peekOverlayView,
-              let webView = selectedTab?.peekTab?.webView,
+              let oldPeekTab = selectedTab?.peekTab,
+              let webView = oldPeekTab.webView,
               let space = activeSpace else {
             closePeekOverlay()
             return
         }
 
-        // Clear peek state on original tab
+        // Clear peek state on original tab. The peek BrowserTab is dropped here
+        // while its web view lives on inside the new tab below, so close it
+        // first: two open tabs sharing one web view would leave WebKit mapping
+        // the page to the dead one (TASK-50). The new tab is reported open by
+        // insertTab → tabStoreDidInsertTab.
         peekTabSubscriptions.removeAll()
+        ExtensionTabLifecycle.didClose(oldPeekTab)
         selectedTab?.clearPeekState()
         reloadSelectedTabSidebarCell()
         store.scheduleSave()

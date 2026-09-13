@@ -12,22 +12,18 @@ extension BrowserTab: WKWebExtensionTab {
     }
 
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
-        // Find the window controller that currently owns this tab
-        for window in NSApp.windows {
-            if let wc = window.windowController as? BrowserWindowController,
-               wc.selectedTabID == id {
-                return wc
-            }
-        }
-        // Fallback: find the window for this tab's space
+        let controllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
+        // The window that currently shows this tab.
+        if let wc = controllers.first(where: { $0.selectedTabID == id }) { return wc }
+        // Otherwise any window that lists it — the same enumeration as `tabs(for:)`,
+        // so a tab is never listed by a window it does not belong to: a favourite
+        // (per-profile, listed by every window on the profile) and a Peek (no
+        // spaceID; hosted by any tab of the window, selected or not) both resolve
+        // here (TASK-50).
+        if let wc = controllers.first(where: { wc in wc.extensionTabs.contains { $0 === self } }) { return wc }
+        // Fallback: the window on this tab's space.
         guard let spaceID else { return nil }
-        for window in NSApp.windows {
-            if let wc = window.windowController as? BrowserWindowController,
-               wc.activeSpaceID == spaceID {
-                return wc
-            }
-        }
-        return nil
+        return controllers.first { $0.activeSpaceID == spaceID }
     }
 
     func title(for context: WKWebExtensionContext) -> String? {
@@ -85,11 +81,31 @@ extension BrowserTab: WKWebExtensionTab {
     }
 
     func close(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
-        guard let spaceID, let space = TabStore.shared.space(withID: spaceID) else {
-            completionHandler(nil)
+        defer { completionHandler(nil) }
+        let store = TabStore.shared
+        // Favourites and Peeks are listed to extensions (TASK-50) but live outside
+        // `space.tabs`, where `closeTab` looks — each closes through its own path.
+        if let (profile, favorite) = store.favorite(backedBy: self) {
+            store.deactivateFavorite(id: favorite.id, profileID: profile.id)
             return
         }
-        TabStore.shared.closeTab(id: id, in: space)
-        completionHandler(nil)
+        if let host = store.tab(hostingPeek: self) {
+            let controllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
+            if let wc = controllers.first(where: { $0.selectedTab === host && $0.peekOverlayView != nil }) {
+                wc.closePeekOverlay()
+            } else {
+                // Hidden or parked: no overlay to animate away.
+                host.peekTab?.teardown()
+                host.clearPeekState()
+                store.scheduleSave()
+            }
+            return
+        }
+        guard let spaceID, let space = store.space(withID: spaceID) else { return }
+        if let entry = space.pinnedEntries.first(where: { $0.tab === self }) {
+            store.closePinnedTab(id: entry.id, in: space)
+        } else {
+            store.closeTab(id: id, in: space)
+        }
     }
 }

@@ -1025,6 +1025,12 @@ class TabStore {
         let insertAt = min(index ?? profile.favorites.count, profile.favorites.count)
         profile.favorites.insert(favorite, at: insertAt)
         reindexFavorites(profile)
+        // The tab was just detached from its section, which reported it closed to
+        // the extension contexts (TASK-50). It is still live and still running
+        // content scripts, so re-open it under the favourite — after it is
+        // listed, so the contexts can place it (`tabs(for:)` enumerates
+        // `profile.favoriteTabs`).
+        ExtensionTabLifecycle.didOpen(tab, in: profile)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
     }
@@ -1066,6 +1072,11 @@ class TabStore {
 
         let tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
         fav.tab = tab
+        // A favourite's tab never enters space.tabs, so no insert notification
+        // reports it — but its web view is built from the profile's
+        // configuration and runs content scripts, which need the tab to be known
+        // to the contexts or every runtime.sendMessage fails (TASK-50).
+        ExtensionTabLifecycle.didOpen(tab, in: profile)
         subscribeToTab(tab, spaceID: space.id)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
@@ -1099,6 +1110,28 @@ class TabStore {
         fav.tab = nil
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
         scheduleSave()
+    }
+
+    /// The favourite whose live backing tab is `tab`, with the profile that owns it.
+    func favorite(backedBy tab: BrowserTab) -> (profile: Profile, favorite: Favorite)? {
+        for profile in profiles {
+            if let favorite = profile.favorites.first(where: { $0.tab === tab }) {
+                return (profile, favorite)
+            }
+        }
+        return nil
+    }
+
+    /// The tab hosting `peek` as its Peek, in any section: a space's normal or
+    /// pinned tabs, or a profile's favourites.
+    func tab(hostingPeek peek: BrowserTab) -> BrowserTab? {
+        for space in spaces {
+            if let host = (space.tabs + space.pinnedTabs).first(where: { $0.peekTab === peek }) { return host }
+        }
+        for profile in profiles {
+            if let host = profile.favoriteTabs.first(where: { $0.peekTab === peek }) { return host }
+        }
+        return nil
     }
 
     /// What a dormant tile's page is now (TASK-34) — a favourite's URL, or a
@@ -1614,6 +1647,11 @@ class TabStore {
             var liveTabs = space.tabs
             liveTabs.append(contentsOf: space.pinnedEntries.compactMap(\.tab))
             for tab in liveTabs where tab.webView != nil {
+                // The tab was reported open to the OLD profile's contexts; sleeping
+                // does not close it, and the wake below re-registers it under the new
+                // profile — so close it here or the old profile keeps a phantom open
+                // tab that can never be closed (TASK-50).
+                ExtensionTabLifecycle.didClose(tab)
                 tab.sleep(force: true)
             }
 

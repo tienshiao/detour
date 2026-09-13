@@ -690,22 +690,25 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // without this, sender.tab is null for content script messages from non-active spaces.
         // Report non-sleeping tabs across all spaces for this profile.
         // Sleeping tabs have no webView and can't run content scripts.
+        //
+        // The enumeration is the same one `tabs(for:)` uses (`extensionWindowTabs`),
+        // so a loading context and a window never disagree about which tabs exist
+        // (TASK-50).
         let profileSpaces = TabStore.shared.spaces.filter { $0.profileID == profile.id }
-        for space in profileSpaces {
-            for tab in space.pinnedTabs + space.tabs where !tab.isSleeping {
-                for context in contexts {
-                    context.didOpenTab(tab)
-                }
-            }
+        let tabs = extensionWindowTabs(pinned: profileSpaces.flatMap(\.pinnedTabs),
+                                       normal: profileSpaces.flatMap(\.tabs),
+                                       favorites: profile.favoriteTabs)
+        for tab in tabs where !tab.isSleeping {
+            ExtensionTabLifecycle.didOpen(tab, in: profile, contexts: contexts)
         }
 
         if let focusedWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
            focusedWC.activeSpace?.profileID == profile.id {
             for context in contexts {
                 context.didFocusWindow(focusedWC)
-                if let activeTab = focusedWC.selectedTab {
-                    context.didActivateTab(activeTab, previousActiveTab: nil)
-                }
+            }
+            if let activeTab = focusedWC.selectedTab {
+                ExtensionTabLifecycle.didActivate(activeTab, in: profile, contexts: contexts)
             }
         }
     }

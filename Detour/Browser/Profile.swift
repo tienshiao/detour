@@ -139,6 +139,10 @@ class Profile {
     var isMalwareFilterEnabled: Bool
     var favorites: [Favorite] = []
 
+    /// The favourites' live backing tabs — favourites are per-profile and live
+    /// outside every space's tab list.
+    var favoriteTabs: [BrowserTab] { favorites.compactMap(\.tab) }
+
     /// The identifier of this profile's persistent website data store and
     /// extension controller: the profile id in the default data directory, an
     /// identifier derived from the data directory elsewhere (TASK-36).

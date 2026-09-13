@@ -4,8 +4,18 @@ import WebKit
 // MARK: - BrowserWindowController + WKWebExtensionWindow
 
 extension BrowserWindowController: WKWebExtensionWindow {
+    /// The tabs this window reports to extensions — see `extensionWindowTabs`:
+    /// pinned, normal, then the live favourite backing tabs of the profile the
+    /// window is showing, each followed by its live Peek (TASK-50). Also the
+    /// membership test `BrowserTab.window(for:)` uses, so the two never disagree.
+    var extensionTabs: [BrowserTab] {
+        guard let space = activeSpace else { return [] }
+        return extensionWindowTabs(pinned: space.pinnedTabs, normal: space.tabs,
+                                   favorites: space.profile?.favoriteTabs ?? [])
+    }
+
     func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] {
-        return (activeSpace?.pinnedTabs ?? []) + currentTabs
+        extensionTabs
     }
 
     func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? {

@@ -85,6 +85,18 @@ class BrowserTab: NSObject {
     private(set) var faviconURL: URL?
     var spaceID: UUID?
     var parentID: UUID?
+    /// The profile whose `WKWebExtensionContext`s were told this tab is open
+    /// (`ExtensionTabLifecycle.didOpen`); nil means the tab is not registered
+    /// with any context. Weak: a removed profile must not be kept alive by a
+    /// tab, and an unregistered tab reads as nil either way. Held here rather
+    /// than derived from `spaceID` because favourite and Peek tabs belong to a
+    /// profile without living in any space's tab list.
+    weak var extensionRegisteredProfile: Profile?
+    /// Combine sinks installed by `ExtensionTabLifecycle.didOpen` that forward
+    /// url/title/loading changes to the registered profile's contexts; cleared by
+    /// `didClose`. Lives on the tab so every registered tab — normal, pinned,
+    /// favourite, peek — is covered regardless of which list (if any) holds it.
+    var extensionPropertyObservers = Set<AnyCancellable>()
     /// Non-nil when this tab is a member of a split group (two adjacent tabs
     /// rendered side by side as one sidebar item). Members of a group are always
     /// contiguous in `space.tabs`, in visual order (left pane first) — TabStore
@@ -426,6 +438,14 @@ class BrowserTab: NSObject {
     func teardown() {
         peekTab?.teardown()
         peekTab = nil
+        // The close point for every kind of tab (TASK-50). Teardown is the last
+        // moment the web view still exists, and it is what every off-list path
+        // calls — deactivateFavorite, removeFavorite, the favourite half of a
+        // profile swap (its space tabs sleep instead and are closed in
+        // `updateSpace`), the peek close paths — none of which produce a
+        // TabStore remove notification.
+        // No-op (and idempotent) when the tab was never reported open.
+        ExtensionTabLifecycle.didClose(self)
         webView?.pauseAllMediaPlayback(completionHandler: nil)
         releaseWebView()
     }
@@ -573,9 +593,7 @@ class BrowserTab: NSObject {
         // WKWebExtension needs didOpenTab to associate the new webView
         // with this tab for content script messaging.
         if let profile = space?.profile {
-            for context in profile.extensionContexts.values {
-                context.didOpenTab(self)
-            }
+            ExtensionTabLifecycle.didOpen(self, in: profile)
         }
     }
 
