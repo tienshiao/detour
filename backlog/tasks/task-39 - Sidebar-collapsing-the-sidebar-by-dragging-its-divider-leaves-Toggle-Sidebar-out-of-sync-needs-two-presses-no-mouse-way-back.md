@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-13 03:31'
-updated_date: '2026-09-13 04:29'
+updated_date: '2026-09-13 04:38'
 labels:
   - sidebar
   - window
@@ -63,6 +63,8 @@ Divider decision: no new affordance for dragging the collapsed sidebar back out 
 Traffic lights unchanged (KVO still hides on collapse, shows on expand); the launch sync now hides them for a restored-collapsed sidebar too.
 
 Verification: SidebarVisibilityStateTests (16 reducer tests covering AC1-AC4, delayed KVO, re-entrancy, drag-while-hovering, toggle-while-hovering); BrowserWindowSidebarModeTests drives a real incognito BrowserWindowController (autosaveName cleared so the shared com.detourbrowser.mac defaults are not touched): setPosition(0) collapses -> autoHides true + traffic lights hidden -> one toggleSidebarMode expands; direct isCollapsed sets adopt the mode; and a real NSSplitViewController autosave round trip (unique autosave name, removed afterwards) shows a restored collapse starts in auto-hide mode. Full DetourTests: 885 tests, 0 failures. Hover itself not driven live (synthetic mouse events are blocked for this shell); covered at reducer level.
+
+Post-merge (2026-09-12): BrowserWindowSidebarModeTests.testAutosaveRestoreArrivesAsExternalCollapse was flaky in the merged full run (fixed 0.5 s wait for AppKit's deferred autosave; observer invalidated before a late restore; a closed window's delayed autosave rewrote the key after removal, poisoning the next run). Test now clears the key after the expanded layout settles, polls for the collapsed write, keeps the observer until the restore lands, lets the close-time write land before removing the key, and XCTSkips if AppKit writes nothing within 5 s. 20 iterations: 20 passed, 0 skipped; full suite 898 tests, 0 failures.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
