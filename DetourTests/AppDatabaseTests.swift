@@ -316,4 +316,88 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(profiles.count, 1, "Stale profile should be cleaned up when session is saved first")
         XCTAssertEqual(profiles[0].id, "profile-2")
     }
+
+    // MARK: - deleteProfile (TASK-31)
+
+    private let perProfileTables = ["profileExtension", "extensionInstalledEvent", "favorite", "contentBlockerWhitelist"]
+    private let extensionKeyedTables = ["extension", "extensionStorage", "extensionPermission"]
+
+    /// An in-memory database with two profiles, an installed extension, and one
+    /// row per profile in every profileID-keyed table. `foreignKeysEnabled: false`
+    /// shows the rows go without relying on the `profile` cascades.
+    private func makeDatabaseWithPerProfileRows(foreignKeysEnabled: Bool = true) throws -> AppDatabase {
+        var config = Configuration()
+        config.foreignKeysEnabled = foreignKeysEnabled
+        let db = try AppDatabase(dbQueue: DatabaseQueue(configuration: config))
+        db.saveProfile(makeProfile(id: testProfileID, name: "Test"))
+        db.saveProfile(makeProfile(id: "profile-2", name: "Second"))
+        db.saveExtension(ExtensionRecord(
+            id: "ext-1", name: "Ext", version: "1.0", manifestJSON: Data("{}".utf8),
+            basePath: "/tmp/ext-1", isEnabled: true, installedAt: 0
+        ))
+        try db.dbQueue.write { d in
+            try ExtensionStorageRecord(extensionID: "ext-1", key: "k", value: Data("1".utf8)).insert(d)
+            try ExtensionPermissionRecord(extensionID: "ext-1", key: "tabs", type: .apiPermission, status: .granted).insert(d)
+        }
+        for profileID in [testProfileID, "profile-2"] {
+            db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: profileID, enabled: false)
+            _ = db.claimRuntimeInstalledEvent(extensionID: "ext-1", profileID: profileID,
+                                              isPrivateProfile: false, currentVersion: "1.0")
+            db.saveFavorites([FavoriteRecord(id: "fav-\(profileID)", profileID: profileID, url: "https://a.example/",
+                                             title: "A", faviconURL: nil, sortOrder: 0)],
+                             profileID: profileID)
+            db.saveContentBlockerWhitelistEntry(ContentBlockerWhitelistRecord(profileID: profileID, host: "a.example"))
+        }
+        return db
+    }
+
+    private func rowCount(_ table: String, profileID: String? = nil, in db: AppDatabase) throws -> Int {
+        try db.dbQueue.read { d in
+            if let profileID {
+                return try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM \"\(table)\" WHERE profileID = ?",
+                                        arguments: [profileID]) ?? 0
+            }
+            return try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM \"\(table)\"") ?? 0
+        }
+    }
+
+    func testDeleteProfileRemovesItsPerProfileRowsAndNoOthers() throws {
+        for foreignKeysEnabled in [true, false] {
+            let db = try makeDatabaseWithPerProfileRows(foreignKeysEnabled: foreignKeysEnabled)
+            for table in perProfileTables {
+                XCTAssertEqual(try rowCount(table, profileID: testProfileID, in: db), 1, "precondition: \(table)")
+            }
+
+            db.deleteProfile(id: testProfileID)
+
+            let label = "foreign keys \(foreignKeysEnabled ? "on" : "off")"
+            XCTAssertEqual(db.loadProfiles().map(\.id), ["profile-2"], label)
+            for table in perProfileTables {
+                XCTAssertEqual(try rowCount(table, profileID: testProfileID, in: db), 0,
+                               "\(table) rows of the deleted profile are removed (\(label))")
+                XCTAssertEqual(try rowCount(table, profileID: "profile-2", in: db), 1,
+                               "\(table) rows of another profile survive (\(label))")
+            }
+            for table in extensionKeyedTables {
+                XCTAssertEqual(try rowCount(table, in: db), 1, "\(table) is untouched (\(label))")
+            }
+        }
+    }
+
+    func testDeleteProfileRefusedBecauseASpaceReferencesItDeletesNothing() throws {
+        let db = try makeDatabaseWithPerProfileRows()
+        let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
+        db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
+
+        db.deleteProfile(id: testProfileID)
+
+        XCTAssertEqual(Set(db.loadProfiles().map(\.id)), [testProfileID, "profile-2"], "the profile is kept")
+        for table in perProfileTables {
+            XCTAssertEqual(try rowCount(table, profileID: testProfileID, in: db), 1, "\(table) rows are kept")
+            XCTAssertEqual(try rowCount(table, profileID: "profile-2", in: db), 1)
+        }
+        for table in extensionKeyedTables {
+            XCTAssertEqual(try rowCount(table, in: db), 1, "\(table) is untouched")
+        }
+    }
 }

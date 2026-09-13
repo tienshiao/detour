@@ -75,6 +75,15 @@ struct AppDatabase {
         }
     }
 
+    /// Deletes the profile row and every row keyed by its id (TASK-31), in one
+    /// transaction: per-profile extension state, the `runtime.onInstalled`
+    /// ledger, favourites and the content blocker whitelist. `favorite`,
+    /// `profileExtension` and `contentBlockerWhitelist` also cascade from the
+    /// profile row, but only while foreign keys are enforced, and
+    /// `extensionInstalledEvent` has no foreign key at all, so each is deleted
+    /// explicitly. Rows keyed by extension alone (`extension`, `extensionStorage`,
+    /// `extensionPermission`) are shared by every profile and are left alone.
+    /// Nothing is deleted while a space still references the profile.
     func deleteProfile(id: String) {
         performWrite("delete profile") { db in
             // Guard: don't delete if any spaces reference it
@@ -83,6 +92,10 @@ struct AppDatabase {
                 log.error("Cannot delete profile \(id): \(count) space(s) still reference it")
                 return
             }
+            try ProfileExtensionRecord.filter(Column("profileID") == id).deleteAll(db)
+            try ExtensionInstalledEventRecord.filter(Column("profileID") == id).deleteAll(db)
+            try FavoriteRecord.filter(Column("profileID") == id).deleteAll(db)
+            try ContentBlockerWhitelistRecord.filter(Column("profileID") == id).deleteAll(db)
             try ProfileRecord.filter(Column("id") == id).deleteAll(db)
         }
     }
