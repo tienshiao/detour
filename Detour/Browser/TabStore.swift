@@ -586,9 +586,10 @@ class TabStore {
                     sortOrder: -2,
                     lastDeselectedAt: nil,
                     parentID: nil,
-                    peekURL: nil,
-                    peekInteractionState: nil,
-                    peekFaviconURL: nil,
+                    // Persisted like a pinned backing tab's: a favourite peeks the same way (TASK-42).
+                    peekURL: tab.peekURL?.absoluteString,
+                    peekInteractionState: tab.peekInteractionState,
+                    peekFaviconURL: tab.peekFaviconURL?.absoluteString,
                     extensionID: profile.extensionID(forPageURL: tab.url)
                 )
                 if let idx = sessionData.firstIndex(where: { $0.0.id == hostSpaceID.uuidString }) {
@@ -787,12 +788,9 @@ class TabStore {
                 }
                 tab.spaceID = spaceID
                 tab.parentID = tabRecord.parentID.flatMap { UUID(uuidString: $0) }
-                tab.peekURL = tabRecord.peekURL.flatMap { URL(string: $0) }
-                tab.peekInteractionState = tabRecord.peekInteractionState
-                tab.peekFaviconURL = tabRecord.peekFaviconURL.flatMap { URL(string: $0) }
+                tab.applyPersistedPeekState(from: tabRecord)
                 tab.splitGroupID = tabRecord.splitGroupID.flatMap { UUID(uuidString: $0) }
                 tab.splitFraction = tabRecord.splitFraction
-                tab.downloadPeekFavicon()
                 space.tabs.append(tab)
                 self.subscribeToTab(tab, spaceID: spaceID)
             }
@@ -874,10 +872,7 @@ class TabStore {
                         )
                     }
                     backingTab?.spaceID = spaceID
-                    backingTab?.peekURL = tabRecord.peekURL.flatMap { URL(string: $0) }
-                    backingTab?.peekInteractionState = tabRecord.peekInteractionState
-                    backingTab?.peekFaviconURL = tabRecord.peekFaviconURL.flatMap { URL(string: $0) }
-                    backingTab?.downloadPeekFavicon()
+                    backingTab?.applyPersistedPeekState(from: tabRecord)
                     if let tab = backingTab {
                         self.subscribeToTab(tab, spaceID: spaceID)
                     }
@@ -963,6 +958,7 @@ class TabStore {
                         )
                     }
                     backingTab?.spaceID = hostSpace.id
+                    backingTab?.applyPersistedPeekState(from: tabRecord)
                     if let tab = backingTab {
                         self.subscribeToTab(tab, spaceID: hostSpace.id)
                     }
@@ -1075,8 +1071,16 @@ class TabStore {
         scheduleSave()
     }
 
+    /// Removes a favorite outright. A live backing tab goes with it — the tab is
+    /// torn down (which also tears down any peek it hosts, see
+    /// `BrowserTab.teardown()`), so nothing is left alive off-list.
     func removeFavorite(id: UUID, profileID: UUID) {
-        guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
+        guard let profile = profiles.first(where: { $0.id == profileID }),
+              let fav = profile.favorites.first(where: { $0.id == id }) else { return }
+        if let tab = fav.tab {
+            tabSubscriptions.removeValue(forKey: tab.id)
+            tab.teardown()
+        }
         profile.favorites.removeAll { $0.id == id }
         reindexFavorites(profile)
         notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }

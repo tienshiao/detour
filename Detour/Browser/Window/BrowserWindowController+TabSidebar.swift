@@ -471,7 +471,13 @@ extension BrowserWindowController: TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRemoveFavoriteAt index: Int) {
         guard let space = activeSpace, let profile = space.profile else { return }
         guard index >= 0, index < profile.favorites.count else { return }
-        store.removeFavorite(id: profile.favorites[index].id, profileID: profile.id)
+        // Removing the favourite discards its live backing tab, so if that tab
+        // was the selection the window has to let go of it — same order as the
+        // favourite branch of `closeCurrentTab`: store teardown, then deselect.
+        let fav = profile.favorites[index]
+        let wasSelected = fav.tab?.id == selectedTabID
+        store.removeFavorite(id: fav.id, profileID: profile.id)
+        if wasSelected { deselectAllTabs() }
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int) {

@@ -131,7 +131,11 @@ extension BrowserWindowController: WKUIDelegate {
     @objc(_webViewFullscreenMayReturnToInline:)
     func _webViewFullscreenMayReturnToInline(_ webView: WKWebView) {
         for space in TabStore.shared.spaces {
-            for tab in space.tabs {
+            // Hosts include pinned and favourite backing tabs, which are not in `space.tabs`.
+            let hosts = space.tabs
+                + space.pinnedEntries.compactMap { $0.tab }
+                + (space.profile?.favorites.compactMap { $0.tab } ?? [])
+            for tab in hosts {
                 if tab.webView === webView || tab.peekTab?.webView === webView {
                     if activeSpaceID != space.id {
                         setActiveSpace(id: space.id)

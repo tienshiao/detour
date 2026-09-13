@@ -134,6 +134,16 @@ class BrowserTab: NSObject {
         }
     }
 
+    /// Restores the persisted peek columns of a session record and starts the
+    /// peek favicon download; the shared tail of every TabRecord → BrowserTab
+    /// rebuild in `TabStore.restoreSession`.
+    func applyPersistedPeekState(from record: TabRecord) {
+        peekURL = record.peekURL.flatMap { URL(string: $0) }
+        peekInteractionState = record.peekInteractionState
+        peekFaviconURL = record.peekFaviconURL.flatMap { URL(string: $0) }
+        downloadPeekFavicon()
+    }
+
     // MARK: - Archiving
 
     var lastDeselectedAt: Date?
