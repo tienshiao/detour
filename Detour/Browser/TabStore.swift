@@ -546,44 +546,24 @@ class TabStore {
 
             var tabRecords: [TabRecord] = []
             for (tabIndex, tab) in space.tabs.enumerated() {
-                let stateData = tab.currentInteractionStateData()
                 tabRecords.append(TabRecord(
-                    id: tab.id.uuidString,
-                    spaceID: space.id.uuidString,
-                    url: tab.url?.absoluteString,
-                    title: tab.title,
-                    faviconURL: tab.faviconURL?.absoluteString,
-                    interactionState: stateData,
+                    tab: tab,
+                    spaceID: space.id,
                     sortOrder: tabIndex,
-                    lastDeselectedAt: tab.lastDeselectedAt?.timeIntervalSince1970,
-                    parentID: tab.parentID?.uuidString,
-                    peekURL: tab.peekURL?.absoluteString,
-                    peekInteractionState: tab.peekInteractionState,
-                    peekFaviconURL: tab.peekFaviconURL?.absoluteString,
-                    splitGroupID: tab.splitGroupID?.uuidString,
-                    splitFraction: tab.splitFraction,
-                    extensionID: space.profile?.extensionID(forPageURL: tab.url)
+                    profile: space.profile,
+                    splitGroupID: tab.splitGroupID,
+                    splitFraction: tab.splitFraction
                 ))
             }
 
             // Also save backing tabs for live pinned entries (FK from pinnedTab.tabID → tab.id)
             for entry in space.pinnedEntries {
                 guard let tab = entry.tab else { continue }
-                let stateData = tab.currentInteractionStateData()
                 tabRecords.append(TabRecord(
-                    id: tab.id.uuidString,
-                    spaceID: space.id.uuidString,
-                    url: tab.url?.absoluteString,
-                    title: tab.title,
-                    faviconURL: tab.faviconURL?.absoluteString,
-                    interactionState: stateData,
+                    tab: tab,
+                    spaceID: space.id,
                     sortOrder: -1,  // Convention for backing tabs
-                    lastDeselectedAt: tab.lastDeselectedAt?.timeIntervalSince1970,
-                    parentID: tab.parentID?.uuidString,
-                    peekURL: tab.peekURL?.absoluteString,
-                    peekInteractionState: tab.peekInteractionState,
-                    peekFaviconURL: tab.peekFaviconURL?.absoluteString,
-                    extensionID: space.profile?.extensionID(forPageURL: tab.url)
+                    profile: space.profile
                 ))
             }
 
@@ -598,22 +578,14 @@ class TabStore {
             guard let hostSpaceID = persistentSpaces.first(where: { $0.profileID == profile.id })?.id else { continue }
             for fav in profile.favorites {
                 guard let tab = fav.tab else { continue }
-                let stateData = tab.currentInteractionStateData()
+                // Persisted exactly like a pinned backing tab's row: a favourite
+                // peeks the same way (TASK-42), and no longer zeroes
+                // lastDeselectedAt/parentID (TASK-49 — see the factory).
                 let tabRecord = TabRecord(
-                    id: tab.id.uuidString,
-                    spaceID: hostSpaceID.uuidString,
-                    url: tab.url?.absoluteString,
-                    title: tab.title,
-                    faviconURL: tab.faviconURL?.absoluteString,
-                    interactionState: stateData,
+                    tab: tab,
+                    spaceID: hostSpaceID,
                     sortOrder: -2,
-                    lastDeselectedAt: nil,
-                    parentID: nil,
-                    // Persisted like a pinned backing tab's: a favourite peeks the same way (TASK-42).
-                    peekURL: tab.peekURL?.absoluteString,
-                    peekInteractionState: tab.peekInteractionState,
-                    peekFaviconURL: tab.peekFaviconURL?.absoluteString,
-                    extensionID: profile.extensionID(forPageURL: tab.url)
+                    profile: profile
                 )
                 if let idx = sessionData.firstIndex(where: { $0.0.id == hostSpaceID.uuidString }) {
                     sessionData[idx].1.append(tabRecord)
