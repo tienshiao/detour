@@ -1278,4 +1278,165 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                        "the worker keeps its idle port after the pings stop")
         XCTAssertEqual(state()?.portOpen, true)
     }
+
+    // MARK: - TASK-29: runtime.onInstalled in extension pages and Private
+
+    /// ExtensionManager wakes a worker for an owed onInstalled in a regular profile
+    /// (the positive control) but never in a Private one, where nothing is owed.
+    /// The worker script carries no polyfill, so nothing claims during the test.
+    func testPrivateProfileWorkerIsNeverWokenForRuntimeOnInstalled() async throws {
+        let ext = try await makeTestExtension(
+            idPrefix: "oninstalled-wake",
+            manifest: """
+            {
+                "manifest_version": 3,
+                "name": "onInstalled Wake Test",
+                "version": "1.0.0",
+                "background": {"service_worker": "background.js"}
+            }
+            """,
+            extraFiles: ["background.js": "// no polyfill: nothing claims\n"])
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let regular = makeProfile("onInstalled Wake Profile")
+        _ = regular.extensionController
+        _ = regular.loadExtensionContext(ext)
+        XCTAssertNotNil(regular.extensionContexts[ext.id])
+        XCTAssertEqual(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: regular),
+                       .init(reason: .install, previousVersion: nil))
+
+        let privateProfile = Profile(name: "onInstalled Wake Private", isIncognito: true)
+        defer { privateProfile.unloadAllExtensions() }
+        _ = privateProfile.extensionController
+        _ = privateProfile.loadExtensionContext(ext)
+        XCTAssertNotNil(privateProfile.extensionContexts[ext.id], "precondition: the context loads in Private")
+        XCTAssertNil(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: privateProfile))
+    }
+
+    /// WebKit's own `runtime.onInstalled`, fired for real at an extension page, must
+    /// not reach a listener the page added through `chrome.runtime.onInstalled`,
+    /// while the worker still gets Detour's event exactly once.
+    ///
+    /// Making WebKit fire: it picks `install` for any load into a controller past
+    /// its 5 s "freshly created" window (TASK-22), so a throwaway context is loaded
+    /// first to start that window and the extension is loaded after it. The
+    /// event goes out once the background content has loaded; the worker's top
+    /// level busy-waits so the page is open and listening by then.
+    ///
+    /// The control is a second page listener registered through WebKit's native
+    /// `addListener` (the class's prototype method, which the shadowing leaves in
+    /// place): it receiving `install` is what shows WebKit really dispatched to
+    /// this page, so the shadowed listener's silence means something.
+    func testRealExtensionPageDoesNotSeeWebKitsRuntimeOnInstalled() async throws {
+        let workerDelayMS = 2500
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+        const received = [];
+        chrome.runtime.onInstalled.addListener((details) => received.push(details));
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message && message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+            if (!message || message.type !== 'installedLog') return false;
+            const status = globalThis.__detourRuntimeOnInstalled;
+            sendResponse({ received: received, mode: status.mode, detail: status.detail,
+                           claimCount: status.claimCount, lastDispatched: status.lastDispatched });
+            return true;
+        });
+        {
+            const until = Date.now() + \(workerDelayMS);
+            while (Date.now() < until) {}
+        }
+        """
+        let throwaway = try await makeTestExtension(idPrefix: "oninstalled-window")
+        let ext = try await makeTestExtension(
+            idPrefix: "oninstalled-page",
+            manifest: """
+            {
+                "manifest_version": 3,
+                "name": "onInstalled Page Test",
+                "version": "1.0.0",
+                "background": {"service_worker": "background.js"}
+            }
+            """,
+            extraFiles: ["background.js": backgroundJS])
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let profile = makeProfile("onInstalled Page Profile")
+        _ = profile.extensionController
+        _ = profile.loadExtensionContext(throwaway)
+        try await Task.sleep(nanoseconds: 5_500_000_000)
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let webView = try await makeExtensionWebView(for: context)
+
+        func evalObject(_ js: String) async throws -> [String: Any] {
+            let raw = try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+            let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        }
+
+        let setup = try await evalObject("""
+            globalThis.__shadowedCalls = [];
+            globalThis.__nativeCalls = [];
+            const event = chrome.runtime.onInstalled;
+            event.addListener((d) => globalThis.__shadowedCalls.push(d));
+            let proto = Object.getPrototypeOf(event);
+            while (proto && !Object.prototype.hasOwnProperty.call(proto, 'addListener')) proto = Object.getPrototypeOf(proto);
+            const nativeAdd = proto ? proto.addListener : null;
+            if (nativeAdd) nativeAdd.call(event, (d) => globalThis.__nativeCalls.push(d));
+            const status = globalThis.__detourRuntimeOnInstalled;
+            return JSON.stringify({
+                mode: status.mode, detail: status.detail, holdsEvent: status.holdsEvent,
+                ownShadow: Object.prototype.hasOwnProperty.call(event, 'addListener'),
+                hasNativeAdd: typeof nativeAdd === 'function',
+                listenerCount: status.listenerCount,
+                claimCount: status.claimCount
+            });
+        """)
+        XCTAssertEqual(setup["mode"] as? String, "suppressed", "page shadowing did not install: \(setup)")
+        XCTAssertEqual(setup["holdsEvent"] as? Bool, true)
+        XCTAssertEqual(setup["ownShadow"] as? Bool, true)
+        XCTAssertEqual(setup["hasNativeAdd"] as? Bool, true, "WebKit's addListener should live on the prototype")
+        XCTAssertEqual(setup["listenerCount"] as? Int, 1)
+        XCTAssertEqual(setup["claimCount"] as? Int, 0, "a page must never claim Detour's event")
+
+        try await waitUntil("the background worker to wake", timeout: 20) {
+            let ping = try await askWorker(from: webView, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+
+        // Churn the heap, then read the event afresh: the shadowing must still be
+        // what `chrome.runtime.onInstalled` returns.
+        var page: [String: Any] = [:]
+        try await waitUntil("WebKit's install to reach the page's native control listener", timeout: 10) {
+            page = try await evalObject("""
+                for (let i = 0; i < 2000; i++) { new Array(1000).fill(i); }
+                const event = chrome.runtime.onInstalled;
+                return JSON.stringify({
+                    shadowed: globalThis.__shadowedCalls, native: globalThis.__nativeCalls,
+                    stillShadowed: event.addListener === Object.getOwnPropertyDescriptor(event, 'addListener')?.value
+                        && event.hasListeners() === true && globalThis.__detourRuntimeOnInstalled.listenerCount === 1,
+                    claimCount: globalThis.__detourRuntimeOnInstalled.claimCount
+                });
+            """)
+            return !((page["native"] as? [Any]) ?? []).isEmpty
+        }
+        print("TASK-29 page measurement: setup=\(setup) page=\(page)")
+        XCTAssertEqual(page["native"] as? [[String: String]], [["reason": "install"]],
+                       "control: WebKit must really have fired install at this page")
+        XCTAssertEqual(page["shadowed"] as? [[String: String]], [],
+                       "WebKit's event must not reach a listener added through chrome.runtime.onInstalled")
+        XCTAssertEqual(page["stillShadowed"] as? Bool, true)
+        XCTAssertEqual(page["claimCount"] as? Int, 0)
+
+        // NEGATIVE: the worker still gets Detour's event, once.
+        let log = try await askWorker(from: webView, message: ["type": "installedLog"])
+        let worker = try XCTUnwrap(log["reply"] as? [String: Any], "the worker must answer: \(log)")
+        print("TASK-29 worker measurement: \(worker)")
+        XCTAssertEqual(worker["mode"] as? String, "detour")
+        XCTAssertEqual(worker["claimCount"] as? Int, 1)
+        XCTAssertEqual(worker["lastDispatched"] as? [String: String], ["reason": "install"],
+                       "the delivery must be Detour's claim")
+        XCTAssertEqual(worker["received"] as? [[String: String]], [["reason": "install"]],
+                       "the worker must get Detour's install exactly once, and not WebKit's as well")
+    }
 }

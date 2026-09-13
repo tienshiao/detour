@@ -495,13 +495,16 @@ again). It cannot be fixed from outside WebKit's rule, so Detour suppresses it a
   update gets the `update` when it next runs there (Chrome defers a pending dispatch the same way).
   A same-version reinstall is nothing (Chrome reports `update` for reloading an unpacked extension;
   a version ledger cannot tell that from a reload, and a spurious event is the worse error).
+  *Superseded by TASK-29: a reinstall now delivers `update`, see below.*
 - **Per profile, Private included.** Each profile runs its own worker with its own storage, so each
   gets the event once. The Private profile's storage is non-persistent, but the ledger is not, so
   it is not replayed at relaunch — the same as Chrome never re-firing at startup.
+  *Superseded by TASK-29: the Private profile never gets the event, see below.*
 - **Upgrade:** migration v9 seeds the ledger with every installed extension's version in every
   saved profile, so updating Detour does not deliver `install` to everything already installed.
   Uninstall deletes the rows.
-- **Suppression** (`ExtensionAPIPolyfill.runtimeOnInstalledJS`, service workers only): the worker
+- **Suppression** (`ExtensionAPIPolyfill.runtimeOnInstalledJS`, service workers only; extension
+  pages too since TASK-29): the worker
   polyfill shadows `addListener`/`removeListener`/`hasListener`/`hasListeners` on the native
   `runtime.onInstalled` object and keeps the listeners itself, so WebKit's dispatch finds no
   listener. It holds a strong reference to the event wrapper (WebKit caches wrappers weakly, and
@@ -516,7 +519,7 @@ again). It cannot be fixed from outside WebKit's rule, so Detour suppresses it a
 - **Waking:** `ExtensionManager.wakeForPendingInstalledEvent` starts the worker after install,
   update, enable and at launch when the ledger says an event is owed.
 - **Limits:** extension pages (popup, options) still get WebKit's event if one is open and
-  listening across an install or reload. A module worker that `await`s before registering its
+  listening across an install or reload (*closed by TASK-29, below*). A module worker that `await`s before registering its
   listener can miss the claim, as it would miss Chrome's dispatch. WebKit's spurious
   `runtime.onStartup` on a profile's first-ever install is left alone.
 
@@ -529,6 +532,65 @@ delivered one `update` in each profile; a per-profile disable → enable then de
 Tests: `RuntimeInstalledEventTests` (rule, ledger, migration), the `runtime.onInstalled` section of
 `ExtensionPolyfillTests` (suppression, claim-once dispatch, worker-only, fallback). API Explorer's
 popup shows the recorded deliveries and the worker's polyfill mode.
+
+#### Follow-up: extension pages, reinstall, Private (TASK-29)
+
+TASK-22 left three gaps open. Each one is now decided and closed, and the bullets above that
+contradict them are superseded:
+
+- **Extension pages no longer see WebKit's event.** The same shadowing now runs in every non-worker
+  context the polyfill reaches that has `runtime.onInstalled` (popup, options, extension tabs,
+  offscreen documents). There it runs in mode `suppressed`: listeners are kept but never called, and
+  the page never claims. Detour's event goes to the worker only. Chrome does deliver to pages that
+  are open when the event fires, but a page opened later never sees it. In a page, WebKit's event is
+  exactly the spurious `install` from a recovery reload or a disable → enable. So no page event at
+  all is the closer and safer behaviour.
+
+  This was measured before relying on it, in the test process (macOS 26.6.2), with
+  `ExtensionPolyfillProfileWiringTests.testRealExtensionPageDoesNotSeeWebKitsRuntimeOnInstalled`.
+  The test loads a throwaway context first and the extension 5.5 s later, so WebKit is past its
+  freshly-created window and really fires `install`. A real extension page from the context listens
+  twice: through `chrome.runtime.onInstalled`, and, as a control, through WebKit's own prototype
+  `addListener`. Results:
+  - The control received `{reason: "install"}`.
+  - The shadowed listener received nothing.
+  - After heap churn, a fresh read still returned the patched wrapper.
+  - The worker got exactly one `install`, from Detour's claim.
+
+  `chrome`, `browser` and `chrome.runtime` are still never replaced.
+- **A same-version reinstall delivers `update`.** Migration v10 adds
+  `extensionInstalledEvent.reinstallPending`. When `ExtensionManager.install` replaces an installed
+  extension that has the same id, it sets the flag on every row for that id
+  (`AppDatabase.markRuntimeInstalledEventReinstalled`) before the replacement loads. The rule reads a
+  flagged row as `update`, with `previousVersion` set to the delivered version. For a same-version
+  reinstall, that is the current version. The claim that delivers the event clears the flag, so it
+  arrives exactly once per profile. A profile that never had the event still gets `install`. Only an
+  explicit install sets the flag. The background-recovery reload (TASK-2), enable and relaunch never
+  go through `install`, so they still deliver nothing. This matches Chrome, which reports `update`
+  when an unpacked extension is reloaded.
+- **The Private profile never receives `runtime.onInstalled`.** Four pieces enforce this:
+  - The rule returns nothing for it.
+  - The claim handler answers `{}` and writes no ledger row (`profile.isIncognito`).
+  - `wakeForPendingInstalledEvent` never wakes a worker there.
+  - v10 deletes the Private rows that v9 had seeded.
+
+  This matches Chrome's default "spanning" incognito mode: the incognito side shares the regular
+  profile's background and never gets an `onInstalled` of its own. It also keeps onboarding pages,
+  such as 1Password's welcome page, from opening in Private windows.
+
+  **Caveat:** the Private context's extension storage is non-persistent, and first-run setup is
+  never re-run there. An extension that seeds `storage.local` only from `onInstalled` will find it
+  empty in Private windows after every launch, and has to cope with the missing state itself.
+
+Tests:
+- `RuntimeInstalledEventTests`: the reinstall rule and ledger, a reinstall through
+  `ExtensionManager.install`, a reload after a delivered reinstall, Private across relaunches, and
+  the v10 migration.
+- `ExtensionPolyfillTests`: page suppression, and a Private claim through the native bridge.
+- `ExtensionPolyfillProfileWiringTests`: the real-page measurement above, and no wake in Private.
+
+API Explorer's popup readout now also shows the popup's own polyfill mode, and that its listener
+received nothing.
 
 ## Recommendation
 

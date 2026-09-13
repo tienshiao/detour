@@ -2851,7 +2851,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["first"] as? [[String: String]], [["reason": "update", "previousVersion": "0.9.0"]])
         XCTAssertEqual(result["second"] as? [[String: String]], [["reason": "update", "previousVersion": "0.9.0"]])
         XCTAssertNil(AppDatabase.shared.pendingRuntimeInstalledEvent(
-            extensionID: "test-polyfill-extension", profileID: profile.id.uuidString, currentVersion: "1.0.0"))
+            extensionID: "test-polyfill-extension", profileID: profile.id.uuidString, isPrivateProfile: false, currentVersion: "1.0.0"))
     }
 
     /// A throwing listener does not keep the event from the listeners after it.
@@ -2908,9 +2908,12 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertTrue(result["again"] is NSNull)
     }
 
-    /// Outside a worker the event stays WebKit's: listeners go to the native event
-    /// and nothing is claimed.
-    func testRuntimeOnInstalledLeftToWebKitOutsideWorkers() async throws {
+    /// Outside a worker — an extension page — WebKit's event is hidden too (TASK-29):
+    /// listeners are kept off the native event, WebKit's dispatch reaches none of
+    /// them, and the page never claims or receives Detour's event, which is the
+    /// worker's alone. The same against a real page and a real WebKit dispatch is
+    /// `ExtensionPolyfillProfileWiringTests.testRealExtensionPageDoesNotSeeWebKitsRuntimeOnInstalled`.
+    func testRuntimeOnInstalledSuppressedInExtensionPages() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView(force: false)
@@ -2918,21 +2921,34 @@ final class ExtensionPolyfillTests: XCTestCase {
 
         let result = try await evalDictionary("""
         const calls = [];
-        chrome.runtime.onInstalled.addListener((d) => calls.push(d));
+        const listener = (d) => calls.push(d);
+        chrome.runtime.onInstalled.addListener(listener);
         globalThis.__fireNativeInstalled({ reason: 'install' });
         const status = globalThis.__detourRuntimeOnInstalled;
-        return JSON.stringify({ mode: status.mode, detail: status.detail, calls: calls.length,
-                                claimCount: status.claimCount, claimed: await status.claim() });
+        return JSON.stringify({ mode: status.mode, detail: status.detail, holdsEvent: status.holdsEvent,
+                                calls: calls.length,
+                                nativeListeners: globalThis.__nativeInstalledListeners.length,
+                                hasListener: chrome.runtime.onInstalled.hasListener(listener),
+                                sameEvent: chrome.runtime.onInstalled === globalThis.__shimInstalledEvent,
+                                sameRuntime: chrome.runtime === globalThis.__shimRuntime,
+                                claimCount: status.claimCount, claimed: await status.claim(),
+                                lastDispatched: status.lastDispatched });
         """, on: view)
 
-        XCTAssertEqual(result["mode"] as? String, "webkit")
-        XCTAssertEqual(result["detail"] as? String, "not-a-worker")
-        XCTAssertEqual(result["calls"] as? Int, 1)
-        XCTAssertEqual(result["claimCount"] as? Int, 0)
+        XCTAssertEqual(result["mode"] as? String, "suppressed")
+        XCTAssertEqual(result["detail"] as? String, "")
+        XCTAssertEqual(result["holdsEvent"] as? Bool, true)
+        XCTAssertEqual(result["calls"] as? Int, 0, "WebKit's own dispatch must not reach a page listener")
+        XCTAssertEqual(result["nativeListeners"] as? Int, 0)
+        XCTAssertEqual(result["hasListener"] as? Bool, true)
+        XCTAssertEqual(result["sameEvent"] as? Bool, true)
+        XCTAssertEqual(result["sameRuntime"] as? Bool, true, "chrome.runtime must not be replaced (TASK-15)")
+        XCTAssertEqual(result["claimCount"] as? Int, 0, "a page must never claim")
         XCTAssertTrue(result["claimed"] is NSNull)
+        XCTAssertTrue(result["lastDispatched"] is NSNull)
         XCTAssertNotNil(AppDatabase.shared.pendingRuntimeInstalledEvent(
-            extensionID: "test-polyfill-extension", profileID: profile.id.uuidString, currentVersion: "1.0.0"),
-            "a context that left the event to WebKit must not consume Detour's")
+            extensionID: "test-polyfill-extension", profileID: profile.id.uuidString, isPrivateProfile: false, currentVersion: "1.0.0"),
+            "a page must not consume the worker's event")
     }
 
     /// If reading the event again does not return the patched object (a wrapper
@@ -2995,5 +3011,53 @@ final class ExtensionPolyfillTests: XCTestCase {
         let second = await claim()
         XCTAssertEqual(first as? [String: String], ["reason": "install"])
         XCTAssertEqual((second as? [String: Any])?.isEmpty, true, "got \(second ?? "nil")")
+    }
+
+    /// The Private profile's worker claims and gets nothing (TASK-29): not on its
+    /// first run, not after a relaunch (a new profile object and handler over the
+    /// same ledger), not after a reinstall; and no ledger row is written for it. The
+    /// regular profile's claim on the same extension still delivers.
+    func testClaimInstalledEventThroughTheNativeBridgeAnswersNothingInThePrivateProfile() async throws {
+        try setInstalledLedger(version: nil)
+        defer { try? setInstalledLedger(version: nil) }
+        let privateID = TabStore.incognitoProfileID.uuidString
+        func clearPrivateRows() throws {
+            _ = try AppDatabase.shared.dbQueue.write { db in
+                try ExtensionInstalledEventRecord
+                    .filter(Column("extensionID") == "test-polyfill-extension" && Column("profileID") == privateID)
+                    .deleteAll(db)
+            }
+        }
+        try clearPrivateRows()
+        defer { try? clearPrivateRows() }
+
+        func claim(through claimHandler: ExtensionPolyfillHandler) async -> Any? {
+            await withCheckedContinuation { continuation in
+                claimHandler.handleNativeMessage(["type": "runtime.claimInstalledEvent", "params": [String: Any]()],
+                                                 verifiedExtensionID: "test-polyfill-extension") { result, _ in
+                    continuation.resume(returning: result)
+                }
+            }
+        }
+
+        for launch in 1...2 {
+            let privateProfile = OriginMappingProfile(id: TabStore.incognitoProfileID, name: "Private", isIncognito: true)
+            let privateHandler = ExtensionPolyfillHandler(profile: privateProfile)
+            let reply = await claim(through: privateHandler)
+            XCTAssertEqual((reply as? [String: Any])?.isEmpty, true, "launch \(launch): got \(reply ?? "nil")")
+            AppDatabase.shared.markRuntimeInstalledEventReinstalled(extensionID: "test-polyfill-extension")
+            let afterReinstall = await claim(through: privateHandler)
+            XCTAssertEqual((afterReinstall as? [String: Any])?.isEmpty, true, "launch \(launch): got \(afterReinstall ?? "nil")")
+        }
+        let privateRows = try await AppDatabase.shared.dbQueue.read { db in
+            try ExtensionInstalledEventRecord
+                .filter(Column("extensionID") == "test-polyfill-extension" && Column("profileID") == privateID)
+                .fetchCount(db)
+        }
+        XCTAssertEqual(privateRows, 0, "the Private profile must never get a ledger row")
+
+        let regular = await claim(through: handler)
+        XCTAssertEqual(regular as? [String: String], ["reason": "install"],
+                       "the regular profile is still owed its install")
     }
 }

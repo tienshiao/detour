@@ -526,8 +526,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler([:] as [String: Any], nil)
                 return
             }
+            // The Private profile never gets the event (TASK-29): the claim
+            // answers nothing there and writes no ledger row.
             guard let details = AppDatabase.shared.claimRuntimeInstalledEvent(
-                extensionID: extensionID, profileID: profile.id.uuidString, currentVersion: version
+                extensionID: extensionID, profileID: profile.id.uuidString,
+                isPrivateProfile: profile.isIncognito, currentVersion: version
             ) else {
                 replyHandler([:] as [String: Any], nil)
                 return

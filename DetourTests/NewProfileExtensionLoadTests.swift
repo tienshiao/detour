@@ -268,7 +268,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
         // The woken worker claims on its own; the claim advances the ledger.
         try await waitUntil("the new profile's worker to claim runtime.onInstalled", timeout: 20) {
             AppDatabase.shared.pendingRuntimeInstalledEvent(
-                extensionID: ext.id, profileID: profileID, currentVersion: "1.0.0") == nil
+                extensionID: ext.id, profileID: profileID, isPrivateProfile: false, currentVersion: "1.0.0") == nil
         }
         XCTAssertEqual(try Self.ledgerVersions(extensionID: ext.id, profileID: profileID), ["1.0.0"])
 

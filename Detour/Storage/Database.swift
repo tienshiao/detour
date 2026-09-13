@@ -543,6 +543,19 @@ struct AppDatabase {
                 """, arguments: [Date().timeIntervalSince1970])
         }
 
+        migrator.registerMigration("v10") { db in
+            // TASK-29: a reinstall owes an `update` even at the same version, which a
+            // version-only ledger cannot tell from a reload.
+            try db.alter(table: "extensionInstalledEvent") { t in
+                t.add(column: "reinstallPending", .boolean).notNull().defaults(to: false)
+            }
+            // The Private profile never gets runtime.onInstalled, so the rows v9
+            // seeded for it are dead. The literal is TabStore.incognitoProfileID,
+            // spelled out so this migration cannot change meaning later.
+            try db.execute(sql: "DELETE FROM extensionInstalledEvent WHERE profileID = ?",
+                           arguments: ["00000000-0000-0000-0000-000000000001"])
+        }
+
         return migrator
     }
 
@@ -594,12 +607,17 @@ struct AppDatabase {
 
     /// The `runtime.onInstalled` event the extension's context in `profileID`
     /// still owes, without delivering it. See `RuntimeInstalledEvent`.
-    func pendingRuntimeInstalledEvent(extensionID: String, profileID: String, currentVersion: String) -> RuntimeInstalledEvent.Details? {
-        performRead("read runtime.onInstalled ledger", default: nil) { db in
-            let delivered = try ExtensionInstalledEventRecord
+    /// `isPrivateProfile` is the profile's `isIncognito`: the Private profile is
+    /// never owed the event (TASK-29).
+    func pendingRuntimeInstalledEvent(extensionID: String, profileID: String, isPrivateProfile: Bool,
+                                      currentVersion: String) -> RuntimeInstalledEvent.Details? {
+        guard !isPrivateProfile else { return nil }
+        return performRead("read runtime.onInstalled ledger", default: nil) { db in
+            let entry = try ExtensionInstalledEventRecord
                 .filter(Column("extensionID") == extensionID && Column("profileID") == profileID)
-                .fetchOne(db)?.deliveredVersion
-            return RuntimeInstalledEvent.pending(deliveredVersion: delivered, currentVersion: currentVersion)
+                .fetchOne(db)?.ledgerEntry
+            return RuntimeInstalledEvent.pending(ledger: entry, currentVersion: currentVersion,
+                                                 isPrivateProfile: false)
         }
     }
 
@@ -608,20 +626,36 @@ struct AppDatabase {
     /// version exactly one gets the event. The ledger advances *before* the worker
     /// dispatches: a worker that dies in between loses the event rather than
     /// risking it twice (Chrome drops its pending dispatch at the same point).
-    /// Returns nil when nothing is owed or the write fails.
-    func claimRuntimeInstalledEvent(extensionID: String, profileID: String, currentVersion: String) -> RuntimeInstalledEvent.Details? {
-        performWrite("claim runtime.onInstalled event", default: nil) { db in
-            let delivered = try ExtensionInstalledEventRecord
+    /// Delivering clears a pending reinstall. Returns nil when nothing is owed —
+    /// always for the Private profile, which is never written — or the write fails.
+    func claimRuntimeInstalledEvent(extensionID: String, profileID: String, isPrivateProfile: Bool,
+                                    currentVersion: String) -> RuntimeInstalledEvent.Details? {
+        guard !isPrivateProfile else { return nil }
+        return performWrite("claim runtime.onInstalled event", default: nil) { db in
+            let entry = try ExtensionInstalledEventRecord
                 .filter(Column("extensionID") == extensionID && Column("profileID") == profileID)
-                .fetchOne(db)?.deliveredVersion
-            guard let details = RuntimeInstalledEvent.pending(deliveredVersion: delivered, currentVersion: currentVersion) else {
+                .fetchOne(db)?.ledgerEntry
+            guard let details = RuntimeInstalledEvent.pending(ledger: entry, currentVersion: currentVersion,
+                                                              isPrivateProfile: false) else {
                 return nil
             }
             try ExtensionInstalledEventRecord(
                 extensionID: extensionID, profileID: profileID,
-                deliveredVersion: currentVersion, deliveredAt: Date().timeIntervalSince1970
+                deliveredVersion: currentVersion, deliveredAt: Date().timeIntervalSince1970,
+                reinstallPending: false
             ).save(db)
             return details
+        }
+    }
+
+    /// Record that the user reinstalled the extension (TASK-29): each profile the
+    /// event was already delivered in is owed one `update` from that version, even
+    /// when the version did not change. Profiles without a row still get `install`.
+    /// Only `ExtensionManager.install` calls this — never a reload or an enable.
+    func markRuntimeInstalledEventReinstalled(extensionID: String) {
+        performWrite("mark runtime.onInstalled reinstall") { db in
+            try db.execute(sql: "UPDATE extensionInstalledEvent SET reinstallPending = 1 WHERE extensionID = ?",
+                           arguments: [extensionID])
         }
     }
 

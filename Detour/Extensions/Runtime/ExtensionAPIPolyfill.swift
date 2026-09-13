@@ -472,10 +472,20 @@ struct ExtensionAPIPolyfill {
     /// racing one — gets `{}`. Listeners registered after the claim settled get
     /// nothing, as in Chrome.
     ///
-    /// Workers only. Extension pages keep WebKit's event (it is rare for one to be
-    /// open, and listening, across an install); `__detourForceRuntimeOnInstalled`
-    /// installs it outside workers for tests. `__detourRuntimeOnInstalled` exposes the
-    /// mode, a `claim()` that tests drive deterministically, and what was dispatched.
+    /// **Extension pages** (popup, options, extension tabs, offscreen documents: any
+    /// non-worker context the polyfill reaches that has `runtime.onInstalled`) get the
+    /// same shadowing but never claim (TASK-29): mode `suppressed`, listeners kept and
+    /// never called. Otherwise WebKit's own dispatch reaches a page that is listening
+    /// when a background-recovery reload or a disable → enable fires its spurious
+    /// `install`. Detour's event goes to the worker only; in Chrome a page opened
+    /// after the event never sees it either. Measured with a real extension page
+    /// (`ExtensionPolyfillProfileWiringTests`): the patched wrapper stays the one
+    /// `chrome.runtime.onInstalled` returns, and when WebKit fires `install` to the
+    /// page, a listener added through it is not called.
+    ///
+    /// `__detourForceRuntimeOnInstalled` installs the worker mode outside workers for
+    /// tests. `__detourRuntimeOnInstalled` exposes the mode, a `claim()` that tests
+    /// drive deterministically, and what was dispatched.
     private static let runtimeOnInstalledJS = """
     (function() {
         const g = globalThis;
@@ -554,11 +564,8 @@ struct ExtensionAPIPolyfill {
         }
 
         function install() {
-            const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
-            if (!isWorker && g.__detourForceRuntimeOnInstalled !== true) {
-                detail = 'not-a-worker';
-                return;
-            }
+            const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined'
+                || g.__detourForceRuntimeOnInstalled === true;
             const event = readEvent();
             if (!event || typeof event !== 'object') {
                 detail = 'no-onInstalled';
@@ -596,8 +603,14 @@ struct ExtensionAPIPolyfill {
                 heldEvent = null;
                 return;
             }
-            mode = 'detour';
-            setTimeout(claim, 0);
+            if (isWorker) {
+                mode = 'detour';
+                setTimeout(claim, 0);
+            } else {
+                // An extension page: WebKit's event is hidden here too, and
+                // Detour's goes to the worker alone (TASK-29).
+                mode = 'suppressed';
+            }
         }
         install();
 

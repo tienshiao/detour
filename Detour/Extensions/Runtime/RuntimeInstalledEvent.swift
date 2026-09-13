@@ -1,6 +1,6 @@
 import Foundation
 
-/// `chrome.runtime.onInstalled` as Detour emits it (TASK-22).
+/// `chrome.runtime.onInstalled` as Detour emits it (TASK-22, TASK-29).
 ///
 /// WebKit's own event cannot be used as is. It decides the reason per context
 /// *load* (`WebExtensionContext::determineInstallReasonDuringLoad`): a version
@@ -13,14 +13,15 @@ import Foundation
 /// doing first-run setup in `onInstalled` (1Password opens its welcome page) would
 /// both miss its real install and repeat it on every recovery.
 ///
-/// So the service-worker polyfill keeps WebKit's event from reaching the extension
-/// and asks Detour instead, once per worker start. Detour answers from a ledger of
-/// the version each (profile, extension) last had the event delivered for, which is
-/// what makes the Chrome rules below hold: per profile, exactly once per install or
-/// version change, never for a reload, relaunch or re-enable, and never
-/// `chrome_update` (Detour has no browser-update notion to report). A profile where
-/// the extension was disabled during an update gets the `update` when it next runs
-/// there, the way Chrome defers a pending dispatch.
+/// So the polyfill keeps WebKit's event from reaching the extension — in the
+/// worker and in its pages — and the worker asks Detour instead, once per worker
+/// start. Detour answers from a ledger of the version each (profile, extension)
+/// last had the event delivered for, which is what makes the Chrome rules below
+/// hold: per profile, exactly once per install, reinstall or version change, never
+/// for a reload, relaunch or re-enable, and never `chrome_update` (Detour has no
+/// browser-update notion to report). A profile where the extension was disabled
+/// during an update gets the `update` when it next runs there, the way Chrome
+/// defers a pending dispatch. The Private profile never gets the event.
 enum RuntimeInstalledEvent {
 
     enum Reason: String, Equatable {
@@ -42,19 +43,38 @@ enum RuntimeInstalledEvent {
         }
     }
 
+    /// What the ledger holds for one (profile, extension).
+    struct LedgerEntry: Equatable {
+        /// The version the event was last delivered for.
+        let deliveredVersion: String
+        /// The user reinstalled the extension (`ExtensionManager.install` over an
+        /// installed one) since that delivery.
+        let reinstallPending: Bool
+    }
+
     /// The event a context running `currentVersion` still owes its listeners, given
-    /// the version the ledger last delivered the event for in that profile (nil when
-    /// it never has). Nil when nothing is owed.
+    /// what the ledger holds for that profile (nil when the event was never
+    /// delivered there). Nil when nothing is owed.
     ///
-    /// Same version → nothing, which is every reload, relaunch and re-enable. A
-    /// same-version reinstall is deliberately nothing too: Chrome reports `update`
-    /// for reloading an unpacked extension, but a ledger keyed by version cannot
-    /// tell that apart from a reload, and a spurious event is the worse error.
-    static func pending(deliveredVersion: String?, currentVersion: String) -> Details? {
-        guard let deliveredVersion else {
+    /// - No entry → `install`.
+    /// - A different version → `update` from the delivered version.
+    /// - A reinstall since the delivery → `update` from the delivered version, which
+    ///   for a same-version reinstall is the current one. Chrome reports `update` for
+    ///   reloading an unpacked extension; Detour's nearest equivalent is the user
+    ///   installing the same extension again. Only an explicit install sets the flag,
+    ///   so a background-recovery reload, a relaunch or a disable → enable — all of
+    ///   which load the delivered version again — still owe nothing.
+    /// - The Private profile → nothing, ever. Chrome's default "spanning" incognito
+    ///   mode runs the extension once, in the regular profile, and the incognito side
+    ///   never gets its own `onInstalled`; delivering it in Detour's Private profile
+    ///   would also rerun first-run setup (1Password's welcome page) in Private
+    ///   windows, whose extension storage does not survive a relaunch.
+    static func pending(ledger: LedgerEntry?, currentVersion: String, isPrivateProfile: Bool) -> Details? {
+        guard !isPrivateProfile else { return nil }
+        guard let ledger else {
             return Details(reason: .install, previousVersion: nil)
         }
-        guard deliveredVersion != currentVersion else { return nil }
-        return Details(reason: .update, previousVersion: deliveredVersion)
+        guard ledger.reinstallPending || ledger.deliveredVersion != currentVersion else { return nil }
+        return Details(reason: .update, previousVersion: ledger.deliveredVersion)
     }
 }

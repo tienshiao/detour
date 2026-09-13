@@ -327,15 +327,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// install or update, or at launch for one a crash or a disabled profile left
     /// undelivered — rather than whenever something else next wakes the worker.
     /// Delivery itself is the worker's claim (`RuntimeInstalledEvent`); a context
-    /// without a service worker never claims, so it is not woken.
+    /// without a service worker never claims, so it is not woken, and neither is
+    /// the Private profile's, which is never owed the event (TASK-29).
     func wakeForPendingInstalledEvent(extensionID: String, in profile: Profile) {
-        guard let context = profile.extensionContext(for: extensionID),
-              context.webExtension.hasBackgroundContent,
-              self.extension(withID: extensionID)?.manifest.background?.serviceWorker != nil,
-              let version = context.webExtension.version,
-              let pending = AppDatabase.shared.pendingRuntimeInstalledEvent(
-                  extensionID: extensionID, profileID: profile.id.uuidString, currentVersion: version
-              ) else { return }
+        guard let pending = installedEventOwingWake(extensionID: extensionID, in: profile),
+              let context = profile.extensionContext(for: extensionID) else { return }
         log.info("runtime.onInstalled: \(pending.reason.rawValue, privacy: .public) pending for \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public); waking its worker")
         context.loadBackgroundContent { error in
             if let error {
@@ -343,6 +339,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 log.error("runtime.onInstalled: waking \(extensionID, privacy: .public) failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
             }
         }
+    }
+
+    /// The event `wakeForPendingInstalledEvent` would wake the worker for, or nil
+    /// when it would not wake it. Separate so tests can check the decision without
+    /// starting a worker.
+    func installedEventOwingWake(extensionID: String, in profile: Profile) -> RuntimeInstalledEvent.Details? {
+        guard !profile.isIncognito,
+              let context = profile.extensionContext(for: extensionID),
+              context.webExtension.hasBackgroundContent,
+              self.extension(withID: extensionID)?.manifest.background?.serviceWorker != nil,
+              let version = context.webExtension.version else { return nil }
+        return AppDatabase.shared.pendingRuntimeInstalledEvent(
+            extensionID: extensionID, profileID: profile.id.uuidString,
+            isPrivateProfile: profile.isIncognito, currentVersion: version)
     }
 
     /// Re-associate the profile's open windows and tabs with a freshly reloaded
@@ -857,6 +867,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 }
             }
             extensions.remove(at: existingIdx)
+            // An explicit reinstall, even of the same version, owes each profile
+            // that already had the event one `update` (TASK-29). Marked before the
+            // replacement loads, so the wake below and the new worker's claim see
+            // it. The recovery reload and enable paths never come through here.
+            AppDatabase.shared.markRuntimeInstalledEventReinstalled(extensionID: ext.id)
         }
 
         extensions.append(ext)

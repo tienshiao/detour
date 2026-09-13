@@ -658,9 +658,15 @@ document.getElementById('btn-refresh-log').addEventListener('click', async () =>
 // --- runtime.onInstalled ---
 // Every delivery the worker recorded (background.js keeps them in
 // storage.local.onInstalledEvents), plus how the polyfill installed the event.
-// Expected in Detour (TASK-22): one 'install' per profile after installing, one
-// 'update' with previousVersion after a version change, and nothing for a
-// reload, relaunch or disable/enable.
+// Expected in Detour (TASK-22, TASK-29): one 'install' per profile after
+// installing, one 'update' with previousVersion after a version change or a
+// same-version reinstall, nothing for a reload, relaunch or disable/enable, and
+// nothing ever in the Private profile. The popup itself listens too: in Detour its
+// mode is 'suppressed' and it never receives the event (only the worker does).
+const popupOnInstalledEvents = [];
+chrome.runtime.onInstalled.addListener((details) => {
+  popupOnInstalledEvents.push({ reason: details.reason, previousVersion: details.previousVersion, timestamp: Date.now() });
+});
 document.getElementById('btn-oninstalled-history').addEventListener('click', async () => {
   try {
     const { onInstalledEvents = [], onInstalledWorkerMode = '(worker not started yet)' } =
@@ -670,7 +676,16 @@ document.getElementById('btn-oninstalled-history').addEventListener('click', asy
       const previous = e.previousVersion ? ` from ${e.previousVersion}` : '';
       return `${time}  ${e.reason}${previous} -> v${e.version}`;
     });
-    showResult('res-oninstalled', [`worker polyfill mode: ${onInstalledWorkerMode}`, ...(lines.length ? lines : ['(no deliveries recorded)'])].join('\n'));
+    const status = globalThis.__detourRuntimeOnInstalled;
+    const popupMode = status ? status.mode + (status.detail ? ` (${status.detail})` : '') : 'no Detour polyfill';
+    const popupReceived = popupOnInstalledEvents.length
+      ? popupOnInstalledEvents.map(e => `${e.reason}${e.previousVersion ? ` from ${e.previousVersion}` : ''}`).join(', ')
+      : 'nothing (expected)';
+    showResult('res-oninstalled', [
+      `worker polyfill mode: ${onInstalledWorkerMode}`,
+      `popup polyfill mode: ${popupMode}; popup listener received: ${popupReceived}`,
+      ...(lines.length ? lines : ['(no deliveries recorded)'])
+    ].join('\n'));
   } catch (e) { showResult('res-oninstalled', e.message, true); }
 });
 
