@@ -8,9 +8,10 @@ import WebKit
 /// Extensions menu used to decide "is this item clickable?" by testing that
 /// property for nil, so simply building the menu loaded every enabled
 /// extension's popup — and 1Password answers its popup loading against a locked
-/// vault by asking the desktop app to unlock. Worse, `menuNeedsUpdate` fires not
-/// only when the menu is opened but during AppKit's key-equivalent dispatch, so
-/// the menu is rebuilt on every Cmd+key press.
+/// vault by asking the desktop app to unlock. Worse, at the time `menuNeedsUpdate`
+/// also fired during AppKit's key-equivalent dispatch, so the menu was rebuilt
+/// on every Cmd+key press; `AppDelegate.menuHasKeyEquivalent` now answers that
+/// query without a rebuild (TASK-56).
 ///
 /// `presentsPopup` inspects only the action's popup path, creating nothing.
 /// Because this protocol has no `popupWebView` member, code that decides through

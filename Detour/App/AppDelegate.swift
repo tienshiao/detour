@@ -338,16 +338,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         extensionsMenu.addItem(withTitle: "Manage Extensions…", action: #selector(showExtensionsSettings), keyEquivalent: "")
         extensionsMenuItem.submenu = extensionsMenu
 
-        // Develop menu
+        // Develop menu. Deliberately not delegate-driven: its dynamic items
+        // depend only on the global extension list, so they are rebuilt from
+        // `extensionsDidChangeNotification` instead of on open. That keeps the
+        // one letter shortcut (Cmd+Option+I) out of `menuHasKeyEquivalent`'s
+        // hand-rolled matching — AppKit matches it natively, with its own
+        // keyboard-layout handling and validation (TASK-56 review).
         let developMenuItem = NSMenuItem()
         mainMenu.addItem(developMenuItem)
         let developMenu = NSMenu(title: "Develop")
-        developMenu.delegate = self
         let inspectorItem = developMenu.addItem(withTitle: "Web Inspector", action: #selector(BrowserWindowController.showWebInspector(_:)), keyEquivalent: "i")
         inspectorItem.keyEquivalentModifierMask = [.command, .option]
         developMenu.addItem(.separator())
         developMenu.addItem(withTitle: "Load Unpacked Extension…", action: #selector(loadUnpackedExtension), keyEquivalent: "")
         developMenuItem.submenu = developMenu
+        self.developMenu = developMenu
+        updateDevelopMenu(developMenu)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(extensionsDidChange),
+            name: ExtensionManager.extensionsDidChangeNotification,
+            object: nil
+        )
 
         // Window menu
         let windowMenuItem = NSMenuItem()
@@ -394,6 +406,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Tag used to identify dynamically-added extension inspector menu items.
     private static let extensionInspectorTag = 9000
+
+    /// The Develop menu, rebuilt on `extensionsDidChangeNotification` rather
+    /// than by an `NSMenuDelegate` (see `setupMainMenu`).
+    private var developMenu: NSMenu?
+
+    /// Every path that changes the extension list or an extension's enabled
+    /// flag posts `extensionsDidChangeNotification` (load, install, uninstall,
+    /// global and per-profile enable), so the Develop menu is current whenever
+    /// it is opened without being rebuilt on open.
+    @objc private func extensionsDidChange() {
+        guard let developMenu else { return }
+        if Thread.isMainThread {
+            updateDevelopMenu(developMenu)
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.updateDevelopMenu(developMenu) }
+        }
+    }
 
     /// Hidden windows that host background webViews so the inspector can attach.
     private var inspectorWindows: [String: NSWindow] = [:]
@@ -445,11 +474,73 @@ extension AppDelegate: NSMenuDelegate {
             updateSpacesMenu(menu)
         case "Extensions":
             updateExtensionsMenu(menu)
-        case "Develop":
-            updateDevelopMenu(menu)
         default:
             break
         }
+    }
+
+    /// Answers AppKit's key-equivalent query, so a Cmd+key press does not
+    /// rebuild the Spaces and Extensions menus (TASK-56).
+    ///
+    /// A delegate that does not implement this method gets `menuNeedsUpdate`
+    /// on every key-equivalent dispatch — re-enumerating spaces, re-querying
+    /// each profile's enabled extensions and redrawing their icons on every
+    /// keystroke, and re-exposing any menu item whose enable decision touches
+    /// WebKit state (TASK-55). Implementing it takes the rebuild off the
+    /// keystroke path; the rebuild runs when AppKit actually needs the menu's
+    /// contents (opening it, accessibility, menu search).
+    ///
+    /// What the two answers mean, verified against AppKit rather than assumed
+    /// (TASK-56 review, macOS 26): `false` is *not* a veto. AppKit goes on to
+    /// scan the items the menu already holds — with its own keyboard-layout
+    /// handling, validation and submenu recursion — just without rebuilding
+    /// first. So a `false` for a shortcut this matcher does not model costs
+    /// nothing on that path, and only the static items that exist between
+    /// opens can be matched either way (the dynamic items carry no key
+    /// equivalent; `MenuKeyEquivalentMatcherTests` asserts it on the real
+    /// menus). Whether older AppKit trusts `false` outright is not verified,
+    /// which is why the matcher stays as the belt to that braces: every
+    /// shortcut left in these menus is a layout-independent function key it
+    /// matches exactly.
+    ///
+    /// `true`, by contrast, *is* trusted: AppKit performs the returned action
+    /// on the returned target with no validation of its own. So this path must
+    /// validate the way AppKit would have — `validateMenuItem` is what keeps
+    /// Next/Previous Space inert when no browser window is key — and, when in
+    /// doubt, answer `false` and let AppKit decide.
+    func menuHasKeyEquivalent(_ menu: NSMenu,
+                              for event: NSEvent,
+                              target: AutoreleasingUnsafeMutablePointer<AnyObject?>,
+                              action: UnsafeMutablePointer<Selector?>) -> Bool {
+        guard let item = MenuKeyEquivalentMatcher.item(matching: event, in: menu.items),
+              let itemAction = item.action else { return false }
+
+        // A nil item target means "resolve against the responder chain", which
+        // is how the window-controller shortcuts find the key window.
+        guard let resolved = NSApp.target(forAction: itemAction, to: item.target, from: item) else {
+            return false
+        }
+        guard Self.menuItemIsEnabled(item, in: menu, target: resolved) else { return false }
+
+        target.pointee = resolved as AnyObject
+        action.pointee = itemAction
+        return true
+    }
+
+    /// AppKit's tiered enable decision for a key-equivalent hit, so the `true`
+    /// path of `menuHasKeyEquivalent` fires exactly what a click could: with
+    /// automatic enabling, the target's `validateMenuItem`, else its
+    /// `validateUserInterfaceItem`, else enabled; without it, the item's own
+    /// `isEnabled`.
+    private static func menuItemIsEnabled(_ item: NSMenuItem, in menu: NSMenu, target: Any) -> Bool {
+        guard menu.autoenablesItems else { return item.isEnabled }
+        if let validator = target as? NSMenuItemValidation {
+            return validator.validateMenuItem(item)
+        }
+        if let validator = target as? NSUserInterfaceValidations {
+            return validator.validateUserInterfaceItem(item)
+        }
+        return true
     }
 
     private func updateSpacesMenu(_ menu: NSMenu) {
@@ -506,10 +597,12 @@ extension AppDelegate: NSMenuDelegate {
 
         for (i, ext) in profileExtensions.enumerated() {
             let displayName = ExtensionManager.shared.displayName(for: ext.id)
-            // Never read `action.popupWebView` here: it is created lazily, so the
-            // read itself loads the extension's popup page — and `menuNeedsUpdate`
-            // fires on every key-equivalent dispatch, not just when the menu opens
-            // (TASK-55). The decision goes through a protocol that cannot see it.
+            // Never read `action.popupWebView` here: it is created lazily, so
+            // the read itself loads the extension's popup page (TASK-55). The
+            // decision goes through a protocol that cannot see it. This rebuild
+            // no longer runs on key-equivalent dispatch — `menuHasKeyEquivalent`
+            // answers that (TASK-56) — but the guard stays: no rebuild, on open
+            // or otherwise, may load popups.
             let hasPopup = ExtensionMenuPopupDecision.hasPopup(
                 action: ExtensionManager.shared.context(for: ext.id)?.action(for: nil),
                 manifestDefaultPopup: ext.manifest.action?.defaultPopup
@@ -541,6 +634,9 @@ extension AppDelegate: NSMenuDelegate {
         menu.insertItem(separator, at: insertIndex + profileExtensions.count)
     }
 
+    /// Rebuilds the Develop menu's per-extension inspector items. Driven by
+    /// `extensionsDidChangeNotification` (and once at setup), not by
+    /// `menuNeedsUpdate`: the Develop menu has no delegate.
     private func updateDevelopMenu(_ menu: NSMenu) {
         // Remove previous extension inspector items
         menu.items
