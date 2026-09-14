@@ -3,11 +3,11 @@ id: TASK-71
 title: >-
   Extensions: determine whether the polyfill's chrome.offscreen override or
   WebKit's native offscreen runs in the signed build, and make it observable
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 04:11'
-updated_date: '2026-09-14 05:42'
+updated_date: '2026-09-14 06:29'
 labels:
   - extensions
   - bug
@@ -43,6 +43,8 @@ Filed by the TASK-68 review on the premise that an offscreen page's close killed
 Determination (2026-09-13): the shipped WebKit (framework version 21624.5.1.11.3 = safari-7624 branch) has no WK_WEB_EXTENSIONS_OFFSCREEN: its UnifiedWebPreferences.yaml has no WebExtensionOffscreenEnabled and its WebExtensionAPINamespace.idl has no offscreen attribute (both present on main, gated by that flag + the offscreen permission + the WebExtensionOffscreenEnabled setting). So in the signed build there is no native chrome.offscreen to win; page 577 in the production run was Detour's OffscreenDocumentHost web view (it lives in the extension's process like every page of the controller's configuration), and the missing offscreen.createDocument log line is most likely the info-level message not being persisted by 'log show'. Decision: Detour's implementation is the one in force and stays so — a future native namespace gets shadowed and reported as 'polyfill-over-native' so it is noticed.
 
 Implemented (commit 260546e): offscreenJS reads chrome.offscreen first (try-guarded), classifies it with the [native code] check, installs Detour's namespace tagged _detourPolyfill and verifies by re-reading; globalThis.__detourOffscreenInstall is written once as polyfill | polyfill-over-native | polyfill-over-foreign | error: … (error also console.error'd); __detourPolyfillDiag.apis.offscreenInstall carries it and workers/background pages log '[Detour polyfill] chrome.offscreen implementation: …' once per start. Real worker in the test host reads polyfill with no captured native namespace. Tests: 5 in ExtensionPolyfillTests, 1 in ExtensionPolyfillProfileWiringTests. The production confirmation is that console line in the next signed-build run.
+
+Closed 2026-09-13 with all criteria checked; the signed build logs '[Detour polyfill] chrome.offscreen implementation: …' once per worker start (readable with ExtensionConsoleLogPublic set).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
