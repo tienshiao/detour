@@ -192,6 +192,15 @@ class Profile {
                 identifier: WebKitStorageScope.current.identifierForCreatingStorage(forProfile: id))
         }
         config.defaultWebsiteDataStore = dataStore
+        // The shipped WebKit (7624) builds `webViewConfiguration` as a plain
+        // `WKWebViewConfiguration()` and never copies `defaultWebsiteDataStore`
+        // into it (main does), and every extension web view — background
+        // page/worker, popup, options, offscreen — is a copy of that
+        // configuration. Without this line all profiles' extension pages, their
+        // service-worker registrations and IndexedDB live in the *default* data
+        // store: shared across profiles, and in the one session whose tracking
+        // prevention pass kept purging 1Password's worker (TASK-70).
+        config.webViewConfiguration.websiteDataStore = dataStore
 
         // Register favicon scheme handler so extensions can use chrome.runtime.getURL("/_favicon/...")
         config.webViewConfiguration.setURLSchemeHandler(

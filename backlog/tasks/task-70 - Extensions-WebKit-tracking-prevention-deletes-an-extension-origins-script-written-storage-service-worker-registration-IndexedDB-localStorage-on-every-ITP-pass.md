@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-14 03:57'
-updated_date: '2026-09-14 05:42'
+updated_date: '2026-09-14 06:14'
 labels:
   - extensions
   - webkit
@@ -57,6 +57,10 @@ Mechanism confirmed in WebKit source (ResourceLoadStatisticsStore.cpp): with the
 Implemented (commit 84e8560): ExtensionOriginInteractionKeeper logs _logUserInteraction: for each context's baseURL on load and every 24 h (Profile.originInteractionKeeper, stopped in unloadAllExtensions; incognito/non-persistent skipped). Test findings: fetchDataRecords never lists webkit-extension:// origins even after _allowWebsiteDataRecordsForAllOrigins, so the extension side is asserted via the worker (ping + IndexedDB marker) and ITPDebug shows the interacted uuid absent from the removal list; _setResourceLoadStatisticsTimeAdvanceForTesting only steps in whole days (a 3 h advance is a no-op) and cannot be reset, so the test advances 24 h in its own profile's session. Negative control: two http origins differing only in the keeper call — the one without interaction loses its localStorage. Docs section added to docs/1password-integration-plan.md. AC#1 (signed build) still needs a production run: expect an 'ITP: logged user interaction' line per extension at launch and no SWServerRegistration::clear for the extension after deleteAndRestrictWebsiteDataForRegistrableDomains.
 
 Review (2026-09-13): keeper timer now also stops from unloadExtension when the last context goes; the disabled-extension gap is documented in the keeper header and filed as TASK-72.
+
+Production check 2026-09-13 22:53 and 22:57 (signed build with the keeper): the interaction was logged 0.4–0.8 s before the pass yet SWServerRegistration::clear still followed and the worker died (keep-alive no reply, restart). Cause found via the ITP databases: session 1 is the DEFAULT WKWebsiteDataStore (~/Library/WebKit/com.detourbrowser.mac/WebsiteData, 719 domains), and the extension origins' IndexedDB/origin files live there — the shipped WebKit's WebExtensionControllerConfiguration::webViewConfiguration() never copies defaultWebsiteDataStore into the web view configuration (main does), so every profile's extension pages, worker and storage share the default store while the keeper logged into profile.dataStore (b0e91083…, session 2). Also confirmed: WebKit mints a fresh base URL per launch, the extension's own pages insert the new origin (fingerprinting-API/third-party-script logging) and the merge runs the pass synchronously — clear within 10 ms; popup clicks do log interactions but too late. Fix: Profile sets config.webViewConfiguration.websiteDataStore = dataStore (profile isolation as designed) and the keeper logs into the controller configuration's store; test testExtensionWebViewsUseTheProfileStore added; docs rewritten. Side effect: the extension data in the default store is abandoned (1Password rebuilds its item cache in each profile store).
+
+Signed build 23:11 (Profile now sets webViewConfiguration.websiteDataStore = dataStore; keeper logs into that store): contexts loaded 23:11:34.45–.50, interactions logged .722 for both persistent profiles (Private skipped), launch ITP passes ran at 23:11:40 for sessions 3 and 2 only — the default store (session 1) is no longer touched — with NO SWServerRegistration::clear after either, and both persistent profiles' workers kept answering keep-alive pings (#1–#3 at 30 s intervals). The fresh origins' storage now lives under WebsiteDataStore/<profile>/Origins instead of WebsiteData/Default. One unrelated event: a worker whose native host disconnected was disarmed at 23:11:45, unloaded by WebKit's idle timer (SWServerRegistration::clear 34 at 23:12:15, no pass involved) and came back at 23:12:35 with a new port — TASK-68 territory, not ITP.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

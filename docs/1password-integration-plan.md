@@ -536,15 +536,35 @@ for the rest). The origin enters the statistics table on its own as soon as a pa
 extension's cross-host resources — a content-script iframe, a `chrome.runtime.getURL` fetch — which
 for 1Password is every page with a login form.
 
-**Why nothing the user did saved it.** Popup clicks, options pages and the extension's own network
-traffic are not first-party user interaction as far as ITP is concerned: nothing in Detour, and
-nothing in WebKit's extension machinery, called `logUserInteraction` for the extension's own origin.
-So the record sat at `hadUserInteraction == false` from the moment the origin was observed, and
-every pass scheduled it. Two guards delay it and neither helps for long: the whole
-script-written-storage list is dropped unless an hour has passed since the oldest recorded
-interaction in the database, and interaction windows are counted in *operating days* (days the
-browser ran), 7 or 30 — which is why the purge shows up as a launch-time event on a machine that has
-been running Detour for weeks.
+**Why nothing the user did saved it.** Two things, found in production on 2026-09-13 after the first
+version of the fix (interaction logged into `profile.dataStore`) changed nothing:
+
+1. *The extension pages were not in the profile's store at all.* The shipped WebKit
+   (`WebExtensionControllerConfigurationCocoa.mm`, safari-7624 branch) builds the controller's
+   `webViewConfiguration` as a plain `WKWebViewConfiguration()` and never copies
+   `defaultWebsiteDataStore` into it (main does). Every extension web view — background page and
+   worker, popup, options, offscreen — is a copy of that configuration, so all profiles' extension
+   pages, their service-worker registrations and their IndexedDB lived in the **default** data store
+   (`~/Library/WebKit/com.detourbrowser.mac/WebsiteData/`, ITP "session 1"), shared across profiles.
+   The purge always hit session 1; the interaction logged into the profile store's session was a
+   no-op. `Profile` now sets `config.webViewConfiguration.websiteDataStore = dataStore` itself.
+2. *Every launch is a brand-new origin.* WebKit mints a fresh `webkit-extension://<uuid>/` base URL at
+   every context load (Detour does not persist one), and migrates IndexedDB/localStorage onto it from
+   the last-seen origin. The service worker registers afresh on the new origin, whose statistics
+   record does not exist yet. The extension's own pages then create it — a fingerprinting-API access
+   (`navigator.*`, canvas) or a third-party script load is logged for the page's own top-frame
+   domain — and `resourceLoadStatisticsUpdated` runs a processing pass *synchronously* after that
+   merge: `merge: sessionID=1` → `deleteAndRestrictWebsiteDataForRegistrableDomains` →
+   `SWServerRegistration::clear` within 10 ms, about a second after the worker started. Popup clicks
+   do log an interaction for the origin (the default store held `hadUserInteraction = 1` rows for
+   earlier launches' uuids), but they come minutes later, for an origin that dies at the next launch
+   anyway.
+
+So the record is `hadUserInteraction == false` at the only moment that matters, and the interaction
+has to be logged into the store the extension pages run in, before the background content starts.
+Two guards delay the purge and neither helps: the whole script-written-storage list is dropped unless
+an hour has passed since the oldest recorded interaction in the database, and interaction windows
+are counted in *operating days* (days the browser ran), 7 or 30.
 
 **The fix — `Detour/Extensions/Runtime/ExtensionOriginInteractionKeeper.swift`.** Detour logs the
 interaction itself, through the private `-[WKWebsiteDataStore _logUserInteraction:completionHandler:]`
@@ -553,8 +573,10 @@ extension base URL is accepted and sets `hadUserInteraction` / `mostRecentUserIn
 its registrable domain). It fires:
 
 - at context load — `Profile.loadExtensionContext` calls `originInteractionKeeper.contextDidLoad`
-  right after `extensionController.load(context)` succeeds, with `context.baseURL`. WebKit mints a
-  fresh origin for every load, so a reload needs its own claim; the TASK-68 background recovery
+  right after `extensionController.load(context)` succeeds and before the background content is
+  started, with `context.baseURL`, into the store of the controller's `webViewConfiguration` — the
+  one the extension's pages run in. WebKit mints a fresh origin for every load, so a reload needs
+  its own claim; the TASK-68 background recovery
   reloads through the same method and is covered by the same call;
 - every 24 hours after that, per profile (`Timer`, 1 h tolerance, main run loop), re-logging every
   loaded context so a long-running process never ages out of the window. The timer is stopped in

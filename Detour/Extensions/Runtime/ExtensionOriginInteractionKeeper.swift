@@ -31,11 +31,14 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "EXT-ITP"
 /// domainsToDeleteAllScriptWrittenStorageFor`, immediately followed by
 /// `SWServerRegistration::clear` for the extension, and the worker was gone.
 ///
-/// Whatever the user did in the extension's popup, its origin's record had no
-/// unexpired interaction when the pass ran (the WebKit source does not exclude
-/// extension pages from interaction logging, so why is unconfirmed). Detour
-/// therefore logs one itself, every time a context is loaded and once a day
-/// for as long as the app runs —
+/// Popup clicks do log an interaction for the extension origin — but WebKit
+/// mints a fresh base URL at every context load, so each launch's origin is
+/// brand new: the extension's own pages put it in the statistics table (a
+/// fingerprinting-API access or a third-party script load is enough), the
+/// merge that inserts it runs a processing pass synchronously, and the
+/// registration is cleared within milliseconds — long before any popup click.
+/// Detour therefore logs the interaction itself, at context load before the
+/// background content starts, and once a day for as long as the app runs —
 /// the interaction window counts "operating days" (days the browser ran), 7 or
 /// 30, so a re-log a day keeps the origin unexpired however long the process
 /// lives.
@@ -152,7 +155,11 @@ final class ExtensionOriginInteractionKeeper {
     /// one (its storage is being removed), or a released one.
     private func keptDataStore() -> WKWebsiteDataStore? {
         guard let profile, !profile.isIncognito, !profile.isDeleted else { return nil }
-        let store = profile.dataStore
+        // The store the extension's pages actually run in — the controller's
+        // web view configuration, which `Profile` points at the profile store.
+        // Logging into any other store is a no-op for the purge, which runs in
+        // the session that holds the registration (production, 2026-09-13).
+        let store = profile.extensionController.configuration.webViewConfiguration.websiteDataStore
         return store.isPersistent ? store : nil
     }
 

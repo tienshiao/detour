@@ -321,6 +321,19 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     // MARK: - A real tracking-prevention pass
 
+    /// The shipped WebKit never copies `defaultWebsiteDataStore` into the
+    /// controller's `webViewConfiguration`, and every extension web view is a
+    /// copy of that configuration: without Detour setting the store itself, all
+    /// profiles' extension pages, workers and IndexedDB share the default data
+    /// store — where the ITP purge ran, out of reach of an interaction logged
+    /// into the profile store (production, 2026-09-13).
+    func testExtensionWebViewsUseTheProfileStore() {
+        let profile = makeProfile("Extension Store Profile")
+        let store = profile.extensionController.configuration.webViewConfiguration.websiteDataStore
+        XCTAssertTrue(store === profile.dataStore, "extension web views must use the profile's data store")
+        XCTAssertFalse(store === WKWebsiteDataStore.default(), "extension web views must not fall back to the default store")
+    }
+
     /// Drives one real ITP processing pass over a profile and watches what it
     /// spares.
     ///
