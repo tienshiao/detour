@@ -46,37 +46,45 @@ final class UnhandledKeyFallthroughTests: XCTestCase {
 
     // MARK: - The controller
 
+    /// Records what `NSResponder.keyDown` forwards. Hung off the controller's
+    /// `nextResponder` (nil in production), it stands in for the end of the
+    /// chain: `super.keyDown` forwards to it instead of calling
+    /// `noResponderFor(keyDown:)`, so the real fall-through runs without NSBeep.
+    private final class FallthroughProbe: NSResponder {
+        var received: [NSEvent] = []
+        override func keyDown(with event: NSEvent) { received.append(event) }
+    }
+
     func testDeclinedKeyStopsAtTheControllerButNativeKeyFallsThrough() throws {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
+        // Never let this never-shown window's split view touch the autosaved
+        // sidebar geometry other windows restore from.
+        wc.sidebarSplitView.autosaveName = nil
         let window = try XCTUnwrap(wc.window)
         let contentView = try XCTUnwrap(window.contentView)
 
-        var fellThrough: [NSEvent] = []
-        wc.unhandledKeyFallthroughForTesting = { fellThrough.append($0) }
+        let probe = FallthroughProbe()
+        wc.nextResponder = probe
 
         let webView = BrowserWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
         contentView.addSubview(webView)
         contentView.addSubview(textField)
-        defer {
-            webView.removeFromSuperview()
-            textField.removeFromSuperview()
-        }
 
         // A key the page declined: WebKit re-dispatches it while the web view
         // still holds first responder.
         XCTAssertTrue(window.makeFirstResponder(webView))
         wc.keyDown(with: try makeKeyDown(in: window, characters: "j", keyCode: 38))
-        XCTAssertTrue(fellThrough.isEmpty, "a key web content declined must not reach NSResponder (no beep)")
+        XCTAssertTrue(probe.received.isEmpty, "a key web content declined must not reach NSResponder (no beep)")
 
         // Same key with a native control focused still falls through to the
         // beep, which is the platform's feedback for an unusable key.
         XCTAssertTrue(window.makeFirstResponder(textField))
         let nativeEvent = try makeKeyDown(in: window, characters: "j", keyCode: 38)
         wc.keyDown(with: nativeEvent)
-        XCTAssertEqual(fellThrough.count, 1, "a key unhandled by native views keeps its beep")
-        XCTAssertTrue(fellThrough.first === nativeEvent)
+        XCTAssertEqual(probe.received.count, 1, "a key unhandled by native views keeps its beep")
+        XCTAssertTrue(probe.received.first === nativeEvent)
     }
 
     private func makeKeyDown(in window: NSWindow, characters: String, keyCode: UInt16) throws -> NSEvent {

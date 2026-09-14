@@ -2225,28 +2225,24 @@ class BrowserWindowController: NSWindowController {
             return
         }
         // The page already saw this key and passed on it: end the chain here
-        // instead of letting NSResponder beep (TASK-76).
+        // instead of letting NSResponder beep (TASK-76). Must stay below the Esc
+        // branch: with a peek open the peek web view holds first responder, so
+        // this guard would otherwise swallow the Esc that closes it.
         if Self.keyWasDeclinedByWebContent(firstResponder: window?.firstResponder) { return }
-        if let testFallthrough = unhandledKeyFallthroughForTesting {
-            testFallthrough(event)
-            return
-        }
+        // Nothing handled the key. As the last responder, `super` beeps via
+        // `noResponderFor(keyDown:)` — or forwards to `nextResponder` if one is
+        // installed (tests hang a probe there to observe this fall-through).
         super.keyDown(with: event)
     }
 
     /// True when the key event arriving here was already offered to — and
     /// declined by — web content, in which case this controller must swallow it.
     ///
-    /// Mechanism: WKWebView hands every keyDown to the web process first. If the
-    /// page doesn't handle it, WebKit re-dispatches the *same* NSEvent through
-    /// AppKit (`WebViewImpl::doneWithKeyEvent` → `[NSApp sendEvent:]` →
-    /// `WebViewImpl::keyDown` → `_web_superKeyDown:`), so it climbs
-    /// BrowserWebView → container views → the window → this controller, the last
-    /// responder. `NSResponder.keyDown` then calls
-    /// `noResponderFor(#selector(keyDown(with:)))`, which is `NSBeep()` — so
-    /// every key any page declines used to beep: arrow keys at a scroll limit,
-    /// letters typed with no focused field, YouTube's player hotkeys while the
-    /// player is unfocused. Safari swallows declined keys silently; so do we.
+    /// The re-dispatch is described above `keyDown`; what it lands on here is
+    /// `NSResponder.keyDown` calling `noResponderFor(keyDown:)`, i.e. `NSBeep()`,
+    /// so every key any page declined used to beep: arrow keys at a scroll
+    /// limit, letters typed with no focused field, YouTube's player hotkeys while
+    /// the player is unfocused. Safari swallows declined keys silently; so do we.
     ///
     /// keyDown is the only path that needs this guard. `noResponderFor(_:)`
     /// beeps solely for `keyDown:`, and the other way an unhandled key can reach
@@ -2258,10 +2254,22 @@ class BrowserWindowController: NSWindowController {
     ///
     /// Native first responders (the sidebar table, a text field, the find bar)
     /// return false, so a genuinely unhandled key there still gives feedback.
+    ///
+    /// Known limit: this samples focus at re-dispatch time, and WebKit's
+    /// re-dispatch is an asynchronous reply from the web process. If a mouse
+    /// click moves focus to a native view in that window, the replayed key is
+    /// delivered to — and judged against — the new responder, so a key the page
+    /// declined can still beep. Rare (busy page + click in the same instant) and
+    /// the outcome is only the old beep, so it is tolerated rather than tracked
+    /// per event.
     static func keyWasDeclinedByWebContent(firstResponder: NSResponder?) -> Bool {
         // On macOS the WKWebView itself normally holds first responder, but walk
         // the ancestor chain anyway so a subview of one (split panes, the peek
-        // web view, WebKit's own internals) counts too.
+        // web view, WebKit's own internals such as the safe-browsing warning
+        // view) counts too. Corollary: any native view Detour parents into a web
+        // view — today only `linkStatusBar`, via `anchorLinkStatusBar(to:)` —
+        // must stay non-focusable, or its declined keys go silent instead of
+        // beeping.
         var view = firstResponder as? NSView
         while let current = view {
             if current is WKWebView { return true }
@@ -2269,11 +2277,6 @@ class BrowserWindowController: NSWindowController {
         }
         return false
     }
-
-    /// Test-only seam: when set, it runs *instead of* `super.keyDown(with:)`, so
-    /// a test can observe the unhandled-key fall-through without NSBeep. Left
-    /// nil in production, where the fall-through is plain `super.keyDown`.
-    var unhandledKeyFallthroughForTesting: ((NSEvent) -> Void)?
 
     override func cancelOperation(_ sender: Any?) {
         if peekOverlayView != nil {
