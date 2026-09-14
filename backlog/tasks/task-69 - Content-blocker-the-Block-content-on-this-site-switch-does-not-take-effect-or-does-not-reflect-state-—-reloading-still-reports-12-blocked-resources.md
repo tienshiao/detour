@@ -3,11 +3,11 @@ id: TASK-69
 title: >-
   Content blocker: the 'Block content on this site' switch does not take effect
   (or does not reflect state) — reloading still reports 12 blocked resources
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 03:23'
-updated_date: '2026-09-14 05:42'
+updated_date: '2026-09-14 06:29'
 labels:
   - content-blocker
   - bug
@@ -30,9 +30,9 @@ Reported 2026-09-13 on https://techcrunch.com/2026/09/12/automattic-confirms-mul
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Turning the switch off on a site, then reloading, shows the switch off and the blocked counter at 0 for that page (verified on the techcrunch.com URL above)
-- [ ] #2 Turning it back on and reloading restores blocking and a non-zero counter
-- [ ] #3 The switch reflects the persisted whitelist state when the popover is reopened, after switching tabs, and after a relaunch
+- [x] #1 Turning the switch off on a site, then reloading, shows the switch off and the blocked counter at 0 for that page (verified on the techcrunch.com URL above)
+- [x] #2 Turning it back on and reloading restores blocking and a non-zero counter
+- [x] #3 The switch reflects the persisted whitelist state when the popover is reopened, after switching tabs, and after a relaunch
 - [x] #4 A unit or integration test covers the whitelist rule being applied after the block lists and the counter resetting on navigation
 <!-- AC:END -->
 
@@ -53,6 +53,8 @@ Root cause (2026-09-13, from WebKit source ContentExtensionsBackend.cpp): ignore
 Implemented (commit 8e2f303): the whitelist rule list is gone; whitelisted main-frame navigations get -[WKWebpagePreferences _setContentBlockersEnabled:NO] from decidePolicyFor:preferences: (ContentBlockerManager.configure), subdomain-aware ContentBlockerWhitelist.covers/entriesCovering, toggleHost removes every covering entry and the popover reloads the tab. The counter now comes from the private navigation delegate callback _webView:contentRuleListWithIdentifier:performedAction:forURL: (blockedLoad) via tab(owning:), so peek and split panes are covered; BlockedResourceTracker and its script handler are deleted. Tests: ContentBlockerWhitelistTests (16) incl. a real WKWebView proving one blockedLoad callback with blocking on and none when the host is whitelisted; both SPI selectors verified present on macOS 26.6.2.
 
 Review fixes (2026-09-13): tab-owned navigation delegate for background-opened tabs, profile from the navigating tab not the window's active space, per-URL dedupe of blocked-load callbacks (WebKit fires once per list), responds(to:) guard on the SPI KVC, reload of every covered pane on toggle, retired whitelist rule lists removed at startup, UA spoof applied to the navigating tab. docs/content-blocking.md rewritten for the new mechanism.
+
+Closed 2026-09-13: manual check of the switch on the techcrunch.com page (off → reload shows off and 0 blocked; on → blocking and a non-zero count return; state persists across popover reopen, tab switch and relaunch) confirmed by the user on the signed build from commit a68e26e.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
