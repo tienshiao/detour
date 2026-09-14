@@ -3,11 +3,11 @@ id: TASK-67
 title: >-
   Extensions: a worker replaced without its page closing leaks its native hosts
   and keeps the keep-alive armed
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 01:45'
-updated_date: '2026-09-14 03:21'
+updated_date: '2026-09-14 06:31'
 labels:
   - extensions
   - 1password
@@ -38,7 +38,7 @@ What replaced the worker at 18:38:49 is not known. Candidates: 1Password called 
 - [x] #2 When a new background context of an extension appears in a profile, native hosts owned by the context it replaced are disconnected and their processes exit
 - [x] #3 The keep-alive armed count for the new context counts only hosts that context connected; a test covers a replacement with 1 and with 2 old hosts
 - [x] #4 A normal host disconnect and a context unload still release each host exactly once (existing TASK-16 tests stay green)
-- [ ] #5 Production check: after quitting the 1Password desktop app, ps shows no BrowserSupport child of Detour older than the current workers
+- [x] #5 Production check: after quitting the 1Password desktop app, ps shows no BrowserSupport child of Detour older than the current workers
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -61,4 +61,12 @@ AC #4: NativeHostKeepAliveTests, ExtensionPolyfillProfileWiringTests, ExtensionP
 Code review (medium, --fix) on 63abb97: applied — tearDownNativeConnections doc now says one-shot sendNativeMessage hosts are not swept (activeMessagingHosts records no controller; pre-existing gap, follow-up candidate), and the supersede branch documents its known over-reach: registries are per extension, not per context, so a connectNative port a still-open popup/options page holds is torn down with the background's on a WebKit-internal background restart (a runtime.reload closes those pages too, so it costs nothing there). A per-context fix needs a signal a native port does not carry — left as reported. Test fixture dedup: makeWorkerExtension wraps makeBackgroundPageExtension (.serviceWorker), startNativeHostProbe calls startMeasurement.
 
 Production run 2 (2026-09-13 20:04-20:20, commit 3b8d8f4): when WebKit unloaded the dead worker's page at 20:06:52 the keep-alive port closed, Detour killed its host (pid 69970 gone) and the 20:07:22 worker spawned a new one (71002); ps at 20:20 shows exactly three BrowserSupport children for three workers. The supersede path did not fire in this run (no runtime.reload happened), so AC #5's quit-the-desktop-app check is still the user's.
+
+Production check 2026-09-13 23:30 (signed build a68e26e): quitting the 1Password desktop app disconnected all three contexts' native hosts at 23:30:17 (three 'Disconnecting native host' + 'Keep-alive disarmed' pairs); ps then showed no BrowserSupport child of Detour at all — only launchd's own 2BUA8C4S2C.com.1password.browser-helper from Sep 6. A reconnect attempt at 23:30:22 was disconnected again within 90 ms.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replacement workers (chrome.runtime.reload / WebKit restart) leaked the old context's native hosts and kept the keep-alive armed because WebKit fires no disconnect for the superseded ports. Detour now tears down the replaced context's hosts when its keep-alive port is superseded and counts only the new context's hosts; tests cover replacements with 1 and 2 old hosts and the TASK-16 release paths. Production check: quitting the desktop app leaves no BrowserSupport child of Detour.
+<!-- SECTION:FINAL_SUMMARY:END -->
