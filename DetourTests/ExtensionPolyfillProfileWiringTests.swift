@@ -20,6 +20,9 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
     private var previousLastActiveSpaceID: UUID?
+    /// Restored in tearDown: a leg that shortens Detour's keep-alive ping interval
+    /// (TASK-68) must not leave it shortened for the rest of the suite.
+    private var previousKeepAlivePingInterval: TimeInterval = 30
     /// Fake native messaging hosts installed by a test (TASK-62); torn down —
     /// env var restored, every spawned process killed — after every test.
     private var fakeNativeHosts: [FakeNativeMessagingHost] = []
@@ -27,6 +30,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         previousLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
+        previousKeepAlivePingInterval = ExtensionManager.shared.keepAlivePingInterval
     }
 
     override func tearDown() {
@@ -49,6 +53,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         }
         createdSpaceIDs.removeAll()
         ExtensionManager.shared.lastActiveSpaceID = previousLastActiveSpaceID
+        ExtensionManager.shared.keepAlivePingInterval = previousKeepAlivePingInterval
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
         }
@@ -1030,9 +1035,9 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             return armedStatus?["armed"] as? Bool == true
         }
         XCTAssertEqual(armedStatus?["active"] as? Bool, true)
-        XCTAssertGreaterThanOrEqual(
-            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id), 1,
-            "arming must produce an immediate ping on the keep-alive port")
+        try await waitUntil("the worker's reply to Detour's first ping") {
+            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id) >= 1
+        }
 
         // The last host exits.
         manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
@@ -1540,9 +1545,9 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             return armedStatus?["armed"] as? Bool == true
         }
         XCTAssertEqual(armedStatus?["active"] as? Bool, true)
-        XCTAssertGreaterThanOrEqual(
-            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id), 1,
-            "arming must produce an immediate ping on the keep-alive port")
+        try await waitUntil("the worker's reply to Detour's first ping") {
+            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id) >= 1
+        }
 
         let closed = try await askWorker(from: webView, message: ["type": "wsClose"], timeout: 15)
         _ = try XCTUnwrap(closed["reply"] as? [String: Any], "\(closed)")
@@ -1843,10 +1848,12 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// Leg (c): the same page, same silent native port, plus the production
     /// keep-alive — the polyfill opens its `detourPolyfill` port and Detour arms
-    /// it because a real native host is connected, so the page posts a ping every
-    /// `__detourKeepAlivePingIntervalMs` (15 s here). If pings defer a page unload
-    /// the way they defer a worker's, this page outlives leg (b). Measured
-    /// 2026-09-13: still running at +300.9 s, host connected, 21 pings received.
+    /// it because a real native host is connected, so Detour pings the page every
+    /// `ExtensionManager.keepAlivePingInterval` (15 s here) and the page answers
+    /// each one. If those round trips defer a page unload the way they defer a
+    /// worker's, this page outlives leg (b). Measured 2026-09-13 (with the pings
+    /// still worker-driven): still running at +300.9 s, host connected, 21 replies
+    /// received.
     func testMeasureBackgroundPageWithTheKeepAliveArmed() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
@@ -1856,9 +1863,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         let ext = try await makeMeasurementExtension(id: id, nativeHost: host.name)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
 
-        let started = try await startMeasurement(
-            ext, profileName: "TASK-62 Armed Keep-alive",
-            prepending: "globalThis.__detourKeepAlivePingIntervalMs = 15000;")
+        ExtensionManager.shared.keepAlivePingInterval = 15
+        let started = try await startMeasurement(ext, profileName: "TASK-62 Armed Keep-alive")
         let controller = started.profile.extensionController
 
         try await waitUntil("the fake host to be spawned for the background page", timeout: 30) {
@@ -1910,6 +1916,161 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             with: Data(try XCTUnwrap(raw as? String).utf8)) as? [String: String])
         XCTAssertEqual(report["sawPolyfill"], "undefined", "the prepended script must run first")
         XCTAssertEqual(report["polyfillNow"], "object", "the polyfill must still run after it")
+    }
+
+    // MARK: - TASK-68: a worker whose only port traffic is the keep-alive
+
+    /// The long leg runs for minutes, so it only runs when asked for:
+    /// `DETOUR_MEASURE_WORKER_UNLOAD=1`, for
+    /// `DETOUR_MEASURE_WORKER_UNLOAD_SECONDS` (default 300) seconds.
+    private var measuringWorkerUnload: Bool {
+        ProcessInfo.processInfo.environment["DETOUR_MEASURE_WORKER_UNLOAD"] == "1"
+    }
+
+    private var workerUnloadMeasurementSeconds: TimeInterval {
+        ProcessInfo.processInfo.environment["DETOUR_MEASURE_WORKER_UNLOAD_SECONDS"]
+            .flatMap(Double.init) ?? 300
+    }
+
+    /// The worker the TASK-68 leg runs: the polyfill and a start counter, and
+    /// nothing else. Its only native port is the keep-alive, and its only traffic
+    /// on it is answering Detour's pings — the production shape of a 1Password
+    /// worker whose helpers are connected but silent and which has no relayed
+    /// socket.
+    ///
+    /// The counter goes into `chrome.storage.local`, which an ordinary page of the
+    /// same extension can read *without messaging the worker* — a message would
+    /// wake it and destroy the measurement. (A worker has no `localStorage`, which
+    /// is what the TASK-62 page legs use.)
+    private static let workerUnloadMeasurementJS = """
+
+    (async function() {
+        try {
+            const stored = await chrome.storage.local.get('starts');
+            const starts = (Number(stored && stored.starts) || 0) + 1;
+            await chrome.storage.local.set({ starts: starts, startedAt: Date.now() });
+        } catch (e) {}
+    })();
+    """
+
+    /// How many times the probe worker has started, read out of the extension's
+    /// own storage through an ordinary page — nothing here wakes the worker.
+    /// -1 when the page cannot read it at all.
+    private func workerStartCount(from webView: WKWebView) async -> Int {
+        let raw = try? await webView.callAsyncJavaScript("""
+            try {
+                const stored = await chrome.storage.local.get('starts');
+                return String(stored && stored.starts !== undefined ? stored.starts : -1);
+            } catch (e) { return '-1'; }
+            """, arguments: [:], contentWorld: .page)
+        return Int((raw as? String) ?? "") ?? -1
+    }
+
+    /// AC #2/#3/#4 of TASK-68. A worker with `nativeMessaging`, armed with a
+    /// simulated host so that *nothing but the keep-alive* ever crosses a port,
+    /// at the production ping interval: for the whole leg the port must stay
+    /// open, replies must keep arriving, and the worker must have started exactly
+    /// once. Then the hold is released and WebKit's idle unload must take it —
+    /// the disarmed path is unchanged.
+    ///
+    /// In production (2026-09-13) exactly this worker was unloaded ~170 s after
+    /// starting with the keep-alive armed the whole time. If that happens here the
+    /// leg fails loudly with the timings rather than quietly passing.
+    ///
+    /// Measured 2026-09-13 with Detour driving the pings (300 s leg): the port
+    /// stayed open for the whole 300.9 s, 11 pings sent and 11 replies received
+    /// (round trips 0–3 ms), never one ping awaiting a reply, one keep-alive port
+    /// opened — so one worker, well past the ~170 s at which production's
+    /// worker-driven pings stopped counting. Released, WebKit closed the port
+    /// 149.4 s later.
+    func testMeasureWorkerUnloadWithOnlyTheKeepAliveOnItsPort() async throws {
+        try XCTSkipUnless(measuringWorkerUnload,
+                          "long measurement leg; set DETOUR_MEASURE_WORKER_UNLOAD=1")
+        let id = measurementExtensionID("task68-worker")
+        let ext = try await makeWorkerExtension(
+            id: id, permissions: ["nativeMessaging", "storage"],
+            backgroundJS: ExtensionAPIPolyfill.polyfillJS + Self.workerUnloadMeasurementJS)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let profile = makeProfile("TASK-68 Worker Unload")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+
+        let manager = ExtensionManager.shared
+        XCTAssertEqual(manager.keepAlivePingInterval, 30,
+                       "this leg only means anything at the production ping interval")
+        func state() -> NativeHostKeepAliveState? {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)
+        }
+        func replies() -> Int {
+            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id)
+        }
+        func portsOpened() -> Int {
+            manager.keepAlivePortOpenCountForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        context.loadBackgroundContent { error in
+            if let error { print("TASK-68 measurement: loadBackgroundContent failed: \(error)") }
+        }
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager", timeout: 30) {
+            state()?.portOpen == true
+        }
+        // No real host is spawned: the simulated hold is what makes the keep-alive
+        // round trips the only traffic on the worker's only port.
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("Detour to arm the worker", timeout: 10) { state()?.armed == true }
+
+        let armedAt = Date()
+        let limit = workerUnloadMeasurementSeconds
+        var lastReport = Date.distantPast
+        var closedAt: TimeInterval?
+        while Date().timeIntervalSince(armedAt) < limit {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            let elapsed = Date().timeIntervalSince(armedAt)
+            if state()?.portOpen != true {
+                closedAt = elapsed
+                break
+            }
+            if Date().timeIntervalSince(lastReport) >= 30 {
+                lastReport = Date()
+                let sent = manager.keepAlivePingsSentForTesting(controller: controller, extensionID: ext.id)
+                let starts = await workerStartCount(from: page)
+                print("TASK-68 measurement: +\(String(format: "%.1f", elapsed)) s — port open, pings sent \(sent?.sent ?? -1), awaiting reply \(sent?.awaiting.map(String.init) ?? "none"), replies \(replies()), worker starts \(starts), keep-alive ports opened \(portsOpened())")
+            }
+        }
+
+        let starts = await workerStartCount(from: page)
+        let sent = manager.keepAlivePingsSentForTesting(controller: controller, extensionID: ext.id)
+        print("TASK-68 measurement: leg ended at +\(String(format: "%.1f", Date().timeIntervalSince(armedAt))) s — closed \(closedAt.map { String(format: "%.1f", $0) } ?? "no"), pings sent \(sent?.sent ?? -1), replies \(replies()), worker starts \(starts), keep-alive ports opened \(portsOpened())")
+
+        XCTAssertNil(closedAt,
+                     "the keep-alive port closed at +\(closedAt ?? -1) s with the keep-alive armed and replies flowing — WebKit unloaded the worker anyway (the TASK-68 production symptom)")
+        XCTAssertEqual(state()?.armed, true, "the keep-alive must still be armed")
+        XCTAssertGreaterThanOrEqual(
+            replies(), Int(limit / manager.keepAlivePingInterval) - 1,
+            "a reply must have come back for essentially every ping")
+        XCTAssertEqual(sent?.awaiting, nil, "no ping may be left unanswered at the end of the leg")
+        XCTAssertEqual(portsOpened(), 1, "the worker must have started exactly once")
+        if starts >= 0 {
+            XCTAssertEqual(starts, 1, "the worker must have started exactly once")
+        }
+
+        // AC #4: released, the worker is WebKit's again — the idle unload must
+        // still take it. Its port is still open, so this is the inactive-ports
+        // path: 2 minutes after the last activity (the final reply, which went out
+        // just before the release), evaluated on WebKit's own 30 s timer, so
+        // anything up to ~150 s. Measured 2026-09-13: 149.4 s.
+        manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        let releasedAt = Date()
+        try await waitUntil("WebKit to unload the released worker", timeout: 200, pollInterval: 1) {
+            state()?.portOpen != true
+        }
+        let unloadedAfter = Date().timeIntervalSince(releasedAt)
+        print("TASK-68 measurement: released at +\(String(format: "%.1f", releasedAt.timeIntervalSince(armedAt))) s; the keep-alive port closed \(String(format: "%.1f", unloadedAfter)) s later")
+        XCTAssertLessThan(unloadedAfter, 180,
+                          "a released worker must go back to WebKit's idle unload")
     }
 
     // MARK: - TASK-62: which contexts install the keep-alive

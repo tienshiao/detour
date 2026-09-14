@@ -1630,10 +1630,23 @@ struct ExtensionAPIPolyfill {
     /// spawning a process) and waits: Detour, which knows exactly when a real
     /// native messaging host is connected, sends `{type:'keepalive-start'}` on that
     /// port while at least one is, and `{type:'keepalive-stop'}` when the last one
-    /// goes away. While armed the worker posts `{type:'keepalive'}` on the port
-    /// every `pingIntervalMs`, which is the activity WebKit's inactive-ports timer
+    /// goes away — and, while armed, sends `{type:'keepalive-ping', seq}` every 30 s.
+    /// Each ping is answered here immediately with `{type:'keepalive', seq}` on the
+    /// same port, and *that reply* is the activity WebKit's inactive-ports timer
     /// counts (verified 2026-09-11, TASK-2 harness: posting on this port held the
-    /// worker for the whole hold, and idle unload resumed after release).
+    /// worker for the whole hold, and idle unload resumed after release). `armed`
+    /// is kept as a diagnostic only: nothing here decides when to post, so a ping is
+    /// answered whether or not a start was seen.
+    ///
+    /// **The interval is Detour's, not the background's** (TASK-68). The background
+    /// used to run it itself, on a `setInterval`, and in production (2026-09-13)
+    /// workers were unloaded ~170 s after starting with the keep-alive armed the
+    /// whole time — 120 s past what would have been their second 45 s ping, i.e.
+    /// their timers had stopped firing and neither side could tell. A
+    /// `DispatchSourceTimer` in `ExtensionManager` cannot be suspended along with
+    /// the background context, and it makes every round trip observable natively
+    /// (`Keep-alive ping #n sent`, `Keep-alive reply #n … (N ms)`, and an error line
+    /// for a ping still unanswered at the next tick).
     ///
     /// If Detour drops the port the worker reconnects with a capped backoff,
     /// disarmed; Detour re-sends `keepalive-start` on the new port if hosts are
@@ -1668,31 +1681,29 @@ struct ExtensionAPIPolyfill {
     /// not `false`) is skipped: WebKit never unloads it, so there is nothing to
     /// keep alive and a port would be retained in Detour for nothing.
     ///
-    /// `__detourKeepAlivePingIntervalMs`
-    /// and `__detourKeepAliveReconnectBaseMs` (both read once at install) shorten
-    /// the timers for tests, and `__detourForceNativePortKeepAlive` installs it
-    /// outside a background context for tests.
+    /// `__detourKeepAliveReconnectBaseMs` (read once at install) shortens the
+    /// reconnect backoff for tests, and `__detourForceNativePortKeepAlive` installs
+    /// this outside a background context for tests. There is no ping-interval
+    /// override any more: the interval is `ExtensionManager.keepAlivePingInterval`.
     private static let nativePortKeepAliveJS = """
     (function() {
         const g = globalThis;
         const KEEPALIVE_HOST = 'detourPolyfill';
-        const DEFAULT_PING_INTERVAL_MS = 45000;
         const DEFAULT_RECONNECT_BASE_MS = 1000;
         const MAX_RECONNECT_MS = 30000;
         // What Detour sends on, and disconnects, a keep-alive port a newer one
         // replaced (ExtensionManager.keepAliveSupersededMessage).
         const SUPERSEDED_TYPE = '\(ExtensionManager.keepAliveSupersededType)';
         const SUPERSEDED_MESSAGE = '\(ExtensionManager.keepAliveSupersededMessage)';
-        const pingIntervalMs = (typeof g.__detourKeepAlivePingIntervalMs === 'number' && g.__detourKeepAlivePingIntervalMs > 0)
-            ? g.__detourKeepAlivePingIntervalMs : DEFAULT_PING_INTERVAL_MS;
         const reconnectBaseMs = (typeof g.__detourKeepAliveReconnectBaseMs === 'number' && g.__detourKeepAliveReconnectBaseMs > 0)
             ? g.__detourKeepAliveReconnectBaseMs : DEFAULT_RECONNECT_BASE_MS;
 
         // The one port this worker holds to Detour, or null between a drop and the
-        // reconnect. `armed` mirrors the last keepalive-start/stop Detour sent.
+        // reconnect. `armed` mirrors the last keepalive-start/stop Detour sent, as a
+        // diagnostic: Detour drives the pings and every one of them is answered.
         let port = null;
         let armed = false;
-        let pingTimer = null;
+        let repliesSent = 0;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
         // 'port' (a port is open) | 'none'.
@@ -1704,29 +1715,16 @@ struct ExtensionAPIPolyfill {
         // one; nothing reconnects until the context starts again).
         let installDetail = '';
 
-        function clearPingTimer() {
-            if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-        }
-
-        function disarm() {
-            clearPingTimer();
-            armed = false;
-        }
-
-        function postPing(target) {
-            try { target.postMessage({ type: 'keepalive' }); } catch (e) {}
-        }
-
-        // Armed: post now (so the inactive-ports timer is reset immediately) and
-        // keep posting while this port is the current one.
-        function arm(target) {
-            clearPingTimer();
-            armed = true;
-            postPing(target);
-            pingTimer = setInterval(function() {
-                if (port !== target) return;
-                postPing(target);
-            }, pingIntervalMs);
+        // Answer one of Detour's pings on the port it arrived on. This post — from
+        // the background context, on an open port — is the whole point of the
+        // exchange: it is what WebKit's inactive-ports timer counts. The ping's
+        // `seq` goes back with it so Detour can measure the round trip and notice a
+        // reply that never comes.
+        function reply(target, seq) {
+            try {
+                target.postMessage({ type: 'keepalive', seq: seq });
+                repliesSent += 1;
+            } catch (e) {}
         }
 
         // Whatever reason the runtime gives for `target`'s disconnect, or ''.
@@ -1790,14 +1788,17 @@ struct ExtensionAPIPolyfill {
             reconnectAttempts = 0;
 
             // Detour drives the pings; a reconnected port always starts disarmed and
-            // is re-armed by Detour if hosts are still connected.
+            // is re-armed — and pinged again — by Detour if hosts are still connected.
             // Set when Detour says a newer keep-alive port replaced this one.
             let superseded = false;
             try {
                 opened.onMessage.addListener(function(message) {
                     if (port !== opened || !message) return;
-                    if (message.type === 'keepalive-start') arm(opened);
-                    else if (message.type === 'keepalive-stop') disarm();
+                    // Answered whether or not a start was seen: Detour pings only
+                    // a port it has armed, and an extra reply is never wrong.
+                    if (message.type === 'keepalive-ping') reply(opened, message.seq);
+                    else if (message.type === 'keepalive-start') armed = true;
+                    else if (message.type === 'keepalive-stop') armed = false;
                     else if (message.type === SUPERSEDED_TYPE) superseded = true;
                 });
             } catch (e) {}
@@ -1805,7 +1806,7 @@ struct ExtensionAPIPolyfill {
                 opened.onDisconnect.addListener(function(disconnected) {
                     if (port !== opened) return;
                     port = null;
-                    disarm();
+                    armed = false;
                     installMode = 'none';
                     // Another context of this extension (a tab navigated to the
                     // background document's path passes the gate below too) took
@@ -1879,7 +1880,7 @@ struct ExtensionAPIPolyfill {
             get installDetail() { return installDetail; },
             get armed() { return armed; },
             get active() { return armed && port !== null; },
-            get pingIntervalMs() { return pingIntervalMs; },
+            get repliesSent() { return repliesSent; },
             get reconnectAttempts() { return reconnectAttempts; }
         });
     })();

@@ -186,7 +186,8 @@ function/value tables (patchable). But some have additional `[Dynamic]` members 
 native function: the read-back equals neither the value just written nor the previous read. There
 is no JS-side way to wrap it. Assume the same for the other `[Dynamic]` runtime members listed
 above. The native-port keep-alive stopped trying: it now only *calls* `connectNative` to open its
-port and Detour tells it when to ping, since the native side knows when a real host is connected
+port, and the background does not even run the clock — Detour pings that port every 30 s and the
+background answers each ping (TASK-68), since the native side knows when a real host is connected
 (TASK-16; `ExtensionAPIPolyfill.nativePortKeepAliveJS` reports `installMode: 'port'` in a
 background context — a worker or a non-persistent background page (TASK-62) — whose manifest
 declares `nativeMessaging`, and `'none'` with `installDetail` `'not-a-background-context'`,

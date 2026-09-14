@@ -96,9 +96,9 @@ final class ExtensionPolyfillTests: XCTestCase {
         // `__fakeNativePorts`) so the native port keep-alive can be exercised
         // without a real native host or a real Detour port. Each fake port can be
         // driven from the test with `__simulateNativeMessage` (what Detour sends:
-        // keepalive-start / keepalive-stop) and `__simulateRemoteDisconnect`.
-        // The keep-alive's ping interval and reconnect backoff are shortened so
-        // tests need not wait 45 s / 1 s.
+        // keepalive-start / keepalive-stop / keepalive-ping) and
+        // `__simulateRemoteDisconnect`. The keep-alive's reconnect backoff is
+        // shortened so tests need not wait a second for it.
         let shimScript = WKUserScript(
             source: """
             if (!globalThis.chrome) globalThis.chrome = {};
@@ -106,7 +106,6 @@ final class ExtensionPolyfillTests: XCTestCase {
             if (!globalThis.chrome.runtime.id) globalThis.chrome.runtime.id = 'test-polyfill-extension';
             globalThis.chrome.runtime.getManifest = () => ({ manifest_version: 3, permissions: \(permissionsJSON) });
 
-            globalThis.__detourKeepAlivePingIntervalMs = 50;
             globalThis.__detourKeepAliveReconnectBaseMs = 100;
             // Install the service-worker-only WebSocket relay and native port
             // keep-alive in this page context so they can be exercised without a
@@ -1659,7 +1658,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         return JSON.stringify({
             armed: status.armed,
             active: status.active,
-            pingIntervalMs: status.pingIntervalMs,
+            repliesSent: status.repliesSent,
             installMode: status.installMode,
             installDetail: status.installDetail,
             reconnectAttempts: status.reconnectAttempts,
@@ -1678,7 +1677,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(status["installDetail"] as? String, "")
         XCTAssertEqual(status["armed"] as? Bool, false, "an idle port must not ping")
         XCTAssertEqual(status["active"] as? Bool, false)
-        XCTAssertEqual(status["pingIntervalMs"] as? Int, 50, "the test override should be honoured")
+        XCTAssertEqual(status["repliesSent"] as? Int, 0, "nothing has pinged it yet")
         XCTAssertEqual(status["reconnectAttempts"] as? Int, 0)
     }
 
@@ -1694,59 +1693,77 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "no extra keep-alive port should be opened")
     }
 
-    func testKeepAliveStartPingsImmediatelyThenAtTheInterval() async throws {
+    /// Detour owns the interval now (TASK-68): a start arms the diagnostic flag and
+    /// posts nothing, and each `keepalive-ping` is echoed back at once with its own
+    /// `seq` — the post WebKit's inactive-ports timer counts.
+    func testKeepAliveAnswersEachPingWithItsSequence() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         const keepAlive = globalThis.__fakeNativePorts[0];
         keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
-        const postedImmediately = keepAlive.posted.length;
-        const armedImmediately = status.armed;
+        const postedAtStart = keepAlive.posted.length;
+        const armedAtStart = status.armed;
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-ping', seq: 1 });
+        const postedAfterFirstPing = keepAlive.posted.length;
+        // Nothing here runs a timer of its own, so waiting produces nothing.
         await new Promise(r => setTimeout(r, 250));
+        const postedAfterWait = keepAlive.posted.length;
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-ping', seq: 2 });
         return JSON.stringify({
-            postedImmediately: postedImmediately,
-            armedImmediately: armedImmediately,
+            postedAtStart: postedAtStart,
+            armedAtStart: armedAtStart,
             active: status.active,
+            postedAfterFirstPing: postedAfterFirstPing,
+            postedAfterWait: postedAfterWait,
+            repliesSent: status.repliesSent,
             posted: keepAlive.posted
         });
         """)
 
-        XCTAssertEqual(result["postedImmediately"] as? Int, 1,
-                       "the first ping must go out with the start, not one interval later")
-        XCTAssertEqual(result["armedImmediately"] as? Bool, true)
+        XCTAssertEqual(result["postedAtStart"] as? Int, 0,
+                       "a start alone must post nothing: Detour's ping is what asks for a reply")
+        XCTAssertEqual(result["armedAtStart"] as? Bool, true)
         XCTAssertEqual(result["active"] as? Bool, true)
-        let posted = try XCTUnwrap(result["posted"] as? [[String: String]])
-        XCTAssertGreaterThanOrEqual(posted.count, 3,
-                                    "expected repeated pings at a 50 ms interval, got \(posted.count)")
-        for message in posted {
-            XCTAssertEqual(message, ["type": "keepalive"])
-        }
+        XCTAssertEqual(result["postedAfterFirstPing"] as? Int, 1, "each ping is answered at once")
+        XCTAssertEqual(result["postedAfterWait"] as? Int, 1,
+                       "the worker must run no interval of its own any more")
+        XCTAssertEqual(result["repliesSent"] as? Int, 2)
+        let posted = try XCTUnwrap(result["posted"] as? [[String: Any]])
+        XCTAssertEqual(posted.count, 2)
+        XCTAssertEqual(posted.map { $0["type"] as? String }, ["keepalive", "keepalive"])
+        XCTAssertEqual(posted.map { $0["seq"] as? Int }, [1, 2],
+                       "the reply must carry the ping's own seq back")
     }
 
-    func testKeepAliveStopEndsThePings() async throws {
+    /// A stop flips the diagnostic flag and closes nothing. A ping after it is
+    /// still answered: Detour pings only a port it has armed, and the worker is
+    /// deliberately not the one deciding.
+    func testKeepAliveStopFlipsTheArmedFlagAndKeepsThePortOpen() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         const keepAlive = globalThis.__fakeNativePorts[0];
         keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
-        await new Promise(r => setTimeout(r, 150));
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-ping', seq: 7 });
         keepAlive.__simulateNativeMessage({ type: 'keepalive-stop' });
-        const postedAtStop = keepAlive.posted.length;
         const armedAfterStop = status.armed;
+        const postedAtStop = keepAlive.posted.length;
         await new Promise(r => setTimeout(r, 250));
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-ping', seq: 8 });
         return JSON.stringify({
-            postedAtStop: postedAtStop,
             armedAfterStop: armedAfterStop,
             active: status.active,
-            postedAfterWait: keepAlive.posted.length,
+            postedAtStop: postedAtStop,
+            posted: keepAlive.posted,
             disconnectedLocally: keepAlive.disconnectedLocally
         });
         """)
 
-        XCTAssertGreaterThanOrEqual(result["postedAtStop"] as? Int ?? 0, 2,
-                                    "the port should have been pinging before the stop")
         XCTAssertEqual(result["armedAfterStop"] as? Bool, false)
         XCTAssertEqual(result["active"] as? Bool, false)
-        XCTAssertEqual(result["postedAfterWait"] as? Int, result["postedAtStop"] as? Int,
-                       "pings must stop when Detour disarms the worker")
+        XCTAssertEqual(result["postedAtStop"] as? Int, 1, "only the one ping was answered")
+        let posted = try XCTUnwrap(result["posted"] as? [[String: Any]])
+        XCTAssertEqual(posted.map { $0["seq"] as? Int }, [7, 8],
+                       "a ping is answered whether or not the worker thinks it is armed")
         XCTAssertEqual(result["disconnectedLocally"] as? Bool, false,
                        "the port stays open while idle; Detour re-arms it on the same port")
     }
@@ -1756,7 +1773,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         const status = globalThis.__detourNativePortKeepAlive;
         const keepAlive = globalThis.__fakeNativePorts[0];
         keepAlive.__simulateNativeMessage({ type: 'something-else' });
-        keepAlive.__simulateNativeMessage('keepalive-start');
+        keepAlive.__simulateNativeMessage('keepalive-ping');
         keepAlive.__simulateNativeMessage(null);
         await new Promise(r => setTimeout(r, 150));
         return JSON.stringify({ armed: status.armed, posted: keepAlive.posted.length });
@@ -1774,6 +1791,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         const status = globalThis.__detourNativePortKeepAlive;
         const first = globalThis.__fakeNativePorts[0];
         first.__simulateNativeMessage({ type: 'keepalive-start' });
+        first.__simulateNativeMessage({ type: 'keepalive-ping', seq: 1 });
         first.__simulateRemoteDisconnect();
         const immediately = {
             installMode: status.installMode,
@@ -1795,7 +1813,10 @@ final class ExtensionPolyfillTests: XCTestCase {
             postedOnFirst: first.posted.length
         };
 
-        if (second) second.__simulateNativeMessage({ type: 'keepalive-start' });
+        if (second) {
+            second.__simulateNativeMessage({ type: 'keepalive-start' });
+            second.__simulateNativeMessage({ type: 'keepalive-ping', seq: 1 });
+        }
         await new Promise(r => setTimeout(r, 150));
         return JSON.stringify({
             immediately: immediately,
@@ -1803,6 +1824,7 @@ final class ExtensionPolyfillTests: XCTestCase {
             afterReconnect: afterReconnect,
             armedAfterRestart: status.armed,
             postedOnSecondAfterRestart: second ? second.posted.length : null,
+            postedOnFirstAfterRestart: first.posted.length,
             portCount: globalThis.__fakeNativePorts.length
         });
         """)
@@ -1822,13 +1844,16 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "the backoff resets after a successful connect")
         XCTAssertEqual(afterReconnect["armed"] as? Bool, false,
                        "a reconnected port starts disarmed until Detour arms it again")
-        XCTAssertEqual(afterReconnect["postedOnSecond"] as? Int, 0)
+        XCTAssertEqual(afterReconnect["postedOnSecond"] as? Int, 0,
+                       "nothing has pinged the new port yet")
         XCTAssertEqual(afterReconnect["postedOnFirst"] as? Int, result["postedOnFirstAtDrop"] as? Int,
                        "the dropped port must never be posted on again")
 
         XCTAssertEqual(result["armedAfterRestart"] as? Bool, true)
-        XCTAssertGreaterThanOrEqual(result["postedOnSecondAfterRestart"] as? Int ?? 0, 2,
-                                    "a new keepalive-start must ping on the reconnected port")
+        XCTAssertEqual(result["postedOnSecondAfterRestart"] as? Int, 1,
+                       "a ping on the reconnected port must be answered on it")
+        XCTAssertEqual(result["postedOnFirstAfterRestart"] as? Int, result["postedOnFirstAtDrop"] as? Int,
+                       "the dropped port must never be posted on again")
         XCTAssertEqual(result["portCount"] as? Int, 2, "exactly one reconnect")
     }
 
@@ -1943,7 +1968,6 @@ final class ExtensionPolyfillTests: XCTestCase {
             globalThis.browser = realChrome;
             globalThis.__realChrome = realChrome;
             globalThis.__realRuntime = realRuntime;
-            globalThis.__detourKeepAlivePingIntervalMs = 50;
             globalThis.__detourForceNativePortKeepAlive = true;
             """,
             injectionTime: .atDocumentStart, forMainFrameOnly: false

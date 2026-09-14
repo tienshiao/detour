@@ -83,9 +83,33 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// created on demand and dropped as soon as they go idle.
     private var keepAliveStates: [KeepAlivePortKey: NativeHostKeepAliveState] = [:]
 
-    /// `{type:"keepalive"}` pings received on each keep-alive port, for diagnostics
-    /// and tests. Dropped with the state entry.
+    /// `{type:"keepalive"}` replies received on each keep-alive port, for
+    /// diagnostics and tests. Dropped with the state entry.
     private var keepAlivePingCounts: [KeepAlivePortKey: Int] = [:]
+
+    /// Detour's own pinging of one armed keep-alive port (TASK-68): the timer and
+    /// what the round trips have done so far. Exists only while the key is armed.
+    private final class KeepAlivePinger {
+        let timer: DispatchSourceTimer
+        /// The sequence number of the last ping sent.
+        var seq = 0
+        var pingsSent = 0
+        var lastPingSentAt: Date?
+        var lastReplyAt: Date?
+        /// The ping that has not been answered yet, if any. A ping still pending
+        /// at the next tick is the symptom TASK-68 exists to make visible.
+        var awaitingSeq: Int?
+
+        init(timer: DispatchSourceTimer) { self.timer = timer }
+    }
+    private var keepAlivePingers: [KeepAlivePortKey: KeepAlivePinger] = [:]
+
+    /// How often Detour pings an armed keep-alive port (TASK-68). Comfortably
+    /// inside WebKit's 2-minute inactive-ports window, so two lost round trips in
+    /// a row are still not enough to let the background be unloaded. A property
+    /// rather than a constant so a test can shorten it; production never changes
+    /// it.
+    var keepAlivePingInterval: TimeInterval = 30
 
     /// Keep-alive ports accepted for each extension, for diagnostics and tests: a
     /// count that keeps climbing means contexts are taking the port from each
@@ -656,6 +680,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             keepAliveStates[key] = state
         }
 
+        // Detour drives the pings, so they stop the moment the worker is not armed
+        // any more — a stop, a port that closed or was replaced, a context unload,
+        // or a control send that never arrived (`reconcile` starts them again).
+        if !state.armed {
+            stopKeepAlivePinging(for: key)
+        }
+
         let extID = key.extensionID
         switch action {
         case .none:
@@ -663,10 +694,96 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         case .sendStart:
             log.info("Keep-alive armed for \(extID, privacy: .public): \(state.connectedHosts) native host(s) connected")
             sendKeepAliveControl("keepalive-start", for: key)
+            startKeepAlivePinging(for: key)
         case .sendStop:
             log.info("Keep-alive disarmed for \(extID, privacy: .public): no native host connected")
             sendKeepAliveControl("keepalive-stop", for: key)
         }
+    }
+
+    /// Begin pinging the extension's keep-alive port: one ping immediately (the
+    /// worker's reply is what resets WebKit's inactive-ports timer, so the arm
+    /// itself must produce one) and then one every `keepAlivePingInterval`.
+    ///
+    /// **Why Detour pings and the background only answers** (TASK-68): WebKit
+    /// defers the background's unload until 2 minutes after the last message the
+    /// *background* posted on one of its open ports — a message Detour sends does
+    /// not count, the reply does. The worker used to run that clock itself on a
+    /// `setInterval`, and in production (2026-09-13) workers were unloaded ~170 s
+    /// after starting with the keep-alive armed the whole time: 120 s past what
+    /// would have been the second ping, i.e. its timers stopped firing and nothing
+    /// could tell. A timer on Detour's side cannot be suspended with the worker,
+    /// and every round trip is observable here, so a stalled background now shows
+    /// up in the log instead of as a silent unload.
+    private func startKeepAlivePinging(for key: KeepAlivePortKey) {
+        stopKeepAlivePinging(for: key)
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + keepAlivePingInterval,
+                       repeating: keepAlivePingInterval, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            self?.sendKeepAlivePing(for: key)
+        }
+        keepAlivePingers[key] = KeepAlivePinger(timer: timer)
+        timer.resume()
+        sendKeepAlivePing(for: key)
+    }
+
+    /// Stop pinging the extension's keep-alive port and forget the round trips.
+    private func stopKeepAlivePinging(for key: KeepAlivePortKey) {
+        guard let pinger = keepAlivePingers.removeValue(forKey: key) else { return }
+        pinger.timer.cancel()
+    }
+
+    /// One `{type:"keepalive-ping", seq}` on the extension's keep-alive port. The
+    /// polyfill answers `{type:"keepalive", seq}` at once (`messageHandler` on the
+    /// port counts it), and a ping still unanswered when the next one goes out is
+    /// logged as an error: at that point the background is stalled, its timers are
+    /// suspended, or the port is dead, and WebKit's unload is roughly 90 s away.
+    private func sendKeepAlivePing(for key: KeepAlivePortKey) {
+        guard let pinger = keepAlivePingers[key], let port = keepAlivePorts[key] else { return }
+        let extID = key.extensionID
+
+        if let pending = pinger.awaitingSeq {
+            let waited = pinger.lastPingSentAt.map { Date().timeIntervalSince($0) } ?? 0
+            log.error("Keep-alive for \(extID, privacy: .public): ping #\(pending) sent \(String(format: "%.0f", waited), privacy: .public) s ago has no reply (worker stalled, its timers suspended, or the port is dead); sending #\(pending + 1)")
+        }
+
+        pinger.seq += 1
+        let seq = pinger.seq
+        pinger.pingsSent += 1
+        pinger.lastPingSentAt = Date()
+        pinger.awaitingSeq = seq
+        port.sendMessage(["type": "keepalive-ping", "seq": seq], completionHandler: { [weak self, weak port] error in
+            guard let error else { return }
+            log.error("Keep-alive ping #\(seq) to \(extID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            guard let self, let port else { return }
+            // Same recovery as a failed control message: the worker is not doing
+            // what `armed` says, so clear it and re-evaluate a second later.
+            let recover = { self.handleKeepAliveControlFailure(for: key, on: port) }
+            if Thread.isMainThread { recover() } else { DispatchQueue.main.async(execute: recover) }
+        })
+        log.info("Keep-alive ping #\(seq) sent to \(extID, privacy: .public)")
+    }
+
+    /// A `{type:"keepalive", seq}` reply came back on the extension's keep-alive
+    /// port: this is the post WebKit counts as background activity, so it is the
+    /// one line that says the keep-alive is actually working.
+    private func recordKeepAliveReply(seq: Int?, for key: KeepAlivePortKey) {
+        keepAlivePingCounts[key, default: 0] += 1
+        let extID = key.extensionID
+        guard let pinger = keepAlivePingers[key] else {
+            // A reply after the disarm (or on a port whose pinger is gone): still
+            // counted, but there is no round trip to measure.
+            log.info("Keep-alive reply #\(seq ?? -1) from \(extID, privacy: .public) (not pinging)")
+            return
+        }
+        let now = Date()
+        let milliseconds = pinger.lastPingSentAt.map { Int(now.timeIntervalSince($0) * 1000) } ?? -1
+        pinger.lastReplyAt = now
+        if seq == nil || seq == pinger.awaitingSeq {
+            pinger.awaitingSeq = nil
+        }
+        log.info("Keep-alive reply #\(seq ?? -1) from \(extID, privacy: .public) (\(milliseconds) ms)")
     }
 
     /// Send one `keepalive-start` / `keepalive-stop` on the extension's keep-alive
@@ -678,7 +795,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         guard let port = keepAlivePorts[key] else { return }
         let extID = key.extensionID
         port.sendMessage(["type": type], completionHandler: { [weak self, weak port] error in
-            guard let error else { return }
+            guard let error else {
+                log.info("Keep-alive '\(type, privacy: .public)' delivered to \(extID, privacy: .public)")
+                return
+            }
             log.error("Keep-alive '\(type, privacy: .public)' failed for \(extID, privacy: .public): \(error.localizedDescription, privacy: .public)")
             guard let self, let port else { return }
             // The keep-alive bookkeeping is main-thread only (see `applyKeepAlive`);
@@ -707,9 +827,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         keepAliveStates[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)]
     }
 
-    /// Pings received on the extension's keep-alive port so far. Tests only.
+    /// Ping replies received on the extension's keep-alive port so far. Tests only.
     func keepAlivePingCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
         keepAlivePingCounts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)] ?? 0
+    }
+
+    /// Pings Detour has sent on the extension's keep-alive port since it was
+    /// armed, and whether one is still unanswered (TASK-68). Tests only.
+    func keepAlivePingsSentForTesting(controller: WKWebExtensionController,
+                                      extensionID: String) -> (sent: Int, awaiting: Int?)? {
+        let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
+        guard let pinger = keepAlivePingers[key] else { return nil }
+        return (pinger.pingsSent, pinger.awaitingSeq)
     }
 
     /// Keep-alive ports accepted for the extension since its context loaded. Tests only.
@@ -1995,7 +2124,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 guard let self,
                       let body = message as? [String: Any],
                       body["type"] as? String == "keepalive" else { return }
-                self.keepAlivePingCounts[key, default: 0] += 1
+                self.recordKeepAliveReply(seq: body["seq"] as? Int, for: key)
             }
             port.disconnectHandler = { [weak self, weak port] _ in
                 guard let self, let port, self.keepAlivePorts[key] === port else { return }

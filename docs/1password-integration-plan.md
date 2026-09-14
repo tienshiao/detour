@@ -275,11 +275,22 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
      extension has since been reloaded cannot disarm a keep-alive a *new* host is holding up. A
      control message that fails to send clears `armed` and is retried a second later while it is
      still wanted (`controlSendFailed` / `reconcile`).
-   - While armed the background (a worker, or since TASK-62 a non-persistent background page)
-     posts `{type: "keepalive"}` on that port immediately and then every 45 s. If Detour drops the
-     port the background reconnects with a capped backoff (1 s, doubling, 30 s max), disarmed, and
-     Detour re-arms the new port from `portOpened` if hosts are still connected, so the background
-     never has to remember anything.
+   - While armed, **Detour** sends `{type: "keepalive-ping", seq}` on that port — immediately on
+     arming and then every `ExtensionManager.keepAlivePingInterval` (30 s) from a
+     `DispatchSourceTimer` — and the background (a worker, or since TASK-62 a non-persistent
+     background page) answers each one at once with `{type: "keepalive", seq}`. The *reply* is the
+     background post WebKit counts. The background ran that interval itself until TASK-68; it does
+     not any more, because a worker whose timers stop firing looks exactly like a healthy one from
+     the outside (see below). If Detour drops the port the background reconnects with a capped
+     backoff (1 s, doubling, 30 s max), disarmed, and Detour re-arms — and starts pinging — the new
+     port from `portOpened` if hosts are still connected, so the background never has to remember
+     anything.
+   - Every round trip is in the log (category `extension-manager`, TASK-68): `Keep-alive
+     'keepalive-start' delivered to <ext>`, `Keep-alive ping #n sent to <ext>`, `Keep-alive reply #n
+     from <ext> (N ms)`, and — the watchdog line — `Keep-alive for <ext>: ping #n sent N s ago has
+     no reply (worker stalled, its timers suspended, or the port is dead); sending #n+1` when a ping
+     is still unanswered at the next tick. A production log can now say whether the pings flow,
+     which the 2026-09-13 run could not.
 
    Why this works, measured: WebKit unloads the background 30 s after a load/wake, but while the
    background has open ports the unload is deferred until 2 minutes after the last message the
@@ -346,6 +357,34 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    sockets ended, the keep-alive reset with `contextUnloaded` so the count restarts at zero —
    through the same helper `closeExtensionPorts` uses, and logs `Replaced background context of
    <ext>: tore down N stale native host(s) and M relayed WebSocket(s)`.
+
+   **Detour drives the pings now, and logs every round trip (TASK-68, 2026-09-14).** The 170 s
+   unloads above are consistent with exactly one thing: the background's own `setInterval` stopped
+   firing (or never fired) after the first ping or two, and nothing on either side could see it —
+   WebKit's rule counts only what the *background* posts, so once its timer stops, the 2-minute
+   clock runs out unopposed. Rather than trust a timer inside a context WebKit is free to suspend,
+   Detour now owns the interval: while a key is armed, `ExtensionManager` sends
+   `{type: "keepalive-ping", seq}` on the keep-alive port (immediately, then every 30 s from a
+   `DispatchSourceTimer` on the main queue) and the polyfill answers `{type: "keepalive", seq}` on
+   the same port at once. The reply is the background post WebKit counts, `keepalive-start` /
+   `keepalive-stop` survive only as the worker's diagnostic `armed` flag, and every send, reply and
+   missing reply is in the log.
+
+   Harness result — `ExtensionPolyfillProfileWiringTests` with `DETOUR_MEASURE_WORKER_UNLOAD=1`
+   (`DETOUR_MEASURE_WORKER_UNLOAD_SECONDS`, default 300), a *worker* declaring `nativeMessaging`
+   whose only port is the keep-alive and whose only traffic on it is answering Detour, armed by
+   `simulateNativeHostForTesting` so no real host adds traffic, at the production 30 s interval:
+
+   | Phase | Result |
+   |-------|--------|
+   | armed, observed 300 s | port open the whole time (300.9 s); 11 pings sent, 11 replies, round trips 0–3 ms; never a ping awaiting a reply at the next tick; one keep-alive port opened, i.e. one worker start |
+   | released (`connected: false`) | `keepalive-stop` delivered, and WebKit closed the port 149.4 s later — the inactive-ports path (2 min after the last reply, evaluated on WebKit's 30 s timer), so the disarmed behaviour is unchanged |
+
+   That is well past the ~170 s at which production's worker-driven pings stopped counting, on the
+   same machine and the same WebKit. What production still has to confirm is the same worker
+   surviving 15+ minutes in the signed build (AC #3 of TASK-68) — with the new lines
+   (`Keep-alive ping #n sent to <ext>`, `Keep-alive reply #n from <ext> (N ms)`, and the watchdog
+   error line) the next run can say so directly instead of being inferred from unload times.
 
    **History — 2026-09-11 22:40 (TASK-15): the worker-side detection this replaces was inert, and
    its first version broke the popup.** The original design wrapped `runtime.connectNative` in the
