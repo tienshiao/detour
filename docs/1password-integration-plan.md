@@ -386,6 +386,80 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    (`Keep-alive ping #n sent to <ext>`, `Keep-alive reply #n from <ext> (N ms)`, and the watchdog
    error line) the next run can say so directly instead of being inferred from unload times.
 
+   **What actually kills the worker: an offscreen document's close clears its service-worker
+   registration (TASK-68, production run 2, 2026-09-13 20:04, signed build at 3b8d8f4).** With the
+   per-round-trip logging in place the next production run answered the question outright, and the
+   answer was not the pings. All three workers armed at 20:04:22 with one host each and answered
+   Detour in 0–20 ms. One of them answered ping #1 and nothing after it, and WebKit's own log says
+   why: 1Password's worker opened its `chrome.offscreen` document — **WebKit's native
+   implementation**, which loads it as a page (577) inside the worker's own WebContent process;
+   Detour's `OffscreenDocumentHost` was not involved at all — the page closed 9 ms later
+   (two of its vendor scripts were missing from the bundle, `EXT-LOAD` code 2), and **14 ms after
+   that page closed** the Networking process logged `SWServerRegistration::clear 31` and the
+   worker's content process `SWContextManager::terminateWorker 36`. In WebKit's
+   `SWServer::unregisterServiceWorkerClientInternal` a client's unregistration clears the whole
+   registration when that client's identifier is the registration's `serviceWorkerPageIdentifier`,
+   so the offscreen page's close is being treated as the service-worker page's close.
+
+   The hidden background page (476) was **not** closed. It stayed loaded around a dead worker: the
+   keep-alive port stayed open and armed, Detour logged `ping #2 sent 30 s ago has no reply` every
+   30 s, and the 20:05:22 and 20:06:22 alarms were simply lost — until WebKit unloaded the page at
+   20:06:52 (120 s after the worker's last counted post, on the 30 s tick), after which the next
+   alarm started a worker that reconnected and has answered every ping since. The Private worker of
+   the day before (page 165 closed 18:15:49.335 → `clear 33` + `terminateWorker 40` 11 ms later,
+   hidden page 56 closed 174 s later) is the same signature. Only the profile whose 1Password
+   created an offscreen document was hit; the other two held. The 170 s cycling *after* a lock was
+   a second, separate fault — the background's own `setInterval` pings stopped flowing while the
+   worker was alive — and that one the Detour-driven pings fixed.
+
+   **Harness (TASK-68 AC #2), `ExtensionPolyfillProfileWiringTests`.** The production trigger is not
+   reachable here: the probe worker captures `chrome.offscreen` before the polyfill runs and finds
+   nothing, so in this build `chrome.offscreen` is Detour's polyfill and `createDocument` goes to
+   `OffscreenDocumentHost`, a WKWebView of Detour's own rather than a page in the worker's process.
+   What the harness does reproduce is the state the production worker was left in, and what Detour
+   now does about it:
+
+   | Leg | Result |
+   |-----|--------|
+   | `testADetourHostedOffscreenDocumentDoesNotKillTheWorker` — Detour-hosted offscreen document created and closed | the worker never notices; pings keep round-tripping, one keep-alive port, no restart |
+   | `testAnOrdinaryExtensionPageClosingDoesNotKillTheWorker` — an extension page opened and released while another stays open | the worker survives (it may cost one missed ping while the page tears down) |
+   | `testAWorkerTerminatedUnderItsLiveBackgroundPageIsRestarted` — the worker clears its own registration (`registration.unregister()`), reaching WebKit's teardown from the other end | `SWServerRegistration::clear 6` + `SWContextManager::terminateWorker 7` (2026-09-13 20:42:20.614/.615), the hidden background page and its port untouched, `portOpen`/`armed` still true, and the pings simply stop coming back — the production state exactly |
+   | …and the recovery on that same leg | ping #3 unanswered at 20:42:24.4, `no reply to pings #3–#4 for 4 s; treating the background as dead and restarting it` at 20:42:26.5, ports and hosts torn down there; WebKit closed the now portless zombie page at 20:42:50.6 (its own 30 s tick); `loadBackgroundContent` at 20:43:01.5 (`keepAliveRestartDelay`, 35 s) → `WebPageProxy::loadServiceWorker`, a second keep-alive port, and a background answering every ping again |
+
+   The symptom first appeared in the harness by accident on 2026-09-13, when a website-data deletion
+   cleared another test's registration and left Detour pinging a worker that had been terminated
+   under a page that was still loaded — the same three log lines, in the same order.
+
+   **The recovery (`ExtensionManager.restartUnresponsiveBackground`).** Nothing Detour can do
+   prevents WebKit from terminating the worker, so the pings are also the detector. A ping that is
+   still unanswered when the next one goes out is logged (`ping #n sent N s ago has no reply …`);
+   `keepAliveMissedReplyLimit` (2) of those in a row — the background silent for at least
+   2 × `keepAlivePingInterval`, 60 s in production, still inside WebKit's 2-minute window — is
+   treated as death:
+
+   1. one error line, `Keep-alive for <ext>: no reply to pings #n–#m for N s; treating the
+      background as dead and restarting it`;
+   2. the same teardown a replaced context gets (TASK-67) — host processes killed and their ports
+      disconnected with `Detour restarted an unresponsive background context.`, relayed sockets
+      ended, the keep-alive reset through `contextUnloaded` — plus the keep-alive port itself,
+      removed from the registry first so its own disconnect handler is a no-op. With no open ports
+      left, WebKit's next 30 s `unloadBackgroundContentIfPossible` tick closes the zombie page
+      instead of waiting out the 2-minute inactive-ports window;
+   3. `keepAliveRestartDelay` (35 s, longer than that tick) later, `loadBackgroundContent` on the
+      context — found through the controller held weakly per keep-alive key — and the outcome
+      logged. Not an unload/reload of the context: that would take the extension's popup, options
+      and other pages with it. If a keep-alive port turned up in the meantime (an alarm woke the
+      background on its own) the load is skipped, and if the page is somehow still there the load
+      is a harmless no-op.
+
+   The threshold and the delay are instance properties so tests can shorten them; a restart in
+   flight is tracked per key so a second cannot start on top of it, and the delayed load re-checks
+   the port, the controller, the profile and the context before it runs.
+
+   What production still has to confirm is a worker surviving 15+ minutes in the signed build with
+   an offscreen document in play (AC #3 of TASK-68) — now with the restart as the safety net rather
+   than a two-minute hole.
+
    **History — 2026-09-11 22:40 (TASK-15): the worker-side detection this replaces was inert, and
    its first version broke the popup.** The original design wrapped `runtime.connectNative` in the
    worker to count real ports itself. WebKit re-materializes that property on every read
@@ -514,8 +588,10 @@ WebSocket open`; the reloaded Private worker opened a third at 18:18:50 (open at
 three stayed open until the user locked 1Password at 18:37:28, when each closed with `code 1005,
 clean true`. Whether a vault change made elsewhere is pushed live, and the API Explorer echo probe
 against `wss://echo.websocket.org`, were not exercised in that run (still open in TASK-21). The
-sockets also turned out to be what held the Personal and Work workers up: the workers without one
-were unloaded at ~170 s despite the armed keep-alive (TASK-68, above).
+sockets also looked at the time like what held the Personal and Work workers up, since the workers
+without one were unloaded at ~170 s despite the armed keep-alive; run 2 traced that to the
+background's own ping timer and to a `chrome.offscreen` document's close terminating the worker
+(TASK-68, above), and Detour now drives the pings and restarts a background that stops answering.
 
 ### Phase 2 — Cheap, high-confidence stubs (parallelizable with Phase 1)
 

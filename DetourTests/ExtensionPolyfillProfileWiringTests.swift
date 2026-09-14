@@ -23,6 +23,10 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// Restored in tearDown: a leg that shortens Detour's keep-alive ping interval
     /// (TASK-68) must not leave it shortened for the rest of the suite.
     private var previousKeepAlivePingInterval: TimeInterval = 30
+    /// Restored in tearDown with it: the recovery knobs a leg lowers so a silent
+    /// background is torn down and restarted in seconds rather than minutes.
+    private var previousKeepAliveMissedReplyLimit = 2
+    private var previousKeepAliveRestartDelay: TimeInterval = 35
     /// Fake native messaging hosts installed by a test (TASK-62); torn down —
     /// env var restored, every spawned process killed — after every test.
     private var fakeNativeHosts: [FakeNativeMessagingHost] = []
@@ -31,6 +35,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         try await super.setUp()
         previousLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
         previousKeepAlivePingInterval = ExtensionManager.shared.keepAlivePingInterval
+        previousKeepAliveMissedReplyLimit = ExtensionManager.shared.keepAliveMissedReplyLimit
+        previousKeepAliveRestartDelay = ExtensionManager.shared.keepAliveRestartDelay
     }
 
     override func tearDown() {
@@ -54,6 +60,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         createdSpaceIDs.removeAll()
         ExtensionManager.shared.lastActiveSpaceID = previousLastActiveSpaceID
         ExtensionManager.shared.keepAlivePingInterval = previousKeepAlivePingInterval
+        ExtensionManager.shared.keepAliveMissedReplyLimit = previousKeepAliveMissedReplyLimit
+        ExtensionManager.shared.keepAliveRestartDelay = previousKeepAliveRestartDelay
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
         }
@@ -1060,9 +1068,11 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// extension exists. The worker carries the polyfill itself: the user script
     /// `Profile.extensionController` installs reaches web views, not workers.
     private func makeWorkerExtension(id: String, permissions: [String],
-                                     backgroundJS: String) async throws -> WebExtension {
+                                     backgroundJS: String,
+                                     extraFiles: [String: String] = [:]) async throws -> WebExtension {
         try await makeBackgroundPageExtension(
-            .serviceWorker, id: id, permissions: permissions, backgroundJS: backgroundJS)
+            .serviceWorker, id: id, permissions: permissions, backgroundJS: backgroundJS,
+            extraFiles: extraFiles)
     }
 
     /// A worker that connects `portCount` native messaging ports to `hostName` at
@@ -2038,6 +2048,461 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         print("TASK-68 measurement: released at +\(String(format: "%.1f", releasedAt.timeIntervalSince(armedAt))) s; the keep-alive port closed \(String(format: "%.1f", unloadedAfter)) s later")
         XCTAssertLessThan(unloadedAfter, 180,
                           "a released worker must go back to WebKit's idle unload")
+    }
+
+    // MARK: - TASK-68: a background that stops answering is restarted
+
+    /// The probe for the TASK-68 recovery legs: a worker that can open and close
+    /// an offscreen document — through WebKit's own `chrome.offscreen` and through
+    /// Detour's polyfilled one, which are kept apart deliberately (see
+    /// `nativeOffscreenCaptureJS`) — and can be told to stop answering Detour's
+    /// keep-alive pings, which is what a worker WebKit terminated under a hidden
+    /// page that is still loaded looks like from Detour's side.
+    ///
+    /// Every answer goes through `chrome.runtime.sendMessage` from an ordinary
+    /// extension page, so "the worker no longer answers" is observable from the
+    /// test as well as from the keep-alive ledger.
+    private static let keepAliveProbeJS = """
+
+    let offscreenLog = [];
+
+    function describe(fn) {
+        try { return String(fn); } catch (e) { return 'error: ' + e; }
+    }
+
+    async function useOffscreen(api, action) {
+        const out = { action: action, ok: false, error: null, hasDocument: null };
+        if (!api) {
+            out.error = 'no offscreen namespace';
+            return out;
+        }
+        try {
+            if (action === 'create') {
+                await api.createDocument({
+                    url: 'offscreen.html', reasons: ['BLOBS'], justification: 'TASK-68 harness'
+                });
+            } else {
+                await api.closeDocument();
+            }
+            out.ok = true;
+        } catch (e) {
+            out.error = String(e && e.message !== undefined ? e.message : e);
+        }
+        try { out.hasDocument = await api.hasDocument(); } catch (e) { out.hasDocument = 'error'; }
+        offscreenLog.push(out);
+        return out;
+    }
+
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (!message) return false;
+        if (message.type === 'ping') {
+            const keepAlive = globalThis.__detourNativePortKeepAlive;
+            sendResponse({
+                type: 'pong',
+                installMode: keepAlive ? keepAlive.installMode : 'missing',
+                installDetail: keepAlive ? keepAlive.installDetail : 'missing',
+                armed: keepAlive ? keepAlive.armed : false,
+                repliesSent: keepAlive ? keepAlive.repliesSent : -1,
+                offscreen: offscreenLog
+            });
+            return true;
+        }
+        if (message.type === 'offscreenInfo') {
+            const polyfilled = describe(chrome.offscreen && chrome.offscreen.createDocument);
+            const native = globalThis.__detourNativeOffscreen;
+            sendResponse({
+                chromeOffscreen: typeof chrome.offscreen,
+                createDocument: typeof (chrome.offscreen && chrome.offscreen.createDocument),
+                goesThroughDetour: polyfilled.indexOf('__detourPolyfillRequest') !== -1,
+                capturedNative: !!native,
+                nativeIsChromeOffscreen: !!native && native === chrome.offscreen,
+                nativeCreateDocument: native ? typeof native.createDocument : 'none',
+                nativeSource: native ? describe(native.createDocument).slice(0, 160) : ''
+            });
+            return true;
+        }
+        if (message.type === 'offscreen') {
+            const api = message.api === 'native'
+                ? globalThis.__detourNativeOffscreen : chrome.offscreen;
+            useOffscreen(api, message.action).then(sendResponse);
+            return true;
+        }
+        if (message.type === 'unregister') {
+            // A service worker can clear its own registration. WebKit answers a
+            // cleared registration the way it answered the one 1Password's
+            // offscreen document took down: SWServerRegistration::clear in the
+            // Networking process, SWContextManager::terminateWorker in this one —
+            // while the hidden background page this worker lives under stays
+            // loaded, with every port on it still open.
+            sendResponse({ ok: true });
+            setTimeout(() => {
+                try { globalThis.registration.unregister(); } catch (e) {}
+            }, 50);
+            return true;
+        }
+        if (message.type === 'ignorePings') {
+            globalThis.__detourKeepAliveIgnorePings =
+                message.count === undefined ? true : message.count;
+            sendResponse({ ok: true, ignoring: globalThis.__detourKeepAliveIgnorePings });
+            return true;
+        }
+        return false;
+    });
+    """
+
+    /// Runs *before* the polyfill in the probe worker and keeps WebKit's own
+    /// `chrome.offscreen` — the polyfill defines its own over it, and the
+    /// production kill (2026-09-13) came from WebKit's native implementation,
+    /// which creates the document as a page in the worker's own process. Held on
+    /// the global so a leg can pick which of the two implementations it exercises.
+    private static let nativeOffscreenCaptureJS = """
+    globalThis.__detourNativeOffscreen =
+        (typeof chrome !== 'undefined' && chrome.offscreen) ? chrome.offscreen : null;
+
+    """
+
+    private func makeKeepAliveProbeExtension(id: String) async throws -> WebExtension {
+        try await makeWorkerExtension(
+            id: id, permissions: ["nativeMessaging", "offscreen"],
+            backgroundJS: Self.nativeOffscreenCaptureJS + ExtensionAPIPolyfill.polyfillJS
+                + Self.keepAliveProbeJS,
+            extraFiles: ["offscreen.html":
+                            "<html><body><div id=\"offscreen\">offscreen</div></body></html>"])
+    }
+
+    /// Start the probe in a fresh profile with the keep-alive armed by a simulated
+    /// host, so the round trips Detour drives are the only traffic on the worker's
+    /// only port — and shorten the ping interval so a leg takes seconds.
+    private func startKeepAliveProbe(
+        _ ext: WebExtension, profileName: String, pingInterval: TimeInterval
+    ) async throws -> (profile: Profile, context: WKWebExtensionContext, page: WKWebView,
+                       controller: WKWebExtensionController) {
+        let manager = ExtensionManager.shared
+        manager.keepAlivePingInterval = pingInterval
+        let started = try await startMeasurement(ext, profileName: profileName)
+        let controller = started.profile.extensionController
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager", timeout: 30) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("Detour to arm the worker", timeout: 10) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+        try await waitUntil("the first keep-alive replies to flow", timeout: 20) {
+            manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id) >= 2
+        }
+        return (started.profile, started.context, started.page, controller)
+    }
+
+    /// One line of the keep-alive ledger, for the measurement legs' output.
+    private func keepAliveLedger(_ ext: WebExtension,
+                                 _ controller: WKWebExtensionController) -> String {
+        let manager = ExtensionManager.shared
+        let sent = manager.keepAlivePingsSentForTesting(controller: controller, extensionID: ext.id)
+        let missed = manager.keepAliveMissedRepliesForTesting(controller: controller, extensionID: ext.id)
+        let state = manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)
+        return "pings sent \(sent?.sent ?? -1), awaiting \(sent?.awaiting.map(String.init) ?? "none"), replies \(manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id)), missed run \(missed.missed), restarting \(missed.restarting), ports opened \(manager.keepAlivePortOpenCountForTesting(controller: controller, extensionID: ext.id)), state \(String(describing: state))"
+    }
+
+    /// Part 1 (a)/(c) of the TASK-68 production finding: does closing an
+    /// offscreen document take the worker with it, as it did in production on
+    /// 2026-09-13?
+    ///
+    /// Not in this harness, and the reason is in the report the probe prints:
+    /// there is no *native* `chrome.offscreen` here to reach. The probe captures
+    /// `chrome.offscreen` in its worker before the polyfill runs
+    /// (`nativeOffscreenCaptureJS`) and finds nothing (`capturedNative` false), so
+    /// `chrome.offscreen` is Detour's polyfill and `createDocument` goes to
+    /// `OffscreenDocumentHost` — a WKWebView of Detour's own, not a page WebKit
+    /// created inside the worker's process, which is what 1Password got (its
+    /// document became page 577 in the worker's WebContent process and the
+    /// Networking process cleared the worker's service-worker registration 14 ms
+    /// after that page closed). Detour's offscreen document opens and closes with
+    /// the worker none the wiser, which is what this asserts.
+    ///
+    /// What *does* reproduce the production kill here is
+    /// `testClosingTheLastExtensionPageKillsTheWorker` below: a page close, of the
+    /// kind WebKit's own offscreen implementation performs.
+    func testADetourHostedOffscreenDocumentDoesNotKillTheWorker() async throws {
+        let id = measurementExtensionID("task68-offscreen")
+        let ext = try await makeKeepAliveProbeExtension(id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let manager = ExtensionManager.shared
+        // Observe, do not recover: this leg is about what the offscreen document
+        // does to the worker, not about the safety net.
+        manager.keepAliveMissedReplyLimit = 1000
+        let started = try await startKeepAliveProbe(
+            ext, profileName: "TASK-68 Offscreen", pingInterval: 1)
+        let controller = started.controller
+
+        let info = try await askWorker(from: started.page, message: ["type": "offscreenInfo"],
+                                       timeout: 10)
+        let report = try XCTUnwrap(info["reply"] as? [String: Any], "\(info)")
+        print("TASK-68 [offscreen]: \(report)")
+        XCTAssertEqual(report["goesThroughDetour"] as? Bool, true,
+                       "chrome.offscreen must be Detour's polyfill in this harness: \(report)")
+        XCTAssertEqual(report["capturedNative"] as? Bool, false,
+                       "no native chrome.offscreen exists before the polyfill here, so the WebKit-hosted document production hit cannot be exercised: \(report)")
+
+        let created = try await askWorker(
+            from: started.page, message: ["type": "offscreen", "api": "detour", "action": "create"],
+            timeout: 30)
+        XCTAssertEqual((created["reply"] as? [String: Any])?["ok"] as? Bool, true, "\(created)")
+        let closed = try await askWorker(
+            from: started.page, message: ["type": "offscreen", "api": "detour", "action": "close"],
+            timeout: 30)
+        XCTAssertEqual((closed["reply"] as? [String: Any])?["ok"] as? Bool, true, "\(closed)")
+
+        let repliesAfterClose = manager.keepAlivePingCountForTesting(
+            controller: controller, extensionID: ext.id)
+        try await waitUntil("the keep-alive replies to keep coming after the document closed",
+                            timeout: 15) {
+            manager.keepAlivePingCountForTesting(
+                controller: controller, extensionID: ext.id) >= repliesAfterClose + 3
+        }
+        print("TASK-68 [offscreen]: \(keepAliveLedger(ext, controller))")
+        XCTAssertEqual(manager.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: ext.id), 1, "the worker must not have restarted")
+        let answered = try await askWorker(from: started.page, message: ["type": "ping"], timeout: 10)
+        XCTAssertEqual((answered["reply"] as? [String: Any])?["type"] as? String, "pong", "\(answered)")
+    }
+
+    /// Part 1, the production finding reproduced: a worker WebKit terminated
+    /// under a background page that is still loaded, with every port on that page
+    /// still open — and the recovery that gets a working background back.
+    ///
+    /// The production *trigger* cannot be reached here: 1Password's worker opened
+    /// a WebKit-hosted `chrome.offscreen` document (a page in the worker's own
+    /// WebContent process) and closing it made the Networking process clear the
+    /// worker's service-worker registration 14 ms later, but this harness has no
+    /// native `chrome.offscreen` at all (see
+    /// `testADetourHostedOffscreenDocumentDoesNotKillTheWorker`). What this test
+    /// does instead is reach the same WebKit teardown from the other end: the
+    /// worker clears its own registration (`registration.unregister()`), so the
+    /// Networking process runs `SWServerRegistration::clear` and the content
+    /// process `SWContextManager::terminateWorker` — the same two lines, in the
+    /// same order, that production logged 14 ms after the offscreen page closed.
+    /// (The symptom first appeared in the harness by accident on 2026-09-13, when
+    /// a website-data deletion cleared another test's registration and left
+    /// Detour pinging a worker that had been terminated under a page that was
+    /// still loaded.)
+    ///
+    /// What Detour sees is what matters, and it is identical to production: the
+    /// keep-alive port stays open and registered, `portOpen` and `armed` stay
+    /// true, alarms and messages are silently lost, and the only sign of death is
+    /// that the pings stop coming back.
+    func testAWorkerTerminatedUnderItsLiveBackgroundPageIsRestarted() async throws {
+        let id = measurementExtensionID("task68-terminated")
+        let ext = try await makeKeepAliveProbeExtension(id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let manager = ExtensionManager.shared
+        manager.keepAliveMissedReplyLimit = 2
+        let started = try await startKeepAliveProbe(
+            ext, profileName: "TASK-68 Terminated Worker", pingInterval: 2)
+        let controller = started.controller
+        XCTAssertEqual(manager.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: ext.id), 1, "precondition: one worker start")
+
+        let unregistered = try await askWorker(
+            from: started.page, message: ["type": "unregister"], timeout: 10)
+        XCTAssertEqual((unregistered["reply"] as? [String: Any])?["ok"] as? Bool, true,
+                       "\(unregistered)")
+
+        try await waitUntil("Detour to see the worker stop answering", timeout: 30,
+                            pollInterval: 0.2) {
+            manager.keepAliveMissedRepliesForTesting(
+                controller: controller, extensionID: ext.id).missed >= 1
+        }
+        let dying = try XCTUnwrap(manager.keepAliveStateForTesting(
+            controller: controller, extensionID: ext.id))
+        XCTAssertTrue(dying.portOpen,
+                      "the production symptom: the hidden background page and its port outlive the worker")
+        XCTAssertTrue(dying.armed)
+        print("TASK-68 [terminated worker]: silent — \(keepAliveLedger(ext, controller))")
+
+        // Two silent intervals: Detour declares the background dead, tears its
+        // connections down and drops the keep-alive port with them, which is what
+        // lets WebKit's own 30 s tick collect the zombie page.
+        let tornDownAt = Date()
+        try await waitUntil("Detour to tear the dead background down", timeout: 30,
+                            pollInterval: 0.2) {
+            manager.keepAliveStateForTesting(
+                controller: controller, extensionID: ext.id)?.portOpen != true
+        }
+        print("TASK-68 [terminated worker]: torn down after \(String(format: "%.1f", Date().timeIntervalSince(tornDownAt))) s — \(keepAliveLedger(ext, controller))")
+        XCTAssertNil(manager.keepAliveStateForTesting(
+            controller: controller, extensionID: ext.id),
+                     "the teardown resets the keep-alive to nothing tracked")
+
+        // And then a fresh background context, with a fresh keep-alive port.
+        try await waitUntil("Detour to start a fresh background context",
+                            timeout: manager.keepAliveRestartDelay + 90, pollInterval: 0.5) {
+            manager.keepAlivePortOpenCountForTesting(
+                controller: controller, extensionID: ext.id) > 1
+        }
+        print("TASK-68 [terminated worker]: restarted — \(keepAliveLedger(ext, controller))")
+
+        // The restarted background answers again. Nothing arms it here: the
+        // simulated host went with the context Detour tore down, as a real
+        // context's hosts do, so arming stands in for the hosts a real background
+        // reconnects at startup.
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("Detour to arm the restarted background", timeout: 10) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+        let repliesAfterRestart = manager.keepAlivePingCountForTesting(
+            controller: controller, extensionID: ext.id)
+        try await waitUntil("the restarted background to answer pings", timeout: 20) {
+            manager.keepAlivePingCountForTesting(
+                controller: controller, extensionID: ext.id) >= repliesAfterRestart + 2
+        }
+        XCTAssertNil(manager.keepAlivePingsSentForTesting(
+            controller: controller, extensionID: ext.id)?.awaiting)
+        print("TASK-68 [terminated worker]: recovered — \(keepAliveLedger(ext, controller))")
+    }
+
+    /// Part 1 (b): the control for the page-close kill above. An extension page
+    /// opened and released *while another extension page of the same context is
+    /// still open* does not take the worker with it — so it is not "a page closed"
+    /// that kills the worker but the last client of its service-worker
+    /// registration going away, which is why closing WebKit's own offscreen
+    /// document was enough in production and why an ordinary popup is not.
+    func testAnOrdinaryExtensionPageClosingDoesNotKillTheWorker() async throws {
+        let id = measurementExtensionID("task68-page-close")
+        let ext = try await makeKeepAliveProbeExtension(id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let manager = ExtensionManager.shared
+        manager.keepAliveMissedReplyLimit = 1000
+        let started = try await startKeepAliveProbe(
+            ext, profileName: "TASK-68 Page Close", pingInterval: 1)
+        let controller = started.controller
+
+        var page: WKWebView? = try await makeExtensionWebView(for: started.context)
+        XCTAssertNotNil(page)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        page = nil
+        // The web view's page is closed on dealloc; give WebKit a moment to act on it.
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+
+        let repliesAfterClose = manager.keepAlivePingCountForTesting(
+            controller: controller, extensionID: ext.id)
+        try await waitUntil("the keep-alive replies to keep coming after the page closed",
+                            timeout: 15) {
+            manager.keepAlivePingCountForTesting(
+                controller: controller, extensionID: ext.id) >= repliesAfterClose + 2
+        }
+        print("TASK-68 [page close]: \(keepAliveLedger(ext, controller))")
+        let answered = try await askWorker(from: started.page, message: ["type": "ping"], timeout: 10)
+        XCTAssertEqual((answered["reply"] as? [String: Any])?["type"] as? String, "pong",
+                       "the worker must still answer after an ordinary page closed: \(answered)")
+        XCTAssertEqual(manager.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: ext.id), 1,
+                       "the worker must not have restarted")
+    }
+
+    /// Part 2: a background that has stopped answering Detour's pings for two
+    /// intervals is torn down and started again.
+    ///
+    /// The worker here is alive and simply ignores the pings
+    /// (`__detourKeepAliveIgnorePings`, a test-only hook in the keep-alive JS) —
+    /// from Detour's side that is exactly the production shape: a hidden page
+    /// still loaded, its port still open, and nothing ever coming back. The
+    /// recovery must disconnect what it holds (which drops the port, so WebKit can
+    /// collect the page) and let a fresh keep-alive port take its place.
+    func testASilentBackgroundIsTornDownAndRestarted() async throws {
+        let id = measurementExtensionID("task68-silent")
+        let ext = try await makeKeepAliveProbeExtension(id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let manager = ExtensionManager.shared
+        manager.keepAliveMissedReplyLimit = 2
+        manager.keepAliveRestartDelay = 3
+        let started = try await startKeepAliveProbe(
+            ext, profileName: "TASK-68 Silent Worker", pingInterval: 1)
+        let controller = started.controller
+
+        XCTAssertEqual(manager.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: ext.id), 1, "precondition: one worker start")
+
+        // Two pings dropped is exactly the limit: the tick after them declares the
+        // background dead. The worker answers again from the third, so the port it
+        // reconnects is a working one.
+        let ignoring = try await askWorker(
+            from: started.page, message: ["type": "ignorePings", "count": 2], timeout: 10)
+        XCTAssertEqual((ignoring["reply"] as? [String: Any])?["ok"] as? Bool, true, "\(ignoring)")
+
+        try await waitUntil("Detour to tear the silent background down and restart it",
+                            timeout: 30, pollInterval: 0.2) {
+            manager.keepAlivePortOpenCountForTesting(
+                controller: controller, extensionID: ext.id) > 1
+        }
+        print("TASK-68 [silent worker]: after the restart — \(keepAliveLedger(ext, controller))")
+
+        // The teardown treats the background as gone, so the simulated host went
+        // with it — a real restarted background connects its own hosts, which is
+        // what this stands in for.
+        let state = try XCTUnwrap(manager.keepAliveStateForTesting(
+            controller: controller, extensionID: ext.id))
+        XCTAssertTrue(state.portOpen, "the fresh keep-alive port must be registered")
+        XCTAssertEqual(state.connectedHosts, 0,
+                       "the unresponsive background's connections must have been torn down")
+        XCTAssertFalse(state.armed, "nothing holds the fresh background up yet")
+
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("Detour to arm the restarted background", timeout: 10) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+        let repliesAfterRestart = manager.keepAlivePingCountForTesting(
+            controller: controller, extensionID: ext.id)
+        try await waitUntil("the restarted background to answer pings again", timeout: 20) {
+            manager.keepAlivePingCountForTesting(
+                controller: controller, extensionID: ext.id) >= repliesAfterRestart + 2
+        }
+        XCTAssertNil(manager.keepAlivePingsSentForTesting(
+            controller: controller, extensionID: ext.id)?.awaiting,
+                     "the restarted background must be answering every ping")
+        XCTAssertEqual(manager.keepAliveMissedRepliesForTesting(
+            controller: controller, extensionID: ext.id).missed, 0)
+        print("TASK-68 [silent worker]: recovered — \(keepAliveLedger(ext, controller))")
+    }
+
+    /// The negative: one missed reply is a hiccup, not a death. Detour logs it,
+    /// keeps pinging on the same port, and tears nothing down.
+    func testASingleMissedKeepAliveReplyDoesNotRestartTheBackground() async throws {
+        let id = measurementExtensionID("task68-one-miss")
+        let ext = try await makeKeepAliveProbeExtension(id: id)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let manager = ExtensionManager.shared
+        manager.keepAliveMissedReplyLimit = 2
+        manager.keepAliveRestartDelay = 3
+        let started = try await startKeepAliveProbe(
+            ext, profileName: "TASK-68 One Miss", pingInterval: 1)
+        let controller = started.controller
+
+        let ignoring = try await askWorker(
+            from: started.page, message: ["type": "ignorePings", "count": 1], timeout: 10)
+        XCTAssertEqual((ignoring["reply"] as? [String: Any])?["ok"] as? Bool, true, "\(ignoring)")
+
+        let repliesBefore = manager.keepAlivePingCountForTesting(
+            controller: controller, extensionID: ext.id)
+        try await waitUntil("the background to answer again after the missed ping", timeout: 20) {
+            manager.keepAlivePingCountForTesting(
+                controller: controller, extensionID: ext.id) >= repliesBefore + 3
+        }
+        print("TASK-68 [one miss]: \(keepAliveLedger(ext, controller))")
+
+        XCTAssertEqual(manager.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: ext.id), 1,
+                       "one missed reply must not restart the background")
+        let state = try XCTUnwrap(manager.keepAliveStateForTesting(
+            controller: controller, extensionID: ext.id))
+        XCTAssertTrue(state.armed, "the keep-alive must still be armed")
+        XCTAssertEqual(state.connectedHosts, 1, "nothing may have been torn down")
+        let missed = manager.keepAliveMissedRepliesForTesting(
+            controller: controller, extensionID: ext.id)
+        XCTAssertEqual(missed.missed, 0, "the missed run ended with the next reply")
+        XCTAssertFalse(missed.restarting, "no restart may be pending")
+        let answered = try await askWorker(from: started.page, message: ["type": "ping"], timeout: 10)
+        XCTAssertEqual((answered["reply"] as? [String: Any])?["type"] as? String, "pong", "\(answered)")
     }
 
     // MARK: - TASK-62: which contexts install the keep-alive

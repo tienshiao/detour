@@ -1681,10 +1681,20 @@ struct ExtensionAPIPolyfill {
     /// not `false`) is skipped: WebKit never unloads it, so there is nothing to
     /// keep alive and a port would be retained in Detour for nothing.
     ///
+    /// If the background stops answering altogether — WebKit terminated the worker
+    /// under a hidden page that is still loaded, which is what a `chrome.offscreen`
+    /// document's close does to it (TASK-68) — Detour notices the missing replies
+    /// and restarts the background context
+    /// (`ExtensionManager.restartUnresponsiveBackground`). Nothing here can help
+    /// with that: the code that would react is the code that died.
+    ///
     /// `__detourKeepAliveReconnectBaseMs` (read once at install) shortens the
-    /// reconnect backoff for tests, and `__detourForceNativePortKeepAlive` installs
-    /// this outside a background context for tests. There is no ping-interval
-    /// override any more: the interval is `ExtensionManager.keepAlivePingInterval`.
+    /// reconnect backoff for tests, `__detourForceNativePortKeepAlive` installs
+    /// this outside a background context for tests, and
+    /// `__detourKeepAliveIgnorePings` (a count, or `true`) makes it drop pings so
+    /// a test can play a background that has stopped answering. There is no
+    /// ping-interval override any more: the interval is
+    /// `ExtensionManager.keepAlivePingInterval`.
     private static let nativePortKeepAliveJS = """
     (function() {
         const g = globalThis;
@@ -1725,6 +1735,20 @@ struct ExtensionAPIPolyfill {
                 target.postMessage({ type: 'keepalive', seq: seq });
                 repliesSent += 1;
             } catch (e) {}
+        }
+
+        // Test-only: drop the next N pings (a number) or every ping (true), so a
+        // test can play a background that has stopped answering — the production
+        // shape of a worker WebKit terminated under a hidden page that is still
+        // loaded (TASK-68). Nothing in production ever sets it.
+        function ignoresPing() {
+            const ignore = g.__detourKeepAliveIgnorePings;
+            if (ignore === true) return true;
+            if (typeof ignore === 'number' && ignore > 0) {
+                g.__detourKeepAliveIgnorePings = ignore - 1;
+                return true;
+            }
+            return false;
         }
 
         // Whatever reason the runtime gives for `target`'s disconnect, or ''.
@@ -1796,7 +1820,7 @@ struct ExtensionAPIPolyfill {
                     if (port !== opened || !message) return;
                     // Answered whether or not a start was seen: Detour pings only
                     // a port it has armed, and an extra reply is never wrong.
-                    if (message.type === 'keepalive-ping') reply(opened, message.seq);
+                    if (message.type === 'keepalive-ping') { if (!ignoresPing()) reply(opened, message.seq); }
                     else if (message.type === 'keepalive-start') armed = true;
                     else if (message.type === 'keepalive-stop') armed = false;
                     else if (message.type === SUPERSEDED_TYPE) superseded = true;
