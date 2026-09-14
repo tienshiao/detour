@@ -3,11 +3,11 @@ id: TASK-76
 title: >-
   Window: keys a web page declines reach the end of the responder chain and play
   the 'unhandled key' beep (YouTube hotkeys with the player unfocused)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 07:03'
-updated_date: '2026-09-14 07:31'
+updated_date: '2026-09-14 08:03'
 labels:
   - window
   - bug
@@ -24,10 +24,10 @@ Reported 2026-09-14: on youtube.com, pressing the player hotkeys (arrow keys to 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 On youtube.com with the player unfocused, arrow keys and < > produce no system beep in Detour (manual check in the signed build); the keys still work when the player is focused
-- [ ] #2 A key that no web content handles (e.g. a letter on a page with no focused field) produces no beep, matching Safari
-- [ ] #3 Esc still closes the peek overlay and keys pressed with a native view focused (sidebar) keep their previous behaviour
-- [ ] #4 A unit test covers that a keyDown re-dispatched from a web view first responder stops at the window controller without falling through to NSResponder
+- [x] #1 On youtube.com with the player unfocused, arrow keys and < > produce no system beep in Detour (manual check in the signed build); the keys still work when the player is focused
+- [x] #2 A key that no web content handles (e.g. a letter on a page with no focused field) produces no beep, matching Safari
+- [x] #3 Esc still closes the peek overlay and keys pressed with a native view focused (sidebar) keep their previous behaviour
+- [x] #4 A unit test covers that a keyDown re-dispatched from a web view first responder stops at the window controller without falling through to NSResponder
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -44,3 +44,9 @@ Reported 2026-09-14: on youtube.com, pressing the player hotkeys (arrow keys to 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented (b6ccb7d + review fixes): BrowserWindowController.keyDown returns after the Esc/peek branch when the window's first responder is a WKWebView or a view inside one (keyWasDeclinedByWebContent), so page-declined keys stop at the controller instead of NSResponder.keyDown → noResponderFor → NSBeep; native first responders still fall through. No second beep path: WebKit's editor-command re-dispatch is wrapped in WKResponderChainSink and noResponderFor beeps only for keyDown. Tests: UnhandledKeyFallthroughTests (4) incl. a real controller with a FallthroughProbe on nextResponder. Review found two related items left for separate tasks: the extension popover's WKWebView lives in a bare NSViewController inside an NSPopover whose window ends the chain, so keys its page declines still beep; and after Cmd+L → Return dismissing the command palette focus is not returned to the page (pre-existing).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Page-declined keys re-dispatched by WebKit reached the end of the responder chain and NSResponder.keyDown beeped. BrowserWindowController.keyDown now returns, after the Esc-closes-peek branch, when the window's first responder is a WKWebView or a view inside one; native first responders still fall through. Verified by the user on youtube.com in the signed build (no beep with the player unfocused) and by UnhandledKeyFallthroughTests (4), including a real controller observed through a probe on nextResponder. No second beep path exists (WebKit's editor-command re-dispatch is wrapped in WKResponderChainSink). Follow-ups: extension popups (TASK-77) and command-palette focus return (TASK-78).
+<!-- SECTION:FINAL_SUMMARY:END -->
