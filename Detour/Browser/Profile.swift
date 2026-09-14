@@ -200,7 +200,16 @@ class Profile {
         // service-worker registrations and IndexedDB live in the *default* data
         // store: shared across profiles, and in the one session whose tracking
         // prevention pass kept purging 1Password's worker (TASK-70).
-        config.webViewConfiguration.websiteDataStore = dataStore
+        //
+        // Persistent profiles only, for now. With the incognito profile's
+        // ephemeral store here, its 1Password worker never answered a keep-alive
+        // ping and WebKit unloaded and re-registered it every 60 s (signed build,
+        // 2026-09-13 23:11); on the default store it runs steadily. Until that is
+        // understood the Private profile keeps WebKit's default, i.e. the shared
+        // default store it has always used (TASK-70 notes).
+        if !isIncognito && !isDeleted {
+            config.webViewConfiguration.websiteDataStore = dataStore
+        }
 
         // Register favicon scheme handler so extensions can use chrome.runtime.getURL("/_favicon/...")
         config.webViewConfiguration.setURLSchemeHandler(
