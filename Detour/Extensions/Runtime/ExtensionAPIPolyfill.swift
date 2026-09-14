@@ -196,6 +196,21 @@ struct ExtensionAPIPolyfill {
             };
         }
 
+        // Is `fn` WebKit's own function, someone else's, or not there at all?
+        // 'missing' | 'native' | 'non-native'. Read by the offscreen install
+        // marker, which has to say whether it shadowed a native namespace
+        // (TASK-71), and by the webNavigation getAllFrames/getFrame reading that
+        // is the only warning a WebKit regression would give (TASK-4).
+        if (!g.__detourNativeness) {
+            g.__detourNativeness = function(fn) {
+                if (typeof fn !== 'function') return 'missing';
+                try {
+                    return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1
+                        ? 'native' : 'non-native';
+                } catch (e) { return 'non-native'; }
+            };
+        }
+
         // The manifest WebKit reports for this extension, or null when it cannot
         // be read (no chrome.runtime.getManifest, nothing object-shaped back, or
         // a throw). The one guarded read every module that branches on the
@@ -1869,8 +1884,9 @@ struct ExtensionAPIPolyfill {
         // at the cost of moving the background off WebKit's 30 s idle unload onto
         // the 2-minute inactive-ports path and holding a port per background in
         // Detour for nothing.
-        const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
-        const isBackgroundPage = g.__detourContextKind === 'background-page';
+        const kind = g.__detourContextKind || 'page';
+        const isWorker = kind === 'worker';
+        const isBackgroundPage = kind === 'background-page';
         // MV2's `background.persistent` defaults to true, so a persistent page is
         // any pre-MV3 background the manifest did not explicitly mark false — the
         // same rule WebKit's `hasPersistentBackgroundContent` applies to a page
@@ -2433,12 +2449,15 @@ struct ExtensionAPIPolyfill {
     ///   * `polyfill`               — nothing was there, Detour installed its own;
     ///   * `polyfill-over-native`   — a native namespace was shadowed;
     ///   * `polyfill-over-foreign`  — a non-native object (another script's) was shadowed;
+    ///   * `polyfill-over-unreadable` — a namespace whose getter threw was shadowed;
     ///   * `error: <detail>`        — the define threw, or did not take.
     ///
     /// `__detourDefine` is warn-only by design (other modules rely on that), so
-    /// the verification and the `console.error` live here: a silently failed
-    /// assignment — which is what a non-writable `chrome.offscreen` gives in
-    /// sloppy mode — is caught by re-reading the tag off the installed object.
+    /// the verification and the `console.error` live here: when both its
+    /// strict-mode assignment and its `Object.defineProperty` fallback throw (a
+    /// non-configurable `chrome.offscreen`), or an accessor swallows the
+    /// assignment, nothing reaches this code — so the tag is re-read off the
+    /// installed object to verify.
     private static let offscreenJS = """
     (function() {
         const g = globalThis;
@@ -2449,23 +2468,20 @@ struct ExtensionAPIPolyfill {
         // a `[Dynamic]` native namespace is vended by a getter that may throw, and
         // this module must not take the rest of the polyfill down with it.
         let pre;
-        try { pre = chrome.offscreen; } catch (e) {}
+        let preUnreadable = false;
+        try { pre = chrome.offscreen; } catch (e) { preUnreadable = true; }
         let alreadyOurs = false;
         try { alreadyOurs = !!(pre && pre._detourPolyfill === true); } catch (e) {}
         if (alreadyOurs) return;
 
-        const nativeness = function(fn) {
-            if (typeof fn !== 'function') return 'missing';
-            try {
-                return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1
-                    ? 'native' : 'non-native';
-            } catch (e) { return 'non-native'; }
-        };
-        // What we are about to shadow, classified before anything is defined.
-        let preKind = 'absent';
+        // What we are about to shadow, classified before anything is defined. A
+        // `[Dynamic]` getter that threw counts as 'unreadable', not 'absent':
+        // something native was there, and saying plain `polyfill` would hide
+        // exactly the shadowing this marker exists to report.
+        let preKind = preUnreadable ? 'unreadable' : 'absent';
         try {
             if (pre !== undefined && pre !== null) {
-                preKind = nativeness(pre.createDocument) === 'native' ? 'native' : 'foreign';
+                preKind = __detourNativeness(pre.createDocument) === 'native' ? 'native' : 'foreign';
             }
         } catch (e) { preKind = 'foreign'; }
 
@@ -2516,14 +2532,16 @@ struct ExtensionAPIPolyfill {
 
             __detourDefine(chrome, 'offscreen', offscreen);
 
-            // Verify. `__detourDefine` assigns first, and in sloppy mode an
-            // assignment to a non-writable property fails *silently* — nothing to
-            // catch, and its `Object.defineProperty` fallback is never reached.
-            // Re-reading the tag is the only way to know the define took.
+            // Verify. `__detourDefine` is warn-only: when both its assignment and
+            // its `Object.defineProperty` fallback throw (a non-configurable
+            // `chrome.offscreen`), or an accessor swallows the assignment, nothing
+            // reaches this code. Re-reading the tag is the only way to know the
+            // define took.
             const after = chrome.offscreen;
             if (after === offscreen || (after && after._detourPolyfill === true)) {
                 marker = preKind === 'native' ? 'polyfill-over-native'
-                    : (preKind === 'foreign' ? 'polyfill-over-foreign' : 'polyfill');
+                    : (preKind === 'foreign' ? 'polyfill-over-foreign'
+                    : (preKind === 'unreadable' ? 'polyfill-over-unreadable' : 'polyfill'));
             } else {
                 marker = 'error: define did not take — chrome.offscreen is still the '
                     + preKind + ' object (' + typeof after + ')';
@@ -2547,9 +2565,8 @@ struct ExtensionAPIPolyfill {
         // One line per background start, through the console bridge, so which
         // offscreen implementation a real background context got is visible in
         // the unified log — the same shape the keep-alive install line uses.
-        const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
-        const isBackgroundPage = g.__detourContextKind === 'background-page';
-        if (isWorker || isBackgroundPage) {
+        const kind = g.__detourContextKind || 'page';
+        if (kind === 'worker' || kind === 'background-page') {
             try {
                 console.info('[Detour polyfill] chrome.offscreen implementation: '
                     + g.__detourOffscreenInstall);
@@ -2586,18 +2603,11 @@ struct ExtensionAPIPolyfill {
         // Re-running the polyfill must not overwrite the first reading.
         try {
             if (!globalThis.__detourWebNavFrames) {
-                const nativeness = function(fn) {
-                    if (typeof fn !== 'function') return 'missing';
-                    try {
-                        return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1
-                            ? 'native' : 'non-native';
-                    } catch (e) { return 'non-native'; }
-                };
                 const nav0 = chrome && chrome.webNavigation;
                 globalThis.__detourWebNavFrames = {
                     namespace: typeof (chrome && chrome.webNavigation),
-                    getAllFrames: nativeness(nav0 && nav0.getAllFrames),
-                    getFrame: nativeness(nav0 && nav0.getFrame)
+                    getAllFrames: __detourNativeness(nav0 && nav0.getAllFrames),
+                    getFrame: __detourNativeness(nav0 && nav0.getFrame)
                 };
             }
         } catch (e) {

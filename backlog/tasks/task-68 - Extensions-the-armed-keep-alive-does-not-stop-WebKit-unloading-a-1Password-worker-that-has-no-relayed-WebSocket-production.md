@@ -3,11 +3,11 @@ id: TASK-68
 title: >-
   Extensions: the armed keep-alive does not stop WebKit unloading a 1Password
   worker that has no relayed WebSocket (production)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 01:45'
-updated_date: '2026-09-14 03:57'
+updated_date: '2026-09-14 04:13'
 labels:
   - extensions
   - 1password
@@ -92,3 +92,9 @@ Test runs, all green: ExtensionPolyfillProfileWiringTests 46 tests, 4 skipped (t
 
 CORRECTION (2026-09-13 20:55): the offscreen page's close was a coincidence. The Networking log shows the actual trigger in both runs: 'NetworkProcess::deleteAndRestrictWebsiteDataForRegistrableDomains started to delete and restrict data for session 1 with candidate domains - 9 ... 706 domainsToDeleteAllScriptWrittenStorageFor' immediately before 'SWServerRegistration::clear' (31 today, 33 yesterday) — WebKit's tracking prevention purging script-written storage for the extension origin, which never earns first-party user interaction. Filed as TASK-70. The harness result stands: neither a Detour-hosted offscreen close nor an ordinary page close kills the worker, and the recovery (03fe845) handles the state whatever clears the registration.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Two faults hid behind the ~170 s unload. (1) The worker-side setInterval pings stopped flowing after a 1Password lock while the worker lived; Detour now drives the pings (30 s strict timer, numbered keepalive-ping / keepalive echo) and logs every round trip, and in the signed build all workers answered every ping for 16 minutes with no relayed socket open. (2) The worker was being terminated one second after launch, under its still-loaded hidden page, by WebKit's tracking-prevention purge of script-written storage for the extension origin (SWServerRegistration::clear right after deleteAndRestrictWebsiteDataForRegistrableDomains in both production runs) — prevention filed as TASK-70. Detour now detects a background that stops answering (two ticks with no reply of any kind), tears down its ports so WebKit closes the zombie page at its next tick, and reloads the background 35 s later (cancellable on unload/reload/replacement); harness reproduction via registration.unregister() restarts in ~40 s. Also: a replaced context's stale hosts are torn down on supersede (TASK-67). Commits 73dd343, 3b8d8f4, 03fe845, 7c6e4d3; docs/1password-integration-plan.md Phase 1 item 1 carries the mechanism, log lines, harness table and production numbers.
+<!-- SECTION:FINAL_SUMMARY:END -->

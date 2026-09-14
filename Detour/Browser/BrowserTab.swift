@@ -90,6 +90,10 @@ class BrowserTab: NSObject {
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var blockedCount: Int = 0
+    /// The URLs behind `blockedCount`: WebKit reports a blocked load once per
+    /// content rule list that acted on it, and the filter lists overlap, so a
+    /// resource is counted once per page (TASK-69).
+    private var blockedURLs: Set<URL> = []
     @Published var estimatedProgress: Double = 0
     @Published var favicon: NSImage?
     private(set) var faviconURL: URL?
@@ -113,6 +117,12 @@ class BrowserTab: NSObject {
     /// than derived from `spaceID` because favourite and Peek tabs belong to a
     /// profile without living in any space's tab list.
     weak var extensionRegisteredProfile: Profile?
+    /// The profile whose settings govern this tab's pages (its content blocker
+    /// whitelist, TASK-69): its space's, or — for a peek or favourite tab that
+    /// lives in no space's list — the one its extension registration named.
+    var owningProfile: Profile? {
+        spaceID.flatMap { TabStore.shared.space(withID: $0)?.profile } ?? extensionRegisteredProfile
+    }
     /// Combine sinks installed by `ExtensionTabLifecycle.didOpen` that forward
     /// url/title/loading changes to the registered profile's contexts; cleared by
     /// `didClose`. Lives on the tab so every registered tab — normal, pinned,
@@ -230,6 +240,7 @@ class BrowserTab: NSObject {
         self.webView = Self.makeWebView(configuration: configuration)
         super.init()
         if let webView { ExtensionPageHostRegistry.register(webView) }
+        webView?.navigationDelegate = self
         applyUserAgent()
         setupObservers()
         NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange(_:)), name: .init("UserAgentDidChange"), object: nil)
@@ -241,6 +252,7 @@ class BrowserTab: NSObject {
         self.webView = webView
         super.init()
         ExtensionPageHostRegistry.register(webView)
+        webView.navigationDelegate = self
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state
         self.url = webView.url
@@ -642,6 +654,7 @@ class BrowserTab: NSObject {
 
         let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
         self.webView = Self.makeWebView(configuration: wakeConfiguration(in: space))
+        webView?.navigationDelegate = self
 
         // The URL observer installed below replaces `url` with the fresh web
         // view's nil URL on its very first emission, which would lose:
@@ -764,7 +777,7 @@ class BrowserTab: NSObject {
         restoringSession = false
         lastAttemptedURL = url
         self.url = url
-        blockedCount = 0
+        resetBlockedCount()
         navigationPending = true
         applySpoofedUserAgent(for: url)
         if url.host != previousHost {
@@ -809,8 +822,20 @@ class BrowserTab: NSObject {
     func didCommitNavigation() {
         navigationPending = false
         restoringSession = false
-        blockedCount = 0
+        resetBlockedCount()
         updateTitle()
+    }
+
+    /// Counts a load a content rule list blocked — once per resource, however
+    /// many lists acted on it (TASK-69).
+    func recordBlockedLoad(of url: URL) {
+        guard blockedURLs.insert(url).inserted else { return }
+        blockedCount += 1
+    }
+
+    private func resetBlockedCount() {
+        blockedURLs.removeAll()
+        blockedCount = 0
     }
 
     func didFailProvisionalNavigation(error: Error) {
@@ -868,6 +893,29 @@ class BrowserTab: NSObject {
             }
         }
         return str
+    }
+}
+
+// MARK: - Unclaimed web views
+
+/// The navigation delegate of a web view no window has claimed yet. A tab
+/// opened in the background — Cmd+click, "Open in New Tab", an extension's
+/// `tabs.create({active: false})` — loads before any window installs itself as
+/// delegate (`wireOwnedWebView` does that on claim), and with none WebKit uses
+/// the configuration's default preferences: the per-site content blocker
+/// switch would never be consulted for that page (TASK-69). Only the policy
+/// decision that carries the preferences is implemented, so every other
+/// callback stays at WebKit's default, exactly as with no delegate; a window
+/// replaces this the moment it claims the tab.
+extension BrowserTab: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        if navigationAction.targetFrame?.isMainFrame == true, let profile = owningProfile {
+            ContentBlockerManager.shared.configure(preferences,
+                                                   forNavigationTo: navigationAction.request.url,
+                                                   profile: profile)
+        }
+        return (.allow, preferences)
     }
 }
 

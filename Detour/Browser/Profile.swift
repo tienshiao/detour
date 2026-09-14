@@ -509,6 +509,12 @@ class Profile {
                 }
             }
         }
+        // The last context out takes the daily interaction refresh with it —
+        // disabling the last extension is this path, not `unloadAllExtensions`;
+        // a reload restarts it through `contextDidLoad` (TASK-70).
+        if extensionContexts.isEmpty {
+            originInteractionKeeper.stop()
+        }
         return context.baseURL
     }
 
@@ -521,9 +527,6 @@ class Profile {
         for id in Array(extensionContexts.keys) {
             unloadExtension(id: id)
         }
-        // Nothing left to keep inside the interaction window, and the run loop
-        // — not this profile — owns that timer (TASK-70).
-        originInteractionKeeper.stop()
     }
 
     /// Get the extension context for a given extension ID in this profile.

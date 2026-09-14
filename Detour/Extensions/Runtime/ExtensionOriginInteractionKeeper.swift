@@ -31,15 +31,25 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "EXT-ITP"
 /// domainsToDeleteAllScriptWrittenStorageFor`, immediately followed by
 /// `SWServerRegistration::clear` for the extension, and the worker was gone.
 ///
-/// Clicking the extension's popup does not help: nothing in that path logs an
-/// interaction for the extension's *own* origin. So Detour logs one itself,
-/// every time a context is loaded and once a day for as long as the app runs —
+/// Whatever the user did in the extension's popup, its origin's record had no
+/// unexpired interaction when the pass ran (the WebKit source does not exclude
+/// extension pages from interaction logging, so why is unconfirmed). Detour
+/// therefore logs one itself, every time a context is loaded and once a day
+/// for as long as the app runs —
 /// the interaction window counts "operating days" (days the browser ran), 7 or
 /// 30, so a re-log a day keeps the origin unexpired however long the process
 /// lives.
 ///
 /// Non-persistent stores (incognito) are skipped: they have no ITP database and
 /// nothing to preserve.
+///
+/// Known hole: only *loaded* contexts are covered. WebKit carries an
+/// extension's IndexedDB and localStorage onto each new origin from its
+/// persisted `LastSeenBaseURL`, so an extension left disabled for longer than
+/// the window (7 or 30 operating days) has that origin purged in the meantime
+/// and the rename at its next load finds nothing to move. Closing it means
+/// persisting the last base URL of every installed extension and re-logging
+/// those too.
 final class ExtensionOriginInteractionKeeper {
 
     /// How often the loaded origins are re-logged. The interaction window is

@@ -8,8 +8,7 @@ Detour includes a built-in content blocker that filters ads, trackers, cookie no
 ContentBlockerManager.shared
   +-- EasyListParser           Parses EasyList/AdBlock Plus filter syntax -> WebKit JSON rules
   +-- ContentRuleStore         Compiles and caches WKContentRuleLists
-  +-- ContentBlockerWhitelist  Per-profile domain exceptions
-  +-- BlockedResourceTracker   Injected JS that counts blocked resources per page
+  +-- ContentBlockerWhitelist  Per-profile host exceptions (the per-site switch)
 ```
 
 All files are in `Browser/ContentBlocker/`.
@@ -31,13 +30,13 @@ Each list can be independently toggled per profile. The master `isAdBlockingEnab
 
 On app launch, `ContentBlockerManager.shared.initialize()`:
 
-1. Load whitelist entries from the database
+1. Load whitelist entries from the database and remove the retired
+   `content-blocker-whitelist-<profileUUID>` rule lists earlier builds compiled
 2. For each filter list:
    - Check if a compiled `WKContentRuleList` already exists in WebKit's store
    - If yes: check if a refresh is needed (24-hour interval)
    - If no: try loading from cached text file in `~/Library/Application Support/Detour/ContentBlocker/`
    - If no cache: fetch from upstream URL
-3. Recompile whitelist rules for all profiles
 
 ## Fetch & Compile Pipeline
 
@@ -71,11 +70,9 @@ Rules are applied when creating a new `WKWebViewConfiguration` in `Space.makeWeb
 ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
 ```
 
-This method:
-1. Always adds the `BlockedResourceTracker` user script
-2. If `profile.isAdBlockingEnabled`:
-   - Adds each enabled filter list's compiled `WKContentRuleList`
-   - Adds the profile's whitelist rules **last** (so `ignore-previous-rules` overrides the block lists)
+This method adds each enabled filter list's compiled `WKContentRuleList` when
+`profile.isAdBlockingEnabled`, and nothing else — no user script, so it is safe to
+call again after `removeAllContentRuleLists()` on every rules change.
 
 ## Per-Profile Whitelist
 
@@ -83,20 +80,48 @@ The whitelist allows users to disable content blocking for specific domains on a
 
 **Storage**: `contentBlockerWhitelist` table with composite key `(profileID, host)`.
 
-**Mechanism**: Generates a `WKContentRuleList` with `ignore-previous-rules` action for whitelisted domains. This rule is added after all block rules, effectively disabling blocking for those domains.
+**Mechanism** (TASK-69): a per-navigation switch, the way Safari's per-site
+content-blocker toggle works. In `decidePolicyFor(navigationAction, preferences:)`,
+for a main-frame navigation whose host is covered by the tab's profile's whitelist,
+`ContentBlockerManager.configure` calls the private
+`-[WKWebpagePreferences _setContentBlockersEnabled:NO]`, which disables every rule
+list for that document and all of its subresource and subframe loads. A tab no
+window has claimed yet is its own web view's navigation delegate for exactly this
+decision, so background-opened tabs get the switch too.
+
+A rule list cannot do this: WebKit evaluates each `WKContentRuleList` independently
+and merges their Block results, so an `ignore-previous-rules` rule only cancels
+rules in its *own* list — a separate "whitelist" list is a no-op regardless of the
+order the lists are added in.
+
+**Matching** (`ContentBlockerWhitelist.covers`): a host is covered by an exact entry
+or by an entry for a parent domain (`news.example.com` is covered by
+`example.com`); case-insensitive. Turning blocking *off* stores the page's exact
+host, lowercased. Turning it back *on* removes every entry covering the host —
+including a parent-domain entry, so flipping the switch on `mail.example.com` also
+drops an `example.com` entry and re-blocks its other subdomains; that is
+deliberate, since leaving the parent entry would keep the switch from taking.
 
 ```
-whitelist.addException(profileID: id, host: "example.com")
-  -> Save to DB
-  -> Recompile whitelist WKContentRuleList for this profile
-  -> reapplyRuleLists() to all windows
+whitelist.toggleHost("example.com", profileID: id)
+  -> Save to / delete from DB (synchronous)
+  -> Reload every on-screen pane (split members, peek) whose host is covered
 ```
 
 ## Blocked Resource Counting
 
-`BlockedResourceTracker` injects a `WKUserScript` that monitors blocked resources. The count is exposed via `BrowserTab.blockedCount` (`@Published`), allowing the UI to display how many resources were blocked on the current page.
+WebKit reports every load a rule list acted on through the private navigation
+delegate callback `_webView:contentRuleListWithIdentifier:performedAction:forURL:`
+(implemented on `BrowserWindowController`); when the `_WKContentRuleListAction`'s
+`blockedLoad` is true the owning tab records the URL. WebKit fires once per list
+that acted, and the filter lists overlap, so `BrowserTab.recordBlockedLoad(of:)`
+counts each URL once per page. The count is exposed via `BrowserTab.blockedCount`
+(`@Published`) and resets to 0 in `load(_:)` and on every committed navigation.
 
-The count resets to 0 on each new navigation.
+The previous implementation counted element `error` events from an injected user
+script — every failed image or script load, blocked or not — which is why the
+popover reported "12 blocked" on pages whose blocking was switched off (TASK-69).
+A page with content blockers disabled produces no callbacks at all.
 
 ## Settings UI
 

@@ -12,9 +12,12 @@ extension BrowserWindowController: WKNavigationDelegate {
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
         let policy = await decidePolicy(for: navigationAction, in: webView)
         // Main frame only: a subframe's preferences do not govern the document's
-        // content blocking, and the host that decides is the page's.
+        // content blocking, and the host that decides is the page's. The profile
+        // is the navigating tab's, not the window's active space: this delegate
+        // stays on a tab's web view after a space switch, so a navigation still
+        // in flight there must be judged against its own profile's whitelist.
         if policy == .allow, navigationAction.targetFrame?.isMainFrame == true,
-           let profile = activeSpace?.profile {
+           let profile = tab(owning: webView)?.owningProfile ?? activeSpace?.profile {
             ContentBlockerManager.shared.configure(preferences,
                                                    forNavigationTo: navigationAction.request.url,
                                                    profile: profile)
@@ -117,8 +120,12 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
-        // Apply Chrome UA spoofing for domains that require it
-        if let url = navigationAction.request.url, let tab = selectedTab {
+        // Apply Chrome UA spoofing for domains that require it — on the tab that
+        // is navigating: `applySpoofedUserAgent` also *restores* the profile UA
+        // for every other host, so keying this on `selectedTab` let any
+        // background, peek or unfocused-pane navigation rewrite the focused
+        // tab's UA.
+        if let url = navigationAction.request.url, let tab = tab(owning: webView) {
             tab.applySpoofedUserAgent(for: url)
         }
 
@@ -286,27 +293,50 @@ extension BrowserWindowController: WKNavigationDelegate {
     /// counted every resource that merely failed to load (TASK-69).
     ///
     /// `action` is a `_WKContentRuleListAction`; `blockedLoad` is read by key,
-    /// the type being SPI. A page whose content blockers are disabled (the
-    /// per-site switch) produces no callbacks at all, so no whitelist check
-    /// belongs here.
+    /// the type being SPI, behind a `responds(to:)` guard like the feature's
+    /// other SPI — an undefined key would raise an ObjC exception Swift cannot
+    /// catch, on every blocked load. WebKit reports each list that acted on a
+    /// URL, and the filter lists overlap, so the tab counts a URL once. A page
+    /// whose content blockers are disabled (the per-site switch) produces no
+    /// callbacks at all, so no whitelist check belongs here.
     @objc(_webView:contentRuleListWithIdentifier:performedAction:forURL:)
     func webView(_ webView: WKWebView, contentRuleListWithIdentifier identifier: String,
                  performedAction action: NSObject, forURL url: URL) {
-        guard action.value(forKey: "blockedLoad") as? Bool == true else { return }
-        tab(owning: webView)?.blockedCount += 1
+        guard action.responds(to: Self.blockedLoadSelector),
+              action.value(forKey: "blockedLoad") as? Bool == true else { return }
+        tab(owning: webView)?.recordBlockedLoad(of: url)
     }
+
+    private static let blockedLoadSelector = NSSelectorFromString("blockedLoad")
 
     /// Resolve the tab (or peek tab) that owns the web view firing a navigation
     /// callback. Callbacks must act on the owning tab, not `selectedTab`: a peek
     /// web view or a navigation still in flight after a tab switch would
     /// otherwise attribute commits/errors (and error pages) to the wrong tab.
+    ///
+    /// The selected tab and its peek are checked first — the blocked-load report
+    /// above fires once per blocked resource, hundreds of times on an ad-heavy
+    /// page, and nearly always for the pane on screen. The other spaces come
+    /// last: the delegate is never cleared from a tab's web view, so a tab of a
+    /// space this window switched away from still reports here.
     private func tab(owning webView: WKWebView) -> BrowserTab? {
-        var candidates: [BrowserTab] = []
-        if let space = activeSpace {
-            candidates.append(contentsOf: space.tabs)
-            candidates.append(contentsOf: space.pinnedEntries.compactMap { $0.tab })
-            candidates.append(contentsOf: space.profile?.favorites.compactMap { $0.tab } ?? [])
+        if let selected = selectedTab {
+            if selected.webView === webView { return selected }
+            if let peek = selected.peekTab, peek.webView === webView { return peek }
         }
+        if let tab = tab(owning: webView, in: activeSpace) { return tab }
+        return store.spaces.lazy
+            .filter { $0.id != self.activeSpaceID }
+            .compactMap { self.tab(owning: webView, in: $0) }
+            .first
+    }
+
+    private func tab(owning webView: WKWebView, in space: Space?) -> BrowserTab? {
+        guard let space else { return nil }
+        var candidates: [BrowserTab] = []
+        candidates.append(contentsOf: space.tabs)
+        candidates.append(contentsOf: space.pinnedEntries.compactMap { $0.tab })
+        candidates.append(contentsOf: space.profile?.favorites.compactMap { $0.tab } ?? [])
         let peeks = candidates.compactMap { $0.peekTab }
         return (candidates + peeks).first { $0.webView === webView }
     }

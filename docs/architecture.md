@@ -112,7 +112,7 @@ Detour/
 |   +-- Settings/                 SettingsWindowController, ProfilesSettingsViewController,
 |   |                             ContentBlockerSettingsViewController
 |   +-- ContentBlocker/           ContentBlockerManager, ContentRuleStore, EasyListParser,
-|   |                             ContentBlockerWhitelist, BlockedResourceTracker
+|   |                             ContentBlockerWhitelist
 |   +-- Shared/                   HoverButton, WindowDragView, ToastView, LinkStatusBar,
 |                                 PeekOverlayView, GlassContainerView, NSColor+Hex
 +-- Storage/

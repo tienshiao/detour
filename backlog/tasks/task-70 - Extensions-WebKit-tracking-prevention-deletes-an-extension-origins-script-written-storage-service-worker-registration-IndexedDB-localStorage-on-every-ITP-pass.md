@@ -4,10 +4,11 @@ title: >-
   Extensions: WebKit tracking prevention deletes an extension origin's
   script-written storage (service-worker registration, IndexedDB, localStorage)
   on every ITP pass
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-14 03:57'
-updated_date: '2026-09-14 04:07'
+updated_date: '2026-09-14 05:42'
 labels:
   - extensions
   - webkit
@@ -33,12 +34,33 @@ Found 2026-09-13 while closing TASK-68 (production runs at 18:15 and 20:04, sign
 <!-- AC:BEGIN -->
 - [ ] #1 After the fix, the ITP pass at launch and the next periodic pass no longer clear a loaded extension's service-worker registration in any profile (Networking log: deleteAndRestrictWebsiteDataForRegistrableDomains with no SWServerRegistration::clear for the extension, and no Detour 'no reply' keep-alive error), verified in the signed build
 - [ ] #2 An extension's IndexedDB and localStorage survive an ITP pass and a relaunch (probe extension in a test, and 1Password's item cache warm on restart in production)
-- [ ] #3 A test drives an ITP pass against a profile data store with a loaded probe extension (WebKit's testing hooks for advancing ITP time / processing statistics) and asserts the registration and storage survive; a negative control shows an ordinary no-interaction origin is still purged
-- [ ] #4 docs/1password-integration-plan.md records the mechanism and the fix; the TASK-68 recovery stays as the safety net
+- [x] #3 A test drives an ITP pass against a profile data store with a loaded probe extension (WebKit's testing hooks for advancing ITP time / processing statistics) and asserts the registration and storage survive; a negative control shows an ordinary no-interaction origin is still purged
+- [x] #4 docs/1password-integration-plan.md records the mechanism and the fix; the TASK-68 recovery stays as the safety net
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add ExtensionOriginInteractionKeeper (Detour/Extensions/Runtime): logUserInteraction(for baseURL, on dataStore) via an @objc protocol shim for _logUserInteraction:completionHandler: (respondsToSelector-guarded; log.error once if missing), skipping non-persistent stores; called from Profile.loadExtensionContext right after a successful load; a per-profile 24h Timer (tolerance 1h) re-logs every loaded context's baseURL; invalidated on unloadAllExtensions/profile deletion. Log one line per call at default level ('ITP interaction logged for <ext> origin <host>'). Expose a refreshNow() for tests.
+2. Tests (new ExtensionOriginTrackingPreventionTests): fresh persistent profile; probe worker extension (reuse wiring-test helpers) that writes an IndexedDB value at start and answers ping/read messages; control page loadHTMLString(baseURL: http://itp-control.example) writes localStorage; assert both records exist (fetchDataRecords; +_allowWebsiteDataRecordsForAllOrigins for the extension origin); _setResourceLoadStatisticsEnabled: true; _setPrevalentDomain: control; _setResourceLoadStatisticsTimeAdvanceForTesting: 3h; _processStatisticsAndDataRecords:; assert the control's localStorage is gone (negative control) while the worker still answers, its IndexedDB value is intact and its service-worker registration record remains. Reset time advance in tearDown; retain torn-down profiles as the other suites do.
+3. docs/1password-integration-plan.md: a section 'Tracking prevention purges the extension origin (TASK-70)' with the mechanism, fix, verification recipe (Networking log lines) and the TASK-68 recovery as safety net.
+4. Production verification (user, signed build): watch 'deleteAndRestrictWebsiteDataForRegistrableDomains' at launch and confirm no 'SWServerRegistration::clear' for the extension and no keep-alive 'no reply'.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Observation 2026-09-13 20:04-21:07 (production Networking pid 69959): only ONE tracking-prevention pass hit session 1, at launch (20:04:22.578, 9 cookie domains / 706 script-written-storage domains, followed by SWServerRegistration::clear 31); session 2's pass at 20:04:26.967 (52 / 625 domains) cleared nothing. No further pass in the next 63 minutes and the recovered workers kept answering every ping, so the purge is a launch-time event (plus whatever later reprocessing ITP schedules), not hourly as first assumed. Two 'deleteWebsiteDataForOrigins ... session 1' at 20:04:21.185/.222 precede it and are separate (origin-scoped removals at extension load; check Profile.swift:493).
+
+Mechanism confirmed in WebKit source (ResourceLoadStatisticsStore.cpp): with the default FirstPartyWebsiteDataRemovalMode::AllButCookies, shouldRemoveAllButCookiesFor() schedules script-written storage removal for EVERY observed domain whose record has no unexpired user interaction (hadUserInteraction false counts as expired immediately); domains enter the table via WebResourceLoadObserver::logSubresourceLoading when a page loads a cross-host resource (the extension's content-script iframes/fetches under sites), and RegistrableDomain for webkit-extension://<uuid> is the uuid host, matching the storage manager's deletion key. -[WKWebsiteDataStore _logUserInteraction:] → WebsiteDataStore::logUserInteraction filters only about:/empty URLs, so it works for the extension base URL. Windows are in operating days (days Detour ran), so a log at every context load plus a daily re-log while loaded keeps the origin permanently fresh. Operating-date expiry needs ≥30 recorded days so tests must use _setPrevalentDomain: for the control, plus _setResourceLoadStatisticsTimeAdvanceForTesting: ≥2h so the 'minimumTimeBetweenDataRecordsRemoval' guard does not clear the storage list.
+
+Implemented (commit 84e8560): ExtensionOriginInteractionKeeper logs _logUserInteraction: for each context's baseURL on load and every 24 h (Profile.originInteractionKeeper, stopped in unloadAllExtensions; incognito/non-persistent skipped). Test findings: fetchDataRecords never lists webkit-extension:// origins even after _allowWebsiteDataRecordsForAllOrigins, so the extension side is asserted via the worker (ping + IndexedDB marker) and ITPDebug shows the interacted uuid absent from the removal list; _setResourceLoadStatisticsTimeAdvanceForTesting only steps in whole days (a 3 h advance is a no-op) and cannot be reset, so the test advances 24 h in its own profile's session. Negative control: two http origins differing only in the keeper call — the one without interaction loses its localStorage. Docs section added to docs/1password-integration-plan.md. AC#1 (signed build) still needs a production run: expect an 'ITP: logged user interaction' line per extension at launch and no SWServerRegistration::clear for the extension after deleteAndRestrictWebsiteDataForRegistrableDomains.
+
+Review (2026-09-13): keeper timer now also stops from unloadExtension when the last context goes; the disabled-extension gap is documented in the keeper header and filed as TASK-72.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+ITP's AllButCookies removal mode purges script-written storage of every observed origin without unexpired user interaction; extension origins qualify because content-script resources put them in the statistics table. ExtensionOriginInteractionKeeper now logs -[WKWebsiteDataStore _logUserInteraction:] for each context's baseURL at load and daily (skipping incognito, stopped when the last context unloads). ExtensionOriginTrackingPreventionTests drives a real ITP pass (24 h time advance; the API steps in whole days) in a fresh profile: an http origin without interaction loses its localStorage while the logged one keeps it, and a probe worker's registration and IndexedDB survive. Docs section added. AC#1/#2 production halves await the next signed-build run (expect 'ITP: logged user interaction' lines and no SWServerRegistration::clear for the extension). Follow-up TASK-72 covers origins of extensions that stay disabled past the window.
+<!-- SECTION:FINAL_SUMMARY:END -->

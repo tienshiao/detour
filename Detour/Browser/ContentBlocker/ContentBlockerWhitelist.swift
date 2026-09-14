@@ -1,5 +1,4 @@
 import Foundation
-import WebKit
 
 /// The per-profile set of hosts the user turned content blocking off for.
 ///
@@ -23,25 +22,24 @@ class ContentBlockerWhitelist {
         whitelistedHosts.removeAll()
         for record in records {
             guard let profileID = UUID(uuidString: record.profileID) else { continue }
-            whitelistedHosts[profileID, default: []].insert(record.host)
+            // Stored hosts are canonicalised on the way in, so the set itself is
+            // lowercase and lookups do not have to re-normalise it (TASK-69).
+            whitelistedHosts[profileID, default: []].insert(record.host.lowercased())
         }
     }
 
     /// Whether `host` is covered by `whitelistedHosts`: an exact match, or a
     /// subdomain of a stored host. Case-insensitive; an empty host matches
-    /// nothing. The production decision, kept pure so tests exercise exactly it.
+    /// nothing. The production decision, kept pure so tests exercise exactly it
+    /// — defined via `entriesCovering` so there is one predicate, not two.
     static func covers(host: String, whitelistedHosts: Set<String>) -> Bool {
-        let host = host.lowercased()
-        guard !host.isEmpty else { return false }
-        return whitelistedHosts.contains { stored in
-            let stored = stored.lowercased()
-            guard !stored.isEmpty else { return false }
-            return host == stored || host.hasSuffix("." + stored)
-        }
+        !entriesCovering(host: host, whitelistedHosts: whitelistedHosts).isEmpty
     }
 
     /// Every stored entry that covers `host` — the exact host and any parent
-    /// domain entry it sits under.
+    /// domain entry it sits under, in their stored spelling (`toggleHost`
+    /// subtracts them from the stored set by value). Entries are lowercased on
+    /// the way in, but this stays correct for a set that was not normalised.
     static func entriesCovering(host: String, whitelistedHosts: Set<String>) -> Set<String> {
         let host = host.lowercased()
         guard !host.isEmpty else { return [] }
@@ -56,13 +54,14 @@ class ContentBlockerWhitelist {
         Self.covers(host: host, whitelistedHosts: hostsForProfile(profileID))
     }
 
-    /// Turns blocking off for `host` (stores the exact host), or back on by
+    /// Turns blocking off for `host` (stores that host, lowercased), or back on by
     /// removing every entry that covers it — a parent domain entry left behind
     /// would keep the site whitelisted and the switch would not take.
     func toggleHost(_ host: String, profileID: UUID) {
         let hosts = hostsForProfile(profileID)
         let covering = Self.entriesCovering(host: host, whitelistedHosts: hosts)
         if covering.isEmpty {
+            let host = host.lowercased()
             whitelistedHosts[profileID, default: []].insert(host)
             database.saveContentBlockerWhitelistEntry(
                 ContentBlockerWhitelistRecord(profileID: profileID.uuidString, host: host))

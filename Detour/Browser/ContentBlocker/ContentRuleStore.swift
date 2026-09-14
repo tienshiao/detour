@@ -243,6 +243,25 @@ class ContentRuleStore {
         compiledLists
     }
 
+    /// Removes compiled lists nothing owns any more: the per-profile
+    /// `content-blocker-whitelist-<uuid>` lists earlier builds compiled (they
+    /// encoded the user's whitelisted hosts in `if-domain` triggers) — the
+    /// per-site switch no longer uses a rule list (TASK-69). `invalidateAll`
+    /// only walks `compiledLists`, so an upgraded install would otherwise keep
+    /// them on disk forever with no removal path.
+    func removeRetiredLists(withPrefix prefix: String) {
+        ruleListStore.getAvailableContentRuleListIdentifiers { [weak self] identifiers in
+            for identifier in identifiers ?? [] where identifier.hasPrefix(prefix) {
+                self?.ruleListStore.removeContentRuleList(forIdentifier: identifier) { error in
+                    if let error {
+                        log.error("Failed to remove retired list \(identifier, privacy: .public): \(error.localizedDescription)")
+                    }
+                }
+                self?.compiledLists.removeValue(forKey: identifier)
+            }
+        }
+    }
+
     func invalidateAll() {
         for id in compiledLists.keys {
             ruleListStore.removeContentRuleList(forIdentifier: id) { _ in }

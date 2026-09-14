@@ -54,6 +54,9 @@ class ContentBlockerManager {
 
     func initialize() {
         whitelist.loadFromDatabase()
+        // Drop the per-profile whitelist rule lists earlier builds compiled: the
+        // per-site switch is preferences-based now and nothing else deletes them.
+        ruleStore.removeRetiredLists(withPrefix: "content-blocker-whitelist-")
 
         // For each list, try to look up compiled rules first, then fetch if needed
         pendingLookups = Self.filterLists.count

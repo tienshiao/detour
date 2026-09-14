@@ -175,8 +175,16 @@ extension BrowserWindowController: TabSidebarDelegate {
             ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id)
             // The switch takes effect per navigation (the page's
             // `WKWebpagePreferences`), so the page has to load again — the way
-            // Safari's per-site switch reloads the tab (TASK-69).
-            self.displayTab?.reload()
+            // Safari's per-site switch reloads the tab (TASK-69). Every pane this
+            // window has on screen for that host, not just `displayTab`: the
+            // other pane of a split would otherwise keep the old blocking state
+            // while its popover, reading the same whitelist, reports the new.
+            var panes = self.selectedTab.map { self.splitMembers(of: $0) } ?? []
+            if let peek = self.selectedTab?.peekTab { panes.append(peek) }
+            for pane in panes
+            where pane.url?.host.map({ ContentBlockerWhitelist.covers(host: $0, whitelistedHosts: [host]) }) == true {
+                pane.reload()
+            }
         }
 
         vc.onPinToggle = { [weak self] extensionID in

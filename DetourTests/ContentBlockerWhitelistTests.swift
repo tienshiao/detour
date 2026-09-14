@@ -224,12 +224,37 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     // MARK: - The counter
 
+    /// WebKit reports a blocked load once per rule list that acted on it, and
+    /// the filter lists overlap: a resource counts once.
+    func testABlockedLoadCountsOncePerResource() {
+        let tab = BrowserTab(id: UUID(), configuration: WKWebViewConfiguration())
+        defer { tab.teardown() }
+        tab.recordBlockedLoad(of: blockedImageURL)
+        tab.recordBlockedLoad(of: blockedImageURL)
+        tab.recordBlockedLoad(of: URL(string: "http://blocked.example/y.png")!)
+        XCTAssertEqual(tab.blockedCount, 2)
+    }
+
     func testCommittingANavigationResetsTheBlockedCount() {
         let tab = BrowserTab(id: UUID(), configuration: WKWebViewConfiguration())
         defer { tab.teardown() }
-        tab.blockedCount = 7
+        tab.recordBlockedLoad(of: blockedImageURL)
         tab.didCommitNavigation()
         XCTAssertEqual(tab.blockedCount, 0)
+        tab.recordBlockedLoad(of: blockedImageURL)
+        XCTAssertEqual(tab.blockedCount, 1, "the next page counts the same resource afresh")
+    }
+
+    // MARK: - Unclaimed web views
+
+    /// A tab opened in the background loads before any window installs itself
+    /// as navigation delegate; without one WebKit would use the configuration's
+    /// default preferences and the switch would never be consulted. The tab is
+    /// the delegate of record until a window claims the web view.
+    func testAnUnclaimedTabIsItsWebViewsNavigationDelegate() {
+        let tab = BrowserTab(id: UUID(), configuration: WKWebViewConfiguration())
+        defer { tab.teardown() }
+        XCTAssertTrue(tab.webView?.navigationDelegate === tab)
     }
 }
 
@@ -264,9 +289,10 @@ private final class RecordingNavigationDelegate: NSObject, WKNavigationDelegate 
     @objc(_webView:contentRuleListWithIdentifier:performedAction:forURL:)
     func webView(_ webView: WKWebView, contentRuleListWithIdentifier identifier: String,
                  performedAction action: NSObject, forURL url: URL) {
-        actions.append(PerformedAction(identifier: identifier,
-                                       blockedLoad: action.value(forKey: "blockedLoad") as? Bool ?? false,
-                                       url: url))
+        // Guarded like production: an undefined key raises an ObjC exception.
+        let blockedLoad = action.responds(to: NSSelectorFromString("blockedLoad"))
+            && action.value(forKey: "blockedLoad") as? Bool == true
+        actions.append(PerformedAction(identifier: identifier, blockedLoad: blockedLoad, url: url))
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finished = true }
