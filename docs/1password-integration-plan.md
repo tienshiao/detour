@@ -386,38 +386,45 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    (`Keep-alive ping #n sent to <ext>`, `Keep-alive reply #n from <ext> (N ms)`, and the watchdog
    error line) the next run can say so directly instead of being inferred from unload times.
 
-   **What actually kills the worker: an offscreen document's close clears its service-worker
-   registration (TASK-68, production run 2, 2026-09-13 20:04, signed build at 3b8d8f4).** With the
-   per-round-trip logging in place the next production run answered the question outright, and the
-   answer was not the pings. All three workers armed at 20:04:22 with one host each and answered
-   Detour in 0–20 ms. One of them answered ping #1 and nothing after it, and WebKit's own log says
-   why: 1Password's worker opened its `chrome.offscreen` document — **WebKit's native
-   implementation**, which loads it as a page (577) inside the worker's own WebContent process;
-   Detour's `OffscreenDocumentHost` was not involved at all — the page closed 9 ms later
-   (two of its vendor scripts were missing from the bundle, `EXT-LOAD` code 2), and **14 ms after
-   that page closed** the Networking process logged `SWServerRegistration::clear 31` and the
-   worker's content process `SWContextManager::terminateWorker 36`. In WebKit's
-   `SWServer::unregisterServiceWorkerClientInternal` a client's unregistration clears the whole
-   registration when that client's identifier is the registration's `serviceWorkerPageIdentifier`,
-   so the offscreen page's close is being treated as the service-worker page's close.
+   **What actually kills the worker: WebKit's tracking prevention purges the extension origin's
+   script-written storage, registration included (TASK-68 → TASK-70; production run 2, 2026-09-13
+   20:04, signed build at 3b8d8f4).** With the per-round-trip logging in place the next production
+   run answered the question outright, and the answer was not the pings. All three workers armed at
+   20:04:22 with one host each and answered Detour in 0–20 ms. One of them answered ping #1 and
+   nothing after it, and the Networking process's log says why: at 20:04:22.578 it ran
+   `NetworkProcess::deleteAndRestrictWebsiteDataForRegistrableDomains ... session 1 with candidate
+   domains - 9 domainsToDeleteAllCookiesFor, 0 domainsToDeleteAllButHttpOnlyCookiesFor, 706
+   domainsToDeleteAllScriptWrittenStorageFor`, and one millisecond later `SWServerRegistration::clear
+   31` followed by the worker's content process logging `SWContextManager::terminateWorker 36`. The
+   run of the day before has the identical pair (`deleteAndRestrict... session 1 ... 702
+   domainsToDeleteAllScriptWrittenStorageFor` → `clear 33` → `terminateWorker 40`, at 18:15:49).
+   Service-worker registrations are script-written storage, and so are the extension's IndexedDB
+   and localStorage; the `webkit-extension://` origin never earns first-party user interaction (ITP
+   only records that for HTTP(S) documents), so once it has aged past ITP's no-interaction window
+   its storage is purged on every pass. Only session 1 (Personal, the profile with the oldest
+   statistics) was in the list in both runs; session 2's pass at 20:04:26 cleared nothing. In the
+   63 minutes after launch there was exactly one pass, so it is a launch-time event plus whatever
+   reprocessing ITP schedules later. A page of 1Password's offscreen document happened to close 14 ms
+   before the clear in both runs and was the first suspect; the harness later showed that neither a
+   Detour-hosted offscreen close nor an ordinary page close touches the worker, and the Networking
+   log settled it.
 
    The hidden background page (476) was **not** closed. It stayed loaded around a dead worker: the
    keep-alive port stayed open and armed, Detour logged `ping #2 sent 30 s ago has no reply` every
    30 s, and the 20:05:22 and 20:06:22 alarms were simply lost — until WebKit unloaded the page at
    20:06:52 (120 s after the worker's last counted post, on the 30 s tick), after which the next
-   alarm started a worker that reconnected and has answered every ping since. The Private worker of
-   the day before (page 165 closed 18:15:49.335 → `clear 33` + `terminateWorker 40` 11 ms later,
-   hidden page 56 closed 174 s later) is the same signature. Only the profile whose 1Password
-   created an offscreen document was hit; the other two held. The 170 s cycling *after* a lock was
-   a second, separate fault — the background's own `setInterval` pings stopped flowing while the
-   worker was alive — and that one the Detour-driven pings fixed.
+   alarm started a worker that reconnected and answered every ping for the rest of the session.
+   The Private worker of the day before (hidden page 56 closed 174 s after the clear) is the same
+   signature. The 170 s cycling *after* a lock was a second, separate fault — the background's own
+   `setInterval` pings stopped flowing while the worker was alive — and that one the Detour-driven
+   pings fixed: in this run the two untouched workers answered replies #1–#33 from 20:04:22 to
+   20:20:23 with no error, no unload and no restart (16 min, AC #3 of TASK-68 in the signed build),
+   and the restarted third answered #1–#27 over 13 min, with no relayed WebSocket open in any of
+   them. Prevention — keeping the extension origin out of ITP's purge list — is TASK-70.
 
-   **Harness (TASK-68 AC #2), `ExtensionPolyfillProfileWiringTests`.** The production trigger is not
-   reachable here: the probe worker captures `chrome.offscreen` before the polyfill runs and finds
-   nothing, so in this build `chrome.offscreen` is Detour's polyfill and `createDocument` goes to
-   `OffscreenDocumentHost`, a WKWebView of Detour's own rather than a page in the worker's process.
-   What the harness does reproduce is the state the production worker was left in, and what Detour
-   now does about it:
+   **Harness (TASK-68 AC #2), `ExtensionPolyfillProfileWiringTests`.** The production trigger (an
+   ITP pass purging the origin) is not driven here; the legs rule out the page-close suspects and
+   reproduce the state the production worker was left in, and what Detour now does about it:
 
    | Leg | Result |
    |-----|--------|

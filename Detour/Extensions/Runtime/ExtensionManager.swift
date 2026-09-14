@@ -98,48 +98,39 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         /// The ping that has not been answered yet, if any. A ping still pending
         /// at the next tick is the symptom TASK-68 exists to make visible.
         var awaitingSeq: Int?
-        /// Consecutive ticks that found the previous ping unanswered. Reset by
-        /// the reply that clears `awaitingSeq`; at `keepAliveMissedReplyLimit`
-        /// the background is declared dead and restarted.
-        var missedReplies = 0
-        /// The first ping of the current unanswered run and when it went out —
-        /// the "#n–#m for N s" in the recovery's log line.
-        var firstUnansweredSeq: Int?
-        var firstUnansweredSentAt: Date?
+        /// The oldest ping of the current silence and when it went out, or nil
+        /// while the background is answering: set with `awaitingSeq` when a ping
+        /// goes out with nothing pending, cleared by the reply that clears
+        /// `awaitingSeq`, and moved up to the still-pending ping by a *late*
+        /// reply (one to an earlier ping) — any reply is proof of life, so the
+        /// silence starts over even though `awaitingSeq` stays set. The "#n–#m
+        /// for N s" in the recovery's log line, and what `missedReplies` counts
+        /// from.
+        var unanswered: (seq: Int, sentAt: Date)?
+
+        /// Ticks so far that found a ping unanswered since the last reply: the
+        /// pings sent after the first unanswered one. At `keepAliveMissedReplyLimit`
+        /// (counting the tick that is checking) the background is declared dead.
+        var missedReplies: Int { unanswered.map { seq - $0.seq } ?? 0 }
 
         init(timer: DispatchSourceTimer) { self.timer = timer }
-
-        /// A reply arrived (or the ledger is starting over): nothing is missing.
-        func clearMissedReplies() {
-            missedReplies = 0
-            firstUnansweredSeq = nil
-            firstUnansweredSentAt = nil
-        }
     }
     private var keepAlivePingers: [KeepAlivePortKey: KeepAlivePinger] = [:]
 
-    /// Keys whose background is being restarted after going silent (TASK-68):
-    /// the teardown has happened and the delayed `loadBackgroundContent` has not
-    /// run yet. Re-entrancy guard — a second recovery cannot be started for a key
-    /// already in one.
-    private var keepAliveRestartsInFlight: Set<KeepAlivePortKey> = []
-
-    /// The controller each keep-alive key belongs to, held weakly: the key itself
-    /// carries only an `ObjectIdentifier`, and the restart path (TASK-68) needs
-    /// the controller to find the profile and, through it, the context whose
-    /// background content must be loaded again. Weak so a controller that went
-    /// away simply resolves to nil.
-    private final class WeakExtensionController {
-        weak var controller: WKWebExtensionController?
-        init(_ controller: WKWebExtensionController) { self.controller = controller }
-    }
-    private var keepAliveControllers: [KeepAlivePortKey: WeakExtensionController] = [:]
+    /// The delayed `loadBackgroundContent` of each background being restarted
+    /// after going silent (TASK-68): the teardown has happened and this has not
+    /// run yet. Cancelled — and the entry dropped — when the context is unloaded
+    /// (nothing left to load into) or a keep-alive port arrives (a background
+    /// context is back on its own). A restart cannot start while one is pending:
+    /// the teardown removed the keep-alive port, and any new port cancels the
+    /// pending one before a pinger can tick on it.
+    private var keepAliveRestarts: [KeepAlivePortKey: DispatchWorkItem] = [:]
 
     /// How often Detour pings an armed keep-alive port (TASK-68). Comfortably
-    /// inside WebKit's 2-minute inactive-ports window, so two lost round trips in
-    /// a row are still not enough to let the background be unloaded. A property
-    /// rather than a constant so a test can shorten it; production never changes
-    /// it.
+    /// inside WebKit's 2-minute inactive-ports window: `keepAliveMissedReplyLimit`
+    /// silent intervals (60 s) still leave time for Detour's own restart to start
+    /// before WebKit's unload would. A property rather than a constant so a test
+    /// can shorten it; production never changes it.
     var keepAlivePingInterval: TimeInterval = 30
 
     /// How many pings in a row may go unanswered before Detour declares the
@@ -161,8 +152,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     /// Keep-alive ports accepted for each extension, for diagnostics and tests: a
     /// count that keeps climbing means contexts are taking the port from each
-    /// other. Unlike the ping count it outlives an idle state (a replaced port
-    /// passes through one) and is dropped only when the context unloads.
+    /// other, or Detour keeps restarting a background that goes silent
+    /// (TASK-68). Unlike the ping count it outlives an idle state (a replaced
+    /// port passes through one) and is dropped only when the context unloads.
     private var keepAlivePortOpenCounts: [KeepAlivePortKey: Int] = [:]
 
     /// The real native messaging hosts currently connected for each extension, keyed
@@ -254,9 +246,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// learns the reason.
     static let keepAliveSupersededType = "keepalive-superseded"
 
-    static func nativeHostForbiddenError() -> NSError {
+    /// An error in Detour's extension domain with `message` as its description —
+    /// the one shape every native-messaging failure takes.
+    static func extensionError(_ message: String) -> NSError {
         NSError(domain: "DetourExtension", code: -1,
-                userInfo: [NSLocalizedDescriptionKey: nativeHostForbiddenMessage])
+                userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    static func nativeHostForbiddenError() -> NSError {
+        extensionError(nativeHostForbiddenMessage)
     }
 
     /// The disconnect reason on a native host port whose background context was
@@ -267,8 +265,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         "The extension's background context was replaced; Detour closed its native host connection."
 
     static func replacedBackgroundContextError() -> NSError {
-        NSError(domain: "DetourExtension", code: -1,
-                userInfo: [NSLocalizedDescriptionKey: replacedBackgroundContextMessage])
+        extensionError(replacedBackgroundContextMessage)
     }
 
     /// The disconnect reason on the ports of a background that stopped answering
@@ -280,8 +277,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         "Detour restarted an unresponsive background context."
 
     static func unresponsiveBackgroundError() -> NSError {
-        NSError(domain: "DetourExtension", code: -1,
-                userInfo: [NSLocalizedDescriptionKey: unresponsiveBackgroundMessage])
+        extensionError(unresponsiveBackgroundMessage)
     }
 
     // MARK: - Notifications
@@ -596,11 +592,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             log.info("Tore down \(torn.relays) relayed WebSocket(s) for \(extensionID, privacy: .public) (context unloaded)")
         }
         keepAlivePortOpenCounts.removeValue(forKey: key)
-        keepAliveControllers.removeValue(forKey: key)
         // A restart pending for a context that is being unloaded has nothing left
-        // to load into; the delayed block checks the context again anyway, but
-        // dropping the key here also frees a later recovery to run.
-        keepAliveRestartsInFlight.remove(key)
+        // to load into — and must not fire later against whatever context the
+        // same key resolves to by then (a reload, or a recycled controller
+        // identity after a profile delete).
+        cancelPendingKeepAliveRestart(for: key)
         if let port = keepAlivePorts.removeValue(forKey: key) {
             port.disconnect(throwing: nil)
             log.info("Keep-alive port closed for \(extensionID, privacy: .public) (context unloaded)")
@@ -623,9 +619,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// all release through a removal that has already happened, which is what
     /// makes the release exactly once.
     ///
-    /// Shared by the two paths that know a background context has gone away — the
-    /// context unload (`closeExtensionPorts`) and the arrival of a replacement
-    /// context's keep-alive port (TASK-67) — so the two cannot drift apart.
+    /// Shared by the three paths that know a background context has gone away —
+    /// the context unload (`closeExtensionPorts`), the arrival of a replacement
+    /// context's keep-alive port (TASK-67) and the restart of a background that
+    /// stopped answering (TASK-68) — so they cannot drift apart.
     @discardableResult
     private func tearDownNativeConnections(
         for key: KeepAlivePortKey, disconnectingPortsWith hostError: NSError?
@@ -811,31 +808,31 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// polyfill answers `{type:"keepalive", seq}` at once (`messageHandler` on the
     /// port counts it), and a ping still unanswered when the next one goes out is
     /// logged as an error: at that point the background is stalled, its timers are
-    /// suspended, or the port is dead, and WebKit's unload is roughly 90 s away.
+    /// suspended, or the port is dead. `keepAliveMissedReplyLimit` such ticks with
+    /// no reply of any kind in between, and the background is treated as dead
+    /// and restarted (`restartUnresponsiveBackground`).
     ///
     /// A ping that fails to *send* is only logged: unlike a control message it
     /// changes nothing in the worker, the next tick retries it anyway, and going
     /// through `handleKeepAliveControlFailure` would disarm and re-arm the state —
     /// discarding this pinger's ledger (`awaitingSeq`, the sequence numbers in the
     /// log) exactly when a failure is what the ledger is for, and doubling the
-    /// 1 Hz retry loop on a port that stays registered but cannot be sent on.
+    /// 1 Hz retry loop on a port that stays registered but cannot be sent on. A
+    /// port that cannot be sent on for `keepAliveMissedReplyLimit` intervals gets
+    /// no reply either, so it ends in the same restart.
     private func sendKeepAlivePing(for key: KeepAlivePortKey) {
         guard let pinger = keepAlivePingers[key], let port = keepAlivePorts[key] else { return }
         let extID = key.extensionID
         let now = Date()
 
-        if let pending = pinger.awaitingSeq {
-            pinger.missedReplies += 1
-            let firstMissed = pinger.firstUnansweredSeq ?? pending
-            let silentFor = pinger.firstUnansweredSentAt.map { now.timeIntervalSince($0) }
-                ?? pinger.lastPingSentAt.map { now.timeIntervalSince($0) } ?? 0
-
+        if let pending = pinger.awaitingSeq, let first = pinger.unanswered {
             // Silent for at least `keepAliveMissedReplyLimit` intervals: the
             // background is not going to answer, and WebKit's unload of the page
             // it is stuck in is close behind. Restart it instead of pinging a
             // corpse for the next two minutes (TASK-68).
-            if pinger.missedReplies >= keepAliveMissedReplyLimit {
-                log.error("Keep-alive for \(extID, privacy: .public): no reply to pings #\(firstMissed)–#\(pending) for \(silentFor, format: .fixed(precision: 0), privacy: .public) s; treating the background as dead and restarting it")
+            if pinger.missedReplies + 1 >= keepAliveMissedReplyLimit {
+                let silentFor = now.timeIntervalSince(first.sentAt)
+                log.error("Keep-alive for \(extID, privacy: .public): no reply to pings #\(first.seq)–#\(pending) for \(silentFor, format: .fixed(precision: 0), privacy: .public) s; treating the background as dead and restarting it")
                 restartUnresponsiveBackground(for: key, on: port)
                 return
             }
@@ -847,11 +844,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         pinger.seq += 1
         let seq = pinger.seq
         pinger.lastPingSentAt = now
-        if pinger.awaitingSeq == nil {
+        if pinger.unanswered == nil {
             // The first ping of a run that may go unanswered; if it does, this is
             // where the silence started.
-            pinger.firstUnansweredSeq = seq
-            pinger.firstUnansweredSentAt = now
+            pinger.unanswered = (seq, now)
         }
         pinger.awaitingSeq = seq
         port.sendMessage(["type": "keepalive-ping", "seq": seq], completionHandler: { error in
@@ -876,9 +872,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let milliseconds = pinger.lastPingSentAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
         if seq == nil || seq == pinger.awaitingSeq {
             pinger.awaitingSeq = nil
-            // The background is answering again: a run of missed replies that had
-            // not reached the limit is over and starts from zero next time.
-            pinger.clearMissedReplies()
+            pinger.unanswered = nil
+        } else if let pending = pinger.awaitingSeq, let sentAt = pinger.lastPingSentAt {
+            // A late reply — to a ping the next tick had already given up on
+            // (a round trip longer than the interval, or a reply that crossed
+            // the tick after the machine woke). The background is alive, which
+            // is all the restart threshold asks; the silence, if it goes on,
+            // starts over at the ping that is still pending.
+            pinger.unanswered = (pending, sentAt)
         }
         log.info("Keep-alive reply #\(seq ?? -1) from \(extID, privacy: .public) (\(milliseconds) ms)")
     }
@@ -910,18 +911,21 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// report their disconnection. Dropping the keep-alive port with them is what
     /// makes the zombie page collectable — with no open ports left, WebKit's next
     /// 30 s `unloadBackgroundContentIfPossible` tick closes it instead of waiting
-    /// out the 2-minute inactive-ports window.
+    /// out the 2-minute inactive-ports window. The same over-reach as TASK-67's
+    /// applies — the registries are per extension, not per context, so a
+    /// `connectNative` port a still-open popup or options page holds goes too —
+    /// and here nothing closes those pages: they see an ordinary `onDisconnect`
+    /// and can reconnect, which is the price of not unloading the context.
+    ///
+    /// The restart is one-shot, on purpose: if `loadBackgroundContent` fails,
+    /// WebKit reports it through the context's errors and
+    /// `Profile.recoverFromBackgroundLoadFailure` takes over (a full unload +
+    /// reload, rate-limited); if the zombie page is still there when the load
+    /// runs, the load is a no-op and the next alarm or message starts the
+    /// background, as it did before the restart existed.
     private func restartUnresponsiveBackground(for key: KeepAlivePortKey,
                                                on port: WKWebExtension.MessagePort) {
         let extID = key.extensionID
-        guard !keepAliveRestartsInFlight.contains(key) else {
-            // A restart of this key is already waiting to load background content;
-            // the pinger this tick came from belongs to a context that arrived
-            // after it, and the pending load will find that port and stand down.
-            log.info("Keep-alive for \(extID, privacy: .public): a restart is already in flight; not starting another")
-            return
-        }
-
         stopKeepAlivePinging(for: key)
         // Removed before the disconnect so the port's own `disconnectHandler` —
         // which checks `keepAlivePorts[key] === port` — is a no-op, and no
@@ -932,12 +936,35 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         ourPort?.disconnect(throwing: error)
         log.info("Restarting the background of \(extID, privacy: .public): tore down \(torn.hosts) native host(s), \(torn.relays) relayed WebSocket(s) and its keep-alive port")
 
-        keepAliveRestartsInFlight.insert(key)
-        DispatchQueue.main.asyncAfter(deadline: .now() + keepAliveRestartDelay) { [weak self] in
+        // No restart can already be pending here: it would have removed the
+        // keep-alive port this tick pinged, and any port since cancels it.
+        let load = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.keepAliveRestartsInFlight.remove(key)
+            self.keepAliveRestarts.removeValue(forKey: key)
             self.loadBackgroundContentAfterRestart(for: key)
         }
+        keepAliveRestarts[key] = load
+        DispatchQueue.main.asyncAfter(deadline: .now() + keepAliveRestartDelay, execute: load)
+    }
+
+    /// Call off a restart's pending `loadBackgroundContent`, if one is waiting:
+    /// the context it was for is being unloaded, or a background context came
+    /// back on its own (an alarm, a message, the polyfill's reconnect from a page
+    /// that never died) and loading would be a second start.
+    private func cancelPendingKeepAliveRestart(for key: KeepAlivePortKey) {
+        guard let load = keepAliveRestarts.removeValue(forKey: key) else { return }
+        load.cancel()
+        log.info("Keep-alive restart for \(key.extensionID, privacy: .public): called off; its context is unloading or a background context is already back")
+    }
+
+    /// The loaded context a keep-alive key names: the extension's context in the
+    /// profile whose controller has the key's identity. The key carries only an
+    /// `ObjectIdentifier`, so this reads each profile's already-loaded contexts
+    /// rather than touching its lazy `extensionController` (see `profile(for:)`).
+    private func loadedExtensionContext(for key: KeepAlivePortKey) -> WKWebExtensionContext? {
+        TabStore.shared.profiles.lazy
+            .compactMap { $0.extensionContext(for: key.extensionID) }
+            .first { $0.webExtensionController.map(ObjectIdentifier.init) == key.controller }
     }
 
     /// The second half of the restart: ask WebKit for background content again,
@@ -950,18 +977,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// success.
     private func loadBackgroundContentAfterRestart(for key: KeepAlivePortKey) {
         let extID = key.extensionID
-        // A keep-alive port again means a background context already started on
-        // its own (an alarm, a message, the polyfill's reconnect from a page that
-        // never died): nothing to load, and loading would be a second start.
-        guard keepAlivePorts[key] == nil else {
-            log.info("Keep-alive restart for \(extID, privacy: .public): a background context is already back; nothing to load")
-            return
-        }
-        guard let controller = keepAliveControllers[key]?.controller,
-              let profile = profile(for: controller),
-              let context = profile.extensionContext(for: extID) else {
-            // The controller, its profile or the context went away while the
-            // restart was pending — there is nothing left to keep alive.
+        guard let context = loadedExtensionContext(for: key) else {
+            // The profile or the context went away while the restart was pending
+            // (its unload cancels the restart, so this is a narrow window) —
+            // there is nothing left to keep alive.
             log.info("Keep-alive restart for \(extID, privacy: .public): the context is no longer loaded; nothing to load")
             return
         }
@@ -1036,7 +1055,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func keepAliveMissedRepliesForTesting(controller: WKWebExtensionController,
                                           extensionID: String) -> (missed: Int, restarting: Bool) {
         let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
-        return (keepAlivePingers[key]?.missedReplies ?? 0, keepAliveRestartsInFlight.contains(key))
+        return (keepAlivePingers[key]?.missedReplies ?? 0, keepAliveRestarts[key] != nil)
     }
 
     /// Keep-alive ports accepted for the extension since its context loaded. Tests only.
@@ -2326,10 +2345,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
             keepAlivePorts[key] = port
             keepAlivePortOpenCounts[key, default: 0] += 1
-            // Weakly, for the restart path (TASK-68): the key carries only the
-            // controller's ObjectIdentifier, and finding the context to load
-            // background content into needs the controller itself.
-            keepAliveControllers[key] = WeakExtensionController(controller)
+            // A background context is back (TASK-68): whether an alarm, a message
+            // or a reconnect started it, a restart still waiting to load
+            // background content would only start a second one.
+            cancelPendingKeepAliveRestart(for: key)
             port.messageHandler = { [weak self] message, _ in
                 guard let self,
                       let body = message as? [String: Any],

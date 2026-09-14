@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-14 01:45'
-updated_date: '2026-09-14 02:55'
+updated_date: '2026-09-14 03:21'
 labels:
   - extensions
   - 1password
@@ -59,4 +59,6 @@ Tests (AC #3), in ExtensionPolyfillProfileWiringTests: testRuntimeReloadTearsDow
 AC #4: NativeHostKeepAliveTests, ExtensionPolyfillProfileWiringTests, ExtensionPolyfillTests, NativeMessagingEnforcementTests, ExtensionPermissionTests — 261 tests, 0 failures, 3 skipped (the long measurement legs). Committed as 63abb97; docs/1password-integration-plan.md Phase 1 item 1 records the WebKit behaviour. AC #5 stays open: it is the production ps check after the next deploy.
 
 Code review (medium, --fix) on 63abb97: applied — tearDownNativeConnections doc now says one-shot sendNativeMessage hosts are not swept (activeMessagingHosts records no controller; pre-existing gap, follow-up candidate), and the supersede branch documents its known over-reach: registries are per extension, not per context, so a connectNative port a still-open popup/options page holds is torn down with the background's on a WebKit-internal background restart (a runtime.reload closes those pages too, so it costs nothing there). A per-context fix needs a signal a native port does not carry — left as reported. Test fixture dedup: makeWorkerExtension wraps makeBackgroundPageExtension (.serviceWorker), startNativeHostProbe calls startMeasurement.
+
+Production run 2 (2026-09-13 20:04-20:20, commit 3b8d8f4): when WebKit unloaded the dead worker's page at 20:06:52 the keep-alive port closed, Detour killed its host (pid 69970 gone) and the 20:07:22 worker spawned a new one (71002); ps at 20:20 shows exactly three BrowserSupport children for three workers. The supersede path did not fire in this run (no runtime.reload happened), so AC #5's quit-the-desktop-app check is still the user's.
 <!-- SECTION:NOTES:END -->

@@ -1731,6 +1731,7 @@ struct ExtensionAPIPolyfill {
         // `seq` goes back with it so Detour can measure the round trip and notice a
         // reply that never comes.
         function reply(target, seq) {
+            if (ignoresPing()) return;
             try {
                 target.postMessage({ type: 'keepalive', seq: seq });
                 repliesSent += 1;
@@ -1820,7 +1821,7 @@ struct ExtensionAPIPolyfill {
                     if (port !== opened || !message) return;
                     // Answered whether or not a start was seen: Detour pings only
                     // a port it has armed, and an extra reply is never wrong.
-                    if (message.type === 'keepalive-ping') { if (!ignoresPing()) reply(opened, message.seq); }
+                    if (message.type === 'keepalive-ping') reply(opened, message.seq);
                     else if (message.type === 'keepalive-start') armed = true;
                     else if (message.type === 'keepalive-stop') armed = false;
                     else if (message.type === SUPERSEDED_TYPE) superseded = true;
