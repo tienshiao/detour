@@ -91,11 +91,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// what the round trips have done so far. Exists only while the key is armed.
     private final class KeepAlivePinger {
         let timer: DispatchSourceTimer
-        /// The sequence number of the last ping sent.
+        /// The sequence number of the last ping sent — also how many have been
+        /// sent, since a pinger is created fresh on every arm.
         var seq = 0
-        var pingsSent = 0
         var lastPingSentAt: Date?
-        var lastReplyAt: Date?
         /// The ping that has not been answered yet, if any. A ping still pending
         /// at the next tick is the symptom TASK-68 exists to make visible.
         var awaitingSeq: Int?
@@ -541,12 +540,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
     }
 
-    /// End every native connection Detour holds for one (controller, extension)
-    /// key — real native messaging hosts (process killed, and their WebKit port
-    /// disconnected when `hostError` says with what) and relayed WebSockets
-    /// (TASK-8) — and reset the keep-alive bookkeeping with them: the whole
-    /// context they belonged to is gone, so `contextUnloaded` is the event, and
-    /// nothing is sent anywhere.
+    /// End every long-lived native connection Detour holds for one (controller,
+    /// extension) key — real `connectNative` hosts (process killed, and their
+    /// WebKit port disconnected when `hostError` says with what) and relayed
+    /// WebSockets (TASK-8) — and reset the keep-alive bookkeeping with them: the
+    /// whole context they belonged to is gone, so `contextUnloaded` is the event,
+    /// and nothing is sent anywhere. One-shot `sendNativeMessage` hosts are *not*
+    /// swept: `activeMessagingHosts` is keyed by host alone and records no
+    /// controller, so they end the way they always have, with the host's reply
+    /// or exit (`disconnectRealNativeHosts` sweeps them, by extension id only).
     ///
     /// Every registry entry is taken away *as a whole* before anything is
     /// disconnected, so each teardown this sets off finds nothing left to release:
@@ -717,7 +719,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// up in the log instead of as a silent unload.
     private func startKeepAlivePinging(for key: KeepAlivePortKey) {
         stopKeepAlivePinging(for: key)
-        let timer = DispatchSource.makeTimerSource(queue: .main)
+        // Strict: an ordinary dispatch timer may be deferred well past its leeway
+        // by App Nap and timer coalescing once every window is occluded, and a
+        // deferred tick is a missed ping *and* a missed "no reply" check — the
+        // silent gap this timer exists to close.
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
         timer.schedule(deadline: .now() + keepAlivePingInterval,
                        repeating: keepAlivePingInterval, leeway: .seconds(1))
         timer.setEventHandler { [weak self] in
@@ -739,28 +745,30 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// port counts it), and a ping still unanswered when the next one goes out is
     /// logged as an error: at that point the background is stalled, its timers are
     /// suspended, or the port is dead, and WebKit's unload is roughly 90 s away.
+    ///
+    /// A ping that fails to *send* is only logged: unlike a control message it
+    /// changes nothing in the worker, the next tick retries it anyway, and going
+    /// through `handleKeepAliveControlFailure` would disarm and re-arm the state —
+    /// discarding this pinger's ledger (`awaitingSeq`, the sequence numbers in the
+    /// log) exactly when a failure is what the ledger is for, and doubling the
+    /// 1 Hz retry loop on a port that stays registered but cannot be sent on.
     private func sendKeepAlivePing(for key: KeepAlivePortKey) {
         guard let pinger = keepAlivePingers[key], let port = keepAlivePorts[key] else { return }
         let extID = key.extensionID
+        let now = Date()
 
         if let pending = pinger.awaitingSeq {
-            let waited = pinger.lastPingSentAt.map { Date().timeIntervalSince($0) } ?? 0
-            log.error("Keep-alive for \(extID, privacy: .public): ping #\(pending) sent \(String(format: "%.0f", waited), privacy: .public) s ago has no reply (worker stalled, its timers suspended, or the port is dead); sending #\(pending + 1)")
+            let waited = pinger.lastPingSentAt.map { now.timeIntervalSince($0) } ?? 0
+            log.error("Keep-alive for \(extID, privacy: .public): ping #\(pending) sent \(waited, format: .fixed(precision: 0), privacy: .public) s ago has no reply (worker stalled, its timers suspended, or the port is dead); sending #\(pending + 1)")
         }
 
         pinger.seq += 1
         let seq = pinger.seq
-        pinger.pingsSent += 1
-        pinger.lastPingSentAt = Date()
+        pinger.lastPingSentAt = now
         pinger.awaitingSeq = seq
-        port.sendMessage(["type": "keepalive-ping", "seq": seq], completionHandler: { [weak self, weak port] error in
+        port.sendMessage(["type": "keepalive-ping", "seq": seq], completionHandler: { error in
             guard let error else { return }
             log.error("Keep-alive ping #\(seq) to \(extID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            guard let self, let port else { return }
-            // Same recovery as a failed control message: the worker is not doing
-            // what `armed` says, so clear it and re-evaluate a second later.
-            let recover = { self.handleKeepAliveControlFailure(for: key, on: port) }
-            if Thread.isMainThread { recover() } else { DispatchQueue.main.async(execute: recover) }
         })
         log.info("Keep-alive ping #\(seq) sent to \(extID, privacy: .public)")
     }
@@ -777,9 +785,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             log.info("Keep-alive reply #\(seq ?? -1) from \(extID, privacy: .public) (not pinging)")
             return
         }
-        let now = Date()
-        let milliseconds = pinger.lastPingSentAt.map { Int(now.timeIntervalSince($0) * 1000) } ?? -1
-        pinger.lastReplyAt = now
+        let milliseconds = pinger.lastPingSentAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
         if seq == nil || seq == pinger.awaitingSeq {
             pinger.awaitingSeq = nil
         }
@@ -838,7 +844,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                                       extensionID: String) -> (sent: Int, awaiting: Int?)? {
         let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
         guard let pinger = keepAlivePingers[key] else { return nil }
-        return (pinger.pingsSent, pinger.awaitingSeq)
+        return (pinger.seq, pinger.awaitingSeq)
     }
 
     /// Keep-alive ports accepted for the extension since its context loaded. Tests only.
@@ -2112,6 +2118,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 // workers). So tear them down here, which also resets the count to
                 // zero: the new port's `portOpened` below arms nothing until the
                 // new context connects a host of its own.
+                //
+                // Known over-reach: the registries are keyed per extension, not
+                // per context, so a `connectNative` port a still-open popup or
+                // options page of this extension holds is torn down with the
+                // background's (nothing on a native port says which context
+                // opened it). A `runtime.reload()` closes those pages too, so it
+                // only costs anything on a WebKit-internal background restart,
+                // where the page sees an ordinary `onDisconnect` and can reconnect.
                 let torn = tearDownNativeConnections(
                     for: key, disconnectingPortsWith: Self.replacedBackgroundContextError())
                 if torn.hosts > 0 || torn.relays > 0 {

@@ -1061,35 +1061,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// `Profile.extensionController` installs reaches web views, not workers.
     private func makeWorkerExtension(id: String, permissions: [String],
                                      backgroundJS: String) async throws -> WebExtension {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("detour-test-\(id)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        tempDirs.append(dir)
-
-        let permissionsJSON = String(
-            decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
-        try """
-        {
-            "manifest_version": 3,
-            "name": "Worker Probe",
-            "version": "1.0.0",
-            "permissions": \(permissionsJSON),
-            "background": {"service_worker": "background.js", "type": "module"}
-        }
-        """.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
-        try "<html><body><div id=\"test\">wiring test page</div></body></html>"
-            .write(to: dir.appendingPathComponent("test.html"), atomically: true, encoding: .utf8)
-        try backgroundJS.write(to: dir.appendingPathComponent("background.js"),
-                               atomically: true, encoding: .utf8)
-
-        let wkExt = try await WKWebExtension(resourceBaseURL: dir)
-        let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
-        let ext = WebExtension(id: id, manifest: manifest, basePath: dir)
-        ext.wkExtension = wkExt
-        ExtensionManager.shared.extensions.removeAll { $0.id == id }
-        ExtensionManager.shared.extensions.append(ext)
-        if !registeredExtensionIDs.contains(id) { registeredExtensionIDs.append(id) }
-        return ext
+        try await makeBackgroundPageExtension(
+            .serviceWorker, id: id, permissions: permissions, backgroundJS: backgroundJS)
     }
 
     /// A worker that connects `portCount` native messaging ports to `hostName` at
@@ -1173,14 +1146,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     private func startNativeHostProbe(
         _ ext: WebExtension, host: FakeNativeMessagingHost, portCount: Int, profileName: String
     ) async throws -> (profile: Profile, context: WKWebExtensionContext, page: WKWebView) {
-        let profile = makeProfile(profileName)
-        let controller = profile.extensionController
-        _ = profile.loadExtensionContext(ext)
-        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
-        let page = try await makeExtensionWebView(for: context)
-        context.loadBackgroundContent { error in
-            if let error { print("TASK-67: loadBackgroundContent failed: \(error)") }
-        }
+        let started = try await startMeasurement(ext, profileName: profileName)
+        let controller = started.profile.extensionController
         try await waitUntil("the worker's \(portCount) native host(s) to connect", timeout: 30) {
             ExtensionManager.shared.liveNativeHostCountForTesting(
                 controller: controller, extensionID: ext.id) == portCount
@@ -1190,7 +1157,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             ExtensionManager.shared.keepAliveStateForTesting(
                 controller: controller, extensionID: ext.id)?.armed == true
         }
-        return (profile, context, page)
+        return started
     }
 
     /// Ask the worker to call `chrome.runtime.reload()` and wait until the
@@ -1768,7 +1735,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         let context = try XCTUnwrap(profile.extensionContexts[ext.id])
         let page = try await makeExtensionWebView(for: context)
         context.loadBackgroundContent { error in
-            if let error { print("TASK-62 measurement: loadBackgroundContent failed: \(error)") }
+            if let error { print("loadBackgroundContent failed: \(error)") }
         }
         return (profile, context, page)
     }
@@ -2464,11 +2431,12 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     // MARK: - TASK-43: runtime.onInstalled in a background page
 
-    /// The shapes of background content WebKit runs as a page rather than a
-    /// service worker, with the path WebKit loads each at — measured against a
-    /// real context by the probe these tests grew out of, and re-asserted here so
-    /// a WebKit change that moves the generated page fails the suite rather than
-    /// silently costing every such extension its event.
+    /// The shapes of background content a test extension can declare: the three
+    /// WebKit runs as a page, plus the MV3 service worker. Each carries the path
+    /// WebKit loads it at — measured against a real context by the probe these
+    /// tests grew out of, and re-asserted here so a WebKit change that moves the
+    /// generated page fails the suite rather than silently costing every such
+    /// extension its event.
     private enum BackgroundPage {
         /// `background.scripts`: WebKit hosts them in a page it generates.
         case scripts
@@ -2480,18 +2448,24 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         /// would make '/./bg.html' and classify the real background page as an
         /// ordinary one, suppressing its event for good).
         case dotSlashPage
+        /// `background.service_worker`: not a page at all. The polyfill has to
+        /// travel in the worker's own script — the user script
+        /// `Profile.extensionController` installs reaches web views, not workers.
+        case serviceWorker
 
         var manifestEntry: String { manifestEntry(persistent: false) }
 
         /// The `background` entry, with `persistent` set to `persistent` or left
         /// out entirely when it is nil — which is how a *persistent* MV2
-        /// background page is spelled (TASK-62).
+        /// background page is spelled (TASK-62). A service worker has no such
+        /// flag, so it ignores `persistent`.
         func manifestEntry(persistent: Bool?) -> String {
             let flag = persistent.map { ", \"persistent\": \($0)" } ?? ""
             switch self {
             case .scripts: return #"{"scripts": ["background.js"]"# + flag + "}"
             case .page: return #"{"page": "bg.html""# + flag + "}"
             case .dotSlashPage: return #"{"page": "./bg.html""# + flag + "}"
+            case .serviceWorker: return #"{"service_worker": "background.js", "type": "module"}"#
             }
         }
 
@@ -2500,6 +2474,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             switch self {
             case .scripts: return "/_generated_background_page.html"
             case .page, .dotSlashPage: return "/bg.html"
+            // No page: the worker's own script is where the context lives.
+            case .serviceWorker: return "/background.js"
             }
         }
 
@@ -2510,12 +2486,13 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             case .scripts: return "scripts"
             case .page: return "page"
             case .dotSlashPage: return "dot-slash-page"
+            case .serviceWorker: return "service-worker"
             }
         }
 
         var ownFiles: [String: String] {
             switch self {
-            case .scripts: return [:]
+            case .scripts, .serviceWorker: return [:]
             case .page, .dotSlashPage:
                 return ["bg.html": "<html><body><script src=\"background.js\"></script></body></html>"]
             }

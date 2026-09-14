@@ -325,6 +325,10 @@ try {
 // 'none' with installDetail 'no-nativeMessaging-permission'. This only reports that
 // state; opening a 'detourPolyfill' port here would evict a keep-alive port if
 // there were one, since Detour keeps one per extension.
+// Since TASK-68 the pings are Detour's: while armed it sends
+// {type:'keepalive-ping', seq} on that port every 30 s and the background context
+// answers {type:'keepalive', seq} — that reply is the activity WebKit counts, and
+// `repliesSent` is how many this context has sent (0 here, with no port to answer on).
 
 const keepAlive = globalThis.__detourNativePortKeepAlive;
 appendLog({
@@ -335,7 +339,8 @@ appendLog({
     installMode: keepAlive.installMode,
     installDetail: keepAlive.installDetail,
     armed: keepAlive.armed,
-    active: keepAlive.active
+    active: keepAlive.active,
+    repliesSent: keepAlive.repliesSent
   } : null
 });
 
