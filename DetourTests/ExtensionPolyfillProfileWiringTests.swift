@@ -2161,6 +2161,61 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     """
 
+    /// TASK-71: which `chrome.offscreen` a *real* service worker ends up with.
+    ///
+    /// The unit tests run the polyfill in a bare WKWebView; this runs it where it
+    /// actually runs, in a worker WebKit built with the full extension
+    /// environment in place. The shipped WebKit vends no `chrome.offscreen` at
+    /// all (`WK_WEB_EXTENSIONS_OFFSCREEN` is main-only), so the marker must read
+    /// a plain `polyfill` — the day it reads `polyfill-over-native` here, WebKit
+    /// has grown one and the shadowing decision needs revisiting.
+    func testOffscreenInstallMarkerIsRecordedInTheWorker() async throws {
+        let id = measurementExtensionID("task71-offscreen-install")
+        let ext = try await makeWorkerExtension(
+            id: id, permissions: ["offscreen"],
+            backgroundJS: Self.nativeOffscreenCaptureJS + ExtensionAPIPolyfill.polyfillJS + """
+
+
+            chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+                if (!message || message.type !== 'offscreenInstall') return false;
+                sendResponse({
+                    marker: globalThis.__detourOffscreenInstall,
+                    diag: __detourPolyfillDiag.apis.offscreenInstall,
+                    contextKind: __detourPolyfillDiag.contextKind,
+                    tagged: !!(chrome.offscreen && chrome.offscreen._detourPolyfill === true),
+                    capturedNative: !!globalThis.__detourNativeOffscreen
+                });
+                return true;
+            });
+            """,
+            extraFiles: ["offscreen.html":
+                            "<html><body><div id=\"offscreen\">offscreen</div></body></html>"])
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let started = try await startMeasurement(ext, profileName: "TASK-71 Offscreen Install")
+        // The worker is still loading when startMeasurement returns, and an
+        // unreachable worker answers `reply: null` rather than an error.
+        var reply: [String: Any] = [:]
+        try await waitUntil("the worker to report its offscreen install", timeout: 20) {
+            let envelope = try await askWorker(from: started.page,
+                                               message: ["type": "offscreenInstall"], timeout: 5)
+            guard let answer = envelope["reply"] as? [String: Any] else { return false }
+            reply = answer
+            return true
+        }
+        print("TASK-71 [offscreen install]: \(reply)")
+
+        XCTAssertEqual(reply["contextKind"] as? String, "worker",
+                       "this must be the service worker's own reading: \(reply)")
+        XCTAssertEqual(reply["capturedNative"] as? Bool, false,
+                       "the shipped WebKit has no native chrome.offscreen: \(reply)")
+        XCTAssertEqual(reply["marker"] as? String, "polyfill", "\(reply)")
+        XCTAssertEqual(reply["diag"] as? String, "polyfill",
+                       "the marker must reach the diag the popup reads: \(reply)")
+        XCTAssertEqual(reply["tagged"] as? Bool, true,
+                       "chrome.offscreen in the worker must be Detour's own object: \(reply)")
+    }
+
     private func makeKeepAliveProbeExtension(id: String) async throws -> WebExtension {
         try await makeWorkerExtension(
             id: id, permissions: ["nativeMessaging", "offscreen"],

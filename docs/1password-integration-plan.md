@@ -116,6 +116,34 @@ Verified by grepping the minified sources, not the manifest:
   `background/offscreen/`, where no `vendor/` directory exists. The resulting "Unable to find …
   in the extension's resources" errors are 1Password's bug and are benign.
 
+### Which `chrome.offscreen` is in force (TASK-71)
+
+Detour's polyfill, in production as well as in tests. The shipped WebKit (framework
+21624.5.1.11.3, the safari-7624 branch) has no `chrome.offscreen` at all — the
+`WK_WEB_EXTENSIONS_OFFSCREEN` feature, its `WebExtensionOffscreenEnabled` preference and the IDL
+attribute exist only on WebKit main — so `createDocument`/`closeDocument`/`hasDocument` route
+through `__detourPolyfillRequest` to `OffscreenDocumentHost`, which hosts the document in a
+WKWebView of Detour's own (with the AudioContext shim) rather than as a page inside the worker's
+process.
+
+That is deliberate, and it stays that way if WebKit grows a native implementation: Detour's is the
+one with the tested lifecycle, so `offscreenJS` shadows a native namespace instead of deferring to
+it. It must not do so silently. `globalThis.__detourOffscreenInstall` — surfaced as
+`_polyfillDiag.apis.offscreenInstall`, which the popup reads — records, once per context,
+`polyfill` (nothing was there), `polyfill-over-native` (a native namespace was shadowed),
+`polyfill-over-foreign` (a non-native object was), or `error: …` when the define did not take, which
+also logs `console.error('[Detour polyfill] chrome.offscreen override failed: …')`.
+
+In a production run the line to look for, once per background start, is:
+
+```
+[Detour polyfill] chrome.offscreen implementation: polyfill
+```
+
+Anything other than `polyfill` there means the environment changed under us — `polyfill-over-native`
+says a WebKit update has shipped its own offscreen API and this decision needs revisiting; `error: …`
+says the extension is running against an implementation Detour did not install.
+
 ## Findings from the 2026-09-11 test session
 
 Timeline from the unified log (`native-messaging`, `extension-polyfill`, `EXT-LOAD` categories) and

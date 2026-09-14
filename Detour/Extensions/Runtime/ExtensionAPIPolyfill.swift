@@ -108,6 +108,9 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.privacy = globalThis.__detourPrivacyInstall; } catch(e) { __detourPolyfillDiag.apis.privacy = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.webRequest = globalThis.__detourWebRequestInstall; } catch(e) { __detourPolyfillDiag.apis.webRequest = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.actionGetUserSettings = globalThis.__detourActionUserSettingsInstall; } catch(e) { __detourPolyfillDiag.apis.actionGetUserSettings = 'error: ' + e.message; }
+        // Which chrome.offscreen is in force: Detour's polyfill, Detour's over a
+        // native/foreign one it shadowed, or an error if the define did not take (TASK-71).
+        try { __detourPolyfillDiag.apis.offscreenInstall = globalThis.__detourOffscreenInstall; } catch(e) { __detourPolyfillDiag.apis.offscreenInstall = 'error: ' + e.message; }
         try { __detourPolyfillDiag.heldWrappers = Object.keys(globalThis.__detourHeldWrappers).join(','); } catch(e) { __detourPolyfillDiag.heldWrappers = 'error: ' + e.message; }
         // Whether WebKit vends webNavigation.getAllFrames/getFrame natively, as
         // observed *before* the polyfill patched anything (TASK-4).
@@ -2411,45 +2414,147 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.offscreen
 
+    /// Polyfill for `chrome.offscreen`, and the record of which implementation
+    /// ended up in force (TASK-71).
+    ///
+    /// Detour's implementation deliberately wins. The shipped WebKit (framework
+    /// 21624.5.1.11.3, the safari-7624 branch) has no `chrome.offscreen` at all —
+    /// `WK_WEB_EXTENSIONS_OFFSCREEN`, its `WebExtensionOffscreenEnabled`
+    /// preference and the IDL attribute exist only on WebKit main — so this is
+    /// the only offscreen API in production as well as in tests, and it is the
+    /// one that carries the AudioContext shim and the tested
+    /// `OffscreenDocumentHost` lifecycle. If a future WebKit does vend a native
+    /// namespace, this shadows it rather than deferring to it — but it must not
+    /// do so silently, hence the marker below.
+    ///
+    /// `globalThis.__detourOffscreenInstall` (surfaced as
+    /// `_polyfillDiag.apis.offscreenInstall`) is written exactly once per
+    /// context and reads:
+    ///   * `polyfill`               — nothing was there, Detour installed its own;
+    ///   * `polyfill-over-native`   — a native namespace was shadowed;
+    ///   * `polyfill-over-foreign`  — a non-native object (another script's) was shadowed;
+    ///   * `error: <detail>`        — the define threw, or did not take.
+    ///
+    /// `__detourDefine` is warn-only by design (other modules rely on that), so
+    /// the verification and the `console.error` live here: a silently failed
+    /// assignment — which is what a non-writable `chrome.offscreen` gives in
+    /// sloppy mode — is caught by re-reading the tag off the installed object.
     private static let offscreenJS = """
     (function() {
-        // Always install — WebKit may provide stubs that don't work
-        const chrome = globalThis.chrome;
+        const g = globalThis;
+        const chrome = g.chrome;
 
-        __detourDefine(chrome, 'offscreen', {
-            createDocument: function(params, callback) {
-                const promise = __detourPolyfillRequest('offscreen.createDocument', params || {});
-                return __detourSettle(promise, callback, false);
-            },
+        // Already Detour's? Re-running the polyfill must not overwrite the first
+        // reading (the same rule `__detourWebNavFrames` follows). Read defensively:
+        // a `[Dynamic]` native namespace is vended by a getter that may throw, and
+        // this module must not take the rest of the polyfill down with it.
+        let pre;
+        try { pre = chrome.offscreen; } catch (e) {}
+        let alreadyOurs = false;
+        try { alreadyOurs = !!(pre && pre._detourPolyfill === true); } catch (e) {}
+        if (alreadyOurs) return;
 
-            closeDocument: function(callback) {
-                const promise = __detourPolyfillRequest('offscreen.closeDocument', {});
-                return __detourSettle(promise, callback, false);
-            },
-
-            hasDocument: function(callback) {
-                const promise = __detourPolyfillRequest('offscreen.hasDocument', {});
-                return __detourSettle(promise, callback);
-            },
-
-            Reason: {
-                TESTING: 'TESTING',
-                AUDIO_PLAYBACK: 'AUDIO_PLAYBACK',
-                IFRAME_SCRIPTING: 'IFRAME_SCRIPTING',
-                DOM_SCRAPING: 'DOM_SCRAPING',
-                BLOBS: 'BLOBS',
-                DOM_PARSER: 'DOM_PARSER',
-                USER_MEDIA: 'USER_MEDIA',
-                DISPLAY_MEDIA: 'DISPLAY_MEDIA',
-                WEB_RTC: 'WEB_RTC',
-                CLIPBOARD: 'CLIPBOARD',
-                LOCAL_STORAGE: 'LOCAL_STORAGE',
-                WORKERS: 'WORKERS',
-                BATTERY_STATUS: 'BATTERY_STATUS',
-                MATCH_MEDIA: 'MATCH_MEDIA',
-                GEOLOCATION: 'GEOLOCATION'
+        const nativeness = function(fn) {
+            if (typeof fn !== 'function') return 'missing';
+            try {
+                return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1
+                    ? 'native' : 'non-native';
+            } catch (e) { return 'non-native'; }
+        };
+        // What we are about to shadow, classified before anything is defined.
+        let preKind = 'absent';
+        try {
+            if (pre !== undefined && pre !== null) {
+                preKind = nativeness(pre.createDocument) === 'native' ? 'native' : 'foreign';
             }
-        });
+        } catch (e) { preKind = 'foreign'; }
+
+        let marker;
+        try {
+            // Built in a local and tagged before it is published, so a throw
+            // part-way through cannot leave a half-built namespace installed.
+            const offscreen = {
+                createDocument: function(params, callback) {
+                    const promise = __detourPolyfillRequest('offscreen.createDocument', params || {});
+                    return __detourSettle(promise, callback, false);
+                },
+
+                closeDocument: function(callback) {
+                    const promise = __detourPolyfillRequest('offscreen.closeDocument', {});
+                    return __detourSettle(promise, callback, false);
+                },
+
+                hasDocument: function(callback) {
+                    const promise = __detourPolyfillRequest('offscreen.hasDocument', {});
+                    return __detourSettle(promise, callback);
+                },
+
+                Reason: {
+                    TESTING: 'TESTING',
+                    AUDIO_PLAYBACK: 'AUDIO_PLAYBACK',
+                    IFRAME_SCRIPTING: 'IFRAME_SCRIPTING',
+                    DOM_SCRAPING: 'DOM_SCRAPING',
+                    BLOBS: 'BLOBS',
+                    DOM_PARSER: 'DOM_PARSER',
+                    USER_MEDIA: 'USER_MEDIA',
+                    DISPLAY_MEDIA: 'DISPLAY_MEDIA',
+                    WEB_RTC: 'WEB_RTC',
+                    CLIPBOARD: 'CLIPBOARD',
+                    LOCAL_STORAGE: 'LOCAL_STORAGE',
+                    WORKERS: 'WORKERS',
+                    BATTERY_STATUS: 'BATTERY_STATUS',
+                    MATCH_MEDIA: 'MATCH_MEDIA',
+                    GEOLOCATION: 'GEOLOCATION'
+                }
+            };
+            // Non-enumerable so extension code that iterates the namespace (or
+            // copies it) does not carry the tag around; it is how a re-run, the
+            // diag and the tests recognise Detour's own object.
+            Object.defineProperty(offscreen, '_detourPolyfill', {
+                value: true, writable: false, configurable: true, enumerable: false
+            });
+
+            __detourDefine(chrome, 'offscreen', offscreen);
+
+            // Verify. `__detourDefine` assigns first, and in sloppy mode an
+            // assignment to a non-writable property fails *silently* — nothing to
+            // catch, and its `Object.defineProperty` fallback is never reached.
+            // Re-reading the tag is the only way to know the define took.
+            const after = chrome.offscreen;
+            if (after === offscreen || (after && after._detourPolyfill === true)) {
+                marker = preKind === 'native' ? 'polyfill-over-native'
+                    : (preKind === 'foreign' ? 'polyfill-over-foreign' : 'polyfill');
+            } else {
+                marker = 'error: define did not take — chrome.offscreen is still the '
+                    + preKind + ' object (' + typeof after + ')';
+            }
+        } catch (e) {
+            marker = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+
+        if (marker.indexOf('error: ') === 0) {
+            // An error, not a warning: the extension is now running against an
+            // implementation Detour did not install and does not support.
+            try {
+                console.error('[Detour polyfill] chrome.offscreen override failed: '
+                    + marker.slice('error: '.length));
+            } catch (e) {}
+        }
+        // Write-once: the first reading is the one that describes what this
+        // context started with.
+        if (!g.__detourOffscreenInstall) g.__detourOffscreenInstall = marker;
+
+        // One line per background start, through the console bridge, so which
+        // offscreen implementation a real background context got is visible in
+        // the unified log — the same shape the keep-alive install line uses.
+        const isWorker = typeof ServiceWorkerGlobalScope !== 'undefined';
+        const isBackgroundPage = g.__detourContextKind === 'background-page';
+        if (isWorker || isBackgroundPage) {
+            try {
+                console.info('[Detour polyfill] chrome.offscreen implementation: '
+                    + g.__detourOffscreenInstall);
+            } catch (e) {}
+        }
     })();
     """
 

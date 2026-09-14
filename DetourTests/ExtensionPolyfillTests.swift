@@ -653,6 +653,173 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result as? Bool, false)
     }
 
+    // MARK: - chrome.offscreen: which implementation is in force (TASK-71)
+
+    /// The shipped WebKit has no `chrome.offscreen` at all, so Detour's polyfill
+    /// is the implementation in force — and says so, in a marker the diag carries
+    /// out of a context whose console nothing can read.
+    func testOffscreenInstallMarkerWhenNothingWasThere() async throws {
+        let result = try await evalDictionary("""
+        const nativeness = function(fn) {
+            if (typeof fn !== 'function') return 'missing';
+            return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1
+                ? 'native' : 'non-native';
+        };
+        return JSON.stringify({
+            marker: globalThis.__detourOffscreenInstall,
+            diag: __detourPolyfillDiag.apis.offscreenInstall,
+            tagged: chrome.offscreen._detourPolyfill === true,
+            tagEnumerable: Object.keys(chrome.offscreen).indexOf('_detourPolyfill') !== -1,
+            createDocument: nativeness(chrome.offscreen.createDocument),
+            typeofNamespace: __detourPolyfillDiag.apis.offscreen
+        });
+        """)
+
+        XCTAssertEqual(result["marker"] as? String, "polyfill")
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+        XCTAssertEqual(result["tagged"] as? Bool, true,
+                       "chrome.offscreen must carry Detour's tag")
+        XCTAssertEqual(result["tagEnumerable"] as? Bool, false,
+                       "the tag must not show up when the namespace is enumerated")
+        XCTAssertEqual(result["createDocument"] as? String, "non-native")
+        XCTAssertEqual(result["typeofNamespace"] as? String, "function")
+    }
+
+    /// Re-running the polyfill must neither relabel the install nor rebuild the
+    /// namespace: the first reading is what described this context's start.
+    func testOffscreenInstallMarkerSurvivesRerun() async throws {
+        let result = try await evalDictionary("""
+        const before = chrome.offscreen;
+        \(ExtensionAPIPolyfill.polyfillJS)
+        return JSON.stringify({
+            marker: globalThis.__detourOffscreenInstall,
+            diag: __detourPolyfillDiag.apis.offscreenInstall,
+            same: before === chrome.offscreen,
+            tagged: chrome.offscreen._detourPolyfill === true
+        });
+        """)
+
+        XCTAssertEqual(result["marker"] as? String, "polyfill",
+                       "a second run must not relabel the install as polyfill-over-foreign")
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+        XCTAssertEqual(result["same"] as? Bool, true,
+                       "the second run must leave Detour's own namespace in place")
+        XCTAssertEqual(result["tagged"] as? Bool, true)
+    }
+
+    /// If a future WebKit does vend a native `chrome.offscreen`, Detour's
+    /// implementation still wins — it is the one carrying the AudioContext shim
+    /// and the tested `OffscreenDocumentHost` lifecycle — but the shadowing has
+    /// to be visible rather than silent. Bound functions stringify as
+    /// `function () { [native code] }`, which is what `nativeness` reads.
+    func testOffscreenInstallMarkerWhenANativeNamespaceIsShadowed() async throws {
+        let withNative = try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy"],
+            shimExtras: """
+            globalThis.chrome.offscreen = {
+                createDocument: (function(){}).bind(null),
+                closeDocument: (function(){}).bind(null),
+                hasDocument: (function(){}).bind(null)
+            };
+            """
+        )
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            marker: globalThis.__detourOffscreenInstall,
+            diag: __detourPolyfillDiag.apis.offscreenInstall,
+            tagged: chrome.offscreen._detourPolyfill === true,
+            goesThroughDetour:
+                Function.prototype.toString.call(chrome.offscreen.createDocument)
+                    .indexOf('__detourPolyfillRequest') !== -1
+        });
+        """, on: withNative)
+
+        XCTAssertEqual(result["marker"] as? String, "polyfill-over-native")
+        XCTAssertEqual(result["diag"] as? String, "polyfill-over-native")
+        XCTAssertEqual(result["tagged"] as? Bool, true)
+        XCTAssertEqual(result["goesThroughDetour"] as? Bool, true,
+                       "Detour's implementation must be the one in force")
+    }
+
+    /// A non-native object of someone else's is shadowed too, and labelled apart
+    /// from a native one so a diag reading says which it was.
+    func testOffscreenInstallMarkerWhenAForeignNamespaceIsShadowed() async throws {
+        let withForeign = try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy"],
+            shimExtras: """
+            globalThis.chrome.offscreen = {
+                createDocument: function() {},
+                closeDocument: function() {},
+                hasDocument: function() {}
+            };
+            """
+        )
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            marker: globalThis.__detourOffscreenInstall,
+            diag: __detourPolyfillDiag.apis.offscreenInstall,
+            tagged: chrome.offscreen._detourPolyfill === true
+        });
+        """, on: withForeign)
+
+        XCTAssertEqual(result["marker"] as? String, "polyfill-over-foreign")
+        XCTAssertEqual(result["diag"] as? String, "polyfill-over-foreign")
+        XCTAssertEqual(result["tagged"] as? Bool, true)
+    }
+
+    /// A define that does not take is the case the marker exists for: an
+    /// unwritable, unconfigurable `chrome.offscreen` leaves `__detourDefine` with
+    /// nothing it can do, and it only warns. The extension is then running against
+    /// an implementation Detour did not install, so this must be an *error* in the
+    /// log and an `error:` marker in the diag — never a silent fallthrough.
+    func testOffscreenInstallMarkerWhenTheDefineDoesNotTake() async throws {
+        let frozen = try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy"],
+            shimExtras: """
+            globalThis.__consoleErrors = [];
+            const __shimOrigConsoleError = console.error;
+            console.error = function() {
+                try {
+                    globalThis.__consoleErrors.push(Array.prototype.join.call(arguments, ' '));
+                } catch (e) {}
+                return __shimOrigConsoleError.apply(console, arguments);
+            };
+            Object.defineProperty(globalThis.chrome, 'offscreen', {
+                value: {
+                    marker: 'frozen',
+                    createDocument: function() {},
+                    closeDocument: function() {},
+                    hasDocument: function() {}
+                },
+                writable: false,
+                configurable: false,
+                enumerable: true
+            });
+            """
+        )
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            marker: globalThis.__detourOffscreenInstall,
+            diag: __detourPolyfillDiag.apis.offscreenInstall,
+            tagged: chrome.offscreen._detourPolyfill === true,
+            stillTheirs: chrome.offscreen.marker,
+            errors: globalThis.__consoleErrors
+        });
+        """, on: frozen)
+
+        let marker = try XCTUnwrap(result["marker"] as? String)
+        XCTAssertTrue(marker.hasPrefix("error: "), "expected an error marker, got: \(marker)")
+        XCTAssertEqual(result["diag"] as? String, marker)
+        XCTAssertEqual(result["tagged"] as? Bool, false,
+                       "the define did not take, so nothing may claim it did")
+        XCTAssertEqual(result["stillTheirs"] as? String, "frozen")
+
+        let errors = try XCTUnwrap(result["errors"] as? [String])
+        XCTAssertTrue(
+            errors.contains { $0.contains("[Detour polyfill] chrome.offscreen override failed:") },
+            "the failure must be logged as an error, not a warning: \(errors)")
+    }
+
     // MARK: - Callback form and runtime.lastError (TASK-23)
     //
     // The shim's chrome.runtime is a plain object, so these exercise the 'js'
