@@ -246,6 +246,13 @@ class Profile {
     /// so a reload does not accumulate observers.
     private var extensionErrorObservers: [String: NSObjectProtocol] = [:]
 
+    /// Keeps this profile's loaded extension origins inside WebKit's tracking
+    /// prevention user-interaction window, so the launch-time processing pass
+    /// stops deleting their service worker registration, IndexedDB and
+    /// localStorage (TASK-70). Lazy like the store and the controller: an
+    /// incognito or deleted profile builds one that does nothing.
+    lazy var originInteractionKeeper = ExtensionOriginInteractionKeeper(profile: self)
+
     /// Apply the saved host-access decisions — `.matchPattern` rows and the
     /// per-URL `.url` rows — to `context`, in the one order that makes the
     /// outcome deterministic. Used by `loadExtensionContext` on every (re)load
@@ -451,6 +458,13 @@ class Profile {
                 FaviconSchemeHandler.grantFaviconPermission(forWebKitHost: host)
             }
             log.info("Context loaded for \(ext.id, privacy: .public), baseURL: \(context.baseURL.absoluteString, privacy: .public)")
+            // WebKit mints a fresh `webkit-extension://<uuid>/` origin for every
+            // load, and tracking prevention purges the script-written storage of
+            // any observed origin with no unexpired user interaction — which is
+            // what killed 1Password's worker. Claim the interaction for this
+            // origin now, while it is new (TASK-70). The background recovery
+            // reloads through here too, so its replacement origin is covered.
+            originInteractionKeeper.contextDidLoad(context, extensionID: ext.id)
             return wkExt.hasBackgroundContent
         } catch {
             let nsError = error as NSError
@@ -507,6 +521,9 @@ class Profile {
         for id in Array(extensionContexts.keys) {
             unloadExtension(id: id)
         }
+        // Nothing left to keep inside the interaction window, and the run loop
+        // — not this profile — owns that timer (TASK-70).
+        originInteractionKeeper.stop()
     }
 
     /// Get the extension context for a given extension ID in this profile.

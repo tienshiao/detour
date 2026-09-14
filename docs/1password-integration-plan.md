@@ -519,6 +519,86 @@ rejections from the worker (`[uncaught exception] (file:line:col) Name: message`
 harness cold-start failure was diagnosed in one run; and Debug builds honor
 `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` to point a host name at a stand-in binary.
 
+#### Tracking prevention purges the extension origin (TASK-70)
+
+**The mechanism.** WebKit's Intelligent Tracking Prevention keeps a statistics record per
+*registrable domain* and, at every processing pass, decides what to delete from
+`ResourceLoadStatisticsStore::registrableDomainsToDeleteOrRestrictWebsiteDataFor()`. With the
+default `FirstPartyWebsiteDataRemovalMode::AllButCookies`, `shouldRemoveAllButCookiesFor()` returns
+true for *every* observed domain that has no unexpired user interaction — a record with
+`hadUserInteraction == false` qualifies on the spot, no prevalence needed — and that domain's
+**script-written storage** goes on the removal list: service worker registration, IndexedDB,
+localStorage, DOM cache. An extension origin is spelled `webkit-extension://<uuid>/`, its
+`RegistrableDomain` is that uuid host, and that is exactly the key
+`NetworkProcess::deleteAndRestrictWebsiteDataForRegistrableDomains` deletes by
+(`ensureSWServer()->clear(origin)` for the registration, `storageManager().deleteDataForRegistrableDomains`
+for the rest). The origin enters the statistics table on its own as soon as a page loads one of the
+extension's cross-host resources — a content-script iframe, a `chrome.runtime.getURL` fetch — which
+for 1Password is every page with a login form.
+
+**Why nothing the user did saved it.** Popup clicks, options pages and the extension's own network
+traffic are not first-party user interaction as far as ITP is concerned: nothing in Detour, and
+nothing in WebKit's extension machinery, called `logUserInteraction` for the extension's own origin.
+So the record sat at `hadUserInteraction == false` from the moment the origin was observed, and
+every pass scheduled it. Two guards delay it and neither helps for long: the whole
+script-written-storage list is dropped unless an hour has passed since the oldest recorded
+interaction in the database, and interaction windows are counted in *operating days* (days the
+browser ran), 7 or 30 — which is why the purge shows up as a launch-time event on a machine that has
+been running Detour for weeks.
+
+**The fix — `Detour/Extensions/Runtime/ExtensionOriginInteractionKeeper.swift`.** Detour logs the
+interaction itself, through the private `-[WKWebsiteDataStore _logUserInteraction:completionHandler:]`
+(macOS 10.15.4+; `WebsiteDataStore::logUserInteraction` rejects only `about:` and empty URLs, so an
+extension base URL is accepted and sets `hadUserInteraction` / `mostRecentUserInteractionTime` for
+its registrable domain). It fires:
+
+- at context load — `Profile.loadExtensionContext` calls `originInteractionKeeper.contextDidLoad`
+  right after `extensionController.load(context)` succeeds, with `context.baseURL`. WebKit mints a
+  fresh origin for every load, so a reload needs its own claim; the TASK-68 background recovery
+  reloads through the same method and is covered by the same call;
+- every 24 hours after that, per profile (`Timer`, 1 h tolerance, main run loop), re-logging every
+  loaded context so a long-running process never ages out of the window. The timer is stopped in
+  `unloadAllExtensions` — which `TabStore.deleteProfile` runs — and self-invalidates if the profile
+  is gone.
+
+Incognito profiles are skipped (non-persistent store, no statistics database, nothing to preserve),
+and so is any store whose `isPersistent` is false. If the private selector ever disappears, the
+keeper logs one error per process and does nothing else.
+
+**How to verify in the signed build.** Every call logs one line at `.notice`, category `EXT-ITP`:
+
+```
+ITP: logged user interaction for <extension id> origin <uuid>
+```
+
+A healthy run then shows, in the Networking process, `deleteAndRestrictWebsiteDataForRegistrableDomains
+... N domainsToDeleteAllScriptWrittenStorageFor` with **no** `SWServerRegistration::clear` and no
+`SWContextManager::terminateWorker` for the extension's worker afterwards, and no
+`Keep-alive ping #n sent to <ext> ... has no reply` error from Detour in the minutes that follow.
+The ITP decision itself can be read directly by turning on `_setResourceLoadStatisticsDebugMode`,
+which logs `About to remove data records for <domain>(all but cookies), ...` on the
+`com.apple.WebKit:ITPDebug` channel (info level — `log show` needs `--info`).
+
+**Tests — `DetourTests/ExtensionOriginTrackingPreventionTests`.** Three unit tests cover the wiring
+(one interaction per loaded context, for that context's own base URL; the daily refresh re-logs
+every loaded context and no unloaded one; a non-persistent store and an incognito profile log
+nothing), and `testTrackingPreventionPassSparesOriginsWithALoggedInteraction` drives a real pass:
+two identical http origins write localStorage, one of them is handed to the keeper's own
+`logInteraction`, both are marked prevalent, the ITP clock is advanced a day (the hour-old guard,
+and WebKit's testing clock only steps in whole days), and the pass empties the uninteracted one
+while sparing the logged one — with a loaded probe extension coming through the same pass with its
+IndexedDB and worker intact. `fetchDataRecords` never reports `webkit-extension://` origins, not
+even after `_allowWebsiteDataRecordsForAllOrigins`, so the extension side of the decision is only
+directly visible in the ITPDebug log; during development it read `About to remove data records for
+... itp-control.example(all but cookies), <uuid of the extension whose statistics had been
+cleared>(all but cookies)` with the extension whose interaction had been logged absent from the
+list.
+
+**The TASK-68 recovery stays.** Keeping the origin out of the purge list removes the cause that was
+actually observed; the keep-alive watchdog and the `loadBackgroundContent` restart remain the safety
+net for any other way a worker can stop answering, and the context reload on
+`backgroundContentFailedToLoad` remains the escape from a stale registration.
+
 #### Log filters
 
 Detour side (the network process lines are the ones that say whether a registration was reused or
