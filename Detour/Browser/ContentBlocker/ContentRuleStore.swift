@@ -243,15 +243,6 @@ class ContentRuleStore {
         compiledLists
     }
 
-    func removeCachedList(identifier: String) {
-        compiledLists.removeValue(forKey: identifier)
-        ruleListStore.removeContentRuleList(forIdentifier: identifier) { error in
-            if let error {
-                log.error("Remove error for \(identifier, privacy: .public): \(error.localizedDescription)")
-            }
-        }
-    }
-
     func invalidateAll() {
         for id in compiledLists.keys {
             ruleListStore.removeContentRuleList(forIdentifier: id) { _ in }

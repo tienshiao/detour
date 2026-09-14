@@ -930,7 +930,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     /// Script message handlers this controller registers on every owned pane webview.
-    private static let ownedScriptHandlerNames = ["linkHover", BlockedResourceTracker.messageName, "editableFieldFocus"]
+    private static let ownedScriptHandlerNames = ["linkHover", "editableFieldFocus"]
 
     /// Wake a sleeping split member alongside the focused pane, mirroring the
     /// wake path in `selectTab`. Guards on the missing webView rather than
@@ -2243,14 +2243,8 @@ class BrowserWindowController: NSWindowController {
     private func hidePeekUI() {
         guard peekOverlayView != nil else { return }
         peekTabSubscriptions.removeAll()
-        if let peekWebView = selectedTab?.peekTab?.webView {
-            // Symmetric with claimPeekWebView: drop the userContentController's
-            // strong reference to this controller while the peek is hidden —
-            // the next present re-claims it, possibly from another window.
-            peekWebView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-            if peekWebView !== pipContentView {
-                peekWebView.removeFromSuperview()
-            }
+        if let peekWebView = selectedTab?.peekTab?.webView, peekWebView !== pipContentView {
+            peekWebView.removeFromSuperview()
         }
         peekOverlayView?.removeFromSuperview()
         peekOverlayView = nil
@@ -2261,8 +2255,6 @@ class BrowserWindowController: NSWindowController {
     private func claimPeekWebView(_ webView: WKWebView) {
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
-        webView.configuration.userContentController.add(self, name: BlockedResourceTracker.messageName)
     }
 
     /// Re-presents the selected tab's peek overlay after it was hidden (tab
@@ -2376,7 +2368,6 @@ class BrowserWindowController: NSWindowController {
         // peek's icon while the new page loads — or persist it if that page has
         // none.
         if let orphan = tab.peekTab {
-            orphan.webView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
             orphan.teardown()
         }
         if url != tab.peekURL {
@@ -2495,7 +2486,6 @@ class BrowserWindowController: NSWindowController {
         guard let overlay = peekOverlayView else { return }
         let tab = selectedTab
         let peekTab = tab?.peekTab
-        peekTab?.webView?.configuration.userContentController.removeScriptMessageHandler(forName: BlockedResourceTracker.messageName)
         peekTabSubscriptions.removeAll()
         tab?.clearPeekState()
         reloadSelectedTabSidebarCell()
@@ -2907,16 +2897,6 @@ extension BrowserWindowController: WKScriptMessageHandler {
         } else if message.name == "editableFieldFocus", let editing = message.body as? Bool {
             if let webView = message.webView as? BrowserWebView {
                 webView.isEditingWebContent = editing
-            }
-        } else if message.name == BlockedResourceTracker.messageName, let count = message.body as? Int {
-            if let peek = selectedTab?.peekTab, message.webView == peek.webView {
-                peek.blockedCount = count
-            } else if let tab = selectedTab,
-                      let member = splitMembers(of: tab).first(where: { $0.webView === message.webView }) {
-                // In a split, the message may come from the unfocused pane.
-                member.blockedCount = count
-            } else {
-                selectedTab?.blockedCount = count
             }
         }
     }

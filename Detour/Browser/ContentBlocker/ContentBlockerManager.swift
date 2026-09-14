@@ -9,6 +9,14 @@ extension Notification.Name {
     static let contentBlockerStatusDidChange = Notification.Name("contentBlockerStatusDidChange")
 }
 
+/// `-[WKWebpagePreferences _setContentBlockersEnabled:]`, declared in WebKit's
+/// `WKWebpagePreferencesPrivate.h` (macOS 10.15+). Safari's per-site content
+/// blocker switch is this setter; there is no public equivalent.
+@objc protocol WKWebpagePreferencesContentBlockerShim {
+    @objc(_setContentBlockersEnabled:)
+    func setContentBlockersEnabled(_ enabled: Bool)
+}
+
 class ContentBlockerManager {
     static let shared = ContentBlockerManager()
 
@@ -36,7 +44,7 @@ class ContentBlockerManager {
     private let fetchInterval: TimeInterval = 86400 // 24 hours
 
     private init() {
-        whitelist = ContentBlockerWhitelist(ruleStore: ruleStore)
+        whitelist = ContentBlockerWhitelist()
         // Detour/ContentBlocker in the default data directory, as before; an
         // isolated data directory downloads into its own (TASK-36).
         cacheDir = ContentBlockerStorage.current.filterListCacheDirectory
@@ -66,11 +74,6 @@ class ContentBlockerManager {
                 }
             }
         }
-
-        // Recompile whitelist for all profiles
-        for profile in TabStore.shared.profiles {
-            whitelist.recompileWhitelistRules(profileID: profile.id) {}
-        }
     }
 
     /// Called when an async WebKit store lookup finishes. Once all lookups are done,
@@ -84,10 +87,12 @@ class ContentBlockerManager {
 
     // MARK: - Apply Rules
 
+    /// Adds the profile's enabled filter lists to `userContentController`.
+    ///
+    /// Adds no user script: this is called again on every rules change (after
+    /// `removeAllContentRuleLists`), and the blocked-load counter now comes from
+    /// WebKit's own per-list action callback instead (TASK-69).
     func applyRuleLists(to userContentController: WKUserContentController, profile: Profile) {
-        // Add blocked resource tracker script
-        userContentController.addUserScript(BlockedResourceTracker.userScript)
-
         guard profile.isAdBlockingEnabled else { return }
 
         let enabledLists: [(String, Bool)] = [
@@ -101,11 +106,45 @@ class ContentBlockerManager {
             guard isEnabled, let list = ruleStore.getCachedList(identifier: identifier) else { continue }
             userContentController.add(list)
         }
+    }
 
-        // Add whitelist (ignore-previous-rules) last so it overrides
-        if let whitelistRules = whitelist.getWhitelistRuleList(profileID: profile.id) {
-            userContentController.add(whitelistRules)
+    // MARK: - Per-site switch (TASK-69)
+
+    /// Turns content blocking off for this navigation when its host is
+    /// whitelisted for `profile`.
+    ///
+    /// `-[WKWebpagePreferences _setContentBlockersEnabled:]` (SPI, macOS 10.15+)
+    /// disables every content rule list for the main-frame document the
+    /// navigation creates and for every subresource and subframe load under it —
+    /// which an `ignore-previous-rules` rule in a separate rule list cannot do,
+    /// because WebKit evaluates each list independently and merges their Block
+    /// results.
+    ///
+    /// Call only for main-frame navigations: a subframe's preferences do not
+    /// govern the document's blocking.
+    func configure(_ preferences: WKWebpagePreferences, forNavigationTo url: URL?, profile: Profile) {
+        guard let host = url?.host, whitelist.isWhitelisted(host: host, profileID: profile.id) else { return }
+        Self.setContentBlockersEnabled(false, on: preferences)
+    }
+
+    /// The SPI call itself, guarded so a WebKit that dropped the selector logs
+    /// once instead of trapping.
+    static func setContentBlockersEnabled(_ enabled: Bool, on preferences: WKWebpagePreferences) {
+        let selector = NSSelectorFromString("_setContentBlockersEnabled:")
+        guard preferences.responds(to: selector) else {
+            reportMissingContentBlockerSPI()
+            return
         }
+        unsafeBitCast(preferences, to: WKWebpagePreferencesContentBlockerShim.self)
+            .setContentBlockersEnabled(enabled)
+    }
+
+    private static var reportedMissingSPI = false
+
+    private static func reportMissingContentBlockerSPI() {
+        guard !reportedMissingSPI else { return }
+        reportedMissingSPI = true
+        log.error("WKWebpagePreferences does not respond to _setContentBlockersEnabled: — the per-site content blocker switch cannot take effect")
     }
 
     func reapplyRuleLists() {

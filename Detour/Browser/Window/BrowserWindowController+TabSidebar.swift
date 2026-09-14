@@ -172,11 +172,11 @@ extension BrowserWindowController: TabSidebarDelegate {
 
         vc.onBlockingToggle = { [weak self] in
             guard let self, let profile = self.activeSpace?.profile, !host.isEmpty else { return }
-            ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id) {
-                DispatchQueue.main.async {
-                    ContentBlockerManager.shared.reapplyRuleLists()
-                }
-            }
+            ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id)
+            // The switch takes effect per navigation (the page's
+            // `WKWebpagePreferences`), so the page has to load again — the way
+            // Safari's per-site switch reloads the tab (TASK-69).
+            self.displayTab?.reload()
         }
 
         vc.onPinToggle = { [weak self] extensionID in

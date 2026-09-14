@@ -4,7 +4,26 @@ import WebKit
 // MARK: - WKNavigationDelegate
 
 extension BrowserWindowController: WKNavigationDelegate {
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+    /// The preferences variant, not the plain `decidePolicyFor:` — returning a
+    /// `WKWebpagePreferences` is the only way to turn content blocking off for a
+    /// page (the per-site switch, TASK-69). WebKit calls only one of the two, so
+    /// implementing this one keeps every branch of the decision below in effect.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        let policy = await decidePolicy(for: navigationAction, in: webView)
+        // Main frame only: a subframe's preferences do not govern the document's
+        // content blocking, and the host that decides is the page's.
+        if policy == .allow, navigationAction.targetFrame?.isMainFrame == true,
+           let profile = activeSpace?.profile {
+            ContentBlockerManager.shared.configure(preferences,
+                                                   forNavigationTo: navigationAction.request.url,
+                                                   profile: profile)
+        }
+        return (policy, preferences)
+    }
+
+    private func decidePolicy(for navigationAction: WKNavigationAction,
+                              in webView: WKWebView) async -> WKNavigationActionPolicy {
         if navigationAction.navigationType == .linkActivated && navigationAction.modifierFlags.contains(.command) {
             if let url = navigationAction.request.url, let space = activeSpace {
                 _ = store.addTab(in: space, url: url, parentID: selectedTabID)
@@ -259,6 +278,22 @@ extension BrowserWindowController: WKNavigationDelegate {
         }
         guard tab.noteProcessTermination() <= 2 else { return }
         tab.reload()
+    }
+
+    /// WebKit's per-list action report (`WKNavigationDelegatePrivate`): called
+    /// whenever a content rule list acted on a load in `webView` — a real
+    /// blocked load, unlike the `error`-event user script this replaces, which
+    /// counted every resource that merely failed to load (TASK-69).
+    ///
+    /// `action` is a `_WKContentRuleListAction`; `blockedLoad` is read by key,
+    /// the type being SPI. A page whose content blockers are disabled (the
+    /// per-site switch) produces no callbacks at all, so no whitelist check
+    /// belongs here.
+    @objc(_webView:contentRuleListWithIdentifier:performedAction:forURL:)
+    func webView(_ webView: WKWebView, contentRuleListWithIdentifier identifier: String,
+                 performedAction action: NSObject, forURL url: URL) {
+        guard action.value(forKey: "blockedLoad") as? Bool == true else { return }
+        tab(owning: webView)?.blockedCount += 1
     }
 
     /// Resolve the tab (or peek tab) that owns the web view firing a navigation
