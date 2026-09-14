@@ -187,6 +187,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 userInfo: [NSLocalizedDescriptionKey: nativeHostForbiddenMessage])
     }
 
+    /// The disconnect reason on a native host port whose background context was
+    /// replaced by a new one (TASK-67, the supersede path of `connectUsing`).
+    /// The context that opened it is already gone, so nothing is likely to read
+    /// this; it exists so the port ends with a reason rather than in silence.
+    static let replacedBackgroundContextMessage =
+        "The extension's background context was replaced; Detour closed its native host connection."
+
+    static func replacedBackgroundContextError() -> NSError {
+        NSError(domain: "DetourExtension", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: replacedBackgroundContextMessage])
+    }
+
     // MARK: - Notifications
 
     static let extensionsDidChangeNotification = Notification.Name("ExtensionManagerExtensionsDidChange")
@@ -491,35 +503,53 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func closeExtensionPorts(for extensionID: String, in controller: WKWebExtensionController) {
         let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
 
-        // Relayed sockets first: each teardown disconnects its own port, and the
-        // registry entry is dropped as a whole so the disconnect chain finds
-        // nothing left to remove — which is also what stops each one releasing its
-        // keep-alive hold, since `contextUnloaded` below resets the whole count.
-        let relays = webSocketRelays.removeValue(forKey: key) ?? [:]
-        for relay in relays.values {
-            relay.tearDown()
+        // WebKit closes an unloaded context's ports itself, so the extension side
+        // of each conversation is already ending: pass no error and only end the
+        // host processes, which would otherwise be left talking to a dead context.
+        let torn = tearDownNativeConnections(for: key, disconnectingPortsWith: nil)
+        if torn.relays > 0 {
+            log.info("Tore down \(torn.relays) relayed WebSocket(s) for \(extensionID, privacy: .public) (context unloaded)")
         }
-        if !relays.isEmpty {
-            log.info("Tore down \(relays.count) relayed WebSocket(s) for \(extensionID, privacy: .public) (context unloaded)")
-        }
-
-        // The whole context is going away: take its hosts out of the registry and
-        // reset the keep-alive bookkeeping with it (nothing is sent, so the order
-        // relative to the disconnects below is moot). Dropping the registry entry
-        // first also means each host's own release callback finds nothing to release.
-        let hosts = liveNativeHosts.removeValue(forKey: key) ?? [:]
-        applyKeepAlive(.contextUnloaded, for: key)
         keepAlivePortOpenCounts.removeValue(forKey: key)
         if let port = keepAlivePorts.removeValue(forKey: key) {
             port.disconnect(throwing: nil)
             log.info("Keep-alive port closed for \(extensionID, privacy: .public) (context unloaded)")
         }
-        // WebKit closes an unloaded context's ports itself, but that only ends the
-        // extension side of the conversation: disconnect the hosts explicitly so the
-        // processes are gone rather than left talking to a dead context.
+    }
+
+    /// End every native connection Detour holds for one (controller, extension)
+    /// key — real native messaging hosts (process killed, and their WebKit port
+    /// disconnected when `hostError` says with what) and relayed WebSockets
+    /// (TASK-8) — and reset the keep-alive bookkeeping with them: the whole
+    /// context they belonged to is gone, so `contextUnloaded` is the event, and
+    /// nothing is sent anywhere.
+    ///
+    /// Every registry entry is taken away *as a whole* before anything is
+    /// disconnected, so each teardown this sets off finds nothing left to release:
+    /// a relay's `onDisconnect`, a host's process exit and its port's disconnect
+    /// all release through a removal that has already happened, which is what
+    /// makes the release exactly once.
+    ///
+    /// Shared by the two paths that know a background context has gone away — the
+    /// context unload (`closeExtensionPorts`) and the arrival of a replacement
+    /// context's keep-alive port (TASK-67) — so the two cannot drift apart.
+    @discardableResult
+    private func tearDownNativeConnections(
+        for key: KeepAlivePortKey, disconnectingPortsWith hostError: NSError?
+    ) -> (hosts: Int, relays: Int) {
+        let relays = webSocketRelays.removeValue(forKey: key) ?? [:]
+        for relay in relays.values {
+            relay.tearDown()
+        }
+        let hosts = liveNativeHosts.removeValue(forKey: key) ?? [:]
+        applyKeepAlive(.contextUnloaded, for: key)
         for live in hosts.values {
             live.host.disconnect()
+            if let hostError {
+                live.port.disconnect(throwing: hostError)
+            }
         }
+        return (hosts.count, relays.count)
     }
 
     /// Tear down every real native host the extension has running, in every
@@ -1933,9 +1963,31 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                     domain: "DetourExtension", code: -1,
                     userInfo: [NSLocalizedDescriptionKey: Self.keepAliveSupersededMessage]))
                 log.info("Keep-alive port for \(extID, privacy: .public) superseded by a newer one")
-                // Disarm the state with the old port so the new one (which starts
-                // disarmed) is re-armed below rather than silently left idle.
-                applyKeepAlive(.portClosed, for: key)
+
+                // A second keep-alive port while the first is still open means the
+                // background context was replaced, and everything Detour holds for
+                // this extension belongs to the context that went away: the
+                // polyfill opens this port before any extension code runs, so the
+                // replacement cannot have connected anything yet.
+                //
+                // Nothing else tells Detour that context ended.
+                // `WebExtensionContext::unload()` — what `chrome.runtime.reload()`
+                // runs (reload = unload + load), and what a WebKit-internal
+                // background restart runs — clears its native port map *without*
+                // calling `reportDisconnection`, so no host port ever disconnects:
+                // the host processes stay alive as Detour's children and keep
+                // counting towards the keep-alive, which then stays armed for a
+                // worker with no live host of its own (production 2026-09-13,
+                // TASK-67: 1Password's workers replaced at 18:38:49, armed counts
+                // climbing to 2 and 3, ten BrowserSupport processes for three
+                // workers). So tear them down here, which also resets the count to
+                // zero: the new port's `portOpened` below arms nothing until the
+                // new context connects a host of its own.
+                let torn = tearDownNativeConnections(
+                    for: key, disconnectingPortsWith: Self.replacedBackgroundContextError())
+                if torn.hosts > 0 || torn.relays > 0 {
+                    log.info("Replaced background context of \(extID, privacy: .public): tore down \(torn.hosts) stale native host(s) and \(torn.relays) relayed WebSocket(s)")
+                }
             }
             keepAlivePorts[key] = port
             keepAlivePortOpenCounts[key, default: 0] += 1

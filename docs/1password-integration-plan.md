@@ -305,6 +305,48 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    host holds the keep-alive's idle port, and that alone moved it off the 30 s unload onto the
    2-minute path (unloaded at ~120 s) — the cost the permission gate exists to avoid.
 
+   **Production, 2026-09-13 (TASK-21, signed build, 1Password 8.12.26.40, macOS 26.6.2, three
+   profiles): partial.** All three workers logged `Keep-alive armed ... 1 native host(s) connected`
+   at 18:15:49, one second after their background pages were created. Personal and Work then held
+   with no restart until the user locked 1Password at 18:37:28 (21+ minutes, AC #1 of TASK-16 in
+   production) — but both also had a relayed WebSocket open (below). Private, which opened no
+   socket, was unloaded by WebKit at 18:18:42 (`WebPageProxy::close`, 174 s after creation) with
+   the keep-alive armed the whole time and nothing in Detour's or WebKit's log in the preceding
+   3 s; the next background load failed with code 6 and the recovery reload fixed it. After the
+   lock closed every relayed socket, workers started at hh:mm:49 were closed about 170 s later and
+   restarted by 1Password's one-minute alarm, so the three profiles cycled about once a minute
+   between them. 170 s is 120 s past the second 45-second ping, which says the first two pings
+   were counted and later ones never arrived — Detour did not log pings, so production could not
+   tell whether the worker stopped posting or WebKit stopped counting. Filed as TASK-68 (per-ping
+   logging, a harness reproduction, and Detour-driven pings whose replies Detour can observe).
+   Quitting the desktop app (18:38:41) also exposed TASK-67: 1Password's workers were replaced at
+   18:38:49 without WebKit reporting their ports' disconnection, so the old BrowserSupport hosts
+   stayed registered, the armed count read 2 and then 3 for one profile, and `ps` showed 10 host
+   processes for three workers at 18:44. The lock/quit path never brings the host count to zero
+   (BrowserSupport stays connected through a lock, and quitting relaunches the app), so AC #2 of
+   TASK-16 — unload after the last host exits — remains covered only by the harness.
+
+   **A replaced background context takes its native hosts with it (TASK-67, fixed 2026-09-14).**
+   WebKit's `WebExtensionContext::unload()` clears `m_nativePortMap` without ever calling
+   `reportDisconnection`, and `chrome.runtime.reload()` *is* `unload()` + `load()`, so a background
+   context that reloads itself — or that WebKit restarts in place — leaves every native port Detour
+   holds for it (real hosts, relayed sockets, the keep-alive port) with no disconnect callback at
+   all. Detour's own cleanup runs only through `Profile.unloadExtension` → `closeExtensionPorts`,
+   which a WebKit-internal reload never goes through, so the host processes stay alive as Detour's
+   children and keep counting towards the keep-alive. Reproduced in
+   `ExtensionPolyfillProfileWiringTests` with a worker probe that holds one (and two) ports to a
+   fake host and then calls `chrome.runtime.reload()`: WebKit fired no disconnect handler for any
+   of them, the old `sleep` processes were still running, and the state read `connectedHosts: 4`
+   for a worker with two hosts — one second after the replacement started, and the same signature
+   as production's `Keep-alive armed … 2 native host(s) connected` at 18:38:49. The one signal
+   Detour does get is the replacement's keep-alive port superseding the old one, and the polyfill
+   opens that port before any extension code runs, so everything registered under that
+   (controller, extension) key at that moment belongs to the context that went away. The supersede
+   path now tears all of it down — host processes killed and their ports disconnected, relayed
+   sockets ended, the keep-alive reset with `contextUnloaded` so the count restarts at zero —
+   through the same helper `closeExtensionPorts` uses, and logs `Replaced background context of
+   <ext>: tore down N stale native host(s) and M relayed WebSocket(s)`.
+
    **History — 2026-09-11 22:40 (TASK-15): the worker-side detection this replaces was inert, and
    its first version broke the popup.** The original design wrapped `runtime.connectNative` in the
    worker to count real ports itself. WebKit re-materializes that property on every read
@@ -426,6 +468,15 @@ echo server, with a fake port), `ExtensionPolyfillTests` (the JS state machine a
 `ExtensionPolyfillProfileWiringTests.testWorkerWebSocketIsRelayedAndReleasedThroughTheProductionWiring`
 (the production Profile wiring, including that Detour holds exactly one session while the socket is
 open and none after it closes).
+
+**Production, 2026-09-13 (TASK-21): the relay works against 1Password's notifier.** At 18:15:50
+two profiles logged `Relaying a WebSocket for aeblfdkhhhdcdjpifhhbdiojplfjncoa` followed by `Relayed
+WebSocket open`; the reloaded Private worker opened a third at 18:18:50 (open at 18:18:50.991). All
+three stayed open until the user locked 1Password at 18:37:28, when each closed with `code 1005,
+clean true`. Whether a vault change made elsewhere is pushed live, and the API Explorer echo probe
+against `wss://echo.websocket.org`, were not exercised in that run (still open in TASK-21). The
+sockets also turned out to be what held the Personal and Work workers up: the workers without one
+were unloaded at ~170 s despite the armed keep-alive (TASK-68, above).
 
 ### Phase 2 — Cheap, high-confidence stubs (parallelizable with Phase 1)
 

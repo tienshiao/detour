@@ -270,8 +270,16 @@ final class FakeNativeMessagingHost {
 
     /// How many of this fixture's host processes are alive right now.
     func processCount() -> Int {
+        processIDs().count
+    }
+
+    /// The pids of this fixture's live host processes. A test that replaces a
+    /// background context needs the identities, not just the count: the old and
+    /// the new context spawn the same number of hosts, so "the old ones exited"
+    /// can only be said about specific processes (TASK-67).
+    func processIDs() -> [Int32] {
         runTool("/usr/bin/pgrep", ["-f", "sleep \(sleepToken)"])
-            .output.split(separator: "\n").filter { !$0.isEmpty }.count
+            .output.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 
     func tearDown() {

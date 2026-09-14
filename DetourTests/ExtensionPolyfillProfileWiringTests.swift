@@ -1048,6 +1048,277 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(state()?.portOpen, true)
     }
 
+    // MARK: - TASK-67: a background context replaced without its ports closing
+
+    /// An MV3 extension whose background content is a *service worker*, built at
+    /// a given id so a `FakeNativeMessagingHost` can allow that id before the
+    /// extension exists. The worker carries the polyfill itself: the user script
+    /// `Profile.extensionController` installs reaches web views, not workers.
+    private func makeWorkerExtension(id: String, permissions: [String],
+                                     backgroundJS: String) async throws -> WebExtension {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-test-\(id)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        tempDirs.append(dir)
+
+        let permissionsJSON = String(
+            decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
+        try """
+        {
+            "manifest_version": 3,
+            "name": "Worker Probe",
+            "version": "1.0.0",
+            "permissions": \(permissionsJSON),
+            "background": {"service_worker": "background.js", "type": "module"}
+        }
+        """.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        try "<html><body><div id=\"test\">wiring test page</div></body></html>"
+            .write(to: dir.appendingPathComponent("test.html"), atomically: true, encoding: .utf8)
+        try backgroundJS.write(to: dir.appendingPathComponent("background.js"),
+                               atomically: true, encoding: .utf8)
+
+        let wkExt = try await WKWebExtension(resourceBaseURL: dir)
+        let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
+        let ext = WebExtension(id: id, manifest: manifest, basePath: dir)
+        ext.wkExtension = wkExt
+        ExtensionManager.shared.extensions.removeAll { $0.id == id }
+        ExtensionManager.shared.extensions.append(ext)
+        if !registeredExtensionIDs.contains(id) { registeredExtensionIDs.append(id) }
+        return ext
+    }
+
+    /// A worker that connects `portCount` native messaging ports to `hostName` at
+    /// startup, can open one relayed WebSocket on request, and on request calls
+    /// `chrome.runtime.reload()` — WebKit's own unload+load of the context, which
+    /// is how a background context is replaced with none of its native ports ever
+    /// reporting a disconnect (`WebExtensionContext::unload()` clears
+    /// `m_nativePortMap` without calling `reportDisconnection`).
+    private func makeNativeHostProbeWorkerExtension(
+        id: String, hostName: String, portCount: Int
+    ) async throws -> WebExtension {
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+
+        const HOST = '\(hostName)';
+        const ports = [];
+        let connectError = null;
+        for (let i = 0; i < \(portCount); i++) {
+            try {
+                ports.push(chrome.runtime.connectNative(HOST));
+            } catch (e) {
+                connectError = String(e && e.message !== undefined ? e.message : e);
+            }
+        }
+        // Held on the global so nothing collects the ports under us.
+        globalThis.__detourProbeNativePorts = ports;
+        let disconnects = 0;
+        for (const port of ports) {
+            try { port.onDisconnect.addListener(() => { disconnects += 1; }); } catch (e) {}
+        }
+        let probeSocket = null;
+
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message) return false;
+            if (message.type === 'ping') {
+                const keepAlive = globalThis.__detourNativePortKeepAlive;
+                sendResponse({
+                    type: 'pong',
+                    ports: ports.length,
+                    disconnects: disconnects,
+                    connectError: connectError,
+                    installMode: keepAlive ? keepAlive.installMode : 'missing',
+                    armed: keepAlive ? keepAlive.armed : false
+                });
+                return true;
+            }
+            if (message.type === 'wsOpen') {
+                const out = { opened: false, error: null };
+                try {
+                    const socket = new WebSocket(message.url);
+                    probeSocket = socket;
+                    globalThis.__detourProbeSocket = socket;
+                    socket.onopen = () => { out.opened = true; sendResponse(out); };
+                    socket.onclose = (e) => {
+                        if (!out.opened) {
+                            out.error = 'closed before open: ' + e.code;
+                            sendResponse(out);
+                        }
+                    };
+                } catch (e) {
+                    out.error = String(e && e.message !== undefined ? e.message : e);
+                    sendResponse(out);
+                }
+                return true;
+            }
+            if (message.type === 'reload') {
+                sendResponse({ ok: true });
+                // Answered first: reload() tears this context down at once.
+                setTimeout(() => { chrome.runtime.reload(); }, 50);
+                return true;
+            }
+            return false;
+        });
+        """
+        return try await makeWorkerExtension(
+            id: id, permissions: ["nativeMessaging"], backgroundJS: backgroundJS)
+    }
+
+    /// Start the probe's context in a fresh profile and wait until its worker has
+    /// connected `portCount` hosts and Detour has armed its keep-alive.
+    private func startNativeHostProbe(
+        _ ext: WebExtension, host: FakeNativeMessagingHost, portCount: Int, profileName: String
+    ) async throws -> (profile: Profile, context: WKWebExtensionContext, page: WKWebView) {
+        let profile = makeProfile(profileName)
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        context.loadBackgroundContent { error in
+            if let error { print("TASK-67: loadBackgroundContent failed: \(error)") }
+        }
+        try await waitUntil("the worker's \(portCount) native host(s) to connect", timeout: 30) {
+            ExtensionManager.shared.liveNativeHostCountForTesting(
+                controller: controller, extensionID: ext.id) == portCount
+                && host.processCount() == portCount
+        }
+        try await waitUntil("Detour to arm the worker's keep-alive", timeout: 20) {
+            ExtensionManager.shared.keepAliveStateForTesting(
+                controller: controller, extensionID: ext.id)?.armed == true
+        }
+        return (profile, context, page)
+    }
+
+    /// Ask the worker to call `chrome.runtime.reload()` and wait until the
+    /// replacement context has opened its own keep-alive port (the moment Detour
+    /// learns a new background context exists). WebKit does not always start the
+    /// replacement on its own, so the wake is nudged while waiting.
+    private func reloadProbeContext(
+        _ context: WKWebExtensionContext, page: WKWebView, controller: WKWebExtensionController,
+        extensionID: String
+    ) async throws {
+        let manager = ExtensionManager.shared
+        let portsBefore = manager.keepAlivePortOpenCountForTesting(
+            controller: controller, extensionID: extensionID)
+        let reloaded = try await askWorker(from: page, message: ["type": "reload"], timeout: 10)
+        XCTAssertEqual((reloaded["reply"] as? [String: Any])?["ok"] as? Bool, true,
+                       "the worker never acknowledged the reload: \(reloaded)")
+
+        var nudged = Date.distantPast
+        try await waitUntil("the replacement context's keep-alive port", timeout: 60) {
+            if manager.keepAlivePortOpenCountForTesting(
+                controller: controller, extensionID: extensionID) > portsBefore { return true }
+            if Date().timeIntervalSince(nudged) > 5 {
+                nudged = Date()
+                context.loadBackgroundContent { _ in }
+            }
+            return false
+        }
+    }
+
+    /// `chrome.runtime.reload()` replaces the background context behind Detour's
+    /// back: WebKit's `unload()` clears its native port map without reporting a
+    /// single disconnection, so every host Detour spawned for the old worker stays
+    /// registered — and alive — while the new worker connects its own. The one
+    /// signal Detour does get is the new context's keep-alive port superseding the
+    /// old one, and that is where the replaced context's connections are torn down
+    /// (TASK-67).
+    func testRuntimeReloadTearsDownTheReplacedContextsNativeHost() async throws {
+        try await assertRuntimeReloadReleasesTheReplacedContextsHosts(portCount: 1)
+    }
+
+    /// The same with two hosts, the shape production showed (1Password's workers
+    /// hold several BrowserSupport helpers, and the leaked count climbed to 2 and
+    /// then 3 for one profile).
+    func testRuntimeReloadTearsDownEveryNativeHostOfTheReplacedContext() async throws {
+        try await assertRuntimeReloadReleasesTheReplacedContextsHosts(portCount: 2)
+    }
+
+    private func assertRuntimeReloadReleasesTheReplacedContextsHosts(
+        portCount: Int, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let id = measurementExtensionID("task67-reload-\(portCount)")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeNativeHostProbeWorkerExtension(
+            id: id, hostName: host.name, portCount: portCount)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let started = try await startNativeHostProbe(
+            ext, host: host, portCount: portCount, profileName: "TASK-67 Reload \(portCount)")
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+
+        let firstGeneration = Set(host.processIDs())
+        XCTAssertEqual(firstGeneration.count, portCount, "precondition: one process per port",
+                       file: file, line: line)
+        XCTAssertEqual(manager.keepAliveStateForTesting(
+            controller: controller, extensionID: ext.id)?.connectedHosts, portCount,
+                       file: file, line: line)
+
+        try await reloadProbeContext(started.context, page: started.page,
+                                     controller: controller, extensionID: ext.id)
+
+        try await waitUntil("the replaced context's host processes to exit", timeout: 30) {
+            host.processIDs().allSatisfy { !firstGeneration.contains($0) }
+        }
+        try await waitUntil("the replacement's hosts to be the only ones registered", timeout: 30) {
+            manager.liveNativeHostCountForTesting(
+                controller: controller, extensionID: ext.id) == portCount
+                && host.processCount() == portCount
+        }
+        let secondGeneration = Set(host.processIDs())
+        print("TASK-67 [\(portCount) host(s)]: first generation \(firstGeneration.sorted()), after the reload \(secondGeneration.sorted()); live hosts \(manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id)), state \(String(describing: manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)))")
+        XCTAssertTrue(secondGeneration.isDisjoint(with: firstGeneration),
+                      "every host process of the replaced context must be gone", file: file, line: line)
+
+        let state = try XCTUnwrap(manager.keepAliveStateForTesting(
+            controller: controller, extensionID: ext.id), file: file, line: line)
+        XCTAssertEqual(state.connectedHosts, portCount,
+                       "the armed count must be the new context's hosts only", file: file, line: line)
+        XCTAssertTrue(state.portOpen, file: file, line: line)
+        XCTAssertTrue(state.armed, "the new context's own hosts must arm it", file: file, line: line)
+    }
+
+    /// A relayed WebSocket (TASK-8) is a native port too, so WebKit drops it in
+    /// the same silence — and it holds the keep-alive up exactly as a host does.
+    /// The supersede teardown must end its session as well.
+    func testASupersededKeepAlivePortTearsDownTheReplacedContextsRelayedSocket() async throws {
+        let server = try LoopbackWebSocketServer()
+        defer { server.stop() }
+        let serverPort = try await server.start()
+
+        let id = measurementExtensionID("task67-relay")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeNativeHostProbeWorkerExtension(id: id, hostName: host.name, portCount: 1)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let started = try await startNativeHostProbe(
+            ext, host: host, portCount: 1, profileName: "TASK-67 Reload Relay")
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+
+        let opened = try await askWorker(
+            from: started.page, message: ["type": "wsOpen", "url": "ws://127.0.0.1:\(serverPort)/"],
+            timeout: 15)
+        XCTAssertEqual((opened["reply"] as? [String: Any])?["opened"] as? Bool, true, "\(opened)")
+        XCTAssertEqual(manager.webSocketRelayCountForTesting(controller: controller, extensionID: ext.id), 1)
+
+        try await reloadProbeContext(started.context, page: started.page,
+                                     controller: controller, extensionID: ext.id)
+
+        // The replacement worker opens no socket of its own, so the count must
+        // fall to zero and stay there.
+        try await waitUntil("the replaced context's relayed socket to be torn down", timeout: 30) {
+            manager.webSocketRelayCountForTesting(controller: controller, extensionID: ext.id) == 0
+        }
+        try await waitUntil("the replacement's own host to be the only connection", timeout: 30) {
+            manager.keepAliveStateForTesting(
+                controller: controller, extensionID: ext.id)?.connectedHosts == 1
+                && host.processCount() == 1
+        }
+    }
+
     // MARK: - TASK-8: relayed WebSockets through the production wiring
 
     /// A background worker that opens, uses and closes one relayed WebSocket on
