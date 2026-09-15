@@ -670,7 +670,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private func configureCell(_ cell: SuggestionCellView, for item: SuggestionItem) {
         switch item {
         case .searchInput(let text):
-            let looksLikeURL = text.contains(".") && !text.contains(" ")
+            let looksLikeURL = AddressInputClassifier.directURL(from: text) != nil
             cell.configure(title: text, url: nil, icon: nil, isSearch: !looksLikeURL, isGoTo: looksLikeURL)
         case .historyResult(let url, let title, let faviconURL):
             cell.configure(title: title, url: url, icon: nil, isSearch: false)

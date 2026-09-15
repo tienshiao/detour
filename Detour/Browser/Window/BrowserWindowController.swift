@@ -1877,15 +1877,9 @@ class BrowserWindowController: NSWindowController {
     }
 
     /// A URL the input denotes directly (explicit scheme or host-like); nil when
-    /// the input is a search phrase.
+    /// the input is a search phrase. See `AddressInputClassifier`.
     func directURL(from input: String) -> URL? {
-        if input.hasPrefix("http://") || input.hasPrefix("https://") {
-            return URL(string: input)
-        }
-        if input.contains(".") && !input.contains(" ") {
-            return URL(string: "https://\(input)")
-        }
-        return nil
+        AddressInputClassifier.directURL(from: input)
     }
 
     func urlFromInput(_ input: String) -> URL? {
