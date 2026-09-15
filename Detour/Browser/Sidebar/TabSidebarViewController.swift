@@ -227,6 +227,18 @@ class TabSidebarViewController: NSViewController {
     private var pageSpaceIDs: [UUID] = []
     private var activePageIndex = 0
 
+    /// What a non-active page's table was last loaded with. The active page's
+    /// data source is the controller's own model; a non-active page renders its
+    /// own space (seen mid-swipe), captured at reload time so the table's cached
+    /// row count and heights always agree with what the data source returns.
+    private struct InactivePageContent {
+        let pinnedItems: [PinnedItem]
+        let tabItems: [TabListItem]
+        let tintColor: NSColor?
+    }
+    private var inactivePageContents: [ObjectIdentifier: InactivePageContent] = [:]
+    private var inactivePageReloadScheduled = false
+
     var activeSpaceID: UUID? {
         didSet { updateActivePage() }
     }
@@ -843,6 +855,7 @@ class TabSidebarViewController: NSViewController {
             page.removeFromSuperview()
         }
         spacePages.removeAll()
+        inactivePageContents.removeAll()
 
         // Build one page per space
         for space in spaces {
@@ -883,9 +896,64 @@ class TabSidebarViewController: NSViewController {
             )
         }
 
-        // Reload all non-active pages from TabStore
-        for (i, page) in spacePages.enumerated() where i != activePageIndex {
-            page.tableView.reloadData()
+        reloadInactivePages()
+    }
+
+    /// Reloads every non-active page (header, favourites, rows, tint) from its
+    /// space in TabStore.
+    private func reloadInactivePages() {
+        for index in spacePages.indices where index != activePageIndex {
+            reloadInactivePage(at: index)
+        }
+    }
+
+    private func reloadInactivePage(at index: Int) {
+        let spaces = relevantSpaces
+        guard index != activePageIndex, index < spacePages.count, index < spaces.count else { return }
+        let page = spacePages[index]
+        let space = spaces[index]
+        let tint = space.color.sidebarSafe(darkBackground: isDarkBackground)
+        inactivePageContents[ObjectIdentifier(page.tableView)] = InactivePageContent(
+            pinnedItems: flattenPinnedTree(
+                entries: space.pinnedEntries,
+                folders: space.pinnedFolders,
+                collapsedFolderIDs: Set(space.pinnedFolders.filter(\.isCollapsed).map(\.id)),
+                // The space's remembered selection (saved by setActiveSpace
+                // before the page goes inactive): an outgoing page keeps its
+                // table selection across reloadData, so its rows must still
+                // expose a selected tab inside a collapsed folder or the
+                // highlight lands on the wrong row.
+                selectedTabID: space.selectedTabID
+            ),
+            tabItems: tabListItems(from: space.tabs),
+            tintColor: tint
+        )
+        page.update(emoji: space.emoji, name: space.name)
+        page.favoritesBar.selectionColor = tint
+        page.updateFavorites(space.profile?.favorites ?? [], animated: false)
+        page.tableView.reloadData()
+    }
+
+    /// True while a non-active page can be on screen: a swipe is tracking or
+    /// settling, or a space-button click is animating the strip.
+    private var isPageStripInMotion: Bool {
+        isTrackingHorizontalSwipe || isAnimatingSwipe || spaceClickAnimation != nil
+    }
+
+    /// A space other than this window's active one changed (tabs, pinned
+    /// entries, folders, favourites). Non-active pages are refreshed whenever
+    /// the strip starts moving, so they only need an immediate reload while it
+    /// is already moving — coalesced, since tab updates (e.g. load progress)
+    /// can arrive many times a frame.
+    func inactiveSpaceContentDidChange() {
+        guard isPageStripInMotion, !inactivePageReloadScheduled else { return }
+        inactivePageReloadScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.inactivePageReloadScheduled = false
+            if self.isPageStripInMotion {
+                self.reloadInactivePages()
+            }
         }
     }
 
@@ -914,9 +982,17 @@ class TabSidebarViewController: NSViewController {
         }
         guard newIndex < spacePages.count else { return }
 
+        let previousIndex = activePageIndex
         activePageIndex = newIndex
         scrollView = spacePages[newIndex].scrollView
         tableView = spacePages[newIndex].tableView
+        inactivePageContents[ObjectIdentifier(tableView)] = nil
+        // The outgoing page was loaded from the controller's model (possibly an
+        // empty one, before a new window's space was assigned) — reload it from
+        // its own space so it is correct the next time a swipe reveals it.
+        if previousIndex != newIndex {
+            reloadInactivePage(at: previousIndex)
+        }
 
         // Snap strip to active page (no animation)
         let pageW = pageClipView.bounds.width
@@ -1274,6 +1350,7 @@ class TabSidebarViewController: NSViewController {
             return
         }
 
+        reloadInactivePages()
         isAnimatingSwipe = true
         let targetX = -CGFloat(targetIndex) * pageW
         let distance = abs(pageStripView.frame.origin.x - targetX)
@@ -1394,6 +1471,7 @@ class TabSidebarViewController: NSViewController {
         swipeStartTintColor = tintColor
         isSwipingSpaces = true
         stopSpaceClickAnimation()
+        reloadInactivePages()
         installSwipeMonitor()
         return processSwipeEvent(event)
     }
@@ -1560,31 +1638,30 @@ class TabSidebarViewController: NSViewController {
         return TabStore.shared.spaces.filter { !$0.isIncognito }
     }
 
+    /// The inactive-page snapshot backing `tv`, or nil for the active page
+    /// (whose data source is the controller's model).
+    private func inactivePageContent(for tv: NSTableView) -> InactivePageContent? {
+        guard tv !== tableView else { return nil }
+        return inactivePageContents[ObjectIdentifier(tv)]
+    }
+
     private func tabItemsForTableView(_ tv: NSTableView) -> [TabListItem] {
-        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else { return tabItems }
-        if index == activePageIndex { return tabItems }
-        let spaces = relevantSpaces
-        guard index < spaces.count else { return [] }
-        return tabListItems(from: spaces[index].tabs)
+        inactivePageContent(for: tv)?.tabItems ?? tabItems
+    }
+
+    /// The flattened pinned items a page's table renders. Row count and cell
+    /// content both come from here so they can never disagree.
+    private func pinnedItemsForTableView(_ tv: NSTableView) -> [PinnedItem] {
+        inactivePageContent(for: tv)?.pinnedItems ?? flattenedPinnedItems
+    }
+
+    /// The sidebar-safe tint a page renders with — its own space's colour.
+    private func safeTintColorForTableView(_ tv: NSTableView) -> NSColor? {
+        inactivePageContent(for: tv)?.tintColor ?? safeTintColor
     }
 
     private func pinnedItemCountForTableView(_ tv: NSTableView) -> Int {
-        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }) else {
-            return flattenedPinnedItems.count
-        }
-        if index == activePageIndex { return flattenedPinnedItems.count }
-        // Non-active pages: compute from the space's raw data (honoring collapsed
-        // folders, without selected-tab exposure)
-        let spaces = relevantSpaces
-        guard index < spaces.count else { return 0 }
-        let space = spaces[index]
-        let items = flattenPinnedTree(
-            entries: space.pinnedEntries,
-            folders: space.pinnedFolders,
-            collapsedFolderIDs: Set(space.pinnedFolders.filter(\.isCollapsed).map(\.id)),
-            selectedTabID: nil
-        )
-        return items.count
+        pinnedItemsForTableView(tv).count
     }
 
     func reloadTab(at index: Int) {
@@ -2112,8 +2189,8 @@ extension TabSidebarViewController: NSTableViewDataSource {
 
 extension TabSidebarViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let itemCount = pinnedItemCountForTableView(tableView)
-        let sRow = sidebarRow(for: row, pinnedItemCount: itemCount)
+        let pinnedItems = pinnedItemsForTableView(tableView)
+        let sRow = sidebarRow(for: row, pinnedItemCount: pinnedItems.count)
         let isActive = tableView === self.tableView
 
         switch sRow {
@@ -2138,8 +2215,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
             return cell
 
         case .pinnedItem(let index):
-            guard index < flattenedPinnedItems.count else { return makeTabCell(tableView) }
-            let item = flattenedPinnedItems[index]
+            guard index < pinnedItems.count else { return makeTabCell(tableView) }
+            let item = pinnedItems[index]
             switch item {
             case .entry(let entry, let depth):
                 let cell = makeTabCell(tableView)
@@ -2181,7 +2258,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 return cell
             case .folder(let folder, let depth):
                 let cell = makeFolderCell(tableView)
-                configureFolderCell(cell, folder: folder, depth: depth, isActive: isActive)
+                configureFolderCell(cell, folder: folder, depth: depth, isActive: isActive,
+                                    color: safeTintColorForTableView(tableView))
                 return cell
             case .split(_, let entries, let depth):
                 let cell = makeTabCell(tableView)
@@ -2431,8 +2509,9 @@ extension TabSidebarViewController: NSTableViewDelegate {
         return cell
     }
 
-    private func configureFolderCell(_ cell: FolderCellView, folder: PinnedFolder, depth: Int, isActive: Bool) {
-        cell.configure(name: folder.name, isCollapsed: folder.isCollapsed, depth: depth, color: safeTintColor)
+    private func configureFolderCell(_ cell: FolderCellView, folder: PinnedFolder, depth: Int, isActive: Bool,
+                                     color: NSColor?) {
+        cell.configure(name: folder.name, isCollapsed: folder.isCollapsed, depth: depth, color: color)
         if isActive {
             cell.onToggleCollapse = { [weak self] in
                 guard let self else { return }
@@ -2459,7 +2538,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             return NSTableRowView()
         default:
             let rowView = TabRowView()
-            rowView.selectionColor = safeTintColor
+            rowView.selectionColor = safeTintColorForTableView(tableView)
             return rowView
         }
     }

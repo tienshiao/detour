@@ -98,8 +98,8 @@ class SpacePageView: NSView {
         header.update(emoji: emoji, name: name)
     }
 
-    func updateFavorites(_ favorites: [Favorite], selectedTabID: UUID? = nil) {
-        favoritesBar.update(favorites: favorites, selectedTabID: selectedTabID)
+    func updateFavorites(_ favorites: [Favorite], selectedTabID: UUID? = nil, animated: Bool = true) {
+        favoritesBar.update(favorites: favorites, selectedTabID: selectedTabID, animated: animated)
     }
 
     func updateFavoriteSelection(selectedTabID: UUID?) {

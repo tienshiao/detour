@@ -4,7 +4,7 @@ import AppKit
 
 extension BrowserWindowController: TabStoreObserver {
     func tabStoreDidInsertTab(_ tab: BrowserTab, at index: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
 
@@ -14,7 +14,7 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         // If our selected tab is still the one being removed, this removal did
         // not come through our own closeTab (which settles selection before
         // removing) — e.g. an extension chrome.tabs.remove or an undo. Advance
@@ -44,7 +44,7 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidReorderTabs(in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
         // Suppressed: a re-entrant tableViewSelectionDidChange → selectTab here
@@ -61,20 +61,20 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidUpdateTab(_ tab: BrowserTab, at index: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.reloadTab(at: index)
     }
 
     // Pinned entry observer methods
 
     func tabStoreDidInsertPinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
     }
 
     func tabStoreDidRemovePinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         if entry.tab?.id == selectedTabID, window?.isKeyWindow == false {
             deselectAllTabs()
         }
@@ -85,7 +85,7 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidPinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
         // pinTab leaves the split silently; undo-of-unpin rejoins a pinned
@@ -95,7 +95,7 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidUnpinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
         // unpinTab silently dissolves a pinned split — collapse a now-stale
@@ -104,7 +104,7 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidReorderPinnedEntries(in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
         if let selectedTabID, let index = space.pinnedEntries.firstIndex(where: { $0.tab?.id == selectedTabID }) {
@@ -115,7 +115,7 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidUpdatePinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         // Pinned tab close fires Update (not Remove) — entries stay as dormant
         // slots. Key window handles deselect itself; background windows don't.
         if entry.tab == nil, selectedTabID != nil, selectedTab == nil, window?.isKeyWindow == false {
@@ -137,7 +137,7 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidUpdatePinnedFolders(in space: Space) {
-        guard space.id == activeSpaceID else { return }
+        guard space.id == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
         // Restore selection after animation. Suppressed: an unguarded
@@ -157,6 +157,8 @@ extension BrowserWindowController: TabStoreObserver {
     }
 
     func tabStoreDidUpdateFavorites(for profile: Profile) {
+        // Other spaces' pages render their profile's favourites too.
+        tabSidebar.inactiveSpaceContentDidChange()
         guard let space = activeSpace, space.profileID == profile.id else { return }
         tabSidebar.updateFavorites(profile.favorites, selectedTabID: selectedTabID)
     }
