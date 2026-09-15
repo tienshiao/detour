@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-15 18:41'
-updated_date: '2026-09-15 19:04'
+updated_date: '2026-09-15 19:45'
 labels:
   - peek
   - navigation
@@ -25,8 +25,9 @@ In a pinned tab or favourite, an ordinary cross-host link click opens a Peek (de
 <!-- AC:BEGIN -->
 - [x] #1 Clicking a target=_blank cross-host link in a pinned tab opens a Peek anchored to that tab instead of a new tab
 - [x] #2 Same behaviour for a favourite's backing tab, including a link fired from the unfocused pane of a pinned split (peekHostTab)
-- [x] #3 Cmd-click, context-menu Open in New Tab/Window, script-initiated window.open popups, and _blank links in normal tabs keep their current behaviour
-- [x] #4 The same-host _blank decision is made and implemented consistently, with the peek-vs-tab routing in a pure function covered by unit tests
+- [x] #3 The same-host _blank decision is made and implemented consistently, with the peek-vs-tab routing in a pure function covered by unit tests
+- [x] #4 Cmd-click, context-menu Open in New Tab/Window, popup-style window.open (size/position or 'popup' features) and _blank links in normal tabs keep their current behaviour
+- [x] #5 A tab-style script window.open (no popup features, e.g. Google Calendar's Zoom link) from a pinned tab or favourite opens a Peek
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -43,10 +44,14 @@ Decision (user, 2026-09-15): every user-activated _blank link in a pinned tab or
 
 <!-- SECTION:NOTES:BEGIN -->
 Verified with a standalone WKWebView spike (swiftc, macOS 26 WebKit): _blank link -> decidePolicyFor(linkActivated, targetFrame nil) then createWebViewWith only if allowed; window.open -> createWebViewWith only (type .other). Implemented PeekAnchor.shouldPeek(anchorURL:to:opensNewWindow:) and the decidePolicy Peek branch passes targetFrame == nil. Hostless _blank targets (blob:, about:blank) keep opening a tab. Tests added to PeekAnchorTests.
+
+Reopened 2026-09-15: user reports a Zoom link in a Google Calendar event (pinned tab) still opens a new tab. Calendar opens it from script, so it reaches only createWebViewWith (navigationType .other). Spike: WKWindowFeatures._wantsPopup (SPI, macOS 14.2+) is false for window.open(url), '_blank' and 'noopener,noreferrer', true for 'width=..,height=..' and 'popup'; _isUserInitiated was true for every call, including one from a timer, so it is not used. createWebViewWith already returns nil (the opener is lost for every popup today), so peeking tab-style opens removes nothing OAuth flows had. Plan: PeekAnchor.shouldPeekScriptedWindow(to:wantsPopup:); in createWebViewWith's .none case, peek when the firing tab is an anchored peekHostTab; popup detection reads _wantsPopup when available, else explicit x/y/width/height.
+
+Implemented (cb244ec): PeekAnchor.shouldPeekScriptedWindow(to:wantsPopup:); createWebViewWith's .none case peeks when peekHostTab resolves an anchored tab; popup detection uses WKWindowFeatures._wantsPopup, else explicit x/y/width/height. peekHostTab/presentPeek became internal for the UI delegate. PeekAnchorTests: 23 passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Found via a WKWebView spike that _blank links reach decidePolicyFor (targetFrame nil) before createWebViewWith, so cross-host ones already peeked; same-host ones opened a tab. Per the user's decision, PeekAnchor.shouldPeek now peeks every hosted _blank link from a pinned tab/favourite (incl. the unfocused pinned split pane via peekHostTab), keeping the cross-host rule for in-place links and all modifier/context-menu/window.open/normal-tab behaviour. Verified by PeekAnchorTests; not exercised in the running app.
+Pinned tabs and favourites now open a Peek for every hosted target=_blank link (decidePolicy with nil targetFrame, same-host included) and for tab-style script window.open (createWebViewWith without popup features, e.g. Google Calendar's Zoom link). Cmd/Shift/Option clicks, context-menu opens, popup-style window.open (OAuth/payment), hostless targets, normal tabs and clicks inside a Peek keep their behaviour. Verified with WKWebView spikes (delegate order, _wantsPopup values) and PeekAnchorTests; the Calendar flow itself was not exercised by Claude.
 <!-- SECTION:FINAL_SUMMARY:END -->
