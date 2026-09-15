@@ -623,6 +623,56 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
                        "getUserSettings must still answer after a collection, not just exist")
     }
 
+    /// TASK-80: what a real extension context gets for `chrome.storage.managed`.
+    /// Observed on macOS 27 (2026-09-14): WebKit provides no managed area, so the
+    /// polyfill installs; a future WebKit that ships one is a passing test.
+    /// Then the same collection churn as the getUserSettings guard, because
+    /// `chrome.storage` is a weakly cached wrapper too.
+    func testStorageManagedInRealExtensionContextSurvivesGarbageCollection() async throws {
+        let wv = try await makeExtensionWebView()
+        let install = try await eval("return __detourPolyfillDiag.apis.storageManaged;", in: wv) as? String
+        if install == "native" {
+            throw XCTSkip("WebKit vends chrome.storage.managed natively; nothing was patched")
+        }
+        XCTAssertEqual(install, "polyfill", "unexpected storage.managed install mode")
+
+        let result = try await evalJSON("""
+            const listener = () => {};
+            chrome.storage.managed.onChanged.addListener(listener);
+            const registered = chrome.storage.managed.onChanged.hasListener(listener);
+            const localNative = __detourNativeness(chrome.storage.local.get);
+            const control = new WeakRef({ marker: 'control' });
+            let collected = false;
+            let rounds = 0;
+            while (!collected && rounds < 10) {
+                rounds += 1;
+                for (let i = 0; i < 20 * rounds; i++) {
+                    const junk = [];
+                    for (let k = 0; k < 50000; k++) junk.push({ i: i, k: k, s: 'x' + k });
+                }
+                await new Promise(resolve => setTimeout(resolve, 25));
+                collected = control.deref() === undefined;
+            }
+            const after = typeof chrome.storage.managed;
+            const held = __detourHeldWrappers.storage === chrome.storage;
+            const got = after === 'object' ? await chrome.storage.managed.get(null) : null;
+            // The native areas must still work on the patched wrapper.
+            await chrome.storage.local.set({ __task80: 'ok' });
+            const local = await chrome.storage.local.get('__task80');
+            return JSON.stringify({ registered, localNative, collected, rounds, after, held, got, local: local.__task80 });
+        """, in: wv) as? [String: Any]
+
+        XCTAssertEqual(result?["registered"] as? Bool, true)
+        XCTAssertEqual(result?["localNative"] as? String, "native", "storage.local must stay WebKit's")
+        XCTAssertEqual(result?["collected"] as? Bool, true,
+                       "no collection observed in \(result?["rounds"] ?? "nil") rounds — churn more garbage")
+        XCTAssertEqual(result?["after"] as? String, "object",
+                       "chrome.storage.managed did not survive a collection")
+        XCTAssertEqual(result?["held"] as? Bool, true)
+        XCTAssertEqual((result?["got"] as? [String: Any])?.count, 0)
+        XCTAssertEqual(result?["local"] as? String, "ok")
+    }
+
     // MARK: - Polyfill Guards
 
     func testPolyfillCanBeRerunWithoutBreaking() async throws {

@@ -73,6 +73,7 @@ struct ExtensionAPIPolyfill {
             privacyJS,
             webRequestStubJS,
             actionUserSettingsJS,
+            storageManagedJS,
             fontSettingsJS,
             sessionsJS,
             searchJS,
@@ -108,6 +109,7 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.privacy = globalThis.__detourPrivacyInstall; } catch(e) { __detourPolyfillDiag.apis.privacy = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.webRequest = globalThis.__detourWebRequestInstall; } catch(e) { __detourPolyfillDiag.apis.webRequest = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.actionGetUserSettings = globalThis.__detourActionUserSettingsInstall; } catch(e) { __detourPolyfillDiag.apis.actionGetUserSettings = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.storageManaged = globalThis.__detourStorageManagedInstall; } catch(e) { __detourPolyfillDiag.apis.storageManaged = 'error: ' + e.message; }
         // Which chrome.offscreen is in force: Detour's polyfill, Detour's over a
         // native/foreign one it shadowed, or an error if the define did not take (TASK-71).
         try { __detourPolyfillDiag.apis.offscreenInstall = globalThis.__detourOffscreenInstall; } catch(e) { __detourPolyfillDiag.apis.offscreenInstall = 'error: ' + e.message; }
@@ -2354,6 +2356,95 @@ struct ExtensionAPIPolyfill {
         }
 
         g.__detourActionUserSettingsInstall = install;
+    })();
+    """
+
+    // MARK: - chrome.storage.managed
+
+    /// Fills in `chrome.storage.managed` when WebKit's `chrome.storage` lacks it
+    /// (TASK-80). 1Password 8.12.37 added a managed-policy config monitor whose
+    /// `initialize()` calls `browser.storage.managed.onChanged.addListener` and
+    /// `storage.managed.get` synchronously inside its background initialize,
+    /// before the desktop-app connection: with no `managed` area the TypeError
+    /// rejects the whole initialize, the native host is never connected, and the
+    /// popup spins forever.
+    ///
+    /// Detour has no enterprise policy source, so the area is what Chrome
+    /// reports on an unmanaged machine: `get` answers `{}` (or the caller's
+    /// defaults object), `getBytesInUse` 0, `getKeys` [], `set`/`remove`/`clear`
+    /// fail with Chrome's read-only error, and `onChanged` never fires. A native
+    /// `managed` area is left alone, and `chrome.storage` itself is never created
+    /// — without the `storage` permission its absence is the correct answer.
+    ///
+    /// `chrome.storage` is a weakly cached `[MainWorldOnly, Dynamic]` wrapper like
+    /// `chrome.action`, so the patched wrapper is rooted through
+    /// `__detourHoldWrapper` and a fresh read checks the patch is visible
+    /// (`polyfill-not-visible` if not; see docs/chrome-runtime-patching.md).
+    private static let storageManagedJS = """
+    (function() {
+        const g = globalThis;
+        const chrome = g.chrome;
+        let install = 'absent';
+        try {
+            const storage = chrome.storage;
+            if (storage && typeof storage === 'object') {
+                const existing = storage.managed;
+                if (existing && typeof existing === 'object') {
+                    // A second run in the same realm sees its own area: keep
+                    // reporting it as the polyfill, not as WebKit's.
+                    install = existing._detourPolyfill ? 'polyfill' : 'native';
+                } else {
+                    const readOnly = () => Promise.reject(new Error('This is a read-only store.'));
+                    // Chrome's StorageArea.get: an object argument is a map of
+                    // defaults, returned as-is for keys the store lacks (all of
+                    // them, here); anything else asks for keys that are absent.
+                    const defaultsFor = (keys) => {
+                        const result = {};
+                        if (keys && typeof keys === 'object' && !Array.isArray(keys)) {
+                            Object.keys(keys).forEach(k => { result[k] = keys[k]; });
+                        }
+                        return result;
+                    };
+                    // `keys` may be omitted, in which case the callback arrives
+                    // in its place.
+                    const split = (keys, callback) => typeof keys === 'function'
+                        ? { keys: undefined, callback: keys }
+                        : { keys: keys, callback: callback };
+                    const managed = {
+                        _detourPolyfill: true,
+                        get(keys, callback) {
+                            const a = split(keys, callback);
+                            return __detourSettle(Promise.resolve(defaultsFor(a.keys)), a.callback);
+                        },
+                        getBytesInUse(keys, callback) {
+                            const a = split(keys, callback);
+                            return __detourSettle(Promise.resolve(0), a.callback);
+                        },
+                        getKeys(callback) {
+                            return __detourSettle(Promise.resolve([]), callback);
+                        },
+                        set(items, callback) { return __detourSettle(readOnly(), callback, false); },
+                        remove(keys, callback) { return __detourSettle(readOnly(), callback, false); },
+                        clear(callback) { return __detourSettle(readOnly(), callback, false); },
+                        onChanged: __detourMakeEventEmitter([])
+                    };
+                    __detourDefine(storage, 'managed', managed);
+                    __detourHoldWrapper('storage', storage);
+                    const again = chrome.storage;
+                    if (again && again.managed === managed) {
+                        install = 'polyfill';
+                    } else {
+                        __detourReleaseWrapper('storage');
+                        console.warn('[Detour polyfill] chrome.storage.managed is not visible through chrome.storage');
+                        install = 'polyfill-not-visible';
+                    }
+                }
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+
+        g.__detourStorageManagedInstall = install;
     })();
     """
 

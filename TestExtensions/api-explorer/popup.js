@@ -442,6 +442,23 @@ async function setEnabled(enabled) {
 document.getElementById('btn-mgmt-enable').addEventListener('click', () => setEnabled(true));
 document.getElementById('btn-mgmt-disable').addEventListener('click', () => setEnabled(false));
 
+// --- Storage Managed ---
+
+document.getElementById('btn-managed-probe').addEventListener('click', async () => {
+  try {
+    showResult('res-storage-managed', await sendBg({ type: 'storageManagedProbe' }));
+  } catch (e) { showResult('res-storage-managed', e.message, true); }
+});
+
+document.getElementById('btn-managed-probe-popup').addEventListener('click', async () => {
+  try {
+    const hasManaged = !!(chrome.storage && typeof chrome.storage.managed === 'object');
+    const result = { hasManaged, install: globalThis.__detourStorageManagedInstall };
+    if (hasManaged) result.getAll = await chrome.storage.managed.get(null);
+    showResult('res-storage-managed', result);
+  } catch (e) { showResult('res-storage-managed', e.message, true); }
+});
+
 // --- Privacy ---
 
 document.getElementById('btn-privacy-get').addEventListener('click', async () => {

@@ -626,6 +626,125 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["diag"] as? String, "native")
     }
 
+    // MARK: - chrome.storage.managed (TASK-80)
+
+    /// 1Password 8.12.37 calls `storage.managed.onChanged.addListener` and
+    /// `storage.managed.get` inside its background initialize; without the area
+    /// the TypeError aborts initialization and the desktop app is never
+    /// connected. The stub is an empty, read-only area in both call styles.
+    func testStorageManagedStub() async throws {
+        // A bare WKWebView has no chrome.storage at all; give it the shape
+        // WebKit provides (a storage namespace without `managed`).
+        let withStorage = try await makeWebView(
+            manifestPermissions: ["history", "management", "privacy", "storage"],
+            shimExtras: "globalThis.chrome.storage = { local: {} };"
+        )
+        let result = try await evalDictionary("""
+        const managed = chrome.storage.managed;
+        const fn = function() {};
+        let threw = null;
+        try { managed.onChanged.addListener(fn); } catch (e) { threw = e.message; }
+        const added = managed.onChanged.hasListener(fn);
+        managed.onChanged.removeListener(fn);
+        const removed = !managed.onChanged.hasListener(fn);
+        const all = await managed.get();
+        const byKey = await managed.get('CredentialIntelligence');
+        const byArray = await managed.get(['a', 'b']);
+        const withDefaults = await managed.get({ a: 1, b: 'two' });
+        const viaCallback = await new Promise(resolve => managed.get(null, resolve));
+        const keysOmittedCallback = await new Promise(resolve => managed.get(resolve));
+        const bytes = await managed.getBytesInUse(null);
+        const keys = await managed.getKeys();
+        const rejections = [];
+        for (const call of [() => managed.set({ a: 1 }), () => managed.remove('a'), () => managed.clear()]) {
+            try { await call(); rejections.push(null); } catch (e) { rejections.push(e.message); }
+        }
+        return JSON.stringify({
+            threw, added, removed, all, byKey, byArray, withDefaults, viaCallback,
+            keysOmittedCallback, bytes, keys, rejections,
+            localUntouched: typeof chrome.storage.local === 'object',
+            held: __detourHeldWrappers.storage === chrome.storage,
+            diag: __detourPolyfillDiag.apis.storageManaged
+        });
+        """, on: withStorage)
+
+        XCTAssertNil(result["threw"] as? String, "onChanged.addListener must not throw")
+        XCTAssertEqual(result["added"] as? Bool, true)
+        XCTAssertEqual(result["removed"] as? Bool, true)
+        XCTAssertEqual((result["all"] as? [String: Any])?.count, 0)
+        XCTAssertEqual((result["byKey"] as? [String: Any])?.count, 0)
+        XCTAssertEqual((result["byArray"] as? [String: Any])?.count, 0)
+        let withDefaults = try XCTUnwrap(result["withDefaults"] as? [String: Any])
+        XCTAssertEqual(withDefaults["a"] as? Int, 1, "an object argument's defaults come back for absent keys")
+        XCTAssertEqual(withDefaults["b"] as? String, "two")
+        XCTAssertEqual((result["viaCallback"] as? [String: Any])?.count, 0)
+        XCTAssertEqual((result["keysOmittedCallback"] as? [String: Any])?.count, 0)
+        XCTAssertEqual(result["bytes"] as? Int, 0)
+        XCTAssertEqual(result["keys"] as? [String], [])
+        XCTAssertEqual(result["rejections"] as? [String],
+                       ["This is a read-only store.", "This is a read-only store.", "This is a read-only store."])
+        XCTAssertEqual(result["localUntouched"] as? Bool, true)
+        XCTAssertEqual(result["held"] as? Bool, true, "the patched storage wrapper must be rooted")
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+    }
+
+    /// NEGATIVE: a write in callback form reports the read-only error through
+    /// runtime.lastError, not as an unhandled rejection.
+    func testStorageManagedWriteCallbackSetsLastError() async throws {
+        let withStorage = try await makeWebView(
+            manifestPermissions: ["storage"],
+            shimExtras: "globalThis.chrome.storage = {};"
+        )
+        let result = try await evalDictionary("""
+        const outcome = await new Promise(resolve => {
+            chrome.storage.managed.set({ a: 1 }, function() {
+                resolve({
+                    args: arguments.length,
+                    lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null
+                });
+            });
+        });
+        return JSON.stringify(outcome);
+        """, on: withStorage)
+        XCTAssertEqual(result["args"] as? Int, 0)
+        XCTAssertEqual(result["lastError"] as? String, "This is a read-only store.")
+    }
+
+    /// NEGATIVE: a native managed area is never replaced.
+    func testStorageManagedNotReplacedWhenNative() async throws {
+        let nativeStorage = try await makeWebView(
+            manifestPermissions: ["storage"],
+            shimExtras: """
+            globalThis.chrome.storage = {
+                managed: { marker: 'native', get: () => Promise.resolve({ policy: true }) }
+            };
+            """
+        )
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            marker: chrome.storage.managed.marker,
+            got: await chrome.storage.managed.get(),
+            diag: __detourPolyfillDiag.apis.storageManaged
+        });
+        """, on: nativeStorage)
+        XCTAssertEqual(result["marker"] as? String, "native", "a native storage.managed must survive the polyfill")
+        XCTAssertEqual((result["got"] as? [String: Any])?["policy"] as? Bool, true)
+        XCTAssertEqual(result["diag"] as? String, "native")
+    }
+
+    /// NEGATIVE: without chrome.storage (no `storage` permission) nothing is
+    /// created — the namespace stays undefined, as in Chrome.
+    func testStorageManagedAbsentWithoutStorageNamespace() async throws {
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            storage: typeof chrome.storage,
+            diag: __detourPolyfillDiag.apis.storageManaged
+        });
+        """)
+        XCTAssertEqual(result["storage"] as? String, "undefined")
+        XCTAssertEqual(result["diag"] as? String, "absent")
+    }
+
     // MARK: - chrome.sessions
 
     func testSessionsMaxSessionResults() async throws {

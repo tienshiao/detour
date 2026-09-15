@@ -743,6 +743,31 @@ API Explorer and test coverage per project convention:
   Basic-auth fill stays unsupported; WebKit has no blocking request interception.
 - `management.setEnabled` native dispatch case returning success without doing anything.
 - Confirm `action.getUserSettings` is provided natively; stub `{isOnToolbar: true}` if not.
+- `chrome.storage.managed` (TASK-80, added 2026-09-14 for 1Password 8.12.37): an empty, read-only
+  managed `StorageArea` patched onto WebKit's native `chrome.storage` when it lacks one (`get` →
+  `{}` or the caller's defaults, `getBytesInUse` → 0, `getKeys` → [], `set`/`remove`/`clear` reject
+  with "This is a read-only store.", `onChanged` never fires), rooted with `__detourHoldWrapper`;
+  `_polyfillDiag.apis.storageManaged` records the path.
+
+  **Why it matters.** 8.12.37 added a Credential Intelligence managed-policy monitor whose
+  `initialize()` calls `browser.storage.managed.onChanged.addListener` synchronously inside the
+  background's async `initialize`, before `initializeNativeAppConnection`. WebKit (macOS 26 and 27)
+  has no `storage.managed`, so the TypeError rejected the whole initialize: "Finished initializing
+  1Password" never ran, the native host was never started, and every popup open logged
+  `[Sls] Not attempting to connect to desktop app: initialization hasn't finished` while the popup
+  showed only its spinner. The symptom looks like a macOS or WebKit regression but depends only on
+  the extension version: 8.12.37.1 has the monitor, 8.10.80.23 has no `storage.managed` use at all, and
+  the machine where 1Password kept working ran 8.12.26.40 (not inspected). Worker console evidence, with
+  `ExtensionConsoleLogPublic` set:
+
+  ```
+  [unhandled rejection] TypeError: undefined is not an object (evaluating 'browser.storage.managed.onChanged')
+  [Sls] Not attempting to connect to desktop app: initialization hasn't finished
+  ```
+
+  The `WASM is not initialized, unable to make core call.` rejection logged at the same time is a
+  startup race inside 1Password (a core call before `instantiate` finishes; WASM then logs
+  "Initializing" normally), not the cause.
 
 ### Phase 3 — Real frame enumeration
 

@@ -624,6 +624,10 @@ async function handleMessage(message) {
       };
     }
 
+    case 'storageManagedProbe': {
+      return await storageManagedProbe();
+    }
+
     case 'actionGetUserSettings': {
       // Feature-detect before calling, so a missing method (polyfill dropped
       // after a collection, or `polyfill-not-visible`) still reports the
@@ -744,4 +748,30 @@ async function handleMessage(message) {
     default:
       return { error: 'Unknown message type: ' + message.type };
   }
+}
+
+async function storageManagedProbe() {
+  // The shape 1Password 8.12.37 relies on during background init (TASK-80):
+  // onChanged.addListener and get() must not throw.
+  const hasManaged = !!(chrome.storage && typeof chrome.storage.managed === 'object');
+  const result = {
+    hasManaged,
+    install: globalThis.__detourStorageManagedInstall,
+    held: !!(globalThis.__detourHeldWrappers && globalThis.__detourHeldWrappers.storage === chrome.storage),
+  };
+  if (!hasManaged) return result;
+  const listener = () => {};
+  chrome.storage.managed.onChanged.addListener(listener);
+  result.listenerRegistered = chrome.storage.managed.onChanged.hasListener(listener);
+  chrome.storage.managed.onChanged.removeListener(listener);
+  result.getAll = await chrome.storage.managed.get(null);
+  result.getWithDefaults = await chrome.storage.managed.get({ CredentialIntelligence: 'default' });
+  result.bytesInUse = await chrome.storage.managed.getBytesInUse(null);
+  try {
+    await chrome.storage.managed.set({ probe: 1 });
+    result.setError = null;
+  } catch (e) {
+    result.setError = e.message;
+  }
+  return result;
 }
