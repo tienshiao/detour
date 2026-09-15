@@ -61,4 +61,18 @@ enum PeekAnchor {
         guard let anchorHost = anchorURL.host, let targetHost = target.host else { return false }
         return targetHost != anchorHost
     }
+
+    /// Whether a link activation on an anchored tab opens a Peek.
+    ///
+    /// `opensNewWindow` is a `target="_blank"` (or named-target) link: WebKit
+    /// asks the navigation delegate about it with a nil `targetFrame` before it
+    /// would call `createWebViewWith`, so cancelling here is what keeps it out
+    /// of a new tab. Such a link peeks whenever the target has a host, same
+    /// host included — navigating in place is not what the page asked for, and
+    /// a new tab defeats the pinned-app model (TASK-85). An in-place link only
+    /// peeks when it leaves the anchor's host.
+    static func shouldPeek(anchorURL: URL, to target: URL, opensNewWindow: Bool) -> Bool {
+        if opensNewWindow { return target.host != nil }
+        return shouldPeekCrossHostNavigation(anchorURL: anchorURL, to: target)
+    }
 }

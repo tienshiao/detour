@@ -104,10 +104,12 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .download
         }
 
-        // Peek mode: intercept cross-host navigation on pinned tabs and favourites.
-        // The anchored tab is the pane that fired, not the selection: in a
-        // pinned split the link can come from the unfocused pane (TASK-48) —
-        // see `peekHostTab`.
+        // Peek mode: intercept cross-host navigation, and every target=_blank
+        // link, on pinned tabs and favourites (`PeekAnchor.shouldPeek`). A
+        // _blank link reaches this with a nil targetFrame before WebKit would
+        // call createWebViewWith; script window.open() never does. The anchored
+        // tab is the pane that fired, not the selection: in a pinned split the
+        // link can come from the unfocused pane (TASK-48) — see `peekHostTab`.
         if navigationAction.navigationType == .linkActivated,
            let space = activeSpace,
            let tab = peekHostTab(firing: webView),
@@ -115,7 +117,8 @@ extension BrowserWindowController: WKNavigationDelegate {
            let anchorURL = PeekAnchor.anchorURL(forTabID: tab.id,
                                                 pinnedEntries: space.pinnedEntries,
                                                 favorites: space.profile?.favorites ?? []),
-           PeekAnchor.shouldPeekCrossHostNavigation(anchorURL: anchorURL, to: url) {
+           PeekAnchor.shouldPeek(anchorURL: anchorURL, to: url,
+                                 opensNewWindow: navigationAction.targetFrame == nil) {
             presentPeek(of: url, on: tab, firing: webView)
             return .cancel
         }

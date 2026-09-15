@@ -156,4 +156,33 @@ final class PeekAnchorTests: XCTestCase {
             anchorURL: url("about:blank"),
             to: url("https://other.example.org/page")))
     }
+
+    // MARK: - shouldPeek (TASK-85: target=_blank links)
+
+    func testNewWindowLinkPeeksWithinSameHost() {
+        XCTAssertTrue(PeekAnchor.shouldPeek(
+            anchorURL: url("https://fav.example.com/home"),
+            to: url("https://fav.example.com/deep/page"), opensNewWindow: true))
+    }
+
+    func testNewWindowLinkPeeksAcrossHosts() {
+        XCTAssertTrue(PeekAnchor.shouldPeek(
+            anchorURL: url("https://fav.example.com/home"),
+            to: url("https://other.example.org/page"), opensNewWindow: true))
+    }
+
+    func testNewWindowLinkToHostlessTargetDoesNotPeek() {
+        // blob:/about:blank popups keep their new-tab behaviour.
+        XCTAssertFalse(PeekAnchor.shouldPeek(
+            anchorURL: url("https://fav.example.com/home"),
+            to: url("about:blank"), opensNewWindow: true))
+    }
+
+    func testInPlaceLinkFollowsTheCrossHostRule() {
+        let anchor = url("https://fav.example.com/home")
+        XCTAssertFalse(PeekAnchor.shouldPeek(
+            anchorURL: anchor, to: url("https://fav.example.com/deep/page"), opensNewWindow: false))
+        XCTAssertTrue(PeekAnchor.shouldPeek(
+            anchorURL: anchor, to: url("https://other.example.org/page"), opensNewWindow: false))
+    }
 }
