@@ -359,23 +359,26 @@ extension BrowserWindowController: TabSidebarDelegate {
         // Settle selection off the split BEFORE the close, mirroring
         // closeTab(at:wasSelected:) — never select a member the same gesture closes.
         if let selectedTabID, memberIDs.contains(selectedTabID) {
-            let remaining = space.tabs.filter { !memberIDs.contains($0.id) }
-            let firstMemberIndex = space.tabs.firstIndex { $0.id == memberIDs[0] } ?? 0
-            if !remaining.isEmpty {
-                selectTab(id: remaining[min(firstMemberIndex, remaining.count - 1)].id)
-            } else if let firstLiveEntry = space.pinnedEntries.first(where: { $0.tab != nil }),
-                      let tab = firstLiveEntry.tab {
-                selectTab(id: tab.id)
-            } else if let firstDormantEntry = space.pinnedEntries.first {
-                store.activatePinnedEntry(id: firstDormantEntry.id, in: space)
-                if let tab = firstDormantEntry.tab { selectTab(id: tab.id) }
-                else {
-                    // A refused tile explains itself (TASK-37).
+            // The members are closed next: no picture-in-picture on the way out.
+            settlingSelectionForClose {
+                let remaining = space.tabs.filter { !memberIDs.contains($0.id) }
+                let firstMemberIndex = space.tabs.firstIndex { $0.id == memberIDs[0] } ?? 0
+                if !remaining.isEmpty {
+                    selectTab(id: remaining[min(firstMemberIndex, remaining.count - 1)].id)
+                } else if let firstLiveEntry = space.pinnedEntries.first(where: { $0.tab != nil }),
+                          let tab = firstLiveEntry.tab {
+                    selectTab(id: tab.id)
+                } else if let firstDormantEntry = space.pinnedEntries.first {
+                    store.activatePinnedEntry(id: firstDormantEntry.id, in: space)
+                    if let tab = firstDormantEntry.tab { selectTab(id: tab.id) }
+                    else {
+                        // A refused tile explains itself (TASK-37).
+                        deselectAllTabs()
+                        showDormantTileRefusal(urls: [firstDormantEntry.pinnedURL])
+                    }
+                } else {
                     deselectAllTabs()
-                    showDormantTileRefusal(urls: [firstDormantEntry.pinnedURL])
                 }
-            } else {
-                deselectAllTabs()
             }
         }
 

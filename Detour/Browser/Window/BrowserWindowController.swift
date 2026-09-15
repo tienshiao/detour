@@ -47,6 +47,11 @@ class BrowserWindowController: NSWindowController {
     private var pendingSplitFraction: Double?
     private var localSnapshot: NSImage?
     private weak var pipContentView: NSView?
+    /// True while a close gesture settles selection off the tab it is about to
+    /// close (`settlingSelectionForClose`). `selectTab` then skips the
+    /// switch-away picture-in-picture: the close tears down the web view a
+    /// moment later, so PiP would start and vanish mid-animation.
+    private var selectionLeavesClosingTab = false
     /// One-shot: the next split-hosting claim animates the panes into place.
     /// Set by the split-creation gestures (drop or menu — the sidebar-delegate
     /// extension, hence not private) right before the store mutation whose
@@ -829,7 +834,7 @@ class BrowserWindowController: NSWindowController {
 
         if let previousTab = selectedTab {
             // Enter PiP for peek before hidePeekUI() removes it from the hierarchy.
-            if let peekTab = previousTab.peekTab, peekTab.isPlayingAudio {
+            if !selectionLeavesClosingTab, let peekTab = previousTab.peekTab, peekTab.isPlayingAudio {
                 peekTab.enterPictureInPicture()
                 pipContentView = peekTab.webView
             }
@@ -839,7 +844,7 @@ class BrowserWindowController: NSWindowController {
             for member in splitMembers(of: previousTab) {
                 member.lastDeselectedAt = Date()
             }
-            if previousTab.isPlayingAudio {
+            if !selectionLeavesClosingTab, previousTab.isPlayingAudio {
                 previousTab.enterPictureInPicture()
                 // Keep the container in the hierarchy so WebKit can capture the
                 // video's on-screen frame for the PiP animation origin.
@@ -2118,7 +2123,7 @@ class BrowserWindowController: NSWindowController {
         let entry = space.pinnedEntries[index]
         // Settle selection BEFORE discarding the backing tab, mirroring
         // closeTab(at:wasSelected:).
-        settleSelectionLeaving(pinnedEntry: entry, in: space)
+        settlingSelectionForClose { settleSelectionLeaving(pinnedEntry: entry, in: space) }
         // Always make dormant (discard backing tab)
         store.closePinnedTab(id: entry.id, in: space)
     }
@@ -2149,9 +2154,21 @@ class BrowserWindowController: NSWindowController {
         let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
 
-        if wasSelected { settleSelectionLeaving(tabAt: index, in: space) }
+        if wasSelected {
+            settlingSelectionForClose { settleSelectionLeaving(tabAt: index, in: space) }
+        }
 
         store.closeTab(id: tabs[index].id, in: space)
+    }
+
+    /// Runs `body`, which moves selection off a tab the caller closes right
+    /// after, without starting picture-in-picture for that tab's playing video
+    /// (or its peek's). Moving a tab to another space settles selection through
+    /// the same helpers but keeps the tab alive, so it does not use this.
+    func settlingSelectionForClose(_ body: () -> Void) {
+        selectionLeavesClosingTab = true
+        defer { selectionLeavesClosingTab = false }
+        body()
     }
 
     /// Moves selection off the tab at `index`, which is about to leave this
