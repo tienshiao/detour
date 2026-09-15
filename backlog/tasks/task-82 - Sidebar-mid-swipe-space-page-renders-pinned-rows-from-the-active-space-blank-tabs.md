@@ -3,10 +3,10 @@ id: TASK-82
 title: >-
   Sidebar: mid-swipe space page renders pinned rows from the active space (blank
   tabs)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 17:35'
-updated_date: '2026-09-15 18:04'
+updated_date: '2026-09-15 18:21'
 labels:
   - bug
   - sidebar
@@ -36,3 +36,9 @@ Verified with a temporary env-gated harness (reverted) sending synthetic trackpa
 
 Code review (--fix): inactive-page snapshot now flattens with space.selectedTabID instead of nil, so an outgoing page whose selected tab sits in a collapsed pinned folder keeps its exposed row aligned with the table's retained selection. Builds.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Non-active sidebar pages render from a per-page snapshot of their own space (pinned items, tab items, tint), reloaded on build, on losing active status, at swipe/click-animation start, and on other-space TabStore changes while the strip moves. Verified via harness before/after and sidebar/space/split test classes.
+<!-- SECTION:FINAL_SUMMARY:END -->
