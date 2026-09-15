@@ -18,11 +18,31 @@ extension BrowserWindowController: WKUIDelegate {
                 appDelegate.createNewWindowWithURL(url)
             }
         case .none:
+            // A tab-style window.open from a pinned tab or favourite peeks, like
+            // a target=_blank link does in decidePolicy (TASK-85).
+            if let host = peekHostTab(firing: webView),
+               PeekAnchor.anchorURL(forTabID: host.id, pinnedEntries: space.pinnedEntries,
+                                    favorites: space.profile?.favorites ?? []) != nil,
+               PeekAnchor.shouldPeekScriptedWindow(to: url, wantsPopup: Self.wantsPopup(windowFeatures)) {
+                presentPeek(of: url, on: host, firing: webView)
+                return nil
+            }
             let tab = TabStore.shared.addTab(in: space, url: url, parentID: selectedTabID)
             selectTab(id: tab.id)
         }
 
         return nil
+    }
+
+    /// Whether a `window.open` asked for a popup rather than a tab. WebKit's
+    /// `_wantsPopup` SPI (macOS 14.2+) implements the HTML "is popup" check;
+    /// before it, explicit position or size is the tell.
+    private static func wantsPopup(_ features: WKWindowFeatures) -> Bool {
+        if features.responds(to: NSSelectorFromString("_wantsPopup")),
+           let wantsPopup = features.value(forKey: "_wantsPopup") as? Bool {
+            return wantsPopup
+        }
+        return features.x != nil || features.y != nil || features.width != nil || features.height != nil
     }
 
     // MARK: - JavaScript Dialogs

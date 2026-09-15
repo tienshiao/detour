@@ -185,4 +185,19 @@ final class PeekAnchorTests: XCTestCase {
         XCTAssertTrue(PeekAnchor.shouldPeek(
             anchorURL: anchor, to: url("https://other.example.org/page"), opensNewWindow: false))
     }
+
+    // MARK: - shouldPeekScriptedWindow (TASK-85: window.open)
+
+    func testTabStyleScriptedWindowPeeks() {
+        XCTAssertTrue(PeekAnchor.shouldPeekScriptedWindow(to: url("https://zoom.us/j/123"), wantsPopup: false))
+    }
+
+    func testPopupStyleScriptedWindowDoesNotPeek() {
+        XCTAssertFalse(PeekAnchor.shouldPeekScriptedWindow(to: url("https://accounts.example.com/oauth"),
+                                                           wantsPopup: true))
+    }
+
+    func testHostlessScriptedWindowDoesNotPeek() {
+        XCTAssertFalse(PeekAnchor.shouldPeekScriptedWindow(to: url("about:blank"), wantsPopup: false))
+    }
 }

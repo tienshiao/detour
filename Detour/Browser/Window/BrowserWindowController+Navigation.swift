@@ -349,7 +349,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     /// (Shift+click, cross-host anchor): the selected tab or a pane of its split,
     /// never a peek's web view and never a background tab (TASK-48). Nil while a
     /// peek is up — the overlay owns the interaction.
-    private func peekHostTab(firing webView: WKWebView) -> BrowserTab? {
+    func peekHostTab(firing webView: WKWebView) -> BrowserTab? {
         guard peekOverlayView == nil, let selected = selectedTab else { return nil }
         let clicked = webView === selected.webView ? selected : tab(owning: webView)
         return PeekAnchor.interceptTab(clicked: clicked, selectedTab: selected,
@@ -364,7 +364,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     /// pane while the selection names the other — fall back to selecting the pane
     /// outright rather than attaching the peek to the wrong tab. Deferred a turn so
     /// the policy decision returns before the view hierarchy changes.
-    private func presentPeek(of url: URL, on tab: BrowserTab, firing webView: WKWebView) {
+    func presentPeek(of url: URL, on tab: BrowserTab, firing webView: WKWebView) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if tab.id != self.selectedTabID {

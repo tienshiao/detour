@@ -75,4 +75,15 @@ enum PeekAnchor {
         if opensNewWindow { return target.host != nil }
         return shouldPeekCrossHostNavigation(anchorURL: anchorURL, to: target)
     }
+
+    /// Whether a script `window.open` from an anchored tab opens a Peek. Such
+    /// opens never reach the navigation delegate — only `createWebViewWith` —
+    /// so they need their own rule (Google Calendar opens a Zoom link this way,
+    /// TASK-85). A tab-style open peeks like a `_blank` link; a popup-style one
+    /// (`wantsPopup`: size/position or `popup` features, as OAuth and payment
+    /// windows ask for) keeps its own tab, as does a hostless target
+    /// (`window.open("")` a page then writes into).
+    static func shouldPeekScriptedWindow(to target: URL, wantsPopup: Bool) -> Bool {
+        !wantsPopup && target.host != nil
+    }
 }
