@@ -319,7 +319,8 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - deleteProfile (TASK-31)
 
-    private let perProfileTables = ["profileExtension", "extensionInstalledEvent", "favorite", "contentBlockerWhitelist"]
+    private let perProfileTables = ["profileExtension", "extensionInstalledEvent", "favorite", "contentBlockerWhitelist",
+                                    "externalAppPermission"]
     private let extensionKeyedTables = ["extension", "extensionStorage", "extensionPermission"]
 
     /// An in-memory database with two profiles, an installed extension, and one
@@ -347,6 +348,8 @@ final class AppDatabaseTests: XCTestCase {
                                              title: "A", faviconURL: nil, sortOrder: 0)],
                              profileID: profileID)
             db.saveContentBlockerWhitelistEntry(ContentBlockerWhitelistRecord(profileID: profileID, host: "a.example"))
+            db.saveExternalAppPermission(ExternalAppPermissionRecord(profileID: profileID, origin: "https://a.example",
+                                                                     scheme: "zoommtg"))
         }
         return db
     }

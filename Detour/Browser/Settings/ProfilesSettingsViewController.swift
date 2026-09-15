@@ -23,6 +23,8 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
     private var deleteButton: NSButton!
     private var extensionTogglesBox: NSBox!
     private var extensionTogglesStack: NSStackView!
+    private var externalAppsLabel: NSTextField!
+    private var externalAppsClearButton: NSButton!
 
     /// All profiles including the built-in incognito profile.
     private var profiles: [Profile] {
@@ -266,6 +268,16 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             ])
         }
 
+        // Remembered "Always allow" decisions for external application links (TASK-84)
+        externalAppsLabel = NSTextField(labelWithString: "")
+        externalAppsLabel.font = .systemFont(ofSize: 12)
+        externalAppsLabel.textColor = .secondaryLabelColor
+        externalAppsClearButton = NSButton(title: "Clear", target: self, action: #selector(clearExternalAppPermissionsClicked))
+        externalAppsClearButton.controlSize = .small
+        let externalAppsRow = NSStackView(views: [externalAppsLabel, externalAppsClearButton])
+        externalAppsRow.orientation = .horizontal
+        externalAppsRow.spacing = 8
+
         gridView = NSGridView(views: [
             [makeLabel("Name"), profileNameField],                   // row 0
             [NSGridCell.emptyContentView, privateNoteLabel],         // row 1
@@ -281,6 +293,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             [makeLabel("Custom string"), customUserAgentField],      // row 11
             [NSGridCell.emptyContentView, uaPreviewLabel],           // row 12
             [makeLabel("Extensions"), extensionTogglesBox],          // row 13
+            [makeLabel("External apps"), externalAppsRow],           // row 14
         ])
         gridView.translatesAutoresizingMaskIntoConstraints = false
         gridView.rowSpacing = spacing
@@ -351,11 +364,18 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
 
         NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
                                                 name: ExtensionManager.extensionsDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(externalAppPermissionsDidChange),
+                                                name: ExternalAppPermissionStore.didChangeNotification, object: nil)
     }
 
     override func viewWillDisappear() {
         super.viewWillDisappear()
         NotificationCenter.default.removeObserver(self, name: ExtensionManager.extensionsDidChangeNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: ExternalAppPermissionStore.didChangeNotification, object: nil)
+    }
+
+    @objc private func externalAppPermissionsDidChange() {
+        updateExternalAppPermissions()
     }
 
     @objc private func extensionsDidChange() {
@@ -437,8 +457,25 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         malwareFilterSwitch.isEnabled = profile.isAdBlockingEnabled
         // Row 11 = custom UA string
         gridView.row(at: 11).isHidden = profile.userAgentMode != .custom
+        // Row 14 = external app permissions (never remembered for Private)
+        gridView.row(at: 14).isHidden = profile.isIncognito
+        updateExternalAppPermissions()
         updateUAPreview()
         updateExtensionToggles()
+    }
+
+    private func updateExternalAppPermissions() {
+        guard let profile = selectedProfile else { return }
+        let count = ExternalAppPermissionStore.shared.count(for: profile.id)
+        externalAppsLabel.stringValue = count == 0 ? "No saved permissions"
+            : count == 1 ? "1 saved permission" : "\(count) saved permissions"
+        externalAppsClearButton.isEnabled = count > 0
+    }
+
+    @objc private func clearExternalAppPermissionsClicked() {
+        guard let profile = selectedProfile else { return }
+        ExternalAppPermissionStore.shared.clearAll(for: profile.id)
+        updateExternalAppPermissions()
     }
 
     private func updateExtensionToggles() {

@@ -136,8 +136,8 @@ struct AppDatabase {
     /// for profiles missing from the saved set), run inside the caller's write
     /// transaction. For each id that no space references it deletes every row
     /// keyed by the id (TASK-31) — per-profile extension state, the
-    /// `runtime.onInstalled` ledger, favourites and the content blocker
-    /// whitelist — then the profile row.
+    /// `runtime.onInstalled` ledger, favourites, the content blocker whitelist
+    /// and remembered external-app permissions — then the profile row.
     ///
     /// `recordingPendingDataRemoval` also records a pending removal of the
     /// profile's on-disk WebKit data (TASK-32, `ProfileDataRemoval`) for every id
@@ -146,7 +146,8 @@ struct AppDatabase {
     /// `saveProfiles` sweep passes false, because its set of live profiles can be
     /// incomplete.
     ///
-    /// `favorite`, `profileExtension` and `contentBlockerWhitelist` also cascade
+    /// `favorite`, `profileExtension`, `contentBlockerWhitelist` and
+    /// `externalAppPermission` also cascade
     /// from the profile row, but only while foreign keys are enforced, and
     /// `extensionInstalledEvent` has no foreign key at all, so each is deleted
     /// explicitly. Rows keyed by extension alone (`extension`, `extensionStorage`,
@@ -167,6 +168,7 @@ struct AppDatabase {
             try ExtensionInstalledEventRecord.filter(Column("profileID") == id).deleteAll(db)
             try FavoriteRecord.filter(Column("profileID") == id).deleteAll(db)
             try ContentBlockerWhitelistRecord.filter(Column("profileID") == id).deleteAll(db)
+            try ExternalAppPermissionRecord.filter(Column("profileID") == id).deleteAll(db)
             if try ProfileRecord.filter(Column("id") == id).deleteAll(db) > 0 {
                 if recordingPendingDataRemoval {
                     try recordPendingProfileDataRemoval(profileID: id, in: db)
@@ -396,6 +398,26 @@ struct AppDatabase {
     func loadContentBlockerWhitelist() -> [ContentBlockerWhitelistRecord] {
         performRead("load whitelist", default: []) { db in
             try ContentBlockerWhitelistRecord.fetchAll(db)
+        }
+    }
+
+    // MARK: - External App Permissions (TASK-84)
+
+    func saveExternalAppPermission(_ record: ExternalAppPermissionRecord) {
+        performWrite("save external app permission") { db in
+            try record.save(db)
+        }
+    }
+
+    func deleteExternalAppPermissions(profileID: String) {
+        performWrite("delete external app permissions") { db in
+            try ExternalAppPermissionRecord.filter(Column("profileID") == profileID).deleteAll(db)
+        }
+    }
+
+    func loadExternalAppPermissions() -> [ExternalAppPermissionRecord] {
+        performRead("load external app permissions", default: []) { db in
+            try ExternalAppPermissionRecord.fetchAll(db)
         }
     }
 
@@ -792,6 +814,18 @@ struct AppDatabase {
                 DELETE FROM extensionPermission
                 WHERE permissionType = 0 AND permissionKey = 'nativeMessaging' AND status <> 0
                 """)
+        }
+
+        migrator.registerMigration("v14") { db in
+            // TASK-84: "Always allow <origin> to open <scheme> links" decisions.
+            // Never written for the Private profile.
+            try db.create(table: "externalAppPermission") { t in
+                t.column("profileID", .text).notNull()
+                    .references("profile", onDelete: .cascade)
+                t.column("origin", .text).notNull()
+                t.column("scheme", .text).notNull()
+                t.uniqueKey(["profileID", "origin", "scheme"])
+            }
         }
 
         return migrator

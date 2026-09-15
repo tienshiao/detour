@@ -91,12 +91,13 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
-        // Open non-HTTP(S) URLs (App Store, mailto, etc.) externally
+        // Non-HTTP(S) URLs (App Store, mailto, zoommtg, etc.) belong to an
+        // external application — only after the user confirms (TASK-84).
         if let url = navigationAction.request.url,
            let scheme = url.scheme,
            scheme != "http", scheme != "https",
            scheme != "about", scheme != "blob", scheme != "webkit-extension", scheme != ErrorPage.scheme {
-            NSWorkspace.shared.open(url)
+            handleExternalAppNavigation(to: url, action: navigationAction, in: webView)
             return .cancel
         }
 
@@ -322,7 +323,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     /// page, and nearly always for the pane on screen. The other spaces come
     /// last: the delegate is never cleared from a tab's web view, so a tab of a
     /// space this window switched away from still reports here.
-    private func tab(owning webView: WKWebView) -> BrowserTab? {
+    func tab(owning webView: WKWebView) -> BrowserTab? {
         if let selected = selectedTab {
             if selected.webView === webView { return selected }
             if let peek = selected.peekTab, peek.webView === webView { return peek }
