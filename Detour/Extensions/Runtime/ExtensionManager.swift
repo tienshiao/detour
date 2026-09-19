@@ -1833,6 +1833,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         let url = configuration.url ?? URL(string: "about:blank")!
+        // Refused before a tab exists: `BrowserTab.load(_:)` would drop the
+        // URL and leave a blank tab reported as a success (TASK-86).
+        guard !InternalPage.isInternal(url) else {
+            completionHandler(nil, Self.extensionError("Cannot open a \(InternalPage.scheme):// URL"))
+            return
+        }
         let tab: BrowserTab
         if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
             tab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
@@ -1865,7 +1871,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Open new tabs for specified URLs
         var lastTab: BrowserTab?
         if let space = wc.activeSpace {
-            for url in configuration.tabURLs {
+            for url in configuration.tabURLs where !InternalPage.isInternal(url) {
                 if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
                     lastTab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
                 } else {

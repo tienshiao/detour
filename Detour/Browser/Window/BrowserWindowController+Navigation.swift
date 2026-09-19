@@ -30,11 +30,8 @@ extension BrowserWindowController: WKNavigationDelegate {
         // Before everything else, so a refused internal URL is not Cmd+clicked
         // into a new tab, peeked, or offered to an external application.
         if InternalPage.isInternal(navigationAction.request.url) {
-            let allowed = InternalPageNavigationPolicy.allows(
-                navigationAction.request.url,
-                targetsMainFrame: navigationAction.targetFrame?.isMainFrame == true,
-                navigationType: navigationAction.navigationType,
-                armedPage: tab(owning: webView)?.armedInternalPage)
+            // A web view that is no tab's is never armed.
+            let allowed = tab(owning: webView)?.authorizesNavigation(navigationAction, in: webView) ?? false
             return allowed ? .allow : .cancel
         }
 
@@ -347,13 +344,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     private func tab(owning webView: WKWebView, in space: Space?) -> BrowserTab? {
-        guard let space else { return nil }
-        var candidates: [BrowserTab] = []
-        candidates.append(contentsOf: space.tabs)
-        candidates.append(contentsOf: space.pinnedEntries.compactMap { $0.tab })
-        candidates.append(contentsOf: space.profile?.favorites.compactMap { $0.tab } ?? [])
-        let peeks = candidates.compactMap { $0.peekTab }
-        return (candidates + peeks).first { $0.webView === webView }
+        space.flatMap { store.tab(hosting: webView, in: $0) }
     }
 
     /// The hosted pane a link activation fired from, for the peek branches

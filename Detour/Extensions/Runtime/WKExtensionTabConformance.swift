@@ -93,6 +93,12 @@ extension BrowserTab: WKWebExtensionTab {
     }
 
     func loadURL(_ url: URL, for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        // tabs.update: the navigation policy would cancel this anyway; say so
+        // rather than report success (TASK-86).
+        guard !InternalPage.isInternal(url) else {
+            completionHandler(ExtensionManager.extensionError("Cannot navigate to a \(InternalPage.scheme):// URL"))
+            return
+        }
         webView?.load(URLRequest(url: url))
         completionHandler(nil)
     }

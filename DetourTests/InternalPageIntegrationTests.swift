@@ -199,6 +199,9 @@ final class InternalPageIntegrationTests: XCTestCase {
         XCTAssertEqual(tab.displayHost, "History", "and so does the faux address bar")
         let titles = try await rowTitles(webView)
         XCTAssertEqual(titles, ["Swift"], "the world script rendered the visit")
+        // Single-use: a tab left armed while History shows would admit a
+        // redirect back to detour:// from the first entry the user clicks.
+        XCTAssertNil(tab.armedInternalPage, "the load spent the arming")
     }
 
     /// AC #9: an incognito space's page explains itself instead of falling
@@ -414,7 +417,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
         tab.wake()
         tab.webView?.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
-        XCTAssertEqual(tab.armedInternalPage, .history, "the wake re-armed the tab")
+        XCTAssertNil(tab.armedInternalPage, "a restored session entry is admitted as a revisit, not by arming")
         try await waitForHistoryPage(tab)
         XCTAssertEqual(tab.title, "History")
     }
@@ -434,8 +437,10 @@ final class InternalPageIntegrationTests: XCTestCase {
         space.tabs.append(restored)
         restored.wake()
         restored.webView?.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
+        XCTAssertEqual(restored.armedInternalPage, .history, "no session to restore: the wake's plain load is armed")
         try await waitForHistoryPage(restored)
         XCTAssertEqual(restored.webView?.url, historyURL)
+        XCTAssertNil(restored.armedInternalPage)
     }
 
     /// AC #8: visiting the page never puts it in the history. A private store,

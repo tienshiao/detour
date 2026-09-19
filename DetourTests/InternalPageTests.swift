@@ -35,9 +35,15 @@ final class InternalPageTests: XCTestCase {
 
     // MARK: - Navigation policy
 
+    private func decision(_ url: URL?, mainFrame: Bool = true, type: WKNavigationType = .other,
+                          armed: InternalPage? = nil, entries: Set<URL> = []) -> InternalPageNavigationPolicy.Decision {
+        InternalPageNavigationPolicy.decision(for: url, targetsMainFrame: mainFrame, navigationType: type,
+                                              armedPage: armed, sessionEntryURLs: entries)
+    }
+
     private func allows(_ url: URL?, mainFrame: Bool = true, type: WKNavigationType = .other,
-                        armed: InternalPage? = nil) -> Bool {
-        InternalPageNavigationPolicy.allows(url, targetsMainFrame: mainFrame, navigationType: type, armedPage: armed)
+                        armed: InternalPage? = nil, entries: Set<URL> = []) -> Bool {
+        decision(url, mainFrame: mainFrame, type: type, armed: armed, entries: entries).allows
     }
 
     func testPolicyIgnoresOtherSchemes() {
@@ -62,20 +68,39 @@ final class InternalPageTests: XCTestCase {
     func testSubframeAndNewWindowAreRefusedEvenWhenArmed() {
         // `mainFrame: false` covers both an <iframe> and a nil target frame.
         XCTAssertFalse(allows(history, mainFrame: false, armed: .history))
-        XCTAssertFalse(allows(history, mainFrame: false, type: .backForward))
-        XCTAssertFalse(allows(history, mainFrame: false, type: .reload))
+        XCTAssertFalse(allows(history, mainFrame: false, type: .backForward, entries: [history]))
+        XCTAssertFalse(allows(history, mainFrame: false, type: .reload, entries: [history]))
     }
 
-    func testBackForwardAndReloadRevisitWithoutArming() {
-        // Session restore arrives as .backForward in a fresh, unarmed web view.
-        XCTAssertTrue(allows(history, type: .backForward))
-        XCTAssertTrue(allows(history, type: .reload))
+    func testBackForwardAndReloadRevisitASessionEntryWithoutArming() {
+        // Session restore arrives as .backForward in a fresh, unarmed web view
+        // whose list is already in place.
+        XCTAssertEqual(decision(history, type: .backForward, entries: [web, history]), .allowedAsRevisit)
+        XCTAssertEqual(decision(history, type: .reload, entries: [history]), .allowedAsRevisit)
+        let search = URL(string: "detour://history/?q=swift")!
+        XCTAssertTrue(allows(search, type: .reload, entries: [search]), "replaceState rewrites the entry")
+    }
+
+    func testARedirectDuringBackForwardIsRefused() {
+        // Going back to a web page that answers 302 detour://history/?q=… keeps
+        // the .backForward type, but its URL is no entry of the list.
+        let forged = URL(string: "detour://history/?q=attacker")!
+        XCTAssertFalse(allows(forged, type: .backForward, entries: [web, history]))
+        XCTAssertFalse(allows(history, type: .backForward, entries: [web]))
+        XCTAssertFalse(allows(history, type: .reload))
+    }
+
+    func testOnlyAnArmingAllowIsSpent() {
+        XCTAssertEqual(decision(history, armed: .history), .allowedByArming)
+        XCTAssertEqual(decision(history, type: .backForward, entries: [history]), .allowedAsRevisit)
+        XCTAssertEqual(decision(web, armed: .history), .notInternal)
+        XCTAssertEqual(decision(history), .refused)
     }
 
     func testUnknownInternalHostIsAlwaysRefused() {
         let unknown = URL(string: "detour://settings/")!
         XCTAssertFalse(allows(unknown, armed: .history))
-        XCTAssertFalse(allows(unknown, type: .backForward))
+        XCTAssertFalse(allows(unknown, type: .backForward, entries: [unknown]))
     }
 
     // MARK: - Scheme handler

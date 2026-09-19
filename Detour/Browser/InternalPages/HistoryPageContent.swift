@@ -515,21 +515,24 @@ extension HistoryPageContent {
     /// Re-reads the newest page when the tab comes back into view. When the
     /// first entry is the one already at the top nothing is re-rendered, so the
     /// scroll position and everything paged in below it survive. No live push.
+    ///
+    /// A refresh is a bystander until it finds something new: it neither claims
+    /// the loading flag nor starts a generation, because focus and visibility
+    /// events arrive while a load-more is in flight, and abandoning that reply
+    /// for a refresh that then changes nothing would stall paging for good — the
+    /// sentinel is already intersecting, so its observer never fires again.
     const refresh = () => {
-        const generation = nextGeneration();
-        state.loading = true;
+        const generation = state.generation;
         native('history.query', queryParams(null)).then((result) => {
             if (generation !== state.generation) return;
-            state.loading = false;
             const entries = Array.isArray(result && result.entries) ? result.entries : [];
             const top = entries.length ? entries[0].id : null;
             if (state.count > 0 && top === state.topID) return;
+            nextGeneration();
             state.cursor = null;
             state.done = false;
             receive(result, true);
-        }, () => {
-            if (generation === state.generation) state.loading = false;
-        });
+        }, () => {});
     };
 
     const onSearchInput = () => {

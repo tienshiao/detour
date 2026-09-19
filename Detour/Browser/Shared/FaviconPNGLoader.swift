@@ -74,8 +74,14 @@ final class FaviconPNGLoader {
     ///   does when an extension asks for no particular size). A size also
     ///   guarantees the result really is a PNG, which the internal scheme's
     ///   `nosniff` response needs.
+    /// - Parameter undecodablePassesThrough: what a requested size does with
+    ///   bytes `NSImage` cannot decode (some SVG and ICO variants): hand them
+    ///   back as they came — `detour-favicon://`'s long-standing behaviour,
+    ///   where the extension's `<img>` may still manage them — or fail, which
+    ///   the History page needs because it labels the response a PNG.
     /// - Note: `completion` may run on any queue.
     func pngData(forPageURL pageURL: String, resizedTo size: Int?,
+                 undecodablePassesThrough: Bool = false,
                  database: HistoryDatabase = .shared,
                  completion: @escaping (Data?) -> Void) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -86,18 +92,22 @@ final class FaviconPNGLoader {
                 completion(nil)
                 return
             }
-            self.pngData(forFaviconURL: faviconURL, resizedTo: size, completion: completion)
+            self.pngData(forFaviconURL: faviconURL, resizedTo: size,
+                         undecodablePassesThrough: undecodablePassesThrough, completion: completion)
         }
     }
 
     private func pngData(forFaviconURL faviconURL: URL, resizedTo size: Int?,
+                         undecodablePassesThrough: Bool,
                          completion: @escaping (Data?) -> Void) {
-        let key = "\(faviconURL.absoluteString)@\(size ?? 0)" as NSString
+        let key = "\(faviconURL.absoluteString)@\(size ?? 0)\(undecodablePassesThrough ? "+raw" : "")" as NSString
 
         lock.lock()
         if let cached = cache.object(forKey: key) {
             lock.unlock()
-            completion(cached as Data)
+            // Empty data is a remembered failure: a history full of one site
+            // whose icon 404s must not refetch it for every row scrolled past.
+            completion(cached.length > 0 ? cached as Data : nil)
             return
         }
         if inFlight[key] != nil {
@@ -113,17 +123,14 @@ final class FaviconPNGLoader {
                 completion(nil)
                 return
             }
-            // A requested size is also a re-encode to PNG; a failure to decode
-            // the image at all is a failure, not a pass-through of bytes whose
-            // type we would then be guessing at.
             let result: Data?
             if let size {
-                result = data.flatMap { self.resizedPNG($0, to: size) }
+                result = data.flatMap { self.resizedPNG($0, to: size) ?? (undecodablePassesThrough ? $0 : nil) }
             } else {
                 result = data
             }
             self.lock.lock()
-            if let result { self.cache.setObject(result as NSData, forKey: key) }
+            self.cache.setObject((result ?? Data()) as NSData, forKey: key)
             let waiting = self.inFlight.removeValue(forKey: key) ?? []
             self.lock.unlock()
             for completion in waiting { completion(result) }

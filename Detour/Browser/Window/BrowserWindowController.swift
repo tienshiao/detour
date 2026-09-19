@@ -364,7 +364,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc private func handleExtensionPopupOpenURL(_ notification: Notification) {
-        guard let url = notification.userInfo?["url"] as? URL else { return }
+        guard let url = notification.userInfo?["url"] as? URL, !InternalPage.isInternal(url) else { return }
         guard let space = activeSpace else { return }
         let tab = store.addTab(in: space, url: url)
         selectTab(id: tab.id)

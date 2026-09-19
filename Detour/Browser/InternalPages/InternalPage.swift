@@ -68,16 +68,40 @@ enum InternalPageNavigationPolicy {
     ///     A nil target frame is a new window, which is refused: nothing opens
     ///     an internal page with a script-reachable opener.
     ///   - armedPage: the page the navigating tab was armed for, if any.
-    static func allows(_ url: URL?, targetsMainFrame: Bool, navigationType: WKNavigationType,
-                       armedPage: InternalPage?) -> Bool {
-        guard InternalPage.isInternal(url) else { return true }
-        guard targetsMainFrame, let url, let page = InternalPage(url: url) else { return false }
-        if page == armedPage { return true }
-        // Back/forward and reload only ever revisit an entry an armed load put
-        // in this tab's list (script cannot push a cross-origin entry), and a
-        // session restore arrives as `.backForward`. A web page can send the tab
-        // *back* to the internal page this way; it gains nothing by it — the
-        // document is cross-origin to it and runs no page-world script.
-        return navigationType == .backForward || navigationType == .reload
+    ///   - sessionEntryURLs: the URLs in the web view's back/forward list.
+    enum Decision: Equatable {
+        /// Not an internal URL: not this policy's business.
+        case notInternal
+        case refused
+        /// Let through by the tab's arming, which the caller must now spend.
+        case allowedByArming
+        /// Let through as a revisit of a session entry; any arming is untouched.
+        case allowedAsRevisit
+
+        var allows: Bool { self != .refused }
+    }
+
+    static func decision(for url: URL?, targetsMainFrame: Bool, navigationType: WKNavigationType,
+                         armedPage: InternalPage?, sessionEntryURLs: Set<URL>) -> Decision {
+        guard InternalPage.isInternal(url) else { return .notInternal }
+        guard targetsMainFrame, let url, let page = InternalPage(url: url) else { return .refused }
+        if page == armedPage { return .allowedByArming }
+        // Back/forward and reload may revisit an entry an armed load put in this
+        // tab's list, and a session restore arrives as `.backForward` with the
+        // list already in place. The URL must *be* such an entry: a server
+        // redirect keeps the type of the navigation it interrupts, so going
+        // back to a web page that answers `302 detour://history/?q=…` would
+        // otherwise walk in. Script cannot forge an entry — `pushState` is
+        // same-origin, and navigating to one is what this policy refuses. A web
+        // page can still send the tab *back* to the internal page; it gains
+        // nothing by it — the document is cross-origin to it and runs no
+        // page-world script.
+        guard navigationType == .backForward || navigationType == .reload else { return .refused }
+        return sessionEntryURLs.contains(url) ? .allowedAsRevisit : .refused
+    }
+
+    static func sessionEntryURLs(of webView: WKWebView) -> Set<URL> {
+        let list = webView.backForwardList
+        return Set((list.backList + list.forwardList + [list.currentItem].compactMap { $0 }).map(\.url))
     }
 }

@@ -544,7 +544,7 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didDoubleClickFavoriteAt index: Int) {
         guard let fav = activeFavorite(at: index) else { return }
-        fav.tab!.load(fav.url)
+        fav.tab!.loadRecordedURL(fav.url)
         selectTab(id: fav.tab!.id)
     }
 

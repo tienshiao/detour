@@ -311,7 +311,7 @@ class BrowserTab: NSObject {
         if let archivedInteractionState,
            let state = Self.unarchiveInteractionState(archivedInteractionState) {
             webView?.interactionState = state
-        } else if let page = fallbackURL.flatMap(InternalPage.init(url:)) {
+        } else if let fallbackURL, InternalPage(url: fallbackURL) != nil {
             // Rebuilding a tab that *was* showing an internal page — Reopen
             // Closed Tab, Undo Delete Space, a dormant pinned entry or
             // favourite going live — arms it, exactly as `wake()` does. Plain
@@ -319,7 +319,7 @@ class BrowserTab: NSObject {
             // no way back (TASK-86). The URL can only be internal because an
             // armed load put it there in the first place: nothing else ever
             // commits one.
-            loadInternalPage(page)
+            loadRecordedURL(fallbackURL)
         } else if let fallbackURL {
             load(fallbackURL)
         }
@@ -531,6 +531,8 @@ class BrowserTab: NSObject {
     /// tab's: an armed load, and a URL that committed by itself (a reload, or
     /// back/forward from a page the user had navigated on to).
     private func applyInternalPageIcon(_ page: InternalPage) {
+        // Every `replaceState` of the page's `?q=` reports a new URL.
+        guard previousHost != page.url.host || favicon == nil else { return }
         faviconGeneration += 1
         faviconURL = nil
         previousHost = page.url.host
@@ -689,7 +691,11 @@ class BrowserTab: NSObject {
         previousHost = url.host
     }
 
-    func wake() {
+    /// - Parameter supersededByLoad: the caller loads another URL right away,
+    ///   so a plain load of the tab's own URL is skipped. Arming is single-use
+    ///   (`authorizesNavigation`): were both loads armed, whichever policy
+    ///   decision came first would spend it and the other be refused.
+    func wake(supersededByLoad: Bool = false) {
         guard webView == nil else { return }
 
         let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
@@ -713,9 +719,6 @@ class BrowserTab: NSObject {
         // this navigation — so a restored tab whose wake failed offline got an
         // error page over its just-restored session (TASK-45).
         awaitingFirstURL = true
-        // `url` is only ever internal because an armed load committed it:
-        // `load(_:)` refuses the scheme and the policy cancels the rest.
-        armedInternalPage = url.flatMap(InternalPage.init(url:))
         let awaitingExtensionContext = space?.profile?.isAwaitingExtensionContext(url) == true
         let restoredState = awaitingExtensionContext
             ? nil : cachedInteractionState.flatMap(Self.unarchiveInteractionState)
@@ -729,8 +732,13 @@ class BrowserTab: NSObject {
         if awaitingExtensionContext {
             // Nothing to load until the context does.
         } else if let restoredState {
+            // An internal page among the restored entries needs no arming:
+            // the policy admits it as a revisit of a session entry.
             webView?.interactionState = restoredState
-        } else if let url {
+        } else if let url, !supersededByLoad {
+            // `url` is only ever internal because an armed load committed it:
+            // `load(_:)` refuses the scheme and the policy cancels the rest.
+            armedInternalPage = InternalPage(url: url)
             webView?.load(URLRequest(url: url))
         }
 
@@ -811,6 +819,22 @@ class BrowserTab: NSObject {
         webView.load(URLRequest(url: url))
     }
 
+    /// Applies `InternalPageNavigationPolicy` for this tab, for whichever
+    /// navigation delegate the web view has. Arming is single-use, spent by the
+    /// navigation it lets through: left armed for as long as the page is
+    /// showing, the tab would wave through a redirect back to the internal
+    /// scheme from the first history entry the user clicked. (An arming whose
+    /// load never reaches the policy is dropped by the URL observer once a web
+    /// page commits.)
+    func authorizesNavigation(_ action: WKNavigationAction, in webView: WKWebView) -> Bool {
+        let decision = InternalPageNavigationPolicy.decision(
+            for: action.request.url, targetsMainFrame: action.targetFrame?.isMainFrame == true,
+            navigationType: action.navigationType, armedPage: armedInternalPage,
+            sessionEntryURLs: InternalPageNavigationPolicy.sessionEntryURLs(of: webView))
+        if decision == .allowedByArming { armedInternalPage = nil }
+        return decision.allows
+    }
+
     /// Navigates to a page Detour serves itself. The only way in: `load(_:)`
     /// refuses the internal scheme, because its callers include web content and
     /// extensions.
@@ -824,11 +848,20 @@ class BrowserTab: NSObject {
         load(url, typed: typed, arming: nil)
     }
 
+    /// Returns the tab to a URL Detour itself recorded from a committed
+    /// navigation — this tab's own `url`/`lastAttemptedURL`, or the stored URL
+    /// of the favourite, pinned entry or closed tab it backs — keeping an
+    /// internal page's `?q=` state. Never for a URL that came from anywhere
+    /// else (a page, an extension, another app, an error page's query string):
+    /// for an internal URL this arms the tab.
+    func loadRecordedURL(_ url: URL) {
+        load(url, arming: InternalPage(url: url))
+    }
+
     private func load(_ url: URL, typed: Bool = false, arming page: InternalPage?) {
         guard page != nil || !InternalPage.isInternal(url) else { return }
         nextVisitIsTyped = typed
-        if isSleeping { wake() }
-        // After `wake()`, which arms a tab restored onto an internal page.
+        if isSleeping { wake(supersededByLoad: true) }
         armedInternalPage = page
         // The user (or a caller acting for them) asked for this page: it
         // replaces whatever session was being restored, and a failure now earns
@@ -865,14 +898,18 @@ class BrowserTab: NSObject {
         // error page even if the session restore never committed (TASK-45).
         restoringSession = false
         if webView?.url?.scheme == ErrorPage.scheme {
-            let retryURL = lastAttemptedURL
-                ?? webView?.url.flatMap { ErrorPage.originalURL(from: $0) }
-            if let retryURL { load(retryURL) }
+            // The error page's own query string is not a recorded URL: a web
+            // page can navigate to an error URL naming any `failedURL`.
+            if let lastAttemptedURL {
+                loadRecordedURL(lastAttemptedURL)
+            } else if let retryURL = webView?.url.flatMap({ ErrorPage.originalURL(from: $0) }) {
+                load(retryURL)
+            }
         } else if webViewShowsNothing, let retryURL = lastAttemptedURL ?? url {
             // `url` is the fallback for a restored tab whose wake never
             // committed a navigation — nothing was "attempted" then (TASK-45),
             // but the user asking to reload must still retry the page.
-            load(retryURL)
+            loadRecordedURL(retryURL)
         } else {
             webView?.reload()
         }
@@ -979,12 +1016,7 @@ class BrowserTab: NSObject {
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
-        guard InternalPageNavigationPolicy.allows(navigationAction.request.url,
-                                                  targetsMainFrame: navigationAction.targetFrame?.isMainFrame == true,
-                                                  navigationType: navigationAction.navigationType,
-                                                  armedPage: armedInternalPage) else {
-            return (.cancel, preferences)
-        }
+        guard authorizesNavigation(navigationAction, in: webView) else { return (.cancel, preferences) }
         if navigationAction.targetFrame?.isMainFrame == true, let profile = owningProfile {
             ContentBlockerManager.shared.configure(preferences,
                                                    forNavigationTo: navigationAction.request.url,

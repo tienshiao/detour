@@ -25,7 +25,7 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// configuration on every wake).
     static func install(on configuration: WKWebViewConfiguration) {
         let controller = configuration.userContentController
-        let scripts = InternalPage.allCases.map(userScriptSource(for:))
+        let scripts = userScriptSources
         guard !controller.userScripts.contains(where: { scripts.contains($0.source) }) else { return }
         controller.addScriptMessageHandler(shared, contentWorld: contentWorld, name: handlerName)
         for source in scripts {
@@ -33,6 +33,8 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
                                                   forMainFrameOnly: true, in: contentWorld))
         }
     }
+
+    private static let userScriptSources = InternalPage.allCases.map(userScriptSource(for:))
 
     /// The page's script, inert everywhere but on its own page. `location` is
     /// read through this world's own bindings, which page script cannot patch.
@@ -91,13 +93,17 @@ extension TabStore {
     /// The tab whose web view this is, wherever it lives: a space's tabs, its
     /// pinned entries, the profile's favourites, or a peek over any of them.
     func tab(hosting webView: WKWebView) -> BrowserTab? {
-        for space in spaces {
-            var candidates = space.tabs
-            candidates.append(contentsOf: space.pinnedEntries.compactMap { $0.tab })
-            candidates.append(contentsOf: space.profile?.favorites.compactMap { $0.tab } ?? [])
-            candidates.append(contentsOf: candidates.compactMap { $0.peekTab })
-            if let tab = candidates.first(where: { $0.webView === webView }) { return tab }
-        }
-        return nil
+        spaces.lazy.compactMap { self.tab(hosting: webView, in: $0) }.first
+    }
+
+    /// The one definition of "a space's tabs" for web view lookups: the
+    /// navigation policy (through `BrowserWindowController.tab(owning:)`) and
+    /// the bridge's sender check must never disagree about it.
+    func tab(hosting webView: WKWebView, in space: Space) -> BrowserTab? {
+        var candidates = space.tabs
+        candidates.append(contentsOf: space.pinnedEntries.compactMap { $0.tab })
+        candidates.append(contentsOf: space.profile?.favorites.compactMap { $0.tab } ?? [])
+        candidates.append(contentsOf: candidates.compactMap { $0.peekTab })
+        return candidates.first { $0.webView === webView }
     }
 }

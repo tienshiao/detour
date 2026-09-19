@@ -63,7 +63,8 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
             .flatMap { $0.value.flatMap(Int.init) } ?? 0
 
         FaviconPNGLoader.shared.pngData(forPageURL: pageUrl,
-                                        resizedTo: requestedSize > 0 ? requestedSize : nil) { [weak self] data in
+                                        resizedTo: requestedSize > 0 ? requestedSize : nil,
+                                        undecodablePassesThrough: true) { [weak self] data in
             self?.respond(urlSchemeTask, taskID: taskID, data: data, mimeType: data != nil ? "image/png" : nil)
         }
     }
