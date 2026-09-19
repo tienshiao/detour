@@ -7,6 +7,9 @@ extension BrowserWindowController: WKUIDelegate {
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard let url = navigationAction.request.url, let space = activeSpace else { return nil }
+        // window.open() never consults decidePolicy; refuse here rather than
+        // open a tab whose only navigation the policy would then cancel.
+        if InternalPage.isInternal(url) { return nil }
 
         switch contextMenuLinkAction {
         case .openInNewTab:

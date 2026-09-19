@@ -27,6 +27,17 @@ extension BrowserWindowController: WKNavigationDelegate {
 
     private func decidePolicy(for navigationAction: WKNavigationAction,
                               in webView: WKWebView) async -> WKNavigationActionPolicy {
+        // Before everything else, so a refused internal URL is not Cmd+clicked
+        // into a new tab, peeked, or offered to an external application.
+        if InternalPage.isInternal(navigationAction.request.url) {
+            let allowed = InternalPageNavigationPolicy.allows(
+                navigationAction.request.url,
+                targetsMainFrame: navigationAction.targetFrame?.isMainFrame == true,
+                navigationType: navigationAction.navigationType,
+                armedPage: tab(owning: webView)?.armedInternalPage)
+            return allowed ? .allow : .cancel
+        }
+
         if navigationAction.navigationType == .linkActivated && navigationAction.modifierFlags.contains(.command) {
             if let url = navigationAction.request.url, let space = activeSpace {
                 _ = store.addTab(in: space, url: url, parentID: selectedTabID)

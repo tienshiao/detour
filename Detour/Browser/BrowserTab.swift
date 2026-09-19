@@ -212,6 +212,12 @@ class BrowserTab: NSObject {
     /// its URL synchronously, and the URL observer then also records it as
     /// `lastAttemptedURL`.
     private var restoringSession = false
+    /// The internal page this tab may navigate to, set only by
+    /// `loadInternalPage(_:)` and by `wake()` for a tab that was already showing
+    /// one. `InternalPageNavigationPolicy` refuses every other navigation to the
+    /// internal scheme, so nothing that merely hands the tab a URL — an
+    /// extension, a link, another app — can open a privileged page.
+    private(set) var armedInternalPage: InternalPage?
     private static let blankURL = URL(string: "about:blank")!
     /// Whether the web view shows no page at all: it never navigated, or it fell
     /// back to `about:blank` after a provisional failure with nothing committed.
@@ -230,6 +236,10 @@ class BrowserTab: NSObject {
         if configuration.urlSchemeHandler(forURLScheme: ErrorPage.scheme) == nil {
             configuration.setURLSchemeHandler(ErrorSchemeHandler(), forURLScheme: ErrorPage.scheme)
         }
+        if configuration.urlSchemeHandler(forURLScheme: InternalPage.scheme) == nil {
+            configuration.setURLSchemeHandler(InternalPageSchemeHandler(), forURLScheme: InternalPage.scheme)
+        }
+        InternalPageBridge.install(on: configuration)
         let webView = BrowserWebView(frame: .zero, configuration: configuration)
         webView.isInspectable = true
         return webView
@@ -405,6 +415,7 @@ class BrowserTab: NSObject {
             .sink { [weak self] url in
                 guard let self else { return }
                 if url != nil { self.awaitingFirstURL = false }
+                if let url, !InternalPage.isInternal(url) { self.armedInternalPage = nil }
                 // A session restore that fails before committing leaves the web
                 // view on about:blank; that is not a page this tab is showing,
                 // and must not become its URL or its retry target (TASK-45).
@@ -673,6 +684,9 @@ class BrowserTab: NSObject {
         // this navigation — so a restored tab whose wake failed offline got an
         // error page over its just-restored session (TASK-45).
         awaitingFirstURL = true
+        // `url` is only ever internal because an armed load committed it:
+        // `load(_:)` refuses the scheme and the policy cancels the rest.
+        armedInternalPage = url.flatMap(InternalPage.init(url:))
         let awaitingExtensionContext = space?.profile?.isAwaitingExtensionContext(url) == true
         let restoredState = awaitingExtensionContext
             ? nil : cachedInteractionState.flatMap(Self.unarchiveInteractionState)
@@ -768,9 +782,23 @@ class BrowserTab: NSObject {
         webView.load(URLRequest(url: url))
     }
 
+    /// Navigates to a page Detour serves itself. The only way in: `load(_:)`
+    /// refuses the internal scheme, because its callers include web content and
+    /// extensions.
+    func loadInternalPage(_ page: InternalPage) {
+        load(page.url, arming: page)
+    }
+
     func load(_ url: URL, typed: Bool = false) {
+        load(url, typed: typed, arming: nil)
+    }
+
+    private func load(_ url: URL, typed: Bool = false, arming page: InternalPage?) {
+        guard page != nil || !InternalPage.isInternal(url) else { return }
         nextVisitIsTyped = typed
         if isSleeping { wake() }
+        // After `wake()`, which arms a tab restored onto an internal page.
+        armedInternalPage = page
         // The user (or a caller acting for them) asked for this page: it
         // replaces whatever session was being restored, and a failure now earns
         // the error page.
@@ -785,7 +813,7 @@ class BrowserTab: NSObject {
             faviconURL = nil
         }
         // Optimistic favicon fetch for programmatic navigations
-        if let host = url.host, let scheme = url.scheme, scheme != ErrorPage.scheme {
+        if let host = url.host, let scheme = url.scheme, scheme != ErrorPage.scheme, page == nil {
             if host != previousHost {
                 faviconGeneration += 1
                 let generation = faviconGeneration
@@ -910,6 +938,12 @@ class BrowserTab: NSObject {
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        guard InternalPageNavigationPolicy.allows(navigationAction.request.url,
+                                                  targetsMainFrame: navigationAction.targetFrame?.isMainFrame == true,
+                                                  navigationType: navigationAction.navigationType,
+                                                  armedPage: armedInternalPage) else {
+            return (.cancel, preferences)
+        }
         if navigationAction.targetFrame?.isMainFrame == true, let profile = owningProfile {
             ContentBlockerManager.shared.configure(preferences,
                                                    forNavigationTo: navigationAction.request.url,
