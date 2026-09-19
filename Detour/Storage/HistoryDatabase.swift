@@ -108,6 +108,29 @@ struct HistoryDatabase {
         })
     }
 
+    /// Corrects the title of a URL already in the history. A single-page app
+    /// changes `document.title` after the navigation has finished, so the title
+    /// stored with the visit is the previous page's (TASK-88); `historyURL`
+    /// holds one title per URL, so leaving it there renames every visit of that
+    /// URL. This is a correction, not a visit: no `historyVisit` row, and
+    /// `visitCount` / `lastVisitTime` are untouched. A URL with no row is a
+    /// no-op — the update never creates one. `historySearch` is synchronized
+    /// with `historyURL`, so the FTS index follows via its triggers.
+    func updateTitle(url: String, title: String) {
+        // Fire-and-forget like `recordVisit`, and serialized behind it on the
+        // same writer queue, so a title correction can never overtake the visit
+        // it corrects.
+        dbQueue.asyncWrite({ db in
+            try db.execute(sql: """
+                UPDATE historyURL SET title = ? WHERE url = ? AND title <> ?
+                """, arguments: [title, url, title])
+        }, completion: { _, result in
+            if case .failure(let error) = result {
+                log.error("Failed to update history title: \(error.localizedDescription)")
+            }
+        })
+    }
+
     func recentHistory(spaceID: String, limit: Int = 12) -> [HistoryURL] {
         do {
             return try dbQueue.read { db in

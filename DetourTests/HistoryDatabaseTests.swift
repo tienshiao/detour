@@ -199,6 +199,55 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
+    // MARK: - updateTitle
+
+    func testUpdateTitleRenamesTheURLWithoutRecordingAVisit() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://www.youtube.com/", title: "a video - YouTube",
+                      spaceID: "space1", visitTime: 1000)
+        try seedVisit(db, url: "https://www.youtube.com/", title: "a video - YouTube",
+                      spaceID: "space1", visitTime: 2000)
+
+        db.updateTitle(url: "https://www.youtube.com/", title: "YouTube")
+
+        // `updateTitle` writes asynchronously but serialized on the writer
+        // queue, so this read observes it.
+        try db.dbQueue.read { conn in
+            let row = try Row.fetchOne(conn, sql: "SELECT * FROM historyURL")!
+            XCTAssertEqual(row["title"] as String, "YouTube")
+            XCTAssertEqual(row["visitCount"] as Int, 2, "a correction is not a visit")
+            XCTAssertEqual(row["lastVisitTime"] as Double, 2000, "the visit times are untouched")
+            let visits = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit")
+            XCTAssertEqual(visits, 2, "no visit row was added")
+        }
+    }
+
+    func testUpdateTitleIsANoOpForAURLWithNoRow() throws {
+        let db = try makeDatabase()
+
+        db.updateTitle(url: "https://never.visited/", title: "Never Visited")
+
+        try db.dbQueue.read { conn in
+            let urls = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyURL")
+            XCTAssertEqual(urls, 0, "a title correction never creates a history row")
+        }
+    }
+
+    /// AC #5: `historySearch` is synchronized with `historyURL`, so the FTS
+    /// index has to follow the correction — the old title must stop matching.
+    func testUpdateTitleIsReflectedInFTSSearch() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://www.youtube.com/", title: "neighbourly baking",
+                       faviconURL: nil, spaceID: "space1")
+
+        db.updateTitle(url: "https://www.youtube.com/", title: "YouTube homepage")
+
+        XCTAssertEqual(db.searchHistory(query: "homepage", spaceID: "space1").map(\.title),
+                       ["YouTube homepage"], "the new title is searchable")
+        XCTAssertEqual(db.searchHistory(query: "neighbourly", spaceID: "space1").count, 0,
+                       "the old title no longer matches")
+    }
+
     // MARK: - expireOldVisits
 
     func testExpireDeletesOldVisitsAndOrphanedURLs() throws {

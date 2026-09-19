@@ -392,15 +392,24 @@ class TabStore {
     /// In-memory dedup cache for history: "url|spaceID" -> timestamp
     private var recentHistoryWrites: [String: TimeInterval] = [:]
 
+    /// How long a tab's title must hold still before it is written back to the
+    /// history. Pages rewrite their title on a timer — unread counters, marquee
+    /// titles, "(3) Inbox" — and debouncing turns that into at most one write
+    /// per quiet second (TASK-88). Injected so a test need not wait a real
+    /// second per title change.
+    private let historyTitleDebounce: TimeInterval
+
     /// Removes deleted profiles' on-disk WebKit data (TASK-32).
     private let profileDataRemoval: ProfileDataRemoval
 
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
          profileDataRemover: ProfileDataRemoval.Remover = .webKit,
          profileDataRemovalRetryDelays: [TimeInterval] = ProfileDataRemoval.defaultRetryDelays,
-         webKitStorageScope: WebKitStorageScope = .current) {
+         webKitStorageScope: WebKitStorageScope = .current,
+         historyTitleDebounce: TimeInterval = 1.0) {
         self.appDB = appDB
         self.historyDB = historyDB
+        self.historyTitleDebounce = historyTitleDebounce
         self.profileDataRemoval = ProfileDataRemoval(
             appDB: appDB, remover: profileDataRemover, retryDelays: profileDataRemovalRetryDelays,
             storageScope: webKitStorageScope)
@@ -1434,6 +1443,14 @@ class TabStore {
         // can't leak onto a later, unrelated navigation.
         let typed = tab.consumeNextVisitIsTyped()
 
+        // A failed load leaves `tab.url` on the URL the user asked for while the
+        // document in the web view is `browser-error://…` (`showErrorPage`), so
+        // recording here would file a visit for a page that never loaded, titled
+        // with the error page's own title (TASK-88). `lastRecordedHistoryURL` is
+        // left alone too: the error document's title must not rename whatever
+        // legitimate row that URL already has.
+        if tab.webView?.url?.scheme == ErrorPage.scheme { return }
+
         // Never record history for incognito spaces
         if let space = space(withID: spaceID), space.isIncognito { return }
 
@@ -1443,10 +1460,24 @@ class TabStore {
         // Skip internal URLs
         guard url.scheme == "http" || url.scheme == "https" else { return }
 
+        // This URL has a `historyURL` row from here on — written below, or left
+        // standing by the dedup — so a late title change may correct it, for as
+        // long as the correction window lasts (TASK-88). The window restarts
+        // here, dedup or not: the recorder seeing the URL again is the page
+        // settling again.
+        tab.lastRecordedHistoryURL = url
+        tab.lastRecordedHistoryAt = Date()
+
         // Deduplicate: skip if same (url, spaceID) recorded within 30 seconds
         let dedupKey = "\(urlString)|\(spaceID.uuidString)"
         let now = Date().timeIntervalSince1970
         if !typed, let lastWrite = recentHistoryWrites[dedupKey], now - lastWrite < 30 {
+            // The title may have settled while the tab was still loading, in
+            // which case the debounced correction was dropped and never retried
+            // (TASK-88). The load has ended by the time the recorder runs, so
+            // this is the moment that title can finally be written — the policy
+            // still decides whether it may be.
+            updateHistoryTitle(for: tab)
             return
         }
         recentHistoryWrites[dedupKey] = now
@@ -1458,6 +1489,30 @@ class TabStore {
             spaceID: spaceID.uuidString,
             typed: typed
         )
+    }
+
+    /// Writes a tab's settled title back onto the history row of the URL it
+    /// recorded, when the policy below allows it (TASK-88). Driven by the
+    /// debounced `$title` subscription in `subscribeToTab`.
+    func updateHistoryTitle(for tab: BrowserTab, now: Date = Date()) {
+        // The space is resolved the way `recordHistoryVisit` resolves it, from
+        // the tab's current `spaceID`: a favourite or peek tab that belongs to
+        // no space never records a visit, so it has nothing to correct either.
+        let space = tab.spaceID.flatMap { self.space(withID: $0) }
+        guard let url = HistoryTitleUpdatePolicy.urlToRename(
+            title: tab.title,
+            webViewTitle: tab.webView?.title,
+            isLoading: tab.isLoading,
+            tabURL: tab.url,
+            webViewURL: tab.webView?.url,
+            lastRecordedHistoryURL: tab.lastRecordedHistoryURL,
+            recordedAt: tab.lastRecordedHistoryAt,
+            now: now,
+            hasSpace: tab.spaceID != nil,
+            isIncognito: space?.isIncognito ?? false
+        ) else { return }
+
+        historyDB.updateTitle(url: url.absoluteString, title: tab.title)
     }
 
     // MARK: - Observer Management
@@ -4164,6 +4219,26 @@ class TabStore {
             }
             .store(in: &cancellables)
 
+        // A title that settles after the visit was recorded corrects the stored
+        // one (TASK-88). Separate from `observe(\.$title)` above, which only
+        // redraws the sidebar: this one is debounced, and the guards in
+        // `updateHistoryTitle` need the title to have stopped moving.
+        tab.$title
+            .dropFirst()
+            .removeDuplicates()
+            // The URL travels with the title: the debounce fires a second after
+            // the title changed, and by then the tab may have moved — a
+            // pushState to another page and a Back within the same second would
+            // otherwise write the second page's title onto the first URL
+            // (TASK-88).
+            .map { [weak tab] title in (title: title, url: tab?.url) }
+            .debounce(for: .seconds(historyTitleDebounce), scheduler: RunLoop.main)
+            .sink { [weak self, weak tab] titled in
+                guard let self, let tab, tab.url == titled.url else { return }
+                self.updateHistoryTitle(for: tab)
+            }
+            .store(in: &cancellables)
+
         tab.$estimatedProgress
             .dropFirst()
             .throttle(for: .milliseconds(100), scheduler: RunLoop.main, latest: true)
@@ -4179,4 +4254,78 @@ class TabStore {
 
 private struct WeakObserver {
     weak var value: (any TabStoreObserver)?
+}
+
+/// When a tab's title change may rename the history row of the URL it is on.
+///
+/// A visit is recorded the moment loading finishes, but a single-page app
+/// rewrites `document.title` after that — the visit keeps the previous page's
+/// title, and since `historyURL` holds one title per URL it renames every visit
+/// of that URL (TASK-88). The correction is deliberately narrow: only the URL
+/// this tab itself recorded, only a title the document actually reports, and
+/// only under the exclusions that governed the recording.
+///
+/// Pure so the whole guard matrix is testable without a web view.
+enum HistoryTitleUpdatePolicy {
+
+    /// How long after the visit was recorded a late title may still correct it.
+    ///
+    /// Long enough for a slow single-page app to fetch its data and set the
+    /// title; short enough that an unread counter or a marquee title does not
+    /// keep rewriting the history for as long as the tab stays open — and
+    /// nobody wants "(211) YouTube" as the stored title of youtube.com anyway.
+    static let correctionWindow: TimeInterval = 60
+
+    /// The URL whose stored title should become `title`, or nil to write nothing.
+    ///
+    /// - Parameters:
+    ///   - title: the tab's settled title (`BrowserTab.title`).
+    ///   - webViewTitle: `tab.webView?.title` — nil for a sleeping tab.
+    ///   - isLoading: a navigation is in flight, so the title in hand may
+    ///     belong to either side of it.
+    ///   - tabURL: where the tab is now.
+    ///   - webViewURL: the URL of the document the title came from
+    ///     (`tab.webView?.url`).
+    ///   - lastRecordedHistoryURL: the URL this tab last got a history row for.
+    ///   - recordedAt: when the recorder last saw that URL.
+    ///   - now: the current time, against `recordedAt`.
+    ///   - hasSpace: the tab belongs to a space, the way a recorded visit does.
+    ///   - isIncognito: that space is incognito.
+    static func urlToRename(title: String,
+                            webViewTitle: String?,
+                            isLoading: Bool,
+                            tabURL: URL?,
+                            webViewURL: URL?,
+                            lastRecordedHistoryURL: URL?,
+                            recordedAt: Date?,
+                            now: Date,
+                            hasSpace: Bool,
+                            isIncognito: Bool) -> URL? {
+        guard hasSpace, !isIncognito, !isLoading else { return nil }
+        // The title has to be one the live document reports. `BrowserTab.updateTitle`
+        // also publishes stand-ins — the scheme-stripped URL while a navigation is
+        // pending, an internal page's name, the persisted title of a session still
+        // being restored — and none of those may reach the history. A sleeping tab
+        // has no web view and so never passes.
+        guard !title.isEmpty, title == webViewTitle else { return nil }
+        // Only the URL this tab recorded: never the previous page after an
+        // in-page navigation moved the tab on, and never a URL nothing wrote a
+        // row for.
+        guard let url = tabURL, url == lastRecordedHistoryURL else { return nil }
+        // The title has to have come from the document at that very URL. A
+        // failed load is the case that matters: `showErrorPage` leaves
+        // `tab.url` on the URL the user asked for while the web view shows
+        // `browser-error://…`, and the error page's title must not rename that
+        // row (TASK-88). Any other disagreement between the tab's URL and the
+        // live document is refused for the same reason.
+        guard webViewURL == url else { return nil }
+        // Only while the visit is still settling. Past the window the page is
+        // no longer catching up with its own navigation, it is just rewriting
+        // its title, and the history stops following.
+        guard let recordedAt, now.timeIntervalSince(recordedAt) <= correctionWindow else { return nil }
+        // The same exclusion the recorder applies: `detour://` internal pages,
+        // `browser-error://` and extension pages are not in the history at all.
+        guard url.scheme == "http" || url.scheme == "https" else { return nil }
+        return url
+    }
 }

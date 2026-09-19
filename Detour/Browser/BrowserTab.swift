@@ -140,6 +140,20 @@ class BrowserTab: NSObject {
     /// the user (command palette URL/suggestion), so its history visit records as
     /// typed. Consumed via `consumeNextVisitIsTyped()`.
     private var nextVisitIsTyped = false
+    /// The URL this tab last got a `historyURL` row for — written now, or already
+    /// there and skipped by the 30 s dedup. A single-page app finishes loading
+    /// the new URL *before* it rewrites `document.title`, so the recorded title
+    /// is the previous page's; the late title is written back onto this URL and
+    /// no other, so a tab that has since moved on never renames the page it left
+    /// (TASK-88). Set only by `TabStore.recordHistoryVisit`, together with
+    /// `lastRecordedHistoryAt`.
+    var lastRecordedHistoryURL: URL?
+    /// When the recorder last saw `lastRecordedHistoryURL` — the start of the
+    /// window in which a late title may still correct that row
+    /// (`HistoryTitleUpdatePolicy.correctionWindow`). Outside it the page is no
+    /// longer settling, it is just rewriting its own title, and the history
+    /// stops following (TASK-88).
+    var lastRecordedHistoryAt: Date?
     private var cachedInteractionState: Data?
 
     // MARK: - Peek State
