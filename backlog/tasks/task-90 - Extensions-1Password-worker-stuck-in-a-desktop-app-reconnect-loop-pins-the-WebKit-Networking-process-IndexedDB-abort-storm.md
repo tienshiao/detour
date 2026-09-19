@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-19 19:51'
-updated_date: '2026-09-19 19:52'
+updated_date: '2026-09-19 19:55'
 labels:
   - bug
   - extensions
@@ -56,4 +56,6 @@ Immediate workaround for the user: kill the looping WebContent process (or toggl
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-09-19 12:52: all measurements above are the release build (filtered by processIdentifier 1306 = /Applications/Detour.app; Networking PID 1380 started 7 s after it). The user reports seeing similar errors in a DEBUG build running from Xcode at the same time; after they stopped it, the release build's loop continued unchanged (20 errors/s, Networking ~86%, worker 58728 ~22%), so the release build has the problem on its own. Hypothesis to test as a TRIGGER, not yet shown: a debug build launched without DETOUR_DATA_DIR shares the bundle id, hence the same ~/Library/WebKit/com.detourbrowser.mac WebsiteDataStore (same 1Password IndexedDB files) and competes for the same 1Password desktop-app connection; 1Password only trusts the signed /Applications build, so the debug instance always fails - check whether its attempts knock the release instance's port over (PortClosed), and whether two instances writing one extension origin's IndexedDB explains the transaction backlog. If so, part of the fix is making non-release builds use an isolated data directory by default.
+
+2026-09-19 12:55: the user killed the looping worker process (PID 58728). Within 20 s: Networking dropped from ~86% to ~1% CPU, the extension-polyfill error stream stopped (20/s -> a handful of lines at restart), WebKit started a replacement service-worker process (PID 65318). No new 1Password-BrowserSupport host was spawned in that window - Detour still has only the two 16.5 h-old hosts (47229/47231) - yet the replacement is NOT looping. So a fresh worker does not reproduce the loop by itself: the stuck state belonged to that worker instance (or to whatever happened around its start ~22:14 on Sep 18), which is consistent with the concurrent-debug-build trigger hypothesis and with a lazily connecting worker. Worth checking next time the Work profile's 1Password is used: does it get a port (new host, or one of the old two), and are 47229/47231 leaked hosts of dead workers (TASK-67 family)?
 <!-- SECTION:NOTES:END -->
