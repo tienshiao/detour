@@ -6,6 +6,12 @@ import Foundation
 enum HistoryPageBridge {
     static let maxPageSize = 200
 
+    /// The history database the page reads, as a test seam: the bridge is
+    /// reached through a real web view, so an integration test has no call site
+    /// to hand a database to. Production never assigns it; a test that does
+    /// must put `.shared` back in its tearDown.
+    static var database: HistoryDatabase = .shared
+
     /// What a tab's History page may see: the visits of every space that
     /// currently uses the tab's profile. Derived from the sending tab — the
     /// page never names a profile or a space. Nil for incognito (nothing is
@@ -16,7 +22,7 @@ enum HistoryPageBridge {
     }
 
     static func handle(method: String, params: [String: Any], from tab: BrowserTab,
-                       database: HistoryDatabase = .shared,
+                       database: HistoryDatabase = HistoryPageBridge.database,
                        reply: @escaping (Any?, String?) -> Void) {
         switch method {
         case "history.query":

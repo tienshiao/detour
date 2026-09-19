@@ -4,23 +4,12 @@ import WebKit
 /// Handles `detour-favicon://` URLs by looking up favicon images from the history database.
 /// Extensions use `chrome.runtime.getURL("/_favicon/?pageUrl=X")` to get favicons;
 /// our polyfill redirects these to this custom scheme so we can serve the images.
+///
+/// The permission gate below is this handler's own; everything after it — the
+/// history lookup, the cache, the download and the resize — is
+/// `FaviconPNGLoader`, shared with the History page's `favicon` route (TASK-86).
 class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
     static let scheme = "detour-favicon"
-
-    private static let transparentPixel: Data = {
-        let bytes: [UInt8] = [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-            0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-            0x54, 0x78, 0x9C, 0x62, 0x00, 0x00, 0x00, 0x02,
-            0x00, 0x01, 0xE5, 0x27, 0xDE, 0xFC, 0x00, 0x00,
-            0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42,
-            0x60, 0x82,
-        ]
-        return Data(bytes)
-    }()
 
     /// WebKit-assigned extension hosts that have the "favicon" manifest permission.
     /// Populated at extension load time by Profile.loadExtensionContext(_:).
@@ -45,12 +34,6 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
         return permittedHosts.contains(host)
     }
 
-    private static let cache: NSCache<NSString, NSData> = {
-        let c = NSCache<NSString, NSData>()
-        c.countLimit = 200
-        return c
-    }()
-
     private let lock = NSLock()
     private var activeTasks = Set<ObjectIdentifier>()
 
@@ -73,58 +56,21 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
+        // No size asked for means "whatever the site serves", which is the one
+        // case the bytes pass through unconverted.
         let requestedSize = components.queryItems?
             .first(where: { $0.name == "size" })
             .flatMap { $0.value.flatMap(Int.init) } ?? 0
 
-        // Cache key includes size so different sizes are cached separately
-        let cacheKey = (requestedSize > 0 ? "\(pageUrl)@\(requestedSize)" : pageUrl) as NSString
-
-        // Check cache first
-        if let cached = Self.cache.object(forKey: cacheKey) {
-            respond(urlSchemeTask, taskID: taskID, data: cached as Data, mimeType: "image/png")
-            return
+        FaviconPNGLoader.shared.pngData(forPageURL: pageUrl,
+                                        resizedTo: requestedSize > 0 ? requestedSize : nil) { [weak self] data in
+            self?.respond(urlSchemeTask, taskID: taskID, data: data, mimeType: data != nil ? "image/png" : nil)
         }
-
-        guard let faviconURLString = HistoryDatabase.shared.faviconURL(for: pageUrl),
-              let faviconURL = URL(string: faviconURLString) else {
-            respond(urlSchemeTask, taskID: taskID, data: nil, mimeType: nil)
-            return
-        }
-
-        let task = URLSession.shared.dataTask(with: faviconURL) { [weak self] data, response, _ in
-            guard let self else { return }
-            let httpResponse = response as? HTTPURLResponse
-            if let data, httpResponse?.statusCode == 200 {
-                let finalData = requestedSize > 0
-                    ? self.resizedPNG(data, to: requestedSize) ?? data
-                    : data
-                Self.cache.setObject(finalData as NSData, forKey: cacheKey)
-                self.respond(urlSchemeTask, taskID: taskID, data: finalData, mimeType: "image/png")
-            } else {
-                self.respond(urlSchemeTask, taskID: taskID, data: nil, mimeType: nil)
-            }
-        }
-        task.resume()
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         lock.lock(); defer { lock.unlock() }
         activeTasks.remove(ObjectIdentifier(urlSchemeTask as AnyObject))
-    }
-
-    private func resizedPNG(_ data: Data, to size: Int) -> Data? {
-        guard let image = NSImage(data: data) else { return nil }
-        let targetSize = NSSize(width: size, height: size)
-        let resized = NSImage(size: targetSize, flipped: false) { rect in
-            NSGraphicsContext.current?.imageInterpolation = .high
-            image.draw(in: rect)
-            return true
-        }
-        guard let tiff = resized.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else { return nil }
-        return png
     }
 
     private func respond(_ task: any WKURLSchemeTask, taskID: ObjectIdentifier, data: Data?, mimeType: String?) {
@@ -135,7 +81,7 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
             guard isActive else { return }
 
             let url = task.request.url ?? URL(string: "about:blank")!
-            let responseData = data ?? Self.transparentPixel
+            let responseData = data ?? FaviconPNGLoader.transparentPixel
             let responseMime = data != nil ? (mimeType ?? "image/png") : "image/png"
             let response = URLResponse(url: url, mimeType: responseMime, expectedContentLength: responseData.count, textEncodingName: nil)
             task.didReceive(response)
