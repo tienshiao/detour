@@ -240,7 +240,10 @@ extension BrowserWindowController: TabSidebarDelegate {
             url = space.tabs[index].url
         }
         guard let url else { return }
-        let newTab = store.addTab(in: space, url: url)
+        // An internal page is duplicated by opening it again: `addTab(in:url:)`
+        // refuses the scheme, which would leave a blank tab behind (TASK-86).
+        let newTab = InternalPage(url: url).map { store.addTab(in: space, internalPage: $0) }
+            ?? store.addTab(in: space, url: url)
         selectTab(id: newTab.id)
     }
 

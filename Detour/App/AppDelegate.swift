@@ -347,6 +347,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let navigateMenu = NSMenu(title: "Navigate")
         navigateMenu.addItem(withTitle: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "[")
         navigateMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
+        navigateMenu.addItem(.separator())
+        // Safari's History menu, in the menu that already holds Back and
+        // Forward rather than a second one beside it (TASK-86). Cmd+Y is free:
+        // the Navigate menu is not delegate-driven, so AppKit matches it
+        // natively and `MenuKeyEquivalentMatcher` never sees it.
+        navigateMenu.addItem(withTitle: "Show All History", action: #selector(BrowserWindowController.showHistory(_:)), keyEquivalent: "y")
         navigateMenuItem.submenu = navigateMenu
 
         // Spaces menu

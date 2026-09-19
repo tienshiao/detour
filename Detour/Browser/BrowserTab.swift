@@ -287,7 +287,11 @@ class BrowserTab: NSObject {
         super.init()
         self.title = title
         self.url = url
-        if let faviconURL {
+        if let page = url.flatMap(InternalPage.init(url:)) {
+            // A restored internal page has no favicon URL to download, and its
+            // icon must be there while the tab is still asleep (TASK-86).
+            applyInternalPageIcon(page)
+        } else if let faviconURL {
             self.faviconURL = faviconURL
             self.previousHost = url?.host
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
@@ -307,6 +311,15 @@ class BrowserTab: NSObject {
         if let archivedInteractionState,
            let state = Self.unarchiveInteractionState(archivedInteractionState) {
             webView?.interactionState = state
+        } else if let page = fallbackURL.flatMap(InternalPage.init(url:)) {
+            // Rebuilding a tab that *was* showing an internal page — Reopen
+            // Closed Tab, Undo Delete Space, a dormant pinned entry or
+            // favourite going live — arms it, exactly as `wake()` does. Plain
+            // `load(_:)` would refuse the scheme and leave the tab blank with
+            // no way back (TASK-86). The URL can only be internal because an
+            // armed load put it there in the first place: nothing else ever
+            // commits one.
+            loadInternalPage(page)
         } else if let fallbackURL {
             load(fallbackURL)
         }
@@ -415,7 +428,11 @@ class BrowserTab: NSObject {
             .sink { [weak self] url in
                 guard let self else { return }
                 if url != nil { self.awaitingFirstURL = false }
-                if let url, !InternalPage.isInternal(url) { self.armedInternalPage = nil }
+                if let url, !InternalPage.isInternal(url) {
+                    self.armedInternalPage = nil
+                } else if let page = url.flatMap(InternalPage.init(url:)) {
+                    self.applyInternalPageIcon(page)
+                }
                 // A session restore that fails before committing leaves the web
                 // view on about:blank; that is not a page this tab is showing,
                 // and must not become its URL or its retry target (TASK-45).
@@ -506,6 +523,18 @@ class BrowserTab: NSObject {
                 self.downloadFavicon(from: url, generation: generation)
             }
         }
+    }
+
+    /// Gives the tab an internal page's SF Symbol instead of a favicon, and
+    /// stops any download still in flight for the page it replaced from landing
+    /// on top of it (TASK-86). Called wherever a `detour://` URL becomes the
+    /// tab's: an armed load, and a URL that committed by itself (a reload, or
+    /// back/forward from a page the user had navigated on to).
+    private func applyInternalPageIcon(_ page: InternalPage) {
+        faviconGeneration += 1
+        faviconURL = nil
+        previousHost = page.url.host
+        favicon = NSImage(systemSymbolName: page.symbolName, accessibilityDescription: page.title)
     }
 
     private func downloadFavicon(from url: URL, generation: Int) {
@@ -787,6 +816,8 @@ class BrowserTab: NSObject {
     /// extensions.
     func loadInternalPage(_ page: InternalPage) {
         load(page.url, arming: page)
+        // After the load, which clears the favicon of the page being left.
+        applyInternalPageIcon(page)
     }
 
     func load(_ url: URL, typed: Bool = false) {
@@ -890,7 +921,14 @@ class BrowserTab: NSObject {
     }
 
     private func updateTitle() {
-        if navigationPending, let lastAttemptedURL {
+        // An internal page is named before it loads (TASK-86): without this the
+        // sidebar would show the raw `detour://history/` for as long as the
+        // navigation is pending, and again for a restored tab that has not
+        // woken and so has no document title to read.
+        if let page = ((navigationPending ? lastAttemptedURL : webView?.url) ?? url)
+            .flatMap(InternalPage.init(url:)) {
+            title = page.title
+        } else if navigationPending, let lastAttemptedURL {
             title = strippedScheme(lastAttemptedURL)
         } else if let webTitle = webView?.title, !webTitle.isEmpty {
             title = webTitle
@@ -908,6 +946,9 @@ class BrowserTab: NSObject {
     }
 
     var displayHost: String {
+        // `detour://history/` has a host, but "history" is not what the faux
+        // address bar should read: an internal page goes by its name (TASK-86).
+        if let page = url.flatMap(InternalPage.init(url:)) { return page.title }
         guard let host = url?.host else { return "" }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }

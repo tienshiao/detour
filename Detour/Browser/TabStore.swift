@@ -1997,6 +1997,18 @@ class TabStore {
         return tab
     }
 
+    /// Opens one of Detour's own pages in a new tab. The only store-level way
+    /// in: `addTab(in:url:)` cannot open an internal page, and must not be able
+    /// to — its callers include an extension's `tabs.create` and web content's
+    /// `window.open` (TASK-86).
+    @discardableResult
+    func addTab(in space: Space, internalPage page: InternalPage, parentID: UUID? = nil) -> BrowserTab {
+        let tab = BrowserTab(configuration: space.makeWebViewConfiguration())
+        insertTab(tab, in: space, parentID: parentID)
+        tab.loadInternalPage(page)
+        return tab
+    }
+
     /// Create a tab for an extension page (webkit-extension://) using the extension
     /// context's webViewConfiguration, which is required to resolve the URL scheme.
     @discardableResult

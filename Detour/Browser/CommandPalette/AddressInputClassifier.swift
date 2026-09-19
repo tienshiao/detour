@@ -29,6 +29,14 @@ enum AddressInputClassifier {
             return URL(string: text)
         }
 
+        // One of Detour's own pages, typed out: `detour://history` means it
+        // (TASK-86). Only a URL naming a page that exists — `detour://nowhere`
+        // is searched for, like any other unrecognised word. Opening it is
+        // still `loadInternalPage`'s decision; this only says what was typed.
+        if let url = URL(string: text), InternalPage(url: url) != nil {
+            return url
+        }
+
         let authorityEnd = text.firstIndex(where: { "/?#".contains($0) }) ?? text.endIndex
         var authority = text[..<authorityEnd]
         if let at = authority.lastIndex(of: "@") {

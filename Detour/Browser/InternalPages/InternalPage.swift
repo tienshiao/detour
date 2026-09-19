@@ -25,6 +25,16 @@ enum InternalPage: String, CaseIterable {
         }
     }
 
+    /// The SF Symbol the sidebar shows instead of a favicon. An internal page
+    /// has none to fetch, and nothing may go to the network for a `detour://`
+    /// URL — `BrowserTab.load(_:arming:)` skips its optimistic `favicon.ico`
+    /// download for exactly that reason.
+    var symbolName: String {
+        switch self {
+        case .history: return "clock.arrow.circlepath"
+        }
+    }
+
     /// The page a URL belongs to: any URL on the internal scheme whose host
     /// names a page, whatever its path or query (a page's own resources and its
     /// `?q=` state live under its host).

@@ -1773,7 +1773,10 @@ class BrowserWindowController: NSWindowController {
             .receive(on: RunLoop.main)
             .sink { [weak self] url in
                 self?.tabSidebar.fauxAddressBar.displayText = tab.displayHost
-                self?.tabSidebar.fauxAddressBar.isSecure = url?.scheme == "https" || url == nil
+                // An internal page is served by Detour itself, so it gets the
+                // lock as much as an https page does (TASK-86).
+                self?.tabSidebar.fauxAddressBar.isSecure =
+                    url?.scheme == "https" || url == nil || InternalPage.isInternal(url)
                 self?.tabSidebar.reloadButton.isEnabled = url != nil
             }
             .store(in: &displayTabSubscriptions)
@@ -1894,6 +1897,24 @@ class BrowserWindowController: NSWindowController {
         guard let webView = selectedTab?.webView else { return }
         guard let inspector = webView.value(forKey: "_inspector") as? NSObject else { return }
         inspector.perform(Selector(("show")))
+    }
+
+    /// Cmd+Y: the History page, in the window's active space — so it sees that
+    /// space's profile and nothing else (TASK-86).
+    ///
+    /// A second Cmd+Y selects the History tab the space already has rather than
+    /// piling up identical ones; a pinned one counts, since pinning is where a
+    /// page the user keeps around ends up. No active space (no window, or a
+    /// window mid-teardown) is simply a no-op.
+    @objc func showHistory(_ sender: Any?) {
+        guard let space = activeSpace else { return }
+        let candidates = space.tabs + space.pinnedEntries.compactMap(\.tab)
+        if let existing = candidates.first(where: { $0.url.flatMap(InternalPage.init(url:)) == .history }) {
+            selectTab(id: existing.id)
+            return
+        }
+        let tab = store.addTab(in: space, internalPage: .history)
+        selectTab(id: tab.id)
     }
 
     @objc func copyCurrentURL(_ sender: Any?) {
@@ -2910,11 +2931,26 @@ extension BrowserWindowController: CommandPaletteDelegate {
         let navigateInPlace = commandPaletteNavigatesInPlace
         dismissCommandPalette()
 
+        // Typed input is the user's own, so an internal page they asked for is
+        // armed rather than refused by `load(_:)` — which is what keeps every
+        // *other* caller of `load(_:)` (extensions, links, other apps) out of
+        // it (TASK-86).
+        let internalPage = InternalPage(url: url)
+
         if navigateInPlace, let tab = selectedTab {
             ensureOwnsWebView()
-            tab.load(url, typed: typed)
+            if let internalPage {
+                tab.loadInternalPage(internalPage)
+            } else {
+                tab.load(url, typed: typed)
+            }
         } else {
             guard let space = activeSpace else { return }
+            if let internalPage {
+                let tab = store.addTab(in: space, internalPage: internalPage)
+                selectTab(id: tab.id)
+                return
+            }
             let tab = store.addTab(in: space)
             selectTab(id: tab.id)
             tab.load(url, typed: typed)
