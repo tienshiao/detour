@@ -60,6 +60,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // full-table anti-join is not even scheduled until after first paint.
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
             HistoryDatabase.shared.expireOldVisits()
+            // By now the session is restored, which is what makes a space
+            // "no longer existing" rather than "not loaded yet" (TASK-87).
+            if !Self.isRunningUnitTests { TabStore.shared.sweepHistoryOfDeletedSpaces() }
         }
 
         // Initialize content blocker (fetch/compile rule lists)

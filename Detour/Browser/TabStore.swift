@@ -392,6 +392,13 @@ class TabStore {
     /// In-memory dedup cache for history: "url|spaceID" -> timestamp
     private var recentHistoryWrites: [String: TimeInterval] = [:]
 
+    /// Spaces `deleteSpace` removed since launch. Never emptied: Undo Delete
+    /// Space can bring any of them back for as long as the session lasts, and
+    /// `sweepHistoryOfDeletedSpaces` must not have taken their visits in the
+    /// meantime (TASK-87). An undone delete puts the space back in `spaces`
+    /// anyway, so leaving its id here costs nothing.
+    private var spaceIDsDeletedThisSession: Set<UUID> = []
+
     /// How long a tab's title must hold still before it is written back to the
     /// history. Pages rewrite their title on a timer — unread counters, marquee
     /// titles, "(3) Inbox" — and debouncing turns that into at most one write
@@ -1515,6 +1522,86 @@ class TabStore {
         historyDB.updateTitle(url: url.absoluteString, title: tab.title)
     }
 
+    /// After visits were deleted from the history (TASK-87): forgets what in
+    /// memory still assumes those rows exist, and only that.
+    ///
+    /// `requestedAt` is when the delete was *asked for*, not when it committed.
+    /// This runs on main after the write, and a visit recorded in between was
+    /// recorded after the user chose what to delete — it is a new row the delete
+    /// never saw, so the state it left behind is current and must survive:
+    ///
+    ///  - the 30 s dedup marker is dropped only when it is older than the
+    ///    request, or revisiting a page right after deleting it would record
+    ///    nothing;
+    ///  - a tab's `lastRecordedHistoryURL` (TASK-88) is cleared only for a URL
+    ///    in `removedURLs` — one whose `historyURL` row is gone, so a late title
+    ///    change would otherwise write onto a row another profile recreated. A
+    ///    merely *affected* URL still has its row, and correcting its title is
+    ///    still the right thing to do.
+    ///
+    /// `clearedScope` says the delete was a whole-scope clear: its URL list can
+    /// run to tens of thousands, so the dedup entries go by space-id suffix
+    /// rather than by looping urls × spaces here on the main thread.
+    func historyDidDelete(_ result: HistoryDeletionResult, spaceIDs: [String], requestedAt: Date,
+                          clearedScope: Bool = false) {
+        guard result.deletedVisitCount > 0 else { return }
+        let cutoff = requestedAt.timeIntervalSince1970
+        var staleKeys: [String] = []
+        if clearedScope {
+            let suffixes = spaceIDs.map { "|\($0)" }
+            for (key, writtenAt) in recentHistoryWrites
+            where writtenAt <= cutoff && suffixes.contains(where: key.hasSuffix) {
+                staleKeys.append(key)
+            }
+        } else {
+            for url in result.affectedURLs {
+                for spaceID in spaceIDs {
+                    let key = "\(url)|\(spaceID)"
+                    guard let writtenAt = recentHistoryWrites[key], writtenAt <= cutoff else { continue }
+                    staleKeys.append(key)
+                }
+            }
+        }
+        for key in staleKeys { recentHistoryWrites[key] = nil }
+
+        guard !result.removedURLs.isEmpty else { return }
+        let removed = Set(result.removedURLs)
+        let scope = Set(spaceIDs)
+        for space in spaces where scope.contains(space.id.uuidString) {
+            let tabs = space.tabs + space.pinnedEntries.compactMap(\.tab)
+            for tab in tabs + tabs.compactMap(\.peekTab) {
+                guard let recorded = tab.lastRecordedHistoryURL,
+                      removed.contains(recorded.absoluteString),
+                      let recordedAt = tab.lastRecordedHistoryAt, recordedAt <= requestedAt else { continue }
+                tab.lastRecordedHistoryURL = nil
+                tab.lastRecordedHistoryAt = nil
+            }
+        }
+    }
+
+    /// Deletes the visits of spaces that no longer exist (TASK-87). At launch,
+    /// not in `deleteSpace`: Undo Delete Space brings the space back under the
+    /// same id and its history must still be there; the undo stack does not
+    /// survive a relaunch.
+    ///
+    /// "Exists" therefore means the spaces the store holds *plus* the ones
+    /// deleted since launch: the sweep runs seconds after launch and the undo
+    /// stack lives for the whole session, so a space deleted before the timer
+    /// fires is still undoable and must keep its history.
+    ///
+    /// The database refuses to sweep unless one of these spaces has visits of
+    /// its own, so a session that failed to restore cannot make the whole
+    /// history look orphaned.
+    func sweepHistoryOfDeletedSpaces() {
+        var existing = Set(spaces.filter { !$0.isIncognito }.map(\.id))
+        existing.formUnion(spaceIDsDeletedThisSession)
+        historyDB.deleteVisits(notInSpaceIDs: existing.map(\.uuidString)) { result in
+            if case .failure(let error) = result {
+                log.error("History sweep failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: - Observer Management
 
     func addObserver(_ observer: TabStoreObserver) {
@@ -1554,6 +1641,9 @@ class TabStore {
         guard spaces.count > 1,
               let index = spaces.firstIndex(where: { $0.id == id }) else { return }
         let space = spaces[index]
+        // The launch sweep runs on a timer and must not take the history of a
+        // space Cmd+Z can still bring back (TASK-87).
+        spaceIDsDeletedThisSession.insert(id)
 
         // Capture state for undo before removing
         let savedName = space.name

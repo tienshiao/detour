@@ -51,9 +51,25 @@ enum HistoryPageContent {
             <h1>History</h1>
             <input id="search" type="search" placeholder="Search History"
                    autocomplete="off" autocorrect="off" spellcheck="false" autofocus>
+            <details id="clear" class="menu" hidden>
+                <summary class="button">Clear History…</summary>
+                <div class="menu-list">
+                    <button class="menu-item" type="button" data-range="hour">Last hour</button>
+                    <button class="menu-item" type="button" data-range="today">Today</button>
+                    <button class="menu-item" type="button" data-range="all">All history</button>
+                </div>
+            </details>
+        </div>
+        <div id="selection" class="selection" hidden>
+            <div class="bar-inner">
+                <span id="selection-count" class="selection-count"></span>
+                <button id="selection-delete" class="button danger" type="button">Delete</button>
+                <button id="selection-cancel" class="button" type="button">Cancel</button>
+            </div>
         </div>
     </header>
     <main class="column">
+        <div id="notice" class="notice" role="status" hidden></div>
         <div id="entries"></div>
         <div id="empty" class="empty" hidden></div>
         <div id="sentinel"></div>
@@ -80,6 +96,14 @@ enum HistoryPageContent {
         --field-bg: rgba(0, 0, 0, 0.05);
         --field-border: rgba(0, 0, 0, 0.1);
         --placeholder: rgba(0, 0, 0, 0.12);
+        --menu-bg: #ffffff;
+        --menu-shadow: rgba(0, 0, 0, 0.18);
+        --selected: rgba(10, 100, 210, 0.12);
+        --focus: rgba(10, 100, 210, 0.85);
+        /* Restrained enough to sit in a quiet list, loud enough to read as
+           destructive in both themes (TASK-87). */
+        --danger: #c22e1f;
+        --danger-soft: rgba(194, 46, 31, 0.1);
     }
 
     @media (prefers-color-scheme: dark) {
@@ -93,6 +117,12 @@ enum HistoryPageContent {
             --field-bg: rgba(255, 255, 255, 0.08);
             --field-border: rgba(255, 255, 255, 0.12);
             --placeholder: rgba(255, 255, 255, 0.12);
+            --menu-bg: #2b2b2b;
+            --menu-shadow: rgba(0, 0, 0, 0.5);
+            --selected: rgba(10, 132, 255, 0.24);
+            --focus: rgba(10, 132, 255, 0.95);
+            --danger: #ff6b5e;
+            --danger-soft: rgba(255, 107, 94, 0.14);
         }
     }
 
@@ -160,6 +190,101 @@ enum HistoryPageContent {
     #search::placeholder { color: var(--muted); }
     #search:focus { border-color: rgba(10, 100, 210, 0.6); }
 
+    .button {
+        flex: 0 0 auto;
+        font: inherit;
+        color: inherit;
+        padding: 4px 10px;
+        background: var(--field-bg);
+        border: 1px solid var(--field-border);
+        border-radius: 7px;
+        white-space: nowrap;
+        cursor: default;
+    }
+
+    .button:hover { background: var(--hover); }
+    .button.danger { color: var(--danger); }
+    .button.danger:hover { background: var(--danger-soft); }
+
+    /* The Clear History menu: a <details>, so it opens and closes with no
+       script and nothing inline. */
+    .menu {
+        position: relative;
+        flex: 0 0 auto;
+    }
+
+    .menu > summary {
+        display: inline-block;
+        list-style: none;
+    }
+
+    .menu > summary::-webkit-details-marker { display: none; }
+
+    /* The UA hides a closed <details>' contents already; say so explicitly, so
+       an absolutely positioned menu cannot escape it. */
+    .menu:not([open]) .menu-list { display: none; }
+
+    .menu-list {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        z-index: 2;
+        min-width: 170px;
+        display: flex;
+        flex-direction: column;
+        padding: 4px;
+        background: var(--menu-bg);
+        border: 1px solid var(--hairline);
+        border-radius: 9px;
+        box-shadow: 0 8px 28px var(--menu-shadow);
+    }
+
+    .menu-item {
+        font: inherit;
+        color: inherit;
+        text-align: left;
+        padding: 5px 10px;
+        background: none;
+        border: 0;
+        border-radius: 5px;
+        cursor: default;
+    }
+
+    .menu-item:hover { background: var(--hover); }
+
+    .selection { border-top: 1px solid var(--hairline); }
+
+    .selection .bar-inner {
+        height: 40px;
+        gap: 10px;
+    }
+
+    .selection-count {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: var(--muted);
+    }
+
+    /* A failed delete says so here rather than in an alert(), which would block
+       the page and, on an internal page, the window with it. */
+    .notice {
+        margin-top: 14px;
+        padding: 7px 10px;
+        border-radius: 7px;
+        color: var(--danger);
+        background: var(--danger-soft);
+    }
+
+    .button:focus-visible,
+    .menu-item:focus-visible,
+    .delete:focus-visible,
+    .pick:focus-visible,
+    .row:focus-visible,
+    summary:focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+    }
+
     .column { padding-bottom: 60px; }
 
     .day {
@@ -171,18 +296,67 @@ enum HistoryPageContent {
         color: var(--muted);
     }
 
+    /* A row is two things: `.item` is the line the user selects and deletes,
+       `.row` inside it is still the link itself, so a click on the title is an
+       ordinary navigation and the selection controls are outside the anchor
+       (interactive content inside an <a> is not) — TASK-87. */
+    .item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        margin: 0 -8px;
+        border-radius: 7px;
+    }
+
+    .item:hover { background: var(--hover); }
+    .item.selected { background: var(--selected); }
+
     .row {
+        flex: 1 1 auto;
+        min-width: 0;
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 7px 8px;
-        margin: 0 -8px;
-        border-radius: 7px;
+        padding: 7px 0;
         color: inherit;
         text-decoration: none;
     }
 
-    a.row:hover { background: var(--hover); }
+    /* The affordances stay in the layout when idle — revealing them with
+       `opacity` rather than `display` keeps the row from jumping under the
+       pointer, and keeps them clickable and tabbable throughout. */
+    .pick {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        opacity: 0;
+    }
+
+    .item:hover .pick,
+    .item.selected .pick,
+    .pick:focus { opacity: 1; }
+
+    .delete {
+        flex: 0 0 auto;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        font: inherit;
+        font-size: 15px;
+        line-height: 1;
+        color: var(--muted);
+        background: none;
+        border: 0;
+        border-radius: 5px;
+        opacity: 0;
+        cursor: default;
+    }
+
+    .item:hover .delete,
+    .delete:focus { opacity: 1; }
+    .delete:hover { color: var(--danger); background: var(--danger-soft); }
 
     .icon {
         flex: 0 0 auto;
@@ -268,11 +442,21 @@ extension HistoryPageContent {
     /// `insertAdjacentHTML`, `outerHTML` or `document.write`. Rows are built with
     /// `createElement` and filled with `textContent`, and a row only becomes a
     /// link when its URL parses as `http(s)` (TASK-86).
+    ///
+    /// Deleting (TASK-87) never confirms anything itself: `history.clear` is
+    /// confirmed by a native sheet the page cannot see, fake or skip, and the
+    /// page's only job is to ignore further clicks while that sheet is up.
     static let script = #"""
     const PAGE_SIZE = 100;
     /// How far past the bottom of the viewport the sentinel may be and still
     /// pull the next page in.
     const PREFETCH_MARGIN = 400;
+    /// Most visit ids one `history.delete` may name — `HistoryPageBridge`
+    /// rejects a longer list as malformed, so a bigger selection is sent as
+    /// several messages.
+    const MAX_DELETE_IDS = \#(HistoryPageBridge.maxDeleteCount);
+    /// How long a failed delete says so before the message fades.
+    const NOTICE_MS = 5000;
 
     const state = {
         // Bumped by every search and every refresh. A reply that does not carry
@@ -290,13 +474,43 @@ extension HistoryPageContent {
         // The day heading last written, so groups continue across pages.
         lastDay: null,
         incognito: false,
+        // A delete is in flight. Deliberately not a generation bump: a
+        // load-more reply that lands after the delete must still be appended,
+        // or paging stalls (see `refresh`).
+        deleting: false,
+        // A `history.clear` is in flight, which means the native confirmation
+        // sheet may be up. The page cannot see the sheet, so this flag is the
+        // only thing keeping a second question from being queued behind it.
+        clearing: false,
+        // Bumped every time a delete's reply is applied. `refresh` uses it to
+        // tell a read that cannot predate a delete from one that might.
+        deleteEpoch: 0,
     };
+
+    /// What this page has deleted and must not let back in: visit ids, and — in
+    /// search mode, where a row stands for a URL and takes every in-scope visit
+    /// of it — the URLs. A reply that was read before the delete committed can
+    /// still name those rows, and dropping them here is cheaper than abandoning
+    /// the paging that reply belongs to. Forgotten again as soon as a read is
+    /// known to have happened after the delete (`reload`, and `refresh` when its
+    /// query outlived no delete).
+    let deletedIDs = new Set();
+    let deletedURLs = new Set();
+
+    /// The row a Shift+click measures its range from: the last one toggled by
+    /// hand. An id rather than an element, because rows come and go.
+    let anchorID = null;
 
     let listEl = null;
     let emptyEl = null;
     let searchEl = null;
     let sentinelEl = null;
+    let clearEl = null;
+    let selectionEl = null;
+    let selectionCountEl = null;
+    let noticeEl = null;
     let searchTimer = null;
+    let noticeTimer = null;
 
     // MARK: - Formatting
 
@@ -345,9 +559,76 @@ extension HistoryPageContent {
     const searchTimeLabel = (date) =>
         `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${timeLabel(date)}`;
 
+    // MARK: - Selection
+
+    const itemEls = () => Array.from(listEl.querySelectorAll('.item'));
+    const selectedEls = () => Array.from(listEl.querySelectorAll('.item.selected'));
+    const idOf = (item) => Number(item.dataset.id);
+    const urlOf = (item) => String(item.dataset.url || '');
+    /// What the row on screen stands for, as it was RENDERED: a single visit, or
+    /// a URL (a search result, which the delete takes every in-scope visit of).
+    /// Read from the row rather than from `state.query`, which can already have
+    /// moved on to a search whose rows have not landed yet (TASK-87).
+    const modeOf = (item) => (item.dataset.mode === 'url' ? 'url' : 'visit');
+
+    /// Whether typing would go into a field rather than to the list. A row's
+    /// checkbox is an `<input>` too, and Delete or Cmd+A with one focused is
+    /// still meant for the list.
+    const isTextFieldFocused = () => {
+        const el = document.activeElement;
+        if (!el) return false;
+        if (el.isContentEditable === true) return true;
+        if (el.tagName === 'TEXTAREA') return true;
+        return el.tagName === 'INPUT' && el.type !== 'checkbox';
+    };
+
+    const setSelected = (item, on) => {
+        item.classList.toggle('selected', on);
+        const box = item.querySelector('.pick');
+        if (box) box.checked = on;
+    };
+
+    const updateSelectionBar = () => {
+        const count = selectedEls().length;
+        selectionCountEl.textContent = count === 1 ? '1 selected' : `${count} selected`;
+        selectionEl.hidden = count === 0;
+    };
+
+    const clearSelection = () => {
+        for (const item of selectedEls()) setSelected(item, false);
+        anchorID = null;
+        updateSelectionBar();
+    };
+
+    const selectAllLoaded = () => {
+        const all = itemEls();
+        for (const item of all) setSelected(item, true);
+        anchorID = all.length ? idOf(all[all.length - 1]) : null;
+        updateSelectionBar();
+    };
+
+    /// The checkbox was just clicked, so it already carries its new state.
+    /// Shift extends from the anchor instead, in DOM order and across day
+    /// groups, and leaves the anchor where it is so the range can be redrawn.
+    const togglePick = (item, shiftKey) => {
+        const all = itemEls();
+        const index = all.indexOf(item);
+        const anchorIndex = anchorID === null ? -1 : all.findIndex((el) => idOf(el) === anchorID);
+        if (shiftKey && index >= 0 && anchorIndex >= 0) {
+            const from = Math.min(anchorIndex, index);
+            const to = Math.max(anchorIndex, index);
+            for (let i = from; i <= to; i += 1) setSelected(all[i], true);
+        } else {
+            const box = item.querySelector('.pick');
+            setSelected(item, box ? box.checked : !item.classList.contains('selected'));
+            anchorID = idOf(item);
+        }
+        updateSelectionBar();
+    };
+
     // MARK: - Rendering
 
-    const buildRow = (entry, date) => {
+    const buildRow = (entry, date, mode) => {
         const parsed = webURL(entry.url);
         const row = document.createElement(parsed ? 'a' : 'div');
         row.className = 'row';
@@ -393,29 +674,74 @@ extension HistoryPageContent {
 
         const when = document.createElement('span');
         when.className = 'when';
-        if (date) when.textContent = state.query ? searchTimeLabel(date) : timeLabel(date);
+        if (date) when.textContent = mode === 'url' ? searchTimeLabel(date) : timeLabel(date);
         row.appendChild(when);
         return row;
     };
 
-    const appendEntries = (entries) => {
+    /// The line the list actually holds: the link, with the controls that select
+    /// and delete it on either side of it rather than inside it.
+    const buildItem = (entry, date, mode) => {
+        const item = document.createElement('div');
+        item.className = 'item';
+        item.dataset.id = String(entry.id);
+        item.dataset.url = String(entry.url);
+        // The mode these entries were read in, kept on the row so a delete asks
+        // for what the user is actually looking at (TASK-87).
+        item.dataset.mode = mode;
+
+        const pick = document.createElement('input');
+        pick.className = 'pick';
+        pick.setAttribute('type', 'checkbox');
+        pick.setAttribute('aria-label', 'Select');
+        pick.addEventListener('click', (event) => togglePick(item, event.shiftKey));
+        item.appendChild(pick);
+
+        item.appendChild(buildRow(entry, date, mode));
+
+        const remove = document.createElement('button');
+        remove.className = 'delete';
+        remove.setAttribute('type', 'button');
+        remove.setAttribute('aria-label', 'Delete');
+        remove.textContent = '×';
+        remove.addEventListener('click', () => deleteItems([item]));
+        item.appendChild(remove);
+        return item;
+    };
+
+    /// Appends the entries worth showing and answers how many that was — which
+    /// is not `entries.length` once a reply carries rows this page has deleted.
+    ///
+    /// `mode` is the one the entries answer — the query they were read for, not
+    /// whatever `state.query` says by the time they arrive.
+    const appendEntries = (entries, mode) => {
         const fragment = document.createDocumentFragment();
+        let appended = 0;
         for (const entry of entries) {
             if (!entry || typeof entry.url !== 'string') continue;
+            // A read that started before a delete committed still names the
+            // rows it removed; they must not reappear under the user (TASK-87).
+            // A deleted URL lost every in-scope visit, so its rows are stale in
+            // either mode.
+            if (deletedIDs.has(Number(entry.id))) continue;
+            if (deletedURLs.has(String(entry.url))) continue;
             const date = dateOf(entry);
-            if (date && !state.query) {
+            if (date && mode === 'visit') {
                 const key = dayKey(date);
                 if (key !== state.lastDay) {
                     state.lastDay = key;
                     const heading = document.createElement('h2');
                     heading.className = 'day';
+                    heading.dataset.day = key;
                     heading.textContent = dayLabel(date);
                     fragment.appendChild(heading);
                 }
             }
-            fragment.appendChild(buildRow(entry, date));
+            fragment.appendChild(buildItem(entry, date, mode));
+            appended += 1;
         }
         listEl.appendChild(fragment);
+        return appended;
     };
 
     const showEmpty = (heading, detail) => {
@@ -430,7 +756,12 @@ extension HistoryPageContent {
     };
 
     const updateEmptyState = () => {
-        if (state.count > 0) {
+        // An empty list is only empty once there is nothing left to load:
+        // deleting every row that is on screen (Cmd+A, Delete) empties a long
+        // history's first page while the next one is already on its way, and
+        // "No history yet" would be a lie (TASK-87). A failed load sets `done`,
+        // so a list that cannot be filled still says something.
+        if (state.count > 0 || state.loading || !state.done) {
             emptyEl.hidden = true;
             return;
         }
@@ -445,6 +776,21 @@ extension HistoryPageContent {
         }
     };
 
+    /// Incognito records nothing, so there is nothing to select and nothing to
+    /// clear. The control starts hidden in the markup and is revealed only once
+    /// a reply has said which kind of space this is.
+    const applyChrome = () => {
+        clearEl.hidden = state.incognito;
+        if (state.incognito) clearEl.open = false;
+    };
+
+    const showNotice = (text) => {
+        noticeEl.textContent = text;
+        noticeEl.hidden = false;
+        clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => { noticeEl.hidden = true; }, NOTICE_MS);
+    };
+
     // MARK: - Loading
 
     /// Abandons everything in flight and returns the generation replies must
@@ -456,14 +802,34 @@ extension HistoryPageContent {
         return state.generation;
     };
 
-    const queryParams = (cursor) => {
+    /// Drops the deletion bookkeeping. Only safe where the read about to be
+    /// rendered is known to have started *after* every applied delete — the
+    /// native side serializes reads behind writes, so "issued after" is enough.
+    /// Keeping the sets for the life of the page instead would hide a URL the
+    /// user deleted and then visited again.
+    const forgetDeletions = () => {
+        deletedIDs = new Set();
+        deletedURLs = new Set();
+    };
+
+    /// `topID` is what `refresh` compares a fresh first page against, so it
+    /// follows the DOM rather than the last reply — including when the row at
+    /// the top is the one just deleted.
+    const syncTopID = () => {
+        const first = listEl.querySelector('.item');
+        state.topID = first ? idOf(first) : null;
+    };
+
+    const queryParams = (cursor, query) => {
         const params = { limit: PAGE_SIZE };
-        if (state.query) params.search = state.query;
+        if (query) params.search = query;
         if (cursor) params.cursor = cursor;
         return params;
     };
 
-    const receive = (result, replace) => {
+    /// `query` is the term these entries answer; the rows are rendered — and
+    /// later deleted — in its mode, not in `state.query`'s (TASK-87).
+    const receive = (result, replace, query) => {
         const entries = Array.isArray(result && result.entries) ? result.entries : [];
         state.incognito = !!(result && result.incognito);
         if (replace) {
@@ -472,11 +838,12 @@ extension HistoryPageContent {
             state.lastDay = null;
             state.topID = null;
         }
-        if (state.count === 0 && entries.length) state.topID = entries[0].id;
-        appendEntries(entries);
-        state.count += entries.length;
+        state.count += appendEntries(entries, query ? 'url' : 'visit');
+        if (state.topID === null) syncTopID();
         state.cursor = (result && result.nextCursor) || null;
         state.done = !state.cursor;
+        applyChrome();
+        updateSelectionBar();
         updateEmptyState();
         // A short page can leave the sentinel on screen, and an observer that
         // is already intersecting fires no second callback.
@@ -484,11 +851,13 @@ extension HistoryPageContent {
     };
 
     const fetchPage = (generation, cursor, replace) => {
+        // Captured now: a reply belongs to the query it was asked with.
+        const query = state.query;
         state.loading = true;
-        native('history.query', queryParams(cursor)).then((result) => {
+        native('history.query', queryParams(cursor, query)).then((result) => {
             if (generation !== state.generation) return;
             state.loading = false;
-            receive(result, replace);
+            receive(result, replace, query);
         }, () => {
             if (generation !== state.generation) return;
             state.loading = false;
@@ -506,6 +875,8 @@ extension HistoryPageContent {
     /// Starts the list again from the top — the first load, and every change of
     /// search term.
     const reload = () => {
+        // Issued now, so it is served after every delete already applied.
+        forgetDeletions();
         const generation = nextGeneration();
         state.cursor = null;
         state.done = false;
@@ -523,16 +894,169 @@ extension HistoryPageContent {
     /// sentinel is already intersecting, so its observer never fires again.
     const refresh = () => {
         const generation = state.generation;
-        native('history.query', queryParams(null)).then((result) => {
+        const epoch = state.deleteEpoch;
+        const query = state.query;
+        native('history.query', queryParams(null, query)).then((result) => {
             if (generation !== state.generation) return;
             const entries = Array.isArray(result && result.entries) ? result.entries : [];
             const top = entries.length ? entries[0].id : null;
             if (state.count > 0 && top === state.topID) return;
             nextGeneration();
+            // This reply is about to replace the whole list, so it is the one
+            // read a delete could undo. Only forget the deletions when no
+            // delete was applied while it was in flight (TASK-87).
+            if (epoch === state.deleteEpoch) forgetDeletions();
             state.cursor = null;
             state.done = false;
-            receive(result, true);
+            receive(result, true, query);
         }, () => {});
+    };
+
+    // MARK: - Deleting
+
+    /// Drops a day heading that has no rows under it any more, and re-points
+    /// `lastDay` at the last one still standing so the next page continues the
+    /// grouping instead of repeating a heading.
+    const pruneDayHeadings = () => {
+        for (const heading of Array.from(listEl.querySelectorAll('.day'))) {
+            let next = heading.nextElementSibling;
+            while (next && !next.classList.contains('day') && !next.classList.contains('item')) {
+                next = next.nextElementSibling;
+            }
+            if (!next || !next.classList.contains('item')) heading.remove();
+        }
+        const headings = listEl.querySelectorAll('.day');
+        const last = headings.length ? headings[headings.length - 1] : null;
+        state.lastDay = last ? last.dataset.day : null;
+    };
+
+    /// Takes what a committed batch deleted out of the list, without reloading
+    /// it: the visits it named, and — for a URL-mode batch, which took every
+    /// in-scope visit of those URLs — every row showing one of them.
+    ///
+    /// The rows are looked up in the list as it stands NOW rather than kept from
+    /// when the delete was issued: a reply that landed while the delete was in
+    /// flight can have re-rendered the list, and the elements captured then are
+    /// no longer the ones on screen (TASK-87).
+    const applyDeletion = (ids, urls) => {
+        state.deleteEpoch += 1;
+        for (const id of ids) deletedIDs.add(id);
+        for (const url of urls) deletedURLs.add(url);
+        let removed = 0;
+        for (const item of itemEls()) {
+            if (!ids.has(idOf(item)) && !urls.has(urlOf(item))) continue;
+            item.remove();
+            removed += 1;
+        }
+        state.count -= removed;
+        if (state.count < 0) state.count = 0;
+        pruneDayHeadings();
+        syncTopID();
+        anchorID = null;
+        updateSelectionBar();
+        updateEmptyState();
+        // `state.cursor` is a (time, id) bound rather than a row, so it still
+        // works when its row is one of these. Removing rows can pull the
+        // sentinel back into view, and an observer that is already intersecting
+        // fires no second callback.
+        loadMoreIfNeeded();
+    };
+
+    /// Deletes the rows `targets` names. A row rendered in list mode is one
+    /// visit; one rendered in search mode stands for a URL, so every in-scope
+    /// visit of that URL goes with it — and a selection can hold both, so the
+    /// rows are grouped by their own mode and each group asks for what it means.
+    /// The scope itself is the native side's business — nothing here says whose
+    /// history this is.
+    const deleteItems = (targets) => {
+        if (state.deleting || state.incognito) return;
+        const groups = new Map();
+        for (const item of targets) {
+            if (!item.isConnected || !Number.isFinite(idOf(item))) continue;
+            const mode = modeOf(item);
+            const group = groups.get(mode);
+            if (group) group.push(item);
+            else groups.set(mode, [item]);
+        }
+        if (!groups.size) return;
+
+        const batches = [];
+        for (const [mode, items] of groups) {
+            for (let i = 0; i < items.length; i += MAX_DELETE_IDS) {
+                batches.push({ mode, items: items.slice(i, i + MAX_DELETE_IDS) });
+            }
+        }
+        state.deleting = true;
+        // One message at a time, and each batch's rows leave the list the moment
+        // that batch is committed: a later batch failing must not put rows back
+        // that the database no longer has. A failure stops the rest — rather
+        // than leaving the page to guess which of several in flight got through
+        // — and the list is then rebuilt from what the database says, because
+        // `refresh` would see the same top row and change nothing (TASK-87).
+        batches.reduce(
+            (previous, batch) => previous.then(() => {
+                const allVisitsOfURL = batch.mode === 'url';
+                const ids = batch.items.map(idOf);
+                return native('history.delete', { ids, allVisitsOfURL }).then(() => {
+                    applyDeletion(new Set(ids),
+                                  new Set(allVisitsOfURL ? batch.items.map(urlOf) : []));
+                });
+            }),
+            Promise.resolve()
+        ).then(() => {
+            state.deleting = false;
+        }, () => {
+            state.deleting = false;
+            showNotice('Those entries could not be deleted.');
+            reload();
+        });
+    };
+
+    /// Asks native to clear a range. The question itself is a sheet on the
+    /// window, so the page neither draws it nor knows its answer until the
+    /// promise settles — and ignores further clicks until then. `cleared: false`
+    /// is the user saying no: nothing on screen changes.
+    const clearHistory = (range) => {
+        if (state.clearing || state.incognito || !range) return;
+        state.clearing = true;
+        clearEl.open = false;
+        native('history.clear', { range }).then((result) => {
+            state.clearing = false;
+            if (!result || !result.cleared) return;
+            // A clear can touch any page of the list, so this one *is* a
+            // generation change: start again from the top.
+            clearSelection();
+            reload();
+        }, () => {
+            state.clearing = false;
+            showNotice('History could not be cleared.');
+        });
+    };
+
+    const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+            if (clearEl.open) {
+                clearEl.open = false;
+                return;
+            }
+            if (selectedEls().length) {
+                event.preventDefault();
+                clearSelection();
+            }
+            return;
+        }
+        if (isTextFieldFocused()) return;
+        if (event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'a') {
+            event.preventDefault();
+            selectAllLoaded();
+            return;
+        }
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+            const chosen = selectedEls();
+            if (!chosen.length) return;
+            event.preventDefault();
+            deleteItems(chosen);
+        }
     };
 
     const onSearchInput = () => {
@@ -558,7 +1082,14 @@ extension HistoryPageContent {
         emptyEl = document.getElementById('empty');
         searchEl = document.getElementById('search');
         sentinelEl = document.getElementById('sentinel');
-        if (!listEl || !emptyEl || !searchEl || !sentinelEl) return;
+        clearEl = document.getElementById('clear');
+        selectionEl = document.getElementById('selection');
+        selectionCountEl = document.getElementById('selection-count');
+        noticeEl = document.getElementById('notice');
+        const deleteButton = document.getElementById('selection-delete');
+        const cancelButton = document.getElementById('selection-cancel');
+        if (!listEl || !emptyEl || !searchEl || !sentinelEl || !clearEl || !selectionEl ||
+            !selectionCountEl || !noticeEl || !deleteButton || !cancelButton) return;
 
         const initial = new URLSearchParams(location.search).get('q');
         if (initial) {
@@ -567,6 +1098,21 @@ extension HistoryPageContent {
         }
         searchEl.addEventListener('input', onSearchInput);
         searchEl.focus();
+
+        deleteButton.addEventListener('click', () => deleteItems(selectedEls()));
+        cancelButton.addEventListener('click', clearSelection);
+        for (const option of clearEl.querySelectorAll('.menu-item')) {
+            option.addEventListener('click', () => clearHistory(option.dataset.range));
+        }
+        // A menu the user cannot close by clicking away is a trap, and one that
+        // reopens while the sheet is up would queue a second question.
+        clearEl.addEventListener('toggle', () => {
+            if (state.clearing) clearEl.open = false;
+        });
+        document.addEventListener('click', (event) => {
+            if (clearEl.open && !clearEl.contains(event.target)) clearEl.open = false;
+        });
+        document.addEventListener('keydown', onKeyDown);
 
         new IntersectionObserver((records) => {
             if (records.some((record) => record.isIntersecting)) loadMoreIfNeeded();

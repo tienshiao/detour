@@ -42,6 +42,51 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
+    /// Runs one of the TASK-87 delete APIs and returns how it settled. The
+    /// deletes complete on GRDB's writer queue, so the test has to wait for the
+    /// callback rather than read straight after the call.
+    private func awaitDeletionOutcome(
+        _ perform: (@escaping (Result<HistoryDeletionResult, Error>) -> Void) -> Void
+    ) -> Result<HistoryDeletionResult, Error> {
+        var captured: Result<HistoryDeletionResult, Error> = .success(.empty)
+        let done = expectation(description: "history delete")
+        perform { result in
+            captured = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        return captured
+    }
+
+    /// The same, for the deletes that are expected to succeed.
+    private func awaitDeletion(_ perform: (@escaping (Result<HistoryDeletionResult, Error>) -> Void) -> Void,
+                               file: StaticString = #filePath, line: UInt = #line) -> HistoryDeletionResult {
+        switch awaitDeletionOutcome(perform) {
+        case .success(let result):
+            return result
+        case .failure(let error):
+            XCTFail("the delete failed: \(error)", file: file, line: line)
+            return .empty
+        }
+    }
+
+    /// Makes every `historyVisit` delete fail, so a test can see what a failed
+    /// write does without a corrupt file or a read-only queue.
+    private func blockVisitDeletes(_ db: HistoryDatabase) throws {
+        try db.dbQueue.write { conn in
+            try conn.execute(sql: """
+                CREATE TRIGGER refuseVisitDelete BEFORE DELETE ON historyVisit
+                BEGIN SELECT RAISE(ABORT, 'refused'); END
+                """)
+        }
+    }
+
+    private func urlRow(_ db: HistoryDatabase, _ url: String) throws -> Row? {
+        try db.dbQueue.read { conn in
+            try Row.fetchOne(conn, sql: "SELECT * FROM historyURL WHERE url = ?", arguments: [url])
+        }
+    }
+
     /// Walks every page of `visits` with the given page size, following the
     /// keyset cursor, and returns the concatenation.
     private func walkVisits(_ db: HistoryDatabase, spaceIDs: [String], pageSize: Int) -> [HistoryVisitEntry] {
@@ -786,5 +831,400 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://b.com", title: "Swift", spaceID: "A", visitTime: 200)
 
         XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 0).count, 1)
+    }
+
+    // MARK: - deleteVisits(ids:spaceIDs:allVisitsOfURL:) — TASK-87
+
+    func testDeleteVisitRemovesOnlyThatVisit() throws {
+        let db = try makeDatabase()
+        let oldest = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://b.com", spaceID: "A", visitTime: 200)
+
+        let result = awaitDeletion { db.deleteVisits(ids: [oldest], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 1)
+        XCTAssertEqual(result.affectedURLs, ["https://a.com"])
+        XCTAssertTrue(result.removedURLs.isEmpty, "the URL still has a visit")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.visitTime), [300, 200])
+        XCTAssertNotNil(try urlRow(db, "https://a.com"))
+    }
+
+    /// The shared `historyURL` row caches the newest visit time; deleting that
+    /// visit has to move it back to the newest survivor.
+    func testDeleteVisitRecomputesLastVisitTimeAndCount() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        let newest = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
+
+        _ = awaitDeletion { db.deleteVisits(ids: [newest], spaceIDs: ["A"], completion: $0) }
+
+        let row = try XCTUnwrap(urlRow(db, "https://a.com"))
+        XCTAssertEqual(row["lastVisitTime"] as Double, 100)
+        XCTAssertEqual(row["visitCount"] as Int, 1)
+    }
+
+    /// `visitCount` legitimately runs ahead of the visit rows (`expireOldVisits`
+    /// deletes rows without decrementing it). A delete subtracts what it removed
+    /// instead of recounting, so the surplus survives — recounting would demote
+    /// the URL for every other profile sharing the row.
+    func testDeleteVisitSubtractsFromHistoricalVisitCountSurplus() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        let second = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
+        try db.dbQueue.write { conn in
+            // 9 recorded visits, only 2 visit rows left after expiry.
+            try conn.execute(sql: "UPDATE historyURL SET visitCount = 9 WHERE url = 'https://a.com'")
+        }
+
+        _ = awaitDeletion { db.deleteVisits(ids: [second], spaceIDs: ["A"], completion: $0) }
+
+        let row = try XCTUnwrap(urlRow(db, "https://a.com"))
+        XCTAssertEqual(row["visitCount"] as Int, 8, "max(9 - 1, 1): the surplus is kept, not recounted")
+    }
+
+    /// The floor: when the subtraction would undercount, the remaining rows win.
+    func testDeleteVisitFloorsVisitCountAtTheRemainingRows() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
+        let third = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
+        try db.dbQueue.write { conn in
+            try conn.execute(sql: "UPDATE historyURL SET visitCount = 1 WHERE url = 'https://a.com'")
+        }
+
+        _ = awaitDeletion { db.deleteVisits(ids: [third], spaceIDs: ["A"], completion: $0) }
+
+        let row = try XCTUnwrap(urlRow(db, "https://a.com"))
+        XCTAssertEqual(row["visitCount"] as Int, 2, "max(1 - 1, 2)")
+    }
+
+    // MARK: - Cross-profile scoping
+
+    /// AC #4: one profile's delete must leave another profile's visits of the
+    /// same URL — and the shared row — intact.
+    func testDeleteVisitLeavesAnotherProfilesVisitsAlone() throws {
+        let db = try makeDatabase()
+        let inA = try seedVisit(db, url: "https://shared.com", title: "Shared Page",
+                                spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "B", visitTime: 900)
+
+        let result = awaitDeletion { db.deleteVisits(ids: [inA], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 1)
+        XCTAssertEqual(result.affectedURLs, ["https://shared.com"])
+        XCTAssertTrue(result.removedURLs.isEmpty, "B still has a visit, so the row stays")
+
+        XCTAssertTrue(db.visits(spaceIDs: ["A"], limit: 10).isEmpty)
+        XCTAssertEqual(db.visits(spaceIDs: ["B"], limit: 10).map(\.visitTime), [900])
+        XCTAssertEqual(db.searchVisits(query: "shared", spaceIDs: ["B"], limit: 10).map(\.url),
+                       ["https://shared.com"], "B's search index entry survives")
+
+        let row = try XCTUnwrap(urlRow(db, "https://shared.com"))
+        XCTAssertEqual(row["lastVisitTime"] as Double, 900, "recomputed across all spaces")
+        XCTAssertEqual(row["visitCount"] as Int, 1)
+    }
+
+    /// A forged id (another profile's visit) must delete nothing — scope is
+    /// enforced in SQL, not by the caller.
+    func testDeleteVisitWithForgedOutOfScopeIDDeletesNothing() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
+        let inB = try seedVisit(db, url: "https://shared.com", title: "Shared Page",
+                                spaceID: "B", visitTime: 900)
+
+        let result = awaitDeletion { db.deleteVisits(ids: [inB], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(result, .empty)
+        try db.dbQueue.read { conn in
+            XCTAssertEqual(try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit"), 2)
+        }
+    }
+
+    /// The `allVisitsOfURL` fan-out is derived only from in-scope ids, so a
+    /// forged id cannot be used as a pointer to delete the caller's *own* visits
+    /// of that URL either.
+    func testDeleteAllVisitsOfURLWithForgedIDDeletesNothing() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 200)
+        let inB = try seedVisit(db, url: "https://shared.com", title: "Shared Page",
+                                spaceID: "B", visitTime: 900)
+
+        let result = awaitDeletion {
+            db.deleteVisits(ids: [inB], spaceIDs: ["A"], allVisitsOfURL: true, completion: $0)
+        }
+
+        XCTAssertEqual(result, .empty)
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).count, 2, "A's own visits survive too")
+        try db.dbQueue.read { conn in
+            XCTAssertEqual(try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit"), 3)
+        }
+    }
+
+    func testDeleteVisitWithUnknownIDDeletesNothing() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+
+        XCTAssertEqual(awaitDeletion { db.deleteVisits(ids: [9999], spaceIDs: ["A"], completion: $0) },
+                       .empty)
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).count, 1)
+    }
+
+    // MARK: - Orphan pruning
+
+    /// AC #5: the last visit anywhere goes → the `historyURL` row goes, and with
+    /// it the FTS entry, the command-palette suggestion and the URL completion.
+    func testDeletingTheLastVisitRemovesTheURLEverywhere() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        let visit = try seedVisit(db, url: "https://gone.com", title: "Vanishing Page",
+                                  faviconURL: "https://gone.com/f.ico", spaceID: "A", visitTime: now)
+        try seedVisit(db, url: "https://stays.com", title: "Vanishing Neighbour",
+                      spaceID: "A", visitTime: now)
+
+        // Preconditions: everything below finds it before the delete.
+        XCTAssertFalse(db.searchHistoryGlobal(query: "vanishing").isEmpty)
+        XCTAssertNotNil(db.bestURLCompletion(prefix: "gone", spaceID: "A"))
+        XCTAssertNotNil(db.faviconURL(for: "https://gone.com"))
+
+        let result = awaitDeletion { db.deleteVisits(ids: [visit], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 1)
+        XCTAssertEqual(result.affectedURLs, ["https://gone.com"])
+        XCTAssertEqual(result.removedURLs, ["https://gone.com"])
+
+        XCTAssertNil(try urlRow(db, "https://gone.com"))
+        XCTAssertEqual(db.searchHistoryGlobal(query: "vanishing").map(\.url), ["https://stays.com"],
+                       "FTS follows the synchronized historyURL delete")
+        XCTAssertTrue(db.searchVisits(query: "vanishing", spaceIDs: ["A"], limit: 10)
+            .contains { $0.url == "https://gone.com" } == false)
+        XCTAssertNil(db.bestURLCompletion(prefix: "gone", spaceID: "A"))
+        XCTAssertNil(db.faviconURL(for: "https://gone.com"))
+        try db.dbQueue.read { conn in
+            XCTAssertEqual(try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historySearch"), 1,
+                           "the FTS row went with it")
+        }
+    }
+
+    // MARK: - allVisitsOfURL
+
+    /// Search mode shows one row per URL, so deleting that row takes every
+    /// in-scope visit of the URL — and nothing else.
+    func testDeleteAllVisitsOfURLRemovesEveryInScopeVisit() throws {
+        let db = try makeDatabase()
+        let day = 24.0 * 3600
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        let middle = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100 + day)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100 + 2 * day)
+        try seedVisit(db, url: "https://a.com", spaceID: "B", visitTime: 100 + 3 * day)
+        try seedVisit(db, url: "https://b.com", spaceID: "A", visitTime: 150)
+
+        let result = awaitDeletion {
+            db.deleteVisits(ids: [middle], spaceIDs: ["A"], allVisitsOfURL: true, completion: $0)
+        }
+
+        XCTAssertEqual(result.deletedVisitCount, 3)
+        XCTAssertEqual(result.affectedURLs, ["https://a.com"])
+        XCTAssertTrue(result.removedURLs.isEmpty, "B still holds a visit")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.url), ["https://b.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["B"], limit: 10).map(\.url), ["https://a.com"])
+        let row = try XCTUnwrap(urlRow(db, "https://a.com"))
+        XCTAssertEqual(row["lastVisitTime"] as Double, 100 + 3 * day)
+        XCTAssertEqual(row["visitCount"] as Int, 1, "max(4 - 3, 1)")
+    }
+
+    // MARK: - deleteVisits(spaceIDs:since:)
+
+    func testDeleteSinceIsInclusiveOfTheBoundary() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://before.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://onboundary.com", spaceID: "A", visitTime: 200)
+        try seedVisit(db, url: "https://after.com", spaceID: "A", visitTime: 300)
+
+        let result = awaitDeletion { db.deleteVisits(spaceIDs: ["A"], since: 200, completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 2)
+        XCTAssertEqual(Set(result.removedURLs), ["https://onboundary.com", "https://after.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.url), ["https://before.com"])
+    }
+
+    func testDeleteSinceNilClearsTheScopeOnly() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://onlya.com", spaceID: "A", visitTime: 200)
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "B", visitTime: 900)
+        try seedVisit(db, url: "https://onlyb.com", spaceID: "B", visitTime: 950)
+
+        let result = awaitDeletion { db.deleteVisits(spaceIDs: ["A"], since: nil, completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 2)
+        XCTAssertEqual(Set(result.affectedURLs), ["https://shared.com", "https://onlya.com"])
+        XCTAssertEqual(result.removedURLs, ["https://onlya.com"], "shared.com still lives in B")
+        XCTAssertTrue(db.visits(spaceIDs: ["A"], limit: 10).isEmpty)
+        XCTAssertEqual(db.visits(spaceIDs: ["B"], limit: 10).map(\.url),
+                       ["https://onlyb.com", "https://shared.com"])
+        XCTAssertNil(try urlRow(db, "https://onlya.com"))
+    }
+
+    /// Several spaces in scope — a profile with more than one space clears all
+    /// of them at once, and only them.
+    func testDeleteSinceCoversEverySpaceInScope() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://a2.com", spaceID: "A2", visitTime: 200)
+        try seedVisit(db, url: "https://b.com", spaceID: "B", visitTime: 300)
+
+        let result = awaitDeletion { db.deleteVisits(spaceIDs: ["A", "A2"], since: nil, completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 2)
+        XCTAssertEqual(db.visits(spaceIDs: ["B"], limit: 10).map(\.url), ["https://b.com"])
+    }
+
+    // MARK: - deleteVisits(notInSpaceIDs:) — launch sweep
+
+    func testSweepDeletesVisitsOfSpacesThatNoLongerExist() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://ghost.com", spaceID: "DELETED", visitTime: 200)
+
+        let result = awaitDeletion { db.deleteVisits(notInSpaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 1)
+        XCTAssertEqual(result.removedURLs, ["https://ghost.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.url), ["https://live.com"])
+        XCTAssertNil(try urlRow(db, "https://ghost.com"))
+    }
+
+    /// Guard 1: a store that failed to load its spaces must not wipe the history.
+    func testSweepWithNoExistingSpacesDeletesNothing() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
+
+        XCTAssertEqual(awaitDeletion { db.deleteVisits(notInSpaceIDs: [], completion: $0) }, .empty)
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).count, 1)
+    }
+
+    /// Guard 2: if the session DB was reset or replaced, the store comes up with
+    /// a fresh space whose id matches no visit — every visit would look orphaned.
+    /// Nothing is swept until at least one existing space is recognized here.
+    func testSweepDoesNothingWhenNoExistingSpaceHasVisits() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "OLD", visitTime: 100)
+        try seedVisit(db, url: "https://b.com", spaceID: "OLDER", visitTime: 200)
+
+        let result = awaitDeletion { db.deleteVisits(notInSpaceIDs: ["brand-new"], completion: $0) }
+
+        XCTAssertEqual(result, .empty)
+        XCTAssertEqual(db.visits(spaceIDs: ["OLD", "OLDER"], limit: 10).count, 2)
+    }
+
+    /// One recognized space is enough to prove the two databases belong together.
+    func testSweepRunsWhenAtLeastOneExistingSpaceHasVisits() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://ghost.com", spaceID: "DELETED", visitTime: 200)
+
+        let result = awaitDeletion { db.deleteVisits(notInSpaceIDs: ["A", "brand-new"], completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 1)
+        XCTAssertEqual(result.removedURLs, ["https://ghost.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).count, 1)
+    }
+
+    // MARK: - Chunking and empty input
+
+    /// More ids than fit in one `IN (…)` list (chunk size 500).
+    func testDeleteChunksLargeIDLists() throws {
+        let db = try makeDatabase()
+        var ids: [Int64] = []
+        try db.dbQueue.write { conn in
+            for i in 1...1200 {
+                try conn.execute(sql: """
+                    INSERT INTO historyURL (url, title, visitCount, lastVisitTime)
+                    VALUES (?, 'P', 1, ?)
+                    """, arguments: ["https://\(i).com", Double(i)])
+                let urlID = conn.lastInsertedRowID
+                try conn.execute(sql: """
+                    INSERT INTO historyVisit (urlID, spaceID, visitTime) VALUES (?, 'A', ?)
+                    """, arguments: [urlID, Double(i)])
+                ids.append(conn.lastInsertedRowID)
+            }
+        }
+        // Plus ids that do not exist: they must simply contribute nothing.
+        let forged: [Int64] = (90_000..<90_300).map(Int64.init)
+
+        let result = awaitDeletion {
+            db.deleteVisits(ids: ids + forged, spaceIDs: ["A"], completion: $0)
+        }
+
+        XCTAssertEqual(result.deletedVisitCount, 1200)
+        XCTAssertEqual(result.affectedURLs.count, 1200)
+        XCTAssertEqual(result.removedURLs.count, 1200)
+        try db.dbQueue.read { conn in
+            XCTAssertEqual(try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit"), 0)
+            XCTAssertEqual(try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyURL"), 0)
+        }
+    }
+
+    func testDeleteWithEmptyInputsReturnsAnEmptyResult() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+
+        XCTAssertEqual(awaitDeletion { db.deleteVisits(ids: [], spaceIDs: ["A"], completion: $0) }, .empty)
+        XCTAssertEqual(awaitDeletion { db.deleteVisits(ids: [], spaceIDs: ["A"], allVisitsOfURL: true, completion: $0) },
+                       .empty)
+        XCTAssertEqual(awaitDeletion { db.deleteVisits(ids: [1], spaceIDs: [], completion: $0) }, .empty)
+        XCTAssertEqual(awaitDeletion { db.deleteVisits(spaceIDs: [], since: nil, completion: $0) }, .empty)
+        XCTAssertEqual(awaitDeletion { db.deleteVisits(notInSpaceIDs: [], completion: $0) }, .empty)
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).count, 1, "no delete touched the DB")
+    }
+
+    // MARK: - A failed write is a failure, not an empty result (TASK-87)
+
+    /// The one thing worse than a delete that fails is one that says it worked:
+    /// the page would take rows off screen, and `TabStore` would forget cache
+    /// entries, for visits that are still in the database.
+    func testAFailedWriteIsReportedAsAFailure() throws {
+        let db = try makeDatabase()
+        let visit = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://b.com", spaceID: "A", visitTime: 200)
+        // A visit the sweep below would delete, so its DELETE reaches the
+        // trigger instead of matching nothing.
+        try seedVisit(db, url: "https://ghost.com", spaceID: "GONE", visitTime: 300)
+        try blockVisitDeletes(db)
+
+        for outcome in [awaitDeletionOutcome { db.deleteVisits(ids: [visit], spaceIDs: ["A"], completion: $0) },
+                        awaitDeletionOutcome {
+                            db.deleteVisits(ids: [visit], spaceIDs: ["A"], allVisitsOfURL: true, completion: $0)
+                        },
+                        awaitDeletionOutcome { db.deleteVisits(spaceIDs: ["A"], since: nil, completion: $0) },
+                        awaitDeletionOutcome { db.deleteVisits(notInSpaceIDs: ["A", "B"], completion: $0) }] {
+            if case .success(let result) = outcome {
+                XCTFail("a refused write was reported as \(result)")
+            }
+        }
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).count, 2, "and the transaction rolled back")
+        XCTAssertNotNil(try urlRow(db, "https://a.com"))
+    }
+
+    /// The staging table is per delete: a failure that rolls one back must not
+    /// leave counts behind for the next one to repair `historyURL` from.
+    func testADeleteAfterAFailedOneIsUnaffectedByIt() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        let second = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
+        try blockVisitDeletes(db)
+        _ = awaitDeletionOutcome { db.deleteVisits(spaceIDs: ["A"], since: nil, completion: $0) }
+        try db.dbQueue.write { conn in try conn.execute(sql: "DROP TRIGGER refuseVisitDelete") }
+
+        let result = awaitDeletion { db.deleteVisits(ids: [second], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(result.deletedVisitCount, 1, "only this delete's rows are counted")
+        XCTAssertEqual(result.affectedURLs, ["https://a.com"])
+        XCTAssertTrue(result.removedURLs.isEmpty)
+        let row = try XCTUnwrap(urlRow(db, "https://a.com"))
+        XCTAssertEqual(row["visitCount"] as Int, 1)
+        XCTAssertEqual(row["lastVisitTime"] as Double, 100)
     }
 }

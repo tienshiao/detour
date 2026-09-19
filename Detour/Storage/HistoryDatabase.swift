@@ -4,6 +4,25 @@ import os
 
 private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
 
+/// What a history delete actually changed (TASK-87).
+///
+/// The caller needs more than "done": `TabStore.historyDidDelete` invalidates its
+/// per-`url|spaceID` dedup cache for `affectedURLs`, and forgets a tab's pending
+/// title correction (TASK-88) only for `removedURLs` — the subset whose
+/// `historyURL` row is gone entirely, i.e. the URLs that also vanished from FTS
+/// search and URL completion. An affected URL still has a row worth correcting.
+struct HistoryDeletionResult: Equatable {
+    /// Number of `historyVisit` rows deleted. Only ever counts in-scope rows.
+    var deletedVisitCount: Int = 0
+    /// Every URL that lost at least one visit, ascending by `historyURL.id`.
+    var affectedURLs: [String] = []
+    /// The subset of `affectedURLs` whose `historyURL` row was deleted because no
+    /// visit of it remained in *any* space.
+    var removedURLs: [String] = []
+
+    static let empty = HistoryDeletionResult()
+}
+
 struct HistoryDatabase {
     static let shared = HistoryDatabase()
 
@@ -410,6 +429,296 @@ struct HistoryDatabase {
             }
         } catch {
             return nil
+        }
+    }
+
+    // MARK: - Deletion (profile-scoped, TASK-87)
+
+    /// Largest `IN (…)` list bound in one statement. SQLite's variable limit is
+    /// 32766 on modern builds, but it is a compile-time option — chunk instead of
+    /// trusting it. (The History page bridge caps a request at
+    /// `maxVisitPageSize` ids anyway.)
+    private static let deleteChunkSize = 500
+
+    /// The temporary table a delete stages its per-URL counts in, so the
+    /// `historyURL` repair afterwards is two set-based statements rather than a
+    /// statement per URL (TASK-87). A literal, never interpolated from input.
+    private static let stageTable = "historyDeleteStage"
+
+    /// Deletes the visits `ids` names that belong to `spaceIDs`.
+    ///
+    /// With `allVisitsOfURL`, deletes every *in-scope* visit of the URLs those
+    /// ids point at — the History page's search mode shows one row per URL, so
+    /// deleting that row has to take the URL's whole in-scope history with it.
+    ///
+    /// Scope is enforced in SQL (`WHERE id IN (…) AND spaceID IN (…)`): an id
+    /// naming another profile's visit deletes nothing and is absent from the
+    /// result. The URL set behind `allVisitsOfURL` is derived only from ids that
+    /// are themselves in scope, so a forged id cannot even be used as a pointer
+    /// to delete the caller's *own* visits of that URL.
+    ///
+    /// `completion` runs on GRDB's writer queue (`asyncWrite`), not on the
+    /// caller's — hop to main yourself. The two guarded no-op cases below call it
+    /// synchronously on the calling queue without touching the database.
+    ///
+    /// A failed write is reported as `.failure` rather than smoothed into an
+    /// empty result: the caller's UI would otherwise take rows off screen — and
+    /// the store would forget cache entries — for rows still in the database
+    /// (TASK-87).
+    func deleteVisits(ids: [Int64], spaceIDs: [String], allVisitsOfURL: Bool = false,
+                      completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
+        let visitIDs = Array(Set(ids))
+        guard !visitIDs.isEmpty, !spaceIDs.isEmpty else { return completion(.success(.empty)) }
+
+        dbQueue.asyncWrite({ db -> HistoryDeletionResult in
+            try self.staging(db) { db in
+                guard allVisitsOfURL else {
+                    try self.stageAndDeleteVisits(db, driving: "id", values: visitIDs, spaceIDs: spaceIDs)
+                    return
+                }
+                // Resolve the URLs *through the scope filter* first, then delete
+                // by URL. Two steps because the second one's row set is wider
+                // than the ids it came from.
+                var urlIDs: Set<Int64> = []
+                for chunk in self.chunked(visitIDs) {
+                    var args: [DatabaseValueConvertible] = chunk
+                    args.append(contentsOf: spaceIDs)
+                    let sql = """
+                        SELECT DISTINCT urlID FROM historyVisit
+                        WHERE id IN (\(self.databaseQuestionMarks(count: chunk.count)))
+                          AND \(self.pinnedSpaceScope(count: spaceIDs.count))
+                        """
+                    let found = try Int64.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+                    urlIDs.formUnion(found)
+                }
+                try self.stageAndDeleteVisits(db, driving: "urlID", values: urlIDs.sorted(),
+                                              spaceIDs: spaceIDs)
+            }
+        }, completion: { _, result in
+            self.complete(result, "delete history visits", completion)
+        })
+    }
+
+    /// Deletes the in-scope visits made at or after `since` (`nil` = every visit
+    /// of the scope — "clear all history" for this profile). The boundary is
+    /// inclusive, so a caller computing "today" passes the start of the local day.
+    ///
+    /// `completion` runs on GRDB's writer queue; the empty-scope guard calls it
+    /// synchronously on the calling queue. A failed write is `.failure`, never an
+    /// empty result.
+    func deleteVisits(spaceIDs: [String], since: Double?,
+                      completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
+        guard !spaceIDs.isEmpty else { return completion(.success(.empty)) }
+
+        dbQueue.asyncWrite({ db -> HistoryDeletionResult in
+            try self.staging(db) { db in
+                var condition = "spaceID IN (\(self.databaseQuestionMarks(count: spaceIDs.count)))"
+                var args: [DatabaseValueConvertible] = spaceIDs
+                if let since {
+                    condition += " AND visitTime >= ?"
+                    args.append(since)
+                }
+                try self.stageAndDeleteVisits(db, where: condition, arguments: args)
+            }
+        }, completion: { _, result in
+            self.complete(result, "clear history range", completion)
+        })
+    }
+
+    /// Launch sweep: deletes the visits of spaces that no longer exist (TASK-87 F).
+    ///
+    /// A deleted space's visits are invisible to every profile but keep occupying
+    /// the DB until the 90-day expiry. They are not deleted at `deleteSpace` time
+    /// because Undo Delete Space restores the space under the same id and must get
+    /// its history back; the undo stack does not survive a relaunch, so the sweep
+    /// belongs at launch, after `TabStore` has restored its spaces.
+    ///
+    /// Two guards, because this is the one delete whose scope is "everything
+    /// else":
+    /// 1. An empty `existingSpaceIDs` deletes nothing — a store that failed to
+    ///    load its spaces must not wipe the history.
+    /// 2. At least one of `existingSpaceIDs` must actually own a visit. `history.db`
+    ///    and the session database are separate files: if the session DB was reset,
+    ///    replaced, or failed to restore, the store comes up with a fresh default
+    ///    space whose id matches no visit, and every visit would look orphaned.
+    ///    One shared space is the proof that the two files belong together. The
+    ///    cost is that a brand-new space with no browsing yet in any surviving
+    ///    space keeps the orphans until the 90-day expiry — acceptable.
+    ///
+    /// `completion` runs on GRDB's writer queue; the empty-list guard calls it
+    /// synchronously on the calling queue. A failed write is `.failure`, never an
+    /// empty result.
+    ///
+    /// `existingSpaceIDs` is what the caller considers to exist, which is not
+    /// only what it currently holds: `TabStore` adds the spaces deleted since
+    /// launch, because Undo Delete Space can still bring them back (TASK-87).
+    func deleteVisits(notInSpaceIDs existingSpaceIDs: [String],
+                      completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
+        let spaceIDs = Array(Set(existingSpaceIDs))
+        guard !spaceIDs.isEmpty else { return completion(.success(.empty)) }
+
+        dbQueue.asyncWrite({ db -> HistoryDeletionResult in
+            let placeholders = self.databaseQuestionMarks(count: spaceIDs.count)
+            // Guard 2, inside the same transaction as the delete so nothing can
+            // slip in between the check and the sweep.
+            let recognized = try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM historyVisit WHERE spaceID IN (\(placeholders)))
+                """, arguments: StatementArguments(spaceIDs)) ?? false
+            guard recognized else {
+                log.notice("History sweep skipped: no visit belongs to any existing space")
+                return .empty
+            }
+
+            return try self.staging(db) { db in
+                try self.stageAndDeleteVisits(db, where: "spaceID NOT IN (\(placeholders))",
+                                              arguments: spaceIDs)
+            }
+        }, completion: { _, result in
+            self.complete(result, "sweep history of deleted spaces", completion)
+        })
+    }
+
+    /// `+spaceID IN (?, …)` — the scope filter for statements whose *driving*
+    /// term is `id IN (…)` or `urlID IN (…)`.
+    ///
+    /// SQLite's unary `+` is a no-op on the value (and here on the type too:
+    /// `spaceID` is `TEXT NOT NULL` and the bound values are strings, so no
+    /// affinity conversion is at stake) but makes the term unusable as an index
+    /// constraint. Without it, `EXPLAIN QUERY PLAN` on a fresh DB — the app never
+    /// runs `ANALYZE`, so the planner works from defaults — picks
+    /// `historyVisit_spaceID_visitTime` for `id IN (<500 ids>) AND spaceID = ?`
+    /// and walks *every* visit of the profile to delete 500 rows. Pinned, it
+    /// seeks the 500 rowids (and, for `allVisitsOfURL`, `historyVisit_urlID`).
+    /// The scope is still enforced in SQL; only the access path changes.
+    private func pinnedSpaceScope(count: Int) -> String {
+        "+spaceID IN (\(databaseQuestionMarks(count: count)))"
+    }
+
+    /// Runs `delete` — which stages its per-URL counts and removes the visits —
+    /// against a staging table of its own, then repairs the `historyURL` rows
+    /// from what it staged. All inside the caller's write transaction.
+    private func staging(_ db: Database,
+                         _ delete: (Database) throws -> Void) throws -> HistoryDeletionResult {
+        // A DatabaseQueue is one connection, so a temp table outlives the
+        // transaction that made it: start from an empty one every time.
+        try db.execute(sql: "DROP TABLE IF EXISTS temp.\(Self.stageTable)")
+        try db.execute(sql: """
+            CREATE TEMP TABLE \(Self.stageTable) (urlID INTEGER PRIMARY KEY, n INTEGER NOT NULL)
+            """)
+        defer { try? db.execute(sql: "DROP TABLE IF EXISTS temp.\(Self.stageTable)") }
+        try delete(db)
+        return try reconcileStagedURLs(db)
+    }
+
+    /// Stages and deletes the in-scope visits named by `values` of the `driving`
+    /// column — `id` (one visit each) or `urlID` (every in-scope visit of those
+    /// URLs). Both are this file's own literals; every value is bound.
+    private func stageAndDeleteVisits(_ db: Database, driving column: String, values: [Int64],
+                                      spaceIDs: [String]) throws {
+        for chunk in chunked(values) {
+            var args: [DatabaseValueConvertible] = chunk
+            args.append(contentsOf: spaceIDs)
+            // A URL can own visits in more than one chunk, which is what the
+            // staging table's `n = n + excluded.n` is for.
+            try stageAndDeleteVisits(db, where: """
+                \(column) IN (\(databaseQuestionMarks(count: chunk.count)))
+                  AND \(pinnedSpaceScope(count: spaceIDs.count))
+                """, arguments: args)
+        }
+    }
+
+    /// Stages how many visits `condition` selects per URL, then deletes them.
+    ///
+    /// `condition` is assembled from this file's own SQL literals and
+    /// `databaseQuestionMarks`; every value travels in `arguments`. The counts
+    /// are what `reconcileStagedURLs` needs to repair the shared `historyURL`
+    /// rows, and they are taken before the delete because afterwards the rows
+    /// they count are gone.
+    private func stageAndDeleteVisits(_ db: Database, where condition: String,
+                                      arguments: [DatabaseValueConvertible]) throws {
+        try db.execute(sql: """
+            INSERT INTO \(Self.stageTable) (urlID, n)
+            SELECT urlID, COUNT(*) FROM historyVisit WHERE \(condition) GROUP BY urlID
+            ON CONFLICT(urlID) DO UPDATE SET n = n + excluded.n
+            """, arguments: StatementArguments(arguments))
+        try db.execute(sql: "DELETE FROM historyVisit WHERE \(condition)",
+                       arguments: StatementArguments(arguments))
+    }
+
+    /// Repairs the `historyURL` rows of every staged URL, in the same
+    /// transaction, and reports what changed.
+    ///
+    /// `historyURL` is one global row per URL shared by every profile, so:
+    /// - `lastVisitTime` becomes the newest *remaining* visit across **all**
+    ///   spaces, not just the deleting profile's.
+    /// - `visitCount` becomes `max(visitCount - deletedHere, remaining rows)`.
+    ///   It is deliberately not a plain `COUNT(*)`: `visitCount` historically
+    ///   runs ahead of the visit rows because `expireOldVisits` deletes rows
+    ///   without decrementing it, and recomputing it as a count would silently
+    ///   demote the URL for every *other* profile sharing the row (it feeds
+    ///   `bestURLCompletion` ranking and the FTS ordering). Subtracting exactly
+    ///   what this delete removed, floored at what is still there, keeps both
+    ///   the surplus and the floor honest.
+    /// - a URL with no visit left in any space loses its `historyURL` row, which
+    ///   takes the FTS entry with it via the synchronized-table triggers.
+    ///
+    /// Four statements whatever the delete's size, rather than one per URL: a
+    /// "clear all history" of a busy profile stages tens of thousands of URLs,
+    /// and per-URL work inside the write transaction blocks every reader behind
+    /// it (TASK-87). Both repairs drive off the staging table's own rowids, so
+    /// nothing scans `historyURL`, and the correlated subqueries seek
+    /// `historyVisit_urlID`.
+    private func reconcileStagedURLs(_ db: Database) throws -> HistoryDeletionResult {
+        let deleted = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(n), 0) FROM \(Self.stageTable)") ?? 0
+        guard deleted > 0 else { return .empty }
+
+        var result = HistoryDeletionResult()
+        result.deletedVisitCount = deleted
+        // Both lists are read while the orphaned `historyURL` rows are still
+        // there — the delete below is what takes their URLs out of reach.
+        result.affectedURLs = try String.fetchAll(db, sql: """
+            SELECT h.url FROM \(Self.stageTable) s
+            JOIN historyURL h ON h.id = s.urlID
+            ORDER BY s.urlID
+            """)
+        result.removedURLs = try String.fetchAll(db, sql: """
+            SELECT h.url FROM \(Self.stageTable) s
+            JOIN historyURL h ON h.id = s.urlID
+            WHERE NOT EXISTS (SELECT 1 FROM historyVisit v WHERE v.urlID = h.id)
+            ORDER BY s.urlID
+            """)
+
+        try db.execute(sql: """
+            UPDATE historyURL SET
+                lastVisitTime = (SELECT MAX(v.visitTime) FROM historyVisit v WHERE v.urlID = historyURL.id),
+                visitCount = MAX(visitCount - (SELECT s.n FROM \(Self.stageTable) s WHERE s.urlID = historyURL.id),
+                                 (SELECT COUNT(*) FROM historyVisit v WHERE v.urlID = historyURL.id))
+            WHERE id IN (SELECT urlID FROM \(Self.stageTable))
+              AND EXISTS (SELECT 1 FROM historyVisit v WHERE v.urlID = historyURL.id)
+            """)
+        try db.execute(sql: """
+            DELETE FROM historyURL
+            WHERE id IN (SELECT urlID FROM \(Self.stageTable))
+              AND NOT EXISTS (SELECT 1 FROM historyVisit v WHERE v.urlID = historyURL.id)
+            """)
+        return result
+    }
+
+    /// Logs a failed delete and passes the outcome on as it is: a caller that
+    /// took a failure for an empty result would tell the user rows are gone that
+    /// are still in the database (TASK-87).
+    private func complete(_ result: Result<HistoryDeletionResult, Error>, _ what: String,
+                          _ completion: (Result<HistoryDeletionResult, Error>) -> Void) {
+        if case .failure(let error) = result {
+            log.error("Failed to \(what, privacy: .public): \(error.localizedDescription)")
+        }
+        completion(result)
+    }
+
+    /// Splits `values` into `IN (…)` sized batches; see `deleteChunkSize`.
+    private func chunked<T>(_ values: [T]) -> [[T]] {
+        stride(from: 0, to: values.count, by: Self.deleteChunkSize).map {
+            Array(values[$0 ..< Swift.min($0 + Self.deleteChunkSize, values.count)])
         }
     }
 
