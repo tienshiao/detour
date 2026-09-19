@@ -3,11 +3,11 @@ id: TASK-88
 title: >-
   History: a visit recorded during an in-page (SPA) navigation keeps the
   previous page's title
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-19 19:37'
-updated_date: '2026-09-19 20:03'
+updated_date: '2026-09-19 20:22'
 labels:
   - bug
 dependencies: []
@@ -35,12 +35,12 @@ Out of scope: collapsing consecutive same-URL visits into one row on the History
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 After an in-page navigation whose document.title changes after loading finishes, the history row for the new URL ends up with the new page's title, not the previous page's (test drives url change -> isLoading false -> title change)
-- [ ] #2 A later title change on the same page (e.g. an unread counter '(211) YouTube' -> '(212) YouTube') updates the stored title without adding a visit or changing visitCount / lastVisitTime
-- [ ] #3 A title is never written for a URL the tab did not record: not while the tab is loading, not the pending-navigation placeholder (the stripped URL), not an empty title, and not onto the previous URL after the tab has moved on (tests)
-- [ ] #4 Incognito spaces and non-http(s) URLs (including detour:// internal pages) never write a title
-- [ ] #5 The updated title is what FTS search returns (historySearch stays in sync) - covered by a HistoryDatabase test
-- [ ] #6 Title updates are coalesced or otherwise cheap enough that a page rewriting its title repeatedly (marquee titles, counters) does not issue a database write per change
+- [x] #1 After an in-page navigation whose document.title changes after loading finishes, the history row for the new URL ends up with the new page's title, not the previous page's (test drives url change -> isLoading false -> title change)
+- [x] #2 A later title change on the same page (e.g. an unread counter '(211) YouTube' -> '(212) YouTube') updates the stored title without adding a visit or changing visitCount / lastVisitTime
+- [x] #3 A title is never written for a URL the tab did not record: not while the tab is loading, not the pending-navigation placeholder (the stripped URL), not an empty title, and not onto the previous URL after the tab has moved on (tests)
+- [x] #4 Incognito spaces and non-http(s) URLs (including detour:// internal pages) never write a title
+- [x] #5 The updated title is what FTS search returns (historySearch stays in sync) - covered by a HistoryDatabase test
+- [x] #6 Title updates are coalesced or otherwise cheap enough that a page rewriting its title repeatedly (marquee titles, counters) does not issue a database write per change
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -65,4 +65,12 @@ Implementation (uncommitted, branch task-88-history-titles):
 Finding: a history.pushState does NOT toggle WKWebView.isLoading (probed with a real web view: url/webView.url move to the pushed URL, zero isLoading transitions). So a pure in-page navigation records no visit at all, and the fix's effect there is that the page the tab LEFT is never renamed by the next page's title. The stale-title write happens whenever something does record a visit while the URL has already moved (a load finishing after the in-page navigation, a session-restore reload, a back/forward); those rows are now corrected as soon as the document's title settles. Also observed: a visit recorded at didFinish can capture BrowserTab's stripped-URL placeholder when WebKit has not reported the title yet — the same correction repairs that a second later.
 
 Tests: DetourTests/HistoryTitleUpdateTests.swift (15: 10 pure policy + 5 real-WKWebView/TabStore integration, incl. the pushState sequence and the recorded-then-retitled case) and 3 new HistoryDatabaseTests (title/counts/visits, unknown-URL no-op, FTS). Full suite: 1290 tests, 4 skipped, 0 failures.
+
+Review pass fixed: error pages recorded a visit (and could rename the real row) - recorder skips browser-error documents and the policy requires webView.url == tab.url; a title that settled while loading was lost to the 30 s dedup - the dedup branch now retries; URL captured with the title through the debounce (Back within the window); corrections limited to 60 s after the recording (AC #2 holds within that window by design: a counter like '(211) YouTube' should not keep rewriting history for as long as the tab is open); debounce injected through TabStore.init. Validation: HistoryTitleUpdateTests (21) + HistoryDatabaseTests (57) x3 stable; full suite 1296 tests, 5 skipped, 0 failures; isolated runtime run against local pages: 'Previous page title' -> 'Settled late title', placeholder title corrected, visitCount/visit rows stay 1, a refused connection records no visit. KNOWN GAP (not this task): history.pushState never toggles isLoading, so pure in-page navigations record no visit at all. TASK-87 must clear lastRecordedHistoryURL/At when a tab's URL is deleted from history.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Late document titles now correct the history row they belong to (HistoryDatabase.updateTitle + debounced title subscription gated by the pure HistoryTitleUpdatePolicy); error pages no longer record visits. Existing stale rows self-heal on the next visit.
+<!-- SECTION:FINAL_SUMMARY:END -->

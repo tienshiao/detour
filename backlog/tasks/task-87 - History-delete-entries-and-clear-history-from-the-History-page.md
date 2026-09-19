@@ -1,10 +1,11 @@
 ---
 id: TASK-87
 title: 'History: delete entries and clear history from the History page'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-19 16:51'
-updated_date: '2026-09-19 19:47'
+updated_date: '2026-09-19 20:21'
 labels: []
 dependencies:
   - TASK-86
