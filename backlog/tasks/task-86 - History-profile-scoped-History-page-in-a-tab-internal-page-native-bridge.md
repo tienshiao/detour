@@ -1,11 +1,11 @@
 ---
 id: TASK-86
 title: 'History: profile-scoped History page in a tab (internal page + native bridge)'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-19 16:50'
-updated_date: '2026-09-19 17:48'
+updated_date: '2026-09-19 19:39'
 labels: []
 dependencies: []
 references:
@@ -41,7 +41,7 @@ Deletion is out of scope here (follow-up task).
 - [x] #2 The page lists visits grouped by day, newest first, showing favicon, title, host/URL and time, and loads older entries incrementally (no unbounded query or DOM)
 - [x] #3 Only visits from spaces that currently use the tab's profile are shown; times/counts come from in-scope historyVisit rows, never from historyURL aggregates (test: two profiles visiting the same URL do not see each other's visit times)
 - [x] #4 A search field filters by title/URL via FTS, scoped to the same profile
-- [ ] #5 Clicking an entry navigates in the current tab's space; Cmd-click / middle-click opens a new tab in that same space
+- [x] #5 Clicking an entry navigates in the current tab's space; Cmd-click / middle-click opens a new tab in that same space
 - [x] #6 The bridge replies only to the main frame of an internal-scheme document; tests cover the negative cases: a web page, an iframe, and an extension context cannot call it, and web content cannot navigate to or embed the internal URL
 - [x] #7 History strings are rendered as text (no HTML injection from titles/URLs) and the page ships a restrictive CSP; covered by a test with a hostile title
 - [x] #8 The History page itself is never recorded as a visit, shows a sensible title/icon in the sidebar and a readable faux address bar, and survives sleep/wake and session restore
@@ -77,6 +77,8 @@ Steps 1-2 landed on task-86-history-page: profile-scoped keyset queries + h3 (sp
 Steps 3-4 landed on task-86-history-page (308602f, 9e93c2f, 36e3b6b): page document/CSS/script + detour://history/favicon route backed by the new shared FaviconPNGLoader (factored out of FaviconSchemeHandler, cache re-keyed by resolved favicon URL); Show All History (Cmd+Y) in the Navigate menu + TabStore.addTab(in:internalPage:); AddressInputClassifier + palette route typed detour://history through loadInternalPage; tab title/icon/faux address bar from InternalPage; BrowserTab's rebuild-from-URL init and Duplicate Tab now arm internal URLs (Reopen Closed Tab / Undo Delete Space / dormant pinned entry or favourite would otherwise be blank). New DetourTests/InternalPageIntegrationTests (12 real-WKWebView tests) plus a HistoryPageBridge.database seam. Favicons: Detour persists no favicon bytes anywhere, so a row's icon is a network fetch of the stored faviconURL — limited to rendered rows via loading=lazy and deduped per favicon URL. Full suite: 1270 tests, 4 skipped, 0 failures.
 
 Review pass (ba10684): arming made single-use and back/forward/reload restricted to real session entries (a clicked entry could 302 back to detour://history/?q=...); wake arms only its own plain load; loadRecordedURL for favourite home / reload retry / rebuilds (keeps ?q=; error-page failedURL stays untrusted); extensions' tabs.create/update + popup open-URL refuse detour:// with an error; refresh no longer abandons an in-flight load-more; favicon loader passthrough + negative cache. Validation: full suite TEST SUCCEEDED; isolated-instance runtime run: open, 100->200 rows on scroll, search scoped to profile, hostile title inert, second Cmd+Y action selects existing tab, web->detour navigation refused, back returns to History, quit/relaunch restores (incl. ?q=), reload works, page never recorded. NOT hand-verified: physical Cmd+Y keystroke, click/Cmd-click/middle-click on a row (AC #5 - rides the existing link policy, no new code), dark mode, split pane / second-window snapshot, real favicons, incognito empty state in the app (covered by an integration test). Negative favicon results are cached for the session, including transient network failures.
+
+AC #5 (click / Cmd-click rows) and the remaining hands-on items were covered by the user's own review of the running app on 2026-09-19; closed at their request. Follow-ups: TASK-87 (deletion), TASK-88 (stale titles after SPA navigation, found during that review).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
