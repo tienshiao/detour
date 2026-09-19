@@ -11,6 +11,55 @@ final class HistoryDatabaseTests: XCTestCase {
         return try HistoryDatabase(dbQueue: dbQueue)
     }
 
+    /// Inserts a visit with a caller-chosen timestamp. `recordVisit` stamps
+    /// `Date()` and writes asynchronously, so the History page tests seed rows
+    /// directly (the same upsert, with an explicit `visitTime`) and get stable
+    /// ordering. `lastVisitTime` keeps the newest time across *all* spaces,
+    /// like the real one, so the cross-profile tests can tell the aggregate
+    /// apart from the in-scope visit time.
+    @discardableResult
+    private func seedVisit(_ db: HistoryDatabase,
+                           url: String,
+                           title: String = "Page",
+                           faviconURL: String? = nil,
+                           spaceID: String,
+                           visitTime: Double) throws -> Int64 {
+        try db.dbQueue.write { conn in
+            let urlID = try Int64.fetchOne(conn, sql: """
+                INSERT INTO historyURL (url, title, faviconURL, visitCount, lastVisitTime)
+                VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(url) DO UPDATE SET
+                    title = excluded.title,
+                    faviconURL = excluded.faviconURL,
+                    visitCount = visitCount + 1,
+                    lastVisitTime = MAX(lastVisitTime, excluded.lastVisitTime)
+                RETURNING id
+                """, arguments: [url, title, faviconURL, visitTime])!
+            try conn.execute(sql: """
+                INSERT INTO historyVisit (urlID, spaceID, visitTime) VALUES (?, ?, ?)
+                """, arguments: [urlID, spaceID, visitTime])
+            return conn.lastInsertedRowID
+        }
+    }
+
+    /// Walks every page of `visits` with the given page size, following the
+    /// keyset cursor, and returns the concatenation.
+    private func walkVisits(_ db: HistoryDatabase, spaceIDs: [String], pageSize: Int) -> [HistoryVisitEntry] {
+        var all: [HistoryVisitEntry] = []
+        var cursor: HistoryCursor?
+        while true {
+            let page = db.visits(spaceIDs: spaceIDs, before: cursor, limit: pageSize)
+            if page.isEmpty { break }
+            all.append(contentsOf: page)
+            cursor = HistoryCursor(after: page[page.count - 1])
+            if all.count > 500 {
+                XCTFail("Pagination did not terminate")
+                break
+            }
+        }
+        return all
+    }
+
     // MARK: - bestURLCompletion
 
     func testBestURLCompletionMatchesPrefixIgnoringSchemeAndWWW() throws {
@@ -456,5 +505,237 @@ final class HistoryDatabaseTests: XCTestCase {
             let visitCount = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit")
             XCTAssertEqual(visitCount, 1, "Only the recent visit should remain")
         }
+    }
+
+    // MARK: - visits(spaceIDs:before:limit:)
+
+    func testVisitsScopedToGivenSpaces() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://b.com", spaceID: "B", visitTime: 200)
+
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.url), ["https://a.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["A", "B"], limit: 10).map(\.url),
+                       ["https://b.com", "https://a.com"])
+        XCTAssertTrue(db.visits(spaceIDs: [], limit: 10).isEmpty)
+    }
+
+    func testVisitsReturnsOneEntryPerVisitNewestFirst() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://b.com", spaceID: "A", visitTime: 200)
+
+        let results = db.visits(spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.map(\.url), ["https://a.com", "https://b.com", "https://a.com"])
+        XCTAssertEqual(results.map(\.visitTime), [300, 200, 100])
+    }
+
+    func testVisitsCarryPageMetadata() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Alpha", faviconURL: "https://a.com/f.ico",
+                      spaceID: "A", visitTime: 100)
+
+        let entry = db.visits(spaceIDs: ["A"], limit: 10).first
+        XCTAssertEqual(entry?.title, "Alpha")
+        XCTAssertEqual(entry?.faviconURL, "https://a.com/f.ico")
+        XCTAssertNotNil(entry?.visitID)
+    }
+
+    /// The URL row is shared by every profile: its `lastVisitTime` is whenever
+    /// *anyone* last visited. A profile-scoped query must report its own visit.
+    func testVisitsNeverLeakAnotherProfilesVisitTime() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://shared.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://shared.com", spaceID: "B", visitTime: 900)
+
+        let results = db.visits(spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.visitTime, 100, "Must be A's visit, not B's and not lastVisitTime")
+
+        try db.dbQueue.read { conn in
+            let aggregate = try Double.fetchOne(conn, sql: "SELECT lastVisitTime FROM historyURL")
+            XCTAssertEqual(aggregate, 900, "Precondition: the shared row does aggregate across profiles")
+        }
+    }
+
+    func testSearchVisitsNeverLeakAnotherProfilesVisitTime() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "B", visitTime: 900)
+
+        let results = db.searchVisits(query: "shared", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.visitTime, 100)
+    }
+
+    func testVisitsPaginationCoversEveryRowExactlyOnce() throws {
+        let db = try makeDatabase()
+        for i in 1...17 {
+            try seedVisit(db, url: "https://\(i).com", spaceID: "A", visitTime: Double(i))
+        }
+
+        let full = db.visits(spaceIDs: ["A"], limit: 100)
+        XCTAssertEqual(full.count, 17)
+
+        let walked = walkVisits(db, spaceIDs: ["A"], pageSize: 5)
+        XCTAssertEqual(walked, full, "Paged walk must equal the single-shot ordering")
+        XCTAssertEqual(Set(walked.map(\.visitID)).count, 17, "No duplicates across pages")
+    }
+
+    /// Identical timestamps are common (a redirect chain lands in the same
+    /// millisecond); the visit id has to break the tie or paging loops or skips.
+    func testVisitsPaginationHandlesIdenticalVisitTimes() throws {
+        let db = try makeDatabase()
+        for i in 1...9 {
+            // Three groups of three visits sharing a timestamp.
+            try seedVisit(db, url: "https://\(i).com", spaceID: "A", visitTime: Double((i - 1) / 3))
+        }
+
+        let full = db.visits(spaceIDs: ["A"], limit: 100)
+        XCTAssertEqual(full.count, 9)
+
+        let walked = walkVisits(db, spaceIDs: ["A"], pageSize: 2)
+        XCTAssertEqual(walked, full)
+        XCTAssertEqual(Set(walked.map(\.visitID)).count, 9)
+    }
+
+    func testVisitsPaginationIsUndisturbedByANewerVisit() throws {
+        let db = try makeDatabase()
+        for i in 1...10 {
+            try seedVisit(db, url: "https://\(i).com", spaceID: "A", visitTime: Double(i))
+        }
+
+        let firstPage = db.visits(spaceIDs: ["A"], limit: 4)
+        XCTAssertEqual(firstPage.map(\.visitTime), [10, 9, 8, 7])
+
+        // A visit arrives (newer than anything) between page fetches.
+        try seedVisit(db, url: "https://new.com", spaceID: "A", visitTime: 1000)
+
+        let secondPage = db.visits(spaceIDs: ["A"], before: HistoryCursor(after: firstPage[3]), limit: 4)
+        XCTAssertEqual(secondPage.map(\.visitTime), [6, 5, 4, 3],
+                       "Keyset paging must not shift later pages when new rows land at the head")
+    }
+
+    func testVisitsLimitClamping() throws {
+        let db = try makeDatabase()
+        try db.dbQueue.write { conn in
+            for i in 1...520 {
+                try conn.execute(sql: """
+                    INSERT INTO historyURL (url, title, visitCount, lastVisitTime)
+                    VALUES (?, 'P', 1, ?)
+                    """, arguments: ["https://\(i).com", Double(i)])
+                try conn.execute(sql: """
+                    INSERT INTO historyVisit (urlID, spaceID, visitTime) VALUES (?, 'A', ?)
+                    """, arguments: [conn.lastInsertedRowID, Double(i)])
+            }
+        }
+
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10_000).count, 500, "Clamped to the page cap")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 0).count, 1, "Clamped up to one row")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: -5).count, 1)
+    }
+
+    // MARK: - searchVisits(query:spaceIDs:before:limit:)
+
+    func testSearchVisitsMatchesTitleAndURL() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://example.com", title: "Swift Programming", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://github.com/repo", title: "Repo", spaceID: "A", visitTime: 200)
+        try seedVisit(db, url: "https://other.com", title: "Cooking", spaceID: "A", visitTime: 300)
+
+        XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 10).map(\.url),
+                       ["https://example.com"])
+        XCTAssertEqual(db.searchVisits(query: "github", spaceIDs: ["A"], limit: 10).map(\.url),
+                       ["https://github.com/repo"])
+    }
+
+    func testSearchVisitsPrefixMatch() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://example.com", title: "Programming Guide", spaceID: "A", visitTime: 100)
+
+        XCTAssertEqual(db.searchVisits(query: "prog", spaceIDs: ["A"], limit: 10).count, 1)
+    }
+
+    func testSearchVisitsReturnsLatestInScopeVisitPerURL() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+        let latestInA = try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "B", visitTime: 500)
+        try seedVisit(db, url: "https://b.com", title: "Swift Too", spaceID: "A", visitTime: 200)
+
+        let results = db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.map(\.url), ["https://a.com", "https://b.com"],
+                       "One entry per URL, ordered by its latest in-scope visit")
+        XCTAssertEqual(results.first?.visitTime, 300)
+        XCTAssertEqual(results.first?.visitID, latestInA)
+    }
+
+    /// Two visits of the same URL at the same instant: the entry must be one of
+    /// them, with its own id — not a `MAX()` time glued to an arbitrary row.
+    func testSearchVisitsPicksHighestIDOnTiedVisitTimes() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+        let second = try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+
+        let results = db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.visitID, second)
+        XCTAssertEqual(results.first?.visitTime, 100)
+    }
+
+    func testSearchVisitsIgnoresOutOfScopeSpaces() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://b.com", title: "Swift", spaceID: "B", visitTime: 200)
+
+        XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 10).map(\.url),
+                       ["https://a.com"])
+        XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A", "B"], limit: 10).map(\.url),
+                       ["https://b.com", "https://a.com"])
+        XCTAssertTrue(db.searchVisits(query: "swift", spaceIDs: [], limit: 10).isEmpty)
+    }
+
+    func testSearchVisitsReturnsEmptyForUnusableQuery() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+
+        XCTAssertTrue(db.searchVisits(query: "", spaceIDs: ["A"], limit: 10).isEmpty)
+        XCTAssertTrue(db.searchVisits(query: "   ", spaceIDs: ["A"], limit: 10).isEmpty)
+        XCTAssertTrue(db.searchVisits(query: "...", spaceIDs: ["A"], limit: 10).isEmpty)
+        XCTAssertFalse(db.searchVisits(query: "swift\"*'()", spaceIDs: ["A"], limit: 10).isEmpty,
+                       "Punctuation around a real token must not break the FTS query")
+    }
+
+    func testSearchVisitsPaginationCoversEveryURLExactlyOnce() throws {
+        let db = try makeDatabase()
+        for i in 1...11 {
+            try seedVisit(db, url: "https://swift\(i).com", title: "Swift \(i)", spaceID: "A", visitTime: Double(i))
+            // A second, older visit of each URL — must not produce a second entry.
+            try seedVisit(db, url: "https://swift\(i).com", title: "Swift \(i)", spaceID: "A", visitTime: Double(i) - 0.5)
+        }
+
+        let full = db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 100)
+        XCTAssertEqual(full.count, 11)
+
+        var walked: [HistoryVisitEntry] = []
+        var cursor: HistoryCursor?
+        while true {
+            let page = db.searchVisits(query: "swift", spaceIDs: ["A"], before: cursor, limit: 3)
+            if page.isEmpty { break }
+            walked.append(contentsOf: page)
+            cursor = HistoryCursor(after: page[page.count - 1])
+            if walked.count > 50 { XCTFail("Pagination did not terminate"); break }
+        }
+        XCTAssertEqual(walked, full)
+        XCTAssertEqual(Set(walked.map(\.url)).count, 11)
+    }
+
+    func testSearchVisitsLimitClamping() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://b.com", title: "Swift", spaceID: "A", visitTime: 200)
+
+        XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 0).count, 1)
     }
 }

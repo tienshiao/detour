@@ -62,6 +62,18 @@ struct HistoryDatabase {
             }
         }
 
+        // The History page pages through the visits of one profile, i.e. a set
+        // of spaceIDs, newest first. Without this index SQLite walks
+        // historyVisit_visitTime and discards the out-of-scope rows: fine when
+        // the profile owns most of the history, ~150× slower when it owns a
+        // sliver of it. With a single space in scope the planner seeks straight
+        // to (spaceID, visitTime); with several it falls back to the visitTime
+        // index, which still satisfies the ORDER BY without a sort.
+        migrator.registerMigration("h3") { db in
+            try db.create(index: "historyVisit_spaceID_visitTime",
+                          on: "historyVisit", columns: ["spaceID", "visitTime"])
+        }
+
         return migrator
     }
 
@@ -179,6 +191,124 @@ struct HistoryDatabase {
             log.error("Failed to search history globally: \(error.localizedDescription)")
             return []
         }
+    }
+
+    // MARK: - History page (profile-scoped)
+
+    /// Largest page the History page may ask for in one query.
+    static let maxVisitPageSize = 500
+
+    /// One page of visits for a profile, newest first.
+    ///
+    /// The history DB has no notion of profiles: a profile's history is the
+    /// visits of the spaces it owns, so the caller passes those space IDs in
+    /// (from `TabStore`). Every field but `title`/`faviconURL` comes from the
+    /// in-scope `historyVisit` rows — `historyURL.visitCount` and
+    /// `lastVisitTime` aggregate across *all* profiles and must never leak into
+    /// a profile-scoped view, neither as a value nor as a sort key.
+    ///
+    /// Pass the previous page's last entry as `cursor` to get the next page;
+    /// see `HistoryCursor` for why this is keyset paging and not OFFSET.
+    func visits(spaceIDs: [String], before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
+        guard !spaceIDs.isEmpty else { return [] }
+        let limit = clampedPageSize(limit)
+        let placeholders = databaseQuestionMarks(count: spaceIDs.count)
+
+        var sql = """
+            SELECT v.id AS visitID, h.url AS url, h.title AS title,
+                   h.faviconURL AS faviconURL, v.visitTime AS visitTime
+            FROM historyVisit v
+            JOIN historyURL h ON h.id = v.urlID
+            WHERE v.spaceID IN (\(placeholders))
+            """
+        var args: [DatabaseValueConvertible] = spaceIDs
+        if let cursor {
+            sql += " AND (v.visitTime < ? OR (v.visitTime = ? AND v.id < ?))"
+            args.append(cursor.visitTime)
+            args.append(cursor.visitTime)
+            args.append(cursor.visitID)
+        }
+        sql += " ORDER BY v.visitTime DESC, v.id DESC LIMIT ?"
+        args.append(limit)
+
+        do {
+            return try dbQueue.read { db in
+                try HistoryVisitEntry.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            }
+        } catch {
+            log.error("Failed to fetch profile history visits: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// One page of search results for a profile, newest first.
+    ///
+    /// Tokenized like `searchHistory` (alphanumeric tokens, each prefix-matched,
+    /// joined with OR) so the History page's search behaves like the command
+    /// palette's. Unlike `visits`, results are deduplicated by URL: each match
+    /// appears once, represented by its most recent *in-scope* visit — the
+    /// window function resolves that unambiguously, including when two visits of
+    /// the same URL share a `visitTime` (a bare `MAX(v.visitTime)` would leave
+    /// the accompanying `v.id` up to SQLite). Paging is the same keyset walk
+    /// over `(visitTime DESC, visitID DESC)`.
+    func searchVisits(query: String, spaceIDs: [String], before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
+        guard !spaceIDs.isEmpty else { return [] }
+        let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return [] }
+
+        let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
+        let limit = clampedPageSize(limit)
+        let placeholders = databaseQuestionMarks(count: spaceIDs.count)
+
+        var sql = """
+            SELECT l.visitID AS visitID, h.url AS url, h.title AS title,
+                   h.faviconURL AS faviconURL, l.visitTime AS visitTime
+            FROM (
+                SELECT v.urlID AS urlID, v.id AS visitID, v.visitTime AS visitTime,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY v.urlID ORDER BY v.visitTime DESC, v.id DESC
+                       ) AS rn
+                FROM historyVisit v
+                WHERE v.spaceID IN (\(placeholders))
+                  AND v.urlID IN (
+                      SELECT m.id FROM historySearch s
+                      JOIN historyURL m ON m.rowid = s.rowid
+                      WHERE historySearch MATCH ?
+                  )
+            ) l
+            JOIN historyURL h ON h.id = l.urlID
+            WHERE l.rn = 1
+            """
+        var args: [DatabaseValueConvertible] = spaceIDs
+        args.append(ftsQuery)
+        if let cursor {
+            sql += " AND (l.visitTime < ? OR (l.visitTime = ? AND l.visitID < ?))"
+            args.append(cursor.visitTime)
+            args.append(cursor.visitTime)
+            args.append(cursor.visitID)
+        }
+        sql += " ORDER BY l.visitTime DESC, l.visitID DESC LIMIT ?"
+        args.append(limit)
+
+        do {
+            return try dbQueue.read { db in
+                try HistoryVisitEntry.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            }
+        } catch {
+            log.error("Failed to search profile history visits: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private func clampedPageSize(_ limit: Int) -> Int {
+        min(max(limit, 1), Self.maxVisitPageSize)
+    }
+
+    /// `?, ?, …` for an `IN` list — space IDs are bound as arguments, never
+    /// interpolated into the SQL.
+    private func databaseQuestionMarks(count: Int) -> String {
+        Array(repeating: "?", count: count).joined(separator: ", ")
     }
 
     /// Return the best URL completion for a typed prefix, matching against scheme-stripped URLs.
