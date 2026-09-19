@@ -3,9 +3,11 @@ id: TASK-88
 title: >-
   History: a visit recorded during an in-page (SPA) navigation keeps the
   previous page's title
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-19 19:37'
+updated_date: '2026-09-19 20:03'
 labels:
   - bug
 dependencies: []
@@ -40,3 +42,27 @@ Out of scope: collapsing consecutive same-URL visits into one row on the History
 - [ ] #5 The updated title is what FTS search returns (historySearch stays in sync) - covered by a HistoryDatabase test
 - [ ] #6 Title updates are coalesced or otherwise cheap enough that a page rewriting its title repeatedly (marquee titles, counters) does not issue a database write per change
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. BrowserTab.lastRecordedHistoryURL: set by TabStore.recordHistoryVisit whenever the tab's current URL has a history row (recorded now, or skipped by the 30 s dedup).
+2. HistoryDatabase.updateTitle(url:title:) - async write, UPDATE historyURL SET title WHERE url = ? AND title <> ?; never touches visitCount/lastVisitTime, adds no visit; FTS follows via the synchronized table.
+3. TabStore: per-tab $title subscription (dropFirst, removeDuplicates, debounce ~1 s on the main run loop = the coalescing AC) -> updateHistoryTitle(tab). Guards, all required: tab not loading; title non-empty AND equal to webView.title (rules out BrowserTab.updateTitle's pending-navigation placeholder); tab.url == lastRecordedHistoryURL (never the previous URL, never a URL this tab did not record); http/https; space not incognito.
+4. Tests: HistoryDatabase (title updated, counts/times untouched, FTS returns new title, unknown URL no-op); TabStore-level for the guards; a WKWebView test for the SPA sequence (pushState-style URL change -> load finishes -> document.title changes later).
+5. Opus implements; Fable reviews; /code-review; runtime verify in an isolated instance; merge.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation (uncommitted, branch task-88-history-titles):
+- BrowserTab.lastRecordedHistoryURL (set only by TabStore.recordHistoryVisit, after the incognito/URL/scheme guards and *before* the 30 s dedup return, so it is set whenever the tab's URL has a historyURL row).
+- HistoryDatabase.updateTitle(url:title:): fire-and-forget asyncWrite, UPDATE historyURL SET title = ? WHERE url = ? AND title <> ?. No visit row, visitCount/lastVisitTime untouched, no-op for an unknown URL; FTS follows via the synchronized historySearch table (tested).
+- TabStore.updateHistoryTitle(for:) + HistoryTitleUpdatePolicy.urlToRename(...) (pure, at the end of TabStore.swift): requires space present, not incognito, not loading, non-empty title equal to webView.title (rules out the pending-navigation placeholder, an internal page's name, a restoring session's persisted title, and sleeping tabs), tab.url == lastRecordedHistoryURL, http/https.
+- Per-tab subscription in subscribeToTab: tab.$title.dropFirst().removeDuplicates().debounce(for: .seconds(TabStore.historyTitleDebounce), scheduler: RunLoop.main) -> updateHistoryTitle. historyTitleDebounce is a static var (1.0 s in production, 0.05 s in tests).
+
+Finding: a history.pushState does NOT toggle WKWebView.isLoading (probed with a real web view: url/webView.url move to the pushed URL, zero isLoading transitions). So a pure in-page navigation records no visit at all, and the fix's effect there is that the page the tab LEFT is never renamed by the next page's title. The stale-title write happens whenever something does record a visit while the URL has already moved (a load finishing after the in-page navigation, a session-restore reload, a back/forward); those rows are now corrected as soon as the document's title settles. Also observed: a visit recorded at didFinish can capture BrowserTab's stripped-URL placeholder when WebKit has not reported the title yet — the same correction repairs that a second later.
+
+Tests: DetourTests/HistoryTitleUpdateTests.swift (15: 10 pure policy + 5 real-WKWebView/TabStore integration, incl. the pushState sequence and the recorded-then-retitled case) and 3 new HistoryDatabaseTests (title/counts/visits, unknown-URL no-op, FTS). Full suite: 1290 tests, 4 skipped, 0 failures.
+<!-- SECTION:NOTES:END -->
