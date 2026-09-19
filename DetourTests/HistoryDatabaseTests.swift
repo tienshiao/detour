@@ -17,10 +17,15 @@ final class HistoryDatabaseTests: XCTestCase {
     /// ordering. `lastVisitTime` keeps the newest time across *all* spaces,
     /// like the real one, so the cross-profile tests can tell the aggregate
     /// apart from the in-scope visit time.
+    ///
+    /// `visitTitle` is the title stored on the visit row itself (TASK-91); nil —
+    /// the default — seeds a visit as the database held them before per-visit
+    /// titles existed, so it reads back with the URL-level title.
     @discardableResult
     private func seedVisit(_ db: HistoryDatabase,
                            url: String,
                            title: String = "Page",
+                           visitTitle: String? = nil,
                            faviconURL: String? = nil,
                            spaceID: String,
                            visitTime: Double) throws -> Int64 {
@@ -36,9 +41,35 @@ final class HistoryDatabaseTests: XCTestCase {
                 RETURNING id
                 """, arguments: [url, title, faviconURL, visitTime])!
             try conn.execute(sql: """
-                INSERT INTO historyVisit (urlID, spaceID, visitTime) VALUES (?, ?, ?)
-                """, arguments: [urlID, spaceID, visitTime])
+                INSERT INTO historyVisit (urlID, spaceID, visitTime, title) VALUES (?, ?, ?, ?)
+                """, arguments: [urlID, spaceID, visitTime, visitTitle])
             return conn.lastInsertedRowID
+        }
+    }
+
+    /// Records a visit and returns the id its completion hands back. The write
+    /// lands on GRDB's writer queue, so the test waits for the callback rather
+    /// than guessing.
+    private func recordVisitAwaitingID(_ db: HistoryDatabase, url: String, title: String,
+                                       spaceID: String, typed: Bool = false,
+                                       file: StaticString = #filePath, line: UInt = #line) -> Int64? {
+        var visitID: Int64?
+        let done = expectation(description: "record visit")
+        db.recordVisit(url: url, title: title, faviconURL: nil, spaceID: spaceID, typed: typed) { id in
+            visitID = id
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        return visitID
+    }
+
+    private func visitTitles(_ db: HistoryDatabase, _ url: String) throws -> [String?] {
+        try db.dbQueue.read { conn in
+            try Optional<String>.fetchAll(conn, sql: """
+                SELECT v.title FROM historyVisit v
+                JOIN historyURL h ON h.id = v.urlID
+                WHERE h.url = ? ORDER BY v.visitTime, v.id
+                """, arguments: [url])
         }
     }
 
@@ -244,33 +275,73 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    // MARK: - updateTitle
+    // MARK: - updateTitle(visitID:url:title:) — TASK-88, retargeted by TASK-91
 
-    func testUpdateTitleRenamesTheURLWithoutRecordingAVisit() throws {
+    func testUpdateTitleCorrectsOnlyTheVisitItNames() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://www.youtube.com/", title: "a video - YouTube",
-                      spaceID: "space1", visitTime: 1000)
-        try seedVisit(db, url: "https://www.youtube.com/", title: "a video - YouTube",
-                      spaceID: "space1", visitTime: 2000)
+                      visitTitle: "a video - YouTube", spaceID: "space1", visitTime: 1000)
+        let second = try seedVisit(db, url: "https://www.youtube.com/", title: "a video - YouTube",
+                                   visitTitle: "a video - YouTube", spaceID: "space1", visitTime: 2000)
 
-        db.updateTitle(url: "https://www.youtube.com/", title: "YouTube")
+        db.updateTitle(visitID: second, url: "https://www.youtube.com/", title: "YouTube")
 
         // `updateTitle` writes asynchronously but serialized on the writer
         // queue, so this read observes it.
         try db.dbQueue.read { conn in
             let row = try Row.fetchOne(conn, sql: "SELECT * FROM historyURL")!
-            XCTAssertEqual(row["title"] as String, "YouTube")
+            XCTAssertEqual(row["title"] as String, "YouTube", "the latest known title follows")
             XCTAssertEqual(row["visitCount"] as Int, 2, "a correction is not a visit")
             XCTAssertEqual(row["lastVisitTime"] as Double, 2000, "the visit times are untouched")
             let visits = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit")
             XCTAssertEqual(visits, 2, "no visit row was added")
         }
+        XCTAssertEqual(try visitTitles(db, "https://www.youtube.com/"),
+                       ["a video - YouTube", "YouTube"],
+                       "the earlier visit keeps what the page was called then")
     }
 
-    func testUpdateTitleIsANoOpForAURLWithNoRow() throws {
+    /// The whole point of the retarget (TASK-91): an older tab settling its
+    /// title must not relabel the URL for a newer visit made since.
+    func testUpdateTitleLeavesTheURLTitleAloneWhenANewerVisitExists() throws {
+        let db = try makeDatabase()
+        let older = try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
+                                  visitTitle: "Morning Edition", spaceID: "space1", visitTime: 1000)
+        try seedVisit(db, url: "https://news.example/", title: "Evening Edition",
+                      visitTitle: "Evening Edition", spaceID: "space2", visitTime: 2000)
+
+        db.updateTitle(visitID: older, url: "https://news.example/", title: "Morning Edition (updated)")
+
+        XCTAssertEqual(try visitTitles(db, "https://news.example/"),
+                       ["Morning Edition (updated)", "Evening Edition"],
+                       "the old tab corrects its own visit")
+        let row = try XCTUnwrap(urlRow(db, "https://news.example/"))
+        XCTAssertEqual(row["title"] as String, "Evening Edition",
+                       "but the latest known title stays the newer visit's")
+    }
+
+    /// The id and the URL have to name the same row: a stale id — the visit was
+    /// deleted and the row id reused, say — must write nothing rather than
+    /// rename a stranger's visit.
+    func testUpdateTitleIsANoOpWhenTheIDAndURLDisagree() throws {
+        let db = try makeDatabase()
+        let mine = try seedVisit(db, url: "https://mine.example/", title: "Mine",
+                                 visitTitle: "Mine", spaceID: "space1", visitTime: 1000)
+        try seedVisit(db, url: "https://theirs.example/", title: "Theirs",
+                      visitTitle: "Theirs", spaceID: "space2", visitTime: 2000)
+
+        db.updateTitle(visitID: mine, url: "https://theirs.example/", title: "Hijacked")
+
+        XCTAssertEqual(try visitTitles(db, "https://mine.example/"), ["Mine"])
+        XCTAssertEqual(try visitTitles(db, "https://theirs.example/"), ["Theirs"])
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://theirs.example/"))["title"] as String, "Theirs")
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://mine.example/"))["title"] as String, "Mine")
+    }
+
+    func testUpdateTitleIsANoOpForAnUnknownVisit() throws {
         let db = try makeDatabase()
 
-        db.updateTitle(url: "https://never.visited/", title: "Never Visited")
+        db.updateTitle(visitID: 9999, url: "https://never.visited/", title: "Never Visited")
 
         try db.dbQueue.read { conn in
             let urls = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyURL")
@@ -279,18 +350,204 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// AC #5: `historySearch` is synchronized with `historyURL`, so the FTS
-    /// index has to follow the correction — the old title must stop matching.
+    /// index has to follow the URL-level title — the old one must stop matching.
     func testUpdateTitleIsReflectedInFTSSearch() throws {
         let db = try makeDatabase()
-        db.recordVisit(url: "https://www.youtube.com/", title: "neighbourly baking",
-                       faviconURL: nil, spaceID: "space1")
+        let visit = try XCTUnwrap(recordVisitAwaitingID(db, url: "https://www.youtube.com/",
+                                                        title: "neighbourly baking", spaceID: "space1"))
 
-        db.updateTitle(url: "https://www.youtube.com/", title: "YouTube homepage")
+        db.updateTitle(visitID: visit, url: "https://www.youtube.com/", title: "YouTube homepage")
 
         XCTAssertEqual(db.searchHistory(query: "homepage", spaceID: "space1").map(\.title),
                        ["YouTube homepage"], "the new title is searchable")
         XCTAssertEqual(db.searchHistory(query: "neighbourly", spaceID: "space1").count, 0,
                        "the old title no longer matches")
+    }
+
+    // MARK: - Per-visit titles (TASK-91)
+
+    /// AC #1: the migration lands on a database that already holds visits, and
+    /// those visits — which never had a title of their own — keep reading back
+    /// with the URL-level one.
+    func testMigrationAddsPerVisitTitlesToAnExistingDatabase() throws {
+        var config = Configuration()
+        config.foreignKeysEnabled = true
+        let queue = try DatabaseQueue(configuration: config)
+        // The database as the version before per-visit titles left it.
+        try HistoryDatabase.migrator.migrate(queue, upTo: "h3")
+        try queue.write { conn in
+            let urlID = try Int64.fetchOne(conn, sql: """
+                INSERT INTO historyURL (url, title, visitCount, lastVisitTime)
+                VALUES ('https://old.example/', 'Old Page', 1, 1000) RETURNING id
+                """)!
+            try conn.execute(sql: """
+                INSERT INTO historyVisit (urlID, spaceID, visitTime) VALUES (?, 'A', 1000)
+                """, arguments: [urlID])
+        }
+
+        let db = try HistoryDatabase(dbQueue: queue)
+
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.title), ["Old Page"],
+                       "a visit from before the migration falls back to the URL title")
+        XCTAssertEqual(db.searchVisits(query: "old", spaceIDs: ["A"], limit: 10).map(\.title),
+                       ["Old Page"])
+        XCTAssertEqual(try visitTitles(db, "https://old.example/"), [nil],
+                       "nothing was backfilled — the old title was never stored per visit")
+    }
+
+    /// AC #3: the user's complaint — 68 visits to youtube.com all showing one
+    /// video's title. Each visit keeps what the page was called at the time.
+    func testTwoVisitsOfOneURLKeepTheirOwnTitles() throws {
+        let db = try makeDatabase()
+        _ = recordVisitAwaitingID(db, url: "https://www.youtube.com/", title: "a video - YouTube",
+                                  spaceID: "A")
+        _ = recordVisitAwaitingID(db, url: "https://www.youtube.com/", title: "another video - YouTube",
+                                  spaceID: "A")
+
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.title),
+                       ["another video - YouTube", "a video - YouTube"])
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://www.youtube.com/"))["title"] as String,
+                       "another video - YouTube", "the URL keeps the latest known title")
+    }
+
+    /// AC #3: recording a newer visit is not a rename of the older ones.
+    func testALaterVisitNeverChangesAnEarlierVisitsTitle() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://dash.example/", title: "All quiet", visitTitle: "All quiet",
+                      spaceID: "A", visitTime: 1000)
+
+        _ = recordVisitAwaitingID(db, url: "https://dash.example/", title: "3 alerts", spaceID: "A")
+
+        XCTAssertEqual(try visitTitles(db, "https://dash.example/"), ["All quiet", "3 alerts"])
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.title), ["3 alerts", "All quiet"])
+    }
+
+    /// AC #4, the privacy case: `historyURL` is one row per URL shared by every
+    /// profile, so before TASK-91 a Work-profile visit titled "(3) Inbox —
+    /// you@work" became the title the Personal profile's History page showed.
+    func testAnotherProfilesTitleNeverReachesThisProfilesVisits() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://mail.example/", title: "Inbox", visitTitle: "Inbox",
+                      spaceID: "personal", visitTime: 1000)
+        try seedVisit(db, url: "https://mail.example/", title: "(3) Inbox - you@work",
+                      visitTitle: "(3) Inbox - you@work", spaceID: "work", visitTime: 2000)
+
+        XCTAssertEqual(db.visits(spaceIDs: ["personal"], limit: 10).map(\.title), ["Inbox"])
+        XCTAssertEqual(db.searchVisits(query: "inbox", spaceIDs: ["personal"], limit: 10).map(\.title),
+                       ["Inbox"])
+        XCTAssertEqual(db.visits(spaceIDs: ["work"], limit: 10).map(\.title), ["(3) Inbox - you@work"])
+    }
+
+    /// `searchVisits` shows one row per URL, represented by the latest in-scope
+    /// visit — so the title it shows is that visit's own.
+    func testSearchVisitsShowsTheRepresentativeVisitsOwnTitle() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
+                      visitTitle: "Morning Edition", spaceID: "A", visitTime: 1000)
+        try seedVisit(db, url: "https://news.example/", title: "Evening Edition",
+                      visitTitle: "Evening Edition", spaceID: "A", visitTime: 2000)
+
+        XCTAssertEqual(db.searchVisits(query: "news", spaceIDs: ["A"], limit: 10).map(\.title),
+                       ["Evening Edition"])
+    }
+
+    /// Decision D, recorded so the limitation is not mistaken for a bug: FTS
+    /// indexes the URL-level (latest known) title only, so a title a page used
+    /// to have is not searchable.
+    func testAPreviousVisitTitleIsNotSearchable() throws {
+        let db = try makeDatabase()
+        _ = recordVisitAwaitingID(db, url: "https://news.example/", title: "Morning Edition",
+                                  spaceID: "A")
+        _ = recordVisitAwaitingID(db, url: "https://news.example/", title: "Evening Edition",
+                                  spaceID: "A")
+
+        XCTAssertTrue(db.searchVisits(query: "morning", spaceIDs: ["A"], limit: 10).isEmpty,
+                      "by decision D: only the latest known title is indexed")
+        XCTAssertEqual(db.searchVisits(query: "evening", spaceIDs: ["A"], limit: 10).map(\.title),
+                       ["Evening Edition"])
+    }
+
+    func testRecordVisitHandsBackTheInsertedVisitID() throws {
+        let db = try makeDatabase()
+
+        let first = recordVisitAwaitingID(db, url: "https://a.com", title: "A", spaceID: "A")
+        let second = recordVisitAwaitingID(db, url: "https://a.com", title: "A again", spaceID: "A")
+
+        XCTAssertNotNil(first)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.visitID), [second, first])
+    }
+
+    /// AC #8 / decision F: the latest visit goes, so the URL's latest known
+    /// title falls back to the newest visit still there.
+    func testDeletingTheLatestVisitFallsBackToTheNewestRemainingTitle() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
+                      visitTitle: "Morning Edition", spaceID: "A", visitTime: 1000)
+        let newest = try seedVisit(db, url: "https://news.example/", title: "Evening Edition",
+                                   visitTitle: "Evening Edition", spaceID: "A", visitTime: 2000)
+
+        _ = awaitDeletion { db.deleteVisits(ids: [newest], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://news.example/"))["title"] as String,
+                       "Morning Edition")
+        XCTAssertEqual(db.searchHistory(query: "morning", spaceID: "A").map(\.title),
+                       ["Morning Edition"], "and the FTS index followed")
+    }
+
+    /// Across profiles, because `historyURL` is shared: the newest remaining
+    /// visit wins wherever it lives.
+    func testTheURLTitleFallsBackAcrossProfiles() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://shared.example/", title: "B's title", visitTitle: "B's title",
+                      spaceID: "B", visitTime: 1500)
+        let newest = try seedVisit(db, url: "https://shared.example/", title: "A's title",
+                                   visitTitle: "A's title", spaceID: "A", visitTime: 2000)
+
+        _ = awaitDeletion { db.deleteVisits(ids: [newest], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://shared.example/"))["title"] as String,
+                       "B's title")
+    }
+
+    /// The deleted visit was the only titled one: its title must not go on
+    /// naming the URL in search, suggestions and completion after the user
+    /// deleted the page it came from. The URL is left with no title, which every
+    /// reader falls back from (the History page and the palette show the URL).
+    func testDeletingTheOnlyTitledVisitClearsTheURLTitle() throws {
+        let db = try makeDatabase()
+        // A visit from before per-visit titles existed, plus a new titled one
+        // whose title is what the URL row currently carries.
+        try seedVisit(db, url: "https://old.example/", title: "Legacy Title", spaceID: "A",
+                      visitTime: 1000)
+        let newest = try seedVisit(db, url: "https://old.example/", title: "Secret Page",
+                                   visitTitle: "Secret Page", spaceID: "A", visitTime: 2000)
+
+        _ = awaitDeletion { db.deleteVisits(ids: [newest], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://old.example/"))["title"] as String, "",
+                       "the deleted page's title stops naming the URL")
+        XCTAssertTrue(db.searchHistory(query: "secret", spaceID: "A").isEmpty,
+                      "and stops being searchable")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.title), [""],
+                       "the surviving legacy visit has no title of its own either")
+    }
+
+    /// Deleting a visit that never had a title of its own cannot be where the
+    /// URL's title came from — blanking it would lose a legitimate title for
+    /// nothing.
+    func testDeletingAnUntitledLegacyVisitLeavesTheURLTitleAlone() throws {
+        let db = try makeDatabase()
+        let older = try seedVisit(db, url: "https://old.example/", title: "Legacy Title",
+                                  spaceID: "A", visitTime: 1000)
+        try seedVisit(db, url: "https://old.example/", title: "Legacy Title", spaceID: "A",
+                      visitTime: 2000)
+
+        _ = awaitDeletion { db.deleteVisits(ids: [older], spaceIDs: ["A"], completion: $0) }
+
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://old.example/"))["title"] as String,
+                       "Legacy Title")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.title), ["Legacy Title"])
     }
 
     // MARK: - expireOldVisits

@@ -18,7 +18,8 @@ final class SuggestionProvider {
             if let tab = tabsByURL[entry.url] {
                 return .openTab(tabID: tab.tabID, spaceID: tab.spaceID, url: tab.url, title: tab.title, favicon: tab.favicon)
             }
-            return .historyResult(url: entry.url, title: entry.title, faviconURL: entry.faviconURL)
+            return .historyResult(url: entry.url, title: Self.displayTitle(entry),
+                                  faviconURL: entry.faviconURL)
         }
     }
 
@@ -52,7 +53,8 @@ final class SuggestionProvider {
             } else if let match = db.bestURLCompletion(prefix: query, spaceID: spaceID) {
                 let display = Self.displayURL(match.url)
                 if display.lowercased().hasPrefix(q) {
-                    topHit = .historyResult(url: match.url, title: match.title, faviconURL: match.faviconURL)
+                    topHit = .historyResult(url: match.url, title: Self.displayTitle(match),
+                                            faviconURL: match.faviconURL)
                     inlineCompletion = display
                     topHitURL = match.url
                 }
@@ -72,7 +74,7 @@ final class SuggestionProvider {
         if let topHitURL { excludedURLs.insert(topHitURL) }
         let historyItems: [SuggestionItem] = db.searchHistory(query: query, spaceID: spaceID, limit: 8)
             .filter { !excludedURLs.contains($0.url) }
-            .map { .historyResult(url: $0.url, title: $0.title, faviconURL: $0.faviconURL) }
+            .map { .historyResult(url: $0.url, title: Self.displayTitle($0), faviconURL: $0.faviconURL) }
 
         var merged: [SuggestionItem] = []
         if let topHit { merged.append(topHit) }
@@ -88,6 +90,14 @@ final class SuggestionProvider {
         let q = query.lowercased()
         return await searchService.fetchSuggestions(for: query, engine: engine)
             .filter { $0.lowercased() != q }
+    }
+
+    /// What a history row is labelled with. `historyURL.title` can be empty
+    /// since TASK-91 — deleting the visit a URL's latest known title came from
+    /// leaves the URL with no title at all — and a blank suggestion row is
+    /// unusable, so the scheme-stripped URL stands in.
+    static func displayTitle(_ entry: HistoryURL) -> String {
+        entry.title.isEmpty ? displayURL(entry.url) : entry.title
     }
 
     static func displayURL(_ urlString: String) -> String {

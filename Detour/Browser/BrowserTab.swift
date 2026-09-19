@@ -148,12 +148,41 @@ class BrowserTab: NSObject {
     /// (TASK-88). Set only by `TabStore.recordHistoryVisit`, together with
     /// `lastRecordedHistoryAt`.
     var lastRecordedHistoryURL: URL?
-    /// When the recorder last saw `lastRecordedHistoryURL` — the start of the
-    /// window in which a late title may still correct that row
+    /// When the visit `lastRecordedVisitID` names was recorded — the start of
+    /// the window in which a late title may still correct it
     /// (`HistoryTitleUpdatePolicy.correctionWindow`). Outside it the page is no
     /// longer settling, it is just rewriting its own title, and the history
-    /// stops following (TASK-88).
+    /// stops following (TASK-88). The window belongs to the *visit*: a later
+    /// recorder pass that the 30 s dedup skips leaves it where it is, so a
+    /// reload ten minutes on cannot write today's title onto this morning's
+    /// visit (TASK-91).
     var lastRecordedHistoryAt: Date?
+    /// The space that recording was filed under. A tab moved to another space
+    /// (TASK-63) is writing another profile's history, so it may not keep
+    /// correcting the visit it left behind (TASK-91).
+    var lastRecordedHistorySpaceID: UUID?
+    /// The id of the `historyVisit` row the recorder last wrote for this tab
+    /// (TASK-91). A late title corrects *that* visit and no other — the shared
+    /// `historyURL` row is one per URL, so correcting by URL renamed every visit
+    /// of it, another profile's included. Nil while the insert is still in
+    /// flight, or when the visit was skipped by the dedup for a URL this tab had
+    /// not recorded itself; a correction with no id is dropped, and the next
+    /// title event (or the dedup branch's retry) writes it.
+    var lastRecordedVisitID: Int64?
+    /// The web view's back/forward entry that was current when the recorder last
+    /// ran (TASK-91). Same-document navigations are recognized by item identity:
+    /// `pushState` and a popstate traversal select a *different* item, while
+    /// `replaceState` rewrites this same item's URL — so query-string churn
+    /// never becomes a visit. Weak: the list owns its items, and an entry that
+    /// has fallen out of it must not be kept alive here.
+    weak var lastRecordedBackForwardItem: WKBackForwardListItem?
+    /// Bumped by every pass of `TabStore.recordHistoryVisit` that decides
+    /// something — a visit written, or one left standing by the dedup. The
+    /// insert hands its id back asynchronously, and the generation is what says
+    /// whether that id is still the one this tab is holding: record A, record B,
+    /// record A again, and A's first insert must not install its id over the
+    /// third recording's (TASK-91).
+    var historyRecordingGeneration: Int = 0
     private var cachedInteractionState: Data?
 
     // MARK: - Peek State

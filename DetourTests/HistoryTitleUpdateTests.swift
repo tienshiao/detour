@@ -40,18 +40,34 @@ final class HistoryTitleUpdateTests: XCTestCase {
                              tabURL: URL? = URL(string: "https://page.invalid/a")!,
                              webViewURL: URL?? = nil,
                              lastRecordedHistoryURL: URL? = URL(string: "https://page.invalid/a")!,
+                             recordedVisitID: Int64? = 42,
                              recordedAt: Date? = Date(timeIntervalSince1970: 1_000_000),
                              now: Date = Date(timeIntervalSince1970: 1_000_000),
                              hasSpace: Bool = true,
                              isIncognito: Bool = false) -> URL? {
-        HistoryTitleUpdatePolicy.urlToRename(
+        HistoryTitleUpdatePolicy.correction(
             title: title, webViewTitle: webViewTitle, isLoading: isLoading, tabURL: tabURL,
             webViewURL: webViewURL ?? tabURL, lastRecordedHistoryURL: lastRecordedHistoryURL,
-            recordedAt: recordedAt, now: now, hasSpace: hasSpace, isIncognito: isIncognito)
+            recordedVisitID: recordedVisitID, recordedAt: recordedAt, now: now,
+            hasSpace: hasSpace, isIncognito: isIncognito)?.url
     }
 
     func testPolicyRenamesTheURLTheTabRecorded() {
         XCTAssertEqual(urlToRename(), pageURL)
+    }
+
+    /// The correction names the visit it rewrites (TASK-91). While the insert is
+    /// still on the writer queue the tab holds no id, and a correction without
+    /// one would have to fall back to "every visit of this URL" — exactly what
+    /// the retarget removed.
+    func testPolicyCarriesTheRecordedVisitAndRefusesWithoutOne() {
+        let correction = HistoryTitleUpdatePolicy.correction(
+            title: "Real Title", webViewTitle: "Real Title", isLoading: false, tabURL: pageURL,
+            webViewURL: pageURL, lastRecordedHistoryURL: pageURL, recordedVisitID: 42,
+            recordedAt: recordedAt, now: recordedAt, hasSpace: true, isIncognito: false)
+        XCTAssertEqual(correction, HistoryTitleUpdatePolicy.Correction(visitID: 42, url: pageURL))
+
+        XCTAssertNil(urlToRename(recordedVisitID: nil), "no visit to correct yet")
     }
 
     /// AC #3: nothing is written while a navigation is in flight — the title in
@@ -151,7 +167,7 @@ final class HistoryTitleUpdateTests: XCTestCase {
         config.foreignKeysEnabled = true
         let historyDB = try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB,
-                             historyTitleDebounce: debounce)
+                             historySettleDebounce: debounce)
         let space: Space
         if incognito {
             space = store.addIncognitoSpace()
@@ -163,7 +179,11 @@ final class HistoryTitleUpdateTests: XCTestCase {
     }
 
     private func makeTab(in f: Fixture) -> BrowserTab {
-        let tab = f.store.addTab(in: f.space)
+        makeTab(in: f.space, of: f.store)
+    }
+
+    private func makeTab(in space: Space, of store: TabStore) -> BrowserTab {
+        let tab = store.addTab(in: space)
         createdTabs.append(tab)
         return tab
     }
@@ -184,6 +204,32 @@ final class HistoryTitleUpdateTests: XCTestCase {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+    }
+
+    /// Waits for the id `recordVisit` hands back — the write lands on GRDB's
+    /// writer queue and then hops to main, and a correction that arrives before
+    /// it does is dropped by the policy (TASK-91).
+    private func waitForRecordedVisitID(_ tab: BrowserTab, timeout: TimeInterval = 3,
+                                        file: StaticString = #filePath, line: UInt = #line) -> Int64? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let visitID = tab.lastRecordedVisitID { return visitID }
+            pump(0.02)
+        }
+        XCTFail("the recorded visit id never arrived", file: file, line: line)
+        return nil
+    }
+
+    /// The titles stored on the visit rows of `url`, oldest first — what the
+    /// History page shows for each visit (TASK-91).
+    private func perVisitTitles(_ db: HistoryDatabase, _ url: URL) throws -> [String?] {
+        try db.dbQueue.read { conn in
+            try Optional<String>.fetchAll(conn, sql: """
+                SELECT v.title FROM historyVisit v
+                JOIN historyURL h ON h.id = v.urlID
+                WHERE h.url = ? ORDER BY v.visitTime, v.id
+                """, arguments: [url.absoluteString])
         }
     }
 
@@ -228,11 +274,88 @@ final class HistoryTitleUpdateTests: XCTestCase {
         f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
         XCTAssertEqual(try storedTitle(f.historyDB, pageURL), "Old Title")
         XCTAssertEqual(tab.lastRecordedHistoryURL, pageURL, "the recorder remembers what it wrote")
+        XCTAssertNotNil(waitForRecordedVisitID(tab), "and which visit row it wrote")
 
         try await setTitle("New Title", on: webView)
 
         XCTAssertEqual(try waitForTitleToLeave("Old Title", f.historyDB, pageURL), "New Title")
         XCTAssertEqual(try visitCount(f.historyDB, pageURL), 1, "a correction adds no visit")
+        XCTAssertEqual(try perVisitTitles(f.historyDB, pageURL), ["New Title"],
+                       "the visit itself carries the corrected title (TASK-91)")
+    }
+
+    /// AC #3/#5: the correction reaches the visit this tab recorded and nothing
+    /// else — not an earlier visit of the same URL, and not another profile's.
+    func testACorrectionTouchesOnlyTheVisitTheTabRecorded() async throws {
+        let f = try makeFixture()
+        let tab = makeTab(in: f)
+        let webView = try XCTUnwrap(tab.webView)
+        // An older visit of this URL, and one in another space (another
+        // profile's History page), both with titles of their own.
+        let ownSpaceID = f.space.id.uuidString
+        let seededURL = pageURL.absoluteString
+        try await f.historyDB.dbQueue.write { conn in
+            let urlID = try Int64.fetchOne(conn, sql: """
+                INSERT INTO historyURL (url, title, visitCount, lastVisitTime)
+                VALUES (?, 'Yesterday', 2, 1000) RETURNING id
+                """, arguments: [seededURL])!
+            try conn.execute(sql: """
+                INSERT INTO historyVisit (urlID, spaceID, visitTime, title)
+                VALUES (?, ?, 1000, 'Yesterday'), (?, 'another-space', 1500, 'Their Title')
+                """, arguments: [urlID, ownSpaceID, urlID])
+        }
+
+        try await loadHTMLStringAndWait(webView, html: html(title: "Old Title"), baseURL: pageURL)
+        pump(0.1)
+        f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
+        XCTAssertNotNil(waitForRecordedVisitID(tab))
+
+        try await setTitle("New Title", on: webView)
+        XCTAssertEqual(try waitForTitleToLeave("Old Title", f.historyDB, pageURL), "New Title")
+
+        XCTAssertEqual(try perVisitTitles(f.historyDB, pageURL),
+                       ["Yesterday", "Their Title", "New Title"],
+                       "the older visit and the other profile's keep their own titles")
+    }
+
+    /// AC #5: the latest known title on the shared `historyURL` row is the
+    /// newest visit's. A tab settling its title *after* someone else recorded a
+    /// newer visit corrects its own visit and leaves that alone (TASK-91).
+    func testACorrectionByAnOlderTabDoesNotOverrideANewerVisitsURLTitle() async throws {
+        let f = try makeFixture()
+        let tab = makeTab(in: f)
+        let webView = try XCTUnwrap(tab.webView)
+
+        try await loadHTMLStringAndWait(webView, html: html(title: "Old Title"), baseURL: pageURL)
+        pump(0.1)
+        f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
+        let mine = try XCTUnwrap(waitForRecordedVisitID(tab))
+
+        // Another tab — another profile, even — visits the same URL afterwards.
+        let seededURL = pageURL.absoluteString
+        let newerVisitTime = Date().timeIntervalSince1970 + 10
+        try await f.historyDB.dbQueue.write { conn in
+            try conn.execute(sql: """
+                INSERT INTO historyVisit (urlID, spaceID, visitTime, title)
+                SELECT id, 'another-space', ?, 'Newer Title' FROM historyURL WHERE url = ?
+                """, arguments: [newerVisitTime, seededURL])
+            try conn.execute(sql: "UPDATE historyURL SET title = 'Newer Title' WHERE url = ?",
+                             arguments: [seededURL])
+        }
+
+        try await setTitle("New Title", on: webView)
+        try await waitUntil("this tab's own visit to be corrected") {
+            self.pump(0.05)
+            return try self.perVisitTitles(f.historyDB, self.pageURL).contains("New Title")
+        }
+
+        XCTAssertEqual(try storedTitle(f.historyDB, pageURL), "Newer Title",
+                       "the latest known title stays the newer visit's")
+        let correctedTitle = try await f.historyDB.dbQueue.read { conn in
+            try String.fetchOne(conn, sql: "SELECT title FROM historyVisit WHERE id = ?",
+                                arguments: [mine])
+        }
+        XCTAssertEqual(correctedTitle, "New Title", "this tab corrected its own visit")
     }
 
     /// AC #6: a page rewriting its title in a burst costs one write, not one per
@@ -249,6 +372,7 @@ final class HistoryTitleUpdateTests: XCTestCase {
         try await loadHTMLStringAndWait(webView, html: html(title: "(1) Inbox"), baseURL: pageURL)
         pump(0.1)
         f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
+        XCTAssertNotNil(waitForRecordedVisitID(tab))
 
         _ = try await webView.callAsyncJavaScript("""
             await new Promise(resolve => {
@@ -282,6 +406,7 @@ final class HistoryTitleUpdateTests: XCTestCase {
         // recorded this URL (a sleeping tab woken onto it, say).
         tab.lastRecordedHistoryURL = nil
         tab.lastRecordedHistoryAt = nil
+        tab.lastRecordedVisitID = nil
         let before = try storedTitle(f.historyDB, pageURL)
         try await setTitle("Still Unrecorded", on: webView)
         pump(0.5)
@@ -300,18 +425,27 @@ final class HistoryTitleUpdateTests: XCTestCase {
         let tab = makeTab(in: f)
         let webView = try XCTUnwrap(tab.webView)
         // A row from some earlier, non-incognito visit of the same URL: the
-        // incognito tab must not rename it.
+        // incognito tab must not rename it — nor the visit behind it.
+        var publicVisitID: Int64?
+        let recorded = expectation(description: "the public visit")
         f.historyDB.recordVisit(url: pageURL.absoluteString, title: "Public Title",
-                                faviconURL: nil, spaceID: UUID().uuidString)
+                                faviconURL: nil, spaceID: UUID().uuidString) { id in
+            publicVisitID = id
+            recorded.fulfill()
+        }
+        await fulfillment(of: [recorded], timeout: 10)
 
         try await loadHTMLStringAndWait(webView, html: html(title: "Private Title"), baseURL: pageURL)
         pump(0.1)
         tab.lastRecordedHistoryURL = pageURL
         tab.lastRecordedHistoryAt = Date()
+        tab.lastRecordedVisitID = publicVisitID
         try await setTitle("Private Title 2", on: webView)
         pump(0.5)
 
         XCTAssertEqual(try storedTitle(f.historyDB, pageURL), "Public Title")
+        XCTAssertEqual(try perVisitTitles(f.historyDB, pageURL), ["Public Title"],
+                       "and the public visit keeps its own title")
     }
 
     /// A title that settles *while* the next navigation is in flight is refused
@@ -327,6 +461,7 @@ final class HistoryTitleUpdateTests: XCTestCase {
         pump(0.1)
         f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
         XCTAssertEqual(try storedTitle(f.historyDB, pageURL), "Old Title")
+        XCTAssertNotNil(waitForRecordedVisitID(tab))
 
         // A navigation starts, and the page renames itself while it is in
         // flight: the debounce fires into a loading tab and the title is
@@ -346,6 +481,93 @@ final class HistoryTitleUpdateTests: XCTestCase {
         XCTAssertEqual(try visitCount(f.historyDB, pageURL), 1, "the dedup still skipped the visit")
     }
 
+    // MARK: - The window belongs to the visit (TASK-91)
+
+    /// The 30 s dedup marker is shared by every tab in the space, so a reload —
+    /// or another tab's visit to the same URL — can skip the write long after
+    /// the visit this tab is holding was made. Restarting the correction window
+    /// there would let the page's title *today* be written onto a visit made
+    /// this morning.
+    func testADedupSkippedRecordingDoesNotReopenAnOldVisitsWindow() async throws {
+        let f = try makeFixture()
+        let tab = makeTab(in: f)
+        let webView = try XCTUnwrap(tab.webView)
+
+        try await loadHTMLStringAndWait(webView, html: html(title: "This Morning"), baseURL: pageURL)
+        pump(0.1)
+        f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
+        let visitID = try XCTUnwrap(waitForRecordedVisitID(tab))
+        try await waitUntil("the morning visit to carry its own title") {
+            self.pump(0.05)
+            return try self.perVisitTitles(f.historyDB, self.pageURL) == ["This Morning"]
+        }
+
+        // That visit was made ten minutes ago; the page is called something else
+        // now, and the debounced correction is refused — it is past the window.
+        let recordedAt = Date(timeIntervalSinceNow: -600)
+        tab.lastRecordedHistoryAt = recordedAt
+        try await setTitle("This Evening", on: webView)
+        pump(0.3)
+
+        // A reload: the visit is inside the 30 s dedup, so nothing is written —
+        // and the window must stay where the visit put it.
+        f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
+        XCTAssertEqual(tab.lastRecordedHistoryAt, recordedAt,
+                       "the window belongs to the visit, not to the recorder pass")
+        XCTAssertEqual(tab.lastRecordedVisitID, visitID,
+                       "and it is still the same visit that could be corrected")
+        pump(0.3)
+
+        XCTAssertEqual(try perVisitTitles(f.historyDB, pageURL), ["This Morning"],
+                       "this morning's visit keeps what the page was called then")
+        XCTAssertEqual(try storedTitle(f.historyDB, pageURL), "This Morning")
+        XCTAssertEqual(try visitCount(f.historyDB, pageURL), 1)
+    }
+
+    /// A tab moved to another space (TASK-63) is writing another profile's
+    /// history. When the dedup skips its recording there, the visit it was
+    /// holding in the space it left is not its to correct any more.
+    func testATabThatMovedToAnotherSpaceStopsCorrectingTheVisitItLeft() async throws {
+        let f = try makeFixture()
+        let otherProfile = f.store.addProfile(name: "Other")
+        let otherSpace = f.store.addSpace(name: "Other", emoji: "🕘", colorHex: "007AFF",
+                                          profileID: otherProfile.id)
+        let tab = makeTab(in: f)
+        let webView = try XCTUnwrap(tab.webView)
+
+        try await loadHTMLStringAndWait(webView, html: html(title: "Mine"), baseURL: pageURL)
+        pump(0.1)
+        f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
+        XCTAssertNotNil(waitForRecordedVisitID(tab))
+        try await waitUntil("this tab's visit to carry its title") {
+            self.pump(0.05)
+            return try self.perVisitTitles(f.historyDB, self.pageURL) == ["Mine"]
+        }
+
+        // A tab in the other space has just visited the same URL, so the dedup
+        // marker for (url, otherSpace) is fresh.
+        let otherTab = makeTab(in: otherSpace, of: f.store)
+        otherTab.url = pageURL
+        f.store.recordHistoryVisit(tab: otherTab, spaceID: otherSpace.id)
+        try await waitUntil("the other space's visit to be recorded") {
+            self.pump(0.05)
+            return try self.perVisitTitles(f.historyDB, self.pageURL).count == 2
+        }
+        let titlesBefore = try perVisitTitles(f.historyDB, pageURL)
+
+        // The tab is moved across, and records there: the dedup skips the write.
+        tab.spaceID = otherSpace.id
+        f.store.recordHistoryVisit(tab: tab, spaceID: otherSpace.id)
+        XCTAssertNil(tab.lastRecordedVisitID,
+                     "the visit it was holding belongs to the space it left")
+
+        try await setTitle("Renamed After Moving", on: webView)
+        pump(0.5)
+
+        XCTAssertEqual(try perVisitTitles(f.historyDB, pageURL), titlesBefore,
+                       "neither the visit it left nor the other space's is renamed")
+    }
+
     // MARK: - Failed loads
 
     /// A failed load leaves `tab.url` on the URL the user asked for while the
@@ -362,13 +584,17 @@ final class HistoryTitleUpdateTests: XCTestCase {
         let tab = makeTab(in: f)
         let webView = try XCTUnwrap(tab.webView)
         let failedURL = URL(string: "https://unreachable.invalid/dead")!
-        // The row an earlier, successful visit of that URL left behind.
+        // The row — and the visit — an earlier, successful visit of that URL
+        // left behind.
+        var earlierVisitID: Int64?
+        let recorded = expectation(description: "the earlier visit")
         f.historyDB.recordVisit(url: failedURL.absoluteString, title: "Real Page",
-                                faviconURL: nil, spaceID: f.space.id.uuidString)
-        try await waitUntil("the earlier visit to be stored") {
-            pump(0.05)
-            return try storedTitle(f.historyDB, failedURL) == "Real Page"
+                                faviconURL: nil, spaceID: f.space.id.uuidString) { id in
+            earlierVisitID = id
+            recorded.fulfill()
         }
+        await fulfillment(of: [recorded], timeout: 10)
+        XCTAssertEqual(try storedTitle(f.historyDB, failedURL), "Real Page")
 
         // What `showErrorPage` leaves behind: the tab on the URL that failed,
         // the web view on the error document.
@@ -387,9 +613,11 @@ final class HistoryTitleUpdateTests: XCTestCase {
         // write the error document's title onto it.
         tab.lastRecordedHistoryURL = failedURL
         tab.lastRecordedHistoryAt = Date()
+        tab.lastRecordedVisitID = earlierVisitID
         f.store.updateHistoryTitle(for: tab)
         pump(0.3)
         XCTAssertEqual(try storedTitle(f.historyDB, failedURL), "Real Page")
+        XCTAssertEqual(try perVisitTitles(f.historyDB, failedURL), ["Real Page"])
     }
 
     // MARK: - The real single-page-app sequence
@@ -406,20 +634,25 @@ final class HistoryTitleUpdateTests: XCTestCase {
         let webView = try XCTUnwrap(tab.webView)
         try await loadHTMLStringAndWait(webView, html: html(title: "a video - SPA"), baseURL: videoURL)
         f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
+        XCTAssertNotNil(waitForRecordedVisitID(tab))
         try await waitUntil("the video page's own title to be stored") {
             pump(0.05)
             return try storedTitle(f.historyDB, videoURL) == "a video - SPA"
         }
     }
 
-    /// What a `pushState` actually does: the URL moves, `isLoading` never
-    /// toggles, so nothing records a visit for the new URL — and the page the
-    /// tab left keeps its own title when the site renames itself afterwards.
-    func testPushStateRecordsNoVisitAndNeverRenamesThePageItLeft() async throws {
+    /// A `loadHTMLString` document has no back/forward entry at all (WebKit
+    /// leaves `backForwardList.currentItem` nil), so a `pushState` in it cannot
+    /// be told from a `replaceState` and the same-document recorder refuses it
+    /// by design (TASK-91) — which is also why the tests around it, all built on
+    /// `loadHTMLString`, see no visits of their own. Real pushState recording is
+    /// covered in `SameDocumentVisitTests`, over a real http document.
+    func testAPushStateWithNoBackForwardEntryRecordsNothing() async throws {
         let f = try makeFixture()
         let tab = makeTab(in: f)
         let webView = try XCTUnwrap(tab.webView)
         try await loadVideoPage(f, tab)
+        XCTAssertNil(webView.backForwardList.currentItem, "precondition: no entry to compare")
 
         var loadingTransitions: [Bool] = []
         let loadingWatch = tab.$isLoading.dropFirst().sink { loadingTransitions.append($0) }
@@ -429,7 +662,7 @@ final class HistoryTitleUpdateTests: XCTestCase {
                                                   contentWorld: .page)
         pump(0.2)
         XCTAssertEqual(tab.url, homeURL, "the tab is on the pushed URL")
-        XCTAssertEqual(loadingTransitions, [], "a pushState starts no load, so nothing records a visit")
+        XCTAssertEqual(loadingTransitions, [], "a pushState starts no load")
 
         // The site renames itself for the page it navigated *to*.
         try await setTitle("SPA Home", on: webView)
@@ -438,7 +671,7 @@ final class HistoryTitleUpdateTests: XCTestCase {
         XCTAssertEqual(try storedTitle(f.historyDB, videoURL), "a video - SPA",
                        "the page the tab left is not renamed by the next page's title")
         XCTAssertNil(try storedTitle(f.historyDB, homeURL),
-                     "an unrecorded URL gets no row from a title change")
+                     "and with no entry to compare, nothing is recorded for the pushed URL")
     }
 
     /// AC #1, the bug itself: something *does* record a visit for the pushed URL
@@ -459,6 +692,7 @@ final class HistoryTitleUpdateTests: XCTestCase {
         f.store.recordHistoryVisit(tab: tab, spaceID: f.space.id)
         XCTAssertEqual(try storedTitle(f.historyDB, homeURL), "a video - SPA",
                        "this is the bug: the new URL is recorded with the previous page's title")
+        XCTAssertNotNil(waitForRecordedVisitID(tab))
 
         try await setTitle("SPA Home", on: webView)
 

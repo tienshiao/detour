@@ -399,12 +399,13 @@ class TabStore {
     /// anyway, so leaving its id here costs nothing.
     private var spaceIDsDeletedThisSession: Set<UUID> = []
 
-    /// How long a tab's title must hold still before it is written back to the
-    /// history. Pages rewrite their title on a timer — unread counters, marquee
-    /// titles, "(3) Inbox" — and debouncing turns that into at most one write
+    /// How long a tab's title — or, since TASK-91, its URL — must hold still
+    /// before the history follows it. Pages rewrite their title on a timer —
+    /// unread counters, marquee titles, "(3) Inbox" — and a single-page app can
+    /// push two URLs in a row; debouncing turns either into at most one write
     /// per quiet second (TASK-88). Injected so a test need not wait a real
-    /// second per title change.
-    private let historyTitleDebounce: TimeInterval
+    /// second per change.
+    private let historySettleDebounce: TimeInterval
 
     /// Removes deleted profiles' on-disk WebKit data (TASK-32).
     private let profileDataRemoval: ProfileDataRemoval
@@ -413,10 +414,10 @@ class TabStore {
          profileDataRemover: ProfileDataRemoval.Remover = .webKit,
          profileDataRemovalRetryDelays: [TimeInterval] = ProfileDataRemoval.defaultRetryDelays,
          webKitStorageScope: WebKitStorageScope = .current,
-         historyTitleDebounce: TimeInterval = 1.0) {
+         historySettleDebounce: TimeInterval = 1.0) {
         self.appDB = appDB
         self.historyDB = historyDB
-        self.historyTitleDebounce = historyTitleDebounce
+        self.historySettleDebounce = historySettleDebounce
         self.profileDataRemoval = ProfileDataRemoval(
             appDB: appDB, remover: profileDataRemover, retryDelays: profileDataRemovalRetryDelays,
             storageScope: webKitStorageScope)
@@ -1467,18 +1468,45 @@ class TabStore {
         // Skip internal URLs
         guard url.scheme == "http" || url.scheme == "https" else { return }
 
+        // Is this pass about the visit the tab is already holding? Only then may
+        // a dedup-skipped recording keep that visit's id — and its correction
+        // window. The space is part of the question: the same tab moved to
+        // another space (TASK-63) is a different profile's history, and the
+        // dedup marker it hits may be another tab's (TASK-91).
+        let continuesLastRecording = tab.lastRecordedHistoryURL == url
+            && tab.lastRecordedHistorySpaceID == spaceID
+
         // This URL has a `historyURL` row from here on — written below, or left
-        // standing by the dedup — so a late title change may correct it, for as
-        // long as the correction window lasts (TASK-88). The window restarts
-        // here, dedup or not: the recorder seeing the URL again is the page
-        // settling again.
+        // standing by the dedup — so a late title change may correct it (TASK-88).
         tab.lastRecordedHistoryURL = url
-        tab.lastRecordedHistoryAt = Date()
+        tab.lastRecordedHistorySpaceID = spaceID
+        // What a later same-document navigation is measured against (TASK-91).
+        tab.lastRecordedBackForwardItem = tab.webView?.backForwardList.currentItem
 
         // Deduplicate: skip if same (url, spaceID) recorded within 30 seconds
         let dedupKey = "\(urlString)|\(spaceID.uuidString)"
         let now = Date().timeIntervalSince1970
         if !typed, let lastWrite = recentHistoryWrites[dedupKey], now - lastWrite < 30 {
+            // No row was written, so the visit the tab may correct is the one it
+            // already had — and only if this pass is about that same visit. For
+            // any other URL, or the same URL in another space, the dedup entry
+            // belongs to some other recording, which this tab must not correct.
+            //
+            // The correction window is *not* restarted: it belongs to the visit,
+            // not to the recorder pass that found one already there. Restarting
+            // it would let a reload ten minutes later write today's title onto a
+            // visit made this morning (TASK-91).
+            if !continuesLastRecording {
+                tab.lastRecordedVisitID = nil
+                tab.lastRecordedHistoryAt = Date()
+                // The tab now holds a different visit (none), so an insert still
+                // in flight from an earlier pass must not install its id over
+                // that decision (TASK-91). A pass that *continues* the same
+                // recording leaves the held visit exactly as it was, and its own
+                // insert is still the right one — bumping there would throw away
+                // the id of the visit this tab is holding.
+                tab.historyRecordingGeneration &+= 1
+            }
             // The title may have settled while the tab was still loading, in
             // which case the debounced correction was dropped and never retried
             // (TASK-88). The load has ended by the time the recorder runs, so
@@ -1489,37 +1517,99 @@ class TabStore {
         }
         recentHistoryWrites[dedupKey] = now
 
+        // A visit is being written: the window starts now, and the id it will be
+        // corrected by is not known yet. Until it arrives the tab holds none, so
+        // a correction landing in between is dropped rather than written onto
+        // the visit this one replaces (TASK-91). The generation moves with it,
+        // so the insert this pass starts is the only one whose id may land.
+        tab.lastRecordedHistoryAt = Date()
+        tab.lastRecordedVisitID = nil
+        tab.historyRecordingGeneration &+= 1
+        let generation = tab.historyRecordingGeneration
         historyDB.recordVisit(
             url: urlString,
             title: tab.title,
             faviconURL: tab.faviconURL?.absoluteString,
             spaceID: spaceID.uuidString,
             typed: typed
-        )
+        ) { [weak self, weak tab] visitID in
+            guard let visitID else { return }
+            // Back to main, where the tab's state lives — on the run loop, which
+            // is what the rest of this pipeline (the debounced subscriptions
+            // below, `.receive(on: RunLoop.main)`) is scheduled on, rather than
+            // the main dispatch queue. An idle run loop would otherwise service
+            // the block only at its next timer, so wake it.
+            RunLoop.main.perform(inModes: [.common]) {
+                // The tab may have recorded again while the insert was in
+                // flight; that recording's id is the current one.
+                guard let tab, tab.historyRecordingGeneration == generation else { return }
+                tab.lastRecordedVisitID = visitID
+                // A title that settled before the id arrived was dropped by the
+                // policy and nothing would retry it — this is that retry, under
+                // the same guards (TASK-91).
+                self?.updateHistoryTitle(for: tab)
+            }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+        }
     }
 
-    /// Writes a tab's settled title back onto the history row of the URL it
-    /// recorded, when the policy below allows it (TASK-88). Driven by the
-    /// debounced `$title` subscription in `subscribeToTab`.
+    /// Records an in-page navigation — a `pushState` or a popstate traversal —
+    /// as a visit (TASK-91, decision G).
+    ///
+    /// Driven by the debounced `$url` subscription in `subscribeToTab`: those
+    /// navigations never toggle `isLoading`, so the ordinary recorder never sees
+    /// them and a single-page app's page views reached the history only when an
+    /// unrelated resource load happened to toggle it. The decision is a pure
+    /// policy; the recording itself goes through `recordHistoryVisit`, so every
+    /// rule it applies — incognito, http(s) only, error pages, internal pages,
+    /// the typed flag, the 30 s dedup, the title handling — is shared rather
+    /// than reimplemented here.
+    func recordSameDocumentNavigationIfNeeded(for tab: BrowserTab) {
+        let currentItem = tab.webView?.backForwardList.currentItem
+        switch SameDocumentVisitPolicy.outcome(
+            tabURL: tab.url,
+            lastRecordedHistoryURL: tab.lastRecordedHistoryURL,
+            currentItem: currentItem.map(ObjectIdentifier.init),
+            lastRecordedItem: tab.lastRecordedBackForwardItem.map(ObjectIdentifier.init)
+        ) {
+        case .skip:
+            return
+        case .adoptBaseline:
+            // Nothing to compare against, so nothing can be told apart: take the
+            // entry the tab is on as the baseline and record from the next
+            // genuinely different one (TASK-91).
+            tab.lastRecordedBackForwardItem = currentItem
+        case .record:
+            guard let spaceID = tab.spaceID else { return }
+            recordHistoryVisit(tab: tab, spaceID: spaceID)
+        }
+    }
+
+    /// Writes a tab's settled title back onto the visit it recorded, when the
+    /// policy below allows it (TASK-88, retargeted from the URL to the visit by
+    /// TASK-91). Driven by the debounced `$title` subscription in
+    /// `subscribeToTab`.
     func updateHistoryTitle(for tab: BrowserTab, now: Date = Date()) {
         // The space is resolved the way `recordHistoryVisit` resolves it, from
         // the tab's current `spaceID`: a favourite or peek tab that belongs to
         // no space never records a visit, so it has nothing to correct either.
         let space = tab.spaceID.flatMap { self.space(withID: $0) }
-        guard let url = HistoryTitleUpdatePolicy.urlToRename(
+        guard let correction = HistoryTitleUpdatePolicy.correction(
             title: tab.title,
             webViewTitle: tab.webView?.title,
             isLoading: tab.isLoading,
             tabURL: tab.url,
             webViewURL: tab.webView?.url,
             lastRecordedHistoryURL: tab.lastRecordedHistoryURL,
+            recordedVisitID: tab.lastRecordedVisitID,
             recordedAt: tab.lastRecordedHistoryAt,
             now: now,
             hasSpace: tab.spaceID != nil,
             isIncognito: space?.isIncognito ?? false
         ) else { return }
 
-        historyDB.updateTitle(url: url.absoluteString, title: tab.title)
+        historyDB.updateTitle(visitID: correction.visitID, url: correction.url.absoluteString,
+                              title: tab.title)
     }
 
     /// After visits were deleted from the history (TASK-87): forgets what in
@@ -1538,6 +1628,12 @@ class TabStore {
     ///    change would otherwise write onto a row another profile recreated. A
     ///    merely *affected* URL still has its row, and correcting its title is
     ///    still the right thing to do.
+    ///
+    /// A tab can therefore be left holding the id of a visit this delete removed
+    /// from a URL that survived. That is deliberate and harmless: `historyVisit`
+    /// ids are `AUTOINCREMENT`, so the id is never handed to another row, and
+    /// `updateTitle(visitID:url:title:)` simply matches nothing (TASK-91). The
+    /// 60 s correction window closes the case shortly after anyway.
     ///
     /// `clearedScope` says the delete was a whole-scope clear: its URL list can
     /// run to tens of thousands, so the dedup entries go by space-id suffix
@@ -1575,6 +1671,11 @@ class TabStore {
                       let recordedAt = tab.lastRecordedHistoryAt, recordedAt <= requestedAt else { continue }
                 tab.lastRecordedHistoryURL = nil
                 tab.lastRecordedHistoryAt = nil
+                // The visit row went with the URL (TASK-91): there is nothing
+                // left to correct, and nothing for the next recording to
+                // continue from.
+                tab.lastRecordedHistorySpaceID = nil
+                tab.lastRecordedVisitID = nil
             }
         }
     }
@@ -4309,6 +4410,22 @@ class TabStore {
             }
             .store(in: &cancellables)
 
+        // An in-page navigation — `pushState`, or a Back within the document —
+        // moves the tab's URL without ever toggling `isLoading`, so the recorder
+        // above never sees it (TASK-91). Debounced on the same interval as the
+        // title below: the URL has to have stopped moving (a site that pushes
+        // twice in a row records only where it came to rest), and by then the
+        // title has usually settled too.
+        tab.$url
+            .dropFirst()
+            .removeDuplicates()
+            .debounce(for: .seconds(historySettleDebounce), scheduler: RunLoop.main)
+            .sink { [weak self, weak tab] url in
+                guard let self, let tab, tab.url == url else { return }
+                self.recordSameDocumentNavigationIfNeeded(for: tab)
+            }
+            .store(in: &cancellables)
+
         // A title that settles after the visit was recorded corrects the stored
         // one (TASK-88). Separate from `observe(\.$title)` above, which only
         // redraws the sidebar: this one is debounced, and the guards in
@@ -4322,7 +4439,7 @@ class TabStore {
             // otherwise write the second page's title onto the first URL
             // (TASK-88).
             .map { [weak tab] title in (title: title, url: tab?.url) }
-            .debounce(for: .seconds(historyTitleDebounce), scheduler: RunLoop.main)
+            .debounce(for: .seconds(historySettleDebounce), scheduler: RunLoop.main)
             .sink { [weak self, weak tab] titled in
                 guard let self, let tab, tab.url == titled.url else { return }
                 self.updateHistoryTitle(for: tab)
@@ -4346,17 +4463,23 @@ private struct WeakObserver {
     weak var value: (any TabStoreObserver)?
 }
 
-/// When a tab's title change may rename the history row of the URL it is on.
+/// When a tab's title change may correct the visit it recorded.
 ///
 /// A visit is recorded the moment loading finishes, but a single-page app
-/// rewrites `document.title` after that — the visit keeps the previous page's
-/// title, and since `historyURL` holds one title per URL it renames every visit
-/// of that URL (TASK-88). The correction is deliberately narrow: only the URL
-/// this tab itself recorded, only a title the document actually reports, and
-/// only under the exclusions that governed the recording.
+/// rewrites `document.title` after that, so the visit keeps the previous page's
+/// title (TASK-88). The correction is deliberately narrow: only the visit this
+/// tab itself recorded, only a title the document actually reports, and only
+/// under the exclusions that governed the recording.
 ///
 /// Pure so the whole guard matrix is testable without a web view.
 enum HistoryTitleUpdatePolicy {
+
+    /// The visit to rewrite, and the URL it must still belong to — the database
+    /// refuses the write if the two have come apart (TASK-91).
+    struct Correction: Equatable {
+        let visitID: Int64
+        let url: URL
+    }
 
     /// How long after the visit was recorded a late title may still correct it.
     ///
@@ -4366,7 +4489,8 @@ enum HistoryTitleUpdatePolicy {
     /// nobody wants "(211) YouTube" as the stored title of youtube.com anyway.
     static let correctionWindow: TimeInterval = 60
 
-    /// The URL whose stored title should become `title`, or nil to write nothing.
+    /// The visit whose stored title should become `title`, or nil to write
+    /// nothing.
     ///
     /// - Parameters:
     ///   - title: the tab's settled title (`BrowserTab.title`).
@@ -4377,20 +4501,25 @@ enum HistoryTitleUpdatePolicy {
     ///   - webViewURL: the URL of the document the title came from
     ///     (`tab.webView?.url`).
     ///   - lastRecordedHistoryURL: the URL this tab last got a history row for.
+    ///   - recordedVisitID: the visit row that recording produced. Nil while the
+    ///     insert is still in flight — the correction waits for the next title
+    ///     event or the recorder's own retry rather than guessing a row
+    ///     (TASK-91).
     ///   - recordedAt: when the recorder last saw that URL.
     ///   - now: the current time, against `recordedAt`.
     ///   - hasSpace: the tab belongs to a space, the way a recorded visit does.
     ///   - isIncognito: that space is incognito.
-    static func urlToRename(title: String,
-                            webViewTitle: String?,
-                            isLoading: Bool,
-                            tabURL: URL?,
-                            webViewURL: URL?,
-                            lastRecordedHistoryURL: URL?,
-                            recordedAt: Date?,
-                            now: Date,
-                            hasSpace: Bool,
-                            isIncognito: Bool) -> URL? {
+    static func correction(title: String,
+                           webViewTitle: String?,
+                           isLoading: Bool,
+                           tabURL: URL?,
+                           webViewURL: URL?,
+                           lastRecordedHistoryURL: URL?,
+                           recordedVisitID: Int64?,
+                           recordedAt: Date?,
+                           now: Date,
+                           hasSpace: Bool,
+                           isIncognito: Bool) -> Correction? {
         guard hasSpace, !isIncognito, !isLoading else { return nil }
         // The title has to be one the live document reports. `BrowserTab.updateTitle`
         // also publishes stand-ins — the scheme-stripped URL while a navigation is
@@ -4402,6 +4531,9 @@ enum HistoryTitleUpdatePolicy {
         // in-page navigation moved the tab on, and never a URL nothing wrote a
         // row for.
         guard let url = tabURL, url == lastRecordedHistoryURL else { return nil }
+        // And only a visit this tab is actually holding: without an id there is
+        // nothing to correct (TASK-91).
+        guard let recordedVisitID else { return nil }
         // The title has to have come from the document at that very URL. A
         // failed load is the case that matters: `showErrorPage` leaves
         // `tab.url` on the URL the user asked for while the web view shows
@@ -4416,6 +4548,66 @@ enum HistoryTitleUpdatePolicy {
         // The same exclusion the recorder applies: `detour://` internal pages,
         // `browser-error://` and extension pages are not in the history at all.
         guard url.scheme == "http" || url.scheme == "https" else { return nil }
-        return url
+        return Correction(visitID: recordedVisitID, url: url)
+    }
+}
+
+/// Whether a tab's URL moving within the document it is already showing is a
+/// visit (TASK-91, decision G).
+///
+/// `history.pushState` and popstate traversals never toggle `isLoading`, so the
+/// ordinary recorder — which runs when a load ends — never sees a single-page
+/// app's page views. They are told apart from `replaceState` by back/forward
+/// *item identity*: a pushState or a traversal makes the web view's
+/// `backForwardList.currentItem` a different object, while a replaceState
+/// rewrites the current item's URL in place. Query-string churn (and the
+/// History page's own `?q=`) is therefore never a visit.
+///
+/// Deliberately not gated on `isLoading`: a single-page app whose subresource
+/// keeps loading for a minute would otherwise lose every page view made in the
+/// meantime. Item identity already excludes a navigation that has not committed
+/// (while a load is provisional `currentItem` is still the old entry — asserted
+/// against a real web view in `SameDocumentVisitTests`), the recorder's own
+/// guards still exclude error pages and non-web schemes, and the ordinary
+/// `isLoading → false` recording that follows a real navigation is absorbed by
+/// the 30 s dedup — whose branch also retries the title correction (TASK-88).
+/// The accepted cost is a second visit for a cross-document load that takes
+/// more than 30 s *after* committing.
+///
+/// Pure — identity arrives as `ObjectIdentifier` — so the matrix is testable
+/// without a web view.
+enum SameDocumentVisitPolicy {
+
+    enum Outcome: Equatable {
+        /// Record a visit for where the tab is now.
+        case record
+        /// Nothing to record.
+        case skip
+        /// Take the tab's current entry as the baseline without recording: with
+        /// no entry to compare against, a `replaceState` is indistinguishable
+        /// from a `pushState`, and inventing a visit is the worse error. The
+        /// next genuinely different entry records (TASK-91).
+        case adoptBaseline
+    }
+
+    /// - Parameters:
+    ///   - tabURL: where the tab is now.
+    ///   - lastRecordedHistoryURL: the URL this tab last recorded — the same URL
+    ///     is this tab's own recording, not a new page view.
+    ///   - currentItem: identity of `backForwardList.currentItem`. Nil means the
+    ///     document has no back/forward entry at all (a `loadHTMLString`
+    ///     document has none), and without one nothing can be told apart.
+    ///   - lastRecordedItem: identity of the entry that was current when this
+    ///     tab last recorded. Nil when nothing has been recorded for this
+    ///     document — a fresh tab, a favourite or peek tab promoted into a
+    ///     space — or when the entry has gone (the reference is weak).
+    static func outcome(tabURL: URL?,
+                        lastRecordedHistoryURL: URL?,
+                        currentItem: ObjectIdentifier?,
+                        lastRecordedItem: ObjectIdentifier?) -> Outcome {
+        guard let tabURL, tabURL != lastRecordedHistoryURL else { return .skip }
+        guard let currentItem else { return .skip }
+        guard let lastRecordedItem else { return .adoptBaseline }
+        return currentItem == lastRecordedItem ? .skip : .record
     }
 }

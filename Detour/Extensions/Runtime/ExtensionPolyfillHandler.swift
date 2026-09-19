@@ -440,7 +440,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 [
                     "id": String(item.id ?? 0),
                     "url": item.url,
-                    "title": item.title,
+                    // A URL can be left with no title at all (TASK-91: the visit
+                    // its latest known title came from was deleted). Chrome's
+                    // history items always carry something displayable, so fall
+                    // back to the URL rather than handing back an empty string.
+                    "title": item.title.isEmpty ? item.url : item.title,
                     "lastVisitTime": item.lastVisitTime * 1000.0,
                     "visitCount": item.visitCount,
                     "typedCount": 0

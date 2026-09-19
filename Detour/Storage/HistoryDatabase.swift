@@ -35,15 +35,18 @@ struct HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         dbQueue = try! DatabaseQueue(path: dbPath, configuration: config)
-        try! migrator.migrate(dbQueue)
+        try! Self.migrator.migrate(dbQueue)
     }
 
     init(dbQueue: DatabaseQueue) throws {
         self.dbQueue = dbQueue
-        try migrator.migrate(dbQueue)
+        try Self.migrator.migrate(dbQueue)
     }
 
-    private var migrator: DatabaseMigrator {
+    /// Static, and not private, so a test can build a database as an earlier
+    /// version left it (`migrate(_:upTo:)`) and then let the real migrator bring
+    /// it forward — the only way to see a migration run over existing data.
+    static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
 
         migrator.registerMigration("h1") { db in
@@ -93,18 +96,43 @@ struct HistoryDatabase {
                           on: "historyVisit", columns: ["spaceID", "visitTime"])
         }
 
+        // A title per visit (TASK-91). `historyURL.title` is one row per URL
+        // shared by every profile, so the newest title relabelled every older
+        // visit — and one profile's "(3) Inbox — you@work" became the title
+        // another profile's History page showed. The visit now carries the title
+        // it was recorded with; the URL row keeps the latest known one for what
+        // wants one row per URL (FTS, suggestions, completion, the extensions
+        // API). Nullable, and deliberately not backfilled: what a page was
+        // called at the time of an older visit was never stored, so those visits
+        // fall back to the URL title via `COALESCE(v.title, h.title)`.
+        migrator.registerMigration("h4") { db in
+            try db.alter(table: "historyVisit") { t in
+                t.add(column: "title", .text)
+            }
+        }
+
         return migrator
     }
 
     /// Records a visit. `typed` marks a deliberate navigation (the user submitted
     /// the URL or picked it in the command palette, vs following a link); typed
     /// visits weigh more in `bestURLCompletion` frecency ranking.
-    func recordVisit(url: String, title: String, faviconURL: String?, spaceID: String, typed: Bool = false) {
+    ///
+    /// The title is written twice: onto the new `historyVisit` row, which keeps
+    /// it for good (TASK-91), and onto the shared `historyURL` row as the latest
+    /// known title of that URL.
+    ///
+    /// `completion` hands back the id of the inserted visit — what a late title
+    /// correction needs to find its own row again (`updateTitle(visitID:url:title:)`).
+    /// It runs on GRDB's writer queue, not the caller's, so hop to main
+    /// yourself; a failed write reports nil.
+    func recordVisit(url: String, title: String, faviconURL: String?, spaceID: String,
+                     typed: Bool = false, completion: ((Int64?) -> Void)? = nil) {
         // Fire-and-forget async write. Serialized on the writer queue, so visits
         // are committed in call order (FIFO); callers that read afterwards on the
         // same DatabaseQueue observe the write because their access is enqueued
         // behind it.
-        dbQueue.asyncWrite({ db in
+        dbQueue.asyncWrite({ db -> Int64 in
             let now = Date().timeIntervalSince1970
 
             // Upsert historyURL and get the row ID back in one query
@@ -118,31 +146,61 @@ struct HistoryDatabase {
                     lastVisitTime = excluded.lastVisitTime
                 RETURNING id
                 """, arguments: [url, title, faviconURL, now])!
-            let visit = HistoryVisit(urlID: urlID, spaceID: spaceID, visitTime: now, isTyped: typed)
+            let visit = HistoryVisit(urlID: urlID, spaceID: spaceID, visitTime: now,
+                                     isTyped: typed, title: title)
             try visit.insert(db)
+            return db.lastInsertedRowID
         }, completion: { _, result in
-            if case .failure(let error) = result {
+            switch result {
+            case .success(let visitID):
+                completion?(visitID)
+            case .failure(let error):
                 log.error("Failed to record history visit: \(error.localizedDescription)")
+                completion?(nil)
             }
         })
     }
 
-    /// Corrects the title of a URL already in the history. A single-page app
-    /// changes `document.title` after the navigation has finished, so the title
-    /// stored with the visit is the previous page's (TASK-88); `historyURL`
-    /// holds one title per URL, so leaving it there renames every visit of that
-    /// URL. This is a correction, not a visit: no `historyVisit` row, and
-    /// `visitCount` / `lastVisitTime` are untouched. A URL with no row is a
-    /// no-op — the update never creates one. `historySearch` is synchronized
-    /// with `historyURL`, so the FTS index follows via its triggers.
-    func updateTitle(url: String, title: String) {
+    /// Corrects the title of one recorded visit. A single-page app changes
+    /// `document.title` after the navigation has finished, so the title stored
+    /// with the visit is the previous page's (TASK-88).
+    ///
+    /// The correction targets the visit the tab itself recorded, by id — never
+    /// "every visit of this URL" (TASK-91). `url` is a consistency check, not a
+    /// defence against id reuse (`historyVisit.id` is `AUTOINCREMENT`, so a
+    /// deleted row's id is never handed out again): an id that has since been
+    /// deleted matches nothing, and an id that does not belong to `url` — a
+    /// caller pairing stale state — writes nothing instead of renaming a
+    /// stranger's visit.
+    ///
+    /// `historyURL.title` — the latest known title, which feeds FTS, the command
+    /// palette and the extensions API — follows only if this visit is still the
+    /// newest visit of the URL across *all* spaces. An old tab settling its
+    /// title minutes later must not override what a newer visit called the page.
+    ///
+    /// This is a correction, not a visit: no `historyVisit` row is added, and
+    /// `visitCount` / `lastVisitTime` are untouched. An unknown id is a no-op.
+    /// `historySearch` is synchronized with `historyURL`, so the FTS index
+    /// follows the URL-level title via its triggers.
+    func updateTitle(visitID: Int64, url: String, title: String) {
         // Fire-and-forget like `recordVisit`, and serialized behind it on the
         // same writer queue, so a title correction can never overtake the visit
-        // it corrects.
+        // it corrects — including the insert that handed out `visitID`.
         dbQueue.asyncWrite({ db in
             try db.execute(sql: """
-                UPDATE historyURL SET title = ? WHERE url = ? AND title <> ?
-                """, arguments: [title, url, title])
+                UPDATE historyVisit SET title = ?
+                WHERE id = ? AND urlID = (SELECT id FROM historyURL WHERE url = ?)
+                """, arguments: [title, visitID, url])
+            // Nothing was corrected — the id is unknown, or names a visit of
+            // another URL — so the shared row must not move either.
+            guard db.changesCount > 0 else { return }
+            try db.execute(sql: """
+                UPDATE historyURL SET title = ?
+                WHERE url = ? AND title <> ?
+                  AND ? = (SELECT v.id FROM historyVisit v
+                           WHERE v.urlID = historyURL.id
+                           ORDER BY v.visitTime DESC, v.id DESC LIMIT 1)
+                """, arguments: [title, url, title, visitID])
         }, completion: { _, result in
             if case .failure(let error) = result {
                 log.error("Failed to update history title: \(error.localizedDescription)")
@@ -244,10 +302,12 @@ struct HistoryDatabase {
     ///
     /// The history DB has no notion of profiles: a profile's history is the
     /// visits of the spaces it owns, so the caller passes those space IDs in
-    /// (from `TabStore`). Every field but `title`/`faviconURL` comes from the
-    /// in-scope `historyVisit` rows — `historyURL.visitCount` and
-    /// `lastVisitTime` aggregate across *all* profiles and must never leak into
-    /// a profile-scoped view, neither as a value nor as a sort key.
+    /// (from `TabStore`). Every field but `faviconURL` comes from the in-scope
+    /// `historyVisit` rows — `historyURL.visitCount` and `lastVisitTime`
+    /// aggregate across *all* profiles and must never leak into a profile-scoped
+    /// view, neither as a value nor as a sort key. The title is the visit's own
+    /// (TASK-91), falling back to the URL-level one only for visits recorded
+    /// before per-visit titles existed.
     ///
     /// Pass the previous page's last entry as `cursor` to get the next page;
     /// see `HistoryCursor` for why this is keyset paging and not OFFSET.
@@ -257,7 +317,7 @@ struct HistoryDatabase {
         let placeholders = databaseQuestionMarks(count: spaceIDs.count)
 
         var sql = """
-            SELECT v.id AS visitID, h.url AS url, h.title AS title,
+            SELECT v.id AS visitID, h.url AS url, COALESCE(v.title, h.title) AS title,
                    h.faviconURL AS faviconURL, v.visitTime AS visitTime
             FROM historyVisit v
             JOIN historyURL h ON h.id = v.urlID
@@ -293,6 +353,18 @@ struct HistoryDatabase {
     /// the same URL share a `visitTime` (a bare `MAX(v.visitTime)` would leave
     /// the accompanying `v.id` up to SQLite). Paging is the same keyset walk
     /// over `(visitTime DESC, visitID DESC)`.
+    ///
+    /// Matching stays on the URL-level title in `historySearch`, while the row
+    /// *displays* the representative visit's own title (TASK-91, decision D):
+    /// indexing every visit title would need a second FTS table over
+    /// `historyVisit` and multiply the index for a marginal feature. Two visible
+    /// consequences, accepted for now:
+    /// - a title a page used to have is not searchable, and conversely a row can
+    ///   display a visit title that does not contain the query — the match came
+    ///   from the URL-level (latest known) title;
+    /// - that latest known title can be the one *another profile's* visit gave
+    ///   the URL, so a query can match through a title this profile never saw.
+    ///   Only the match crosses profiles; what the row shows does not.
     func searchVisits(query: String, spaceIDs: [String], before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
         guard !spaceIDs.isEmpty else { return [] }
         let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -304,10 +376,11 @@ struct HistoryDatabase {
         let placeholders = databaseQuestionMarks(count: spaceIDs.count)
 
         var sql = """
-            SELECT l.visitID AS visitID, h.url AS url, h.title AS title,
+            SELECT l.visitID AS visitID, h.url AS url, COALESCE(l.visitTitle, h.title) AS title,
                    h.faviconURL AS faviconURL, l.visitTime AS visitTime
             FROM (
                 SELECT v.urlID AS urlID, v.id AS visitID, v.visitTime AS visitTime,
+                       v.title AS visitTitle,
                        ROW_NUMBER() OVER (
                            PARTITION BY v.urlID ORDER BY v.visitTime DESC, v.id DESC
                        ) AS rn
@@ -602,8 +675,14 @@ struct HistoryDatabase {
         // A DatabaseQueue is one connection, so a temp table outlives the
         // transaction that made it: start from an empty one every time.
         try db.execute(sql: "DROP TABLE IF EXISTS temp.\(Self.stageTable)")
+        // `hadTitle` is 1 when at least one of the deleted visits carried a
+        // title of its own: only then may the URL's latest known title have come
+        // from a visit this delete removed, and only then is it repaired below
+        // (TASK-91).
         try db.execute(sql: """
-            CREATE TEMP TABLE \(Self.stageTable) (urlID INTEGER PRIMARY KEY, n INTEGER NOT NULL)
+            CREATE TEMP TABLE \(Self.stageTable) (
+                urlID INTEGER PRIMARY KEY, n INTEGER NOT NULL, hadTitle INTEGER NOT NULL
+            )
             """)
         defer { try? db.execute(sql: "DROP TABLE IF EXISTS temp.\(Self.stageTable)") }
         try delete(db)
@@ -637,9 +716,12 @@ struct HistoryDatabase {
     private func stageAndDeleteVisits(_ db: Database, where condition: String,
                                       arguments: [DatabaseValueConvertible]) throws {
         try db.execute(sql: """
-            INSERT INTO \(Self.stageTable) (urlID, n)
-            SELECT urlID, COUNT(*) FROM historyVisit WHERE \(condition) GROUP BY urlID
-            ON CONFLICT(urlID) DO UPDATE SET n = n + excluded.n
+            INSERT INTO \(Self.stageTable) (urlID, n, hadTitle)
+            SELECT urlID, COUNT(*), MAX(title IS NOT NULL) FROM historyVisit
+            WHERE \(condition) GROUP BY urlID
+            ON CONFLICT(urlID) DO UPDATE SET
+                n = n + excluded.n,
+                hadTitle = MAX(hadTitle, excluded.hadTitle)
             """, arguments: StatementArguments(arguments))
         try db.execute(sql: "DELETE FROM historyVisit WHERE \(condition)",
                        arguments: StatementArguments(arguments))
@@ -659,6 +741,14 @@ struct HistoryDatabase {
     ///   `bestURLCompletion` ranking and the FTS ordering). Subtracting exactly
     ///   what this delete removed, floored at what is still there, keeps both
     ///   the surplus and the floor honest.
+    /// - `title` — the latest known title — is repaired only when the delete
+    ///   took a visit that carried a title (`hadTitle`), since only such a visit
+    ///   can be where the URL's title came from. It becomes the title of the
+    ///   newest *remaining* visit that has one, across all spaces, and empty
+    ///   when no remaining visit has one: the deleted page's title must not go
+    ///   on naming the URL in search and suggestions (TASK-91). Deleting a visit
+    ///   recorded before per-visit titles existed leaves the title alone —
+    ///   blanking a legacy URL's only title would lose it for nothing.
     /// - a URL with no visit left in any space loses its `historyURL` row, which
     ///   takes the FTS entry with it via the synchronized-table triggers.
     ///
@@ -692,7 +782,14 @@ struct HistoryDatabase {
             UPDATE historyURL SET
                 lastVisitTime = (SELECT MAX(v.visitTime) FROM historyVisit v WHERE v.urlID = historyURL.id),
                 visitCount = MAX(visitCount - (SELECT s.n FROM \(Self.stageTable) s WHERE s.urlID = historyURL.id),
-                                 (SELECT COUNT(*) FROM historyVisit v WHERE v.urlID = historyURL.id))
+                                 (SELECT COUNT(*) FROM historyVisit v WHERE v.urlID = historyURL.id)),
+                title = CASE
+                    WHEN (SELECT s.hadTitle FROM \(Self.stageTable) s WHERE s.urlID = historyURL.id) = 1
+                    THEN COALESCE((SELECT v.title FROM historyVisit v
+                                   WHERE v.urlID = historyURL.id AND v.title IS NOT NULL
+                                   ORDER BY v.visitTime DESC, v.id DESC LIMIT 1),
+                                  '')
+                    ELSE title END
             WHERE id IN (SELECT urlID FROM \(Self.stageTable))
               AND EXISTS (SELECT 1 FROM historyVisit v WHERE v.urlID = historyURL.id)
             """)

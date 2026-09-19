@@ -865,8 +865,11 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-loopback-http")
     private let routes: [String: String]
+    private let pending: [String: String]
+    private let stalled: [String: String]
     private let lock = NSLock()
     private var _requestedPaths: [String] = []
+    private var _held: [String: [NWConnection]] = [:]
 
     /// The request paths seen so far, in arrival order.
     var requestedPaths: [String] {
@@ -878,8 +881,21 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         var description: String { "loopback HTTP server did not become ready" }
     }
 
-    init(routes: [String: String]) throws {
+    /// - Parameters:
+    ///   - pending: routes whose response *head* is sent when the request
+    ///     arrives and whose body is withheld until `release(_:)` — a resource
+    ///     that has started but not finished. The value is the body sent on
+    ///     release. A page loading one of these has committed (so it has a
+    ///     back/forward entry and a URL) while `isLoading` stays true, which is
+    ///     what a long-running single-page app looks like (TASK-91).
+    ///   - stalled: routes that send *nothing* until `release(_:)`, when the
+    ///     whole response goes out — a navigation that stays provisional, so the
+    ///     web view is still on the previous document and entry.
+    init(routes: [String: String], pending: [String: String] = [:],
+         stalled: [String: String] = [:]) throws {
         self.routes = routes
+        self.pending = pending
+        self.stalled = stalled
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         params.requiredInterfaceType = .loopback
@@ -914,7 +930,36 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 
     func stop() {
+        lock.lock()
+        let held = _held.values.flatMap { $0 }
+        _held.removeAll()
+        lock.unlock()
+        for connection in held { connection.cancel() }
         listener.cancel()
+    }
+
+    /// Finishes the withheld responses of a `pending` or `stalled` route: what
+    /// is left of the response goes out and the connection closes, which is what
+    /// ends the load.
+    func release(_ path: String) {
+        lock.lock()
+        let connections = _held.removeValue(forKey: path) ?? []
+        lock.unlock()
+        var rest = Data()
+        if let body = pending[path] {
+            rest = Data(body.utf8)
+        } else if let body = stalled[path] {
+            let header = "HTTP/1.1 200 OK\r\n"
+                + "Content-Type: text/html; charset=utf-8\r\n"
+                + "Content-Length: \(body.utf8.count)\r\n"
+                + "Connection: close\r\n\r\n"
+            rest = Data((header + body).utf8)
+        }
+        for connection in connections {
+            connection.send(content: rest, completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+        }
     }
 
     private func handle(_ connection: NWConnection) {
@@ -952,6 +997,21 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         lock.lock()
         _requestedPaths.append(path)
         lock.unlock()
+
+        if pending[path] != nil || stalled[path] != nil {
+            lock.lock()
+            _held[path, default: []].append(connection)
+            lock.unlock()
+            guard pending[path] != nil else { return } // stalled: not a byte yet
+            // Headers only, no Content-Length: the body is terminated by the
+            // close in `release(_:)`, so the resource stays in flight until then.
+            let header = "HTTP/1.1 200 OK\r\n"
+                + "Content-Type: text/html; charset=utf-8\r\n"
+                + "Connection: close\r\n\r\n"
+            connection.send(content: Data(header.utf8), completion: .contentProcessed { _ in })
+            return
+        }
+
         let body = Data((routes[path] ?? "<html><body>not found</body></html>").utf8)
         let status = routes[path] == nil ? "404 Not Found" : "200 OK"
         let header = "HTTP/1.1 \(status)\r\n"
