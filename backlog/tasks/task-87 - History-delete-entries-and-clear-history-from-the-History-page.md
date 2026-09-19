@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-19 16:51'
-updated_date: '2026-09-19 20:21'
+updated_date: '2026-09-19 21:28'
 labels: []
 dependencies:
   - TASK-86
@@ -34,14 +34,14 @@ Things to get right:
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A single entry can be deleted from the page (button/context menu and Delete key on selection); it disappears without a full reload
-- [ ] #2 Multiple selected entries can be deleted at once
-- [ ] #3 A Clear History action offers time ranges (last hour, today, all time) and asks for confirmation before deleting
-- [ ] #4 Deletion only removes visits belonging to the tab's profile; another profile's visits to the same URL survive, with its visitCount/lastVisitTime recomputed (test)
-- [ ] #5 A historyURL row is removed only when no visits remain in any profile, and then no longer appears in FTS search, command-palette suggestions, or URL completion (test)
-- [ ] #6 Revisiting a URL immediately after deleting it records a new visit (dedup cache invalidated) (test)
-- [ ] #7 Delete bridge messages are rejected from anything but the internal page's main frame (negative tests)
-- [ ] #8 Deleting a space removes that space's visits (or the task records the decision not to)
-- [ ] #9 Unit tests cover the new HistoryDatabase delete APIs including aggregate recomputation and orphan pruning
+- [x] #2 Multiple selected entries can be deleted at once
+- [x] #3 A Clear History action offers time ranges (last hour, today, all time) and asks for confirmation before deleting
+- [x] #4 Deletion only removes visits belonging to the tab's profile; another profile's visits to the same URL survive, with its visitCount/lastVisitTime recomputed (test)
+- [x] #5 A historyURL row is removed only when no visits remain in any profile, and then no longer appears in FTS search, command-palette suggestions, or URL completion (test)
+- [x] #6 Revisiting a URL immediately after deleting it records a new visit (dedup cache invalidated) (test)
+- [x] #7 Delete bridge messages are rejected from anything but the internal page's main frame (negative tests)
+- [x] #8 Deleting a space removes that space's visits (or the task records the decision not to)
+- [x] #9 Unit tests cover the new HistoryDatabase delete APIs including aggregate recomputation and orphan pruning
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -58,3 +58,9 @@ G. Page UI: row selection (click on a checkbox-like affordance / Shift-range / C
 
 Steps: 1. (Opus) DB APIs + tests. 2. (Fable) bridge methods, native confirmation, scope enforcement, cache invalidation, launch sweep. 3. (Opus) page UI + integration tests incl. negative bridge cases for the delete methods and a cross-profile forged-id test. 4. /code-review, in-process runtime verification (click, key, clear + sheet, dark mode), merge.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Committed on task-87-history-deletion (f1686e7); NOT merged yet. AC #8 decision: visits are not deleted in deleteSpace (Undo Delete Space restores the space under the same id and must get its history back); instead visits of spaces that no longer exist are swept at launch, treating spaces deleted this session as existing, and refusing to sweep unless a surviving space has visits (a session DB that failed to restore must not orphan the whole history). Review pass fixed: failed write reported as success; delete mode taken from state.query instead of the rendered row; removal by captured element instead of the live DOM; partial multi-batch failure; clear scope captured before the sheet; sweep vs undo in the first 5 s; historyDidDelete erasing state of visits recorded after the request; per-URL work inside the write transaction (now set-based via a temp staging table); false empty state. Validation: targeted suites 138 tests x3 stable; full suite 1343-1344 tests, 5 skipped - 0 failures in one run, and 1 failure in two runs, both the same unrelated JS-GC timing test (ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection). Runtime (isolated instance, SCREEN LOCKED so script-driven page events only): row delete, Shift range, Cmd+A, Escape, Clear menu, native sheet text/profile name/destructive button, second clear ignored while the sheet is up, Cancel = no change, Clear All = empty list and 0 visits / 0 URLs / 0 FTS rows; launch sweep removed a vanished space's visits and corrected the shared URL's visitCount. STILL TO VERIFY ON AN UNLOCKED SCREEN before merge / AC #1: real mouse clicks and the Delete key through AppKit, Cmd+A on the page vs the Edit > Select All menu item, and the visual pass in light/dark.
+<!-- SECTION:NOTES:END -->
