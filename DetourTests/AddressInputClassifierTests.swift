@@ -95,4 +95,23 @@ final class AddressInputClassifierTests: XCTestCase {
         XCTAssertNil(url("10:30"))
         XCTAssertNil(url("16:9"))
     }
+
+    // MARK: - Detour's own pages (TASK-86)
+
+    func testAnInternalPageIsTakenAsWritten() {
+        XCTAssertEqual(url("detour://history"), "detour://history")
+        XCTAssertEqual(url("detour://history/"), "detour://history/")
+        XCTAssertEqual(url("detour://history/?q=swift"), "detour://history/?q=swift")
+        XCTAssertEqual(url("DETOUR://History/"), "DETOUR://History/")
+    }
+
+    /// An internal host that names no page is not a URL: it goes to the search
+    /// engine like any other unrecognised word, rather than opening something
+    /// that does not exist.
+    func testAnUnknownInternalHostSearches() {
+        XCTAssertNil(url("detour://settings"))
+        XCTAssertNil(url("detour://"))
+        // Not the internal scheme at all.
+        XCTAssertNil(url("detour-favicon://history/"))
+    }
 }
