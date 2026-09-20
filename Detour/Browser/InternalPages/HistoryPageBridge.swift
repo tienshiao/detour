@@ -8,14 +8,30 @@ import AppKit
 /// message says *whose* history it is about. `history.delete` names visit ids
 /// and `history.clear` names a range; the profile's spaces come from the
 /// sending tab, and the SQL deletes only rows that are both named and in that
-/// scope — an id belonging to another profile deletes nothing. The page sends
-/// no timestamps either: a range's cutoff is computed here.
+/// scope — an id belonging to another profile deletes nothing.
 ///
-/// The same rule covers the time filter (TASK-92): `history.query` and
-/// `history.delete` take a symbolic `range` — `{preset: …}` or `{day: …}` — and
-/// `HistoryTimeRange` turns it into half-open bounds natively. A range that is
-/// neither absent nor one of those shapes is "malformed", never widened to all
-/// of history.
+/// The time filter (TASK-92) starts the same way: `history.query` takes a
+/// symbolic `range` — `{preset: …}` or `{day: …}` — and `HistoryTimeRange`
+/// turns it into half-open bounds here. A range that is neither absent nor one
+/// of those shapes is "malformed", never widened to all of history.
+///
+/// The reply then says which window that was (`window: {from, until}`), and the
+/// page echoes it back — on every later page of the same listing, and on a
+/// URL-mode `history.delete` of one of its rows, which takes a `window` and no
+/// `range` at all. One listing therefore pages and deletes against the window
+/// it was rendered under: re-resolving "today" per request would move the
+/// window under a listing that is open across midnight.
+///
+/// So a page *can* name instants here, which `history.clear` refuses. The
+/// difference is what naming one can reach:
+/// - the scope is still derived from the sending tab, so no window of any shape
+///   reaches another profile's visits;
+/// - a query window only narrows a read the page is allowed to make in full;
+/// - a delete window only narrows a fan-out. `allVisitsOfURL` without one takes
+///   *every* in-scope visit of the named URLs, so a window can only spare rows,
+///   never reach further ones — and the named ids are deleted whatever it says.
+/// `history.clear` is the opposite shape: nothing bounds it from below, so an
+/// instant there would *widen* what is destroyed. Its cutoff stays native.
 enum HistoryPageBridge {
     static let maxPageSize = 200
     /// Most visit ids one `history.delete` may name; a selection larger than
@@ -77,21 +93,24 @@ enum HistoryPageBridge {
             let search = (params["search"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let limit = min(max((params["limit"] as? NSNumber)?.intValue ?? 100, 1), maxPageSize)
             let cursor = cursor(from: params["cursor"])
-            // The period the page named, turned into instants here (TASK-92):
-            // the bounds are taken per request, so every page of one listing
-            // agrees about where the period ends.
-            guard let window = HistoryTimeRange.parse(params["range"]).bounds() else {
-                return reply(nil, "malformed")
-            }
+            // The period the page named, turned into instants here (TASK-92) —
+            // unless the page echoed back the window its listing's first page
+            // was resolved under, which is then the window this page of it is
+            // read with. Either way the reply says which window that was, so
+            // the whole listing agrees about where the period begins and ends
+            // however long it stays open.
+            guard let resolved = resolvedWindow(params) else { return reply(nil, "malformed") }
             DispatchQueue.global(qos: .userInitiated).async {
                 // One extra row tells the page whether there is more to load.
                 let rows = search.isEmpty
-                    ? database.visits(spaceIDs: spaceIDs, from: window.from, until: window.until,
+                    ? database.visits(spaceIDs: spaceIDs, from: resolved.from, until: resolved.until,
                                       before: cursor, limit: limit + 1)
-                    : database.searchVisits(query: search, spaceIDs: spaceIDs, from: window.from,
-                                            until: window.until, before: cursor, limit: limit + 1)
+                    : database.searchVisits(query: search, spaceIDs: spaceIDs, from: resolved.from,
+                                            until: resolved.until, before: cursor, limit: limit + 1)
                 let page = Array(rows.prefix(limit))
                 var result: [String: Any] = ["entries": page.map(payload(for:)), "incognito": false]
+                // Absent for all of history: there is no window to page inside.
+                if let window = resolved.window { result["window"] = window.bridgeValue }
                 if rows.count > limit, let last = page.last {
                     result["nextCursor"] = ["time": last.visitTime, "id": last.visitID]
                 }
@@ -102,21 +121,26 @@ enum HistoryPageBridge {
             let ids = (params["ids"] as? [NSNumber] ?? []).map(\.int64Value)
             guard !ids.isEmpty, ids.count <= maxDeleteCount else { return reply(nil, "malformed") }
             let allVisitsOfURL = params["allVisitsOfURL"] as? Bool ?? false
-            guard let window = HistoryTimeRange.parse(params["range"]).bounds() else {
-                return reply(nil, "malformed")
+            let sent: HistoryTimeWindow?
+            switch windowParam(params["window"]) {
+            case .malformed: return reply(nil, "malformed")
+            case .absent: sent = nil
+            case .window(let value): sent = value
             }
-            // A row read under a time range stands for the URL's visits inside
-            // it, so the fan-out is narrowed to the same period (TASK-92). A
-            // per-visit delete names one row and needs no range; the page sends
-            // none, and one sent anyway is ignored rather than allowed to
-            // silently spare the named visit.
-            let range: (from: Double?, until: Double?) = allVisitsOfURL ? window : (nil, nil)
+            // A row read under a period stands for the URL's visits inside it,
+            // so the fan-out is narrowed to the window that row was rendered
+            // under (TASK-92) — the page echoes the one its listing was read
+            // with rather than naming a period this side would re-resolve to
+            // some other pair of instants. A per-visit delete names one row and
+            // needs no window; the page sends none, and one sent anyway is
+            // ignored rather than allowed to silently spare the named visit.
+            let window = allVisitsOfURL ? sent : nil
             // Taken before the write, not after it: a visit recorded while the
             // delete is in flight is newer than the request and its in-memory
             // state must survive `historyDidDelete` (TASK-87).
             let requestedAt = Date()
             database.deleteVisits(ids: ids, spaceIDs: spaceIDs, allVisitsOfURL: allVisitsOfURL,
-                                  from: range.from, until: range.until) { result in
+                                  from: window?.from, until: window?.until) { result in
                 DispatchQueue.main.async {
                     finish(result, spaceIDs: spaceIDs, requestedAt: requestedAt, clearedScope: false,
                            reply: reply)
@@ -178,6 +202,41 @@ enum HistoryPageBridge {
         alert.addButton(withTitle: "Clear History").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { completion($0 == .alertFirstButtonReturn) }
+    }
+
+    /// What a `window` param said. Absent is not malformed — the first page of
+    /// a listing has no window to echo yet, and all of history never gets one.
+    private enum WindowParam {
+        case absent
+        case window(HistoryTimeWindow)
+        case malformed
+    }
+
+    private static func windowParam(_ value: Any?) -> WindowParam {
+        guard let value, !(value is NSNull) else { return .absent }
+        guard let window = HistoryTimeWindow(bridgeValue: value) else { return .malformed }
+        return .window(window)
+    }
+
+    /// The window one `history.query` reads under, and the one its reply
+    /// reports: the page's echoed `window` when it sent one, else the bounds of
+    /// the symbolic `range`. Nil when either param is malformed — the `range` is
+    /// validated even when a window overrides its bounds, because a message that
+    /// says something unrecognizable is refused rather than half-read.
+    ///
+    /// `window` is nil only for all of history, which has no bounds to agree on.
+    private static func resolvedWindow(_ params: [String: Any])
+        -> (window: HistoryTimeWindow?, from: Double?, until: Double?)? {
+        guard let bounds = HistoryTimeRange.parse(params["range"]).bounds() else { return nil }
+        switch windowParam(params["window"]) {
+        case .malformed:
+            return nil
+        case .window(let window):
+            return (window, window.from, window.until)
+        case .absent:
+            guard let from = bounds.from else { return (nil, nil, nil) }
+            return (HistoryTimeWindow(from: from, until: bounds.until), from, bounds.until)
+        }
     }
 
     private static func cursor(from value: Any?) -> HistoryCursor? {

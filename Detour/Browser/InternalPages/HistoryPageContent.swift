@@ -51,7 +51,7 @@ enum HistoryPageContent {
             <h1>History</h1>
             <input id="search" type="search" placeholder="Search History"
                    autocomplete="off" autocorrect="off" spellcheck="false" autofocus>
-            <select id="range" class="picker" aria-label="Time range" hidden>
+            <select id="range" class="picker" aria-label="Time range" autocomplete="off" hidden>
                 <option value="">All time</option>
                 <option value="today">Today</option>
                 <option value="yesterday">Yesterday</option>
@@ -59,7 +59,7 @@ enum HistoryPageContent {
                 <option value="month">Last 30 days</option>
                 <option value="day">Specific day…</option>
             </select>
-            <input id="day" class="picker" type="date" aria-label="Day" hidden>
+            <input id="day" class="picker" type="date" aria-label="Day" autocomplete="off" hidden>
             <details id="clear" class="menu" hidden>
                 <summary class="button">Clear History…</summary>
                 <div class="menu-list">
@@ -517,8 +517,14 @@ extension HistoryPageContent {
         query: '',
         // The period the list is filtered to (TASK-92), in the shape the bridge
         // parses: null (all time), `{preset}` or `{day}`. Never a timestamp —
-        // the bounds are the native side's to compute.
+        // resolving a period into instants is the native side's job.
         range: null,
+        // And the instants it resolved to for THIS listing, as the reply to its
+        // first page reported them: `{from, until}`, or null for all time. Sent
+        // back with every later page and with a URL-mode delete, so a listing
+        // open across midnight keeps paging — and deletes — inside the period
+        // it was rendered under instead of a "today" that has moved on.
+        listWindow: null,
         cursor: null,
         done: false,
         loading: false,
@@ -544,9 +550,12 @@ extension HistoryPageContent {
 
     /// What this page has deleted and must not let back in: visit ids, and — in
     /// search mode, where a row stands for a URL and takes every in-scope visit
-    /// of it — the URLs. A reply that was read before the delete committed can
-    /// still name those rows, and dropping them here is cheaper than abandoning
-    /// the paging that reply belongs to. Forgotten again as soon as a read is
+    /// of it *in one window* — that window and URL, as `${windowKey}\n${url}`.
+    /// A reply that was read before the delete committed can still name those
+    /// rows, and dropping them here is cheaper than abandoning the paging that
+    /// reply belongs to. Keyed by window because that is all the delete took:
+    /// the URL's visits in another period are still there, and a listing of
+    /// that period must still show them. Forgotten again as soon as a read is
     /// known to have happened after the delete (`reload`, and `refresh` when its
     /// query outlived no delete).
     let deletedIDs = new Set();
@@ -555,6 +564,11 @@ extension HistoryPageContent {
     /// The row a Shift+click measures its range from: the last one toggled by
     /// hand. An id rather than an element, because rows come and go.
     let anchorID = null;
+
+    /// The last day the user actually picked on this page, so coming back to
+    /// "Specific day…" returns to it rather than to today, and a field left
+    /// half-typed can be put back to a real day (TASK-92).
+    let pickedDay = null;
 
     let listEl = null;
     let emptyEl = null;
@@ -628,9 +642,6 @@ extension HistoryPageContent {
         month: 'the last 30 days',
     };
 
-    /// How far back the date field may go — the history's own retention window.
-    const RETENTION_DAYS = 90;
-
     /// Whether `name` is one of the presets above. An own-property test, not a
     /// truthiness one: `PRESETS['constructor']` is inherited and truthy, and a
     /// hand-edited URL is a string the page did not write.
@@ -642,12 +653,6 @@ extension HistoryPageContent {
         const month = String(date.getMonth() + 1).padStart(2, '0');
         const day = String(date.getDate()).padStart(2, '0');
         return `${date.getFullYear()}-${month}-${day}`;
-    };
-
-    const daysAgo = (days) => {
-        const date = new Date();
-        date.setDate(date.getDate() - days);
-        return date;
     };
 
     /// Whether `text` is a real day, spelled exactly `YYYY-MM-DD`. The regex
@@ -662,9 +667,25 @@ extension HistoryPageContent {
         return Number.isFinite(date.getTime()) && isoDay(date) === text;
     };
 
-    /// The range as a string, for the row bookkeeping and for comparisons.
-    /// Both shapes hold a single key, so the JSON is stable.
+    /// The range as a string, for comparing one period to another. Both shapes
+    /// hold a single key, so the JSON is stable.
     const rangeKey = (range) => (range ? JSON.stringify(range) : '');
+
+    /// The window a reply says it was read under, rebuilt here rather than kept
+    /// as it arrived: the object is written with its keys in a fixed order, so
+    /// `windowKey` below is the same string for the same window every time it
+    /// is stamped on a row or looked up in `deletedURLs`. Null when the reply
+    /// named none, which is what all of history looks like.
+    const readWindow = (value) => {
+        if (!value || typeof value !== 'object') return null;
+        const from = value.from;
+        const until = value.until === undefined ? null : value.until;
+        if (typeof from !== 'number' || !Number.isFinite(from)) return null;
+        if (until !== null && (typeof until !== 'number' || !Number.isFinite(until))) return null;
+        return { from, until };
+    };
+
+    const windowKey = (listWindow) => (listWindow ? JSON.stringify(listWindow) : '');
 
     /// What the empty state calls the current period, or null when there is
     /// none. A day is spelled out in full: "No history from Tue" would be a
@@ -690,6 +711,10 @@ extension HistoryPageContent {
     /// Read from the row rather than from `state.query`, which can already have
     /// moved on to a search whose rows have not landed yet (TASK-87).
     const modeOf = (item) => (item.dataset.mode === 'url' ? 'url' : 'visit');
+    /// The window the row was rendered under, as its key: '' is all time. Read
+    /// from the row for the same reason as the mode — `state` may already have
+    /// moved on to another period (TASK-92).
+    const windowOf = (item) => String(item.dataset.window || '');
 
     /// Whether typing would go into a control rather than to the list. A row's
     /// checkbox is an `<input>` too, and Delete or Cmd+A with one focused is
@@ -804,7 +829,7 @@ extension HistoryPageContent {
 
     /// The line the list actually holds: the link, with the controls that select
     /// and delete it on either side of it rather than inside it.
-    const buildItem = (entry, date, mode, range) => {
+    const buildItem = (entry, date, mode, listWindowKey) => {
         const item = document.createElement('div');
         item.className = 'item';
         item.dataset.id = String(entry.id);
@@ -812,10 +837,11 @@ extension HistoryPageContent {
         // The mode these entries were read in, kept on the row so a delete asks
         // for what the user is actually looking at (TASK-87).
         item.dataset.mode = mode;
-        // And the period they were read under, for the same reason: a URL-mode
-        // row stands for the URL's visits *in that period*, whatever the
-        // control has been changed to since (TASK-92).
-        item.dataset.range = range;
+        // And the window they were read under, for the same reason: a URL-mode
+        // row stands for the URL's visits *between those two instants*,
+        // whatever the control has been changed to since — and whatever
+        // "today" has come to mean by the time the row is deleted (TASK-92).
+        item.dataset.window = listWindowKey;
 
         const pick = document.createElement('input');
         pick.className = 'pick';
@@ -840,19 +866,20 @@ extension HistoryPageContent {
     /// is not `entries.length` once a reply carries rows this page has deleted.
     ///
     /// `mode` is the one the entries answer — the query they were read for, not
-    /// whatever `state.query` says by the time they arrive — and `range` is the
-    /// period they were read under, kept on each row for the same reason.
-    const appendEntries = (entries, mode, range) => {
+    /// whatever `state.query` says by the time they arrive — and
+    /// `listWindowKey` is the window they were read under, kept on each row for
+    /// the same reason.
+    const appendEntries = (entries, mode, listWindowKey) => {
         const fragment = document.createDocumentFragment();
         let appended = 0;
         for (const entry of entries) {
             if (!entry || typeof entry.url !== 'string') continue;
             // A read that started before a delete committed still names the
             // rows it removed; they must not reappear under the user (TASK-87).
-            // A deleted URL lost every in-scope visit, so its rows are stale in
-            // either mode.
+            // A URL-mode delete took the URL's visits in one window only, so
+            // only a reply read under that same window is stale (TASK-92).
             if (deletedIDs.has(Number(entry.id))) continue;
-            if (deletedURLs.has(String(entry.url))) continue;
+            if (deletedURLs.has(`${listWindowKey}\n${String(entry.url)}`)) continue;
             const date = dateOf(entry);
             if (date && mode === 'visit') {
                 const key = dayKey(date);
@@ -865,7 +892,7 @@ extension HistoryPageContent {
                     fragment.appendChild(heading);
                 }
             }
-            fragment.appendChild(buildItem(entry, date, mode, range));
+            fragment.appendChild(buildItem(entry, date, mode, listWindowKey));
             appended += 1;
         }
         listEl.appendChild(fragment);
@@ -917,7 +944,7 @@ extension HistoryPageContent {
     const applyChrome = () => {
         clearEl.hidden = state.incognito;
         rangeEl.hidden = state.incognito;
-        dayEl.hidden = state.incognito || rangeEl.value !== 'day';
+        revealDayField(!state.incognito && !!(state.range && state.range.day));
         if (state.incognito) clearEl.open = false;
     };
 
@@ -957,29 +984,44 @@ extension HistoryPageContent {
         state.topID = first ? idOf(first) : null;
     };
 
-    const queryParams = (cursor, query, range) => {
+    const queryParams = (cursor, query, range, listWindow) => {
         const params = { limit: PAGE_SIZE };
         if (query) params.search = query;
         // Omitted rather than sent as null when there is none: absent is what
         // the bridge reads as "all time".
         if (range) params.range = range;
-        if (cursor) params.cursor = cursor;
+        if (cursor) {
+            params.cursor = cursor;
+            // Only a later page of a listing carries a window, and it is the
+            // one the listing's first page was answered with: the bridge uses
+            // it instead of resolving the period again, which after midnight
+            // would answer a different one (TASK-92). A first page, and a
+            // refresh, ask by period and are told which window they got.
+            if (listWindow) params.window = listWindow;
+        }
         return params;
     };
 
-    /// `query` is the term these entries answer and `range` the period they
-    /// were read under; the rows are rendered — and later deleted — in those,
-    /// not in whatever `state` has moved on to (TASK-87, TASK-92).
-    const receive = (result, replace, query, range) => {
+    /// `query` is the term these entries answer; the rows are rendered — and
+    /// later deleted — in that mode, not in whatever `state` has moved on to
+    /// (TASK-87). The window is the reply's own: what these entries were
+    /// actually read between, which for a later page is the window the page
+    /// echoed and for a first page is the one native just resolved (TASK-92).
+    const receive = (result, replace, query) => {
         const entries = Array.isArray(result && result.entries) ? result.entries : [];
+        const listWindow = readWindow(result && result.window);
+        const key = windowKey(listWindow);
         state.incognito = !!(result && result.incognito);
         if (replace) {
             listEl.replaceChildren();
             state.count = 0;
             state.lastDay = null;
             state.topID = null;
+            // This reply IS the listing now, so its window is the one every
+            // later page of it will be asked for.
+            state.listWindow = listWindow;
         }
-        state.count += appendEntries(entries, query ? 'url' : 'visit', rangeKey(range));
+        state.count += appendEntries(entries, query ? 'url' : 'visit', key);
         if (state.topID === null) syncTopID();
         state.cursor = (result && result.nextCursor) || null;
         state.done = !state.cursor;
@@ -997,10 +1039,13 @@ extension HistoryPageContent {
         const query = state.query;
         const range = state.range;
         state.loading = true;
-        native('history.query', queryParams(cursor, query, range)).then((result) => {
+        // A later page of this listing is asked for inside the window the
+        // listing's first page was answered with.
+        const params = queryParams(cursor, query, range, cursor ? state.listWindow : null);
+        native('history.query', params).then((result) => {
             if (generation !== state.generation) return;
             state.loading = false;
-            receive(result, replace, query, range);
+            receive(result, replace, query);
         }, () => {
             if (generation !== state.generation) return;
             state.loading = false;
@@ -1040,7 +1085,10 @@ extension HistoryPageContent {
         const epoch = state.deleteEpoch;
         const query = state.query;
         const range = state.range;
-        native('history.query', queryParams(null, query, range)).then((result) => {
+        // By period, with no window: a refresh reads the list again from the
+        // top, so it is entitled to the period as it stands now — and the reply
+        // it replaces the list with brings the window that goes with it.
+        native('history.query', queryParams(null, query, range, null)).then((result) => {
             if (generation !== state.generation) return;
             const entries = Array.isArray(result && result.entries) ? result.entries : [];
             const top = entries.length ? entries[0].id : null;
@@ -1052,7 +1100,7 @@ extension HistoryPageContent {
             if (epoch === state.deleteEpoch) forgetDeletions();
             state.cursor = null;
             state.done = false;
-            receive(result, true, query, range);
+            receive(result, true, query);
         }, () => {});
     };
 
@@ -1076,19 +1124,29 @@ extension HistoryPageContent {
 
     /// Takes what a committed batch deleted out of the list, without reloading
     /// it: the visits it named, and — for a URL-mode batch, which took every
-    /// in-scope visit of those URLs — every row showing one of them.
+    /// in-scope visit of those URLs *inside `key`*, the window the batch was
+    /// sent with — every row showing one of them that was read under that same
+    /// window.
+    ///
+    /// The window is what keeps this from over-removing: if the list was
+    /// re-rendered under another period while the delete was in flight, its
+    /// rows stand for visits the delete never touched, and matching them by URL
+    /// alone would take rows off screen — and suppress them in `appendEntries`
+    /// — for visits the database still has (TASK-92). An id needs no such care:
+    /// a named visit is gone whatever period a row showing it was read under.
     ///
     /// The rows are looked up in the list as it stands NOW rather than kept from
     /// when the delete was issued: a reply that landed while the delete was in
     /// flight can have re-rendered the list, and the elements captured then are
     /// no longer the ones on screen (TASK-87).
-    const applyDeletion = (ids, urls) => {
+    const applyDeletion = (ids, urls, key) => {
         state.deleteEpoch += 1;
         for (const id of ids) deletedIDs.add(id);
-        for (const url of urls) deletedURLs.add(url);
+        for (const url of urls) deletedURLs.add(`${key}\n${url}`);
         let removed = 0;
         for (const item of itemEls()) {
-            if (!ids.has(idOf(item)) && !urls.has(urlOf(item))) continue;
+            const byURL = urls.has(urlOf(item)) && windowOf(item) === key;
+            if (!ids.has(idOf(item)) && !byURL) continue;
             item.remove();
             removed += 1;
         }
@@ -1108,32 +1166,30 @@ extension HistoryPageContent {
 
     /// Deletes the rows `targets` names. A row rendered in list mode is one
     /// visit; one rendered in search mode stands for a URL, so every in-scope
-    /// visit of that URL goes with it — narrowed to the period the row was
+    /// visit of that URL goes with it — narrowed to the window the row was
     /// rendered under (TASK-92), which is what it stood for on screen. A
-    /// selection can hold rows of either mode and of more than one period, so
-    /// they are grouped by both and each group asks for exactly what it means.
-    /// The scope itself is the native side's business — nothing here says whose
-    /// history this is.
+    /// selection can hold rows of either mode, so they are grouped by mode and
+    /// each group asks for exactly what it means. There is no second key for
+    /// the window: every row of a listing was read under the same one, and a
+    /// re-render replaces the whole list, so the group's window is simply its
+    /// first row's. The scope itself is the native side's business — nothing
+    /// here says whose history this is.
     const deleteItems = (targets) => {
         if (state.deleting || state.incognito) return;
         const groups = new Map();
         for (const item of targets) {
             if (!item.isConnected || !Number.isFinite(idOf(item))) continue;
             const mode = modeOf(item);
-            const range = String(item.dataset.range || '');
-            // Newline: neither a mode nor a JSON range can contain one, so the
-            // two parts cannot run together into another group's key.
-            const key = `${mode}\n${range}`;
-            const group = groups.get(key);
+            const group = groups.get(mode);
             if (group) group.items.push(item);
-            else groups.set(key, { mode, range, items: [item] });
+            else groups.set(mode, { mode, key: windowOf(item), items: [item] });
         }
         if (!groups.size) return;
 
         const batches = [];
-        for (const { mode, range, items } of groups.values()) {
+        for (const { mode, key, items } of groups.values()) {
             for (let i = 0; i < items.length; i += MAX_DELETE_IDS) {
-                batches.push({ mode, range, items: items.slice(i, i + MAX_DELETE_IDS) });
+                batches.push({ mode, key, items: items.slice(i, i + MAX_DELETE_IDS) });
             }
         }
         state.deleting = true;
@@ -1148,13 +1204,14 @@ extension HistoryPageContent {
                 const allVisitsOfURL = batch.mode === 'url';
                 const ids = batch.items.map(idOf);
                 const params = { ids, allVisitsOfURL };
-                // Only a URL-mode delete fans out, so only it has a period to
+                // Only a URL-mode delete fans out, so only it has a window to
                 // be narrowed to; a per-visit delete names its row and sends
                 // none.
-                if (allVisitsOfURL && batch.range) params.range = JSON.parse(batch.range);
+                if (allVisitsOfURL && batch.key) params.window = JSON.parse(batch.key);
                 return native('history.delete', params).then(() => {
                     applyDeletion(new Set(ids),
-                                  new Set(allVisitsOfURL ? batch.items.map(urlOf) : []));
+                                  new Set(allVisitsOfURL ? batch.items.map(urlOf) : []),
+                                  batch.key);
                 });
             }),
             Promise.resolve()
@@ -1256,17 +1313,70 @@ extension HistoryPageContent {
         reload();
     };
 
-    /// The <select> changed, or the date field did. "Specific day…" with no
-    /// valid day yet is not a query: the previous listing stays until there is
-    /// a day to ask about.
-    const onRangeInput = () => {
+    /// Shows or hides the date field. `max` is set every time it is revealed
+    /// rather than once at startup: a page left open overnight would otherwise
+    /// refuse today. There is no `min` — the 90-day expiry only runs at launch,
+    /// so older visits can still be there, and a day with nothing in it simply
+    /// lists nothing.
+    const revealDayField = (show) => {
+        dayEl.hidden = !show;
+        if (show) dayEl.setAttribute('max', isoDay(new Date()));
+    };
+
+    /// The day the field should be showing: the one the list is filtered to,
+    /// else the last one picked, else today.
+    const shownDay = () => {
+        if (state.range && validDay(state.range.day)) return state.range.day;
+        return validDay(pickedDay) ? pickedDay : isoDay(new Date());
+    };
+
+    /// Makes both controls say what `state.range` says. The state is the truth
+    /// and the controls follow it: WebKit restores form values on a reload or a
+    /// session restore *after* this script has set them from the URL, and would
+    /// otherwise leave the select on a period the list is not showing (TASK-92).
+    const syncRangeControls = () => {
+        const range = state.range;
+        rangeEl.value = range ? (range.preset || 'day') : '';
+        if (range && range.day) dayEl.value = range.day;
+        revealDayField(!state.incognito && !!(range && range.day));
+    };
+
+    /// The <select> changed. "Specific day…" is applied straight away, with the
+    /// last day picked on this page or else today: a choice that left the list
+    /// on the previous period would put the control, the list and the page's
+    /// own URL in three different states until a date was typed (TASK-92).
+    const onRangeChange = () => {
         const choice = rangeEl.value;
-        dayEl.hidden = state.incognito || choice !== 'day';
         if (choice === 'day') {
-            if (validDay(dayEl.value)) applyRange({ day: dayEl.value });
+            revealDayField(!state.incognito);
+            const day = shownDay();
+            pickedDay = day;
+            dayEl.value = day;
+            applyRange({ day });
             return;
         }
+        revealDayField(false);
         applyRange(isPreset(choice) ? { preset: choice } : null);
+    };
+
+    /// The date field changed. A value that is not a day yet is left alone —
+    /// the field is typed into a character at a time, and fighting the user on
+    /// every keystroke would be worse than waiting.
+    const onDayInput = () => {
+        if (!validDay(dayEl.value)) return;
+        pickedDay = dayEl.value;
+        applyRange({ day: dayEl.value });
+    };
+
+    /// The date field was committed or left. Whatever is in it now, the control
+    /// goes back to agreeing with the list: an empty or impossible value is
+    /// replaced by the day actually being shown.
+    const onDaySettled = () => {
+        if (validDay(dayEl.value)) {
+            onDayInput();
+            return;
+        }
+        dayEl.value = shownDay();
     };
 
     const start = () => {
@@ -1291,12 +1401,6 @@ extension HistoryPageContent {
             state.query = term.trim();
             searchEl.value = state.query;
         }
-        // The date field can only reach as far back as the history does; the
-        // attributes are set here rather than in the markup because "90 days
-        // ago" is not a constant. Attributes, not styles — the CSP forbids the
-        // latter, and these are the picker's own limits either way.
-        dayEl.setAttribute('min', isoDay(daysAgo(RETENTION_DAYS)));
-        dayEl.setAttribute('max', isoDay(new Date()));
         // The period the URL came back with. Anything unrecognizable — a hand-
         // edited URL, a preset from a later version — falls back to all time
         // rather than to an error the user cannot act on.
@@ -1304,19 +1408,26 @@ extension HistoryPageContent {
         const day = initial.get('day');
         if (isPreset(preset)) {
             state.range = { preset };
-            rangeEl.value = preset;
         } else if (validDay(day)) {
             state.range = { day };
-            rangeEl.value = 'day';
-            dayEl.value = day;
+            pickedDay = day;
         }
+        rangeEl.value = state.range ? (state.range.preset || 'day') : '';
+        if (state.range && state.range.day) dayEl.value = state.range.day;
+        // Form-state restoration runs after this script; `autocomplete="off"`
+        // opts the controls out of it, and these put them right if it ran anyway.
+        window.addEventListener('load', syncRangeControls);
+        window.addEventListener('pageshow', syncRangeControls);
         searchEl.addEventListener('input', onSearchInput);
-        rangeEl.addEventListener('change', onRangeInput);
-        // `change` fires when a date is complete; `input` also catches the
-        // picker's own edits, and both are cheap — `applyRange` ignores a
-        // period that has not actually changed.
-        dayEl.addEventListener('change', onRangeInput);
-        dayEl.addEventListener('input', onRangeInput);
+        rangeEl.addEventListener('change', onRangeChange);
+        // `input` applies a day as soon as there is one — the picker's own
+        // edits arrive that way — while `change` and `blur` also put a value
+        // that never became a day back to the one on screen.
+        dayEl.addEventListener('input', onDayInput);
+        dayEl.addEventListener('change', onDaySettled);
+        dayEl.addEventListener('blur', onDaySettled);
+        // A page left open overnight must still be able to pick today.
+        dayEl.addEventListener('focus', () => dayEl.setAttribute('max', isoDay(new Date())));
         searchEl.focus();
 
         deleteButton.addEventListener('click', () => deleteItems(selectedEls()));

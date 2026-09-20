@@ -330,14 +330,7 @@ struct HistoryDatabase {
             WHERE v.spaceID IN (\(placeholders))
             """
         var args: [DatabaseValueConvertible] = spaceIDs
-        if let from {
-            sql += " AND v.visitTime >= ?"
-            args.append(from)
-        }
-        if let until {
-            sql += " AND v.visitTime < ?"
-            args.append(until)
-        }
+        sql += timeWindow("v.visitTime", from: from, until: until, into: &args)
         if let cursor {
             sql += " AND (v.visitTime < ? OR (v.visitTime = ? AND v.id < ?))"
             args.append(cursor.visitTime)
@@ -395,17 +388,10 @@ struct HistoryDatabase {
         let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
         let limit = clampedPageSize(limit)
         let placeholders = databaseQuestionMarks(count: spaceIDs.count)
-        // Both values are bound; only the presence of each term is decided here.
-        var window = ""
+        // The window's arguments sit between the space IDs and the FTS query,
+        // which is where its terms sit in the statement below.
         var args: [DatabaseValueConvertible] = spaceIDs
-        if let from {
-            window += "\n                  AND v.visitTime >= ?"
-            args.append(from)
-        }
-        if let until {
-            window += "\n                  AND v.visitTime < ?"
-            args.append(until)
-        }
+        let window = timeWindow("v.visitTime", from: from, until: until, into: &args)
         args.append(ftsQuery)
 
         var sql = """
@@ -445,6 +431,27 @@ struct HistoryDatabase {
             log.error("Failed to search profile history visits: \(error.localizedDescription)")
             return []
         }
+    }
+
+    /// The `[from, until)` terms for a visit-time column, with their values
+    /// appended to `args` — half-open, so a visit exactly on `from` is in the
+    /// period and one exactly on `until` belongs to the next (TASK-92).
+    ///
+    /// One helper because three statements need the same pair and each binds it
+    /// in a different place: the caller appends to `args` in statement order,
+    /// and this never reorders what is already there.
+    private func timeWindow(_ column: String, from: Double?, until: Double?,
+                            into args: inout [DatabaseValueConvertible]) -> String {
+        var sql = ""
+        if let from {
+            sql += " AND \(column) >= ?"
+            args.append(from)
+        }
+        if let until {
+            sql += " AND \(column) < ?"
+            args.append(until)
+        }
+        return sql
     }
 
     private func clampedPageSize(_ limit: Int) -> Int {
@@ -605,12 +612,16 @@ struct HistoryDatabase {
                 }
                 try self.stageAndDeleteVisits(db, driving: "urlID", values: urlIDs.sorted(),
                                               spaceIDs: spaceIDs, from: from, until: until)
-                // A second pass for the named ids alone, and only when a range
-                // narrowed the first one: an id the caller named with a range
-                // that does not contain it would otherwise be left behind, and
-                // the row it belongs to would come back on the next refresh.
-                // Anything the pass above already took is gone, so it cannot be
-                // staged — or counted — twice.
+                // A second pass for the named ids alone, and only when a window
+                // narrowed the first one. Normally it finds nothing: the window
+                // is the one the row was rendered under, so the pass above has
+                // already taken the named visits with it. It is the defence for
+                // the case where that is not true — a window the caller had
+                // when it read the row but which no longer contains it, or one
+                // a hand-written message simply got wrong. Without it the id
+                // the caller named would be left behind and its row would come
+                // back on the next refresh. Anything the pass above took is
+                // already gone, so nothing can be staged — or counted — twice.
                 if from != nil || until != nil {
                     try self.stageAndDeleteVisits(db, driving: "id", values: visitIDs, spaceIDs: spaceIDs)
                 }
@@ -749,15 +760,7 @@ struct HistoryDatabase {
         for chunk in chunked(values) {
             var args: [DatabaseValueConvertible] = chunk
             args.append(contentsOf: spaceIDs)
-            var window = ""
-            if let from {
-                window += " AND visitTime >= ?"
-                args.append(from)
-            }
-            if let until {
-                window += " AND visitTime < ?"
-                args.append(until)
-            }
+            let window = timeWindow("visitTime", from: from, until: until, into: &args)
             // A URL can own visits in more than one chunk, which is what the
             // staging table's `n = n + excluded.n` is for.
             try stageAndDeleteVisits(db, where: """

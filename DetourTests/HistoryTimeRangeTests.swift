@@ -194,6 +194,41 @@ final class HistoryTimeRangeTests: XCTestCase {
                           day.bounds(now: now, calendar: losAngeles).from)
     }
 
+    /// The page's day is a Gregorian day — the date field speaks `YYYY-MM-DD`
+    /// and nothing else — so it is resolved as one whatever calendar the system
+    /// is set to. Read as a Buddhist year, 2026 is 543 years in the past, and
+    /// the list would not be showing the day the control names.
+    func testADayIsAGregorianDayWhateverTheSystemCalendarIs() throws {
+        let gregorian = try losAngeles()
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = gregorian.timeZone
+        let now = try date(gregorian, 2026, 9, 25)
+
+        let day = HistoryTimeRange.day(year: 2026, month: 9, day: 18)
+        let viaBuddhist = day.bounds(now: now, calendar: buddhist)
+        let viaGregorian = day.bounds(now: now, calendar: gregorian)
+
+        XCTAssertEqual(viaBuddhist.from, try seconds(gregorian, 2026, 9, 18))
+        XCTAssertEqual(viaBuddhist.until, try seconds(gregorian, 2026, 9, 19))
+        XCTAssertEqual(viaBuddhist.from, viaGregorian.from, "the same instant, whatever the era is called")
+        XCTAssertEqual(viaBuddhist.until, viaGregorian.until)
+    }
+
+    /// And the time zone of the calendar it was given is still what decides
+    /// where that day begins — only the calendar system is replaced.
+    func testANonGregorianCalendarKeepsItsTimeZone() throws {
+        var buddhistTokyo = Calendar(identifier: .buddhist)
+        buddhistTokyo.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        var tokyo = Calendar(identifier: .gregorian)
+        tokyo.timeZone = buddhistTokyo.timeZone
+        let now = try date(tokyo, 2026, 9, 25)
+
+        XCTAssertEqual(HistoryTimeRange.day(year: 2026, month: 9, day: 18)
+            .bounds(now: now, calendar: buddhistTokyo).from, try seconds(tokyo, 2026, 9, 18))
+        XCTAssertEqual(HistoryTimeRange.yesterday.bounds(now: now, calendar: buddhistTokyo).from,
+                       try seconds(tokyo, 2026, 9, 24), "and the presets answer in it too")
+    }
+
     // MARK: - Parsed.bounds
 
     func testParsedBoundsDistinguishAllTimeFromMalformed() throws {
@@ -210,5 +245,68 @@ final class HistoryTimeRangeTests: XCTestCase {
 
         XCTAssertNil(HistoryTimeRange.Parsed.malformed.bounds(now: now, calendar: calendar),
                      "a malformed range has no bounds — the caller must refuse it")
+    }
+
+    // MARK: - HistoryTimeWindow
+
+    /// The resolved window travels back to the page and comes back again on the
+    /// listing's later pages and on its deletes, so what the bridge accepts as
+    /// one is pinned exactly: two keys, both there, `from` before `until`.
+    func testAWindowParses() {
+        let window = HistoryTimeWindow(bridgeValue: ["from": 100, "until": 200])
+        XCTAssertEqual(window, HistoryTimeWindow(from: 100, until: 200))
+        XCTAssertEqual(HistoryTimeWindow(bridgeValue: ["from": 1.5, "until": 2.5]),
+                       HistoryTimeWindow(from: 1.5, until: 2.5), "fractional seconds are seconds")
+        XCTAssertEqual(HistoryTimeWindow(bridgeValue: ["from": -10, "until": 0]),
+                       HistoryTimeWindow(from: -10, until: 0), "1969 is a time like any other")
+    }
+
+    /// A period that is still running has no upper bound, and JSON `null` is
+    /// how the page says so.
+    func testAWindowWithNoUpperBound() throws {
+        XCTAssertEqual(HistoryTimeWindow(bridgeValue: ["from": 100, "until": NSNull()]),
+                       HistoryTimeWindow(from: 100, until: nil))
+
+        let decoded = try JSONSerialization.jsonObject(with: Data(#"{"from":100,"until":null}"#.utf8))
+        XCTAssertEqual(HistoryTimeWindow(bridgeValue: decoded), HistoryTimeWindow(from: 100, until: nil),
+                       "which is what a JS null arrives as")
+    }
+
+    func testEverythingElseIsNotAWindow() {
+        let cases: [Any] = [
+            [String: Any](),                                    // says nothing
+            ["from": 100],                                      // until is not optional on the wire
+            ["until": 200],
+            ["from": 100, "until": 200, "extra": 1],            // an extra key
+            ["from": 100, "to": 200],                           // the wrong key
+            ["from": 200, "until": 200],                        // empty
+            ["from": 300, "until": 200],                        // inverted
+            ["from": NSNull(), "until": 200],                   // no lower bound
+            ["from": Double.infinity, "until": 200],
+            ["from": 100, "until": Double.infinity],
+            ["from": Double.nan, "until": 200],
+            ["from": "100", "until": "200"],                    // numbers, not strings
+            ["from": true, "until": false],                     // and not booleans
+            ["from": 100, "until": ["from": 200]],
+            [100, 200],                                         // not a dictionary
+            "today",
+            100,
+            NSNull(),
+        ]
+        for value in cases {
+            XCTAssertNil(HistoryTimeWindow(bridgeValue: value), "\(value) was accepted")
+        }
+        XCTAssertNil(HistoryTimeWindow(bridgeValue: nil), "and an absent one is no window either")
+    }
+
+    /// What goes out is what comes back: the reply's window is the page's next
+    /// request, so the two spellings have to agree.
+    func testAWindowRoundTrips() throws {
+        for window in [HistoryTimeWindow(from: 100, until: 200), HistoryTimeWindow(from: 100, until: nil)] {
+            XCTAssertEqual(HistoryTimeWindow(bridgeValue: window.bridgeValue), window)
+        }
+        let open = HistoryTimeWindow(from: 100, until: nil).bridgeValue
+        XCTAssertEqual(open["from"] as? Double, 100)
+        XCTAssertTrue(open["until"] is NSNull, "an open end is null on the wire, not a missing key")
     }
 }

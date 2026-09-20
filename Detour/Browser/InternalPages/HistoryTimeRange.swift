@@ -2,10 +2,13 @@ import Foundation
 
 /// The period the History page is looking at (TASK-92).
 ///
-/// The page never sends a timestamp — it names a period symbolically and the
-/// bounds are computed here, the same rule as `HistoryPageBridge.ClearRange`'s
-/// cutoff (TASK-87): a page that could name its own instants could ask for, or
-/// delete, a window it was never shown.
+/// A period is named symbolically — `today`, `yesterday`, a `YYYY-MM-DD` day —
+/// and turned into instants here, the same rule as
+/// `HistoryPageBridge.ClearRange`'s cutoff (TASK-87). The resolved window then
+/// travels back to the page as a `HistoryTimeWindow` (below) so that one
+/// listing pages and deletes against the window it was rendered under; see
+/// `HistoryPageBridge` for why letting the page echo those instants is safe
+/// while `history.clear` still refuses to be told one.
 ///
 /// Every bound is day-aligned in the *local* calendar and half-open,
 /// `[from, until)`, so one page of a listing and the next agree about where the
@@ -96,6 +99,7 @@ enum HistoryTimeRange: Equatable {
     /// `until` is "up to now and beyond" — a period that is still running, so
     /// a visit recorded while the page is open belongs to it.
     func bounds(now: Date = Date(), calendar: Calendar = .current) -> (from: Double, until: Double?) {
+        let calendar = gregorian(like: calendar)
         let startOfToday = calendar.startOfDay(for: now)
         switch self {
         case .today:
@@ -128,6 +132,25 @@ enum HistoryTimeRange: Equatable {
         }
     }
 
+    /// `calendar`'s time zone, read with the Gregorian calendar.
+    ///
+    /// A day the page names is a *Gregorian* day — the date field speaks
+    /// `YYYY-MM-DD` and nothing else — while `Calendar.current` is whatever the
+    /// user set macOS to. Resolving 2026-09-18 in the Buddhist calendar gives a
+    /// day 543 years out, and in the Japanese one a year 2026 of the current era
+    /// that does not exist at all; the day the list then shows is not the day
+    /// the control says. The presets are day arithmetic (`startOfDay`, ±n days),
+    /// which lands on the same instants in any calendar whose days start at
+    /// midnight, but they go through this one too: one rule per method is easier
+    /// to keep true than two. Only the calendar system is replaced — the time
+    /// zone is the user's, and it is what decides where a local day begins.
+    private func gregorian(like calendar: Calendar) -> Calendar {
+        guard calendar.identifier != .gregorian else { return calendar }
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        return gregorian
+    }
+
     private func startOfDay(_ calendar: Calendar, daysBefore days: Int, from start: Date) -> Date {
         guard let shifted = calendar.date(byAdding: .day, value: -days, to: start) else { return start }
         // `byAdding` keeps the wall-clock time where it can, which on a day that
@@ -148,6 +171,64 @@ extension HistoryTimeRange.Parsed {
             return (window.from, window.until)
         case .malformed: return nil
         }
+    }
+}
+
+/// One listing's resolved period (TASK-92): the half-open window
+/// `[from, until)` in seconds since 1970 that a page of entries was read under,
+/// as it travels on the wire in both directions.
+///
+/// `history.query` answers with the window it resolved, and the page sends that
+/// same window back on every later page of the listing — and on a URL-mode
+/// `history.delete` of one of its rows. A symbolic period would not do: "today"
+/// re-resolved at the next request is a different pair of instants once the
+/// clock has passed midnight, and the listing would page, and delete, against a
+/// window it was never rendered under.
+///
+/// So this is the one place where the page names instants rather than a period.
+/// What that can do is bounded by the two things it cannot touch: the scope,
+/// which is always derived from the sending tab, and the direction — a window
+/// only ever *narrows*, a read or a fan-out. `HistoryPageBridge`'s doc comment
+/// has the argument in full.
+struct HistoryTimeWindow: Equatable {
+    let from: Double
+    /// `nil` is "up to now and beyond": a period that is still running.
+    let until: Double?
+
+    init(from: Double, until: Double?) {
+        self.from = from
+        self.until = until
+    }
+
+    /// Reads the wire form `{"from": <number>, "until": <number>|null}`.
+    ///
+    /// Exactly those two keys, both present, `from` finite, `until` finite or
+    /// null, and — when there is an upper bound — `from < until`. Everything
+    /// else is refused: a window is not a thing to guess at, and a caller that
+    /// cannot say what it means gets "malformed" rather than some wider period
+    /// it did not ask for. An empty or inverted window would ask the database
+    /// for rows it can never return, which no honest caller wants.
+    init?(bridgeValue: Any?) {
+        guard let fields = bridgeValue as? [String: Any], fields.count == 2,
+              let from = Self.finite(fields["from"]), let rawUntil = fields["until"] else { return nil }
+        if rawUntil is NSNull {
+            self.init(from: from, until: nil)
+            return
+        }
+        guard let until = Self.finite(rawUntil), from < until else { return nil }
+        self.init(from: from, until: until)
+    }
+
+    var bridgeValue: [String: Any] {
+        ["from": from, "until": until ?? NSNull()]
+    }
+
+    /// A finite JavaScript number, and not a boolean: `true` bridges to an
+    /// `NSNumber` too, and a window bounded by `true` is nonsense.
+    private static func finite(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite else { return nil }
+        return number.doubleValue
     }
 }
 
