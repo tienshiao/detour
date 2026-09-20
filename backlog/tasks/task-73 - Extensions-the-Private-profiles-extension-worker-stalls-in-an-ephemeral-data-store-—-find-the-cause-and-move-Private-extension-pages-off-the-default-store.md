@@ -3,10 +3,11 @@ id: TASK-73
 title: >-
   Extensions: the Private profile's extension worker stalls in an ephemeral data
   store — find the cause and move Private extension pages off the default store
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-14 06:38'
-updated_date: '2026-09-14 06:38'
+updated_date: '2026-09-20 23:32'
 labels:
   - extensions
   - webkit
@@ -30,3 +31,13 @@ Found 2026-09-13 (TASK-70): the shipped WebKit's WebExtensionControllerConfigura
 - [ ] #3 Nothing under ~/Library/WebKit/com.detourbrowser.mac/WebsiteData/Default gains an origin for a Private-profile extension base URL after a Private session (grep the origin files), and the persistent profiles are unaffected (ExtensionOriginTrackingPreventionTests stay green)
 - [ ] #4 A test loads a probe worker extension in an incognito profile and asserts its background answers a message after 60 s and that its web view configuration uses the profile's non-persistent store
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Hypothesis (2026-09-20, from WebKit source): the stall is WebKit's private-data gate, not IndexedDB/_renameOrigin/relay. WebExtensionContext::processes() — the set every event/port message is dispatched to — skips any frame whose page session isEphemeral() unless the context hasAccessToPrivateData (old revision fc3f603: unconditional skip; main adds an exception only for the controller's defaultWebsiteDataStore). With the background page on the ephemeral store and no private access (the Sep 13 experiment), no event ever reached the worker: keep-alive ping #1 (a native-port message) was never delivered, so no reply, no port activity, WebKit unloaded it. websiteDataStore(sessionID) likewise returns nullptr for a non-persistent store without private access. TASK-74 (f39e63f) now sets hasAccessToPrivateData on every context loaded into Private.
+1. Drop the isIncognito guard in Profile.extensionController (webViewConfiguration.websiteDataStore = dataStore for incognito too; deleted profiles still excluded); keep the ITP keeper skipping incognito.
+2. Test (AC4): probe worker extension in an incognito profile answers a message after 60 s (TEST_RUNNER_-gated long leg) and its web view configuration uses the profile's non-persistent store; negative control: without hasAccessToPrivateData the ephemeral worker gets no events (pins the cause).
+3. Runtime harness: probe extension with a native-port keep-alive in Private, 5 min, no SWServerRegistration::clear cycle; grep WebsiteData/Default for the Private base URL origin (AC3).
+4. Docs + task notes (AC1). AC2 with real 1Password in the signed build is the user's check.
+<!-- SECTION:PLAN:END -->
