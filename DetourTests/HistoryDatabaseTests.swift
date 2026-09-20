@@ -373,7 +373,11 @@ final class HistoryDatabaseTests: XCTestCase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let queue = try DatabaseQueue(configuration: config)
-        // The database as the version before per-visit titles left it.
+        // The database as the version before per-visit titles left it. The
+        // custom SQL functions go on the connection first — driving `migrator`
+        // past h5 on a bare queue needs `history_fold` (TASK-96) — which is
+        // what `HistoryDatabase(dbQueue:)` does for itself further down.
+        queue.writeWithoutTransaction { HistoryDatabase.registerFunctions(on: $0) }
         try HistoryDatabase.migrator.migrate(queue, upTo: "h3")
         try queue.write { conn in
             let urlID = try Int64.fetchOne(conn, sql: """
@@ -958,18 +962,23 @@ final class HistoryDatabaseTests: XCTestCase {
                        "the profile the title belongs to still sees it")
     }
 
-    /// Known limitation, spelled out on `searchHistory`: `historySearch` is the
-    /// candidate generator and holds only the shared title, so a word that only
-    /// this space's own title has produces no candidate to test. The row is
-    /// still *labelled* with this space's own title wherever it does appear.
-    func testKnownLimitationAnOwnTitleAloneProducesNoCandidate() throws {
+    /// The TASK-94 limitation, inverted by TASK-96. `historySearch` used to be
+    /// the sole candidate generator and holds only the shared, latest-known
+    /// title, so a word that only this space's own title ever had produced no
+    /// candidate to test at all: A saw "Alpha page", B later retitled the shared
+    /// row "Secret budget", and "alpha" found nothing in A. `historyTitle`
+    /// indexes every title a space gave a URL, so A's own word finds it now —
+    /// and only from A.
+    func testAnOwnTitleAloneIsFoundThroughTheTitleIndex() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
-        XCTAssertTrue(db.searchHistory(query: "alpha", spaceID: "A").isEmpty,
-                      "accepted limitation — see the doc comment on searchHistory")
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Alpha page"],
-                       "but the recent list still labels the row with this space's own title")
+        XCTAssertEqual(db.searchHistory(query: "alpha", spaceID: "A").map(\.title),
+                       ["Alpha page"],
+                       "found through this space's own title, and labelled with it")
+        XCTAssertTrue(db.searchHistory(query: "alpha", spaceID: "B").isEmpty,
+                      "B never saw a page called that — the index is per space")
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Alpha page"])
     }
 
     /// FTS5 reserves AND / OR / NOT as query operators, so the unquoted

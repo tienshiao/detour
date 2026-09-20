@@ -34,7 +34,7 @@ struct HistoryDatabase {
 
         var config = Configuration()
         config.foreignKeysEnabled = true
-        config.prepareDatabase { db in db.add(function: Self.titleMatchFunction) }
+        config.prepareDatabase { db in Self.registerFunctions(on: db) }
         dbQueue = try! DatabaseQueue(path: dbPath, configuration: config)
         try! Self.migrator.migrate(dbQueue)
     }
@@ -44,9 +44,19 @@ struct HistoryDatabase {
         // The queue arrives already configured (tests build their own), so
         // `Configuration.prepareDatabase` above cannot have run for it. A
         // `DatabaseQueue` is one connection, so registering on it here covers
-        // the whole queue for as long as it lives.
-        dbQueue.writeWithoutTransaction { db in db.add(function: Self.titleMatchFunction) }
+        // the whole queue for as long as it lives — and it has to happen before
+        // `migrate`, because the h5 backfill calls `history_fold`.
+        dbQueue.writeWithoutTransaction { db in Self.registerFunctions(on: db) }
         try Self.migrator.migrate(dbQueue)
+    }
+
+    /// Every custom SQL function this file's statements and migrations depend
+    /// on, in one place so the two initializers cannot drift apart — and so a
+    /// test that drives `migrator` against a bare queue of its own can install
+    /// them the same way (`migrate(_:upTo:)` past h5 needs `history_fold`).
+    static func registerFunctions(on db: Database) {
+        db.add(function: titleMatchFunction)
+        db.add(function: foldFunction)
     }
 
     // MARK: - Title matching (TASK-93)
@@ -65,6 +75,35 @@ struct HistoryDatabase {
         guard let title = String.fromDatabaseValue(values[0]), !title.isEmpty else { return false }
         let query = String.fromDatabaseValue(values[1]) ?? ""
         return titleMatches(title, tokens: queryTokenCache.tokens(for: query))
+    }
+
+    /// `history_fold(text)` — the folding every other part of history search
+    /// applies, exposed to SQL so the *stored* form of a title can be folded
+    /// too (TASK-96).
+    ///
+    /// `historyTitleSearch` indexes `historyTitle.folded`, not the raw title,
+    /// because FTS5's `unicode61` and Foundation's folding do not agree on
+    /// characters Foundation *expands*: `ß` → `ss`, the `ﬁ` ligature → `fi`.
+    /// `unicode61` maps one codepoint to at most one other, so it indexed
+    /// `straße` where the matcher looked for `strasse`, and the candidate gate
+    /// hid rows the matcher would have accepted. Folding both the stored title
+    /// and the query terms with the *same* function removes the disagreement at
+    /// the source rather than recording it.
+    ///
+    /// Pure, so SQLite may hoist and cache it. NULL in, NULL out — the callers
+    /// only ever hand it a non-empty title, but a migration is not the place to
+    /// discover otherwise.
+    static let foldFunction = DatabaseFunction("history_fold", argumentCount: 1, pure: true) { values in
+        guard let text = String.fromDatabaseValue(values[0]) else { return nil }
+        return folded(text)
+    }
+
+    /// The one definition of "folded" in this file: case- and
+    /// diacritic-insensitive, locale-independent. `searchTokens`, the matcher's
+    /// slow path and `history_fold` all go through it so the index, the query
+    /// terms and the matcher cannot drift apart.
+    static func folded(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 
     /// Does `title` match `query` the way `historySearch` would?
@@ -100,7 +139,7 @@ struct HistoryDatabase {
         case .rejected: return false
         case .notASCII: break
         }
-        let folded = title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let folded = Self.folded(title)
         switch scanASCII(folded, tokens.ascii) {
         case .matched: return true
         case .rejected: return false
@@ -200,7 +239,7 @@ struct HistoryDatabase {
     /// Folded, alphanumeric-only tokens — the split every history query already
     /// applies to the user's text, applied to both sides of a title comparison.
     private static func searchTokens(_ text: String) -> [String] {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        folded(text)
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
     }
@@ -271,6 +310,168 @@ struct HistoryDatabase {
             try db.alter(table: "historyVisit") { t in
                 t.add(column: "title", .text)
             }
+        }
+
+        // Every title a URL has ever had, per space, and an FTS index over it
+        // (TASK-96). `historySearch` holds one row per URL whose `title` is the
+        // latest known one, shared by every profile: a word only *this* space's
+        // own visit title ever had produced no candidate at all (the palette's
+        // accepted limitation), and the History page had to find such rows by
+        // scanning the profile's visits behind a LIKE/GLOB prefilter — 18–40 ms
+        // per 50k ASCII titles, ~350 ms when none of them is ASCII.
+        //
+        // `historyTitle` is one row per DISTINCT non-empty title a space gave a
+        // URL, with `n` counting the visits currently carrying it. Per *distinct*
+        // title and not per visit: TASK-91's decision D rejected a per-visit FTS
+        // table as index bloat, and a URL visited a thousand times under one title
+        // is one row here — roughly the size of the existing FTS `title` column.
+        //
+        // The row also stores `history_fold(title)`, and *that* is what the FTS
+        // table indexes. The index is a candidate gate in front of
+        // `history_title_matches`, so anything the tokenizer folds differently
+        // from the matcher is a result the matcher would have accepted and the
+        // gate silently drops. Indexing the already-folded text and folding the
+        // query terms the same way makes the two agree by construction instead
+        // of by coincidence — see `foldFunction` for the characters that made
+        // them disagree.
+        migrator.registerMigration("h5") { db in
+            try db.create(table: "historyTitle") { t in
+                // AUTOINCREMENT, so an id is never handed out twice: the FTS
+                // table below addresses these rows by id and a reused id would
+                // resurrect a deleted title's index entry.
+                t.autoIncrementedPrimaryKey("id")
+                t.column("urlID", .integer).notNull()
+                    .references("historyURL", onDelete: .cascade)
+                t.column("spaceID", .text).notNull()
+                t.column("title", .text).notNull()
+                // `history_fold(title)`, written once when the row is created.
+                // The FTS index below is built over *this* column, not `title`:
+                // see `foldFunction`. The raw title stays the row's identity —
+                // it is what the refcount triggers key on and what a
+                // suggestion displays — so two titles that differ only by case
+                // or accent remain two rows and each keeps its own count.
+                t.column("folded", .text).notNull()
+                t.column("n", .integer).notNull()
+                // The refcount triggers below address a row by exactly this key,
+                // and it is also the `urlID = ?` index the FK cascade needs. No
+                // `(spaceID)` index: every query reaching this table arrives from
+                // the FTS side and seeks by rowid, so a space index would only be
+                // written, never read (checked with EXPLAIN QUERY PLAN).
+                t.uniqueKey(["urlID", "spaceID", "title"])
+            }
+
+            // External content: the FTS table stores the index, `historyTitle`
+            // stores the text. `unicode61` like `historySearch`, so both sides
+            // of `searchVisits`' gate tokenize alike; what this one indexes is
+            // the folded column, so it also agrees with the matcher.
+            try db.create(virtualTable: "historyTitleSearch", using: FTS5()) { t in
+                t.content = "historyTitle"
+                t.contentRowID = "id"
+                t.tokenizer = .unicode61()
+                // Named for the content column it mirrors: an external-content
+                // table reads its text back with `SELECT folded FROM historyTitle`.
+                t.column("folded")
+            }
+
+            // Hand-written, and deliberately not `synchronize(withTable:)`: GRDB's
+            // synchronization installs an AFTER UPDATE trigger that deletes and
+            // re-inserts the FTS entry for every column change, and `n` changes on
+            // every visit. A `historyTitle` row's `title` is immutable — a retitle
+            // is a *different* row — so insert and delete are the whole story.
+            try db.execute(sql: """
+                CREATE TRIGGER historyTitle_ai AFTER INSERT ON historyTitle BEGIN
+                    INSERT INTO historyTitleSearch(rowid, folded) VALUES (new.id, new.folded);
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER historyTitle_ad AFTER DELETE ON historyTitle BEGIN
+                    INSERT INTO historyTitleSearch(historyTitleSearch, rowid, folded)
+                    VALUES ('delete', old.id, old.folded);
+                END
+                """)
+
+            // Existing history, in one pass. It runs *after* the two triggers
+            // above, so the FTS index is filled by them rather than by a separate
+            // 'rebuild', and *before* the `historyVisit` triggers below, so no
+            // visit is counted twice. Legacy title-less visits (TASK-91) are not
+            // indexed: nothing ever stored what those pages were called, and the
+            // URL-level title still reaches them through `historySearch`.
+            try db.execute(sql: """
+                INSERT INTO historyTitle (urlID, spaceID, title, folded, n)
+                SELECT urlID, spaceID, title, history_fold(title), COUNT(*) FROM historyVisit
+                WHERE title IS NOT NULL AND title <> ''
+                GROUP BY urlID, spaceID, title
+                """)
+
+            // Maintenance lives in SQL triggers rather than in Swift because the
+            // visits are written and deleted by a dozen paths — `recordVisit`,
+            // `updateTitle`, four delete APIs, `expireOldVisits`' GRDB
+            // `deleteAll`, FK cascades from `historyURL`, and the tests' own raw
+            // SQL seeding. A trigger is the only place all of them pass through.
+            //
+            // A visit counts iff it has a usable title of its own.
+            try db.execute(sql: """
+                CREATE TRIGGER historyVisit_ai_title AFTER INSERT ON historyVisit
+                WHEN new.title IS NOT NULL AND new.title <> ''
+                BEGIN
+                    INSERT INTO historyTitle (urlID, spaceID, title, folded, n)
+                    VALUES (new.urlID, new.spaceID, new.title, history_fold(new.title), 1)
+                    ON CONFLICT(urlID, spaceID, title) DO UPDATE SET n = n + 1;
+                END
+                """)
+            // Decrement, then drop the row once nothing carries the title any
+            // more. Two unique-index seeks, whatever the URL's history: a
+            // `NOT EXISTS (… another visit with this title …)` probe would walk
+            // every visit of the URL — quadratic for the page visited thousands
+            // of times, which is exactly the shape this task exists to remove.
+            //
+            // Deleting a `historyURL` row cascades into both children. The order
+            // of the two cascades is SQLite's business, so this may run after the
+            // `historyTitle` rows are already gone: both statements then match
+            // nothing, which is the intended no-op.
+            try db.execute(sql: """
+                CREATE TRIGGER historyVisit_ad_title AFTER DELETE ON historyVisit
+                WHEN old.title IS NOT NULL AND old.title <> ''
+                BEGIN
+                    UPDATE historyTitle SET n = n - 1
+                    WHERE urlID = old.urlID AND spaceID = old.spaceID AND title = old.title;
+                    DELETE FROM historyTitle
+                    WHERE urlID = old.urlID AND spaceID = old.spaceID AND title = old.title
+                      AND n <= 0;
+                END
+                """)
+            // A retitle (TASK-88) moves the count from one row to another. Two
+            // triggers rather than one because a trigger has a single WHEN and
+            // the two sides qualify independently — a legacy visit gaining a
+            // title has no old row, a visit losing one has no new row. Their
+            // firing order is undefined and does not matter: the shared guard
+            // rules out old and new naming the same row.
+            let changed = """
+                (old.title IS NOT new.title OR old.urlID IS NOT new.urlID
+                     OR old.spaceID IS NOT new.spaceID)
+                """
+            try db.execute(sql: """
+                CREATE TRIGGER historyVisit_au_title_old
+                AFTER UPDATE OF title, urlID, spaceID ON historyVisit
+                WHEN old.title IS NOT NULL AND old.title <> '' AND \(changed)
+                BEGIN
+                    UPDATE historyTitle SET n = n - 1
+                    WHERE urlID = old.urlID AND spaceID = old.spaceID AND title = old.title;
+                    DELETE FROM historyTitle
+                    WHERE urlID = old.urlID AND spaceID = old.spaceID AND title = old.title
+                      AND n <= 0;
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER historyVisit_au_title_new
+                AFTER UPDATE OF title, urlID, spaceID ON historyVisit
+                WHEN new.title IS NOT NULL AND new.title <> '' AND \(changed)
+                BEGIN
+                    INSERT INTO historyTitle (urlID, spaceID, title, folded, n)
+                    VALUES (new.urlID, new.spaceID, new.title, history_fold(new.title), 1)
+                    ON CONFLICT(urlID, spaceID, title) DO UPDATE SET n = n + 1;
+                END
+                """)
         }
 
         return migrator
@@ -389,10 +590,24 @@ struct HistoryDatabase {
         return "\(column) : (\(terms))"
     }
 
-    /// The title half of a history search, over `titleExpression`: the prefilter
-    /// SQLite can evaluate in C, and behind it `history_title_matches`. One
-    /// helper because both the History page (`searchVisits`) and the palette
-    /// (`searchHistory`) scan titles this way, and they must agree exactly.
+    /// The MATCH expression for `historyTitleSearch`, which indexes folded text
+    /// (TASK-96): the query has to arrive folded too, or "straße" would never
+    /// meet the indexed `strasse`. `historySearch` keeps the raw tokens — it
+    /// indexes raw URLs and raw shared titles and is not ours to re-fold.
+    ///
+    /// Folding an alphanumeric token has never yet produced nothing, but if it
+    /// ever did the raw tokens stand in rather than an empty MATCH, which FTS5
+    /// rejects as a syntax error: the index then behaves exactly as it did
+    /// before the titles were folded.
+    private static func titleIndexQuery(_ tokens: [String], folded foldedTokens: [String]) -> String {
+        ftsPrefixQuery(foldedTokens.isEmpty ? tokens : foldedTokens)
+    }
+
+    /// The title half of the History page's search, over `titleExpression`: the
+    /// prefilter SQLite can evaluate in C, and behind it
+    /// `history_title_matches`. A helper of its own because the prefilter and
+    /// the matcher must agree exactly, and because that agreement is what the
+    /// differential tests are written against.
     ///
     ///     (title LIKE '%tok%' [OR …] OR title GLOB '*[^ -~]*') AND history_title_matches(…)
     ///
@@ -409,20 +624,20 @@ struct HistoryDatabase {
     /// not aliased (a SELECT alias is not visible to the WHERE clause), so it
     /// must not itself bind anything.
     ///
-    /// "Agree exactly" is about the prefilter and the matcher, not about the
-    /// expression handed in: the two callers deliberately pass different ones.
-    /// `searchVisits` keeps the unguarded `COALESCE(v.title, h.title)` — its
-    /// scope is a *profile*, i.e. several space IDs, and the palette's guard is
-    /// written argument-free as `o.spaceID <> v.spaceID`, which would read a
-    /// sibling space of the same profile as foreign. Falling back to the
-    /// URL-level title for a legacy visit is the TASK-91 decision for the
-    /// History page and is not TASK-94's to change.
+    /// The expression handed in is `searchVisits`' unguarded
+    /// `COALESCE(v.title, h.title)`: its scope is a *profile*, i.e. several
+    /// space IDs, so the palette's argument-free cross-space guard
+    /// (`o.spaceID <> v.spaceID`) would read a sibling space of the same
+    /// profile as foreign. Falling back to the URL-level title for a legacy
+    /// visit is the TASK-91 decision for the History page. Since TASK-96 the
+    /// palette answers its title half from the `historyTitle` index instead and
+    /// has no caller here.
     private func titleMatchCondition(_ titleExpression: String, tokens: [String],
                                      into args: inout [DatabaseValueConvertible]) -> String {
         let likeTerms = tokens.map { _ in "\(titleExpression) LIKE ?" }
             .joined(separator: "\n                           OR ")
         for token in tokens {
-            args.append("%\(token.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil))%")
+            args.append("%\(Self.folded(token))%")
         }
         args.append(tokens.joined(separator: " "))
         return """
@@ -474,21 +689,6 @@ struct HistoryDatabase {
                        CASE WHEN NOT EXISTS (SELECT 1 FROM historyVisit o
                                              WHERE o.urlID = h.id AND o.spaceID <> ?)
                             THEN h.title ELSE '' END)
-        """
-
-    /// The same rule as `scopedTitleExpression`, for the title a *visit* is
-    /// matched on. Correlated to the enclosing `v`, so the scope comes from
-    /// `v.spaceID` and this binds nothing — it is repeated several times inside
-    /// `titleMatchCondition`, which requires an expression free of arguments.
-    ///
-    /// `COALESCE` evaluates left to right and stops, so the cross-space guard
-    /// costs nothing for a visit that has a title of its own.
-    private static let visitTitleExpression = """
-        COALESCE(NULLIF(v.title, ''),
-                                    CASE WHEN NOT EXISTS (
-                                             SELECT 1 FROM historyVisit o
-                                             WHERE o.urlID = h.id AND o.spaceID <> v.spaceID)
-                                         THEN h.title ELSE '' END)
         """
 
     /// The `HistoryURL` columns as a space-scoped inner select must expose them.
@@ -560,31 +760,32 @@ struct HistoryDatabase {
     ///
     /// Like `searchVisits`, a title from another profile must neither label a
     /// suggestion nor produce one (TASK-94) — but this runs synchronously on the
-    /// main thread on every keystroke, so the title half cannot be a scan of the
-    /// scope's visits the way the History page's is. The shape is therefore:
+    /// main thread on every keystroke, so nothing here may scan the scope's
+    /// visits. Every candidate therefore comes out of an index, and the three
+    /// ways a URL can qualify are three indexed sources, UNION'd:
     ///
-    /// - `historySearch` stays the candidate generator, with today's tokenization
-    ///   and today's ordering. It is one row per URL and its `title` is the
-    ///   shared, latest-known one.
-    /// - A candidate qualifies only if the space visited it, and then only if it
-    ///   matches in the FTS `url` column — a URL is the same text whoever visited
-    ///   it — or some *in-scope* visit's own title matches, under the same
-    ///   cross-space rule the label uses (`visitTitleExpression`) and behind the
-    ///   same prefilter the History page scans with (`titleMatchCondition`). The
-    ///   URL test is written first, so the matcher only ever runs over the visits
-    ///   of candidates that did not already match by URL.
+    /// - **A, the URL text.** `historySearch`'s `url` column. A URL is the same
+    ///   text whoever visited it, so an FTS hit there qualifies the row as soon
+    ///   as this space has visited it at all (the EXISTS).
+    /// - **B, this space's own titles.** `historyTitleSearch` over the
+    ///   `historyTitle` rows of *this* `spaceID` (TASK-96). No per-visit check
+    ///   is needed or possible: a row exists only while `n > 0`, i.e. while an
+    ///   in-scope visit still carries that exact title.
+    /// - **C, legacy title-less visits.** `historySearch`'s `title` column —
+    ///   the shared, latest-known URL title — but only for a URL this space
+    ///   visited *without* a title of its own and that no other space has
+    ///   visited at all. That is `scopedTitleExpression`'s fallback rule
+    ///   (TASK-94) spelled as a filter: exactly the case where the shared title
+    ///   is the only record of what this space saw and cannot be anyone else's.
+    ///   The FTS hit *is* the match on `h.title`, so no `history_title_matches`
+    ///   call is needed behind it.
     ///
-    /// **Accepted limitation**: FTS is still the gate, so in the palette a title
-    /// only this space ever gave a page is findable only while the shared
-    /// URL-level title also contains the word. Query "inbox" finds the personal
-    /// visit of a page the shared row calls "(3) Inbox - you@work" and labels it
-    /// "Inbox"; query "work" finds nothing there — but a word that appears *only*
-    /// in this space's own older title, and nowhere in the shared one, produces
-    /// no candidate to test. Lifting that would mean scanning the scope's visits
-    /// on every keystroke: TASK-93 measured 18–40 ms per 50k visits, and 220 ms
-    /// for non-ASCII titles — fine off-main for the History page, not inside a
-    /// keystroke's budget. The History page remains the place to find an old
-    /// title.
+    /// TASK-96 lifted what used to be an accepted limitation here: `historySearch`
+    /// was the sole candidate gate, so a word that appears only in this space's
+    /// own visit title and nowhere in the shared URL title produced no candidate
+    /// to test — personal saw "Budget 2026", work later retitled the URL
+    /// "Dashboard", and typing "budget" in personal found nothing. Source B is
+    /// that word's index.
     ///
     /// **Accepted, and different from `searchVisits`**: a row here is a URL,
     /// not a visit, so the visit that earned the match and the visit that
@@ -593,6 +794,11 @@ struct HistoryDatabase {
     /// this space's own, so nothing crosses a profile; it is only the
     /// searchVisits guarantee ("a row that matched on a title displays a title
     /// that matched") that a one-row-per-URL list cannot keep.
+    ///
+    /// `rank` is `MIN` over whichever sources produced the row. The three are
+    /// bm25 scores of two different FTS tables and are not strictly comparable;
+    /// they order suggestions and nothing else, and the keys behind them
+    /// (`-visitCount`, then `id`) settle everything a tie leaves open.
     ///
     /// Not changed, and deliberately: `rank`, `h.visitCount` and `h.faviconURL`
     /// are cross-space values. The first two order the results and nothing else.
@@ -603,38 +809,53 @@ struct HistoryDatabase {
             .filter { !$0.isEmpty }
         guard !tokens.isEmpty else { return [] }
 
-        // Arguments in statement order: the label's two, the FTS candidate
-        // query, the scope test, the url-column query, the title test's space ID,
-        // then whatever `titleMatchCondition` binds, then the limit.
+        // Arguments in statement order: the label's two, then each candidate
+        // source's FTS query followed by the space IDs it tests, then the limit.
         var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
-        args.append(Self.ftsPrefixQuery(tokens))
-        args.append(spaceID)
         args.append(Self.ftsPrefixQuery(tokens, column: "url"))
         args.append(spaceID)
-        let titleCondition = titleMatchCondition(Self.visitTitleExpression, tokens: tokens,
-                                                 into: &args)
+        args.append(Self.titleIndexQuery(tokens, folded: Self.searchTokens(query)))
+        args.append(spaceID)
+        args.append(Self.ftsPrefixQuery(tokens, column: "title"))
+        args.append(spaceID)
+        args.append(spaceID)
         args.append(limit)
 
+        // `UNION ALL` and not `UNION`: the duplicates are wanted — `MIN(c.rank)`
+        // is how a URL that matched several ways keeps its best score — and
+        // de-duplicating rows only to group them immediately afterwards is work
+        // for nothing.
         let sql = Self.labelledSelect(inner: """
-            SELECT \(Self.historyURLProjection), s.rank AS rank
-                        FROM historySearch s
-                        JOIN historyURL h ON h.rowid = s.rowid
-                        WHERE historySearch MATCH ?
-                          AND EXISTS (
-                              SELECT 1 FROM historyVisit v
-                              WHERE v.urlID = h.id AND v.spaceID = ?
-                          )
-                          AND (
-                              h.id IN (
-                                  SELECT s2.rowid FROM historySearch s2
-                                  WHERE historySearch MATCH ?
-                              )
-                              OR EXISTS (
+            SELECT \(Self.historyURLProjection), MIN(c.rank) AS rank
+                        FROM (
+                            SELECT s.rowid AS urlID, s.rank AS rank
+                            FROM historySearch s
+                            WHERE historySearch MATCH ?
+                              AND EXISTS (
                                   SELECT 1 FROM historyVisit v
-                                  WHERE v.urlID = h.id AND v.spaceID = ?
-                                    AND (\(titleCondition))
+                                  WHERE v.urlID = s.rowid AND v.spaceID = ?
                               )
-                          )
+                            UNION ALL
+                            SELECT t.urlID AS urlID, ts.rank AS rank
+                            FROM historyTitleSearch ts
+                            JOIN historyTitle t ON t.id = ts.rowid
+                            WHERE historyTitleSearch MATCH ? AND t.spaceID = ?
+                            UNION ALL
+                            SELECT s.rowid AS urlID, s.rank AS rank
+                            FROM historySearch s
+                            WHERE historySearch MATCH ?
+                              AND EXISTS (
+                                  SELECT 1 FROM historyVisit v
+                                  WHERE v.urlID = s.rowid AND v.spaceID = ?
+                                    AND (v.title IS NULL OR v.title = '')
+                              )
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM historyVisit o
+                                  WHERE o.urlID = s.rowid AND o.spaceID <> ?
+                              )
+                        ) c
+                        JOIN historyURL h ON h.id = c.urlID
+                        GROUP BY h.id
                         ORDER BY rank, -h.visitCount, id
                         LIMIT ?
             """, orderedBy: "h.rank, -h.visitCount, h.id")
@@ -766,20 +987,38 @@ struct HistoryDatabase {
     ///   qualifies every visit of that URL without crossing anything.
     /// - Titles are matched against the visit's *own* title (falling back to
     ///   the URL-level one only for legacy title-less visits — which is what
-    ///   they display) by `history_title_matches`, a scan, not an index.
+    ///   they display) by `history_title_matches`, which tests a row rather
+    ///   than looking one up. What keeps it off the profile's whole visit
+    ///   history is the candidate gate below.
     ///
-    /// Titles stay out of the index because `historySearch` holds one row per
-    /// URL: its `title` is the latest known one, shared by every profile, so
-    /// matching on it let a query find a page through a title only *another*
-    /// profile's visit ever gave it. Indexing per visit instead would mean a
-    /// second FTS table over `historyVisit` — rejected as index bloat (TASK-91,
-    /// decision D) — so the title half is a scan of the rows the other filters
-    /// already leave: one profile's visits inside the window, reached through
-    /// `historyVisit_spaceID_visitTime`. `expireOldVisits` keeps that to 90
-    /// days of visits, which bounds but does not make it small — a heavy
-    /// profile holds tens of thousands inside the window — so the scan is not
-    /// run on the title itself but behind a prefilter SQLite can evaluate in C
-    /// (`titleMatchCondition`, shared with the palette's `searchHistory`):
+    /// The matcher is the *precise* test and stays exactly as it was; what
+    /// TASK-96 added in front of it is a **candidate gate**, so it no longer
+    /// runs over every visit of the profile:
+    ///
+    ///     v.urlID IN ( historySearch MATCH <whole query>
+    ///                  UNION
+    ///                  <this scope's historyTitle rows matching the query> )
+    ///
+    /// The first arm is the URL text *and* the shared URL-level title. The
+    /// shared title is in there only to keep legacy title-less visits
+    /// reachable — they match through `h.title` and have no title row of their
+    /// own — and it can only ever *offer* a candidate: the matcher below still
+    /// decides, so a title another profile gave the page produces nothing here.
+    /// The second arm is TASK-96's index: every distinct title a space in scope
+    /// gave a URL (`historyTitle`, indexed by `historyTitleSearch`). Written
+    /// before the title condition so short-circuit evaluation reaches the
+    /// LIKE/GLOB prefilter only for candidates.
+    ///
+    /// Titles are still not in `historySearch` itself, because that table holds
+    /// one row per URL: its `title` is the latest known one, shared by every
+    /// profile, so matching on it alone let a query find a page through a title
+    /// only *another* profile's visit ever gave it. TASK-91's decision D
+    /// rejected a per-*visit* FTS table as index bloat; `historyTitle` indexes
+    /// distinct titles per (URL, space) instead, which is roughly the size of
+    /// the existing FTS `title` column however often a page is revisited.
+    ///
+    /// Behind the gate the title test is unchanged — a prefilter SQLite can
+    /// evaluate in C, then the matcher (`titleMatchCondition`):
     ///
     ///     (title LIKE '%tok%' [OR …] OR title GLOB '*[^ -~]*') AND history_title_matches(…)
     ///
@@ -793,6 +1032,26 @@ struct HistoryDatabase {
     /// term hands it to the matcher unconditionally. `history_title_matches`
     /// reproduces the FTS semantics it replaces (folding, alphanumeric tokens,
     /// prefix terms, OR) so the two halves of the query agree with each other.
+    ///
+    /// The gate is the one place where the tokenizer and the matcher have to
+    /// agree in the *same* direction: a title the matcher accepts but the index
+    /// spells differently would be filtered out before the matcher ever sees
+    /// it. They agree by construction rather than by coincidence, because
+    /// `historyTitleSearch` indexes `history_fold(title)` and this query's
+    /// terms are folded by the same function (`titleIndexQuery`). Left to
+    /// itself `unicode61` maps one codepoint to at most one other, so it would
+    /// index `straße` and `ﬁle` where the matcher looks for `strasse` and
+    /// `file`; folding first removes that class of disagreement entirely, and
+    /// `HistoryTitleIndexTests` asserts an empty divergence list over a corpus
+    /// chosen to produce one.
+    ///
+    /// The **legacy** arm is the exception, unchanged and deliberately so: a
+    /// title-less visit (TASK-91) has no row in `historyTitle` and reaches the
+    /// gate only through `historySearch`, which indexes the raw shared title.
+    /// So "strasse" still does not find a pre-TASK-91 visit of a page whose
+    /// shared title is "Straße" — exactly the behaviour that arm has always
+    /// had, since `historySearch` is the URL-level index and not ours to
+    /// re-fold.
     ///
     /// What this buys: a title a page *used* to have is searchable again — every
     /// visit matches under the title it was recorded with; a row that matched on
@@ -821,11 +1080,16 @@ struct HistoryDatabase {
         // not visible to the WHERE clause that has to filter on it.
         let titleExpression = "COALESCE(v.title, h.title)"
 
-        // The window's arguments sit between the space IDs and the query terms,
-        // which is where they sit in the statement below: FTS query, then one
-        // pattern per token, then the tokens for the matcher.
+        // Appended in statement order throughout: the space IDs, the window,
+        // then the gate's two FTS queries (the second followed by the space IDs
+        // again, for the title index's own scope test), then the precise test's
+        // url-column query, then one LIKE pattern per token and the tokens for
+        // the matcher.
         var args: [DatabaseValueConvertible] = spaceIDs
         let window = timeWindow("v.visitTime", from: from, until: until, into: &args)
+        args.append(Self.ftsPrefixQuery(tokens))
+        args.append(Self.titleIndexQuery(tokens, folded: Self.searchTokens(query)))
+        args.append(contentsOf: spaceIDs)
         args.append(urlQuery)
         let titleCondition = titleMatchCondition(titleExpression, tokens: tokens, into: &args)
 
@@ -844,6 +1108,14 @@ struct HistoryDatabase {
                 FROM historyVisit v
                 JOIN historyURL h ON h.id = v.urlID
                 WHERE v.spaceID IN (\(placeholders))\(window)
+                  AND v.urlID IN (
+                      SELECT s.rowid FROM historySearch s WHERE historySearch MATCH ?
+                      UNION
+                      SELECT t.urlID FROM historyTitleSearch ts
+                      JOIN historyTitle t ON t.id = ts.rowid
+                      WHERE historyTitleSearch MATCH ?
+                        AND t.spaceID IN (\(placeholders))
+                  )
                   AND (
                       v.urlID IN (
                           SELECT s.rowid FROM historySearch s WHERE historySearch MATCH ?
