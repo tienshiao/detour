@@ -74,6 +74,7 @@ struct ExtensionAPIPolyfill {
             webRequestStubJS,
             actionUserSettingsJS,
             storageManagedJS,
+            permissionsOriginPortJS,
             fontSettingsJS,
             sessionsJS,
             searchJS,
@@ -110,6 +111,11 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.webRequest = globalThis.__detourWebRequestInstall; } catch(e) { __detourPolyfillDiag.apis.webRequest = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.actionGetUserSettings = globalThis.__detourActionUserSettingsInstall; } catch(e) { __detourPolyfillDiag.apis.actionGetUserSettings = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.storageManaged = globalThis.__detourStorageManagedInstall; } catch(e) { __detourPolyfillDiag.apis.storageManaged = 'error: ' + e.message; }
+        // Whether permissions.contains/request/remove are wrapped to drop the
+        // port WebKit's match-pattern parser rejects (TASK-75), and whether
+        // `browser.permissions` was a second object needing its own wrapping.
+        try { __detourPolyfillDiag.apis.permissionsOriginPort = globalThis.__detourPermissionsPortInstall; } catch(e) { __detourPolyfillDiag.apis.permissionsOriginPort = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.permissionsBrowserDistinct = globalThis.__detourPermissionsPortBrowserDistinct; } catch(e) { __detourPolyfillDiag.apis.permissionsBrowserDistinct = 'error: ' + e.message; }
         // Which chrome.offscreen is in force: Detour's polyfill, Detour's over a
         // native/foreign one it shadowed, or an error if the define did not take (TASK-71).
         try { __detourPolyfillDiag.apis.offscreenInstall = globalThis.__detourOffscreenInstall; } catch(e) { __detourPolyfillDiag.apis.offscreenInstall = 'error: ' + e.message; }
@@ -2445,6 +2451,202 @@ struct ExtensionAPIPolyfill {
         }
 
         g.__detourStorageManagedInstall = install;
+    })();
+    """
+
+    // MARK: - chrome.permissions origin patterns with a port (TASK-75)
+
+    /// Drops an explicit port from every origin pattern handed to
+    /// `permissions.contains` / `request` / `remove`, then forwards the call to
+    /// WebKit unchanged.
+    ///
+    /// Chrome's match patterns accept a port in the host part
+    /// (`http://127.0.0.1:8471/*`); WebKit's `WKWebExtension.MatchPattern`
+    /// parses `scheme://host/path` only and rejects anything else, so the call
+    /// throws "The origins value is invalid, because http://127.0.0.1:8471/* is
+    /// not a valid pattern" instead of answering. 1Password builds the origin
+    /// pattern of every page it sees and calls `permissions.contains({origins})`
+    /// before setting that page up, so on a site served from a non-default port
+    /// the throw aborts the setup and its inline menu appears on no form at all
+    /// (found 2026-09-13 on a fixture at http://127.0.0.1:8471/, TASK-75).
+    ///
+    /// Semantics: a Chrome host grant covers every port on that host, and
+    /// WebKit's grants are per host as well, so dropping the port asks WebKit
+    /// the question it can answer — and its answer is the one Chrome gives.
+    /// A pattern WebKit can already parse is passed through untouched, as is a
+    /// `details` that carries no `origins` array, and the caller's object is
+    /// never mutated: the rewrite goes into a shallow copy.
+    ///
+    /// `chrome.permissions` is a `[MainWorldOnly]` namespace vended from the
+    /// weak wrapper cache, so the patched wrapper is rooted through
+    /// `__detourHoldWrapper` and a fresh read then checks the patch is what
+    /// `chrome.permissions` answers with (`polyfill-not-visible` if not; TASK-60,
+    /// docs/chrome-runtime-patching.md). `browser.permissions` is patched under
+    /// its own key when it is a *different* object than `chrome.permissions`
+    /// (1Password calls `browser.*`); neither global is ever replaced (TASK-15).
+    private static let permissionsOriginPortJS = """
+    (function() {
+        const g = globalThis;
+        let install = 'absent';
+        let browserDistinct = false;
+        try {
+            // Is `text` a match-pattern port — digits, or the `*` Chrome allows?
+            // Written out rather than as a regex so the pattern survives being
+            // embedded in a Swift string.
+            const isPortText = function(text) {
+                if (text === '*') return true;
+                if (text.length === 0) return false;
+                for (let i = 0; i < text.length; i++) {
+                    const code = text.charCodeAt(i);
+                    if (code < 48 || code > 57) return false;
+                }
+                return true;
+            };
+
+            // `scheme://authority[/path...]` → the same string without a trailing
+            // `:<digits>` or `:*` on the authority. Everything else is returned
+            // as it came in: a non-string, a pattern with no `://` (`<all_urls>`),
+            // an empty authority (`file:///*`), a `:` that is in the path
+            // (`https://host/a:80/*`), the colons inside an IPv6 literal
+            // (`http://[::1]/*`), and userinfo (`user:pw@host`, not valid in a
+            // match pattern — WebKit's rejection of it is the right answer).
+            const stripOriginPort = function(pattern) {
+                if (typeof pattern !== 'string') return pattern;
+                const schemeEnd = pattern.indexOf('://');
+                if (schemeEnd === -1) return pattern;
+                const authorityStart = schemeEnd + 3;
+                let authorityEnd = pattern.indexOf('/', authorityStart);
+                if (authorityEnd === -1) authorityEnd = pattern.length;
+                const authority = pattern.slice(authorityStart, authorityEnd);
+                if (authority.length === 0) return pattern;
+                if (authority.indexOf('@') !== -1) return pattern;
+                // A bracketed IPv6 host owns every colon up to its `]`.
+                let hostEnd = 0;
+                if (authority.charAt(0) === '[') {
+                    const bracket = authority.indexOf(']');
+                    if (bracket === -1) return pattern;
+                    hostEnd = bracket + 1;
+                }
+                const colon = authority.indexOf(':', hostEnd);
+                if (colon === -1) return pattern;
+                if (!isPortText(authority.slice(colon + 1))) return pattern;
+                return pattern.slice(0, authorityStart) + authority.slice(0, colon)
+                    + pattern.slice(authorityEnd);
+            };
+            // Exposed for the tests, and so the rule can be read from a console.
+            g.__detourStripOriginPort = stripOriginPort;
+
+            // One line per realm, the first time a pattern is actually rewritten,
+            // so the console bridge shows the rewrite happened and with what.
+            let logged = false;
+            const noteRewrite = function(before, after) {
+                if (logged) return;
+                logged = true;
+                console.info('[Detour polyfill] permissions: origin pattern '
+                    + before + ' -> ' + after
+                    + ' (WebKit match patterns carry no port, TASK-75)');
+            };
+
+            const rewriteDetails = function(details) {
+                if (!details || typeof details !== 'object') return details;
+                if (!Array.isArray(details.origins)) return details;
+                let rewrote = false;
+                const origins = details.origins.map(function(origin) {
+                    const stripped = stripOriginPort(origin);
+                    if (stripped !== origin) {
+                        rewrote = true;
+                        noteRewrite(origin, stripped);
+                    }
+                    return stripped;
+                });
+                if (!rewrote) return details;
+                const copy = {};
+                Object.keys(details).forEach(function(key) { copy[key] = details[key]; });
+                copy.origins = origins;
+                return copy;
+            };
+
+            const methodNames = ['contains', 'request', 'remove'];
+
+            // Wrap the three methods of one permissions namespace in place, root
+            // it, and report whether the patch is what a fresh read answers with.
+            const patch = function(permissions, key, read) {
+                let marker = null;
+                let defineFailed = false;
+                for (let i = 0; i < methodNames.length; i++) {
+                    const name = methodNames[i];
+                    const native = permissions[name];
+                    if (typeof native !== 'function') continue;
+                    if (native._detourPortWrapper) { marker = marker || name; continue; }
+                    const wrapper = function(details, callback) {
+                        // The caller's own argument shape is forwarded verbatim:
+                        // a promise call stays a promise call, a callback call
+                        // stays a callback call, and extra arguments survive.
+                        const args = Array.prototype.slice.call(arguments);
+                        if (args.length > 0) args[0] = rewriteDetails(args[0]);
+                        const receiver = (this === undefined || this === null || this === g)
+                            ? permissions : this;
+                        return native.apply(receiver, args);
+                    };
+                    wrapper._detourPortWrapper = true;
+                    // Kept so a diagnostic (or a test) can still reach — and read
+                    // the nativeness of — the function WebKit vends.
+                    wrapper._detourNative = native;
+                    __detourDefine(permissions, name, wrapper);
+                    // `__detourDefine` only warns when the namespace refuses the
+                    // write; comparing native to native below would then report
+                    // a patch that never took.
+                    if (permissions[name] !== wrapper) { defineFailed = true; continue; }
+                    marker = marker || name;
+                }
+                if (defineFailed) return 'define-failed';
+                if (!marker) return 'no-methods';
+                __detourHoldWrapper(key, permissions);
+                const again = read();
+                if (again && again[marker] === permissions[marker]) return 'polyfill';
+                // Nothing reads the object we patched: drop the root rather than
+                // keep a dead wrapper alive, and say so.
+                __detourReleaseWrapper(key);
+                console.warn('[Detour polyfill] permissions port wrappers are not visible through ' + key);
+                return 'polyfill-not-visible';
+            };
+
+            // `chrome.permissions` and `browser.permissions` are the same object
+            // in some realms and two wrappers in others, so they are collected by
+            // identity and each distinct one is patched under its own root key.
+            const targets = [];
+            const addTarget = function(key, holder) {
+                if (!holder) return;
+                let permissions = null;
+                try { permissions = holder.permissions; } catch (e) { return; }
+                if (!permissions || typeof permissions !== 'object') return;
+                for (let i = 0; i < targets.length; i++) {
+                    if (targets[i].permissions === permissions) return;
+                }
+                targets.push({
+                    key: key,
+                    permissions: permissions,
+                    read: function() { return holder.permissions; }
+                });
+            };
+            addTarget('permissions', g.chrome);
+            addTarget('browserPermissions', g.browser);
+            browserDistinct = targets.length > 1;
+
+            if (targets.length > 0) {
+                install = 'polyfill';
+                for (let i = 0; i < targets.length; i++) {
+                    const target = targets[i];
+                    const status = patch(target.permissions, target.key, target.read);
+                    if (status !== 'polyfill') install = status;
+                }
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+
+        g.__detourPermissionsPortInstall = install;
+        g.__detourPermissionsPortBrowserDistinct = browserDistinct;
     })();
     """
 

@@ -806,6 +806,61 @@ API Explorer and test coverage per project convention:
   startup race inside 1Password (a core call before `instantiate` finishes; WASM then logs
   "Initializing" normally), not the cause.
 
+- **Origin patterns with a port** (TASK-75, added 2026-09-20): `permissions.contains` / `request` /
+  `remove` are wrapped so that every string in `details.origins` loses an explicit port before the
+  call reaches WebKit (`ExtensionAPIPolyfill.permissionsOriginPortJS`;
+  `_polyfillDiag.apis.permissionsOriginPort` records the path).
+
+  **The incompatibility.** Chrome's match patterns allow a port in the host part
+  (`http://127.0.0.1:8471/*`); WebKit's `WKWebExtension.MatchPattern` parses `scheme://host/path`
+  only and rejects anything else, so the call *throws* instead of answering:
+
+  ```
+  Exception thrown: Invalid call to permissions.contains(). The origins value is invalid,
+  because http://127.0.0.1:8471/* is not a valid pattern
+  ```
+
+  1Password builds the origin pattern of every page it sees and calls
+  `permissions.contains({origins: [...]})` before setting the page up, so on any site served from a
+  non-default port — local dev servers, intranet tools, anything at `host:8080` — the throw aborts
+  its per-page setup and the inline menu appears on no form at all, including a plain top-level
+  login form (found 2026-09-13 during the TASK-4 trial, signed build a68e26e, on a fixture at
+  `http://127.0.0.1:8471/`).
+
+  **The rewrite rule.** For a `scheme://authority[/path...]` string, a trailing `:<digits>` or `:*`
+  is dropped from the authority; everything else is forwarded exactly as the caller wrote it:
+
+  | in | out |
+  |---|---|
+  | `http://127.0.0.1:8471/*` | `http://127.0.0.1/*` |
+  | `https://host:8443/path` | `https://host/path` |
+  | `*://*.example.com:8080/*` | `*://*.example.com/*` |
+  | `https://host:8443` (no path) | `https://host` |
+  | `http://[::1]:3000/*` | `http://[::1]/*` |
+  | `http://[::1]/*`, `https://host/a:80/*`, `<all_urls>`, `file:///*`, non-strings | unchanged |
+
+  Colons inside an IPv6 literal and colons in the path are not ports, and userinfo
+  (`https://user:pw@host/*`) is not valid in a match pattern at all, so it is left for WebKit to
+  reject. A `details` with no `origins` array is forwarded untouched, the caller's object is never
+  mutated (the rewrite goes into a shallow copy), and callback and promise forms are both preserved.
+
+  **Why dropping the port is the right answer, not a lie.** A Chrome host grant covers every port on
+  that host, and WebKit's grants are per host as well (`WebExtensionContext::hasPermissions` matches
+  the requested pattern against the granted patterns with `IgnorePaths`), so the port-less question
+  is the one WebKit can answer and its answer is the one Chrome would give. Measured against a real
+  context (2026-09-20): a granted host answers `true` with a port, an ungranted host answers `false`
+  with a port, and both match their port-free twins.
+
+  **Storage side.** Nothing normalises pattern keys on the way into the permissions DB, and nothing
+  needs to: the prompt delegate keys `.matchPattern` rows by `WKWebExtension.MatchPattern.string`
+  (a pattern WebKit itself parsed — and after this wrapper the delegate only ever sees port-less
+  ones), so the only way a ported key reaches the DB is a Settings toggle on a manifest
+  `host_permissions` entry that WebKit could not parse. Such a row is inert by construction, since
+  WebKit drops the unparseable pattern from the extension's requested set and
+  `Profile.applySavedHostAccessDecisions` skips any row it cannot parse or that no askable pattern
+  matches — pinned by
+  `ExtensionPermissionTests.testPortedHostPermissionNeverBecomesAnAskablePattern`.
+
 ### Phase 3 — Real frame enumeration
 
 1Password calls `getAllFrames({tabId})`, filters by URL, and fans messages out to every frame with

@@ -217,7 +217,7 @@ the native runtime. Option 1 only works because it pins the *same* wrapper WebKi
 ### Members inside a [MainWorldOnly, Dynamic] sub-namespace: patchable, but only while held
 
 A member *inside* one of the Level 1 namespaces above (`chrome.action.getUserSettings`,
-`chrome.webRequest.onAuthRequired`) can be patched in place — the wrapper takes the own property
+`chrome.webRequest.onAuthRequired`, `chrome.permissions.contains`) can be patched in place — the wrapper takes the own property
 and reads through `chrome.action` keep returning it, *as long as that wrapper is still alive*.
 Two separate things are true of an own property on `chrome` for these namespaces, and they must
 not be conflated:
@@ -240,13 +240,32 @@ allocations, and a `WeakRef` to the patched wrapper read back `undefined`).
 Any strong reference works. The polyfill's shared form is `__detourHoldWrapper(name, wrapper)` in
 `ExtensionAPIPolyfill.preambleJS`, which stores the wrapper in the non-enumerable, non-writable
 `globalThis.__detourHeldWrappers` (so `__detourHeldWrappers.action === chrome.action` can be asserted,
-and extension code enumerating or clearing globals cannot drop a root). `actionUserSettingsJS` and
-the native-namespace path of `webRequestStubJS` root through it, then re-read the namespace and
+and extension code enumerating or clearing globals cannot drop a root). `actionUserSettingsJS`
+(key `action`), `storageManagedJS` (key `storage`), `permissionsOriginPortJS` (key `permissions`,
+plus `browserPermissions` when `browser.permissions` is a second object) and the native-namespace
+path of `webRequestStubJS` root through it, then re-read the namespace and
 check the patch is what it answers with; if not, they release the root and record
 `polyfill-not-visible` / `native+onAuthRequired-not-visible` in `__detourPolyfillDiag.apis`.
 `ExtensionPolyfillIntegrationTests.testActionGetUserSettingsSurvivesGarbageCollection` asserts the
 root identity and forces a collection (churning garbage until a control `WeakRef` clears) to read
 the API back afterwards.
+
+`permissionsOriginPortJS` (TASK-75) is the one module that wraps *native* members rather than
+filling a gap: `contains`, `request` and `remove` are replaced with wrappers that drop an explicit
+port from every `details.origins` string before forwarding (Chrome's match patterns take a port,
+WebKit's parser rejects one, so the call throws instead of answering). Each wrapper keeps WebKit's
+own function on `wrapper._detourNative` — so the nativeness reading survives, and a test can still
+call what WebKit vends — and is marked `_detourPortWrapper`, so a second run of the polyfill in the
+same realm re-roots the namespace instead of wrapping its own wrapper. Measured 2026-09-20 in a real
+extension page: `chrome.permissions === browser.permissions`, i.e. WebKit vends one namespace object
+under both globals, so one patch also covers the `browser.*` calls 1Password makes; the two-object
+case is handled regardless, since that identity is a WebKit implementation detail. Its diag entry
+(`apis.permissionsOriginPort`) reads `polyfill`, `absent` (no namespace), `no-methods` (none of the
+three is a function), `define-failed` (WebKit refused the write, so the native function is still in
+place and nothing is rooted) or `polyfill-not-visible`. Divergence from Chrome worth knowing: the
+rewrite makes a ported pattern mean the whole host for `request` and `remove` too, so the pair stays
+symmetric inside Detour (the prompt shows the host pattern that is actually granted), whereas Chrome
+treats `http://host:8080/*` as narrower than `http://host/*`.
 
 ### Bottom line
 

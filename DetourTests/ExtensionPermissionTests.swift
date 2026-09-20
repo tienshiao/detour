@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WebKit
 @testable import Detour
 
 final class ExtensionPermissionTests: XCTestCase {
@@ -519,5 +520,63 @@ extension ExtensionPermissionTests {
         let error = ExtensionManager.nativeHostForbiddenError()
         XCTAssertEqual(error.localizedDescription, "Access to the specified native messaging host is forbidden.")
         XCTAssertEqual(error.domain, "DetourExtension")
+    }
+}
+
+// MARK: - TASK-75: match patterns with a port, on the storage side
+
+extension ExtensionPermissionTests {
+
+    /// Can a `.matchPattern` row keyed by a pattern *with a port* ever mean
+    /// anything? No — and this pins why, so the polyfill's port stripping stays
+    /// a JS-side concern and nothing normalises keys on the way into the DB.
+    ///
+    /// The two ways a `.matchPattern` row is written are the permission prompt
+    /// (`ExtensionManager.handlePermissionPrompt` keys it by
+    /// `WKWebExtension.MatchPattern.string`, i.e. a pattern WebKit itself
+    /// parsed — and after the TASK-75 wrapper the delegate is handed port-less
+    /// patterns anyway) and a Settings toggle, which keys it by the raw manifest
+    /// string. Only the second can carry a port, and a row that does is inert by
+    /// construction: `WKWebExtension.MatchPattern(string:)` throws on it, so
+    /// `Profile.applySavedHostAccessDecisions` skips it, and the port-less
+    /// pattern it would normalise to is not in the extension's askable set
+    /// either, because WebKit drops an unparseable host permission instead of
+    /// reporting it. Normalising the write would therefore grant nothing extra
+    /// that the gate lets through — while turning a port-scoped declaration into
+    /// a whole-host one.
+    @MainActor
+    func testPortedHostPermissionNeverBecomesAnAskablePattern() async throws {
+        XCTAssertNil(try? WKWebExtension.MatchPattern(string: "http://127.0.0.1:8471/*"),
+                     "WebKit's match-pattern parser must still reject a port (TASK-75's whole premise)")
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-test-ported-host-perm-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try """
+        {
+            "manifest_version": 3,
+            "name": "Ported Host Permission",
+            "version": "1.0.0",
+            "host_permissions": ["http://127.0.0.1:8471/*", "https://example.com/*"]
+        }
+        """.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+
+        let wkExt = try await WKWebExtension(resourceBaseURL: dir)
+        let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
+        let ext = WebExtension(id: "ported-host-perm", manifest: manifest, basePath: dir)
+        ext.wkExtension = wkExt
+
+        let askable = Set(ext.askableMatchPatterns.map(\.string))
+        XCTAssertTrue(askable.contains("https://example.com/*"),
+                      "the parseable host permission is askable; got \(askable)")
+        XCTAssertFalse(askable.contains("http://127.0.0.1:8471/*"),
+                       "WebKit must not report a host permission it cannot parse")
+        XCTAssertFalse(askable.contains("http://127.0.0.1/*"),
+                       "nor a port-stripped repair of it — so a normalised row would still be skipped")
+
+        // The manifest itself keeps the raw string, which is what a Settings row
+        // for it would be keyed by: the one path a ported key can reach the DB.
+        XCTAssertEqual(ext.manifest.hostPermissions?.contains("http://127.0.0.1:8471/*"), true)
     }
 }

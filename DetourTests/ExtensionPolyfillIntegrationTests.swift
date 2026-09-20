@@ -673,6 +673,121 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(result?["local"] as? String, "ok")
     }
 
+    // MARK: - TASK-75: origin patterns with a port
+
+    /// WebKit's match-pattern parser takes `scheme://host/path` only, so a
+    /// Chrome-legal `http://127.0.0.1:8471/*` makes `permissions.contains` throw
+    /// "not a valid pattern" instead of answering — which is what stopped
+    /// 1Password setting up any page served from a non-default port. Against a
+    /// real `WKWebExtensionContext`: the wrapped call answers a boolean for a
+    /// granted and for a denied host, both with a port, and the negative control
+    /// shows WebKit's own function still throws on the same input (if it stops,
+    /// this test says so and the wrapper can go).
+    func testPermissionsContainsAnswersForPortedOriginPatterns() async throws {
+        let wv = try await makeExtensionWebView()
+
+        let result = try await evalJSON("""
+            const out = {
+                install: __detourPolyfillDiag.apis.permissionsOriginPort,
+                browserDistinct: __detourPolyfillDiag.apis.permissionsBrowserDistinct,
+                permissionsType: typeof chrome.permissions,
+                wrapped: chrome.permissions.contains._detourPortWrapper === true,
+                nativeness: __detourNativeness(chrome.permissions.contains._detourNative)
+            };
+            try { out.sameNamespace = chrome.permissions === browser.permissions; }
+            catch (e) { out.sameNamespace = 'error: ' + e.message; }
+            // Granted host, with a port: <all_urls> covers it, so `true`.
+            try { out.granted = await chrome.permissions.contains({ origins: ['http://127.0.0.1:8471/*'] }); }
+            catch (e) { out.granted = 'threw: ' + (e && e.message ? e.message : String(e)); }
+            // The path 1Password actually takes.
+            try { out.viaBrowser = await browser.permissions.contains({ origins: ['http://127.0.0.1:8471/*'] }); }
+            catch (e) { out.viaBrowser = 'threw: ' + (e && e.message ? e.message : String(e)); }
+            // A port-free pattern must still work, and the API permission form
+            // (no `origins` at all) must reach WebKit untouched.
+            try { out.portless = await chrome.permissions.contains({ origins: ['http://127.0.0.1/*'] }); }
+            catch (e) { out.portless = 'threw: ' + (e && e.message ? e.message : String(e)); }
+            try { out.apiPermission = await chrome.permissions.contains({ permissions: ['storage'] }); }
+            catch (e) { out.apiPermission = 'threw: ' + (e && e.message ? e.message : String(e)); }
+            // NEGATIVE CONTROL: WebKit's own function, with the same input.
+            try {
+                out.nativeAnswer = await chrome.permissions.contains._detourNative.call(
+                    chrome.permissions, { origins: ['http://127.0.0.1:8471/*'] });
+            } catch (e) { out.nativeThrew = (e && e.message ? e.message : String(e)); }
+            return JSON.stringify(out);
+        """, in: wv) as? [String: Any]
+
+        let out = try XCTUnwrap(result)
+        XCTAssertEqual(out["permissionsType"] as? String, "object",
+                       "an extension page must have chrome.permissions")
+        XCTAssertEqual(out["install"] as? String, "polyfill",
+                       "unexpected permissions port-wrapper install mode")
+        XCTAssertEqual(out["wrapped"] as? Bool, true)
+        XCTAssertEqual(out["nativeness"] as? String, "native",
+                       "the wrapper must keep WebKit's own function, not another wrapper")
+
+        XCTAssertEqual(out["granted"] as? Bool, true,
+                       "a granted host with a port must answer true, got: \(out["granted"] ?? "nil")")
+        XCTAssertEqual(out["viaBrowser"] as? Bool, true,
+                       "browser.permissions is the namespace 1Password calls, got: \(out["viaBrowser"] ?? "nil")")
+        XCTAssertEqual(out["portless"] as? Bool, true)
+        XCTAssertEqual(out["apiPermission"] as? Bool, true,
+                       "a details object with no origins must reach WebKit unchanged")
+
+        // Recorded rather than asserted: whether WebKit vends one namespace
+        // object for `chrome` and `browser` or two decides whether the polyfill
+        // has one wrapper to install or two, and it is a WebKit implementation
+        // detail that may change.
+        print("TASK-75: chrome.permissions === browser.permissions: \(out["sameNamespace"] ?? "nil"), "
+              + "browserDistinct: \(out["browserDistinct"] ?? "nil")")
+
+        XCTAssertNil(out["nativeAnswer"],
+                     """
+                     WebKit's own permissions.contains now ACCEPTS a match pattern with a port \
+                     (it answered \(out["nativeAnswer"] ?? "nil")). The TASK-75 port-stripping \
+                     wrapper in ExtensionAPIPolyfill.permissionsOriginPortJS exists only because \
+                     it threw: re-check and remove it.
+                     """)
+        let nativeThrew = try XCTUnwrap(out["nativeThrew"] as? String,
+                                        "WebKit's own permissions.contains neither threw nor answered")
+        XCTAssertTrue(nativeThrew.contains("not a valid pattern"),
+                      "unexpected error from WebKit's permissions.contains: \(nativeThrew)")
+    }
+
+    /// NEGATIVE: a host the context is *not* granted answers `false` with a port
+    /// exactly as it does without one — the wrapper turns a throw into an
+    /// answer, it does not turn every answer into `true`.
+    ///
+    /// The grants have to be taken away for the question to have a negative
+    /// answer at all: this context is granted `<all_urls>`, and `contains`
+    /// answers from the granted patterns alone (`hasPermissions` walks
+    /// `currentPermissionMatchPatterns`), so while that grant stands every host
+    /// contains — an explicitly *denied* host pattern included (both measured
+    /// 2026-09-20). Nor does `setPermissionStatus(.unknown:)` clear an all-hosts
+    /// grant, the same WebKit behaviour `ExtensionManager.setPermissionDecision`
+    /// works around, so the granted dictionary is emptied directly and put back.
+    func testPermissionsContainsIsFalseForAnUngrantedPortedOrigin() async throws {
+        let wv = try await makeExtensionWebView()
+
+        let savedGrants = state.context.grantedPermissionMatchPatterns
+        state.context.grantedPermissionMatchPatterns = [:]
+        defer { state.context.grantedPermissionMatchPatterns = savedGrants }
+
+        let result = try await evalJSON("""
+            const out = {};
+            try { out.ported = await chrome.permissions.contains({ origins: ['http://ungranted.example:9001/*'] }); }
+            catch (e) { out.ported = 'threw: ' + (e && e.message ? e.message : String(e)); }
+            try { out.portless = await chrome.permissions.contains({ origins: ['http://ungranted.example/*'] }); }
+            catch (e) { out.portless = 'threw: ' + (e && e.message ? e.message : String(e)); }
+            return JSON.stringify(out);
+        """, in: wv) as? [String: Any]
+
+        let out = try XCTUnwrap(result)
+        XCTAssertEqual(out["portless"] as? Bool, false,
+                       "control: an ungranted host answers false, got: \(out["portless"] ?? "nil")")
+        XCTAssertEqual(out["ported"] as? Bool, false,
+                       "the same host with a port must answer false too, got: \(out["ported"] ?? "nil")")
+    }
+
     // MARK: - Polyfill Guards
 
     func testPolyfillCanBeRerunWithoutBreaking() async throws {

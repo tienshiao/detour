@@ -592,6 +592,43 @@ document.getElementById('btn-perm-remove-origin').addEventListener('click', asyn
   }
 });
 
+// TASK-75: Chrome's match patterns take a port, WebKit's do not — without
+// Detour's polyfill wrapper this call throws "http://127.0.0.1:8471/* is not a
+// valid pattern" instead of answering, which is what stopped 1Password on every
+// site served from a non-default port. The wrapper drops the port and forwards,
+// so this must print a boolean (true under `<all_urls>`), and the port-free
+// twin must print the same answer. `contains._detourNative` is WebKit's own
+// function, kept by the wrapper: it is expected to still throw.
+const PORTED_ORIGIN = 'http://127.0.0.1:8471/*';
+
+document.getElementById('btn-perm-contains-port').addEventListener('click', async () => {
+  const lines = [];
+  try {
+    const ported = await chrome.permissions.contains({ origins: [PORTED_ORIGIN] });
+    lines.push(`contains("${PORTED_ORIGIN}"): ${ported}`);
+  } catch (e) {
+    lines.push(`contains("${PORTED_ORIGIN}") THREW: ${e.message} — the TASK-75 wrapper is missing`);
+  }
+  try {
+    const portless = await chrome.permissions.contains({ origins: ['http://127.0.0.1/*'] });
+    lines.push(`contains("http://127.0.0.1/*"): ${portless} (must match the line above)`);
+  } catch (e) {
+    lines.push(`contains("http://127.0.0.1/*") THREW: ${e.message}`);
+  }
+  const native = chrome.permissions.contains._detourNative;
+  if (typeof native !== 'function') {
+    lines.push('no _detourNative on permissions.contains — nothing is wrapping it');
+  } else {
+    try {
+      const answer = await native.call(chrome.permissions, { origins: [PORTED_ORIGIN] });
+      lines.push(`WebKit's own contains answered ${answer} — it accepts ports now, the wrapper may be removable`);
+    } catch (e) {
+      lines.push(`WebKit's own contains threw (expected): ${e.message}`);
+    }
+  }
+  showResult('res-permissions', lines.join('\n'));
+});
+
 // --- Native Messaging ---
 // Probes a host that does not exist, to show the error shapes an extension sees.
 // This extension does not declare `nativeMessaging`, so a real host is refused

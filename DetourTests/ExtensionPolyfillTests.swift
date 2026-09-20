@@ -745,6 +745,331 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["diag"] as? String, "absent")
     }
 
+    // MARK: - chrome.permissions origin patterns with a port (TASK-75)
+
+    /// A stand-in for WebKit's `chrome.permissions` that records every call —
+    /// the `details` object it was handed (by identity, so a test can tell a
+    /// rewritten copy from the caller's own object), how many arguments came
+    /// with it, and what `this` was. Its answers are fixed; what these tests
+    /// assert is the *arguments* the wrapper forwards.
+    private static let fakePermissionsShim = """
+    globalThis.__permCalls = [];
+    globalThis.__makeFakePermission = function(method, answer) {
+        return function(details, callback) {
+            globalThis.__permCalls.push({
+                method: method,
+                details: details,
+                argCount: arguments.length,
+                hasCallback: typeof callback === 'function',
+                onNamespace: this === globalThis.chrome.permissions
+            });
+            if (typeof callback === 'function') { callback(answer); return; }
+            return Promise.resolve(answer);
+        };
+    };
+    globalThis.__nativeContains = globalThis.__makeFakePermission('contains', true);
+    globalThis.chrome.permissions = {
+        contains: globalThis.__nativeContains,
+        request: globalThis.__makeFakePermission('request', true),
+        remove: globalThis.__makeFakePermission('remove', false),
+        getAll: function() { return Promise.resolve({ permissions: [], origins: [] }); }
+    };
+    """
+
+    private func makePermissionsWebView(extras: String = "") async throws -> WKWebView {
+        try await makeWebView(manifestPermissions: ["history"],
+                              shimExtras: Self.fakePermissionsShim + "\n" + extras)
+    }
+
+    /// contains/request/remove all reach the native function with the port gone
+    /// from every ported origin and everything else — other origins, the rest of
+    /// the details object — exactly as the caller wrote it.
+    func testPermissionsOriginPortStrippedForAllThreeMethods() async throws {
+        let wv = try await makePermissionsWebView()
+        let result = try await evalDictionary("""
+        const details = {
+            origins: ['http://127.0.0.1:8471/*', 'https://example.com/*'],
+            permissions: ['tabs']
+        };
+        const before = JSON.stringify(details);
+        const contained = await chrome.permissions.contains(details);
+        const requested = await chrome.permissions.request({ origins: ['*://*.example.com:8080/*'] });
+        const removed = await chrome.permissions.remove({ origins: ['https://host:8443/path'] });
+        return JSON.stringify({
+            contained: contained, requested: requested, removed: removed,
+            calls: __permCalls.map(function(call) {
+                return {
+                    method: call.method,
+                    origins: call.details.origins,
+                    permissions: call.details.permissions || null,
+                    onNamespace: call.onNamespace
+                };
+            }),
+            callerUnchanged: JSON.stringify(details) === before,
+            callerObjectNotForwarded: __permCalls[0].details !== details,
+            diag: __detourPolyfillDiag.apis.permissionsOriginPort,
+            browserDistinct: __detourPolyfillDiag.apis.permissionsBrowserDistinct,
+            held: __detourHeldWrappers.permissions === chrome.permissions,
+            nativeKept: chrome.permissions.contains._detourNative === globalThis.__nativeContains
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["contained"] as? Bool, true)
+        XCTAssertEqual(result["requested"] as? Bool, true)
+        XCTAssertEqual(result["removed"] as? Bool, false)
+
+        let calls = try XCTUnwrap(result["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.count, 3)
+        XCTAssertEqual(calls[0]["method"] as? String, "contains")
+        XCTAssertEqual(calls[0]["origins"] as? [String],
+                       ["http://127.0.0.1/*", "https://example.com/*"],
+                       "the ported origin loses its port; the other is untouched")
+        XCTAssertEqual(calls[0]["permissions"] as? [String], ["tabs"],
+                       "the rest of the details object is forwarded as written")
+        XCTAssertEqual(calls[1]["origins"] as? [String], ["*://*.example.com/*"])
+        XCTAssertEqual(calls[2]["origins"] as? [String], ["https://host/path"])
+        for call in calls {
+            XCTAssertEqual(call["onNamespace"] as? Bool, true,
+                           "the native function must run on the permissions namespace")
+        }
+
+        XCTAssertEqual(result["callerUnchanged"] as? Bool, true,
+                       "the caller's details object must never be mutated")
+        XCTAssertEqual(result["callerObjectNotForwarded"] as? Bool, true,
+                       "a rewrite goes into a shallow copy")
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+        XCTAssertEqual(result["browserDistinct"] as? Bool, false,
+                       "this fixture gives browser no permissions namespace of its own")
+        XCTAssertEqual(result["held"] as? Bool, true, "the patched namespace must be rooted")
+        XCTAssertEqual(result["nativeKept"] as? Bool, true,
+                       "the wrapper keeps the native function reachable for diagnostics")
+    }
+
+    /// Both call styles survive the wrapper: a call with a callback stays a
+    /// callback call (two arguments, native answers through the callback), and
+    /// one without stays a promise call (one argument).
+    func testPermissionsOriginPortKeepsCallbackAndPromiseForms() async throws {
+        let wv = try await makePermissionsWebView()
+        let result = try await evalDictionary("""
+        const viaCallback = await new Promise(function(resolve) {
+            chrome.permissions.contains({ origins: ['http://127.0.0.1:8471/*'] }, resolve);
+        });
+        const viaPromise = await chrome.permissions.contains({ origins: ['http://127.0.0.1:8471/*'] });
+        return JSON.stringify({
+            viaCallback: viaCallback,
+            viaPromise: viaPromise,
+            calls: __permCalls.map(function(call) {
+                return { argCount: call.argCount, hasCallback: call.hasCallback, origins: call.details.origins };
+            })
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["viaCallback"] as? Bool, true)
+        XCTAssertEqual(result["viaPromise"] as? Bool, true)
+        let calls = try XCTUnwrap(result["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls[0]["argCount"] as? Int, 2)
+        XCTAssertEqual(calls[0]["hasCallback"] as? Bool, true)
+        XCTAssertEqual(calls[0]["origins"] as? [String], ["http://127.0.0.1/*"])
+        XCTAssertEqual(calls[1]["argCount"] as? Int, 1,
+                       "no callback was given, so none may be invented")
+        XCTAssertEqual(calls[1]["hasCallback"] as? Bool, false)
+    }
+
+    /// The rewrite rule itself: only a real port on the authority goes.
+    func testPermissionsOriginPortStripRule() async throws {
+        let wv = try await makePermissionsWebView()
+        let result = try await evalDictionary("""
+        const cases = [
+            'http://127.0.0.1:8471/*',
+            'https://host:8443/path',
+            '*://*.example.com:8080/*',
+            'https://host:8443',
+            'http://host:*/*',
+            'http://[::1]:3000/*',
+            'http://[::1]/*',
+            'https://example.com/*',
+            '<all_urls>',
+            'file:///*',
+            'https://host/a:80/*',
+            'https://user:secret@host/*',
+            'https://host:80x/*',
+            'https://host:/*'
+        ];
+        const out = {};
+        cases.forEach(function(pattern) { out[pattern] = __detourStripOriginPort(pattern); });
+        return JSON.stringify({
+            stripped: out,
+            nonStrings: [__detourStripOriginPort(42), __detourStripOriginPort(null)]
+        });
+        """, on: wv)
+
+        let stripped = try XCTUnwrap(result["stripped"] as? [String: String])
+        XCTAssertEqual(stripped["http://127.0.0.1:8471/*"], "http://127.0.0.1/*")
+        XCTAssertEqual(stripped["https://host:8443/path"], "https://host/path")
+        XCTAssertEqual(stripped["*://*.example.com:8080/*"], "*://*.example.com/*")
+        XCTAssertEqual(stripped["https://host:8443"], "https://host",
+                       "a pattern with no path still loses its port")
+        XCTAssertEqual(stripped["http://host:*/*"], "http://host/*",
+                       "Chrome's port wildcard goes the same way a number does")
+        XCTAssertEqual(stripped["http://[::1]:3000/*"], "http://[::1]/*")
+        XCTAssertEqual(stripped["http://[::1]/*"], "http://[::1]/*",
+                       "the colons inside an IPv6 literal are not a port")
+        XCTAssertEqual(stripped["https://example.com/*"], "https://example.com/*")
+        XCTAssertEqual(stripped["<all_urls>"], "<all_urls>")
+        XCTAssertEqual(stripped["file:///*"], "file:///*")
+        XCTAssertEqual(stripped["https://host/a:80/*"], "https://host/a:80/*",
+                       "a colon in the path is not a port")
+        XCTAssertEqual(stripped["https://user:secret@host/*"], "https://user:secret@host/*",
+                       "userinfo is not valid in a match pattern — leave it for WebKit to reject")
+        XCTAssertEqual(stripped["https://host:80x/*"], "https://host:80x/*")
+        XCTAssertEqual(stripped["https://host:/*"], "https://host:/*")
+        let nonStrings = try XCTUnwrap(result["nonStrings"] as? [Any])
+        XCTAssertEqual(nonStrings.count, 2)
+        XCTAssertEqual(nonStrings[0] as? Int, 42, "a non-string comes back as it went in")
+        XCTAssertTrue(nonStrings[1] is NSNull)
+    }
+
+    /// NEGATIVE: nothing to rewrite means nothing is touched — a details object
+    /// with no `origins` array, and one whose origins carry no port, both reach
+    /// the native function as the very object the caller passed.
+    func testPermissionsOriginPortForwardsUnrewrittenDetailsUntouched() async throws {
+        let wv = try await makePermissionsWebView()
+        let result = try await evalDictionary("""
+        const apiOnly = { permissions: ['tabs'] };
+        const portless = { origins: ['https://example.com/*'] };
+        await chrome.permissions.contains(apiOnly);
+        await chrome.permissions.contains(portless);
+        await chrome.permissions.contains(undefined);
+        await chrome.permissions.contains({ origins: 'not-an-array' });
+        await chrome.permissions.contains({ origins: [7, null, 'http://h:99/*'] });
+        return JSON.stringify({
+            apiOnlySame: __permCalls[0].details === apiOnly,
+            portlessSame: __permCalls[1].details === portless,
+            undefinedForwarded: __permCalls[2].details === undefined,
+            undefinedArgCount: __permCalls[2].argCount,
+            stringOrigins: __permCalls[3].details.origins,
+            mixedOrigins: __permCalls[4].details.origins
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["apiOnlySame"] as? Bool, true,
+                       "details with no origins array is forwarded untouched")
+        XCTAssertEqual(result["portlessSame"] as? Bool, true,
+                       "origins with no port are forwarded untouched, object identity included")
+        XCTAssertEqual(result["undefinedForwarded"] as? Bool, true)
+        XCTAssertEqual(result["undefinedArgCount"] as? Int, 1)
+        XCTAssertEqual(result["stringOrigins"] as? String, "not-an-array",
+                       "a non-array origins value is WebKit's to reject")
+        let mixed = try XCTUnwrap(result["mixedOrigins"] as? [Any])
+        XCTAssertEqual(mixed.count, 3)
+        XCTAssertEqual(mixed[0] as? Int, 7)
+        XCTAssertTrue(mixed[1] is NSNull)
+        XCTAssertEqual(mixed[2] as? String, "http://h/*",
+                       "the string entries are rewritten; the rest passes through")
+    }
+
+    /// Re-running the polyfill in the same realm must not wrap the wrapper: the
+    /// native function is called once per call and stays one hop away.
+    func testPermissionsOriginPortRerunLeavesOneWrapperLayer() async throws {
+        let wv = try await makePermissionsWebView()
+        let result = try await evalDictionary("""
+        \(ExtensionAPIPolyfill.polyfillJS)
+        __permCalls.length = 0;
+        const answer = await chrome.permissions.contains({ origins: ['http://127.0.0.1:8471/*'] });
+        return JSON.stringify({
+            answer: answer,
+            callCount: __permCalls.length,
+            origins: __permCalls[0].details.origins,
+            nativeIsTheFake: chrome.permissions.contains._detourNative === globalThis.__nativeContains,
+            nativeIsNotAWrapper: chrome.permissions.contains._detourNative._detourPortWrapper === undefined,
+            held: __detourHeldWrappers.permissions === chrome.permissions,
+            diag: __detourPolyfillDiag.apis.permissionsOriginPort
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["answer"] as? Bool, true)
+        XCTAssertEqual(result["callCount"] as? Int, 1, "the native function must be called exactly once")
+        XCTAssertEqual(result["origins"] as? [String], ["http://127.0.0.1/*"])
+        XCTAssertEqual(result["nativeIsTheFake"] as? Bool, true)
+        XCTAssertEqual(result["nativeIsNotAWrapper"] as? Bool, true,
+                       "a second run must not wrap the first run's wrapper")
+        XCTAssertEqual(result["held"] as? Bool, true)
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+    }
+
+    /// A `browser.permissions` that is a different object than
+    /// `chrome.permissions` is patched too, under its own root key — 1Password
+    /// calls `browser.*`.
+    func testPermissionsOriginPortPatchesADistinctBrowserNamespace() async throws {
+        let wv = try await makePermissionsWebView(extras: """
+        globalThis.browser = globalThis.browser || {};
+        globalThis.browser.permissions = {
+            contains: globalThis.__makeFakePermission('browser.contains', true),
+            request: globalThis.__makeFakePermission('browser.request', true),
+            remove: globalThis.__makeFakePermission('browser.remove', true)
+        };
+        """)
+        let result = try await evalDictionary("""
+        await browser.permissions.contains({ origins: ['http://127.0.0.1:8471/*'] });
+        return JSON.stringify({
+            distinct: chrome.permissions !== browser.permissions,
+            origins: __permCalls[0].details.origins,
+            method: __permCalls[0].method,
+            chromeWrapped: chrome.permissions.contains._detourPortWrapper === true,
+            browserWrapped: browser.permissions.contains._detourPortWrapper === true,
+            chromeHeld: __detourHeldWrappers.permissions === chrome.permissions,
+            browserHeld: __detourHeldWrappers.browserPermissions === browser.permissions,
+            diag: __detourPolyfillDiag.apis.permissionsOriginPort,
+            browserDistinct: __detourPolyfillDiag.apis.permissionsBrowserDistinct
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["distinct"] as? Bool, true)
+        XCTAssertEqual(result["method"] as? String, "browser.contains")
+        XCTAssertEqual(result["origins"] as? [String], ["http://127.0.0.1/*"])
+        XCTAssertEqual(result["chromeWrapped"] as? Bool, true)
+        XCTAssertEqual(result["browserWrapped"] as? Bool, true)
+        XCTAssertEqual(result["chromeHeld"] as? Bool, true)
+        XCTAssertEqual(result["browserHeld"] as? Bool, true)
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+        XCTAssertEqual(result["browserDistinct"] as? Bool, true)
+    }
+
+    /// NEGATIVE: a namespace that refuses the write must not be reported as
+    /// patched — `__detourDefine` only warns, so the install marker has to notice.
+    func testPermissionsOriginPortReportsARefusedDefine() async throws {
+        let wv = try await makePermissionsWebView(
+            extras: "Object.freeze(globalThis.chrome.permissions);")
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            wrapped: chrome.permissions.contains._detourPortWrapper === true,
+            diag: __detourPolyfillDiag.apis.permissionsOriginPort,
+            rooted: Object.keys(__detourHeldWrappers).indexOf('permissions') !== -1
+        });
+        """, on: wv)
+        XCTAssertEqual(result["wrapped"] as? Bool, false)
+        XCTAssertEqual(result["diag"] as? String, "define-failed")
+        XCTAssertEqual(result["rooted"] as? Bool, false, "an unpatched namespace is not rooted")
+    }
+
+    /// NEGATIVE: without a `chrome.permissions` namespace nothing is created —
+    /// its absence is the right answer, as in Chrome.
+    func testPermissionsOriginPortAbsentWithoutNamespace() async throws {
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            permissions: typeof chrome.permissions,
+            browserPermissions: typeof browser.permissions,
+            diag: __detourPolyfillDiag.apis.permissionsOriginPort,
+            rooted: Object.keys(__detourHeldWrappers).indexOf('permissions') !== -1
+        });
+        """)
+        XCTAssertEqual(result["permissions"] as? String, "undefined")
+        XCTAssertEqual(result["browserPermissions"] as? String, "undefined")
+        XCTAssertEqual(result["diag"] as? String, "absent")
+        XCTAssertEqual(result["rooted"] as? Bool, false, "nothing was patched, so nothing is rooted")
+    }
+
     // MARK: - chrome.sessions
 
     func testSessionsMaxSessionResults() async throws {
