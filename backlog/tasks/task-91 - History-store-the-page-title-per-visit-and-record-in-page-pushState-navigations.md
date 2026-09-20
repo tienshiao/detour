@@ -3,11 +3,11 @@ id: TASK-91
 title: >-
   History: store the page title per visit, and record in-page (pushState)
   navigations
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-19 20:33'
-updated_date: '2026-09-19 22:29'
+updated_date: '2026-09-20 00:53'
 labels:
   - history
 dependencies:
@@ -80,3 +80,9 @@ Implementation (uncommitted) verified at runtime in an isolated instance against
 
 Committed on task-91-visit-titles (stacked on task-87-history-deletion); NOT merged - waits for TASK-87's unlocked-screen pass. Review fixes applied (see previous note); one deliberate narrowing: the recording generation is bumped whenever a pass changes which visit the tab holds (every recording, every dedup pass that clears the id), NOT on a dedup pass that continues the same visit - bumping there discarded the tab's own in-flight id and lost the late-title correction (verified by mutation testing both ways). Validation: targeted 190 tests x3 stable; full suite 1380 tests, 5 skipped, 0 failures. Runtime (isolated instance, page driven from native timers because the locked screen throttles hidden-page timers): load 'SPA Home'; pushState /watch?v=1 -> own visit 'Video one' (title set 300 ms after the push); two replaceState rewrites -> nothing; pushState /home -> 'SPA Home again'; #section-2 -> its own visit. Accepted costs: a cross-document load that takes >30 s after commit can record a second visit; the first pushState after a tab without a baseline item is not recorded. Test-infra finding: a WKWebView with NO navigation delegate never sends the request for load(_:) - offscreen tests that need a real load must install one.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Each visit keeps its own title (migration h4) and pushState/fragment navigations record their own visits (replaceState does not); History rows show the visit title with a URL-level fallback, scoped per profile. Verified by tests (full suite 1380, 0 failures) and a runtime pass against a local SPA. Known limitation: History search still matches the shared URL-level FTS title. Merged to main (809903c).
+<!-- SECTION:FINAL_SUMMARY:END -->

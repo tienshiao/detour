@@ -1,11 +1,11 @@
 ---
 id: TASK-87
 title: 'History: delete entries and clear history from the History page'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-19 16:51'
-updated_date: '2026-09-19 21:28'
+updated_date: '2026-09-20 00:53'
 labels: []
 dependencies:
   - TASK-86
@@ -33,7 +33,7 @@ Things to get right:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A single entry can be deleted from the page (button/context menu and Delete key on selection); it disappears without a full reload
+- [x] #1 A single entry can be deleted from the page (button/context menu and Delete key on selection); it disappears without a full reload
 - [x] #2 Multiple selected entries can be deleted at once
 - [x] #3 A Clear History action offers time ranges (last hour, today, all time) and asks for confirmation before deleting
 - [x] #4 Deletion only removes visits belonging to the tab's profile; another profile's visits to the same URL survive, with its visitCount/lastVisitTime recomputed (test)
@@ -63,4 +63,12 @@ Steps: 1. (Opus) DB APIs + tests. 2. (Fable) bridge methods, native confirmation
 
 <!-- SECTION:NOTES:BEGIN -->
 Committed on task-87-history-deletion (f1686e7); NOT merged yet. AC #8 decision: visits are not deleted in deleteSpace (Undo Delete Space restores the space under the same id and must get its history back); instead visits of spaces that no longer exist are swept at launch, treating spaces deleted this session as existing, and refusing to sweep unless a surviving space has visits (a session DB that failed to restore must not orphan the whole history). Review pass fixed: failed write reported as success; delete mode taken from state.query instead of the rendered row; removal by captured element instead of the live DOM; partial multi-batch failure; clear scope captured before the sheet; sweep vs undo in the first 5 s; historyDidDelete erasing state of visits recorded after the request; per-URL work inside the write transaction (now set-based via a temp staging table); false empty state. Validation: targeted suites 138 tests x3 stable; full suite 1343-1344 tests, 5 skipped - 0 failures in one run, and 1 failure in two runs, both the same unrelated JS-GC timing test (ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection). Runtime (isolated instance, SCREEN LOCKED so script-driven page events only): row delete, Shift range, Cmd+A, Escape, Clear menu, native sheet text/profile name/destructive button, second clear ignored while the sheet is up, Cancel = no change, Clear All = empty list and 0 visits / 0 URLs / 0 FTS rows; launch sweep removed a vanished space's visits and corrected the shared URL's visitCount. STILL TO VERIFY ON AN UNLOCKED SCREEN before merge / AC #1: real mouse clicks and the Delete key through AppKit, Cmd+A on the page vs the Edit > Select All menu item, and the visual pass in light/dark.
+
+Unlocked-screen pass (2026-09-19, isolated instance, real NSEvents posted through NSApp's event queue): click on a row's x button, checkbox click + Delete (backspace) key, forward-delete key, Shift-click range + selection-bar Delete, Escape, all removed/changed exactly the expected rows and the DB agreed. Cmd+A with the list focused selects every row and no page text (the page's keydown wins over Edit > Select All); with the search field focused it selects the field's text only, and Delete there edits the field, not the list. Light/dark visual pass OK (list, selection bar, selected row, Clear menu). Not captured: the CSS :hover look in a screenshot. Observation: selecting the first row reveals the selection bar and shifts the list down 40px under the pointer.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+History page can delete single/multiple entries (x button, Delete key, selection bar) and clear by range behind a native confirmation sheet; deletion is profile-scoped with aggregate recompute, orphan pruning, FTS/suggestion cleanup, dedup-cache invalidation and a launch sweep of vanished spaces. Verified by unit + integration tests (full suite green) and a real-input runtime pass in light and dark. Merged to main (f1686e7).
+<!-- SECTION:FINAL_SUMMARY:END -->
