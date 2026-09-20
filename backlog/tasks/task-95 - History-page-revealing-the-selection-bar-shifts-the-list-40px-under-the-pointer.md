@@ -3,9 +3,11 @@ id: TASK-95
 title: >-
   History page: revealing the selection bar shifts the list 40px under the
   pointer
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-20 03:28'
+updated_date: '2026-09-20 03:51'
 labels: []
 dependencies: []
 references:
@@ -28,3 +30,9 @@ On detour://history/, ticking the first checkbox reveals the selection bar ('N s
 - [ ] #4 Hidden controls are not focusable or reachable by Tab while overlaid; incognito (no range control) lays out correctly
 - [ ] #5 Real-input runtime pass in light and dark: tick first row then immediately click the next row - the intended row toggles
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Design (Fable): the selection controls share the search row's 52px slot instead of adding a 40px strip. #selection becomes an absolutely positioned overlay inside the (position: sticky) header, same .bar-inner geometry; while a selection exists the header carries a 'selecting' class and the main row's controls get visibility:hidden (keeps layout, removes them from hit-testing, Tab order and the AX tree) - the h1 stays. Entering selection closes the Clear History <details>. Anything that would focus the search field while selecting clears the selection first. Values/URL state of search, range, day are untouched, so they return as they were. Steps: 1 (Opus, worktree) implement + integration tests measuring row rects/header height before and after. 2 (Fable) /code-review, real-input runtime pass light+dark (tick first row, immediately click the next). 3 commit + merge.
+<!-- SECTION:PLAN:END -->
