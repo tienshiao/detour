@@ -1,11 +1,11 @@
 ---
 id: TASK-92
 title: 'History: time-range filter on the History page'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-20 00:54'
-updated_date: '2026-09-20 01:36'
+updated_date: '2026-09-20 02:57'
 labels: []
 dependencies: []
 references:
@@ -31,7 +31,7 @@ The History page (detour://history/) can only be narrowed by text search. Add a 
 - [x] #5 Deleting a search-mode row while a range is active deletes only that URL's in-scope visits inside the range (what the row stands for); list-mode deletes and Clear History are unchanged
 - [x] #6 The empty state names the period when a range is active and nothing matches; incognito hides the control
 - [x] #7 Unit tests cover the HistoryDatabase range parameters (list + search + ranged URL delete, boundaries, cursor paging) and integration tests cover the bridge (valid, malformed, cross-profile isolation unchanged)
-- [ ] #8 Runtime pass with real input events in light and dark: picking each preset, a specific day, range + search, URL round-trip after reload
+- [x] #8 Runtime pass with real input events in light and dark: picking each preset, a specific day, range + search, URL round-trip after reload
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -50,4 +50,12 @@ Steps: 1 (Opus) implement B-E + tests. 2 (Fable) review, /code-review, real-inpu
 
 <!-- SECTION:NOTES:BEGIN -->
 Committed on task-92-history-range-filter (e9355a2 + 2acca1f); NOT merged. Deviations from the first plan, after /code-review: (1) one window per listing - the query reply reports window {from, until}, the page echoes it on load-more and on URL-mode deletes (delete takes 'window', no 'range'); page-supplied instants are acceptable because scope stays native and a window can only narrow a read or a delete fan-out (history.clear still computes its cutoff natively). (2) Days resolve in a Gregorian calendar with the user's time zone. (3) applyDeletion/deletedURLs are keyed by window so a ranged delete never hides rows of another period. (4) 'Specific day…' applies at once (last picked day, else today); an emptied field is put back. (5) No min on the date field (AC #1 wording: the 90-day expiry only runs at launch, so older days can exist; an old day lists nothing); max=today refreshed on reveal/focus. (6) Found at runtime: WebKit restores form values after the page script on reload/session restore, leaving the select out of step with the list - controls now follow state (autocomplete=off + sync on load/pageshow, test added). Validation: full suite 1418 tests, 5 skipped, 0 failures. Runtime with REAL posted input (unlocked): each preset chosen through the native popup with arrow keys + Return (counts 2/1/4/6 as seeded), ?range= in the URL, reload keeps range + query, empty state names the period, light/dark bar visuals OK. STILL OWED for AC #8 (screen re-locked): real input on the date field (arrow keys on a segment), ranged URL-mode delete checked against the DB, final light/dark pass after the review fixes. Harness saved untracked at .claude/task92-harness.patch; isolated data dir DetourVerify87 is seeded.
+
+AC #8 completed 2026-09-19 (screen unlocked, real posted input, isolated profile): date field driven with real click + 10x Down on the day segment -> 2026-09-09, ?day= in the URL, 2 rows, survives reload; range+search (week+wiki empty state naming the period, month+wiki 1 row, reload keeps both); ranged URL-mode delete (today + 'page', real click on page1's x) removed only today's page1 visit - the Sep 9 visit of the same URL survived in history.db and reappears under All time; final light + dark screenshots OK after the review fixes. Harness reverted, never committed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added a time-range filter (All time / Today / Yesterday / Last 7 days / Last 30 days / Specific day) to detour://history/. Bounds are computed natively by the pure HistoryTimeRange type (Gregorian, user time zone, half-open); a listing keeps one window for paging and URL-mode deletes; range lives in the page URL next to ?q=; controls follow page state after WebKit form restore. Deviation: no min on the date field. Verified by the full suite (1418 tests, 0 failures) and a real-input runtime pass in light and dark, including a ranged delete checked against the DB.
+<!-- SECTION:FINAL_SUMMARY:END -->
