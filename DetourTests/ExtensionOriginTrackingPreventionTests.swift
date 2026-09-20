@@ -8,23 +8,32 @@ import WebKit
 private final class InteractionRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [URL] = []
+    private var recordedStores: [WKWebsiteDataStore] = []
 
     var urls: [URL] {
         lock.lock(); defer { lock.unlock() }
         return recorded
     }
 
+    /// The store each interaction was logged into, in call order.
+    var stores: [WKWebsiteDataStore] {
+        lock.lock(); defer { lock.unlock() }
+        return recordedStores
+    }
+
     func install() {
-        ExtensionOriginInteractionKeeper.interactionLogHookForTesting = { [weak self] url, _ in
+        ExtensionOriginInteractionKeeper.interactionLogHookForTesting = { [weak self] url, store in
             guard let self else { return }
             self.lock.lock(); defer { self.lock.unlock() }
             self.recorded.append(url)
+            self.recordedStores.append(store)
         }
     }
 
     func reset() {
         lock.lock(); defer { lock.unlock() }
         recorded = []
+        recordedStores = []
     }
 }
 
@@ -268,22 +277,52 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
                       "a non-persistent store must never reach WebKit's interaction log")
     }
 
-    /// An incognito profile goes through exactly the same
-    /// `loadExtensionContext` and must still log nothing — its store is
-    /// non-persistent.
-    func testIncognitoProfileLogsNoInteraction() async throws {
+    /// An incognito profile's *browsing* store is non-persistent, but its
+    /// extension pages run in WebKit's default store — persistent, and subject
+    /// to the purge. Skipping it because the profile "is incognito" let ITP
+    /// delete 1Password's IndexedDB under its running Private-profile worker
+    /// (TASK-90), so its origin must be logged like any other, into the store
+    /// its pages actually use.
+    func testIncognitoProfileLogsItsOriginIntoTheStoreItsPagesUse() async throws {
         let recorder = InteractionRecorder()
         recorder.install()
 
         let ext = try await makeProbeExtension(idPrefix: "itp-incognito")
         let profile = Profile(name: "ITP Incognito", isIncognito: true)
         defer { profile.unloadAllExtensions() }
-        _ = profile.extensionController
+        let pagesStore = profile.extensionController.configuration.webViewConfiguration.websiteDataStore
+        // The premise. If this ever fails the Private profile's extension pages
+        // have moved to an ephemeral store and the keeper rightly logs nothing:
+        // turn the assertions below around rather than deleting them.
+        XCTAssertTrue(pagesStore.isPersistent,
+                      "premise: the Private profile's extension pages run in a persistent store")
+        XCTAssertFalse(profile.dataStore.isPersistent, "its browsing store stays non-persistent")
+
         _ = profile.loadExtensionContext(ext)
-        XCTAssertNotNil(profile.extensionContexts[ext.id], "precondition: the context should load")
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id], "precondition: the context should load")
+
+        XCTAssertEqual(recorder.urls, [context.baseURL],
+                       "the Private profile's extension origin must be logged exactly once at load")
+        XCTAssertTrue(recorder.stores.allSatisfy { $0 === pagesStore },
+                      "and into the store its pages run in, not the profile's browsing store")
+
+        recorder.reset()
+        profile.originInteractionKeeper.refreshNow()
+        XCTAssertEqual(recorder.urls, [context.baseURL], "the daily refresh must cover it too")
+    }
+
+    /// A deleted profile's storage is being removed: nothing of it is kept,
+    /// whatever store its pages would have used.
+    func testDeletedProfileLogsNoInteraction() async throws {
+        let recorder = InteractionRecorder()
+        recorder.install()
+
+        let profile = makeProfile("ITP Deleted Profile")
+        profile.isDeleted = true
+        profile.originInteractionKeeper.refreshNow()
 
         XCTAssertTrue(recorder.urls.isEmpty,
-                      "an incognito profile must not log interactions, got \(recorder.urls)")
+                      "a deleted profile must not log interactions, got \(recorder.urls)")
     }
 
     /// The production path: loading a context logs one interaction, for that
