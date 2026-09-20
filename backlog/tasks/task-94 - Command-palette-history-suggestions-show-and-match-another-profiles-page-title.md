@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-20 03:12'
-updated_date: '2026-09-20 04:43'
+updated_date: '2026-09-20 07:21'
 labels: []
 dependencies:
   - TASK-93
@@ -44,6 +44,8 @@ Design (Fable). The palette runs these queries synchronously on the main thread 
 Decision (user, 2026-09-19): the palette STAYS scoped to the single space (today's behaviour) - do not widen it to the profile. The task is only about the title: what a suggestion displays and what a title match may go through must come from in-scope (this space's) visits. This settles the space-vs-profile question in the description.
 
 Implemented (5ef9353) after two /code-review rounds. Label = the space's latest NON-EMPTY own visit title; the shared historyURL.title only when no other space has a visit of the URL, else '' (displayTitle shows the URL). searchHistory: FTS over both columns stays the candidate gate + ranking; a candidate qualifies if the space visited it AND (FTS url-column match OR an in-scope visit's own title passes the shared titleMatchCondition = LIKE/GLOB prefilter + history_title_matches). Review findings fixed: legacy NULL-title fallback leaked the other profile's title (now guarded, also in the matcher input); FTS5 keyword tokens (NOT/AND/OR) were a syntax error returning nothing in palette, History page and chrome.history.search - all tokens now quoted via ftsPrefixQuery; weak ordering tests replaced by full-order + id-tiebreak + filter-before-LIMIT tests; projection deduped (labelledSelect). Accepted + pinned by tests: (1) an own title is findable only while the shared title also contains the word (FTS gate; main-thread per-keystroke budget) - root fix would be indexing every title a URL has had (schema migration), which would also let TASK-93 drop its scan; (2) match and label can come from different own visits (a row is a URL). Documented, not fixed: faviconURL/rank/visitCount remain cross-space; legacy-guard hole when another space's NULL-title visits set the shared title and were then deleted (90-day legacy window only). Timings, 50k visits, Debug: search 'a' 17.0 ms (was 18.4), URL token 8.4 (18.9), title-only 3.6 (2.5), miss 0.6, recentHistory 28.3 (25.2; pre-existing full aggregation - candidate follow-up), worst case one URL with 5,000 non-matching own visits 25 ms. Validation: full suite 1449 tests, 5 skipped, 0 failures; runtime check in the real app against the on-disk isolated DB with a seeded foreign-space visit (labels own, 'budget'/'secret' empty, foreign-only URL never returned, 'NOT wiki' works, provider rows correct). Real-key palette typing not done (screen locked); palette UI code unchanged.
+
+2026-09-20 follow-ups decided by the user: TASK-96 (index every title a URL has had) and TASK-97 (recentHistory aggregation) filed. NOT filed, by decision: a profile-aware guard for the History page's legacy NULL-title fallback in searchVisits - it only affects pre-TASK-91 visits and ages out with the 90-day expiry.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
