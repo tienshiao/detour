@@ -46,9 +46,14 @@ enum HistoryPageContent {
     <link rel="stylesheet" href="page.css">
     </head>
     <body>
-    <header class="bar">
-        <div class="bar-inner">
+    <header id="bar" class="bar">
+        <div id="bar-main" class="bar-inner">
             <h1>History</h1>
+            <div id="selection" class="selection">
+                <span id="selection-count" class="selection-count"></span>
+                <button id="selection-delete" class="button danger" type="button">Delete</button>
+                <button id="selection-cancel" class="button" type="button">Cancel</button>
+            </div>
             <input id="search" type="search" placeholder="Search History"
                    autocomplete="off" autocorrect="off" spellcheck="false" autofocus>
             <select id="range" class="picker" aria-label="Time range" autocomplete="off" hidden>
@@ -68,13 +73,6 @@ enum HistoryPageContent {
                     <button class="menu-item" type="button" data-range="all">All history</button>
                 </div>
             </details>
-        </div>
-        <div id="selection" class="selection" hidden>
-            <div class="bar-inner">
-                <span id="selection-count" class="selection-count"></span>
-                <button id="selection-delete" class="button danger" type="button">Delete</button>
-                <button id="selection-cancel" class="button" type="button">Cancel</button>
-            </div>
         </div>
     </header>
     <main class="column">
@@ -302,16 +300,39 @@ enum HistoryPageContent {
 
     .menu-item:hover { background: var(--hover); }
 
-    .selection { border-top: 1px solid var(--hairline); }
+    /* Selecting swaps the search row's contents instead of adding a strip below
+       it (TASK-95). A strip makes the sticky header taller the moment the first
+       checkbox is ticked: every row of the list slides out from under a
+       stationary pointer, a quick second click lands on the wrong entry, and
+       the list jumps back when the selection empties. `.bar-inner` has a fixed
+       52px height, so exchanging its children cannot change the header's height
+       at all — the list below it never moves, and the selection's controls land
+       in the column the ones they replace were standing in.
 
-    .selection .bar-inner {
-        height: 40px;
+       The <h1> is the one thing that does not go: the count reads as its
+       subtitle, and the buttons take the place of Clear History at the end of
+       the row. */
+    .selection {
+        display: flex;
+        align-items: center;
+        flex: 1 1 auto;
+        min-width: 0;
         gap: 10px;
     }
+
+    /* One switch for the whole swap: the class on the header. The rule only
+       ever *adds* hiding, so a control the page hides for its own reasons — the
+       date field, and the period and Clear History controls in a private space
+       — stays hidden by its own `hidden` attribute when the selection ends. */
+    .bar:not(.selecting) .selection { display: none; }
+    .bar.selecting > .bar-inner > :not(h1):not(.selection) { display: none; }
 
     .selection-count {
         flex: 1 1 auto;
         min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
         color: var(--muted);
     }
 
@@ -546,6 +567,12 @@ extension HistoryPageContent {
         // Bumped every time a delete's reply is applied. `refresh` uses it to
         // tell a read that cannot predate a delete from one that might.
         deleteEpoch: 0,
+        // What a selection is holding back (TASK-95): 'reload' to start the
+        // list again, 'refresh' to look for newer entries, null for nothing.
+        // A reload outranks a refresh, which leaves the list — and its scroll
+        // position — alone when there is nothing new. Run once, by
+        // `leaveSelection`.
+        deferred: null,
     };
 
     /// What this page has deleted and must not let back in: visit ids, and — in
@@ -565,11 +592,26 @@ extension HistoryPageContent {
     /// hand. An id rather than an element, because rows come and go.
     let anchorID = null;
 
+    /// The control the selection took focus away from, to be given it back when
+    /// the selection ends — the user was typing a search, ticked a row, and
+    /// means to carry on typing (TASK-95). Null whenever no selection is on.
+    let focusToRestore = null;
+
+    /// The control the press now under way is taking focus away from. A real
+    /// mousedown on a row's checkbox moves focus itself — out of the search
+    /// field, to the checkbox or to the document — and it does so before the
+    /// `click` that starts the selection, so by then `activeElement` no longer
+    /// says where the caret was. This is noted in the capture phase of the
+    /// press, before any of that, and belongs to that press alone.
+    let pendingFocus = null;
+
     /// The last day the user actually picked on this page, so coming back to
     /// "Specific day…" returns to it rather than to today, and a field left
     /// half-typed can be put back to a real day (TASK-92).
     let pickedDay = null;
 
+    let barEl = null;
+    let barMainEl = null;
     let listEl = null;
     let emptyEl = null;
     let searchEl = null;
@@ -736,10 +778,93 @@ extension HistoryPageContent {
         if (box) box.checked = on;
     };
 
+    /// Whether the list may be replaced right now — one rule, asked at every
+    /// point a replacement could start or land (TASK-95). While rows are
+    /// ticked the answer is no: replacing the list throws the tick away and
+    /// flips the header under the user, which is the whole of what this page
+    /// promises not to do. The replacement is owed instead, and
+    /// `leaveSelection` runs the strongest one that was asked for. Appending
+    /// — a load-more page — replaces nothing and carries on as usual.
+    const deferWhileSelecting = (kind) => {
+        if (!barEl.classList.contains('selecting')) return false;
+        state.deferred = state.deferred === 'reload' || kind === 'reload' ? 'reload' : 'refresh';
+        return true;
+    };
+
+    /// Whether `el` is one of the row's own controls — the ones a selection
+    /// takes off the row, and so the ones whose focus it has to deal with. The
+    /// selection's own buttons are not: they are what the row becomes.
+    const isRowControl = (el) =>
+        !!el && el !== barMainEl && barMainEl.contains(el) && !selectionEl.contains(el);
+
+    /// The search row's own controls have just left the row (TASK-95), and
+    /// what they were in the middle of goes with them.
+    const enterSelection = () => {
+        // A menu left open would hang under a row the selection is about to
+        // change, and come back open afterwards.
+        clearEl.open = false;
+        // Nothing may keep focus in a control that is no longer rendered: it
+        // would be typed into unseen. Where the caret was is `activeElement`
+        // for a keyboard selection, and `pendingFocus` for a pointer one —
+        // the press moved it before the click arrived here.
+        const active = document.activeElement;
+        const candidate = isRowControl(active) ? active : pendingFocus;
+        pendingFocus = null;
+        if (candidate) {
+            focusToRestore = candidate;
+            if (isRowControl(active)) active.blur();
+            // With the field out of the row, `isTextFieldFocused()` is false
+            // and Delete or Backspace acts on the selection. That is the
+            // intent: the header says "N selected" next to a Delete button,
+            // and the field the key would have edited is not on screen.
+            //
+            // Which is also the whole story of who gets the caret back. A key
+            // that ends the selection keeps it: `onKeyDown` forgets this
+            // control before it deletes, because the key may still be down
+            // when the field returns. A button or a row's × gives it back
+            // unless the delete succeeded and took the last ticked row with
+            // it — `applyDeletion` forgets it then, for the same reason.
+        }
+        // A search the user had half typed is owed, not dropped: firing it here
+        // would re-render the rows under the tick that started the selection.
+        clearTimeout(searchTimer);
+    };
+
+    /// The last row was unpicked (or deleted, or the list was replaced under
+    /// the selection): the row's controls are back, and so is everything the
+    /// selection was holding back — run here, once.
+    const leaveSelection = () => {
+        const restore = focusToRestore;
+        focusToRestore = null;
+        const active = document.activeElement;
+        // Given back, never taken: only when the user has not put the caret
+        // somewhere else meanwhile. A selection button is not somewhere else
+        // — with Full Keyboard Access the Cancel that ended the selection is
+        // itself about to stop being rendered.
+        if (restore && restore.isConnected &&
+            (!active || active === document.body || selectionEl.contains(active))) {
+            restore.focus();
+        }
+        const deferred = state.deferred;
+        state.deferred = null;
+        // The field first: whatever it says now is the query, so a reload
+        // started here reads the right thing and writes the right URL.
+        if (commitSearch() || deferred === 'reload') reload();
+        else if (deferred === 'refresh') refresh();
+    };
+
+    /// The one place that says whether a selection is on. The `selecting` class
+    /// is the whole switch — the stylesheet swaps the row's contents behind it
+    /// — and the two helpers above run on the edges, once each.
     const updateSelectionBar = () => {
         const count = selectedEls().length;
+        const selecting = count > 0;
+        const was = barEl.classList.contains('selecting');
         selectionCountEl.textContent = count === 1 ? '1 selected' : `${count} selected`;
-        selectionEl.hidden = count === 0;
+        barEl.classList.toggle('selecting', selecting);
+        if (selecting === was) return;
+        if (selecting) enterSelection();
+        else leaveSelection();
     };
 
     const clearSelection = () => {
@@ -1008,6 +1133,15 @@ extension HistoryPageContent {
     /// actually read between, which for a later page is the window the page
     /// echoed and for a first page is the one native just resolved (TASK-92).
     const receive = (result, replace, query) => {
+        // A reply that would replace the list, landing after a selection
+        // started: dropped, and owed instead (TASK-95). The listing it belongs
+        // to is abandoned with it — the request that asked for it had already
+        // reset the cursor — so nothing may page off the rows still on screen
+        // until `leaveSelection` starts the list again.
+        if (replace && deferWhileSelecting('reload')) {
+            state.done = true;
+            return;
+        }
         const entries = Array.isArray(result && result.entries) ? result.entries : [];
         const listWindow = readWindow(result && result.window);
         const key = windowKey(listWindow);
@@ -1063,12 +1197,28 @@ extension HistoryPageContent {
     /// Starts the list again from the top — the first load, and every change of
     /// search term.
     const reload = () => {
+        if (deferWhileSelecting('reload')) return;
         // Issued now, so it is served after every delete already applied.
         forgetDeletions();
         const generation = nextGeneration();
         state.cursor = null;
         state.done = false;
         fetchPage(generation, null, true);
+    };
+
+    /// Ends whatever selection is up and starts the list again — once. While
+    /// a selection stands nothing may replace the list, so ending it is what
+    /// runs the reload (`leaveSelection`, which also commits whatever the
+    /// search field says, and which would otherwise run one of its own on top
+    /// of the caller's). With nothing ticked there is no selection to end, and
+    /// the reload is run here. Either way exactly one read goes out (TASK-95).
+    const endSelectionAndReload = () => {
+        state.deferred = 'reload';
+        clearSelection();
+        if (state.deferred === 'reload') {
+            state.deferred = null;
+            reload();
+        }
     };
 
     /// Re-reads the newest page when the tab comes back into view. When the
@@ -1081,6 +1231,7 @@ extension HistoryPageContent {
     /// for a refresh that then changes nothing would stall paging for good — the
     /// sentinel is already intersecting, so its observer never fires again.
     const refresh = () => {
+        if (deferWhileSelecting('refresh')) return;
         const generation = state.generation;
         const epoch = state.deleteEpoch;
         const query = state.query;
@@ -1093,6 +1244,10 @@ extension HistoryPageContent {
             const entries = Array.isArray(result && result.entries) ? result.entries : [];
             const top = entries.length ? entries[0].id : null;
             if (state.count > 0 && top === state.topID) return;
+            // A selection started while this was in flight: it is the rows on
+            // screen the user ticked, so this reply waits for them (TASK-95).
+            // Checked before anything is abandoned — a refresh is a bystander.
+            if (deferWhileSelecting('refresh')) return;
             nextGeneration();
             // This reply is about to replace the whole list, so it is the one
             // read a delete could undo. Only forget the deletions when no
@@ -1155,6 +1310,15 @@ extension HistoryPageContent {
         pruneDayHeadings();
         syncTopID();
         anchorID = null;
+        // The ticked rows are gone, so the selection ends here — and the caret
+        // does not come back with the row's controls: Return or Space may
+        // still be down on the Delete button that did this, and the repeats
+        // would land in the search field (TASK-95). Only when the rows
+        // actually went, and only when they were the last of them: a delete
+        // that failed, and a row's own × while other rows stay ticked, leave
+        // the candidate alone. A delete from the keyboard has already given
+        // it up in `onKeyDown`, whatever its outcome.
+        if (!selectedEls().length) focusToRestore = null;
         updateSelectionBar();
         updateEmptyState();
         // `state.cursor` is a (time, id) bound rather than a row, so it still
@@ -1220,7 +1384,11 @@ extension HistoryPageContent {
         }, () => {
             state.deleting = false;
             showNotice('Those entries could not be deleted.');
-            reload();
+            // The rows the database still has come back from it — `refresh`
+            // would see the same top row and change nothing. The selection
+            // goes with them: the header may not go on offering Delete for
+            // rows it could not delete.
+            endSelectionAndReload();
         });
     };
 
@@ -1237,8 +1405,7 @@ extension HistoryPageContent {
             if (!result || !result.cleared) return;
             // A clear can touch any page of the list, so this one *is* a
             // generation change: start again from the top.
-            clearSelection();
-            reload();
+            endSelectionAndReload();
         }, () => {
             state.clearing = false;
             showNotice('History could not be cleared.');
@@ -1267,6 +1434,18 @@ extension HistoryPageContent {
             const chosen = selectedEls();
             if (!chosen.length) return;
             event.preventDefault();
+            // One delete per press. A held-down key repeats for as long as the
+            // request is in flight and beyond it, and those repeats mean
+            // nothing here — they are swallowed rather than aimed at whatever
+            // the selection left behind (TASK-95).
+            if (event.repeat) return;
+            // And the caret does not go back to the search field, whatever
+            // becomes of this delete. The key may still be down when the
+            // selection ends — a failure ends it too, and hands the row's
+            // controls back — and a repeat arriving after the field has the
+            // caret would be typed into it: the guard above never sees those,
+            // because `isTextFieldFocused` returns before it.
+            focusToRestore = null;
             deleteItems(chosen);
         }
     };
@@ -1290,14 +1469,22 @@ extension HistoryPageContent {
         }
     };
 
+    /// Makes whatever the field says now the query, and answers whether that
+    /// changed anything — in which case the list has to be started again. The
+    /// debounce below ends here, and so does a search a selection held back
+    /// (TASK-95), so both write the page's URL the same way.
+    const commitSearch = () => {
+        const next = searchEl.value.trim();
+        if (next === state.query) return false;
+        state.query = next;
+        writeLocation();
+        return true;
+    };
+
     const onSearchInput = () => {
         clearTimeout(searchTimer);
         searchTimer = setTimeout(() => {
-            const next = searchEl.value.trim();
-            if (next === state.query) return;
-            state.query = next;
-            writeLocation();
-            reload();
+            if (commitSearch()) reload();
         }, 150);
     };
 
@@ -1309,8 +1496,7 @@ extension HistoryPageContent {
         if (rangeKey(range) === rangeKey(state.range)) return;
         state.range = range;
         writeLocation();
-        clearSelection();
-        reload();
+        endSelectionAndReload();
     };
 
     /// Shows or hides the date field. `max` is set every time it is revealed
@@ -1380,6 +1566,8 @@ extension HistoryPageContent {
     };
 
     const start = () => {
+        barEl = document.getElementById('bar');
+        barMainEl = document.getElementById('bar-main');
         listEl = document.getElementById('entries');
         emptyEl = document.getElementById('empty');
         searchEl = document.getElementById('search');
@@ -1392,8 +1580,9 @@ extension HistoryPageContent {
         noticeEl = document.getElementById('notice');
         const deleteButton = document.getElementById('selection-delete');
         const cancelButton = document.getElementById('selection-cancel');
-        if (!listEl || !emptyEl || !searchEl || !rangeEl || !dayEl || !sentinelEl || !clearEl ||
-            !selectionEl || !selectionCountEl || !noticeEl || !deleteButton || !cancelButton) return;
+        if (!barEl || !barMainEl || !listEl || !emptyEl || !searchEl || !rangeEl || !dayEl ||
+            !sentinelEl || !clearEl || !selectionEl || !selectionCountEl || !noticeEl ||
+            !deleteButton || !cancelButton) return;
 
         const initial = new URLSearchParams(location.search);
         const term = initial.get('q');
@@ -1443,6 +1632,28 @@ extension HistoryPageContent {
         document.addEventListener('click', (event) => {
             if (clearEl.open && !clearEl.contains(event.target)) clearEl.open = false;
         });
+        // Where the caret is as a press begins, before the press moves it
+        // (TASK-95). The capture phase, so this runs ahead of the focus
+        // handling a mousedown does of its own. The primary button only: a
+        // right-click or a Ctrl-click opens a menu and fires no `click`, so
+        // it would leave a candidate behind with nothing to collect it.
+        document.addEventListener('mousedown', (event) => {
+            const active = document.activeElement;
+            pendingFocus = event.button === 0 && !event.ctrlKey && isRowControl(active)
+                ? active : null;
+        }, true);
+        document.addEventListener('contextmenu', () => { pendingFocus = null; });
+        // The press is over. A candidate it did not hand to a selection is
+        // this press's business and nobody else's — least of all a Cmd+A that
+        // comes later with the caret somewhere else. The `click` clear is the
+        // bubble phase, so a row's own handler has had it first; the timer
+        // catches a press that fires no click at all (released off the
+        // element, or swallowed), and runs after the click would have, since
+        // `mouseup` and `click` are dispatched in the same task.
+        document.addEventListener('click', () => { pendingFocus = null; });
+        document.addEventListener('mouseup', () => {
+            setTimeout(() => { pendingFocus = null; }, 0);
+        }, true);
         document.addEventListener('keydown', onKeyDown);
 
         new IntersectionObserver((records) => {

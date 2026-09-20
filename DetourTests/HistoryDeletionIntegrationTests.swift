@@ -213,7 +213,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
                 titles: Array.from(document.querySelectorAll('.row .title')).map((el) => el.textContent),
                 days: Array.from(document.querySelectorAll('.day')).map((el) => el.textContent),
                 emptyTitle: empty.hidden || !title ? null : title.textContent,
-                selection: selection.hidden
+                selection: getComputedStyle(selection).display === 'none'
                     ? null : document.getElementById('selection-count').textContent,
                 notice: notice.hidden ? null : notice.textContent,
                 clearHidden: document.getElementById('clear').hidden,
@@ -873,6 +873,9 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         let released = expectation(description: "the writer queue is given back")
         let holding = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
+        // Whatever happens below, the queue is given back: a wait that fails
+        // here would otherwise leave the database — and teardown — blocked.
+        defer { release.signal() }
         DispatchQueue.global().async {
             try? f.db.dbQueue.write { _ in
                 holding.signal()
@@ -1454,6 +1457,1135 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         let left = f.db.visits(spaceIDs: [f.space.id.uuidString], limit: 100)
             .filter { $0.url == "https://zulu.example/" }
         XCTAssertEqual(left.count, 1, "the visit from three days ago was not on screen and stays")
+    }
+
+    // MARK: - The selection shares the search row (TASK-95)
+
+    /// A JSON object the page built, as a dictionary — for the measurements
+    /// below that `pageState` has no business carrying.
+    private func jsonFromPage(_ webView: WKWebView, _ js: String) async throws -> [String: Any] {
+        let raw = try await runInPage(webView, js)
+        let text = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+    }
+
+    /// Starts counting the `history.query` messages the page sends, and zeroes
+    /// the count. Every read the page makes goes through `postMessage` on the
+    /// bridge's handler, so wrapping that — from inside the page's own content
+    /// world, where the script already lives — is the one place that sees them
+    /// all; nothing is added to the page for this. A test that needs "no read
+    /// happened" also asserts a read happening later, which is what proves the
+    /// wrapper was in place rather than quietly missing.
+    private func instrumentBridge(_ webView: WKWebView) async throws {
+        try await runInPage(webView, """
+            if (!window.bridgeLog) {
+                window.bridgeLog = { sent: 0, settled: 0, deletes: 0 };
+                const handler = window.webkit.messageHandlers.detourInternal;
+                const proto = Object.getPrototypeOf(handler);
+                const original = proto.postMessage;
+                proto.postMessage = function (body) {
+                    const method = body && body.method;
+                    if (method === 'history.delete') window.bridgeLog.deletes += 1;
+                    const answer = original.call(this, body);
+                    if (method !== 'history.query') return answer;
+                    window.bridgeLog.sent += 1;
+                    // Counted where the reply arrives, so a test can wait for
+                    // the page to have been *told* rather than for a guess at
+                    // how long telling it takes. The page's own handler runs
+                    // in the microtask after this one, which is still long
+                    // before the next round trip from the test.
+                    return answer.then(
+                        (value) => { window.bridgeLog.settled += 1; return value; },
+                        (error) => { window.bridgeLog.settled += 1; throw error; });
+                };
+            }
+            window.bridgeLog.sent = 0;
+            window.bridgeLog.settled = 0;
+            window.bridgeLog.deletes = 0;
+            return true;
+            """)
+    }
+
+    /// What the page has asked the bridge for since the counters were zeroed.
+    private struct BridgeLog: Equatable {
+        var sent = 0
+        var settled = 0
+        var deletes = 0
+    }
+
+    private func bridgeLog(_ webView: WKWebView) async throws -> BridgeLog {
+        let dict = try await jsonFromPage(webView, "return JSON.stringify(window.bridgeLog);")
+        var log = BridgeLog()
+        log.sent = (dict["sent"] as? NSNumber)?.intValue ?? -1
+        log.settled = (dict["settled"] as? NSNumber)?.intValue ?? -1
+        log.deletes = (dict["deletes"] as? NSNumber)?.intValue ?? -1
+        return log
+    }
+
+    /// Waits for `count` reads to have been answered, so what is asserted
+    /// afterwards is the page's state *after* the reply, not while it is in
+    /// flight.
+    private func waitForSettledQueries(_ webView: WKWebView, _ count: Int,
+                                       file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await waitUntil("\(count) history.query repl(y|ies) to land", file: file, line: line) {
+            try await self.bridgeLog(webView).settled >= count
+        }
+    }
+
+    /// Everything a selection must leave exactly as it found it: how tall the
+    /// sticky header is, where the list sits under it, and where the page is
+    /// scrolled to. The numbers themselves are nobody's business — only that
+    /// they are the same in both states.
+    private struct HeaderGeometry: Equatable {
+        var headerHeight = 0.0
+        var firstItemTop = 0.0
+        var lastItemTop = 0.0
+        var scrollY = 0.0
+    }
+
+    private func geometry(_ webView: WKWebView) async throws -> HeaderGeometry {
+        let dict = try await jsonFromPage(webView, """
+            const items = document.querySelectorAll('.item');
+            const last = items.length ? items[items.length - 1] : null;
+            return JSON.stringify({
+                headerHeight: document.getElementById('bar').offsetHeight,
+                firstItemTop: items.length ? items[0].getBoundingClientRect().top : 0,
+                lastItemTop: last ? last.getBoundingClientRect().top : 0,
+                scrollY: window.scrollY,
+            });
+            """)
+        var geometry = HeaderGeometry()
+        geometry.headerHeight = (dict["headerHeight"] as? NSNumber)?.doubleValue ?? -1
+        geometry.firstItemTop = (dict["firstItemTop"] as? NSNumber)?.doubleValue ?? -1
+        geometry.lastItemTop = (dict["lastItemTop"] as? NSNumber)?.doubleValue ?? -1
+        geometry.scrollY = (dict["scrollY"] as? NSNumber)?.doubleValue ?? -1
+        return geometry
+    }
+
+    private func assertUnmoved(_ actual: HeaderGeometry, _ expected: HeaderGeometry, _ what: String,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.headerHeight, expected.headerHeight, accuracy: 0.01,
+                       "the header changed height \(what)", file: file, line: line)
+        XCTAssertEqual(actual.firstItemTop, expected.firstItemTop, accuracy: 0.01,
+                       "the first row moved \(what)", file: file, line: line)
+        XCTAssertEqual(actual.lastItemTop, expected.lastItemTop, accuracy: 0.01,
+                       "the last row moved \(what)", file: file, line: line)
+        XCTAssertEqual(actual.scrollY, expected.scrollY, accuracy: 0.01,
+                       "the page scrolled \(what)", file: file, line: line)
+    }
+
+    /// AC: ticking the first row's checkbox moves nothing — not the header's
+    /// height, not a row, not the scroll position — and neither does clearing
+    /// the selection again (TASK-95).
+    func testSelectingTheFirstRowMovesNothing() async throws {
+        let f = try await makePageFixture("Selection Layout")
+        let idle = try await geometry(f.webView)
+
+        try await runInPage(f.webView, """
+            document.getElementById('search').blur();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            return true;
+            """)
+        var selection = try await pageState(f.webView).selection
+        XCTAssertEqual(selection, "1 selected")
+        try await assertUnmoved(geometry(f.webView), idle, "while a row is selected")
+
+        try await runInPage(f.webView, """
+            document.getElementById('selection-cancel').click();
+            return true;
+            """)
+        selection = try await pageState(f.webView).selection
+        XCTAssertNil(selection)
+        try await assertUnmoved(geometry(f.webView), idle, "after the selection was cleared")
+    }
+
+    /// The same, with the list scrolled: the header is sticky, so a strip added
+    /// to it would push every visible row down here too.
+    func testSelectingARowMovesNothingWhenTheListIsScrolled() async throws {
+        let db = try makeDatabase()
+        HistoryPageBridge.database = db
+        let space = makeSpace("Selection Scrolled")
+        let startOfDay = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        // One page of a single day: enough rows to scroll, few enough that the
+        // listing is finished and no paging can append while this test measures.
+        for index in 1...40 {
+            try seedVisit(db, url: "https://page.example/\(index)", title: "Page \(index)",
+                          spaceID: space.id, visitTime: startOfDay + Double(index))
+        }
+
+        let tab = makeTab(in: space)
+        tab.loadInternalPage(.history)
+        try await waitForHistoryPage(tab)
+        let webView = try XCTUnwrap(tab.webView)
+        try await waitForRows(webView, 40)
+
+        // The preconditions this test rests on, named so a host view too small
+        // to scroll fails as itself rather than as a mysterious equality.
+        let room = try await jsonFromPage(webView, """
+            window.scrollTo(0, 300);
+            return JSON.stringify({
+                overflow: document.documentElement.scrollHeight - window.innerHeight,
+                scrollY: window.scrollY,
+            });
+            """)
+        XCTAssertGreaterThan((room["overflow"] as? NSNumber)?.doubleValue ?? 0, 300,
+                             "the page is not tall enough to scroll 300pt: nothing to test")
+        XCTAssertEqual((room["scrollY"] as? NSNumber)?.doubleValue ?? -1, 300, accuracy: 0.01,
+                       "the list never scrolled")
+
+        let idle = try await geometry(webView)
+        // A row that is actually on screen under the header, the way a pointer
+        // would have found one.
+        let picked = try await runInPage(webView, """
+            document.getElementById('search').blur();
+            const header = document.getElementById('bar').getBoundingClientRect().bottom;
+            const item = Array.from(document.querySelectorAll('.item')).find((el) => {
+                const rect = el.getBoundingClientRect();
+                return rect.top > header && rect.bottom < window.innerHeight;
+            });
+            if (!item) return '';
+            item.querySelector('.pick').click();
+            return String(item.dataset.id);
+            """) as? String
+        XCTAssertFalse(try XCTUnwrap(picked, "the page answered nothing at all").isEmpty,
+                       "no row was on screen under the header to pick")
+        var selection = try await pageState(webView).selection
+        XCTAssertEqual(selection, "1 selected")
+        try await assertUnmoved(geometry(webView), idle, "while a row is selected, scrolled down")
+
+        try await runInPage(webView, """
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            return true;
+            """)
+        selection = try await pageState(webView).selection
+        XCTAssertNil(selection)
+        try await assertUnmoved(geometry(webView), idle, "after Escape, scrolled down")
+    }
+
+    /// The row's own controls leave the row entirely while a selection is on —
+    /// the fixed-height row is what keeps the header still, so `display: none`
+    /// is safe here, and it takes them out of hit-testing, the tab order and
+    /// the accessibility tree. They come back with the search term, the period
+    /// and the page's URL untouched.
+    func testTheSearchRowsControlsLeaveTheRowAndComeBackUnchanged() async throws {
+        let f = try await makePageFixture("Selection Controls")
+
+        try await runInPage(f.webView, """
+            const range = document.getElementById('range');
+            range.value = 'week';
+            range.dispatchEvent(new Event('change'));
+            const search = document.getElementById('search');
+            search.value = 'today';
+            search.dispatchEvent(new Event('input'));
+            return true;
+            """)
+        try await waitForRows(f.webView, 3, "the three pages titled Today")
+        let before = try await pageState(f.webView)
+        XCTAssertEqual(before.rangeValue, "week")
+        XCTAssertEqual(before.search, "?q=today&range=week")
+
+        try await runInPage(f.webView, """
+            document.getElementById('search').blur();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            return true;
+            """)
+        let selecting = try await jsonFromPage(f.webView, """
+            const display = (id) => getComputedStyle(document.getElementById(id)).display;
+            return JSON.stringify({
+                search: display('search'),
+                range: display('range'),
+                clear: display('clear'),
+                day: display('day'),
+                title: getComputedStyle(document.querySelector('h1')).display,
+                selection: display('selection'),
+                count: document.getElementById('selection-count').textContent,
+                searchValue: document.getElementById('search').value,
+            });
+            """)
+        XCTAssertEqual(selecting["search"] as? String, "none")
+        XCTAssertEqual(selecting["range"] as? String, "none",
+                       "the class rule has to out-rank the .picker styling")
+        XCTAssertEqual(selecting["clear"] as? String, "none",
+                       "and the .menu styling")
+        XCTAssertEqual(selecting["day"] as? String, "none")
+        XCTAssertNotEqual(selecting["title"] as? String, "none", "the page's own title stays")
+        XCTAssertNotEqual(selecting["selection"] as? String, "none")
+        XCTAssertEqual(selecting["count"] as? String, "1 selected")
+        XCTAssertEqual(selecting["searchValue"] as? String, "today", "hidden, not emptied")
+
+        try await runInPage(f.webView, """
+            document.getElementById('selection-cancel').click();
+            return true;
+            """)
+        let after = try await jsonFromPage(f.webView, """
+            const display = (id) => getComputedStyle(document.getElementById(id)).display;
+            return JSON.stringify({
+                search: display('search'),
+                range: display('range'),
+                clear: display('clear'),
+                day: display('day'),
+                selection: display('selection'),
+                searchValue: document.getElementById('search').value,
+            });
+            """)
+        XCTAssertNotEqual(after["search"] as? String, "none")
+        XCTAssertNotEqual(after["range"] as? String, "none")
+        XCTAssertNotEqual(after["clear"] as? String, "none")
+        XCTAssertEqual(after["day"] as? String, "none",
+                       "the date field belongs to a choice nobody made: still hidden by its own attribute")
+        XCTAssertEqual(after["selection"] as? String, "none")
+        XCTAssertEqual(after["searchValue"] as? String, "today")
+        let state = try await pageState(f.webView)
+        XCTAssertEqual(state.rangeValue, "week", "the period came back as it was")
+        XCTAssertEqual(state.search, "?q=today&range=week", "and so did the page's URL")
+        XCTAssertEqual(state.ids.count, 3, "the listing itself never changed")
+    }
+
+    /// A Clear History menu left open would hang over a list the selection is
+    /// about to change, and come back open afterwards: entering the selection
+    /// closes it, and it stays closed.
+    func testStartingASelectionClosesTheClearHistoryMenu() async throws {
+        let f = try await makePageFixture("Selection Closes Menu")
+
+        let opened = try await jsonFromPage(f.webView, """
+            document.getElementById('search').blur();
+            const clear = document.getElementById('clear');
+            clear.open = true;
+            const wasOpen = clear.open;
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            return JSON.stringify({ wasOpen: wasOpen, open: clear.open });
+            """)
+        XCTAssertEqual(opened["wasOpen"] as? Bool, true, "the menu was open to begin with")
+        XCTAssertEqual(opened["open"] as? Bool, false, "and the selection closed it")
+
+        let afterEscape = try await jsonFromPage(f.webView, """
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            return JSON.stringify({
+                open: document.getElementById('clear').open,
+                selected: document.querySelectorAll('.item.selected').length,
+            });
+            """)
+        XCTAssertEqual(afterEscape["open"] as? Bool, false, "it did not come back open")
+        XCTAssertEqual((afterEscape["selected"] as? NSNumber)?.intValue, 0,
+                       "Escape cleared the selection, not the menu")
+    }
+
+    /// A control that has just left the row may not keep the caret — it would
+    /// be typed into unseen. Focus goes back to the document while the
+    /// selection is on, and the field gets it back when the selection ends.
+    func testASelectionNeverLeavesFocusInAControlThatLeftTheRow() async throws {
+        let f = try await makePageFixture("Selection Focus")
+
+        let selecting = try await jsonFromPage(f.webView, """
+            const search = document.getElementById('search');
+            search.focus();
+            const before = document.activeElement.id;
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            const active = document.activeElement;
+            return JSON.stringify({
+                before: before,
+                after: active.id || active.tagName,
+                activeDisplay: getComputedStyle(active).display,
+                searchDisplay: getComputedStyle(search).display,
+            });
+            """)
+        XCTAssertEqual(selecting["before"] as? String, "search", "the field had focus to begin with")
+        XCTAssertEqual(selecting["searchDisplay"] as? String, "none")
+        XCTAssertNotEqual(selecting["after"] as? String, "search", "focus stayed in the hidden field")
+        XCTAssertNotEqual(selecting["activeDisplay"] as? String, "none",
+                          "focus is on something that is rendered")
+
+        let afterEscape = try await jsonFromPage(f.webView, """
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            const active = document.activeElement;
+            return JSON.stringify({
+                active: active.id || active.tagName,
+                searchDisplay: getComputedStyle(document.getElementById('search')).display,
+            });
+            """)
+        XCTAssertNotEqual(afterEscape["searchDisplay"] as? String, "none", "the field is back")
+        XCTAssertEqual(afterEscape["active"] as? String, "search",
+                       "and Escape hands the caret back to it")
+    }
+
+    /// The flow the restore is for: type a query, tick a row, change your mind,
+    /// carry on typing. Cancel gives the field its focus and its text back —
+    /// and runs the search it was owed.
+    func testCancellingASelectionGivesTheSearchFieldItsFocusBack() async throws {
+        let f = try await makePageFixture("Focus Restore")
+
+        try await runInPage(f.webView, """
+            const search = document.getElementById('search');
+            search.focus();
+            search.value = 'zulu';
+            search.dispatchEvent(new Event('input'));
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            return true;
+            """)
+        let restored = try await jsonFromPage(f.webView, """
+            document.getElementById('selection-cancel').click();
+            const active = document.activeElement;
+            return JSON.stringify({
+                active: active.id || active.tagName,
+                value: document.getElementById('search').value,
+            });
+            """)
+        XCTAssertEqual(restored["active"] as? String, "search")
+        XCTAssertEqual(restored["value"] as? String, "zulu", "with what was typed still in it")
+        try await waitForRows(f.webView, 1, "and the search the selection held back")
+    }
+
+    /// Focus is given back, never taken: a user who put the caret somewhere
+    /// else during the selection keeps it there.
+    func testASelectionDoesNotTakeFocusBackFromWhereTheUserPutIt() async throws {
+        let f = try await makePageFixture("Focus Not Stolen")
+
+        let result = try await jsonFromPage(f.webView, """
+            const search = document.getElementById('search');
+            search.focus();
+            const items = document.querySelectorAll('.item');
+            items[0].querySelector('.pick').click();
+            // The user goes somewhere else while the selection is on.
+            items[1].querySelector('.pick').focus();
+            const before = document.activeElement.className;
+            document.getElementById('selection-cancel').click();
+            const active = document.activeElement;
+            return JSON.stringify({
+                before: before,
+                after: active.id || active.className || active.tagName,
+            });
+            """)
+        XCTAssertEqual(result["before"] as? String, "pick", "the user moved the caret themselves")
+        XCTAssertEqual(result["after"] as? String, "pick", "and it was not taken back off them")
+    }
+
+    /// A search typed a moment before a row is ticked must not land in the
+    /// middle of the selection: re-rendering the list would throw the tick away
+    /// and flash the header. The debounce is held, and run when the selection
+    /// ends (TASK-95).
+    func testASearchTypedBeforeASelectionWaitsForItToEnd() async throws {
+        let f = try await makePageFixture("Pending Search Selection")
+        try await instrumentBridge(f.webView)
+
+        let typed = try await jsonFromPage(f.webView, """
+            const search = document.getElementById('search');
+            search.focus();
+            search.value = 'zulu';
+            search.dispatchEvent(new Event('input'));
+            // The same turn, so the 150 ms debounce cannot have fired: the user
+            // ticks a row while the search is still owed.
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            window.firstItem = document.querySelectorAll('.item')[0];
+            return JSON.stringify({
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+                count: document.getElementById('selection-count').textContent,
+            });
+            """)
+        XCTAssertEqual(typed["selecting"] as? Bool, true)
+        XCTAssertEqual(typed["count"] as? String, "1 selected")
+        let before = try await pageState(f.webView).ids
+
+        // Well past the debounce: nothing may have happened.
+        try await Task.sleep(nanoseconds: 600_000_000)
+        let waited = try await jsonFromPage(f.webView, """
+            return JSON.stringify({
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+                count: document.getElementById('selection-count').textContent,
+                selected: document.querySelectorAll('.item.selected').length,
+                sameFirstRow: document.querySelectorAll('.item')[0] === window.firstItem,
+                search: location.search,
+            });
+            """)
+        XCTAssertEqual(waited["selecting"] as? Bool, true, "the header left selection mode")
+        XCTAssertEqual(waited["count"] as? String, "1 selected")
+        XCTAssertEqual((waited["selected"] as? NSNumber)?.intValue, 1, "the tick survived")
+        XCTAssertEqual(waited["sameFirstRow"] as? Bool, true, "the rows were re-rendered under it")
+        XCTAssertEqual(waited["search"] as? String, "", "and the search had not run")
+        let during = try await pageState(f.webView).ids
+        XCTAssertEqual(during, before, "the listing is still the one the row was ticked in")
+        // Not "nothing visibly changed" — nothing was even asked.
+        var reads = try await bridgeLog(f.webView)
+        XCTAssertEqual(reads.sent, 0, "the page read the history while a selection was up")
+
+        try await runInPage(f.webView, """
+            document.getElementById('selection-cancel').click();
+            return true;
+            """)
+        try await waitForRows(f.webView, 1, "the owed search, run once the selection ended")
+        let after = try await pageState(f.webView)
+        XCTAssertEqual(after.titles, ["Zulu Page"])
+        XCTAssertEqual(after.search, "?q=zulu", "through the ordinary path, URL and all")
+        // And the counter did move, so the zero above was a real observation.
+        reads = try await bridgeLog(f.webView)
+        XCTAssertEqual(reads.sent, 1, "the owed search is one read, and the counter saw it")
+    }
+
+    /// A narrow window is where an overlay would have put the count on top of
+    /// the title. In the row itself the count is just another flex child: it
+    /// ellipsizes, and the buttons stay inside the row.
+    func testTheSelectionFitsANarrowWindowWithoutOverlappingTheTitle() async throws {
+        let f = try await makePageFixture("Narrow Selection")
+        // The same way `makeTab` sizes it — the view is in no hierarchy, so
+        // nothing lays it back out; if that ever changes this fails as a
+        // precondition rather than as a wait that never ends.
+        f.webView.frame = NSRect(x: 0, y: 0, width: 360, height: 700)
+        try await waitUntil("the web view to lay out at 360pt", timeout: 3) {
+            (try await self.runInPage(f.webView, "return window.innerWidth;") as? NSNumber)?
+                .intValue == 360
+        }
+        let width = try await runInPage(f.webView, "return window.innerWidth;") as? NSNumber
+        XCTAssertEqual(width?.intValue, 360,
+                       "the web view did not keep the narrow frame this test needs")
+
+        let boxes = try await jsonFromPage(f.webView, """
+            document.getElementById('search').blur();
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }));
+            const box = (el) => {
+                const rect = el.getBoundingClientRect();
+                return { left: rect.left, right: rect.right };
+            };
+            const count = document.getElementById('selection-count');
+            return JSON.stringify({
+                title: box(document.querySelector('h1')),
+                count: box(count),
+                remove: box(document.getElementById('selection-delete')),
+                cancel: box(document.getElementById('selection-cancel')),
+                row: box(document.getElementById('bar-main')),
+                text: count.textContent,
+            });
+            """)
+        XCTAssertEqual(boxes["text"] as? String, "7 selected")
+        let edge = { (name: String, side: String) -> Double in
+            ((boxes[name] as? [String: Any])?[side] as? NSNumber)?.doubleValue ?? .nan
+        }
+        XCTAssertGreaterThanOrEqual(edge("count", "left"), edge("title", "right"),
+                                    "the count is on top of the title")
+        XCTAssertLessThanOrEqual(edge("count", "right"), edge("remove", "left") + 0.5,
+                                 "the count runs into the buttons")
+        // The row's padding, read off the title rather than taken from the CSS.
+        let padding = edge("title", "left") - edge("row", "left")
+        XCTAssertGreaterThanOrEqual(edge("remove", "left"), edge("row", "left") + padding - 0.5)
+        XCTAssertLessThanOrEqual(edge("cancel", "right"), edge("row", "right") - padding + 0.5,
+                                 "a button hangs off the end of the row")
+    }
+
+    /// Incognito hides the period and Clear History controls altogether, which
+    /// is the row the swap has to work in as well. A private space records
+    /// nothing, so there is no row to tick: the header's two states are driven
+    /// here by the one class `updateSelectionBar` toggles.
+    func testTheIncognitoHeaderKeepsItsHeightInBothStates() async throws {
+        let db = try makeDatabase()
+        HistoryPageBridge.database = db
+        let tab = makeTab(in: makeIncognitoSpace())
+        tab.loadInternalPage(.history)
+        try await waitForHistoryPage(tab)
+        let webView = try XCTUnwrap(tab.webView)
+
+        let chrome = try await pageState(webView)
+        XCTAssertTrue(chrome.clearHidden)
+        XCTAssertTrue(chrome.rangeHidden)
+
+        let measured = try await jsonFromPage(webView, """
+            const bar = document.getElementById('bar');
+            const empty = document.getElementById('empty');
+            const measure = () => [bar.offsetHeight, empty.getBoundingClientRect().top];
+            const idle = measure();
+            bar.classList.add('selecting');
+            const selecting = measure();
+            const selectionDisplay = getComputedStyle(document.getElementById('selection')).display;
+            bar.classList.remove('selecting');
+            return JSON.stringify({
+                idle: idle, selecting: selecting, back: measure(),
+                selectionDisplay: selectionDisplay,
+            });
+            """)
+        let idle = (measured["idle"] as? [NSNumber])?.map(\.doubleValue) ?? []
+        XCTAssertEqual(idle.count, 2)
+        XCTAssertEqual((measured["selecting"] as? [NSNumber])?.map(\.doubleValue), idle,
+                       "the private header grew, or the empty state moved")
+        XCTAssertEqual((measured["back"] as? [NSNumber])?.map(\.doubleValue), idle)
+        XCTAssertNotEqual(measured["selectionDisplay"] as? String, "none",
+                          "the controls show even with nothing else in the row")
+    }
+
+    /// The reply to a read that was already in flight when the selection
+    /// started is a replacement too, and waits its turn: dropped where it
+    /// lands, re-asked when the selection ends (TASK-95).
+    func testAReplyInFlightWhenTheSelectionStartsIsDroppedAndReAsked() async throws {
+        let f = try await makePageFixture("Deferred Reply")
+        try await instrumentBridge(f.webView)
+
+        // The database is one connection, so holding a write holds the search
+        // the page is about to issue: its reply cannot land until this test
+        // lets it, which is when the selection is already up.
+        let released = expectation(description: "the writer queue is given back")
+        let holding = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        // Whatever happens below — a failed wait, a thrown assertion — the
+        // queue is given back, or the database (and teardown with it) hangs.
+        defer { release.signal() }
+        DispatchQueue.global().async {
+            try? f.db.dbQueue.write { _ in
+                holding.signal()
+                release.wait()
+            }
+            released.fulfill()
+        }
+        XCTAssertEqual(holding.wait(timeout: .now() + 10), .success, "the write never started")
+
+        try await runInPage(f.webView, """
+            const search = document.getElementById('search');
+            search.value = 'zulu';
+            search.dispatchEvent(new Event('input'));
+            return true;
+            """)
+        // The page writes its URL as it issues the query, so this is the
+        // request being on its way.
+        try await waitUntil("the search to be issued") {
+            try await self.runInPage(f.webView, "return location.search;") as? String == "?q=zulu"
+        }
+
+        // The reply really is still held: the list is the unfiltered one the
+        // page started with, not the single row 'zulu' answers.
+        let before = try await pageState(f.webView).ids
+        XCTAssertEqual(before.count, 7, "the search was answered before the row was ticked")
+        var log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log.settled, 0, "the reply had already landed: nothing was deferred")
+
+        try await runInPage(f.webView, """
+            document.getElementById('search').blur();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            window.firstItem = document.querySelectorAll('.item')[0];
+            return true;
+            """)
+        release.signal()
+        await fulfillment(of: [released], timeout: 10)
+        // The held reply has now been answered — and dropped.
+        try await waitForSettledQueries(f.webView, 1)
+
+        let during = try await jsonFromPage(f.webView, """
+            return JSON.stringify({
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+                selected: document.querySelectorAll('.item.selected').length,
+                sameFirstRow: document.querySelectorAll('.item')[0] === window.firstItem,
+            });
+            """)
+        XCTAssertEqual(during["selecting"] as? Bool, true, "the header left selection mode")
+        XCTAssertEqual((during["selected"] as? NSNumber)?.intValue, 1, "the tick was thrown away")
+        XCTAssertEqual(during["sameFirstRow"] as? Bool, true, "the list was replaced under it")
+        let stillThere = try await pageState(f.webView).ids
+        XCTAssertEqual(stillThere, before, "the rows the tick belongs to are still the ones on screen")
+
+        try await runInPage(f.webView, """
+            document.getElementById('selection-cancel').click();
+            return true;
+            """)
+        try await waitForRows(f.webView, 1, "the search, asked again once the selection ended")
+        let after = try await pageState(f.webView)
+        XCTAssertEqual(after.titles, ["Zulu Page"])
+        XCTAssertEqual(after.search, "?q=zulu")
+        log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log.sent, 2, "the search, and the one that replaced the dropped reply")
+        XCTAssertEqual(log.settled, 2)
+    }
+
+    /// A refresh — the tab coming back into view, the window taking focus — is
+    /// deferred too, and it is still a *refresh* when it runs: it finds the
+    /// same top row and leaves the list, and the rows paged in below it, alone.
+    func testARefreshWhileSelectingIsDeferredAndStillARefresh() async throws {
+        let f = try await makePageFixture("Deferred Refresh")
+        try await instrumentBridge(f.webView)
+
+        try await runInPage(f.webView, """
+            document.getElementById('search').blur();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            window.firstItem = document.querySelectorAll('.item')[0];
+            // What the window taking focus does.
+            window.dispatchEvent(new Event('focus'));
+            return true;
+            """)
+        try await Task.sleep(nanoseconds: 400_000_000)
+
+        let during = try await jsonFromPage(f.webView, """
+            return JSON.stringify({
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+                selected: document.querySelectorAll('.item.selected').length,
+                sameFirstRow: document.querySelectorAll('.item')[0] === window.firstItem,
+            });
+            """)
+        XCTAssertEqual(during["selecting"] as? Bool, true)
+        XCTAssertEqual((during["selected"] as? NSNumber)?.intValue, 1)
+        XCTAssertEqual(during["sameFirstRow"] as? Bool, true)
+        var log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log.sent, 0, "the refresh read the history anyway")
+
+        try await runInPage(f.webView, """
+            document.getElementById('selection-cancel').click();
+            return true;
+            """)
+        // Waited for the *reply*, not for the request: what the page does with
+        // a refresh is only knowable once it has been answered.
+        try await waitForSettledQueries(f.webView, 1)
+        let after = try await jsonFromPage(f.webView, """
+            return JSON.stringify({
+                sameFirstRow: document.querySelectorAll('.item')[0] === window.firstItem,
+                rows: document.querySelectorAll('.item').length,
+                search: location.search,
+            });
+            """)
+        XCTAssertEqual(after["sameFirstRow"] as? Bool, true,
+                       "a refresh that found nothing new still re-rendered the list")
+        XCTAssertEqual((after["rows"] as? NSNumber)?.intValue, 7)
+        XCTAssertEqual(after["search"] as? String, "")
+        log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log.sent, 1, "one read, and it was the deferred refresh")
+    }
+
+    /// Only *replacing* the list is deferred. Cmd+A and then scrolling for
+    /// more is a real flow, so a load-more page still appends — under the
+    /// selection, which keeps every row it had.
+    func testLoadMoreStillAppendsWhileSelecting() async throws {
+        let db = try makeDatabase()
+        HistoryPageBridge.database = db
+        let space = makeSpace("Append While Selecting")
+        let start = Date().timeIntervalSince1970 - 7200
+        for index in 1...150 {
+            try seedVisit(db, url: "https://page.example/\(index)", title: "Page \(index)",
+                          spaceID: space.id, visitTime: start + Double(index))
+        }
+
+        let tab = makeTab(in: space)
+        tab.loadInternalPage(.history)
+        try await waitForHistoryPage(tab)
+        let webView = try XCTUnwrap(tab.webView)
+        try await waitForRows(webView, 100, "one page of a history that has more")
+
+        let chosen = try await runInPage(webView, """
+            document.getElementById('search').blur();
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }));
+            window.scrollTo(0, document.documentElement.scrollHeight);
+            return document.querySelectorAll('.item.selected').length;
+            """) as? NSNumber
+        XCTAssertEqual(chosen?.intValue, 100, "Cmd+A took the loaded rows")
+
+        try await waitForRows(webView, 150, "the next page, appended under the selection")
+        let after = try await jsonFromPage(webView, """
+            return JSON.stringify({
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+                selected: document.querySelectorAll('.item.selected').length,
+                count: document.getElementById('selection-count').textContent,
+            });
+            """)
+        XCTAssertEqual(after["selecting"] as? Bool, true, "appending ended the selection")
+        XCTAssertEqual((after["selected"] as? NSNumber)?.intValue, 100,
+                       "the rows that were ticked are still ticked")
+        XCTAssertEqual(after["count"] as? String, "100 selected",
+                       "and the new rows were not ticked for the user")
+    }
+
+    /// A delete that fails: the selection ends — the header may not go on
+    /// offering Delete for rows it could not delete — and the list is rebuilt
+    /// from the database exactly once.
+    func testAFailedDeleteClearsTheSelectionAndRebuildsTheListOnce() async throws {
+        let f = try await makePageFixture("Failed Delete Selection")
+        try blockVisitDeletes(f.db)
+        try await instrumentBridge(f.webView)
+
+        try await runInPage(f.webView, """
+            document.getElementById('search').blur();
+            const items = document.querySelectorAll('.item');
+            items[0].querySelector('.pick').click();
+            items[1].querySelector('.pick').click();
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+            return true;
+            """)
+        try await waitUntil("the page to report the failure") {
+            try await self.pageState(f.webView).notice != nil
+        }
+        // The recovery's own read, answered — not "the rows are still seven",
+        // which they were the whole time.
+        try await waitForSettledQueries(f.webView, 1)
+
+        let state = try await pageState(f.webView)
+        XCTAssertEqual(state.ids.count, 7, "the rows the database still has came back")
+        XCTAssertEqual(state.notice, "Those entries could not be deleted.")
+        XCTAssertNil(state.selection, "the header still offers Delete for rows it could not delete")
+        let after = try await jsonFromPage(f.webView, """
+            return JSON.stringify({
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+                selected: document.querySelectorAll('.item.selected').length,
+                searchDisplay: getComputedStyle(document.getElementById('search')).display,
+            });
+            """)
+        XCTAssertEqual(after["selecting"] as? Bool, false, "the header was left in selection mode")
+        XCTAssertEqual((after["selected"] as? NSNumber)?.intValue, 0)
+        XCTAssertNotEqual(after["searchDisplay"] as? String, "none", "with the search field hidden")
+        // Give a second reload the time it would need to show up.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log.sent, 1, "the recovery read the history more than once")
+        XCTAssertEqual(log.deletes, 1, "and it asked to delete more than once")
+        XCTAssertEqual(visitTimes(f.db, f.space).count, 7)
+    }
+
+    /// The caret comes back when the delete *failed*: nothing was removed, the
+    /// key that asked is long since up, and the user is where they were.
+    func testAFailedDeleteGivesTheSearchFieldItsFocusBack() async throws {
+        let f = try await makePageFixture("Failed Delete Focus")
+        try blockVisitDeletes(f.db)
+        try await instrumentBridge(f.webView)
+
+        try await runInPage(f.webView, """
+            document.getElementById('search').focus();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            document.getElementById('selection-delete').click();
+            return true;
+            """)
+        try await waitForSettledQueries(f.webView, 1)
+
+        let after = try await jsonFromPage(f.webView, """
+            const active = document.activeElement;
+            return JSON.stringify({
+                active: active.id || active.tagName,
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+            });
+            """)
+        XCTAssertEqual(after["selecting"] as? Bool, false)
+        XCTAssertEqual(after["active"] as? String, "search",
+                       "nothing was deleted, so nothing justified keeping the caret away")
+    }
+
+    /// A delete started from the keyboard never hands the caret back — not
+    /// even when it fails and the row's controls come straight back. The key
+    /// that asked may still be down, and a repeat arriving once the field has
+    /// the caret is typed into it: the repeat guard never sees those, because
+    /// a focused text field returns before it (TASK-95).
+    func testAFailedKeyboardDeleteDoesNotHandTheCaretBack() async throws {
+        let f = try await makePageFixture("Failed Keyboard Delete Focus")
+        try blockVisitDeletes(f.db)
+        try await instrumentBridge(f.webView)
+
+        try await runInPage(f.webView, """
+            const search = document.getElementById('search');
+            search.value = 'foo';
+            search.focus();
+            // Ticked with the pointer, so the field is where the caret is owed.
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+            return true;
+            """)
+        try await waitForSettledQueries(f.webView, 1)
+
+        let after = try await jsonFromPage(f.webView, """
+            const active = document.activeElement;
+            return JSON.stringify({
+                active: active.id || active.tagName,
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+            });
+            """)
+        XCTAssertEqual(after["selecting"] as? Bool, false, "the failure left the header selecting")
+        XCTAssertNotEqual(after["active"] as? String, "search",
+                          "the caret went back under a key that may still be down")
+    }
+
+    /// A secondary press opens a menu and fires no `click`, so nothing
+    /// collects the candidate it would otherwise have left — and a keyboard
+    /// selection made later must not inherit it.
+    func testARightClickLeavesNoFocusCandidateBehind() async throws {
+        let f = try await makePageFixture("Right Click Candidate")
+
+        let result = try await jsonFromPage(f.webView, """
+            const search = document.getElementById('search');
+            const item = document.querySelectorAll('.item')[0];
+            search.focus();
+            item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+            item.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+            search.blur();
+            // Later, from the keyboard, with the caret nowhere.
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }));
+            const selected = document.querySelectorAll('.item.selected').length;
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            const active = document.activeElement;
+            return JSON.stringify({ selected: selected, active: active.id || active.tagName });
+            """)
+        XCTAssertEqual((result["selected"] as? NSNumber)?.intValue, 7, "Cmd+A took the loaded rows")
+        XCTAssertNotEqual(result["active"] as? String, "search",
+                          "a right-click left a candidate for a later selection to pick up")
+    }
+
+    /// And so does a press released where no `click` follows: the release
+    /// itself clears the candidate, after the click it was waiting for did
+    /// not come.
+    func testAPressThatFiresNoClickLeavesNoFocusCandidateBehind() async throws {
+        let f = try await makePageFixture("Abandoned Press Candidate")
+
+        try await runInPage(f.webView, """
+            const search = document.getElementById('search');
+            const item = document.querySelectorAll('.item')[0];
+            search.focus();
+            item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            search.blur();
+            item.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            return true;
+            """)
+        // The release arms a timer that runs after the click would have.
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let result = try await jsonFromPage(f.webView, """
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }));
+            const selected = document.querySelectorAll('.item.selected').length;
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            const active = document.activeElement;
+            return JSON.stringify({ selected: selected, active: active.id || active.tagName });
+            """)
+        XCTAssertEqual((result["selected"] as? NSNumber)?.intValue, 7, "Cmd+A took the loaded rows")
+        XCTAssertNotEqual(result["active"] as? String, "search",
+                          "a press that fired no click left its candidate behind")
+    }
+
+    /// A row's own × while other rows are ticked deletes that row only: the
+    /// selection stands, and the caret it is holding is still owed back.
+    func testDeletingAnUnselectedRowLeavesTheSelectionAndItsFocusAlone() async throws {
+        let f = try await makePageFixture("Row Button During Selection")
+
+        try await runInPage(f.webView, """
+            const search = document.getElementById('search');
+            search.focus();
+            const items = document.querySelectorAll('.item');
+            items[0].querySelector('.pick').click();
+            // A different row, which nobody ticked.
+            items[1].querySelector('.delete').click();
+            return true;
+            """)
+        try await waitForRows(f.webView, 6)
+
+        let during = try await jsonFromPage(f.webView, """
+            return JSON.stringify({
+                selecting: document.getElementById('bar').classList.contains('selecting'),
+                selected: document.querySelectorAll('.item.selected').length,
+            });
+            """)
+        XCTAssertEqual(during["selecting"] as? Bool, true, "the selection went with another row")
+        XCTAssertEqual((during["selected"] as? NSNumber)?.intValue, 1)
+
+        let after = try await jsonFromPage(f.webView, """
+            document.getElementById('selection-cancel').click();
+            const active = document.activeElement;
+            return JSON.stringify({ active: active.id || active.tagName });
+            """)
+        XCTAssertEqual(after["active"] as? String, "search",
+                       "the caret was forgotten by a delete that did not end the selection")
+        XCTAssertEqual(visitTimes(f.db, f.space).count, 6)
+    }
+
+    /// Clearing the history while something else is owed is still one read:
+    /// ending the selection runs it, and the caller does not run a second.
+    func testClearingWithAReloadOwedReadsTheHistoryOnce() async throws {
+        let f = try await makePageFixture("Clear With Owed Reload")
+        stubConfirmClear(true)
+        try await instrumentBridge(f.webView)
+
+        try await runInPage(f.webView, """
+            document.getElementById('search').blur();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            // Something to owe: a refresh, held back by the selection.
+            window.dispatchEvent(new Event('focus'));
+            // The menu is off the row while a selection is up, so this is the
+            // reply arriving for a clear the user started before ticking.
+            document.querySelector('#clear .menu-item[data-range="all"]').click();
+            return true;
+            """)
+        try await waitForRows(f.webView, 0, "the list the clear emptied")
+
+        let state = try await pageState(f.webView)
+        XCTAssertEqual(state.emptyTitle, "No history yet")
+        XCTAssertNil(state.selection)
+        XCTAssertEqual(confirmedRanges, [.all])
+        // Give a second read the time it would need to show up.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log.sent, 1, "the clear's reload and the owed one were both run")
+    }
+
+    /// Holding Delete down deletes once. The repeats arrive while the request
+    /// is in flight and after the rows are gone; neither may do anything —
+    /// least of all reach the search field the selection gives back.
+    func testHoldingDeleteDeletesOnceAndTheRepeatsGoNowhere() async throws {
+        let f = try await makePageFixture("Key Repeat")
+        try await instrumentBridge(f.webView)
+
+        let held = try await jsonFromPage(f.webView, """
+            document.getElementById('search').blur();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            const repeatKey = () => document.dispatchEvent(
+                new KeyboardEvent('keydown', { key: 'Backspace', repeat: true, bubbles: true }));
+            repeatKey();
+            repeatKey();
+            return JSON.stringify({
+                rows: document.querySelectorAll('.item').length,
+                selected: document.querySelectorAll('.item.selected').length,
+            });
+            """)
+        XCTAssertEqual((held["rows"] as? NSNumber)?.intValue, 7, "a repeat deleted a row")
+        XCTAssertEqual((held["selected"] as? NSNumber)?.intValue, 1, "and the tick is still there")
+        XCTAssertEqual(visitTimes(f.db, f.space).count, 7, "nothing reached the database")
+        var log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log, BridgeLog(sent: 0, settled: 0, deletes: 0),
+                       "a repeat asked the bridge for something")
+
+        // The press itself does delete.
+        try await runInPage(f.webView, """
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+            return true;
+            """)
+        try await waitForRows(f.webView, 6)
+
+        // And the repeats that follow the press land on nothing: the field is
+        // back, but it does not have the caret.
+        try await runInPage(f.webView, """
+            for (let i = 0; i < 3; i += 1) {
+                document.dispatchEvent(
+                    new KeyboardEvent('keydown', { key: 'Backspace', repeat: true, bubbles: true }));
+            }
+            return true;
+            """)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let after = try await jsonFromPage(f.webView, """
+            const active = document.activeElement;
+            return JSON.stringify({
+                rows: document.querySelectorAll('.item').length,
+                active: active.id || active.tagName,
+            });
+            """)
+        XCTAssertEqual((after["rows"] as? NSNumber)?.intValue, 6, "the repeats deleted more rows")
+        // Where the caret is, not what a synthetic key would have typed into
+        // it — a dispatched KeyboardEvent performs no editing, so asserting an
+        // untouched value would prove nothing. This is the thing that keeps
+        // the repeats away from the field.
+        XCTAssertNotEqual(after["active"] as? String, "search",
+                          "the caret went back into the field the repeats are aimed at")
+        log = try await bridgeLog(f.webView)
+        XCTAssertEqual(log.deletes, 1, "one press, one delete")
+        XCTAssertEqual(log.sent, 0, "and the repeats sent the page off to read the history")
+        XCTAssertEqual(visitTimes(f.db, f.space).count, 6, "exactly one delete reached the database")
+    }
+
+    /// A selection that ends because its rows were deleted hands focus to
+    /// nobody — the key that deleted them may still be down.
+    func testASelectionEndedByADeleteDoesNotHandFocusBack() async throws {
+        let f = try await makePageFixture("Focus After Delete")
+
+        try await runInPage(f.webView, """
+            const search = document.getElementById('search');
+            search.focus();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            document.getElementById('selection-delete').click();
+            return true;
+            """)
+        try await waitForRows(f.webView, 6)
+
+        let after = try await jsonFromPage(f.webView, """
+            const active = document.activeElement;
+            return JSON.stringify({
+                active: active.id || active.tagName,
+                searchDisplay: getComputedStyle(document.getElementById('search')).display,
+            });
+            """)
+        XCTAssertNotEqual(after["active"] as? String, "search",
+                          "the field took the caret back after a delete")
+        XCTAssertNotEqual(after["searchDisplay"] as? String, "none", "though it is on screen again")
+    }
+
+    /// A real press moves focus itself, before the click that starts the
+    /// selection: WebKit blurs the search field on mousedown over a row. The
+    /// page notes where the caret was as the press begins, so Cancel can still
+    /// give it back (TASK-95) — `pick.click()` alone never exercises this,
+    /// because a synthetic click does no focus handling at all.
+    func testAPressThatBlursTheFieldStillHandsTheCaretBack() async throws {
+        let f = try await makePageFixture("Pointer Focus")
+
+        let result = try await jsonFromPage(f.webView, """
+            const search = document.getElementById('search');
+            const pick = document.querySelectorAll('.item')[0].querySelector('.pick');
+            search.focus();
+            // The sequence a real click produces, in order: the press, the
+            // focus change the press performs by itself, then the release and
+            // the click the page listens for.
+            pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            search.blur();
+            const afterPress = document.activeElement.id || document.activeElement.tagName;
+            pick.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            pick.click();
+            const whileSelecting = document.activeElement.id || document.activeElement.tagName;
+            document.getElementById('selection-cancel').click();
+            const active = document.activeElement;
+            return JSON.stringify({
+                afterPress: afterPress,
+                whileSelecting: whileSelecting,
+                selected: document.querySelectorAll('.item.selected').length,
+                active: active.id || active.tagName,
+            });
+            """)
+        XCTAssertNotEqual(result["afterPress"] as? String, "search",
+                          "the press left the caret in the field: this test proves nothing")
+        XCTAssertNotEqual(result["whileSelecting"] as? String, "search")
+        XCTAssertEqual((result["selected"] as? NSNumber)?.intValue, 0, "Cancel left the row ticked")
+        XCTAssertEqual(result["active"] as? String, "search",
+                       "the caret the press took was never noted, so Cancel had nothing to give back")
+    }
+
+    /// And the candidate belongs to that press alone: a press that started no
+    /// selection must not hand its caret to a keyboard selection made later,
+    /// with the focus somewhere else entirely.
+    func testAPressThatStartedNoSelectionLeavesNothingBehind() async throws {
+        let f = try await makePageFixture("Stale Focus Candidate")
+
+        let result = try await jsonFromPage(f.webView, """
+            const search = document.getElementById('search');
+            const items = document.querySelectorAll('.item');
+            // A press on a row that ticks nothing: the row's link, with the
+            // field focused and WebKit blurring it as the press lands.
+            search.focus();
+            items[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            search.blur();
+            items[0].dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            items[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            // Later, and from the keyboard, with the caret elsewhere.
+            items[1].querySelector('.pick').focus();
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }));
+            const selected = document.querySelectorAll('.item.selected').length;
+            document.getElementById('selection-cancel').click();
+            const active = document.activeElement;
+            return JSON.stringify({
+                selected: selected,
+                active: active.id || active.className || active.tagName,
+            });
+            """)
+        XCTAssertEqual((result["selected"] as? NSNumber)?.intValue, 7, "Cmd+A took the loaded rows")
+        XCTAssertNotEqual(result["active"] as? String, "search",
+                          "a candidate from an earlier press was handed to a later selection")
+    }
+
+    /// Cancel reached with the keyboard: focus is on the button that is about
+    /// to stop being rendered, which counts as nowhere — the field gets it
+    /// back (Full Keyboard Access).
+    func testCancellingFromTheKeyboardStillGivesTheFieldItsFocusBack() async throws {
+        let f = try await makePageFixture("Focus From Cancel")
+
+        let result = try await jsonFromPage(f.webView, """
+            const search = document.getElementById('search');
+            search.focus();
+            document.querySelectorAll('.item')[0].querySelector('.pick').click();
+            const cancel = document.getElementById('selection-cancel');
+            cancel.focus();
+            const held = document.activeElement.id;
+            cancel.click();
+            const active = document.activeElement;
+            return JSON.stringify({ held: held, active: active.id || active.tagName });
+            """)
+        XCTAssertEqual(result["held"] as? String, "selection-cancel",
+                       "the button never took focus: this test proves nothing")
+        XCTAssertEqual(result["active"] as? String, "search")
     }
 
     // MARK: - What the store forgets afterwards (AC #6)
