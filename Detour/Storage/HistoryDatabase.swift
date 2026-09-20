@@ -34,13 +34,175 @@ struct HistoryDatabase {
 
         var config = Configuration()
         config.foreignKeysEnabled = true
+        config.prepareDatabase { db in db.add(function: Self.titleMatchFunction) }
         dbQueue = try! DatabaseQueue(path: dbPath, configuration: config)
         try! Self.migrator.migrate(dbQueue)
     }
 
     init(dbQueue: DatabaseQueue) throws {
         self.dbQueue = dbQueue
+        // The queue arrives already configured (tests build their own), so
+        // `Configuration.prepareDatabase` above cannot have run for it. A
+        // `DatabaseQueue` is one connection, so registering on it here covers
+        // the whole queue for as long as it lives.
+        dbQueue.writeWithoutTransaction { db in db.add(function: Self.titleMatchFunction) }
         try Self.migrator.migrate(dbQueue)
+    }
+
+    // MARK: - Title matching (TASK-93)
+
+    /// `history_title_matches(title, tokens)` — the SQL face of
+    /// `titleMatches(_:query:)`, so `searchVisits` can test a *visit's own*
+    /// title without a per-visit FTS index. Pure, so SQLite may hoist and cache
+    /// it; registered on every connection (see the two initializers).
+    ///
+    /// The second argument is the same text for every row of a statement, so
+    /// the tokens are folded once and reused (`queryTokenCache`) instead of
+    /// being re-derived per visit.
+    static let titleMatchFunction = DatabaseFunction(
+        "history_title_matches", argumentCount: 2, pure: true
+    ) { values in
+        guard let title = String.fromDatabaseValue(values[0]), !title.isEmpty else { return false }
+        let query = String.fromDatabaseValue(values[1]) ?? ""
+        return titleMatches(title, tokens: queryTokenCache.tokens(for: query))
+    }
+
+    /// Does `title` match `query` the way `historySearch` would?
+    ///
+    /// Deliberately equivalent to what the FTS side does with the same query —
+    /// `unicode61` tokens, each term prefix-matched, terms OR'd — so a title
+    /// scan and an FTS hit never disagree about what counts as a match: both
+    /// sides are case- and diacritic-folded, cut into maximal alphanumeric runs,
+    /// and a title token matches when it *starts with* a query token. A query
+    /// token never matches mid-token ("box" does not find "Inbox"), exactly as
+    /// `inbox*` does not.
+    ///
+    /// Pure and free of GRDB so it can be tested directly. This overload folds
+    /// the query every time; the SQL function goes through the cached tokens.
+    static func titleMatches(_ title: String?, query: String) -> Bool {
+        guard let title, !title.isEmpty else { return false }
+        return titleMatches(title, tokens: QueryTokens(query))
+    }
+
+    /// The matcher proper, over query tokens that were folded once.
+    ///
+    /// Three attempts, one answer. A title whose UTF-8 is plain ASCII is walked
+    /// byte by byte with no allocation at all — folding an ASCII string only
+    /// lowercases it, so a byte-wise lowercase compare is the same test. A
+    /// title that is not ASCII but *folds* to ASCII (`Résumé`, `ÅNGSTRÖM`) is
+    /// folded once and then walked the same way. Only what is still not ASCII
+    /// after folding — Cyrillic, CJK, emoji — is tokenized into an array of
+    /// strings, the general definition this has to agree with.
+    static func titleMatches(_ title: String, tokens: QueryTokens) -> Bool {
+        guard !tokens.isEmpty else { return false }
+        switch scanASCII(title, tokens.ascii) {
+        case .matched: return true
+        case .rejected: return false
+        case .notASCII: break
+        }
+        let folded = title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        switch scanASCII(folded, tokens.ascii) {
+        case .matched: return true
+        case .rejected: return false
+        case .notASCII: break
+        }
+        return folded.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .contains { titleToken in
+                !titleToken.isEmpty && tokens.folded.contains { titleToken.hasPrefix($0) }
+            }
+    }
+
+    /// `asciiMatch` over a string's UTF-8, or `.notASCII` when that storage is
+    /// not contiguous (a bridged `NSString`) and the general path must answer.
+    private static func scanASCII(_ text: String, _ tokens: [[UInt8]]) -> ASCIIScan {
+        text.utf8.withContiguousStorageIfAvailable { asciiMatch($0, tokens) } ?? .notASCII
+    }
+
+    private enum ASCIIScan { case matched, rejected, notASCII }
+
+    /// Walks an all-ASCII title once: maximal `[0-9A-Za-z]` runs, each compared
+    /// case-insensitively against the (already lowercased) query tokens. The
+    /// whole buffer is checked for ASCII first, so a match is never declared on
+    /// the strength of a prefix that `folding` might have reshaped later on.
+    private static func asciiMatch(_ bytes: UnsafeBufferPointer<UInt8>,
+                                   _ tokens: [[UInt8]]) -> ASCIIScan {
+        for byte in bytes where byte >= 0x80 { return .notASCII }
+        guard !tokens.isEmpty else { return .rejected }
+
+        let count = bytes.count
+        var index = 0
+        while index < count {
+            guard isASCIIAlphanumeric(bytes[index]) else {
+                index += 1
+                continue
+            }
+            let start = index
+            repeat { index += 1 } while index < count && isASCIIAlphanumeric(bytes[index])
+            let length = index - start
+            for token in tokens where token.count <= length {
+                var offset = 0
+                while offset < token.count, asciiLowercase(bytes[start + offset]) == token[offset] {
+                    offset += 1
+                }
+                if offset == token.count { return .matched }
+            }
+        }
+        return .rejected
+    }
+
+    private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {
+        (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
+    }
+
+    private static func asciiLowercase(_ byte: UInt8) -> UInt8 {
+        (byte >= 0x41 && byte <= 0x5A) ? byte + 0x20 : byte
+    }
+
+    /// One query's tokens, folded once: as strings for the general path, and as
+    /// UTF-8 bytes for the ASCII one. A token that is not itself ASCII is left
+    /// out of `ascii` — it can never match inside an ASCII title.
+    struct QueryTokens {
+        let folded: [String]
+        let ascii: [[UInt8]]
+
+        var isEmpty: Bool { folded.isEmpty }
+
+        init(_ query: String) {
+            folded = HistoryDatabase.searchTokens(query)
+            ascii = folded.compactMap { token in
+                let bytes = Array(token.utf8)
+                return bytes.allSatisfy { $0 < 0x80 } ? bytes : nil
+            }
+        }
+    }
+
+    /// Remembers the last query's tokens. Every row of one statement passes the
+    /// same text, and `searchVisits` may call the function tens of thousands of
+    /// times for a single keystroke.
+    private final class QueryTokenCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var query: String?
+        private var tokens = QueryTokens("")
+
+        func tokens(for query: String) -> QueryTokens {
+            lock.lock()
+            defer { lock.unlock() }
+            if self.query != query {
+                tokens = QueryTokens(query)
+                self.query = query
+            }
+            return tokens
+        }
+    }
+
+    private static let queryTokenCache = QueryTokenCache()
+
+    /// Folded, alphanumeric-only tokens — the split every history query already
+    /// applies to the user's text, applied to both sides of a title comparison.
+    private static func searchTokens(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
     }
 
     /// Static, and not private, so a test can build a database as an earlier
@@ -361,23 +523,50 @@ struct HistoryDatabase {
     /// the accompanying `v.id` up to SQLite). Paging is the same keyset walk
     /// over `(visitTime DESC, visitID DESC)`.
     ///
-    /// Matching stays on the URL-level title in `historySearch`, while the row
-    /// *displays* the representative visit's own title (TASK-91, decision D):
-    /// indexing every visit title would need a second FTS table over
-    /// `historyVisit` and multiply the index for a marginal feature. Two visible
-    /// consequences, accepted for now:
-    /// - a title a page used to have is not searchable, and conversely a row can
-    ///   display a visit title that does not contain the query — the match came
-    ///   from the URL-level (latest known) title;
-    /// - that latest known title can be the one *another profile's* visit gave
-    ///   the URL, so a query can match through a title this profile never saw.
-    ///   Only the match crosses profiles; what the row shows does not.
+    /// A **visit**, not a URL, has to earn the match (TASK-93), and the two
+    /// halves of the query are answered differently:
+    /// - URL text goes through `historySearch`, filtered to its `url` column.
+    ///   A URL is the same text whoever visited it, so an FTS hit there
+    ///   qualifies every visit of that URL without crossing anything.
+    /// - Titles are matched against the visit's *own* title (falling back to
+    ///   the URL-level one only for legacy title-less visits — which is what
+    ///   they display) by `history_title_matches`, a scan, not an index.
+    ///
+    /// Titles stay out of the index because `historySearch` holds one row per
+    /// URL: its `title` is the latest known one, shared by every profile, so
+    /// matching on it let a query find a page through a title only *another*
+    /// profile's visit ever gave it. Indexing per visit instead would mean a
+    /// second FTS table over `historyVisit` — rejected as index bloat (TASK-91,
+    /// decision D) — so the title half is a scan of the rows the other filters
+    /// already leave: one profile's visits inside the window, reached through
+    /// `historyVisit_spaceID_visitTime`. `expireOldVisits` keeps that to 90
+    /// days of visits, which bounds but does not make it small — a heavy
+    /// profile holds tens of thousands inside the window — so the scan is not
+    /// run on the title itself but behind a prefilter SQLite can evaluate in C:
+    ///
+    ///     (title LIKE '%tok%' [OR …] OR title GLOB '*[^ -~]*') AND history_title_matches(…)
+    ///
+    /// which is a strict superset of the matcher, and therefore only ever saves
+    /// work. For a title made of printable ASCII, folding *is* ASCII
+    /// lowercasing and "some token starts with `tok`" implies "the string
+    /// contains `tok`" — precisely what SQLite's default (ASCII
+    /// case-insensitive) LIKE tests. A title where folding could do more than
+    /// lowercase — diacritics, non-ASCII case, anything the matcher might
+    /// reshape — necessarily holds a character outside ` `…`~`, and the GLOB
+    /// term hands it to the matcher unconditionally. `history_title_matches`
+    /// reproduces the FTS semantics it replaces (folding, alphanumeric tokens,
+    /// prefix terms, OR) so the two halves of the query agree with each other.
+    ///
+    /// What this buys: a title a page *used* to have is searchable again — every
+    /// visit matches under the title it was recorded with; a row that matched on
+    /// a title always displays a title that matched; and no title from another
+    /// profile can either produce a result here or hide one.
     ///
     /// `from`/`until` (TASK-92) narrow the window *inside* the inner select,
-    /// next to the space filter, so `ROW_NUMBER` picks the latest visit **in
-    /// the range** — the visit the row stands for is one the user can see — and
-    /// a URL with no in-range visit drops out of the results entirely rather
-    /// than appearing with an out-of-range time.
+    /// next to the space filter, so `ROW_NUMBER` picks the latest **in-range,
+    /// qualifying** visit — the visit the row stands for is one the user can see
+    /// and one that actually matched — and a URL with no such visit drops out of
+    /// the results entirely rather than appearing with an out-of-range time.
     func searchVisits(query: String, spaceIDs: [String], from: Double? = nil, until: Double? = nil,
                       before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
         guard !spaceIDs.isEmpty else { return [] }
@@ -385,33 +574,64 @@ struct HistoryDatabase {
             .filter { !$0.isEmpty }
         guard !tokens.isEmpty else { return [] }
 
-        let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
+        // The FTS half, confined to the `url` column by a column filter;
+        // `historySearch` is synchronized with `historyURL`, so its rowid is
+        // `historyURL.id`. The title half takes the tokens as plain text.
+        let urlQuery = "url : (\(tokens.map { "\($0)*" }.joined(separator: " OR ")))"
+        let titleTokens = tokens.joined(separator: " ")
         let limit = clampedPageSize(limit)
         let placeholders = databaseQuestionMarks(count: spaceIDs.count)
-        // The window's arguments sit between the space IDs and the FTS query,
-        // which is where its terms sit in the statement below.
+        // The displayed title, repeated rather than aliased: a SELECT alias is
+        // not visible to the WHERE clause that has to filter on it.
+        let titleExpression = "COALESCE(v.title, h.title)"
+        // One LIKE per token, bound. A token is alphanumeric by construction
+        // (the split above drops everything else), so it can hold neither `%`
+        // nor `_` and needs no ESCAPE clause.
+        let likeTerms = tokens.map { _ in "\(titleExpression) LIKE ?" }.joined(separator: "\n                           OR ")
+
+        // The window's arguments sit between the space IDs and the query terms,
+        // which is where they sit in the statement below: FTS query, then one
+        // pattern per token, then the tokens for the matcher.
         var args: [DatabaseValueConvertible] = spaceIDs
         let window = timeWindow("v.visitTime", from: from, until: until, into: &args)
-        args.append(ftsQuery)
+        args.append(urlQuery)
+        for token in tokens {
+            args.append("%\(token.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil))%")
+        }
+        args.append(titleTokens)
 
+        // `historyURL` is joined inside the inner select, not outside it: the
+        // title test needs the URL-level title for legacy title-less visits,
+        // and it has to run before `ROW_NUMBER` picks a representative.
+        //
+        // The LIKE/GLOB prefilter is written to the left of the AND so SQLite's
+        // short-circuit evaluation reaches `history_title_matches` only for the
+        // few rows that could match; see the doc comment for why it cannot
+        // exclude a row the matcher would have accepted. The GLOB pattern is a
+        // constant — no user text — so it is spelled out rather than bound.
         var sql = """
-            SELECT l.visitID AS visitID, h.url AS url, COALESCE(l.visitTitle, h.title) AS title,
-                   h.faviconURL AS faviconURL, l.visitTime AS visitTime
+            SELECT l.visitID AS visitID, l.url AS url, COALESCE(l.visitTitle, l.urlTitle) AS title,
+                   l.faviconURL AS faviconURL, l.visitTime AS visitTime
             FROM (
-                SELECT v.urlID AS urlID, v.id AS visitID, v.visitTime AS visitTime,
-                       v.title AS visitTitle,
+                SELECT v.id AS visitID, v.visitTime AS visitTime, v.title AS visitTitle,
+                       h.url AS url, h.title AS urlTitle, h.faviconURL AS faviconURL,
                        ROW_NUMBER() OVER (
                            PARTITION BY v.urlID ORDER BY v.visitTime DESC, v.id DESC
                        ) AS rn
                 FROM historyVisit v
+                JOIN historyURL h ON h.id = v.urlID
                 WHERE v.spaceID IN (\(placeholders))\(window)
-                  AND v.urlID IN (
-                      SELECT m.id FROM historySearch s
-                      JOIN historyURL m ON m.rowid = s.rowid
-                      WHERE historySearch MATCH ?
+                  AND (
+                      v.urlID IN (
+                          SELECT s.rowid FROM historySearch s WHERE historySearch MATCH ?
+                      )
+                      OR (
+                          (\(likeTerms)
+                           OR \(titleExpression) GLOB '*[^ -~]*')
+                          AND history_title_matches(\(titleExpression), ?)
+                      )
                   )
             ) l
-            JOIN historyURL h ON h.id = l.urlID
             WHERE l.rn = 1
             """
         if let cursor {

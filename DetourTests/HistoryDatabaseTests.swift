@@ -436,6 +436,13 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(db.searchVisits(query: "inbox", spaceIDs: ["personal"], limit: 10).map(\.title),
                        ["Inbox"])
         XCTAssertEqual(db.visits(spaceIDs: ["work"], limit: 10).map(\.title), ["(3) Inbox - you@work"])
+        // And the other direction (TASK-93): a word only the *work* title has
+        // must not pull the personal visit into the results, even though the
+        // shared `historyURL` row carries that title for both.
+        XCTAssertTrue(db.searchVisits(query: "work", spaceIDs: ["personal"], limit: 10).isEmpty,
+                      "the personal profile never saw a page called that")
+        XCTAssertEqual(db.searchVisits(query: "work", spaceIDs: ["work"], limit: 10).map(\.title),
+                       ["(3) Inbox - you@work"])
     }
 
     /// `searchVisits` shows one row per URL, represented by the latest in-scope
@@ -451,18 +458,18 @@ final class HistoryDatabaseTests: XCTestCase {
                        ["Evening Edition"])
     }
 
-    /// Decision D, recorded so the limitation is not mistaken for a bug: FTS
-    /// indexes the URL-level (latest known) title only, so a title a page used
-    /// to have is not searchable.
-    func testAPreviousVisitTitleIsNotSearchable() throws {
+    /// Decision D's limitation — only the latest known title is indexed, so a
+    /// title a page used to have was not searchable — is gone since TASK-93:
+    /// titles are matched against each visit's own title, not the index.
+    func testAPreviousVisitTitleIsSearchable() throws {
         let db = try makeDatabase()
         _ = recordVisitAwaitingID(db, url: "https://news.example/", title: "Morning Edition",
                                   spaceID: "A")
         _ = recordVisitAwaitingID(db, url: "https://news.example/", title: "Evening Edition",
                                   spaceID: "A")
 
-        XCTAssertTrue(db.searchVisits(query: "morning", spaceIDs: ["A"], limit: 10).isEmpty,
-                      "by decision D: only the latest known title is indexed")
+        XCTAssertEqual(db.searchVisits(query: "morning", spaceIDs: ["A"], limit: 10).map(\.title),
+                       ["Morning Edition"], "the visit that was called that is the one found")
         XCTAssertEqual(db.searchVisits(query: "evening", spaceIDs: ["A"], limit: 10).map(\.title),
                        ["Evening Edition"])
     }
@@ -1088,6 +1095,220 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://b.com", title: "Swift", spaceID: "A", visitTime: 200)
 
         XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 0).count, 1)
+    }
+
+    // MARK: - Title matches stay inside the profile (TASK-93)
+
+    /// The pure matcher behind `history_title_matches`, tested without SQL. It
+    /// has to behave like the FTS side it replaced: folded, alphanumeric
+    /// tokens, each query term prefix-matched, terms OR'd.
+    func testTitleMatcherFollowsTheFTSSemantics() {
+        XCTAssertTrue(HistoryDatabase.titleMatches("Inbox", query: "inb"), "prefix, like inb*")
+        XCTAssertTrue(HistoryDatabase.titleMatches("Inbox", query: "inbox"))
+        XCTAssertFalse(HistoryDatabase.titleMatches("Inbox", query: "box"),
+                       "a term is a prefix, never a substring")
+        XCTAssertTrue(HistoryDatabase.titleMatches("Résumé", query: "resume"),
+                      "both sides are case- and diacritic-folded")
+        XCTAssertTrue(HistoryDatabase.titleMatches("resume", query: "RÉSUMÉ"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("(3) Inbox - you@work", query: "you"),
+                      "punctuation splits tokens on the title side")
+        XCTAssertTrue(HistoryDatabase.titleMatches("(3) Inbox - you@work", query: "work"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("Swift Programming", query: "cooking swift"),
+                      "several query terms are OR'd, like the FTS query")
+        XCTAssertFalse(HistoryDatabase.titleMatches("Swift Programming", query: "cooking baking"))
+        XCTAssertFalse(HistoryDatabase.titleMatches(nil, query: "inbox"), "no title, no match")
+        XCTAssertFalse(HistoryDatabase.titleMatches("", query: "inbox"))
+        XCTAssertFalse(HistoryDatabase.titleMatches("...", query: "inbox"),
+                       "a title with no tokens matches nothing")
+        XCTAssertFalse(HistoryDatabase.titleMatches("Inbox", query: ""))
+        XCTAssertFalse(HistoryDatabase.titleMatches("Inbox", query: "   "))
+    }
+
+    /// The matcher has two implementations — a byte scan for all-ASCII titles,
+    /// `Foundation` folding for everything else — which have to agree. Each
+    /// case is asserted twice: once as written (ASCII, so the fast path) and
+    /// once with a non-ASCII, non-alphanumeric character appended, which
+    /// changes no token but forces the general path.
+    func testTitleMatcherAgreesOnItsASCIIAndFoldingPaths() {
+        let cases: [(title: String, query: String, expected: Bool)] = [
+            ("Inbox", "inbox", true),
+            ("Inbox", "INB", true),
+            ("Inbox", "box", false),
+            ("Inbox2024", "inbox2", true),
+            ("Inbox2024", "inbox2024", true),
+            ("Inbox2024", "2024", false),
+            ("Inbox2024", "inbox20245", false),
+            ("...leading dots", "leading", true),
+            ("trailing!!!", "trailing", true),
+            ("ends with tok", "tok", true),
+            ("ends with tok", "toke", false),
+            ("digits 12345", "123", true),
+            ("a", "a", true),
+            ("a", "ab", false),
+            ("under_score name", "score", true),
+            ("100% pure", "100", true),
+            ("one two", "three two", true),
+            ("one two", "three four", false),
+            ("", "one", false),
+            ("!!!", "one", false),
+        ]
+        for (title, query, expected) in cases {
+            XCTAssertEqual(HistoryDatabase.titleMatches(title, query: query), expected,
+                           "ASCII path: \(title.debugDescription) / \(query.debugDescription)")
+            // "…" is neither ASCII nor alphanumeric: same tokens, other path.
+            XCTAssertEqual(HistoryDatabase.titleMatches(title + "…", query: query), expected,
+                           "folding path: \(title.debugDescription) / \(query.debugDescription)")
+        }
+    }
+
+    /// The SQL prefilter (`LIKE`/`GLOB`) in front of `history_title_matches`
+    /// only ever saves work if it is a strict superset of the matcher. Over a
+    /// corpus chosen to stress folding, tokenizing and LIKE's own wildcards,
+    /// what `searchVisits` returns must be exactly what the matcher alone
+    /// selects — which also checks the SQL function's cached tokens against the
+    /// uncached pure entry point.
+    func testSearchVisitsAgreesWithTheMatcherOverANastyCorpus() throws {
+        let db = try makeDatabase()
+        // (URL-level title, the visit's own title or nil for a legacy visit)
+        let corpus: [(String, String?)] = [
+            ("Inbox", "Inbox"), ("inbox2024", "inbox2024"), ("INBOX", "INBOX"),
+            ("(3) Inbox - you@work", "(3) Inbox - you@work"),
+            ("Résumé", "Résumé"), ("resume", "resume"), ("RÉSUMÉ", "RÉSUMÉ"),
+            ("ÀÉÎ letters", "ÀÉÎ letters"), ("Привет мир", "Привет мир"), ("привет", "привет"),
+            ("東京 tokyo", "東京 tokyo"), ("emoji 🎉 party", "emoji 🎉 party"),
+            ("", ""), ("Legacy fallback title", nil), ("Another legacy row", nil),
+            ("100% pure", "100% pure"), ("under_score name", "under_score name"),
+            ("Mixed CaSe Title", "Mixed CaSe Title"), ("trailing punctuation!!!", "trailing punctuation!!!"),
+            ("...leading dots", "...leading dots"), ("ends with tok", "ends with tok"),
+            ("tokenizer", "tokenizer"), ("café au lait", "café au lait"),
+            ("cafe au lait", "cafe au lait"), ("naïve approach", "naïve approach"),
+            ("naive approach", "naive approach"), ("ÅNGSTRÖM units", "ÅNGSTRÖM units"),
+            ("angstrom units", "angstrom units"), ("digits 12345", "digits 12345"),
+            ("12345", "12345"), ("a", "a"), ("ab", "ab"), ("abc", "abc"),
+            ("Ünicode start", "Ünicode start"), ("work life", "work life"), ("WORK", "WORK"),
+            ("you@work", "you@work"), ("sub-token box", "sub-token box"),
+            ("Inbox sub", "Inbox sub"), ("  padded  ", "  padded  "),
+            ("tab\tseparated", "tab\tseparated"), ("newline\nin title", "newline\nin title"),
+        ]
+        var displayed: [String: String] = [:]   // url -> what the row shows
+        for (index, entry) in corpus.enumerated() {
+            let url = "https://qq\(index).invalid/"
+            try seedVisit(db, url: url, title: entry.0, visitTitle: entry.1, spaceID: "A",
+                          visitTime: Double(index + 1))
+            displayed[url] = entry.1 ?? entry.0
+        }
+
+        let queries = ["inbox", "INBOX", "inb", "box", "resume", "RÉSUMÉ", "café", "cafe",
+                       "привет", "ПРИВЕТ", "tokyo", "東京", "party", "🎉", "100", "under",
+                       "score", "tok", "12", "a", "work you", "angstrom", "naive", "ünicode",
+                       "legacy", "padded", "tab", "newline", "letters", "zzznothing", "%", "_"]
+        for query in queries {
+            let fromSQL = Set(db.searchVisits(query: query, spaceIDs: ["A"], limit: 500).map(\.url))
+            let fromMatcher = Set(displayed.filter { HistoryDatabase.titleMatches($0.value, query: query) }
+                .map(\.key))
+            XCTAssertEqual(fromSQL, fromMatcher,
+                           "the prefilter changed the answer for \(query.debugDescription)")
+        }
+    }
+
+    /// Every visit matches under the title it was recorded with, so the title a
+    /// page used to have finds the visit that had it — and the row shows it.
+    func testAnEarlierTitleFindsTheVisitThatCarriedIt() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://example.com/p7", title: "First name",
+                      visitTitle: "First name", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://example.com/p7", title: "Second name",
+                      visitTitle: "Second name", spaceID: "A", visitTime: 200)
+
+        let results = db.searchVisits(query: "first", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.visitTime, 100)
+        XCTAssertEqual(results.first?.title, "First name")
+    }
+
+    /// `historyURL.title` is one row per URL shared by every profile, so the
+    /// latest known title can be one only another profile's visit ever gave the
+    /// page. A title match now has to be earned by a visit *in scope*.
+    func testATitleOnlyAnotherProfileSawDoesNotMatchInThisProfile() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://ledger.example/x1", title: "Alpha overview",
+                      visitTitle: "Alpha overview", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://ledger.example/x1", title: "Secret budget",
+                      visitTitle: "Secret budget", spaceID: "B", visitTime: 200)
+
+        XCTAssertTrue(db.searchVisits(query: "budget", spaceIDs: ["A"], limit: 10).isEmpty,
+                      "A never saw a page called that")
+        let inB = db.searchVisits(query: "budget", spaceIDs: ["B"], limit: 10)
+        XCTAssertEqual(inB.map(\.title), ["Secret budget"], "B's own visit did earn the match")
+        XCTAssertEqual(inB.map(\.url), ["https://ledger.example/x1"])
+    }
+
+    /// The URL column is the same text whoever visited it, so a match on it
+    /// still qualifies every visit — and the row shows this profile's own title.
+    func testAURLMatchStillCrossesProfilesAndShowsTheOwnTitle() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://ledger.example/x1", title: "Alpha overview",
+                      visitTitle: "Alpha overview", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://ledger.example/x1", title: "Secret budget",
+                      visitTitle: "Secret budget", spaceID: "B", visitTime: 200)
+
+        let results = db.searchVisits(query: "ledger", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.map(\.title), ["Alpha overview"])
+        XCTAssertEqual(results.map(\.visitTime), [100])
+    }
+
+    /// The row stands for the latest in-scope visit that *itself* matched, not
+    /// the latest in-scope visit of a matching URL — and which visit that is
+    /// depends on the query, not on what the shared row happens to hold.
+    func testTheRepresentativeIsTheLatestMatchingVisit() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://example.com/z9", title: "Topic", visitTitle: "Topic",
+                      spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://example.com/z9", title: "Other", visitTitle: "Other",
+                      spaceID: "A", visitTime: 200)
+        // The newest visit anywhere, so the shared row's title is "Topic" again.
+        try seedVisit(db, url: "https://example.com/z9", title: "Topic", visitTitle: "Topic",
+                      spaceID: "B", visitTime: 300)
+
+        let topic = db.searchVisits(query: "topic", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(topic.count, 1)
+        XCTAssertEqual(topic.first?.visitTime, 100, "A's 'Other' visit did not match")
+        XCTAssertEqual(topic.first?.title, "Topic")
+
+        let other = db.searchVisits(query: "other", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(other.map(\.visitTime), [200], "and the superseded title searches too")
+        XCTAssertEqual(other.map(\.title), ["Other"])
+    }
+
+    /// A visit from before per-visit titles existed carries no title of its own
+    /// and already displays the URL-level one, so it matches through it.
+    func testALegacyUntitledVisitMatchesThroughTheURLTitle() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://example.com/q3", title: "Quarterly memo", spaceID: "A",
+                      visitTime: 100)
+
+        let results = db.searchVisits(query: "memo", spaceIDs: ["A"], limit: 10)
+        XCTAssertEqual(results.map(\.title), ["Quarterly memo"])
+        XCTAssertEqual(try visitTitles(db, "https://example.com/q3"), [nil],
+                       "precondition: the visit itself has no title")
+    }
+
+    /// The window and the title rule compose: the qualifying visit has to be
+    /// inside the period too, and an in-period visit that did not match cannot
+    /// stand in for it.
+    func testATitleMatchMustAlsoBeInsideTheRange() throws {
+        let db = try makeDatabase()
+        // Two visits of one URL: only the older one was called "Nightly report".
+        try seedVisit(db, url: "https://example.com/r4", title: "Nightly report",
+                      visitTitle: "Something else", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://example.com/r4", title: "Nightly report",
+                      visitTitle: "Nightly report", spaceID: "A", visitTime: 100)
+
+        XCTAssertTrue(db.searchVisits(query: "nightly", spaceIDs: ["A"], from: 200, limit: 10).isEmpty,
+                      "the only visit in the period is not the one that matched")
+        let inRange = db.searchVisits(query: "nightly", spaceIDs: ["A"], from: 50, until: 200, limit: 10)
+        XCTAssertEqual(inRange.map(\.visitTime), [100])
+        XCTAssertEqual(inRange.map(\.title), ["Nightly report"])
     }
 
     // MARK: - Time ranges (TASK-92)
