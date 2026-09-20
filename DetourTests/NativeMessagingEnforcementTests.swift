@@ -71,7 +71,10 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// An MV3 extension declaring nativeMessaging, with one page to run calls from,
     /// registered in ExtensionManager and the DB the way an installed one is.
-    private func makeExtension() async throws -> WebExtension {
+    /// `permissions` is a parameter so a test can make the manifest itself the
+    /// thing under test — an extension that never declared nativeMessaging is
+    /// the `.denied` half of the gate.
+    private func makeExtension(permissions: [String] = ["nativeMessaging"]) async throws -> WebExtension {
         let id = "nm-enforce-\(UUID().uuidString.prefix(8).lowercased())"
         let dir = try makeTempDir(id)
         let manifestJSON = """
@@ -79,7 +82,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             "manifest_version": 3,
             "name": "Native Messaging Enforcement Test",
             "version": "1.0.0",
-            "permissions": ["nativeMessaging"]
+            "permissions": [\(permissions.map { "\"\($0)\"" }.joined(separator: ", "))]
         }
         """
         try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
@@ -340,6 +343,74 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             controller: loadedOther.profile.extensionController, extensionID: other.id), 1)
         let otherState = try await portState("real", in: loadedOther.webView)
         XCTAssertEqual(otherState["disconnected"] as? Bool, false, "\(otherState)")
+    }
+
+    // MARK: - The context must be one its profile lists (TASK-90)
+
+    /// Both halves of the connect gate on one page: a context the profile lists
+    /// gets its port accepted and a live host registered, and the same page —
+    /// once its context is no longer listed — is refused and spawns nothing.
+    ///
+    /// Until TASK-90 the second half was accepted in silence (`completionHandler(nil)`):
+    /// a port with no handlers, no host process and no log line, which is the
+    /// state the production reconnect-loop investigation had to rule out by hand.
+    func testConnectNativeIsAcceptedForAListedContextAndRefusedOnceItIsNot() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id])
+        let loaded = try await load(ext, profileName: "NM Listed Context Profile")
+        let controller = loaded.profile.extensionController
+
+        try await connectNative(Self.hostName, as: "listed", in: loaded.webView)
+        try await waitUntil("the listed context's host to be spawned and registered") {
+            ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 1
+                && self.fakeHostProcessCount() == 1
+        }
+        let accepted = try await portState("listed", in: loaded.webView)
+        XCTAssertEqual(accepted["disconnected"] as? Bool, false, "an accepted port stays open: \(accepted)")
+
+        // The context stays loaded in the controller — the page keeps running and
+        // WebKit still routes its connects — but the profile no longer lists it,
+        // which is all `extensionIDFromContext` consults. Put back before
+        // teardown, which unloads through the profile.
+        let context = try XCTUnwrap(loaded.profile.extensionContexts.removeValue(forKey: ext.id))
+        defer { loaded.profile.extensionContexts[ext.id] = context }
+
+        try await connectNative(Self.hostName, as: "unlisted", in: loaded.webView)
+        var state: [String: Any] = [:]
+        try await waitUntil("the unattributable port to be refused") {
+            state = try await self.portState("unlisted", in: loaded.webView)
+            return state["disconnected"] as? Bool == true
+        }
+        XCTAssertTrue((state["portError"] as? String ?? "").contains("Unrecognized extension context"),
+                      "expected the refusal on the port, got: \(state)")
+        XCTAssertEqual(fakeHostProcessCount(), 1, "the refused connect must not spawn a host of its own")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(
+            controller: controller, extensionID: ext.id), 1, "and must not register anything")
+    }
+
+    /// The other half of the gate's refusal: an extension that never declared
+    /// nativeMessaging is refused by the manifest check, with the reason that
+    /// names the manifest rather than the context.
+    func testConnectNativeWithoutTheDeclaredPermissionIsRefusedWithoutSpawning() async throws {
+        let ext = try await makeExtension(permissions: [])
+        try installFakeHost(allowing: [ext.id])
+        let loaded = try await load(ext, profileName: "NM Undeclared Profile")
+
+        try await connectNative(Self.hostName, as: "undeclared", in: loaded.webView)
+
+        var state: [String: Any] = [:]
+        try await waitUntil("the undeclared connect to be refused") {
+            state = try await self.portState("undeclared", in: loaded.webView)
+            return state["disconnected"] as? Bool == true
+        }
+        // WebKit wraps the refusal ("Invalid call to runtime.connectNative(). …")
+        // and capitalises what it wraps, so the reason is matched case-insensitively.
+        XCTAssertTrue((state["portError"] as? String ?? "")
+                        .localizedCaseInsensitiveContains("nativeMessaging permission not declared"),
+                      "expected the manifest refusal on the port, got: \(state)")
+        XCTAssertEqual(fakeHostProcessCount(), 0, "an undeclared host must not be spawned")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(
+            controller: loaded.profile.extensionController, extensionID: ext.id), 0)
     }
 
     // MARK: - Built-in hosts ignore the decision (positive)

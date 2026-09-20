@@ -175,6 +175,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
     private var liveNativeHosts: [KeepAlivePortKey: [ObjectIdentifier: LiveNativeHost]] = [:]
 
+    /// The rate limit on the per-attempt `connectNative` logging
+    /// (`logNativeConnectAttempt`, TASK-90). One limiter for all profiles: its
+    /// keys carry the profile name, so two profiles never share a window.
+    private var nativeConnectLogLimiter = NativeConnectLogLimiter()
+
     /// Whether a native-host connection from an extension may proceed.
     enum NativeHostAccess: Equatable {
         /// Detour's own polyfill host: accepted without the manifest permission.
@@ -225,6 +230,61 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 AppDatabase.shared.permissionStatus(
                     extensionID: $0, key: ExtensionPermissionRecord.nativeMessagingKey, type: .apiPermission)
             })
+    }
+
+    /// The extension id a `connectNative` line names when the context that sent
+    /// it is not one its profile lists — there is no verified id to name, and
+    /// the claimed one is not to be trusted.
+    private static let unverifiedExtensionLabel = "(unverified context)"
+
+    /// Log one `connectNative` attempt to a real native messaging host and how
+    /// it ended (TASK-90). Every attempt reaches the *persisted* log — notice
+    /// level for a connect, error level for a refusal or a failure (os_log has
+    /// no level between the two: `Logger.warning` and `Logger.error` both write
+    /// `.error`) — so the next reconnect loop can be read out of `log show`
+    /// alone, which the last one could not: every line on this path was `.info`
+    /// or absent.
+    ///
+    /// Rate-limited per (profile, extension, host) so the loop cannot itself
+    /// evict the log history it is the evidence for. Never logs anything about
+    /// the messages that would flow on the port: what a host exchanges is the
+    /// user's secrets (see `NativeMessagingHost`, which logs byte counts only).
+    ///
+    /// The keep-alive and WebSocket relay hosts do not come through here: they
+    /// are Detour's own bridges rather than attempts to reach an outside
+    /// program, they have their own lifecycle logging, and neither loops.
+    private func logNativeConnectAttempt(
+        extensionID: String?,
+        hostName: String,
+        profileName: String,
+        outcome: NativeConnectLogLimiter.Outcome,
+        detail: String? = nil
+    ) {
+        let extensionLabel = extensionID ?? Self.unverifiedExtensionLabel
+        let key = NativeConnectLogLimiter.Key(
+            profileName: profileName, extensionID: extensionLabel, hostName: hostName)
+        switch nativeConnectLogLimiter.admit(key, outcome: outcome) {
+        case .suppress:
+            return
+        case .logReportingSuppressed(let suppressed, let interval):
+            log.notice("connectNative: \(suppressed.total, privacy: .public) further attempts to '\(hostName, privacy: .public)' from \(extensionLabel, privacy: .public) in profile \(profileName, privacy: .public) in the last \(String(format: "%.0f", interval), privacy: .public)s: \(suppressed.connected, privacy: .public) connected, \(suppressed.failed, privacy: .public) failed, \(suppressed.refused, privacy: .public) refused")
+        case .log:
+            break
+        }
+        let outcomeText: String
+        let level: OSLogType
+        switch outcome {
+        case .connected:
+            outcomeText = "connected"
+            level = .default
+        case .refused:
+            outcomeText = "refused: \(detail ?? "no reason given")"
+            level = .error
+        case .failed:
+            outcomeText = "failed: \(detail ?? "no error given")"
+            level = .error
+        }
+        log.log(level: level, "connectNative from \(extensionLabel, privacy: .public) in profile \(profileName, privacy: .public) to '\(hostName, privacy: .public)': \(outcomeText, privacy: .public)")
     }
 
     /// What an extension sees when the user denied nativeMessaging: Chrome's own
@@ -2248,11 +2308,33 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // permission and ignore the user's nativeMessaging decision, and the relay
         // needs no extension record at all.
         let resolvedExtensionID = extensionIDFromContext(extensionContext)
+        let profileName = profile(for: controller)?.name ?? "(no profile)"
 
         // Every path but the relay's needs the profile-verified id.
+        //
+        // A context its profile no longer lists (unloaded, or a connect in
+        // flight across a reload) is refused, the way the one-shot
+        // `sendNativeMessage` path and the relay branch above already refuse it.
+        // Until TASK-90 this answered `completionHandler(nil)`: it accepted a
+        // port that nothing was keyed to, so no handler was ever attached, no
+        // host was spawned and nothing was logged — an extension reconnecting
+        // into that silence is invisible, which is exactly the state the
+        // TASK-90 investigation had to rule out by hand. In practice only the
+        // keep-alive host reaches this: a real host with no verified id has no
+        // manifest to read, so `nativeHostAccess` calls it `.denied` and that
+        // branch refuses it with a rate-limited line of its own. This line is
+        // not rate-limited because the keep-alive's own reconnect backs off to
+        // one attempt every 30 s (`nativePortKeepAliveJS`).
+        //
+        // As in the relay branch, a controller *no Profile owns* — one built by
+        // hand in the tests — is the exception: there is no profile to verify
+        // against, which is not the same as failing verification, so the
+        // context's own identifier stands in.
         func verifiedExtensionID() -> String? {
             if let resolvedExtensionID { return resolvedExtensionID }
-            completionHandler(nil)
+            if profile(for: controller) == nil { return extensionContext.uniqueIdentifier }
+            log.error("Rejecting a native port to '\(hostName, privacy: .public)' from a context not loaded in profile \(profileName, privacy: .public)")
+            completionHandler(Self.extensionError("Unrecognized extension context"))
             return nil
         }
 
@@ -2376,15 +2458,31 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             applyKeepAlive(.portOpened, for: key)
             return
         case .denied:
-            guard let extID = verifiedExtensionID() else { return }
-            log.warning("Extension \(extID, privacy: .public) tried connectNative to '\(hostName, privacy: .public)' without declaring nativeMessaging permission")
+            // A context the profile no longer lists has no manifest to consult,
+            // so it reads as `.denied` for every real host and this is where an
+            // unattributable connect lands (TASK-90). Say that rather than
+            // blaming a permission it may well have declared — and log it at
+            // error level, since a context Detour cannot attribute is a bug on
+            // one side or the other, not a policy decision.
+            guard let deniedID = resolvedExtensionID else {
+                logNativeConnectAttempt(
+                    extensionID: nil, hostName: hostName, profileName: profileName,
+                    outcome: .refused, detail: "unrecognized extension context")
+                completionHandler(Self.extensionError("Unrecognized extension context"))
+                return
+            }
+            logNativeConnectAttempt(
+                extensionID: deniedID, hostName: hostName, profileName: profileName,
+                outcome: .refused, detail: "nativeMessaging permission not declared")
             completionHandler(NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "nativeMessaging permission not declared"]))
             return
         case .deniedByUser:
             guard let extID = verifiedExtensionID() else { return }
             // Refused before any host object exists: nothing is looked up or spawned.
-            log.warning("Refusing connectNative to '\(hostName, privacy: .public)' from \(extID, privacy: .public): nativeMessaging denied by the user")
+            logNativeConnectAttempt(
+                extensionID: extID, hostName: hostName, profileName: profileName,
+                outcome: .refused, detail: "nativeMessaging denied by the user")
             completionHandler(Self.nativeHostForbiddenError())
             return
         case .allowed:
@@ -2432,11 +2530,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         do {
             try host.connect()
         } catch {
+            // Until TASK-90 this failure was the quietest outcome of the lot:
+            // the extension got its error and Detour's log said nothing, so a
+            // host that could not be spawned looked exactly like a host that was
+            // never asked for.
+            logNativeConnectAttempt(
+                extensionID: extID, hostName: hostName, profileName: profileName,
+                outcome: .failed, detail: error.localizedDescription)
             completionHandler(error)
             return
         }
         liveNativeHosts[keepAliveKey, default: [:]][hostKey] = LiveNativeHost(host: host, port: port)
         applyKeepAlive(.hostConnected, for: keepAliveKey)
+        logNativeConnectAttempt(
+            extensionID: extID, hostName: hostName, profileName: profileName, outcome: .connected)
         completionHandler(nil)
     }
 }

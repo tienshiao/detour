@@ -692,12 +692,32 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             case .drop:
                 replyHandler(true, nil)
                 return
+            case .dropReportingFlood(let droppedSoFar, let since):
+                // An extension that has been over the cap without a pause for a
+                // full minute (TASK-90: 1Password's worker logged 20 errors a
+                // second for hours). Reported once per incident, at error level
+                // and naming the profile, because the point is that the next
+                // incident is diagnosable from `log show` alone — the flood
+                // itself evicts everything else from the log store.
+                //
+                // Logging is the whole reaction, by decision. Restarting the
+                // worker was the obvious alternative and is the wrong one: in
+                // the incident this was written for, a restarted worker
+                // re-entered the same loop within a minute (the root cause was
+                // its IndexedDB being purged under it), so a restart would have
+                // bought nothing and an automatic one invites a restart loop on
+                // top of the message loop. A user-visible notice was rejected
+                // for the same reason — there is nothing the user could do about
+                // an extension's own error loop.
+                log.error("[console bridge] flood from \(extensionID, privacy: .public) in profile \(self.profile?.name ?? "(released)", privacy: .public): \(droppedSoFar, privacy: .public) messages dropped over \(String(format: "%.0f", since), privacy: .public)s of unbroken over-cap logging; the bridge stays capped at \(Int(ConsoleBridgeLimiter.sustainedRatePerSecond), privacy: .public) messages/s for this extension. Logging only — no worker restart, no user notice.")
+                replyHandler(true, nil)
+                return
             case .allowReportingDropped(let count, let interval):
                 // Same prefix as the polyfill's own summary so one log predicate
-                // finds both halves of an incident. `interval` is the age of the
-                // window that dropped them, not the flood's span (bounded by the
-                // window), so it is not phrased as a rate.
-                log.warning("[console bridge] dropped \(count, privacy: .public) messages from \(extensionID, privacy: .public) over the \(ConsoleBridgeLimiter.messagesPerWindow, privacy: .public)/s cap, in a window opened \(String(format: "%.1f", interval), privacy: .public)s ago")
+                // finds both halves of an incident. `interval` is the span the
+                // reported drops accumulated over, so unlike the old fixed
+                // window's it is a fair denominator.
+                log.warning("[console bridge] dropped \(count, privacy: .public) messages from \(extensionID, privacy: .public) over the \(ConsoleBridgeLimiter.burstCapacity, privacy: .public)-message burst / \(Int(ConsoleBridgeLimiter.sustainedRatePerSecond), privacy: .public)-per-second cap, in \(String(format: "%.1f", interval), privacy: .public)s")
             case .allow:
                 break
             }
