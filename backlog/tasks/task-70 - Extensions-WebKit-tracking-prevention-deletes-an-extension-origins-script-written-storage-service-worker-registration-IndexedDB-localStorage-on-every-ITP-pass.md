@@ -4,11 +4,11 @@ title: >-
   Extensions: WebKit tracking prevention deletes an extension origin's
   script-written storage (service-worker registration, IndexedDB, localStorage)
   on every ITP pass
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 03:57'
-updated_date: '2026-09-14 07:25'
+updated_date: '2026-09-20 18:51'
 labels:
   - extensions
   - webkit
@@ -33,9 +33,9 @@ Found 2026-09-13 while closing TASK-68 (production runs at 18:15 and 20:04, sign
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 After the fix, the ITP pass at launch and the next periodic pass no longer clear a loaded extension's service-worker registration in any profile (Networking log: deleteAndRestrictWebsiteDataForRegistrableDomains with no SWServerRegistration::clear for the extension, and no Detour 'no reply' keep-alive error), verified in the signed build
-- [ ] #2 An extension's IndexedDB and localStorage survive an ITP pass and a relaunch (probe extension in a test, and 1Password's item cache warm on restart in production)
-- [x] #3 A test drives an ITP pass against a profile data store with a loaded probe extension (WebKit's testing hooks for advancing ITP time / processing statistics) and asserts the registration and storage survive; a negative control shows an ordinary no-interaction origin is still purged
-- [x] #4 docs/1password-integration-plan.md records the mechanism and the fix; the TASK-68 recovery stays as the safety net
+- [x] #2 A test drives an ITP pass against a profile data store with a loaded probe extension (WebKit's testing hooks for advancing ITP time / processing statistics) and asserts the registration and storage survive; a negative control shows an ordinary no-interaction origin is still purged
+- [x] #3 docs/1password-integration-plan.md records the mechanism and the fix; the TASK-68 recovery stays as the safety net
+- [x] #4 An extension's IndexedDB and localStorage survive an ITP pass (probe extension in a test; 1Password's databases intact after the launch pass in the signed build). Surviving a RELAUNCH is out of scope here: WebKit mints a new origin per context load - TASK-99
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -67,10 +67,14 @@ Regression seen after moving extension web views to the profile store (23:11 bui
 Signed build 23:19 (explicit store for persistent profiles only): both persistent profiles' workers answered every keep-alive round for 2.5 min with no registration clear after their sessions' launch passes (23:19:28). The Private profile is back to its previous behaviour — its extension pages are in the default store, session 1's launch pass cleared its registration once (23:19:23), and the TASK-68 recovery restarted it at 23:21:31 — instead of the 60 s cycling seen on the ephemeral store. Options for Private, not decided: (a) let the keeper log into the store its pages run in (the default store, so drop the isIncognito guard; a test-host incognito profile would then write into the production default store's ITP DB), or (b) find out why 1Password's worker stalls at start in a non-persistent session (set ExtensionConsoleLogPublic and read its console). AC#1 remains open for the periodic pass and for the Private profile.
 
 Periodic pass verified 2026-09-14 00:19:53–57 (signed build a68e26e, running since 23:19:21): ITP passes for sessions 1, 3 and 2 (Personal: 58 cookie / 681 storage candidates) — none followed by SWServerRegistration::clear, and no keep-alive 'no reply' since launch for the persistent profiles' workers. Two clears in the same second (3072 in session 1, 3080 in session 3) preceded the passes' 'started to delete' lines and came with SWServer::removeContextConnection, i.e. WebKit unloading idle workers (the 1Password desktop app had been quit at 23:30, so no keep-alive was armed) — NetworkProcess::deleteAndRestrictWebsiteDataForRegistrableDomains logs 'started' before it clears any registration, so those were not ITP deletions; both workers re-registered at 00:20:23. AC#1 checked for the launch pass and the periodic pass; the Private profile's launch-time kill is tracked in TASK-73/TASK-74. AC#2's production half (item cache warm on restart) still needs a run with ExtensionConsoleLogPublic set.
+
+2026-09-20: AC #2 narrowed (user decision). ITP-pass half verified: ExtensionOriginTrackingPreventionTests, and in the signed build on 2026-09-20 (TASK-90 notes) all three 1Password origins - incl. the Private profile's on the default store after ccde7e1 - kept both IndexedDB databases through the launch pass with no unlinked files and no SWServerRegistration::clear. The relaunch half was never achievable: on-disk origin dirs show a new webkit-extension uuid per launch with the previous launch's origin orphaned, so 1Password's cold item cache at start is an origin-stability problem, not ITP - moved to TASK-99. Private-profile questions stay in TASK-73/74, disabled extensions in TASK-72.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 ITP's AllButCookies removal mode purges script-written storage of every observed origin without unexpired user interaction; extension origins qualify because content-script resources put them in the statistics table. ExtensionOriginInteractionKeeper now logs -[WKWebsiteDataStore _logUserInteraction:] for each context's baseURL at load and daily (skipping incognito, stopped when the last context unloads). ExtensionOriginTrackingPreventionTests drives a real ITP pass (24 h time advance; the API steps in whole days) in a fresh profile: an http origin without interaction loses its localStorage while the logged one keeps it, and a probe worker's registration and IndexedDB survive. Docs section added. AC#1/#2 production halves await the next signed-build run (expect 'ITP: logged user interaction' lines and no SWServerRegistration::clear for the extension). Follow-up TASK-72 covers origins of extensions that stay disabled past the window.
+
+Closed 2026-09-20: launch and periodic passes verified in the signed build for persistent profiles (Sep 14) and for the Private profile after TASK-90's ccde7e1 (Sep 20). Storage surviving a relaunch needs a stable context base URL: TASK-99.
 <!-- SECTION:FINAL_SUMMARY:END -->
