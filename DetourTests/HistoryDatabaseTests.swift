@@ -789,6 +789,339 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.faviconURL, "https://a.com/favicon.ico")
     }
 
+    // MARK: - Palette title isolation (TASK-94)
+
+    /// The fixture behind most of these: one URL two profiles visited, the work
+    /// one last — so the shared `historyURL.title` (and the FTS index built from
+    /// it) carries the work title for both. Times are recent because
+    /// `bestURLCompletion` ignores visits older than 90 days.
+    private func seedTwoProfileVisit(_ db: HistoryDatabase,
+                                     url: String = "https://mail.example/",
+                                     ownTitle: String,
+                                     otherTitle: String) throws {
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: url, title: ownTitle, visitTitle: ownTitle,
+                      spaceID: "A", visitTime: now - 200)
+        try seedVisit(db, url: url, title: otherTitle, visitTitle: otherTitle,
+                      spaceID: "B", visitTime: now - 100)
+    }
+
+    func testRecentHistoryShowsTheSpacesOwnTitle() throws {
+        let db = try makeDatabase()
+        try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
+
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Alpha page"],
+                       "the other profile's title must not label this profile's suggestion")
+        XCTAssertEqual(db.recentHistory(spaceID: "B").map(\.title), ["Secret budget"])
+    }
+
+    func testBestURLCompletionShowsTheSpacesOwnTitle() throws {
+        let db = try makeDatabase()
+        try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
+
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceID: "A")?.title, "Alpha page")
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceID: "B")?.title, "Secret budget")
+    }
+
+    func testSearchHistoryShowsTheSpacesOwnTitle() throws {
+        let db = try makeDatabase()
+        try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
+
+        // A URL token: both profiles match, each under its own title.
+        XCTAssertEqual(db.searchHistory(query: "mail", spaceID: "A").map(\.title), ["Alpha page"])
+        XCTAssertEqual(db.searchHistory(query: "mail", spaceID: "B").map(\.title), ["Secret budget"])
+    }
+
+    /// The leak proper: a word only the *other* profile's title has must not
+    /// produce a suggestion here, even though the shared row carries that title.
+    func testSearchHistoryNeverMatchesThroughAnotherProfilesTitle() throws {
+        let db = try makeDatabase()
+        try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
+
+        XCTAssertTrue(db.searchHistory(query: "budget", spaceID: "A").isEmpty,
+                      "this profile never saw a page called that")
+        XCTAssertEqual(db.searchHistory(query: "budget", spaceID: "B").map(\.title),
+                       ["Secret budget"])
+    }
+
+    /// The reported case, both directions: the shared title is the work one, so
+    /// FTS offers the URL as a candidate for "inbox" *and* for "work". Only the
+    /// first is a match for the personal profile, and it is labelled "Inbox".
+    func testSearchHistoryMatchesTheOwnTitleBehindASharedOne() throws {
+        let db = try makeDatabase()
+        try seedTwoProfileVisit(db, ownTitle: "Inbox", otherTitle: "(3) Inbox - you@work")
+
+        XCTAssertEqual(db.searchHistory(query: "inbox", spaceID: "A").map(\.title), ["Inbox"])
+        XCTAssertTrue(db.searchHistory(query: "work", spaceID: "A").isEmpty,
+                      "the personal profile never saw a page called that")
+        XCTAssertEqual(db.searchHistory(query: "work", spaceID: "B").map(\.title),
+                       ["(3) Inbox - you@work"])
+    }
+
+    /// Which of this space's own visits labels the row: the latest one, not the
+    /// latest visit overall (which is another profile's here).
+    func testTheLatestInScopeVisitProvidesTheTitle() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
+                      visitTitle: "Morning Edition", spaceID: "A", visitTime: now - 300)
+        try seedVisit(db, url: "https://news.example/", title: "Evening Edition",
+                      visitTitle: "Evening Edition", spaceID: "A", visitTime: now - 200)
+        try seedVisit(db, url: "https://news.example/", title: "Night Edition",
+                      visitTitle: "Night Edition", spaceID: "B", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Evening Edition"])
+        XCTAssertEqual(db.searchHistory(query: "news", spaceID: "A").map(\.title),
+                       ["Evening Edition"])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "news", spaceID: "A")?.title,
+                       "Evening Edition")
+    }
+
+    /// Visits recorded before per-visit titles existed have none of their own,
+    /// so the URL-level title still stands in — nothing else ever knew what that
+    /// page was called, and no other space has a claim on it here.
+    func testALegacyVisitWithoutATitleFallsBackToTheURLTitle() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://old.example/", title: "Legacy Title",
+                      spaceID: "A", visitTime: now - 200)
+        try seedVisit(db, url: "https://old.example/", title: "Legacy Title",
+                      spaceID: "A", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Legacy Title"])
+        XCTAssertEqual(db.searchHistory(query: "old", spaceID: "A").map(\.title), ["Legacy Title"])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceID: "A")?.title, "Legacy Title")
+    }
+
+    /// The label is this space's latest *usable* title, not its latest visit: a
+    /// later visit that arrived with no title, or with an empty one, must not
+    /// blank out a title this space does have.
+    func testAnUntitledLaterVisitDoesNotHideThisSpacesOwnTitle() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        // The shared title keeps the token, so FTS still offers the candidate
+        // and `searchHistory` — the one lookup whose MATCH expression, not just
+        // its label, walks these untitled visits — is exercised too.
+        try seedVisit(db, url: "https://old.example/", title: "Own Title",
+                      visitTitle: "Own Title", spaceID: "A", visitTime: now - 300)
+        try seedVisit(db, url: "https://old.example/", title: "Own Title",
+                      spaceID: "A", visitTime: now - 200)
+        try seedVisit(db, url: "https://old.example/", title: "Own Title",
+                      visitTitle: "", spaceID: "A", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Own Title"])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceID: "A")?.title, "Own Title")
+        XCTAssertEqual(db.searchHistory(query: "own", spaceID: "A").map(\.title), ["Own Title"])
+    }
+
+    /// Accepted for the palette: a row is a **URL**, so the visit that earned
+    /// the match and the visit that supplies the label need not be the same one
+    /// — here "inbox" matches the older personal visit while the label comes
+    /// from the newer. (`searchVisits`, where a row *is* a visit, never does
+    /// this; see the contrast in `searchHistory`'s doc comment.) Nothing
+    /// crosses a profile either way: both visits are this space's own.
+    func testTheMatchingVisitAndTheLabellingVisitCanDiffer() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://mail.example/", title: "Inbox", visitTitle: "Inbox",
+                      spaceID: "personal", visitTime: now - 300)
+        try seedVisit(db, url: "https://mail.example/", title: "Sign in", visitTitle: "Sign in",
+                      spaceID: "personal", visitTime: now - 200)
+        try seedVisit(db, url: "https://mail.example/", title: "(3) Inbox - you@work",
+                      visitTitle: "(3) Inbox - you@work", spaceID: "work", visitTime: now - 100)
+
+        XCTAssertEqual(db.searchHistory(query: "inbox", spaceID: "personal").map(\.title),
+                       ["Sign in"],
+                       "matched through the older own visit, labelled by the newer one")
+    }
+
+    /// The leak a plain `COALESCE(own title, h.title)` still had: this space's
+    /// visit predates per-visit titles, and a *later* visit from another space
+    /// has since overwritten the shared title. Falling back to it would display
+    /// exactly the title TASK-94 removes, so the row is left unlabelled and
+    /// `SuggestionProvider.displayTitle` shows the URL instead.
+    func testALegacyVisitNeverFallsBackToAnotherProfilesTitle() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://mail.example/", title: "Inbox",
+                      spaceID: "personal", visitTime: now - 200)
+        try seedVisit(db, url: "https://mail.example/", title: "(3) Inbox - you@work",
+                      visitTitle: "(3) Inbox - you@work", spaceID: "work", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceID: "personal").map(\.title), [""],
+                       "no own title and a shared one that may be the work profile's")
+        XCTAssertEqual(db.searchHistory(query: "mail", spaceID: "personal").map(\.title), [""])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceID: "personal")?.title, "")
+        XCTAssertTrue(db.searchHistory(query: "work", spaceID: "personal").isEmpty,
+                      "and the same guard keeps the work title out of the matcher")
+        XCTAssertEqual(db.recentHistory(spaceID: "work").map(\.title), ["(3) Inbox - you@work"],
+                       "the profile the title belongs to still sees it")
+    }
+
+    /// Known limitation, spelled out on `searchHistory`: `historySearch` is the
+    /// candidate generator and holds only the shared title, so a word that only
+    /// this space's own title has produces no candidate to test. The row is
+    /// still *labelled* with this space's own title wherever it does appear.
+    func testKnownLimitationAnOwnTitleAloneProducesNoCandidate() throws {
+        let db = try makeDatabase()
+        try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
+
+        XCTAssertTrue(db.searchHistory(query: "alpha", spaceID: "A").isEmpty,
+                      "accepted limitation — see the doc comment on searchHistory")
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Alpha page"],
+                       "but the recent list still labels the row with this space's own title")
+    }
+
+    /// FTS5 reserves AND / OR / NOT as query operators, so the unquoted
+    /// `NOT* OR found*` this built was a syntax error: the statement threw, the
+    /// catch logged it, and the user saw no results at all for "not found"
+    /// (TASK-94). Tokens are quoted now, in every lookup that builds a MATCH.
+    func testFTSKeywordTokensAreSearchableRatherThanASyntaxError() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://found.example/page", title: "Found it",
+                       faviconURL: nil, spaceID: "A")
+
+        for query in ["NOT found", "OR found", "AND found", "NEAR found", "not FOUND"] {
+            XCTAssertEqual(db.searchHistory(query: query, spaceID: "A").map(\.url),
+                           ["https://found.example/page"], "searchHistory(\(query))")
+            XCTAssertEqual(db.searchVisits(query: query, spaceIDs: ["A"], limit: 10).map(\.url),
+                           ["https://found.example/page"], "searchVisits(\(query))")
+            XCTAssertEqual(db.searchHistoryGlobal(query: query).map(\.url),
+                           ["https://found.example/page"], "searchHistoryGlobal(\(query))")
+        }
+    }
+
+    /// A URL this space never visited stays out, however well it matches.
+    func testALookupNeverReturnsAURLTheSpaceNeverVisited() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://swiftshop.example/", title: "Swiftshop",
+                      visitTitle: "Swiftshop", spaceID: "B", visitTime: now - 100)
+
+        XCTAssertTrue(db.recentHistory(spaceID: "A").isEmpty)
+        XCTAssertTrue(db.searchHistory(query: "swiftshop", spaceID: "A").isEmpty,
+                      "matching by URL text is not a licence to cross profiles")
+        XCTAssertNil(db.bestURLCompletion(prefix: "swiftshop", spaceID: "A"))
+    }
+
+    /// Nothing about ordering or limiting moved: the rows are still picked and
+    /// sorted by the inner select the old statement was, and only then labelled.
+    func testRecentHistoryOrderingAndLimitAreUnchanged() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        for (index, host) in ["a", "b", "c", "d", "e"].enumerated() {
+            try seedVisit(db, url: "https://\(host).example/", title: host.uppercased(),
+                          visitTitle: host.uppercased(), spaceID: "A",
+                          visitTime: now - Double(100 - index))
+        }
+
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.url),
+                       ["https://e.example/", "https://d.example/", "https://c.example/",
+                        "https://b.example/", "https://a.example/"])
+        XCTAssertEqual(db.recentHistory(spaceID: "A", limit: 3).map(\.url),
+                       ["https://e.example/", "https://d.example/", "https://c.example/"])
+    }
+
+    /// `id` is the last sort key, and the inner LIMIT and the outer ORDER BY
+    /// are one decision (`labelledSelect`): rows that tie on rank *and* on
+    /// visitCount come back in ascending id, and `limit: k` returns exactly the
+    /// first k of that order. The URLs are seeded in reverse alphabetical order,
+    /// so the expected answer is id order and not URL order.
+    func testSearchHistoryTiebreaksOnIDAndLimitsToThatSameOrder() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        // Identical token structure in both columns and one visit each, so
+        // neither rank nor visitCount can separate them.
+        try seedVisit(db, url: "https://zzz.example/swift", title: "Alpha",
+                      visitTitle: "Alpha", spaceID: "A", visitTime: now - 300)
+        try seedVisit(db, url: "https://mmm.example/swift", title: "Bravo",
+                      visitTitle: "Bravo", spaceID: "A", visitTime: now - 200)
+        try seedVisit(db, url: "https://aaa.example/swift", title: "Delta",
+                      visitTitle: "Delta", spaceID: "A", visitTime: now - 100)
+
+        let expected = ["https://zzz.example/swift", "https://mmm.example/swift",
+                        "https://aaa.example/swift"]
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A").map(\.url), expected)
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A", limit: 2).map(\.url),
+                       ["https://zzz.example/swift", "https://mmm.example/swift"])
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A", limit: 1).map(\.url),
+                       ["https://zzz.example/swift"])
+    }
+
+    /// The same contract for `recentHistory`, whose last key is `id DESC`: two
+    /// URLs whose latest in-scope visit is the same instant come back
+    /// newest-id-first, and the limit cuts that order rather than another one.
+    func testRecentHistoryTiebreaksOnIDAndLimitsToThatSameOrder() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://first.example/", title: "First",
+                      visitTitle: "First", spaceID: "A", visitTime: now - 100)
+        try seedVisit(db, url: "https://second.example/", title: "Second",
+                      visitTitle: "Second", spaceID: "A", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.url),
+                       ["https://second.example/", "https://first.example/"])
+        XCTAssertEqual(db.recentHistory(spaceID: "A", limit: 1).map(\.url),
+                       ["https://second.example/"])
+    }
+
+    /// `rank` decides, and the row matching in both indexed columns wins: the
+    /// full order is asserted, so a lost or reversed sort key fails here.
+    func testSearchHistoryOrdersBetterFTSRankFirst() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        // Same visit count on both, so only rank can separate them.
+        try seedVisit(db, url: "https://swift.example/", title: "Swift docs",
+                      visitTitle: "Swift docs", spaceID: "A", visitTime: now - 200)
+        try seedVisit(db, url: "https://other.example/swift", title: "Cooking",
+                      visitTitle: "Cooking", spaceID: "A", visitTime: now - 100)
+
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A").map(\.url),
+                       ["https://swift.example/", "https://other.example/swift"])
+    }
+
+    /// `-visitCount` is the second sort key. Two rows built to tie on rank —
+    /// same column, same token counts — are separated by it, most-visited first.
+    func testSearchHistoryOrdersByVisitCountWhenRankTies() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://one.example/", title: "Swift alpha",
+                      visitTitle: "Swift alpha", spaceID: "A", visitTime: now - 400)
+        for i in 0..<5 {
+            try seedVisit(db, url: "https://two.example/", title: "Swift bravo",
+                          visitTitle: "Swift bravo", spaceID: "A", visitTime: now - Double(300 - i))
+        }
+
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A").map(\.url),
+                       ["https://two.example/", "https://one.example/"],
+                       "5 visits outranks 1 once the FTS rank ties")
+    }
+
+    /// Filtering happens *inside* the inner select, before LIMIT: the
+    /// better-ranked candidate is one this space only ever titled differently,
+    /// so asking for one row returns the next candidate, not nothing.
+    func testSearchHistoryFiltersBeforeApplyingTheLimit() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://one.example/", title: "Zebra notes and more words",
+                      visitTitle: "Zebra notes and more words", spaceID: "A", visitTime: now - 300)
+        // A visited two.example, but called it something else; the shared title
+        // — the only place "zebra" appears for it — came from B, later.
+        try seedVisit(db, url: "https://two.example/", title: "Alpha", visitTitle: "Alpha",
+                      spaceID: "A", visitTime: now - 200)
+        try seedVisit(db, url: "https://two.example/", title: "Zebra", visitTitle: "Zebra",
+                      spaceID: "B", visitTime: now - 100)
+
+        XCTAssertEqual(db.searchHistoryGlobal(query: "zebra").map(\.url),
+                       ["https://two.example/", "https://one.example/"],
+                       "premise: the shorter, B-titled row is the better-ranked candidate")
+        XCTAssertEqual(db.searchHistory(query: "zebra", spaceID: "A", limit: 1).map(\.url),
+                       ["https://one.example/"],
+                       "the better-ranked candidate is dropped before LIMIT, not after")
+        XCTAssertEqual(db.searchHistory(query: "zebra", spaceID: "A").map(\.url),
+                       ["https://one.example/"])
+    }
+
     // MARK: - faviconURL(for:)
 
     func testFaviconURLExactMatch() throws {

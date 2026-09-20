@@ -370,18 +370,185 @@ struct HistoryDatabase {
         })
     }
 
+    // MARK: - Query building (shared)
+
+    /// The `historySearch` MATCH expression for a query's tokens: each token
+    /// prefix-matched, all OR'd, optionally confined to one column.
+    ///
+    /// Every token is **quoted** (TASK-94). FTS5 reserves `AND`, `OR` and `NOT`
+    /// as query operators, so a bare `NOT* OR found*` is a syntax error — every
+    /// history lookup threw, logged and returned nothing, and typing "not found"
+    /// in the palette or the History page silently found nothing at all. Inside
+    /// double quotes a token is always a string. (`NEAR` only parses as an
+    /// operator before `(`, so it never failed, but it is quoted alike.) Tokens
+    /// are alphanumeric by construction — the split that produces them drops
+    /// everything else — so none can contain a quote and none needs escaping.
+    private static func ftsPrefixQuery(_ tokens: [String], column: String? = nil) -> String {
+        let terms = tokens.map { "\"\($0)\"*" }.joined(separator: " OR ")
+        guard let column else { return terms }
+        return "\(column) : (\(terms))"
+    }
+
+    /// The title half of a history search, over `titleExpression`: the prefilter
+    /// SQLite can evaluate in C, and behind it `history_title_matches`. One
+    /// helper because both the History page (`searchVisits`) and the palette
+    /// (`searchHistory`) scan titles this way, and they must agree exactly.
+    ///
+    ///     (title LIKE '%tok%' [OR …] OR title GLOB '*[^ -~]*') AND history_title_matches(…)
+    ///
+    /// The prefilter is a strict superset of the matcher, so it only ever saves
+    /// work; it is written to the left of the AND so short-circuit evaluation
+    /// reaches the Swift function only for the few rows that could match. See
+    /// `searchVisits` for why it cannot exclude a row the matcher would accept.
+    /// The GLOB pattern is a constant — no user text — so it is spelled out
+    /// rather than bound; a token is alphanumeric, so it can hold neither `%`
+    /// nor `_` and its LIKE pattern needs no ESCAPE clause.
+    ///
+    /// Arguments are appended in statement order: one pattern per token, then
+    /// the tokens as one string for the matcher. `titleExpression` is repeated,
+    /// not aliased (a SELECT alias is not visible to the WHERE clause), so it
+    /// must not itself bind anything.
+    ///
+    /// "Agree exactly" is about the prefilter and the matcher, not about the
+    /// expression handed in: the two callers deliberately pass different ones.
+    /// `searchVisits` keeps the unguarded `COALESCE(v.title, h.title)` — its
+    /// scope is a *profile*, i.e. several space IDs, and the palette's guard is
+    /// written argument-free as `o.spaceID <> v.spaceID`, which would read a
+    /// sibling space of the same profile as foreign. Falling back to the
+    /// URL-level title for a legacy visit is the TASK-91 decision for the
+    /// History page and is not TASK-94's to change.
+    private func titleMatchCondition(_ titleExpression: String, tokens: [String],
+                                     into args: inout [DatabaseValueConvertible]) -> String {
+        let likeTerms = tokens.map { _ in "\(titleExpression) LIKE ?" }
+            .joined(separator: "\n                           OR ")
+        for token in tokens {
+            args.append("%\(token.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil))%")
+        }
+        args.append(tokens.joined(separator: " "))
+        return """
+            (\(likeTerms)
+                           OR \(titleExpression) GLOB '*[^ -~]*')
+                          AND history_title_matches(\(titleExpression), ?)
+            """
+    }
+
+    // MARK: - Command palette (space-scoped)
+
+    /// The title a palette suggestion displays: the title *this space's* own
+    /// latest visit gave the URL (TASK-94).
+    ///
+    /// `historyURL.title` is one row per URL shared by every profile, overwritten
+    /// by the newest visit anywhere, so a suggestion in the personal profile was
+    /// labelled with whatever the work profile last called the page ("(3) Inbox -
+    /// you@work"). This space's own latest *titled* visit answers instead —
+    /// `IS NOT NULL AND <> ''`, so a visit recorded with no usable title does not
+    /// hide an older one that has it.
+    ///
+    /// When this space has no titled visit of the URL at all — only visits from
+    /// before per-visit titles existed (TASK-91) — the URL-level title stands in
+    /// **only if no other space has visited the URL either**. Otherwise that
+    /// title is, or may since have become, another profile's, which is the leak
+    /// itself; the row is labelled with the empty string and
+    /// `SuggestionProvider.displayTitle` shows the URL. Losing a legitimate
+    /// legacy title on a shared URL is the cheap half of that trade.
+    ///
+    /// Known hole, not worth code: the guard reads the *present*. If another
+    /// space's pre-TASK-91 visits are what gave `historyURL.title` its value
+    /// and those visits are later deleted, nothing recomputes it —
+    /// `reconcileStagedURLs` only revisits the title when a deleted visit
+    /// carried one of its own — so the shared title outlives its source and
+    /// this space adopts it as a fallback. Confined to title-less visits still
+    /// inside the 90-day window.
+    ///
+    /// Written against `h.id` / `h.title`, with two bound `?` — the space ID
+    /// twice — so each of the three lookups can name its already-narrowed rows
+    /// `h` and drop this into the *outer* select (`labelledSelect`): the
+    /// correlated subqueries then run only for the handful of rows that survived
+    /// LIMIT, never for every candidate.
+    private static let scopedTitleExpression = """
+        COALESCE(
+                       (SELECT v2.title FROM historyVisit v2
+                        WHERE v2.urlID = h.id AND v2.spaceID = ?
+                          AND v2.title IS NOT NULL AND v2.title <> ''
+                        ORDER BY v2.visitTime DESC, v2.id DESC LIMIT 1),
+                       CASE WHEN NOT EXISTS (SELECT 1 FROM historyVisit o
+                                             WHERE o.urlID = h.id AND o.spaceID <> ?)
+                            THEN h.title ELSE '' END)
+        """
+
+    /// The same rule as `scopedTitleExpression`, for the title a *visit* is
+    /// matched on. Correlated to the enclosing `v`, so the scope comes from
+    /// `v.spaceID` and this binds nothing — it is repeated several times inside
+    /// `titleMatchCondition`, which requires an expression free of arguments.
+    ///
+    /// `COALESCE` evaluates left to right and stops, so the cross-space guard
+    /// costs nothing for a visit that has a title of its own.
+    private static let visitTitleExpression = """
+        COALESCE(NULLIF(v.title, ''),
+                                    CASE WHEN NOT EXISTS (
+                                             SELECT 1 FROM historyVisit o
+                                             WHERE o.urlID = h.id AND o.spaceID <> v.spaceID)
+                                         THEN h.title ELSE '' END)
+        """
+
+    /// The `HistoryURL` columns as a space-scoped inner select must expose them.
+    private static let historyURLProjection = """
+        h.id AS id, h.url AS url, h.title AS title,
+                               h.faviconURL AS faviconURL, h.visitCount AS visitCount,
+                               h.lastVisitTime AS lastVisitTime
+        """
+
+    /// Wraps a space-scoped `inner` select in the outer select that labels its
+    /// rows (TASK-94). `inner` exposes `historyURLProjection`, is aliased `h`, and
+    /// has already applied its own WHERE / GROUP BY / ORDER BY / LIMIT — so the
+    /// label's correlated subqueries see only the rows that survived.
+    ///
+    /// `order` restates the inner ORDER BY over the carried-out columns: an outer
+    /// select over a subquery inherits no order. Empty for a single-row lookup.
+    ///
+    /// The label's two binds lead the statement, so every caller's arguments
+    /// start with `labelArguments(spaceID)`; this is the one place that knows it.
+    private static func labelledSelect(inner: String, orderedBy order: String) -> String {
+        """
+        SELECT h.id AS id, h.url AS url,
+               \(scopedTitleExpression) AS title,
+               h.faviconURL AS faviconURL, h.visitCount AS visitCount,
+               h.lastVisitTime AS lastVisitTime
+        FROM (
+        \(inner)
+        ) h
+        \(order.isEmpty ? "" : "ORDER BY \(order)")
+        """
+    }
+
+    /// What `scopedTitleExpression` binds: the space ID, twice.
+    private static func labelArguments(_ spaceID: String) -> [DatabaseValueConvertible] {
+        [spaceID, spaceID]
+    }
+
+    /// The most recently visited URLs of one space, newest first.
+    ///
+    /// The inner select picks the rows (unchanged: one per URL, ordered by the
+    /// space's own latest visit); the outer one labels them (TASK-94) — with an
+    /// `id` tiebreak in both, so which rows the LIMIT keeps and the order they
+    /// come back in are the same decision.
     func recentHistory(spaceID: String, limit: Int = 12) -> [HistoryURL] {
+        let sql = Self.labelledSelect(inner: """
+            SELECT \(Self.historyURLProjection),
+                               MAX(v.visitTime) AS inScopeVisitTime
+                        FROM historyURL h
+                        JOIN historyVisit v ON v.urlID = h.id
+                        WHERE v.spaceID = ?
+                        GROUP BY h.url
+                        ORDER BY inScopeVisitTime DESC, id DESC
+                        LIMIT ?
+            """, orderedBy: "h.inScopeVisitTime DESC, h.id DESC")
+        var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
+        args.append(spaceID)
+        args.append(limit)
         do {
             return try dbQueue.read { db in
-                try HistoryURL.fetchAll(db, sql: """
-                    SELECT h.*
-                    FROM historyURL h
-                    JOIN historyVisit v ON v.urlID = h.id
-                    WHERE v.spaceID = ?
-                    GROUP BY h.url
-                    ORDER BY MAX(v.visitTime) DESC
-                    LIMIT ?
-                    """, arguments: [spaceID, limit])
+                try HistoryURL.fetchAll(db, sql: sql, arguments: StatementArguments(args))
             }
         } catch {
             log.error("Failed to fetch recent history: \(error.localizedDescription)")
@@ -389,25 +556,92 @@ struct HistoryDatabase {
         }
     }
 
+    /// History suggestions for the command palette, scoped to one space.
+    ///
+    /// Like `searchVisits`, a title from another profile must neither label a
+    /// suggestion nor produce one (TASK-94) — but this runs synchronously on the
+    /// main thread on every keystroke, so the title half cannot be a scan of the
+    /// scope's visits the way the History page's is. The shape is therefore:
+    ///
+    /// - `historySearch` stays the candidate generator, with today's tokenization
+    ///   and today's ordering. It is one row per URL and its `title` is the
+    ///   shared, latest-known one.
+    /// - A candidate qualifies only if the space visited it, and then only if it
+    ///   matches in the FTS `url` column — a URL is the same text whoever visited
+    ///   it — or some *in-scope* visit's own title matches, under the same
+    ///   cross-space rule the label uses (`visitTitleExpression`) and behind the
+    ///   same prefilter the History page scans with (`titleMatchCondition`). The
+    ///   URL test is written first, so the matcher only ever runs over the visits
+    ///   of candidates that did not already match by URL.
+    ///
+    /// **Accepted limitation**: FTS is still the gate, so in the palette a title
+    /// only this space ever gave a page is findable only while the shared
+    /// URL-level title also contains the word. Query "inbox" finds the personal
+    /// visit of a page the shared row calls "(3) Inbox - you@work" and labels it
+    /// "Inbox"; query "work" finds nothing there — but a word that appears *only*
+    /// in this space's own older title, and nowhere in the shared one, produces
+    /// no candidate to test. Lifting that would mean scanning the scope's visits
+    /// on every keystroke: TASK-93 measured 18–40 ms per 50k visits, and 220 ms
+    /// for non-ASCII titles — fine off-main for the History page, not inside a
+    /// keystroke's budget. The History page remains the place to find an old
+    /// title.
+    ///
+    /// **Accepted, and different from `searchVisits`**: a row here is a URL,
+    /// not a visit, so the visit that earned the match and the visit that
+    /// supplies the label need not be the same one — "inbox" can match this
+    /// space's older visit while the row is labelled by its newer one. Both are
+    /// this space's own, so nothing crosses a profile; it is only the
+    /// searchVisits guarantee ("a row that matched on a title displays a title
+    /// that matched") that a one-row-per-URL list cannot keep.
+    ///
+    /// Not changed, and deliberately: `rank`, `h.visitCount` and `h.faviconURL`
+    /// are cross-space values. The first two order the results and nothing else.
+    /// `faviconURL` *is* displayed — one icon per URL, whoever fetched it last —
+    /// which is a separate question from the title and not TASK-94's.
     func searchHistory(query: String, spaceID: String, limit: Int = 10) -> [HistoryURL] {
         let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
         guard !tokens.isEmpty else { return [] }
 
-        let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
+        // Arguments in statement order: the label's two, the FTS candidate
+        // query, the scope test, the url-column query, the title test's space ID,
+        // then whatever `titleMatchCondition` binds, then the limit.
+        var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
+        args.append(Self.ftsPrefixQuery(tokens))
+        args.append(spaceID)
+        args.append(Self.ftsPrefixQuery(tokens, column: "url"))
+        args.append(spaceID)
+        let titleCondition = titleMatchCondition(Self.visitTitleExpression, tokens: tokens,
+                                                 into: &args)
+        args.append(limit)
+
+        let sql = Self.labelledSelect(inner: """
+            SELECT \(Self.historyURLProjection), s.rank AS rank
+                        FROM historySearch s
+                        JOIN historyURL h ON h.rowid = s.rowid
+                        WHERE historySearch MATCH ?
+                          AND EXISTS (
+                              SELECT 1 FROM historyVisit v
+                              WHERE v.urlID = h.id AND v.spaceID = ?
+                          )
+                          AND (
+                              h.id IN (
+                                  SELECT s2.rowid FROM historySearch s2
+                                  WHERE historySearch MATCH ?
+                              )
+                              OR EXISTS (
+                                  SELECT 1 FROM historyVisit v
+                                  WHERE v.urlID = h.id AND v.spaceID = ?
+                                    AND (\(titleCondition))
+                              )
+                          )
+                        ORDER BY rank, -h.visitCount, id
+                        LIMIT ?
+            """, orderedBy: "h.rank, -h.visitCount, h.id")
 
         do {
             return try dbQueue.read { db in
-                try HistoryURL.fetchAll(db, sql: """
-                    SELECT h.*
-                    FROM historySearch s
-                    JOIN historyURL h ON h.rowid = s.rowid
-                    JOIN historyVisit v ON v.urlID = h.id
-                    WHERE historySearch MATCH ? AND v.spaceID = ?
-                    GROUP BY h.url
-                    ORDER BY rank, -h.visitCount
-                    LIMIT ?
-                    """, arguments: [ftsQuery, spaceID, limit])
+                try HistoryURL.fetchAll(db, sql: sql, arguments: StatementArguments(args))
             }
         } catch {
             log.error("Failed to search history: \(error.localizedDescription)")
@@ -434,7 +668,9 @@ struct HistoryDatabase {
 
                 let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
                 guard !tokens.isEmpty else { return [] }
-                let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
+                // Quoted tokens, or a query holding "and"/"or"/"not" is an FTS5
+                // syntax error and the extension sees no results (TASK-94).
+                let ftsQuery = Self.ftsPrefixQuery(tokens)
 
                 var sql = """
                     SELECT h.*
@@ -542,7 +778,8 @@ struct HistoryDatabase {
     /// `historyVisit_spaceID_visitTime`. `expireOldVisits` keeps that to 90
     /// days of visits, which bounds but does not make it small — a heavy
     /// profile holds tens of thousands inside the window — so the scan is not
-    /// run on the title itself but behind a prefilter SQLite can evaluate in C:
+    /// run on the title itself but behind a prefilter SQLite can evaluate in C
+    /// (`titleMatchCondition`, shared with the palette's `searchHistory`):
     ///
     ///     (title LIKE '%tok%' [OR …] OR title GLOB '*[^ -~]*') AND history_title_matches(…)
     ///
@@ -576,18 +813,13 @@ struct HistoryDatabase {
 
         // The FTS half, confined to the `url` column by a column filter;
         // `historySearch` is synchronized with `historyURL`, so its rowid is
-        // `historyURL.id`. The title half takes the tokens as plain text.
-        let urlQuery = "url : (\(tokens.map { "\($0)*" }.joined(separator: " OR ")))"
-        let titleTokens = tokens.joined(separator: " ")
+        // `historyURL.id`.
+        let urlQuery = Self.ftsPrefixQuery(tokens, column: "url")
         let limit = clampedPageSize(limit)
         let placeholders = databaseQuestionMarks(count: spaceIDs.count)
         // The displayed title, repeated rather than aliased: a SELECT alias is
         // not visible to the WHERE clause that has to filter on it.
         let titleExpression = "COALESCE(v.title, h.title)"
-        // One LIKE per token, bound. A token is alphanumeric by construction
-        // (the split above drops everything else), so it can hold neither `%`
-        // nor `_` and needs no ESCAPE clause.
-        let likeTerms = tokens.map { _ in "\(titleExpression) LIKE ?" }.joined(separator: "\n                           OR ")
 
         // The window's arguments sit between the space IDs and the query terms,
         // which is where they sit in the statement below: FTS query, then one
@@ -595,20 +827,11 @@ struct HistoryDatabase {
         var args: [DatabaseValueConvertible] = spaceIDs
         let window = timeWindow("v.visitTime", from: from, until: until, into: &args)
         args.append(urlQuery)
-        for token in tokens {
-            args.append("%\(token.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil))%")
-        }
-        args.append(titleTokens)
+        let titleCondition = titleMatchCondition(titleExpression, tokens: tokens, into: &args)
 
         // `historyURL` is joined inside the inner select, not outside it: the
         // title test needs the URL-level title for legacy title-less visits,
         // and it has to run before `ROW_NUMBER` picks a representative.
-        //
-        // The LIKE/GLOB prefilter is written to the left of the AND so SQLite's
-        // short-circuit evaluation reaches `history_title_matches` only for the
-        // few rows that could match; see the doc comment for why it cannot
-        // exclude a row the matcher would have accepted. The GLOB pattern is a
-        // constant — no user text — so it is spelled out rather than bound.
         var sql = """
             SELECT l.visitID AS visitID, l.url AS url, COALESCE(l.visitTitle, l.urlTitle) AS title,
                    l.faviconURL AS faviconURL, l.visitTime AS visitTime
@@ -626,9 +849,7 @@ struct HistoryDatabase {
                           SELECT s.rowid FROM historySearch s WHERE historySearch MATCH ?
                       )
                       OR (
-                          (\(likeTerms)
-                           OR \(titleExpression) GLOB '*[^ -~]*')
-                          AND history_title_matches(\(titleExpression), ?)
+                          \(titleCondition)
                       )
                   )
             ) l
@@ -692,6 +913,11 @@ struct HistoryDatabase {
     /// more than ones older than 90 days), doubled for typed visits, so the site
     /// the user deliberately navigates to daily beats one they clicked into many
     /// times weeks ago. Visits older than 90 days (the expiry window) are ignored.
+    ///
+    /// Only in-scope visits ever produced the match; since TASK-94 the title the
+    /// top hit displays is in-scope too — the inner select finds the row, the
+    /// outer one labels it (`scopedTitleExpression`). One row, so the outer
+    /// select needs no order of its own.
     func bestURLCompletion(prefix: String, spaceID: String) -> HistoryURL? {
         guard !prefix.isEmpty else { return nil }
         let escaped = prefix
@@ -706,31 +932,38 @@ struct HistoryDatabase {
         ]
         let now = Date().timeIntervalSince1970
         let day = 24.0 * 3600
+        let sql = Self.labelledSelect(inner: """
+            SELECT \(Self.historyURLProjection)
+                        FROM historyURL h
+                        JOIN historyVisit v ON v.urlID = h.id
+                        WHERE v.spaceID = ?
+                          AND (h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\'
+                            OR h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\')
+                          AND v.visitTime >= ?
+                        GROUP BY h.url
+                        ORDER BY SUM(
+                            (CASE WHEN v.isTyped THEN 2.0 ELSE 1.0 END) *
+                            (CASE
+                                WHEN v.visitTime >= ? THEN 100.0
+                                WHEN v.visitTime >= ? THEN 70.0
+                                WHEN v.visitTime >= ? THEN 50.0
+                                WHEN v.visitTime >= ? THEN 30.0
+                                ELSE 10.0
+                            END)) DESC,
+                            MAX(v.visitTime) DESC
+                        LIMIT 1
+            """, orderedBy: "")
+        // Appended one at a time: a single heterogeneous literal of strings and
+        // computed Doubles is more than the type checker will sit through.
+        var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
+        args.append(spaceID)
+        args.append(contentsOf: patterns)
+        for days in [90.0, 4.0, 14.0, 31.0, 90.0] {
+            args.append(now - days * day)
+        }
         do {
             return try dbQueue.read { db in
-                try HistoryURL.fetchOne(db, sql: """
-                    SELECT h.*
-                    FROM historyURL h
-                    JOIN historyVisit v ON v.urlID = h.id
-                    WHERE v.spaceID = ?
-                      AND (h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\'
-                        OR h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\')
-                      AND v.visitTime >= ?
-                    GROUP BY h.url
-                    ORDER BY SUM(
-                        (CASE WHEN v.isTyped THEN 2.0 ELSE 1.0 END) *
-                        (CASE
-                            WHEN v.visitTime >= ? THEN 100.0
-                            WHEN v.visitTime >= ? THEN 70.0
-                            WHEN v.visitTime >= ? THEN 50.0
-                            WHEN v.visitTime >= ? THEN 30.0
-                            ELSE 10.0
-                        END)) DESC,
-                        MAX(v.visitTime) DESC
-                    LIMIT 1
-                    """, arguments: [spaceID, patterns[0], patterns[1], patterns[2], patterns[3],
-                                     now - 90 * day,
-                                     now - 4 * day, now - 14 * day, now - 31 * day, now - 90 * day])
+                try HistoryURL.fetchOne(db, sql: sql, arguments: StatementArguments(args))
             }
         } catch {
             log.error("Failed to find URL completion: \(error.localizedDescription)")

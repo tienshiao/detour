@@ -278,6 +278,73 @@ final class SuggestionProviderTests: XCTestCase {
         })
     }
 
+    // MARK: - Profile title isolation (TASK-94)
+
+    /// One URL two profiles visited, the work one last — so the shared
+    /// `historyURL` row, and the FTS index built from it, carry the work title
+    /// for both. Recorded through the production `recordVisit` so these tests
+    /// exercise what the browser actually writes; the writes are serialized on
+    /// GRDB's writer queue, so awaiting each keeps the order. No title word
+    /// appears in the URL, so every match below is earned by a title.
+    private func seedTwoProfileVisit(_ db: HistoryDatabase) {
+        for (spaceID, title) in [("personal", "Alpha page"), ("work", "Secret budget")] {
+            let done = expectation(description: "record \(spaceID) visit")
+            db.recordVisit(url: "https://mail.example/", title: title, faviconURL: nil,
+                           spaceID: spaceID) { _ in done.fulfill() }
+            wait(for: [done], timeout: 10)
+        }
+    }
+
+    func testDefaultSuggestionsShowTheSpacesOwnTitle() throws {
+        let db = try makeDatabase()
+        seedTwoProfileVisit(db)
+        let provider = makeProvider(db: db)
+
+        let items = provider.defaultSuggestions(spaceID: "personal", tabs: [])
+
+        guard case .historyResult(_, let title, _) = items.first else {
+            return XCTFail("Expected a history suggestion")
+        }
+        XCTAssertEqual(title, "Alpha page", "the work profile's title must not label this row")
+    }
+
+    func testLocalSuggestionsLabelTheTopHitWithTheSpacesOwnTitle() throws {
+        let db = try makeDatabase()
+        seedTwoProfileVisit(db)
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "mail", spaceID: "personal", tabs: [],
+                                              allowAutocomplete: true)
+
+        XCTAssertEqual(local.inlineCompletion, "mail.example")
+        guard case .historyResult(let url, let title, _) = local.items.first else {
+            return XCTFail("First item should be the history top hit")
+        }
+        XCTAssertEqual(url, "https://mail.example/")
+        XCTAssertEqual(title, "Alpha page")
+    }
+
+    func testLocalSuggestionsFindNothingThroughAnotherProfilesTitle() throws {
+        let db = try makeDatabase()
+        seedTwoProfileVisit(db)
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "budget", spaceID: "personal", tabs: [],
+                                              allowAutocomplete: true)
+
+        XCTAssertFalse(local.items.contains {
+            if case .historyResult = $0 { return true }
+            return false
+        }, "a word only the work profile's title has must not surface the page here")
+        // The work profile does find it, under its own title.
+        let work = provider.localSuggestions(for: "budget", spaceID: "work", tabs: [],
+                                             allowAutocomplete: true)
+        XCTAssertTrue(work.items.contains {
+            if case .historyResult(_, let title, _) = $0 { return title == "Secret budget" }
+            return false
+        })
+    }
+
     // MARK: - Merge ordering
 
     func testMergeOrderIsTabsHistorySearch() {
