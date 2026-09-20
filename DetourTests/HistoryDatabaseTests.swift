@@ -1090,6 +1090,168 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 0).count, 1)
     }
 
+    // MARK: - Time ranges (TASK-92)
+
+    /// Half-open `[from, until)`: a visit exactly on the lower bound is in the
+    /// period, one exactly on the upper bound belongs to the next.
+    func testVisitsWithinARangeAreHalfOpen() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://before.com", spaceID: "A", visitTime: 199)
+        try seedVisit(db, url: "https://onfrom.com", spaceID: "A", visitTime: 200)
+        try seedVisit(db, url: "https://inside.com", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://onuntil.com", spaceID: "A", visitTime: 400)
+        try seedVisit(db, url: "https://after.com", spaceID: "A", visitTime: 401)
+
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], from: 200, until: 400, limit: 10).map(\.url),
+                       ["https://inside.com", "https://onfrom.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], from: 400, limit: 10).map(\.url),
+                       ["https://after.com", "https://onuntil.com"],
+                       "an open-ended period runs to now and beyond")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], until: 200, limit: 10).map(\.url),
+                       ["https://before.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).count, 5, "and no range is all of them")
+    }
+
+    /// A period nothing was recorded in is an empty list, not an error — what an
+    /// out-of-window day asks for.
+    func testAnEmptyRangeReturnsNothing() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+
+        XCTAssertTrue(db.visits(spaceIDs: ["A"], from: 1000, until: 2000, limit: 10).isEmpty)
+        XCTAssertTrue(db.searchVisits(query: "swift", spaceIDs: ["A"], from: 1000, until: 2000,
+                                      limit: 10).isEmpty)
+    }
+
+    /// Paging has to stay inside the period: the cursor walks the same keyset,
+    /// and every page carries the same bounds.
+    func testVisitsPaginationInsideARangeCoversItExactlyOnce() throws {
+        let db = try makeDatabase()
+        for i in 1...17 {
+            try seedVisit(db, url: "https://\(i).com", spaceID: "A", visitTime: Double(i))
+        }
+
+        let full = db.visits(spaceIDs: ["A"], from: 5, until: 15, limit: 100)
+        XCTAssertEqual(full.map(\.visitTime), (5...14).reversed().map(Double.init))
+
+        var walked: [HistoryVisitEntry] = []
+        var cursor: HistoryCursor?
+        while true {
+            let page = db.visits(spaceIDs: ["A"], from: 5, until: 15, before: cursor, limit: 3)
+            if page.isEmpty { break }
+            walked.append(contentsOf: page)
+            cursor = HistoryCursor(after: page[page.count - 1])
+            if walked.count > 50 { XCTFail("Pagination did not terminate"); break }
+        }
+        XCTAssertEqual(walked, full, "the paged walk is the single-shot listing")
+        XCTAssertEqual(Set(walked.map(\.visitID)).count, 10, "no duplicates across pages")
+    }
+
+    /// AC #2: a search row stands for the URL's latest visit *inside* the
+    /// period — the bounds sit in the inner select, so `ROW_NUMBER` never picks
+    /// a visit the user cannot see.
+    func testSearchVisitsRepresentsAURLByItsLatestInRangeVisit() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
+        let inRange = try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 900)
+
+        let results = db.searchVisits(query: "swift", spaceIDs: ["A"], from: 200, until: 400, limit: 10)
+
+        XCTAssertEqual(results.map(\.visitID), [inRange])
+        XCTAssertEqual(results.map(\.visitTime), [300], "not the newest visit, the newest in-range one")
+    }
+
+    /// And a URL whose every visit is outside the period does not appear at all.
+    func testSearchVisitsDropsURLsWithNoInRangeVisit() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://recent.com", title: "Swift Recent", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://old.com", title: "Swift Old", spaceID: "A", visitTime: 100)
+
+        XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], from: 200, limit: 10).map(\.url),
+                       ["https://recent.com"])
+        XCTAssertEqual(db.searchVisits(query: "swift", spaceIDs: ["A"], limit: 10).count, 2,
+                       "both are still there without a range")
+    }
+
+    /// The range narrows the fan-out, so deleting a search row while a period is
+    /// showing takes the URL's visits *in that period* and leaves the rest —
+    /// and the shared `historyURL` row is repaired from what actually went.
+    func testRangedDeleteOfAllVisitsOfURLLeavesTheOutOfRangeVisits() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        let named = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 900)
+        try seedVisit(db, url: "https://b.com", spaceID: "A", visitTime: 250)
+
+        let result = awaitDeletion {
+            db.deleteVisits(ids: [named], spaceIDs: ["A"], allVisitsOfURL: true,
+                            from: 150, until: 400, completion: $0)
+        }
+
+        XCTAssertEqual(result.deletedVisitCount, 2, "the two in the period, and only those")
+        XCTAssertEqual(result.affectedURLs, ["https://a.com"])
+        XCTAssertTrue(result.removedURLs.isEmpty, "the URL still has visits outside it")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.visitTime), [900, 250, 100],
+                       "the neighbour and the out-of-range visits stayed")
+        let row = try XCTUnwrap(urlRow(db, "https://a.com"))
+        XCTAssertEqual(row["lastVisitTime"] as Double, 900, "recomputed from what remains")
+        XCTAssertEqual(row["visitCount"] as Int, 2, "max(4 - 2, 2)")
+    }
+
+    /// The row the user clicked always goes, even if the period it was rendered
+    /// under no longer contains it — otherwise the page takes it off screen and
+    /// the next refresh brings it back.
+    func testARangedDeleteStillTakesTheVisitItNames() throws {
+        let db = try makeDatabase()
+        let named = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 400)
+
+        let result = awaitDeletion {
+            db.deleteVisits(ids: [named], spaceIDs: ["A"], allVisitsOfURL: true,
+                            from: 150, until: 350, completion: $0)
+        }
+
+        XCTAssertEqual(result.deletedVisitCount, 3, "the period's two, plus the named one outside it")
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.visitTime), [400])
+        XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://a.com"))["visitCount"] as Int, 1,
+                       "counted once each, not twice")
+    }
+
+    /// Without the fan-out there is nothing for a range to narrow: the named
+    /// visit is deleted exactly as before.
+    func testARangeIsIgnoredWhenAllVisitsOfURLIsFalse() throws {
+        let db = try makeDatabase()
+        let named = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
+
+        let result = awaitDeletion {
+            db.deleteVisits(ids: [named], spaceIDs: ["A"], from: 1000, until: 2000, completion: $0)
+        }
+
+        XCTAssertEqual(result.deletedVisitCount, 1)
+        XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.visitTime), [300])
+    }
+
+    /// Scope still comes first: a range cannot be used to reach another
+    /// profile's visits of the same URL.
+    func testARangedDeleteStaysInsideTheScope() throws {
+        let db = try makeDatabase()
+        let named = try seedVisit(db, url: "https://shared.com", spaceID: "A", visitTime: 200)
+        try seedVisit(db, url: "https://shared.com", spaceID: "B", visitTime: 250)
+
+        let result = awaitDeletion {
+            db.deleteVisits(ids: [named], spaceIDs: ["A"], allVisitsOfURL: true,
+                            from: 100, until: 400, completion: $0)
+        }
+
+        XCTAssertEqual(result.deletedVisitCount, 1)
+        XCTAssertEqual(db.visits(spaceIDs: ["B"], limit: 10).map(\.visitTime), [250])
+    }
+
     // MARK: - deleteVisits(ids:spaceIDs:allVisitsOfURL:) — TASK-87
 
     func testDeleteVisitRemovesOnlyThatVisit() throws {

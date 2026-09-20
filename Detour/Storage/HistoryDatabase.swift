@@ -311,7 +311,13 @@ struct HistoryDatabase {
     ///
     /// Pass the previous page's last entry as `cursor` to get the next page;
     /// see `HistoryCursor` for why this is keyset paging and not OFFSET.
-    func visits(spaceIDs: [String], before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
+    ///
+    /// `from`/`until` narrow the listing to a time range, half-open
+    /// `[from, until)` (TASK-92). Both are computed natively from the symbolic
+    /// range the page named — see `HistoryTimeRange` — and are day-aligned, so
+    /// every page of one listing sees the same window.
+    func visits(spaceIDs: [String], from: Double? = nil, until: Double? = nil,
+                before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
         guard !spaceIDs.isEmpty else { return [] }
         let limit = clampedPageSize(limit)
         let placeholders = databaseQuestionMarks(count: spaceIDs.count)
@@ -324,6 +330,14 @@ struct HistoryDatabase {
             WHERE v.spaceID IN (\(placeholders))
             """
         var args: [DatabaseValueConvertible] = spaceIDs
+        if let from {
+            sql += " AND v.visitTime >= ?"
+            args.append(from)
+        }
+        if let until {
+            sql += " AND v.visitTime < ?"
+            args.append(until)
+        }
         if let cursor {
             sql += " AND (v.visitTime < ? OR (v.visitTime = ? AND v.id < ?))"
             args.append(cursor.visitTime)
@@ -365,7 +379,14 @@ struct HistoryDatabase {
     /// - that latest known title can be the one *another profile's* visit gave
     ///   the URL, so a query can match through a title this profile never saw.
     ///   Only the match crosses profiles; what the row shows does not.
-    func searchVisits(query: String, spaceIDs: [String], before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
+    ///
+    /// `from`/`until` (TASK-92) narrow the window *inside* the inner select,
+    /// next to the space filter, so `ROW_NUMBER` picks the latest visit **in
+    /// the range** — the visit the row stands for is one the user can see — and
+    /// a URL with no in-range visit drops out of the results entirely rather
+    /// than appearing with an out-of-range time.
+    func searchVisits(query: String, spaceIDs: [String], from: Double? = nil, until: Double? = nil,
+                      before cursor: HistoryCursor? = nil, limit: Int) -> [HistoryVisitEntry] {
         guard !spaceIDs.isEmpty else { return [] }
         let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
@@ -374,6 +395,18 @@ struct HistoryDatabase {
         let ftsQuery = tokens.map { "\($0)*" }.joined(separator: " OR ")
         let limit = clampedPageSize(limit)
         let placeholders = databaseQuestionMarks(count: spaceIDs.count)
+        // Both values are bound; only the presence of each term is decided here.
+        var window = ""
+        var args: [DatabaseValueConvertible] = spaceIDs
+        if let from {
+            window += "\n                  AND v.visitTime >= ?"
+            args.append(from)
+        }
+        if let until {
+            window += "\n                  AND v.visitTime < ?"
+            args.append(until)
+        }
+        args.append(ftsQuery)
 
         var sql = """
             SELECT l.visitID AS visitID, h.url AS url, COALESCE(l.visitTitle, h.title) AS title,
@@ -385,7 +418,7 @@ struct HistoryDatabase {
                            PARTITION BY v.urlID ORDER BY v.visitTime DESC, v.id DESC
                        ) AS rn
                 FROM historyVisit v
-                WHERE v.spaceID IN (\(placeholders))
+                WHERE v.spaceID IN (\(placeholders))\(window)
                   AND v.urlID IN (
                       SELECT m.id FROM historySearch s
                       JOIN historyURL m ON m.rowid = s.rowid
@@ -395,8 +428,6 @@ struct HistoryDatabase {
             JOIN historyURL h ON h.id = l.urlID
             WHERE l.rn = 1
             """
-        var args: [DatabaseValueConvertible] = spaceIDs
-        args.append(ftsQuery)
         if let cursor {
             sql += " AND (l.visitTime < ? OR (l.visitTime = ? AND l.visitID < ?))"
             args.append(cursor.visitTime)
@@ -538,7 +569,15 @@ struct HistoryDatabase {
     /// empty result: the caller's UI would otherwise take rows off screen — and
     /// the store would forget cache entries — for rows still in the database
     /// (TASK-87).
+    ///
+    /// `from`/`until` narrow the `allVisitsOfURL` fan-out to the half-open range
+    /// `[from, until)` (TASK-92): a row deleted while the page is filtered to a
+    /// period stands for the URL's visits *in that period*, and the ones outside
+    /// it — which the user was not looking at — stay. Without `allVisitsOfURL`
+    /// they are ignored; the named ids are always deleted, whatever the range,
+    /// so the row the user clicked cannot survive its own deletion.
     func deleteVisits(ids: [Int64], spaceIDs: [String], allVisitsOfURL: Bool = false,
+                      from: Double? = nil, until: Double? = nil,
                       completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
         let visitIDs = Array(Set(ids))
         guard !visitIDs.isEmpty, !spaceIDs.isEmpty else { return completion(.success(.empty)) }
@@ -565,7 +604,16 @@ struct HistoryDatabase {
                     urlIDs.formUnion(found)
                 }
                 try self.stageAndDeleteVisits(db, driving: "urlID", values: urlIDs.sorted(),
-                                              spaceIDs: spaceIDs)
+                                              spaceIDs: spaceIDs, from: from, until: until)
+                // A second pass for the named ids alone, and only when a range
+                // narrowed the first one: an id the caller named with a range
+                // that does not contain it would otherwise be left behind, and
+                // the row it belongs to would come back on the next refresh.
+                // Anything the pass above already took is gone, so it cannot be
+                // staged — or counted — twice.
+                if from != nil || until != nil {
+                    try self.stageAndDeleteVisits(db, driving: "id", values: visitIDs, spaceIDs: spaceIDs)
+                }
             }
         }, completion: { _, result in
             self.complete(result, "delete history visits", completion)
@@ -692,16 +740,29 @@ struct HistoryDatabase {
     /// Stages and deletes the in-scope visits named by `values` of the `driving`
     /// column — `id` (one visit each) or `urlID` (every in-scope visit of those
     /// URLs). Both are this file's own literals; every value is bound.
+    ///
+    /// `from`/`until` narrow the rows to the half-open range `[from, until)`
+    /// (TASK-92); they are bound like everything else.
     private func stageAndDeleteVisits(_ db: Database, driving column: String, values: [Int64],
-                                      spaceIDs: [String]) throws {
+                                      spaceIDs: [String], from: Double? = nil,
+                                      until: Double? = nil) throws {
         for chunk in chunked(values) {
             var args: [DatabaseValueConvertible] = chunk
             args.append(contentsOf: spaceIDs)
+            var window = ""
+            if let from {
+                window += " AND visitTime >= ?"
+                args.append(from)
+            }
+            if let until {
+                window += " AND visitTime < ?"
+                args.append(until)
+            }
             // A URL can own visits in more than one chunk, which is what the
             // staging table's `n = n + excluded.n` is for.
             try stageAndDeleteVisits(db, where: """
                 \(column) IN (\(databaseQuestionMarks(count: chunk.count)))
-                  AND \(pinnedSpaceScope(count: spaceIDs.count))
+                  AND \(pinnedSpaceScope(count: spaceIDs.count))\(window)
                 """, arguments: args)
         }
     }

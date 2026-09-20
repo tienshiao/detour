@@ -193,6 +193,9 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         var selection: String?
         var notice: String?
         var clearHidden = true
+        var rangeHidden = true
+        var rangeValue = ""
+        var search = ""
     }
 
     private func pageState(_ webView: WKWebView) async throws -> PageState {
@@ -210,6 +213,9 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
                     ? null : document.getElementById('selection-count').textContent,
                 notice: notice.hidden ? null : notice.textContent,
                 clearHidden: document.getElementById('clear').hidden,
+                rangeHidden: document.getElementById('range').hidden,
+                rangeValue: document.getElementById('range').value,
+                search: location.search,
             });
             """)
         let text = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
@@ -222,6 +228,9 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         state.selection = dict["selection"] as? String
         state.notice = dict["notice"] as? String
         state.clearHidden = dict["clearHidden"] as? Bool ?? true
+        state.rangeHidden = dict["rangeHidden"] as? Bool ?? true
+        state.rangeValue = dict["rangeValue"] as? String ?? ""
+        state.search = dict["search"] as? String ?? ""
         return state
     }
 
@@ -558,6 +567,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         // The page hides what it cannot do.
         let chrome = try await pageState(webView)
         XCTAssertTrue(chrome.clearHidden, "no Clear History control in a private space")
+        XCTAssertTrue(chrome.rangeHidden, "and nothing to filter by period either (TASK-92)")
     }
 
     // MARK: - The page (AC #1, #2)
@@ -925,6 +935,190 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         let after = try await pageState(f.webView)
         XCTAssertEqual(after.ids, before)
         XCTAssertEqual(visitTimes(f.db, f.space).count, 7)
+    }
+
+    // MARK: - The time filter (TASK-92)
+
+    /// The URLs one `history.query` answered with, in the order it answered.
+    private func queryURLs(_ webView: WKWebView, _ params: [String: Any],
+                           file: StaticString = #filePath, line: UInt = #line) async throws -> [String] {
+        let outcome = try await callBridge(webView, in: InternalPageBridge.contentWorld,
+                                           method: "history.query", params: params)
+        XCTAssertNil(outcome.error, "the query was refused", file: file, line: line)
+        let entries = outcome.result?["entries"] as? [[String: Any]] ?? []
+        return entries.compactMap { $0["url"] as? String }
+    }
+
+    /// A preset is turned into bounds natively; the page gets the period's
+    /// visits and nothing else, with or without a search.
+    func testAQueryWithAPresetAnswersOnlyThePeriodsVisits() async throws {
+        let db = try makeDatabase()
+        HistoryPageBridge.database = db
+        let space = makeSpace("Preset Query")
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        let startOfYesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: startOfToday))
+        let longAgo = try XCTUnwrap(calendar.date(byAdding: .day, value: -10, to: startOfToday))
+        try seedVisit(db, url: "https://today.example/", title: "Swift Today", spaceID: space.id,
+                      visitTime: startOfToday.timeIntervalSince1970 + 60)
+        try seedVisit(db, url: "https://yesterday.example/", title: "Swift Yesterday", spaceID: space.id,
+                      visitTime: startOfYesterday.timeIntervalSince1970 + 60)
+        try seedVisit(db, url: "https://old.example/", title: "Swift Old", spaceID: space.id,
+                      visitTime: longAgo.timeIntervalSince1970 + 60)
+
+        let tab = makeTab(in: space)
+        tab.loadInternalPage(.history)
+        try await waitForHistoryPage(tab)
+        let webView = try XCTUnwrap(tab.webView)
+
+        let today = try await queryURLs(webView, ["range": ["preset": "today"]])
+        XCTAssertEqual(today, ["https://today.example/"])
+        let yesterday = try await queryURLs(webView, ["range": ["preset": "yesterday"]])
+        XCTAssertEqual(yesterday, ["https://yesterday.example/"], "half-open: today is not in it")
+        let week = try await queryURLs(webView, ["range": ["preset": "week"]])
+        XCTAssertEqual(week, ["https://today.example/", "https://yesterday.example/"])
+        let month = try await queryURLs(webView, ["range": ["preset": "month"]])
+        XCTAssertEqual(month.count, 3)
+        let everything = try await queryURLs(webView, [:])
+        XCTAssertEqual(everything.count, 3, "no range is all of history")
+        // A day the retention window could still hold, but nothing was recorded
+        // in: an empty list, not an error.
+        let emptyDay = try await queryURLs(webView, ["range": ["day": "1999-01-01"]])
+        XCTAssertEqual(emptyDay, [], "a period with nothing in it is still a period")
+        // Combined with a search: one row per URL, inside the period only.
+        let searched = try await queryURLs(webView, ["search": "swift", "range": ["preset": "today"]])
+        XCTAssertEqual(searched, ["https://today.example/"])
+    }
+
+    /// A `range` that is neither absent nor one of the two shapes is refused —
+    /// never quietly widened to all of history, on either method.
+    func testAMalformedRangeIsRejected() async throws {
+        let db = try makeDatabase()
+        HistoryPageBridge.database = db
+        let space = makeSpace("Malformed Range")
+        let visit = try seedVisit(db, url: "https://swift.org/", title: "Swift", spaceID: space.id,
+                                  visitTime: Date().timeIntervalSince1970 - 60)
+
+        let tab = makeTab(in: space)
+        tab.loadInternalPage(.history)
+        try await waitForHistoryPage(tab)
+        let webView = try XCTUnwrap(tab.webView)
+
+        let ranges: [Any] = [
+            "today",
+            ["preset": "decade"],
+            ["preset": "day"],
+            ["preset": "today", "day": "2026-01-01"],
+            ["day": "2026-2-3"],
+            ["day": "2026-02-30"],
+            ["day": "2026-13-01"],
+            ["day": 20260203],
+            [String: Any](),
+        ]
+        for range in ranges {
+            var outcome = try await callBridge(webView, in: InternalPageBridge.contentWorld,
+                                               method: "history.query", params: ["range": range])
+            XCTAssertNil(outcome.result, "history.query answered \(range)")
+            XCTAssertEqual(outcome.error, "malformed", "history.query \(range)")
+
+            outcome = try await callBridge(webView, in: InternalPageBridge.contentWorld,
+                                           method: "history.delete",
+                                           params: ["ids": [visit], "allVisitsOfURL": true, "range": range])
+            XCTAssertNil(outcome.result, "history.delete answered \(range)")
+            XCTAssertEqual(outcome.error, "malformed", "history.delete \(range)")
+        }
+        XCTAssertEqual(visitTimes(db, space).count, 1, "and nothing was deleted along the way")
+    }
+
+    /// AC #5: deleting a search row while a period is showing takes that URL's
+    /// visits inside the period. The ones outside it are not what the row stood
+    /// for, and they stay.
+    func testDeletingAURLRowWithARangeKeepsTheVisitsOutsideIt() async throws {
+        let db = try makeDatabase()
+        HistoryPageBridge.database = db
+        let space = makeSpace("Ranged Delete")
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        let longAgo = try XCTUnwrap(calendar.date(byAdding: .day, value: -10, to: startOfToday))
+        let url = "https://zulu.example/"
+        let today = try seedVisit(db, url: url, title: "Zulu", spaceID: space.id,
+                                  visitTime: startOfToday.timeIntervalSince1970 + 60)
+        try seedVisit(db, url: url, title: "Zulu", spaceID: space.id,
+                      visitTime: startOfToday.timeIntervalSince1970 + 120)
+        try seedVisit(db, url: url, title: "Zulu", spaceID: space.id,
+                      visitTime: longAgo.timeIntervalSince1970 + 60)
+
+        let tab = makeTab(in: space)
+        tab.loadInternalPage(.history)
+        try await waitForHistoryPage(tab)
+        let webView = try XCTUnwrap(tab.webView)
+
+        let outcome = try await callBridge(webView, in: InternalPageBridge.contentWorld,
+                                           method: "history.delete",
+                                           params: ["ids": [today], "allVisitsOfURL": true,
+                                                    "range": ["preset": "today"]])
+        XCTAssertNil(outcome.error)
+        XCTAssertEqual((outcome.result?["deleted"] as? NSNumber)?.intValue, 2, "today's two visits")
+        XCTAssertEqual(visitTimes(db, space), [longAgo.timeIntervalSince1970 + 60],
+                       "the visit from ten days ago was never on screen")
+        XCTAssertTrue(try urlRowExists(db, url), "a visit remains, so the URL row stays")
+    }
+
+    /// AC #1 and #4 from the page's side: the control reloads the list into the
+    /// period, the rows remember which period they were read under, and the URL
+    /// carries it so a reload comes back to the same view.
+    func testChoosingAPeriodFiltersTheListAndTheURL() async throws {
+        let f = try await makePageFixture("Range Control")
+        let before = try await pageState(f.webView)
+        XCTAssertFalse(before.rangeHidden, "the control is there for a normal space")
+        XCTAssertEqual(before.rangeValue, "", "and starts at All time")
+        XCTAssertEqual(before.search, "")
+
+        try await runInPage(f.webView, """
+            const range = document.getElementById('range');
+            range.value = 'yesterday';
+            range.dispatchEvent(new Event('change'));
+            return true;
+            """)
+        try await waitForRows(f.webView, 1, "only the one visit from yesterday")
+
+        var state = try await pageState(f.webView)
+        XCTAssertEqual(state.titles, ["Yesterday Page"])
+        XCTAssertEqual(state.search, "?range=yesterday", "the period is in the page's URL")
+        let stamped = try await runInPage(f.webView, """
+            return document.querySelector('.item').dataset.range;
+            """) as? String
+        XCTAssertEqual(stamped, "{\"preset\":\"yesterday\"}",
+                       "the row remembers the period it was read under")
+
+        // A period nothing was recorded in names itself in the empty state.
+        try await runInPage(f.webView, """
+            const range = document.getElementById('range');
+            range.value = 'day';
+            range.dispatchEvent(new Event('change'));
+            const day = document.getElementById('day');
+            day.value = '2019-05-04';
+            day.dispatchEvent(new Event('change'));
+            return true;
+            """)
+        try await waitUntil("the empty state to name the day") {
+            try await self.pageState(f.webView).emptyTitle?.hasPrefix("No history from ") == true
+        }
+        state = try await pageState(f.webView)
+        XCTAssertEqual(state.search, "?day=2019-05-04")
+        XCTAssertTrue(state.emptyTitle?.contains("2019") == true, "got \(state.emptyTitle ?? "nil")")
+
+        // And back to all of it, with the URL emptied out again.
+        try await runInPage(f.webView, """
+            const range = document.getElementById('range');
+            range.value = '';
+            range.dispatchEvent(new Event('change'));
+            return true;
+            """)
+        try await waitForRows(f.webView, 7)
+        state = try await pageState(f.webView)
+        XCTAssertEqual(state.search, "")
+        XCTAssertEqual(visitTimes(f.db, f.space).count, 7, "filtering deletes nothing")
     }
 
     // MARK: - What the store forgets afterwards (AC #6)

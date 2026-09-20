@@ -10,6 +10,12 @@ import AppKit
 /// sending tab, and the SQL deletes only rows that are both named and in that
 /// scope — an id belonging to another profile deletes nothing. The page sends
 /// no timestamps either: a range's cutoff is computed here.
+///
+/// The same rule covers the time filter (TASK-92): `history.query` and
+/// `history.delete` take a symbolic `range` — `{preset: …}` or `{day: …}` — and
+/// `HistoryTimeRange` turns it into half-open bounds natively. A range that is
+/// neither absent nor one of those shapes is "malformed", never widened to all
+/// of history.
 enum HistoryPageBridge {
     static let maxPageSize = 200
     /// Most visit ids one `history.delete` may name; a selection larger than
@@ -71,11 +77,19 @@ enum HistoryPageBridge {
             let search = (params["search"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let limit = min(max((params["limit"] as? NSNumber)?.intValue ?? 100, 1), maxPageSize)
             let cursor = cursor(from: params["cursor"])
+            // The period the page named, turned into instants here (TASK-92):
+            // the bounds are taken per request, so every page of one listing
+            // agrees about where the period ends.
+            guard let window = HistoryTimeRange.parse(params["range"]).bounds() else {
+                return reply(nil, "malformed")
+            }
             DispatchQueue.global(qos: .userInitiated).async {
                 // One extra row tells the page whether there is more to load.
                 let rows = search.isEmpty
-                    ? database.visits(spaceIDs: spaceIDs, before: cursor, limit: limit + 1)
-                    : database.searchVisits(query: search, spaceIDs: spaceIDs, before: cursor, limit: limit + 1)
+                    ? database.visits(spaceIDs: spaceIDs, from: window.from, until: window.until,
+                                      before: cursor, limit: limit + 1)
+                    : database.searchVisits(query: search, spaceIDs: spaceIDs, from: window.from,
+                                            until: window.until, before: cursor, limit: limit + 1)
                 let page = Array(rows.prefix(limit))
                 var result: [String: Any] = ["entries": page.map(payload(for:)), "incognito": false]
                 if rows.count > limit, let last = page.last {
@@ -88,11 +102,21 @@ enum HistoryPageBridge {
             let ids = (params["ids"] as? [NSNumber] ?? []).map(\.int64Value)
             guard !ids.isEmpty, ids.count <= maxDeleteCount else { return reply(nil, "malformed") }
             let allVisitsOfURL = params["allVisitsOfURL"] as? Bool ?? false
+            guard let window = HistoryTimeRange.parse(params["range"]).bounds() else {
+                return reply(nil, "malformed")
+            }
+            // A row read under a time range stands for the URL's visits inside
+            // it, so the fan-out is narrowed to the same period (TASK-92). A
+            // per-visit delete names one row and needs no range; the page sends
+            // none, and one sent anyway is ignored rather than allowed to
+            // silently spare the named visit.
+            let range: (from: Double?, until: Double?) = allVisitsOfURL ? window : (nil, nil)
             // Taken before the write, not after it: a visit recorded while the
             // delete is in flight is newer than the request and its in-memory
             // state must survive `historyDidDelete` (TASK-87).
             let requestedAt = Date()
-            database.deleteVisits(ids: ids, spaceIDs: spaceIDs, allVisitsOfURL: allVisitsOfURL) { result in
+            database.deleteVisits(ids: ids, spaceIDs: spaceIDs, allVisitsOfURL: allVisitsOfURL,
+                                  from: range.from, until: range.until) { result in
                 DispatchQueue.main.async {
                     finish(result, spaceIDs: spaceIDs, requestedAt: requestedAt, clearedScope: false,
                            reply: reply)
