@@ -516,6 +516,12 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
                 let note = "\(resolvedName) is turned off for all profiles in Extensions settings"
                 toggle.toolTip = note
                 label.toolTip = note
+            } else if profile.isIncognito {
+                // The same opt-in as "Allow in Private" in Extensions settings,
+                // so it carries the same warning (TASK-74).
+                let note = "Extensions allowed in Private windows keep their data (storage, caches, cookies) outside the private session, so it survives after the window closes."
+                toggle.toolTip = note
+                label.toolTip = note
             }
             extensionTogglesStack.addArrangedSubview(row)
         }

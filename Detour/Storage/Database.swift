@@ -649,7 +649,10 @@ struct AppDatabase {
                 t.primaryKey(["extensionID", "key"])
             }
 
-            // Per-profile extension state (opt-out: missing row = enabled)
+            // Per-profile extension state. A missing row means the profile's
+            // default, which since TASK-74 is off for the built-in Private
+            // profile and on everywhere else — see
+            // `extensionEnabledByDefault(inProfile:)`.
             try db.create(table: "profileExtension") { t in
                 t.column("profileID", .text).notNull()
                     .references("profile", onDelete: .cascade)
@@ -1084,10 +1087,30 @@ struct AppDatabase {
     static let isExtensionEnabledReadLabel = "check extension enabled for profile"
     static let enabledExtensionIDsReadLabel = "load enabled extension IDs for profile"
 
+    /// What a missing `profileExtension` row means for this profile: on
+    /// everywhere except the built-in Private profile, where it means off
+    /// (TASK-74).
+    ///
+    /// Chrome's incognito default, and here it is more than a convention: until
+    /// TASK-73 gives the Private profile's extension pages its ephemeral store,
+    /// they run in WebKit's default *persistent* store, so an extension allowed
+    /// in Private keeps its storage, caches and cookies after the private
+    /// session ends. Opting in per extension ("Allow in Private" in Extension
+    /// settings) is therefore the only state the user can be presumed to want by
+    /// default. No migration was needed: the live DB had no `profileExtension`
+    /// rows for the Private profile at all, so flipping the default is exactly
+    /// the behaviour change, and a user who had explicitly allowed one would
+    /// have a row that still reads ON.
+    static func extensionEnabledByDefault(inProfile profileID: String) -> Bool {
+        UUID(uuidString: profileID) != TabStore.incognitoProfileID
+    }
+
     /// Check if an extension is enabled for a specific profile.
-    /// True if globally enabled AND (no per-profile row OR row.isEnabled).
+    /// True if globally enabled AND (the per-profile row says so, or there is no
+    /// row and the profile's default is on — see `extensionEnabledByDefault(inProfile:)`).
     func isExtensionEnabled(extensionID: String, profileID: String) -> Bool {
-        performRead(Self.isExtensionEnabledReadLabel, default: false) { db in
+        let byDefault = Self.extensionEnabledByDefault(inProfile: profileID)
+        return performRead(Self.isExtensionEnabledReadLabel, default: false) { db in
             // Check global enabled first
             guard let ext = try ExtensionRecord.filter(Column("id") == extensionID).fetchOne(db),
                   ext.isEnabled else {
@@ -1099,17 +1122,19 @@ struct AppDatabase {
                 .fetchOne(db) {
                 return row.isEnabled
             }
-            return true // missing row = enabled
+            return byDefault // missing row = the profile's default
         }
     }
 
-    /// The profile's own choice, ignoring the global flag: true unless the
-    /// profile has a row turning the extension off (missing row = enabled).
+    /// The profile's own choice, ignoring the global flag: the row's value, or
+    /// the profile's default when it has no row
+    /// (`extensionEnabledByDefault(inProfile:)` — on, except in Private).
     func isExtensionEnabledByProfile(extensionID: String, profileID: String) -> Bool {
-        performRead("check profile extension enabled row", default: true) { db in
+        let byDefault = Self.extensionEnabledByDefault(inProfile: profileID)
+        return performRead("check profile extension enabled row", default: byDefault) { db in
             try ProfileExtensionRecord
                 .filter(Column("profileID") == profileID && Column("extensionID") == extensionID)
-                .fetchOne(db)?.isEnabled ?? true
+                .fetchOne(db)?.isEnabled ?? byDefault
         }
     }
 
@@ -1146,7 +1171,12 @@ struct AppDatabase {
                 existing.isPinned = !existing.isPinned
                 try existing.update(db)
             } else {
-                try ProfileExtensionRecord(profileID: profileID, extensionID: extensionID, isEnabled: true, isPinned: true).insert(db)
+                // A pin must not decide the enabled flag: the fresh row carries
+                // the profile's default, so pinning in Private does not silently
+                // allow the extension there (TASK-74).
+                try ProfileExtensionRecord(profileID: profileID, extensionID: extensionID,
+                                           isEnabled: Self.extensionEnabledByDefault(inProfile: profileID),
+                                           isPinned: true).insert(db)
             }
         }
     }
@@ -1158,24 +1188,26 @@ struct AppDatabase {
         }
     }
 
-    /// Returns the set of extension IDs that are globally enabled and not disabled for this profile.
+    /// Returns the set of extension IDs that are enabled for this profile.
     ///
     /// The same rule as `isExtensionEnabled(extensionID:profileID:)`, in one
-    /// query: globally enabled AND (no per-profile row OR row.isEnabled). An id
-    /// with no `extension` row is in neither answer. Ids only — neither row is
-    /// decoded as a record, so the `extension` table's `manifestJSON` blob is
-    /// never read for this answer (TASK-46).
+    /// query: globally enabled AND (the profile's row, or with no row the profile's
+    /// default — `extensionEnabledByDefault(inProfile:)`, off in Private). An id with no `extension`
+    /// row is in neither answer. Ids only — neither row is decoded as a record,
+    /// so the `extension` table's `manifestJSON` blob is never read for this
+    /// answer (TASK-46).
     func enabledExtensionIDs(for profileID: String) -> Set<String> {
-        performRead(Self.enabledExtensionIDsReadLabel, default: []) { db in
-            let disabledIDs = try ProfileExtensionRecord
-                .filter(Column("profileID") == profileID && Column("isEnabled") == false)
-                .select(Column("extensionID"), as: String.self)
-                .fetchSet(db)
-            return try ExtensionRecord
+        let byDefault = Self.extensionEnabledByDefault(inProfile: profileID)
+        return performRead(Self.enabledExtensionIDsReadLabel, default: []) { db in
+            let globallyEnabled = try ExtensionRecord
                 .filter(Column("isEnabled") == true)
                 .select(Column("id"), as: String.self)
                 .fetchSet(db)
-                .subtracting(disabledIDs)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT extensionID, isEnabled FROM profileExtension WHERE profileID = ?
+                """, arguments: [profileID])
+            let choices = Dictionary(uniqueKeysWithValues: rows.map { ($0["extensionID"] as String, $0["isEnabled"] as Bool) })
+            return globallyEnabled.filter { choices[$0] ?? byDefault }
         }
     }
 }

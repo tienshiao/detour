@@ -1482,7 +1482,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Whether the extension is enabled in the profile — the one rule every path
     /// that loads a context (launch, install, both toggles) and every per-profile
     /// list (menus, pinned toolbar icons) goes through: the global flag is on AND
-    /// the profile has not turned it off (no per-profile row means on).
+    /// the profile's own answer is on. With no per-profile row that answer is the
+    /// profile's default (`AppDatabase.extensionEnabledByDefault(inProfile:)`):
+    /// on everywhere except the built-in Private profile, where an extension is
+    /// off until the user allows it there (TASK-74).
     ///
     /// The two flags are stored independently and each toggle writes only its
     /// own: a global disable leaves the per-profile rows alone, so re-enabling
@@ -1566,8 +1569,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     /// Turn the extension on or off for every profile. Only the global flag is
-    /// written; per-profile choices survive, so enabling loads it just where
-    /// the profile has not turned it off.
+    /// written; per-profile choices survive, so enabling loads it just where the
+    /// profile's own answer is on — never in Private unless the user allowed it
+    /// there (TASK-74).
     @MainActor
     func setEnabled(id: String, enabled: Bool) {
         guard let ext = self.extension(withID: id) else { return }

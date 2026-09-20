@@ -621,6 +621,43 @@ actually observed; the keep-alive watchdog and the `loadBackgroundContent` resta
 net for any other way a worker can stop answering, and the context reload on
 `backgroundContentFailedToLoad` remains the escape from a stale registration.
 
+#### Extensions are off in Private unless allowed (TASK-74)
+
+The origin the section above keeps out of the purge is an origin in the **default persistent store**,
+and that is true of the Private profile's extension pages too: the shipped WebKit builds every
+extension web view from a configuration that has no data store of its own, and `Profile` only sets
+`config.webViewConfiguration.websiteDataStore = dataStore` for persistent profiles — the incognito
+profile's worker is cycled on its ephemeral browsing store, but the extension pages' storage,
+caches and cookies land in `~/Library/WebKit/com.detourbrowser.mac/WebsiteData/` and outlive the
+private session. Until TASK-73 gives those pages the ephemeral store, an extension running in a
+Private window is a persistent-storage leak — 1Password's item cache above all.
+
+So Detour adopts Chrome's incognito default: **extensions are off in the Private profile unless the
+user allows each one**, with an "Allow in Private" switch per extension in Extension settings
+(`ExtensionsSettingsViewController`, next to the global Enabled switch and disabled while the
+extension is off globally) and the same per-profile row shown by the Profiles settings toggles. The
+switch calls `ExtensionManager.setEnabled(id:profileID:enabled:)` for `TabStore.incognitoProfileID`,
+which loads or unloads that profile's context live and closes its extension pages on a disable.
+A context loaded into the Private profile is given `hasAccessToPrivateData` (`Profile.loadExtensionContext`):
+Private windows report `isPrivate(for:)`, and without the flag WebKit hides them and their tabs from
+the context and injects no content scripts there, so the allowed extension would load and do nothing
+(verified at runtime: content scripts inject in Private tabs only with the allow on).
+
+The rule, in `AppDatabase.extensionEnabledByDefault(inProfile:)`: a missing `profileExtension` row
+means **off for the built-in Private profile only**, and on for every other profile, exactly as
+before. `isExtensionEnabled`, `isExtensionEnabledByProfile` and `enabledExtensionIDs(for:)` all go
+through it (the last one resolves each globally enabled id the same way: the profile's row, or the
+default with no row), and `toggleExtensionPinned` inserts a fresh row
+carrying that default, so pinning cannot silently allow an extension in Private. Installing,
+updating or globally re-enabling an extension writes no per-profile row at all, so none of them
+touches the Private state.
+
+**No migration was needed.** The live database had no `profileExtension` rows for the Private profile
+— extensions ran there only because "missing row = enabled" — so flipping the default *is* the
+behaviour change, and any explicit allow the user makes from now on is a row that keeps reading ON.
+Extensions the user does allow in Private keep their data in the default store until TASK-73 lands;
+that is what the note under the switch says.
+
 #### Log filters
 
 Detour side (the network process lines are the ones that say whether a registration was reused or

@@ -367,6 +367,16 @@ class Profile {
         context.uniqueIdentifier = ext.id
         context.isInspectable = true
 
+        // A context is only ever loaded into the Private profile after the user
+        // turned on "Allow in Private" for it (TASK-74), which is exactly what
+        // WebKit's private-data access means. Private windows report
+        // `isPrivate(for:)` true, and without this flag WebKit hides them and
+        // their tabs from the context and injects no content scripts into pages
+        // on a non-persistent store — the extension would load and do nothing.
+        if isIncognito {
+            context.hasAccessToPrivateData = true
+        }
+
         // Always grant nativeMessaging at the context level so the polyfill
         // bridge can use browser.runtime.sendNativeMessage() at all, and so the
         // built-in detourPolyfill / detourWebSocketRelay hosts keep working. A

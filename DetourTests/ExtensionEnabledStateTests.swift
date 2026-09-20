@@ -4,7 +4,9 @@ import GRDB
 @testable import Detour
 
 /// TASK-26: an extension is enabled in a profile iff it is enabled globally AND
-/// the profile has not turned it off (no per-profile row = on). The global and
+/// the profile's own answer is on (no per-profile row = the profile's default:
+/// on, except in the built-in Private profile — TASK-74,
+/// `ExtensionPrivateDefaultTests`). The global and
 /// per-profile toggles each write only their own flag, and every path that
 /// loads a context — launch (`loadExtensionsIntoProfile`) and both
 /// `ExtensionManager.setEnabled` overloads — applies that one rule. These tests

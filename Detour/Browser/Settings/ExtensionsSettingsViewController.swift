@@ -239,6 +239,35 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         enabledRow.orientation = .horizontal
         enabledRow.spacing = 8
 
+        // Allow in Private (TASK-74). Extensions are off in the built-in Private
+        // profile until the user opts in per extension, so this switch shows and
+        // writes only that profile's own row. Like the per-profile toggles in
+        // Profiles settings, it shows the saved choice but is disabled while the
+        // extension is off globally: the choice is kept, it just has no effect.
+        let privateSwitch = NSSwitch()
+        privateSwitch.state = AppDatabase.shared.isExtensionEnabledByProfile(
+            extensionID: ext.id, profileID: TabStore.incognitoProfileID.uuidString) ? .on : .off
+        privateSwitch.isEnabled = ext.isEnabled
+        privateSwitch.target = self
+        privateSwitch.action = #selector(allowInPrivateToggled(_:))
+
+        let privateLabel = NSTextField(labelWithString: "Allow in Private")
+        privateLabel.font = .systemFont(ofSize: 13)
+        privateLabel.textColor = ext.isEnabled ? .labelColor : .disabledControlTextColor
+
+        let privateRow = NSStackView(views: [privateLabel, privateSwitch])
+        privateRow.orientation = .horizontal
+        privateRow.spacing = 8
+        if !ext.isEnabled {
+            let note = "\(resolvedName) is turned off for all profiles"
+            privateSwitch.toolTip = note
+            privateLabel.toolTip = note
+        }
+
+        let privateNote = NSTextField(wrappingLabelWithString: "Extensions allowed in Private windows keep their data (storage, caches, cookies) outside the private session, so it survives after the window closes.")
+        privateNote.font = .systemFont(ofSize: 11)
+        privateNote.textColor = .secondaryLabelColor
+
         // Permissions section — interactive toggles
         let permsHeader = NSTextField(labelWithString: "Permissions")
         permsHeader.font = .systemFont(ofSize: 13, weight: .medium)
@@ -425,10 +454,12 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         detailContainer.addSubview(uninstallButton)
 
         // Main stack (everything above uninstall)
-        let mainStack = NSStackView(views: [headerStack, descLabel, sep, enabledRow, permsStack])
+        let mainStack = NSStackView(views: [headerStack, descLabel, sep, enabledRow,
+                                            privateRow, privateNote, permsStack])
         mainStack.orientation = .vertical
         mainStack.alignment = .leading
         mainStack.spacing = 12
+        mainStack.setCustomSpacing(4, after: privateRow)
         mainStack.translatesAutoresizingMaskIntoConstraints = false
         detailContainer.addSubview(mainStack)
 
@@ -436,6 +467,8 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             mainStack.topAnchor.constraint(equalTo: detailContainer.topAnchor, constant: 8),
             mainStack.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
             mainStack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
+            // The note wraps rather than stretching the leading-aligned stack.
+            privateNote.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
             scrollView.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
             flippedDocView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             uninstallButton.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
@@ -467,6 +500,17 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         guard let ext = selectedExtension else { return }
         let enabled = sender.state == .on
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: enabled)
+    }
+
+    /// "Allow in Private": writes only the built-in Private profile's row
+    /// (TASK-74). `setEnabled(id:profileID:enabled:)` loads or unloads the
+    /// context in that profile right away when it exists, closes its extension
+    /// pages on a disable, and posts `extensionsDidChange`, which rebuilds this
+    /// detail view — so the switch always reads back the saved state.
+    @objc private func allowInPrivateToggled(_ sender: NSSwitch) {
+        guard let ext = selectedExtension else { return }
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: TabStore.incognitoProfileID,
+                                           enabled: sender.state == .on)
     }
 
     private func makePermissionRow(
