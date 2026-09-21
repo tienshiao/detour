@@ -11,9 +11,11 @@ import GRDB
 /// `isExtensionEnabledByProfile(extensionID:profileID:)` and
 /// `enabledExtensionIDs(for:)` must never disagree.
 ///
-/// Why it matters and not just a default: until TASK-73 the Private profile's
-/// extension pages run in WebKit's *default persistent* store, so an extension
-/// running there leaks storage past the private session.
+/// Why it was more than a default when it landed: the Private profile's
+/// extension pages then ran in WebKit's *default persistent* store, so an
+/// extension running there leaked storage past the private session. TASK-73 has
+/// since moved them to the profile's own ephemeral store
+/// (`ExtensionPrivateStoreTests`); the rule below is unchanged by that.
 ///
 /// The first half drives an in-memory `AppDatabase` (the rule, and the paths
 /// that write rows); the second drives the real `ExtensionManager` against the

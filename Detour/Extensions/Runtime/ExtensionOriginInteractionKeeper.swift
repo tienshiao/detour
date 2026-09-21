@@ -45,8 +45,9 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "EXT-ITP"
 ///
 /// Non-persistent stores are skipped: they have no ITP database and nothing to
 /// preserve. That is a property of the store the extension's pages run in, not
-/// of the profile — the Private profile's extension pages run in the default,
-/// persistent store and are kept like any other (`keptDataStore`, TASK-90).
+/// of the profile (`keptDataStore`, TASK-90) — which since TASK-73 is what
+/// takes the Private profile out: its extension pages run in its own ephemeral
+/// store, where no purge can reach them.
 ///
 /// Known hole: only *loaded* contexts are covered. WebKit carries an
 /// extension's IndexedDB and localStorage onto each new origin from its
@@ -157,18 +158,20 @@ final class ExtensionOriginInteractionKeeper {
     /// removed), a released one, or pages that really do run in a
     /// non-persistent store.
     ///
-    /// Decided by the store, never by `isIncognito` (TASK-90). The Private
-    /// profile's *browsing* store is non-persistent, but `Profile` leaves its
-    /// extension pages on WebKit's default store — persistent, and ITP session
-    /// 1. Skipping it here left 1Password's Private-profile origin outside the
-    /// interaction window: within a minute of every worker start the purge
-    /// deleted its IndexedDB files under the running worker, every transaction
-    /// aborted, and the extension's backend re-initialised in a loop that
-    /// logged 20 errors a second and pinned the Networking process
-    /// (production, 2026-09-18 and -19). What is logged is the extension's
-    /// `webkit-extension://<uuid>/` origin only — nothing about what was
-    /// browsed privately. If the Private profile's extension pages ever move to
-    /// an ephemeral store, `isPersistent` below skips them again by itself.
+    /// Decided by the store, never by `isIncognito` (TASK-90). That rule is
+    /// what keeps this correct across TASK-73: while the Private profile's
+    /// extension pages were on WebKit's default store — persistent, and ITP
+    /// session 1 — skipping them *because the profile is incognito* left
+    /// 1Password's Private-profile origin outside the interaction window, and
+    /// within a minute of every worker start the purge deleted its IndexedDB
+    /// files under the running worker, every transaction aborted, and the
+    /// extension's backend re-initialised in a loop that logged 20 errors a
+    /// second and pinned the Networking process (production, 2026-09-18 and
+    /// -19). Those pages now run in the profile's own ephemeral store
+    /// (TASK-73), so `isPersistent` below drops them by itself — no ITP
+    /// database, no purge, nothing to keep. What is logged for a persistent
+    /// profile is the extension's `webkit-extension://<uuid>/` origin only —
+    /// nothing about what was browsed.
     private func keptDataStore() -> WKWebsiteDataStore? {
         guard let profile, !profile.isDeleted else { return nil }
         // The store the extension's pages actually run in — the controller's

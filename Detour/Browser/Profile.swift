@@ -201,13 +201,35 @@ class Profile {
         // store: shared across profiles, and in the one session whose tracking
         // prevention pass kept purging 1Password's worker (TASK-70).
         //
-        // Persistent profiles only, for now. With the incognito profile's
-        // ephemeral store here, its 1Password worker never answered a keep-alive
-        // ping and WebKit unloaded and re-registered it every 60 s (signed build,
-        // 2026-09-13 23:11); on the default store it runs steadily. Until that is
-        // understood the Private profile keeps WebKit's default, i.e. the shared
-        // default store it has always used (TASK-70 notes).
-        if !isIncognito && !isDeleted {
+        // The incognito profile gets it too (TASK-73), so its extension pages
+        // run in the same ephemeral store its browsing does: nothing an
+        // extension writes in Private reaches the disk or outlives the process.
+        // (Not the *window*: the built-in Private profile, its store and its
+        // loaded contexts live until quit, exactly like its browsing cookies.)
+        //
+        // The 2026-09-13 experiment that first put the ephemeral store here —
+        // 1Password's worker never answering keep-alive ping #1, WebKit
+        // unloading and re-registering it every 60 s — was measuring a missing
+        // `hasAccessToPrivateData`, not the store. Shipped WebKit's
+        // `WebExtensionContext::processes()`, the process set every extension
+        // event and port message is dispatched to, drops every page with
+        // `!hasAccessToPrivateData() && page->sessionID().isEphemeral()`
+        // (WebKit main excepts pages on the controller's
+        // `defaultWebsiteDataStore`; 7624 does not), and
+        // `WebExtensionContext::websiteDataStore(sessionID)` fails the same
+        // test. With the worker itself in an ephemeral session and the context
+        // without private-data access, no event could reach it: the keep-alive
+        // ping is a native-port message, so it was never delivered, nothing
+        // ever replied, and WebKit's 30 s unload timer took the worker. TASK-74
+        // now sets `hasAccessToPrivateData` on every context loaded into an
+        // incognito profile (`loadExtensionContext`), which lifts that gate.
+        //
+        // Still excluded: a deleted profile. Its `dataStore` is a throwaway
+        // `.nonPersistent()` fallback for an object nothing should be using
+        // any more, and its contexts get no private-data access — putting its
+        // pages in an ephemeral session would hit exactly the gate above and
+        // silently stop delivering events to them.
+        if !isDeleted {
             config.webViewConfiguration.websiteDataStore = dataStore
         }
 

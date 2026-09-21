@@ -1091,13 +1091,16 @@ struct AppDatabase {
     /// everywhere except the built-in Private profile, where it means off
     /// (TASK-74).
     ///
-    /// Chrome's incognito default, and here it is more than a convention: until
-    /// TASK-73 gives the Private profile's extension pages its ephemeral store,
-    /// they run in WebKit's default *persistent* store, so an extension allowed
-    /// in Private keeps its storage, caches and cookies after the private
-    /// session ends. Opting in per extension ("Allow in Private" in Extension
-    /// settings) is therefore the only state the user can be presumed to want by
-    /// default. No migration was needed: the live DB had no `profileExtension`
+    /// Chrome's incognito default, and when it landed it was more than a
+    /// convention: the Private profile's extension pages then ran in WebKit's
+    /// default *persistent* store, so an extension allowed in Private kept its
+    /// storage, caches and cookies after the private session ended. TASK-73 has
+    /// since moved those pages to the profile's own ephemeral store, but the
+    /// default stands on its own — opting in per extension ("Allow in Private"
+    /// in Extension settings) is the state the user can be presumed to want.
+    /// (The user-facing note under that switch still describes the leak; it is
+    /// revised once TASK-73 is confirmed in a signed build.)
+    /// No migration was needed: the live DB had no `profileExtension`
     /// rows for the Private profile at all, so flipping the default is exactly
     /// the behaviour change, and a user who had explicitly allowed one would
     /// have a row that still reads ON.

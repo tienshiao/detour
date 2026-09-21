@@ -547,7 +547,8 @@ version of the fix (interaction logged into `profile.dataStore`) changed nothing
    pages, their service-worker registrations and their IndexedDB lived in the **default** data store
    (`~/Library/WebKit/com.detourbrowser.mac/WebsiteData/`, ITP "session 1"), shared across profiles.
    The purge always hit session 1; the interaction logged into the profile store's session was a
-   no-op. `Profile` now sets `config.webViewConfiguration.websiteDataStore = dataStore` itself.
+   no-op. `Profile` now sets `config.webViewConfiguration.websiteDataStore = dataStore` itself —
+   for persistent profiles at first, and since TASK-73 for the incognito profile too.
 2. *Every launch is a brand-new origin.* WebKit mints a fresh `webkit-extension://<uuid>/` base URL at
    every context load (Detour does not persist one), and migrates IndexedDB/localStorage onto it from
    the last-seen origin. The service worker registers afresh on the new origin, whose statistics
@@ -583,9 +584,12 @@ its registrable domain). It fires:
   `unloadAllExtensions` — which `TabStore.deleteProfile` runs — and self-invalidates if the profile
   is gone.
 
-Incognito profiles are skipped (non-persistent store, no statistics database, nothing to preserve),
-and so is any store whose `isPersistent` is false. If the private selector ever disappears, the
-keeper logs one error per process and does nothing else.
+The decision is the *store's*, never `isIncognito` (TASK-90): any store whose `isPersistent` is false
+is skipped — no statistics database, nothing to preserve — and every other one is kept, whatever
+profile it belongs to. That is what made the keeper survive TASK-73 unchanged: while the Private
+profile's extension pages sat on the default persistent store they were kept like any other, and now
+that they run in the profile's own ephemeral store they drop out of the keeper by themselves. If the
+private selector ever disappears, the keeper logs one error per process and does nothing else.
 
 **How to verify in the signed build.** Every call logs one line at `.notice`, category `EXT-ITP`:
 
@@ -623,14 +627,14 @@ net for any other way a worker can stop answering, and the context reload on
 
 #### Extensions are off in Private unless allowed (TASK-74)
 
-The origin the section above keeps out of the purge is an origin in the **default persistent store**,
-and that is true of the Private profile's extension pages too: the shipped WebKit builds every
-extension web view from a configuration that has no data store of its own, and `Profile` only sets
-`config.webViewConfiguration.websiteDataStore = dataStore` for persistent profiles — the incognito
-profile's worker is cycled on its ephemeral browsing store, but the extension pages' storage,
-caches and cookies land in `~/Library/WebKit/com.detourbrowser.mac/WebsiteData/` and outlive the
-private session. Until TASK-73 gives those pages the ephemeral store, an extension running in a
-Private window is a persistent-storage leak — 1Password's item cache above all.
+When this landed, the origin the section above keeps out of the purge was an origin in the **default
+persistent store** — and so were the Private profile's extension pages: the shipped WebKit builds
+every extension web view from a configuration that has no data store of its own, and `Profile` set
+`config.webViewConfiguration.websiteDataStore = dataStore` for persistent profiles only, so an
+extension's storage, caches and cookies in a Private window landed in
+`~/Library/WebKit/com.detourbrowser.mac/WebsiteData/` and outlived the private session — 1Password's
+item cache above all. TASK-73 (below) closed that leak; the default-off rule here is kept on its own
+merits, as Chrome's is.
 
 So Detour adopts Chrome's incognito default: **extensions are off in the Private profile unless the
 user allows each one**, with an "Allow in Private" switch per extension in Extension settings
@@ -655,8 +659,78 @@ touches the Private state.
 **No migration was needed.** The live database had no `profileExtension` rows for the Private profile
 — extensions ran there only because "missing row = enabled" — so flipping the default *is* the
 behaviour change, and any explicit allow the user makes from now on is a row that keeps reading ON.
-Extensions the user does allow in Private keep their data in the default store until TASK-73 lands;
-that is what the note under the switch says.
+
+**What TASK-73 leaves owed here.** The note under the switch, the matching tooltip in Profiles
+settings and `AppDatabase.extensionEnabledByDefault`'s doc comment all say that an extension allowed
+in Private keeps its data outside the private session. That stopped being true in the code with
+TASK-73, but the wording stays until the signed-build check below confirms it in production; the
+default-off rule is not up for revision either way.
+
+#### Private extension pages run in the private profile's ephemeral store (TASK-73)
+
+`Profile.extensionController` now applies `config.webViewConfiguration.websiteDataStore = dataStore`
+to the incognito profile as well, so its extension pages — background worker, popup, options,
+offscreen — run in the same `.nonPersistent()` store its browsing does and nothing an extension
+writes in Private reaches the disk or survives the process (the built-in Private profile, its store
+and its loaded contexts live until quit, like its browsing cookies — not just until the window
+closes). Only a *deleted* profile is still excluded: its
+store is a throwaway `.nonPersistent()` fallback for an object nothing should be using, and its
+contexts get no private-data access, which by the gate below would silently stop delivering events
+to them.
+
+**Why the first attempt looked like the store's fault.** Doing exactly this on 2026-09-13 (signed
+build, 23:11) made 1Password's Private-profile worker never answer keep-alive ping #1: WebKit
+unloaded it (`SWServerRegistration::clear` + `SWServer::removeContextConnection` ~40 s after start)
+and re-registered it (`runRegisterJob` "No existing registration") every 60 s, three cycles observed,
+while the same worker on the default store ran steadily. What was actually being measured was the
+**private-data gate**, not the store. In the shipped WebKit,
+`WebExtensionContext::processes()` — the process set every extension event and every port message is
+dispatched to — skips each page for which
+
+```
+!hasAccessToPrivateData() && page->sessionID().isEphemeral()
+```
+
+(WebKit main adds an exception for a page whose session is the controller's
+`defaultWebsiteDataStore`; the shipped macOS WebKit does not have it), and
+`WebExtensionContext::websiteDataStore(sessionID)` returns `nullptr` on the same test. With the
+background worker itself living in an ephemeral session and the context lacking private-data access,
+**no event could reach it at all** — the keep-alive ping is a native-port message, so it was never
+delivered, nothing replied, no port traffic was recorded, and WebKit's 30 s unload timer took the
+worker; the next launch re-registered it, forever. Nothing in the worker was stalling: it was never
+being spoken to.
+
+The gate is lifted by TASK-74, which sets `context.hasAccessToPrivateData = true` for every context
+loaded into an incognito profile (`Profile.loadExtensionContext`) — needed there anyway, or WebKit
+hides Private windows and tabs from the context. With that flag in place the ephemeral store works.
+
+**Tests — `DetourTests/ExtensionPrivateStoreTests`.** Five, all on real `Profile`s and real
+controllers:
+
+- the wiring, both profile kinds: the incognito controller's
+  `webViewConfiguration.websiteDataStore` is the profile's own store and is non-persistent, a loaded
+  context's `webViewConfiguration` carries it, and a persistent profile still gets its
+  identifier-backed store (never `WKWebsiteDataStore.default()`);
+- the positive leg: a probe MV3 worker in an incognito profile answers a `runtime.sendMessage` from
+  an extension page at once and again after a delay — a few seconds by default, ≥60 s with
+  `TEST_RUNNER_DETOUR_MEASURE_PRIVATE_WORKER=1` (optionally
+  `TEST_RUNNER_DETOUR_MEASURE_PRIVATE_WORKER_SECONDS=<n>`), the way TASK-62's long legs are gated.
+  Measured 2026-09-20 over 90 s: answered by worker start #1, then by start #2 — WebKit idle-unloaded
+  the worker during the wait and the message woke it, its `chrome.storage.local` counter surviving
+  the restart inside the ephemeral store;
+- the matched control pair that pins the cause: the same probe, the same ephemeral store, the
+  context loaded by hand so the one variable is `hasAccessToPrivateData`. With the flag the worker
+  answers; without it the callback fires with **no reply and no `lastError`** — WebKit's shape for
+  "could not reach the worker" — for 20 s of retries. Observed 2026-09-20: `control-open →
+  outcome=answered`, `control-closed → outcome=empty`. If that ever flips, the gate is not the cause
+  and TASK-73's explanation has to be reopened.
+
+**Still owed (signed build, 1Password).** The unit tests confirm the mechanism, not production:
+a Private window with 1Password allowed must keep its worker answering keep-alive pings for **at
+least 5 minutes** with no `SWServerRegistration::clear` / re-register cycle, and nothing under
+`~/Library/WebKit/com.detourbrowser.mac/WebsiteData/Default` may gain an origin for a
+Private-profile extension base URL after a private session (grep the origin files). Only after that
+should the "Allow in Private" note text and the Profiles-settings tooltip be revised.
 
 #### Log filters
 

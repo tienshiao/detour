@@ -277,13 +277,18 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
                       "a non-persistent store must never reach WebKit's interaction log")
     }
 
-    /// An incognito profile's *browsing* store is non-persistent, but its
-    /// extension pages run in WebKit's default store — persistent, and subject
-    /// to the purge. Skipping it because the profile "is incognito" let ITP
-    /// delete 1Password's IndexedDB under its running Private-profile worker
-    /// (TASK-90), so its origin must be logged like any other, into the store
-    /// its pages actually use.
-    func testIncognitoProfileLogsItsOriginIntoTheStoreItsPagesUse() async throws {
+    /// Since TASK-73 an incognito profile's extension pages run in the same
+    /// ephemeral store its browsing does, so there is no ITP database to keep
+    /// anything in and the keeper must log nothing for it — and must not trip
+    /// over it either.
+    ///
+    /// The decision is still the store's, never `isIncognito` (TASK-90): while
+    /// those pages were on WebKit's default *persistent* store, skipping them
+    /// for being incognito let ITP delete 1Password's IndexedDB under its
+    /// running Private-profile worker. The premise below is what tells the two
+    /// situations apart, so if it ever fails again, turn these assertions back
+    /// around rather than deleting them.
+    func testIncognitoProfilesPagesRunInItsEphemeralStoreSoNothingIsLogged() async throws {
         let recorder = InteractionRecorder()
         recorder.install()
 
@@ -291,24 +296,18 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
         let profile = Profile(name: "ITP Incognito", isIncognito: true)
         defer { profile.unloadAllExtensions() }
         let pagesStore = profile.extensionController.configuration.webViewConfiguration.websiteDataStore
-        // The premise. If this ever fails the Private profile's extension pages
-        // have moved to an ephemeral store and the keeper rightly logs nothing:
-        // turn the assertions below around rather than deleting them.
-        XCTAssertTrue(pagesStore.isPersistent,
-                      "premise: the Private profile's extension pages run in a persistent store")
-        XCTAssertFalse(profile.dataStore.isPersistent, "its browsing store stays non-persistent")
+        XCTAssertFalse(profile.dataStore.isPersistent, "its browsing store is non-persistent")
+        XCTAssertTrue(pagesStore === profile.dataStore,
+                      "premise: the Private profile's extension pages run in its own ephemeral store")
 
         _ = profile.loadExtensionContext(ext)
-        let context = try XCTUnwrap(profile.extensionContexts[ext.id], "precondition: the context should load")
+        XCTAssertNotNil(profile.extensionContexts[ext.id], "precondition: the context should load")
 
-        XCTAssertEqual(recorder.urls, [context.baseURL],
-                       "the Private profile's extension origin must be logged exactly once at load")
-        XCTAssertTrue(recorder.stores.allSatisfy { $0 === pagesStore },
-                      "and into the store its pages run in, not the profile's browsing store")
+        XCTAssertTrue(recorder.urls.isEmpty,
+                      "an ephemeral store has no statistics database: nothing to log, got \(recorder.urls)")
 
-        recorder.reset()
         profile.originInteractionKeeper.refreshNow()
-        XCTAssertEqual(recorder.urls, [context.baseURL], "the daily refresh must cover it too")
+        XCTAssertTrue(recorder.urls.isEmpty, "and the daily refresh must stay out of it too")
     }
 
     /// A deleted profile's storage is being removed: nothing of it is kept,
