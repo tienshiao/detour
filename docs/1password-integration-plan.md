@@ -365,6 +365,27 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    (BrowserSupport stays connected through a lock, and quitting relaunches the app), so AC #2 of
    TASK-16 — unload after the last host exits — remains covered only by the harness.
 
+   **Production, 2026-09-21 (TASK-21 re-run after TASK-67/68/73, signed build from 761c4b6,
+   1Password 8.12.26.40, Personal/Work/Private with 1Password allowed in Private): holds.** Personal
+   and Work armed at 00:56:40.8/41.3, Private at 01:00:35.3. For 23 minutes (19 for Private) every
+   30-second Detour ping was answered (max 74 ms) with exactly one `Keep-alive port opened` per
+   profile and no disarm, port close, supersede, recovery, `SWServerRegistration::clear`,
+   `runRegisterJob` or `terminateWorker` line — including Private, the worker WebKit unloaded while
+   armed on 2026-09-13. The idle path, which lock/quit cannot reach, was reached by turning off
+   "Integrate with 1Password app" in the extension's settings in Personal: host disconnect + `NM EOF`
+   at 01:26:08.97, the relayed socket closed (`code 1005, clean true`) and `Keep-alive disarmed` at
+   01:26:09.222, WebKit's `WebPageProxy::close` + `SWServerRegistration::clear` +
+   `terminateWorker` at 01:26:39.228–.232 — 30.0 s after the disarm — and the next event reloaded
+   the worker at 01:26:41.302 (`loadServiceWorker`, `runRegisterJob: No existing registration`,
+   "Finished initializing 1Password" 01:26:41.601, 148 ms) with no code-6 load failure and no
+   recovery reload. Work and Private kept answering pings throughout. Turning the integration back
+   on connected one new host at 01:29:16.385; `ps` afterwards showed exactly three BrowserSupport
+   children of Detour (00:56:40, 01:00:35, 01:29:16), so nothing leaked (TASK-67). Two log-reading
+   notes: `Keep-alive port ... superseded by a newer one` at the reload is expected, because WebKit's
+   unload never reports the old port's disconnect; and `Keep-alive armed ...: 1 native host(s)
+   connected` at 01:28:46.870 was the relayed notifier socket reopening after an unlock with the
+   integration still off — relayed sockets count as hosts by design, the wording just says "native".
+
    **A replaced background context takes its native hosts with it (TASK-67, fixed 2026-09-14).**
    WebKit's `WebExtensionContext::unload()` clears `m_nativePortMap` without ever calling
    `reportDisconnection`, and `chrome.runtime.reload()` *is* `unload()` + `load()`, so a background
@@ -846,6 +867,16 @@ sockets also looked at the time like what held the Personal and Work workers up,
 without one were unloaded at ~170 s despite the armed keep-alive; run 2 traced that to the
 background's own ping timer and to a `chrome.offscreen` document's close terminating the worker
 (TASK-68, above), and Detour now drives the pings and restarts a background that stops answering.
+
+**Production, 2026-09-21 (TASK-21 re-run): complete.** Personal and Work relayed and opened their
+notifier sockets at 00:57:18, Private at 01:00:36; none closed until Personal's integration was
+turned off on purpose at 01:26:09 (`code 1005, clean true`), and it reopened at 01:28:47. A vault
+change made on another device at about 01:19 reached all three workers at once — `[Syncer] Sync
+started ... reason code: 7` at 01:18:47.646/.794/.804 with no local trigger, each done in ~0.5 s —
+and the user saw the item appear without a refresh. The API Explorer relay probe against
+`wss://echo.websocket.org` (01:21:43) opened, echoed a text frame and the binary frame `[1,2,3,4]`,
+and closed `1000 "done"`, clean. API Explorer's `hostname could not be found` / `1006` relay lines
+at each of its worker starts are its deliberate `wss://example.invalid` probe.
 
 ### Phase 2 — Cheap, high-confidence stubs (parallelizable with Phase 1)
 
