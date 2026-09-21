@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-14 06:38'
-updated_date: '2026-09-20 23:32'
+updated_date: '2026-09-21 00:20'
 labels:
   - extensions
   - webkit
@@ -26,10 +26,10 @@ Found 2026-09-13 (TASK-70): the shipped WebKit's WebExtensionControllerConfigura
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The stall's cause is identified and recorded in the task and in docs/1password-integration-plan.md, with the worker console evidence
+- [x] #1 The stall's cause is identified and recorded in the task and in docs/1password-integration-plan.md, with the worker console evidence
 - [ ] #2 With the incognito controller's webViewConfiguration.websiteDataStore set to the profile's non-persistent store, 1Password's worker in the Private profile answers keep-alive pings for at least 5 minutes with no SWServerRegistration::clear / re-register cycle (signed build)
 - [ ] #3 Nothing under ~/Library/WebKit/com.detourbrowser.mac/WebsiteData/Default gains an origin for a Private-profile extension base URL after a Private session (grep the origin files), and the persistent profiles are unaffected (ExtensionOriginTrackingPreventionTests stay green)
-- [ ] #4 A test loads a probe worker extension in an incognito profile and asserts its background answers a message after 60 s and that its web view configuration uses the profile's non-persistent store
+- [x] #4 A test loads a probe worker extension in an incognito profile and asserts its background answers a message after 60 s and that its web view configuration uses the profile's non-persistent store
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -41,3 +41,12 @@ Hypothesis (2026-09-20, from WebKit source): the stall is WebKit's private-data 
 3. Runtime harness: probe extension with a native-port keep-alive in Private, 5 min, no SWServerRegistration::clear cycle; grep WebsiteData/Default for the Private base URL origin (AC3).
 4. Docs + task notes (AC1). AC2 with real 1Password in the signed build is the user's check.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-20: cause CONFIRMED and fixed (see commit 'run the Private profile's extension pages in its ephemeral store'). ExtensionPrivateStoreTests control pair: identical hand-loaded probe in the incognito profile's ephemeral store, hasAccessToPrivateData=false -> sendMessage comes back empty with no lastError for 20 s (WebKit's 'could not reach the worker'); true -> answered. 90 s env-gated leg (TEST_RUNNER_DETOUR_MEASURE_PRIVATE_WORKER=1): worker idle-unloaded and woke on message with chrome.storage.local intact inside the ephemeral store. ITP keeper needed no change (decides by store.isPersistent).
+Validation: 77 tests green on main (ExtensionPrivateStoreTests, ExtensionOriginTrackingPreventionTests, ExtensionPrivateDefaultTests, NewProfileExtensionLoadTests, ExtensionPolyfillProfileWiringTests). Runtime, Debug build, isolated DetourVerify73, probe MV3 extension allowed in Private: controller + context webViewConfiguration store === profile.dataStore, non-persistent, hasAccessToPrivateData=true; 5 min 40 s of 20 s pings in a Private window 17/17 answered by one worker instance, 0 SWServerRegistration::clear, 0 terminateWorker, only the initial runRegisterJob per profile; normal window unaffected; byte scan (UTF-8 + UTF-16LE) of all of ~/Library/WebKit/com.detourbrowser.mac finds no Private marker/base-URL host during or after the run (Default profile's markers found = positive control), WebsiteData/Default listing unchanged; relaunch: Private markers gone, Default's readable; allow OFF unloads cleanly.
+Observed, by design today: the Private profile, its ephemeral store and loaded contexts live until quit, so extension state survives closing the Private window (never reaches disk). Data written to WebsiteData/Default by Private extension pages in earlier builds is not cleaned up. Settings note/tooltip 'keep their data outside the private session' is now stale — left until the signed-build check.
+OWED (user, signed build + real 1Password): AC #2 keep-alive >= 5 min with no clear/re-register cycle; AC #3 re-check on the production data dir.
+<!-- SECTION:NOTES:END -->
