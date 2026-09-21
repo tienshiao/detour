@@ -4,11 +4,11 @@ title: >-
   Extensions: origin patterns with a port make chrome.permissions calls throw in
   WebKit, so 1Password never shows its menu on sites served from a non-default
   port
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 06:51'
-updated_date: '2026-09-20 23:46'
+updated_date: '2026-09-21 08:08'
 labels:
   - extensions
   - 1password
@@ -28,7 +28,7 @@ Found 2026-09-13 during the TASK-4 trial (signed build a68e26e) on a fixture at 
 <!-- AC:BEGIN -->
 - [x] #1 A polyfill test (ExtensionPolyfillTests, shim with a fake native chrome.permissions that records its calls) shows permissions.contains/request/remove receive origins with the port removed and other origins unchanged, in both callback and promise forms, and that the wrapper survives a re-run of the polyfill
 - [x] #2 A real-context test (ExtensionPolyfillIntegrationTests or ExtensionPermissionTests) calls chrome.permissions.contains({origins: ['http://127.0.0.1:<port>/*']}) from a probe worker and gets a boolean back instead of a thrown 'not a valid pattern' error; the negative control without the wrapper still throws
-- [ ] #3 In the signed build, 1Password's inline menu appears on the top-level form of the TASK-4 fixture page served on a non-default port (rerun the TASK-4 trial afterwards)
+- [x] #3 In the signed build, 1Password's inline menu appears on the top-level form of the TASK-4 fixture page served on a non-default port (rerun the TASK-4 trial afterwards)
 - [x] #4 docs/1password-integration-plan.md records the incompatibility and the rewrite rule
 <!-- AC:END -->
 
@@ -49,4 +49,12 @@ Saved-pattern check: a ported .matchPattern key can only reach the DB via a Sett
 Code review: added 'define-failed' status when WebKit refuses the write (+ test). Known divergence kept by design: request/remove of a ported pattern act on the whole host (symmetric; prompt shows the host pattern); Chrome treats host:port as narrower. Documented in docs/chrome-runtime-patching.md.
 Validation: ExtensionPolyfillTests + ExtensionPolyfillIntegrationTests + ExtensionPermissionTests 239 tests green on main. Runtime (isolated DetourVerify75, two probe MV3 extensions, page on 127.0.0.1:8475): promise + callback forms answer true for the granted ported pattern and false for an ungranted one, native negative control throws 'not a valid pattern', rewrite logged once per worker realm, wrapper survives 60 s + GC churn, getAll unaffected. Tip: launch with --args -ExtensionConsoleLogPublic YES to read bridged console text in the unified log.
 OWED (user): AC #3 — signed build, 1Password inline menu on the TASK-4 fixture page served on a non-default port.
+
+2026-09-21 signed build (/Applications/Detour.app built 00:52 from 761c4b6, pid 68860, 1Password 8.12.26.40, ExtensionConsoleLogPublic set): fixture http://127.0.0.1:8471/ in a normal window. User: 1Password control appears in the top-level form's input and opens ('No items to show'). Log 00:56:54.610 '[Detour polyfill] permissions: origin pattern http://127.0.0.1:8471/* -> http://127.0.0.1/* (WebKit match patterns carry no port, TASK-75)'; zero 'not a valid pattern' exceptions in the whole 12-minute capture (2026-09-13 trial: thrown at every page load). AC #3 met.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+chrome.permissions.contains/request/remove strip an explicit port from origin patterns before reaching WebKit (668e8d8, permissionsOriginPortJS). Verified by polyfill + real-context tests with negative control, the debug harness, and on 2026-09-21 in the signed build with real 1Password: the inline menu now appears on a page served from 127.0.0.1:8471 and WebKit no longer throws 'not a valid pattern'.
+<!-- SECTION:FINAL_SUMMARY:END -->

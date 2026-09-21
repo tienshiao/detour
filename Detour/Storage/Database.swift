@@ -1098,8 +1098,6 @@ struct AppDatabase {
     /// since moved those pages to the profile's own ephemeral store, but the
     /// default stands on its own — opting in per extension ("Allow in Private"
     /// in Extension settings) is the state the user can be presumed to want.
-    /// (The user-facing note under that switch still describes the leak; it is
-    /// revised once TASK-73 is confirmed in a signed build.)
     /// No migration was needed: the live DB had no `profileExtension`
     /// rows for the Private profile at all, so flipping the default is exactly
     /// the behaviour change, and a user who had explicitly allowed one would

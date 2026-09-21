@@ -3,11 +3,11 @@ id: TASK-73
 title: >-
   Extensions: the Private profile's extension worker stalls in an ephemeral data
   store — find the cause and move Private extension pages off the default store
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-14 06:38'
-updated_date: '2026-09-21 00:20'
+updated_date: '2026-09-21 08:08'
 labels:
   - extensions
   - webkit
@@ -27,8 +27,8 @@ Found 2026-09-13 (TASK-70): the shipped WebKit's WebExtensionControllerConfigura
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The stall's cause is identified and recorded in the task and in docs/1password-integration-plan.md, with the worker console evidence
-- [ ] #2 With the incognito controller's webViewConfiguration.websiteDataStore set to the profile's non-persistent store, 1Password's worker in the Private profile answers keep-alive pings for at least 5 minutes with no SWServerRegistration::clear / re-register cycle (signed build)
-- [ ] #3 Nothing under ~/Library/WebKit/com.detourbrowser.mac/WebsiteData/Default gains an origin for a Private-profile extension base URL after a Private session (grep the origin files), and the persistent profiles are unaffected (ExtensionOriginTrackingPreventionTests stay green)
+- [x] #2 With the incognito controller's webViewConfiguration.websiteDataStore set to the profile's non-persistent store, 1Password's worker in the Private profile answers keep-alive pings for at least 5 minutes with no SWServerRegistration::clear / re-register cycle (signed build)
+- [x] #3 Nothing under ~/Library/WebKit/com.detourbrowser.mac/WebsiteData/Default gains an origin for a Private-profile extension base URL after a Private session (grep the origin files), and the persistent profiles are unaffected (ExtensionOriginTrackingPreventionTests stay green)
 - [x] #4 A test loads a probe worker extension in an incognito profile and asserts its background answers a message after 60 s and that its web view configuration uses the profile's non-persistent store
 <!-- AC:END -->
 
@@ -49,4 +49,12 @@ Hypothesis (2026-09-20, from WebKit source): the stall is WebKit's private-data 
 Validation: 77 tests green on main (ExtensionPrivateStoreTests, ExtensionOriginTrackingPreventionTests, ExtensionPrivateDefaultTests, NewProfileExtensionLoadTests, ExtensionPolyfillProfileWiringTests). Runtime, Debug build, isolated DetourVerify73, probe MV3 extension allowed in Private: controller + context webViewConfiguration store === profile.dataStore, non-persistent, hasAccessToPrivateData=true; 5 min 40 s of 20 s pings in a Private window 17/17 answered by one worker instance, 0 SWServerRegistration::clear, 0 terminateWorker, only the initial runRegisterJob per profile; normal window unaffected; byte scan (UTF-8 + UTF-16LE) of all of ~/Library/WebKit/com.detourbrowser.mac finds no Private marker/base-URL host during or after the run (Default profile's markers found = positive control), WebsiteData/Default listing unchanged; relaunch: Private markers gone, Default's readable; allow OFF unloads cleanly.
 Observed, by design today: the Private profile, its ephemeral store and loaded contexts live until quit, so extension state survives closing the Private window (never reaches disk). Data written to WebsiteData/Default by Private extension pages in earlier builds is not cleaned up. Settings note/tooltip 'keep their data outside the private session' is now stale — left until the signed-build check.
 OWED (user, signed build + real 1Password): AC #2 keep-alive >= 5 min with no clear/re-register cycle; AC #3 re-check on the production data dir.
+
+2026-09-21 signed build (/Applications/Detour.app built 00:52 from 761c4b6, pid 68860, 1Password 8.12.26.40 allowed in Private): Private context loaded 01:00:34.294 (baseURL webkit-extension://84f2a174-75f8-4d39-87fb-2c16ba4b7f82/), keep-alive port opened 01:00:34.532, connectNative in profile Private connected + 'Keep-alive armed ... 1 native host(s)' 01:00:35.255. AC #2: pings #1..#15 every 30 s all answered in 0-1 ms through 01:07:36 (7 min, user active in the Private window with 1Password), one 'Keep-alive port opened' per profile for the whole run, 0 SWServerRegistration::clear, 0 runRegisterJob, 0 disarmed/port closed/recovery lines (Sep 13 experiment: clear + re-register every 60 s). AC #3: byte scan (UTF-8 + UTF-16LE) of all of ~/Library/WebKit/com.detourbrowser.mac for the Private base-URL host finds 0 files while the session was live; positive controls: Personal's host in 7 files, Work's in 6. Persistent-profile suites were green on this commit (77 tests, note above). New, seen only in the Private worker (8x in the first 20 s, 01:00:42-01:00:55): '[unhandled rejection] TypeError: undefined is not an object (evaluating 'a.providers')' from 1Password's background bundle, next to Webauthn _handleGetCredential lines; worker kept running and answering — not investigated here. Still open as a small follow-up: the Settings note/tooltip 'keep their data outside the private session' is stale.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cause: WebKit's private-data gate — a context whose pages run in an ephemeral session receives no events unless hasAccessToPrivateData is set (TASK-74 sets it). Fix eeb3ae2: the Private profile's extension controller uses the profile's non-persistent store. Verified by ExtensionPrivateStoreTests (control pair + 90 s leg), the debug harness, and on 2026-09-21 in the signed build with real 1Password: 7 min of answered keep-alive pings with no clear/re-register cycle, and no Private extension origin anywhere under the app's WebKit directory.
+<!-- SECTION:FINAL_SUMMARY:END -->

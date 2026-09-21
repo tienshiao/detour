@@ -519,7 +519,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             } else if profile.isIncognito {
                 // The same opt-in as "Allow in Private" in Extensions settings,
                 // so it carries the same warning (TASK-74).
-                let note = "Extensions allowed in Private windows keep their data (storage, caches, cookies) outside the private session, so it survives after the window closes."
+                let note = "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is discarded when Detour quits."
                 toggle.toolTip = note
                 label.toolTip = note
             }

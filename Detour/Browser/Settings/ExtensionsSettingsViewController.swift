@@ -264,7 +264,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             privateLabel.toolTip = note
         }
 
-        let privateNote = NSTextField(wrappingLabelWithString: "Extensions allowed in Private windows keep their data (storage, caches, cookies) outside the private session, so it survives after the window closes.")
+        let privateNote = NSTextField(wrappingLabelWithString: "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is discarded when Detour quits.")
         privateNote.font = .systemFont(ofSize: 11)
         privateNote.textColor = .secondaryLabelColor
 

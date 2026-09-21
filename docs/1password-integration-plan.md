@@ -660,10 +660,10 @@ touches the Private state.
 — extensions ran there only because "missing row = enabled" — so flipping the default *is* the
 behaviour change, and any explicit allow the user makes from now on is a row that keeps reading ON.
 
-**What TASK-73 leaves owed here.** The note under the switch, the matching tooltip in Profiles
-settings and `AppDatabase.extensionEnabledByDefault`'s doc comment all say that an extension allowed
-in Private keeps its data outside the private session. That stopped being true in the code with
-TASK-73, but the wording stays until the signed-build check below confirms it in production; the
+**Wording after TASK-73.** The note under the switch and the matching tooltip in Profiles settings
+used to say that an extension allowed in Private keeps its data outside the private session. TASK-73
+made that false, and once the signed-build check below passed (2026-09-21) both were reworded: the
+data stays in memory only, is never written to disk and is discarded when Detour quits. The
 default-off rule is not up for revision either way.
 
 #### Private extension pages run in the private profile's ephemeral store (TASK-73)
@@ -725,12 +725,18 @@ controllers:
   outcome=answered`, `control-closed → outcome=empty`. If that ever flips, the gate is not the cause
   and TASK-73's explanation has to be reopened.
 
-**Still owed (signed build, 1Password).** The unit tests confirm the mechanism, not production:
-a Private window with 1Password allowed must keep its worker answering keep-alive pings for **at
-least 5 minutes** with no `SWServerRegistration::clear` / re-register cycle, and nothing under
-`~/Library/WebKit/com.detourbrowser.mac/WebsiteData/Default` may gain an origin for a
-Private-profile extension base URL after a private session (grep the origin files). Only after that
-should the "Allow in Private" note text and the Profiles-settings tooltip be revised.
+**Production, 2026-09-21 (signed build from 761c4b6, 1Password 8.12.26.40 allowed in Private).**
+The Private context loaded at 01:00:34 and armed its keep-alive at 01:00:35 (`connectNative ... in
+profile Private ... connected`). Pings #1–#15, one every 30 s, were all answered in 0–1 ms over
+7 minutes of use, with one `Keep-alive port opened` per profile for the whole run and no
+`SWServerRegistration::clear`, `runRegisterJob`, disarm or recovery line (the 2026-09-13 experiment
+cycled every 60 s). A byte scan (UTF-8 and UTF-16LE) of all of
+`~/Library/WebKit/com.detourbrowser.mac` for the Private context's base-URL host found no file
+while the session was live; the Personal and Work hosts were found in 7 and 6 files (positive
+control). The "Allow in Private" note and the Profiles-settings tooltip were reworded afterwards.
+Seen only in the Private worker, in its first 20 s: eight `[unhandled rejection] TypeError:
+undefined is not an object (evaluating 'a.providers')` from 1Password's background bundle, next to
+Webauthn `_handleGetCredential` lines; the worker kept running. Not investigated.
 
 #### Log filters
 
@@ -883,7 +889,10 @@ API Explorer and test coverage per project convention:
 - **Origin patterns with a port** (TASK-75, added 2026-09-20): `permissions.contains` / `request` /
   `remove` are wrapped so that every string in `details.origins` loses an explicit port before the
   call reaches WebKit (`ExtensionAPIPolyfill.permissionsOriginPortJS`;
-  `_polyfillDiag.apis.permissionsOriginPort` records the path).
+  `_polyfillDiag.apis.permissionsOriginPort` records the path). Confirmed in the signed build on
+  2026-09-21: on the fixture at `http://127.0.0.1:8471/` the worker logged the rewrite
+  (`http://127.0.0.1:8471/* -> http://127.0.0.1/*`), WebKit threw no `not a valid pattern`
+  exception, and 1Password's inline menu appeared on the top-level form.
 
   **The incompatibility.** Chrome's match patterns allow a port in the host part
   (`http://127.0.0.1:8471/*`); WebKit's `WKWebExtension.MatchPattern` parses `scheme://host/path`
@@ -995,6 +1004,24 @@ follow-up decision, smallest first: (a) report `about:srcdoc` / `about:blank` in
 actually lets the fan-out land. (a) alone may be enough to stop the complaint if 1Password skips
 frames it cannot fill; (b) is needed if a login form really does live in a `srcdoc`/`about:blank`
 frame. Deciding between them needs the second half of TASK-4 — real 1Password on the signed build.
+
+**Signed build, 2026-09-21** (761c4b6 with the TASK-75 port rewrite, 1Password 8.12.26.40, fixture
+at `http://127.0.0.1:8471/` with the cross-origin frame from `http://localhost:8472/`):
+
+| Frame kind | 1Password control in the input | Menu on click |
+|---|---|---|
+| top-level form | yes | yes ("No items to show") |
+| cross-origin http iframe | yes | **no — nothing happens** |
+| `srcdoc` iframe | no | — |
+| script-filled `about:blank` iframe | no | — |
+
+Loading the fixture did **not** log "[Tabs] Could not collect all frames that were initially found".
+That line appeared once in the same capture, from the Private profile's worker on another page, so
+the empty-URL frames are not shown to be its source. What the trial does establish: (1) `srcdoc` and
+`about:blank` frames get no 1Password control, as the no-content-script measurement predicted — fix
+(b) is the one that matters for users, (a) alone would change nothing visible; (2) a separate
+defect: in a cross-origin http iframe the content script runs and draws its control, but the inline
+menu never opens.
 
 ### Phase 4 — Verification and polish (optional)
 
