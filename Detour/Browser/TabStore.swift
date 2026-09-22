@@ -4295,30 +4295,141 @@ class TabStore {
         }
     }
 
-    private func sleepStaleTabs() {
+    /// How many times a tab's web view may be hosted (`BrowserTab.showsSinceWake`)
+    /// before the tab becomes eligible to sleep on the short
+    /// `sleepShowBudgetGrace` instead of its profile's `sleepThreshold`.
+    ///
+    /// Why this exists (TASK-104): WebKit's GPU process keeps one IOSurfacePool
+    /// per WebContent process and caps that pool by *bytes* only, while the
+    /// kernel caps a process at 16,384 IOSurfaces. Every hidden -> visible
+    /// transition of a web view leaves a few purged-but-alive surfaces in the
+    /// pool that the byte budget never reclaims, and only the WebContent process
+    /// going away — the tab sleeping or closing — frees them. After a long
+    /// uptime the GPU process hits the 16,384 limit and WebGL contexts and
+    /// accelerated canvases die browser-wide. The tabs shown most often are
+    /// exactly the ones the idle rule never sleeps (pinned entries' and
+    /// favourites' backing tabs, which it skips outright), so a tab that has
+    /// spent its show budget gets a second, much shorter route to sleeping. It
+    /// only ever *shortens* a threshold: a tab that is on screen
+    /// (`lastDeselectedAt == nil`), playing audio, or was used within the grace
+    /// is never slept by it.
+    ///
+    /// Overridable for the runtime harness via `DETOUR_SLEEP_SHOW_BUDGET`, read
+    /// once at launch.
+    static let sleepShowBudget = sleepShowBudgetSetting()
+    /// How long a tab that has spent its show budget must stay out of sight
+    /// before it sleeps. Overridable via `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS`.
+    static let sleepShowBudgetGrace = sleepShowBudgetGraceSetting()
+
+    static let defaultSleepShowBudget = 50
+    static let defaultSleepShowBudgetGrace: TimeInterval = 15 * 60
+
+    /// A non-positive or unparseable override is ignored rather than disabling
+    /// the rule by accident.
+    static func sleepShowBudgetSetting(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        guard let raw = environment["DETOUR_SLEEP_SHOW_BUDGET"],
+              let value = Int(raw), value > 0 else { return defaultSleepShowBudget }
+        return value
+    }
+
+    static func sleepShowBudgetGraceSetting(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> TimeInterval {
+        guard let raw = environment["DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS"],
+              let value = TimeInterval(raw), value.isFinite, value >= 0 else { return defaultSleepShowBudgetGrace }
+        return value
+    }
+
+    /// Sleeps tabs that have been out of sight long enough, on either of two
+    /// rules: the profile's `sleepThreshold` for ordinary normal tabs, or — for
+    /// any hidden, silent tab that has spent its show budget — the much shorter
+    /// `sleepShowBudgetGrace`. The budget rule is the only one that reaches
+    /// pinned entries' and favourites' backing tabs, which is the point: they are
+    /// shown constantly and never idle long enough to sleep on time alone
+    /// (TASK-104).
+    ///
+    /// A profile set to never sleep tabs is honoured by both rules.
+    ///
+    /// `now` is injectable for tests; production drives this from `archiveTimer`.
+    func sleepStaleTabs(now: Date = Date()) {
+        let budgetCutoff = now.addingTimeInterval(-Self.sleepShowBudgetGrace)
+
+        /// When the tab went out of sight, or nil when it must not sleep at all
+        /// — the preconditions both rules share. A nil `lastDeselectedAt` means
+        /// the tab is selected in some window.
+        ///
+        /// A parented container means some window is hosting the tab right now
+        /// ("has a superview" = "hosted somewhere", as in `removeContentViews`):
+        /// two windows on one space share a single `lastDeselectedAt`, so the
+        /// one that deselects the tab stamps it while the other still shows it,
+        /// and releasing the web view would blank that window's content area.
+        func offScreenSince(_ tab: BrowserTab) -> Date? {
+            guard !tab.isPlayingAudio, tab.webViewContainer?.superview == nil else { return nil }
+            return tab.lastDeselectedAt
+        }
+
+        /// Shown enough times to have stranded surfaces, and out of sight for
+        /// the grace — so sleeping it now cannot be "right after it was used".
+        func isOverShowBudget(_ tab: BrowserTab) -> Bool {
+            guard tab.showsSinceWake >= Self.sleepShowBudget,
+                  let since = offScreenSince(tab) else { return false }
+            return since < budgetCutoff
+        }
+
         for space in spaces {
             let threshold = space.profile?.sleepThreshold ?? .oneHour
             guard threshold != .never else { continue }
-            let cutoff = Date().addingTimeInterval(-threshold.rawValue)
+            let cutoff = now.addingTimeInterval(-threshold.rawValue)
             let pinnedTabIDs = Set(space.pinnedEntries.compactMap { $0.tab?.id })
 
             func isStale(_ tab: BrowserTab) -> Bool {
-                guard !pinnedTabIDs.contains(tab.id), !tab.isPlayingAudio,
-                      let lastDeselected = tab.lastDeselectedAt else { return false }
-                return lastDeselected < cutoff
+                guard !pinnedTabIDs.contains(tab.id), let since = offScreenSince(tab) else { return false }
+                return since < cutoff
+            }
+
+            func shouldSleep(_ tab: BrowserTab) -> Bool {
+                isStale(tab) || isOverShowBudget(tab)
             }
 
             for tab in space.tabs {
-                guard !tab.isSleeping, isStale(tab) else { continue }
+                guard !tab.isSleeping, shouldSleep(tab) else { continue }
                 // A split renders both members at once — never sleep one while
                 // its partner is fresh, or a visible pane goes blank.
                 if let groupID = tab.splitGroupID {
                     let partners = space.tabs.filter { $0.splitGroupID == groupID && $0.id != tab.id }
-                    guard partners.allSatisfy({ $0.isSleeping || isStale($0) }) else { continue }
+                    guard partners.allSatisfy({ $0.isSleeping || shouldSleep($0) }) else { continue }
+                }
+                tab.sleep()
+            }
+
+            // Pinned entries stay *live but asleep*: the entry keeps its tab, so
+            // selecting it wakes back into the cached interaction state instead
+            // of reloading a dormant tile.
+            for entry in space.pinnedEntries {
+                guard let tab = entry.tab, !tab.isSleeping, isOverShowBudget(tab) else { continue }
+                // A pinned split's group lives on the entries (§12), so its
+                // partners are resolved there rather than through `splitGroupID`
+                // on the tabs — same rule, same reason.
+                if let groupID = entry.splitGroupID {
+                    let partners = pinnedSplitEntries(groupID: groupID, in: space)
+                        .compactMap(\.tab).filter { $0 !== tab }
+                    guard partners.allSatisfy({ $0.isSleeping || isOverShowBudget($0) }) else { continue }
                 }
                 tab.sleep()
             }
         }
+
+        // Favourites hang off the profile, not off any space, and are never
+        // split — their backing tabs only ever sleep on the budget rule.
+        for profile in profiles where profile.sleepThreshold != .never {
+            for favorite in profile.favorites {
+                guard let tab = favorite.tab, !tab.isSleeping, isOverShowBudget(tab) else { continue }
+                tab.sleep()
+            }
+        }
+
         scheduleSave()
     }
 

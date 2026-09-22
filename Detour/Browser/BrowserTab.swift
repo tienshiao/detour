@@ -183,6 +183,20 @@ class BrowserTab: NSObject {
     /// record A again, and A's first insert must not install its id over the
     /// third recording's (TASK-91).
     var historyRecordingGeneration: Int = 0
+    /// How many times a window has hosted this tab's web view since that web
+    /// view was created — the "show budget" `TabStore.sleepStaleTabs` uses to
+    /// sleep tabs that are shown constantly but never idle long enough to sleep
+    /// on time alone (pinned entries' and favourites' backing tabs). Every
+    /// hide -> show of a web view strands a few purged IOSurfaces in the GPU
+    /// process's per-WebContent-process pool, and only the WebContent process
+    /// going away frees them (TASK-104 — see `TabStore.sleepShowBudget`).
+    ///
+    /// Reset wherever a fresh web view is built (`wake()`, and the inits that
+    /// construct one — where the property simply starts at 0); the other
+    /// assignments to `webView` set it to nil, which leaves the count
+    /// meaningless rather than wrong. Never persisted: a restored tab starts
+    /// asleep with no web view to have shown.
+    private(set) var showsSinceWake: Int = 0
     private var cachedInteractionState: Data?
 
     // MARK: - Peek State
@@ -628,6 +642,13 @@ class BrowserTab: NSObject {
         self.webView = nil
     }
 
+    /// A window just hosted this tab's web view — the pane was attached, or an
+    /// occluded window carrying it came back on screen (TASK-104). Only
+    /// meaningful while `webView != nil`; the count is reset by the next wake.
+    func noteShown() {
+        showsSinceWake += 1
+    }
+
     /// Whether this tab is showing a page from the `webkit-extension://<host>/`
     /// origin. A live web view has already moved on when `url` has not (the
     /// published property only follows it through a KVO publisher), so the web
@@ -744,6 +765,9 @@ class BrowserTab: NSObject {
         let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
         self.webView = Self.makeWebView(configuration: wakeConfiguration(in: space))
         webView?.navigationDelegate = self
+        // A fresh web view means a fresh WebContent process and a fresh slice of
+        // the GPU process's IOSurface pool: the show budget starts over (TASK-104).
+        showsSinceWake = 0
 
         // The URL observer installed below replaces `url` with the fresh web
         // view's nil URL on its very first emission, which would lose:

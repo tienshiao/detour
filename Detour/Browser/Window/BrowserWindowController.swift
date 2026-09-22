@@ -304,6 +304,36 @@ class BrowserWindowController: NSWindowController {
             name: ExtensionManager.extensionPinStateDidChangeNotification,
             object: nil
         )
+
+        // A window coming back from occluded (app switch, another window covering
+        // it, Mission Control) shows its panes again without any claim running,
+        // and each such hide -> show strands IOSurfaces in the GPU process's pool
+        // (TASK-104) — so it counts against the tabs' show budget.
+        wasWindowVisible = window.occlusionState.contains(.visible)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWindowOcclusionStateChanged),
+            name: NSWindow.didChangeOcclusionStateNotification,
+            object: window
+        )
+    }
+
+    /// Previous value of the window's `.visible` occlusion flag, so only
+    /// not-visible -> visible transitions count as a show (the notification also
+    /// fires for other occlusion changes, and for visible -> hidden).
+    private var wasWindowVisible = false
+
+    @objc private func handleWindowOcclusionStateChanged(_ notification: Notification) {
+        guard let window else { return }
+        let isVisible = window.occlusionState.contains(.visible)
+        defer { wasWindowVisible = isVisible }
+        guard isVisible, !wasWindowVisible, ownsWebView else { return }
+        // Only this window's own live panes: a window showing a snapshot has no
+        // web view on screen. A peek is not counted — it never sleeps on its
+        // own (it is parked with its host), so its count would never be read.
+        for tab in selectedTab.map(splitMembers(of:)) ?? [] where tab.webView != nil {
+            tab.noteShown()
+        }
     }
 
     @objc private func handleExtensionActionDidChange(_ notification: Notification) {
@@ -406,6 +436,12 @@ class BrowserWindowController: NSWindowController {
 
         // Save current tab selection for the old space
         activeSpace?.selectedTabID = selectedTabID
+        // The old space's tab leaves the screen here, and `selectTab` below
+        // cannot stamp it: once `activeSpaceID` moves, `selectedTab` resolves in
+        // the new space. Unstamped it would count as on screen and never sleep.
+        if let outgoing = selectedTab {
+            stampDeselected(outgoing)
+        }
 
         hidePeekUI()
 
@@ -839,11 +875,7 @@ class BrowserWindowController: NSWindowController {
                 pipContentView = peekTab.webView
             }
             hidePeekUI()
-            // Stamp every pane of a split: the unfocused pane has no selection
-            // of its own, and without a timestamp it would never go stale.
-            for member in splitMembers(of: previousTab) {
-                member.lastDeselectedAt = Date()
-            }
+            stampDeselected(previousTab)
             if !selectionLeavesClosingTab, previousTab.isPlayingAudio {
                 previousTab.enterPictureInPicture()
                 // Keep the container in the hierarchy so WebKit can capture the
@@ -924,6 +956,18 @@ class BrowserWindowController: NSWindowController {
         // claimed, so a freshly woken tab is reported open before it is
         // reported active (TASK-51).
         announceExtensionActiveTabIfChanged()
+    }
+
+    /// Marks the tab as having just left this window's screen — the timestamp
+    /// `TabStore.sleepStaleTabs` measures idleness from (nil = selected
+    /// somewhere). Every pane of a split is stamped: the unfocused pane has no
+    /// selection of its own, and without a timestamp it would never go stale.
+    /// Must run while the tab still resolves in `activeSpace`, so a space
+    /// switch stamps before it moves `activeSpaceID`.
+    private func stampDeselected(_ tab: BrowserTab) {
+        for member in splitMembers(of: tab) {
+            member.lastDeselectedAt = Date()
+        }
     }
 
     /// The selected tab's split partners (both panes, visual order) — or just
@@ -1076,6 +1120,11 @@ class BrowserWindowController: NSWindowController {
         // are still on screen to snapshot.
         let separation = takeSplitSeparationContext(for: tab)
 
+        // Already hosting this pane — just refresh. Not a show: the container
+        // never left the window (nothing hides it; a covering window is the
+        // occlusion handler's count), and this branch runs on every
+        // `windowDidBecomeKey` — popovers closing, Cmd-Tab — so counting it
+        // would spend the show budget on events that strand nothing (TASK-104).
         if container.superview === contentContainerView {
             container.isHidden = false
             container.frame = contentContainerView.bounds
@@ -1085,6 +1134,9 @@ class BrowserWindowController: NSWindowController {
             anchorLinkStatusBar(to: webView)
             return
         }
+        // The pane is about to be attached to this window: a hidden -> visible
+        // transition WebKit leaks surfaces on (TASK-104).
+        tab.noteShown()
 
         // Snapshot what the previous owner displayed at its current size: the
         // whole split view when the pane was hosted in one (both panes, one
@@ -1144,7 +1196,8 @@ class BrowserWindowController: NSWindowController {
         // entries for a pinned split — the store helper reads either.
         let fraction = activeSpace.flatMap { store.splitFraction(containing: members[0].id, in: $0) } ?? 0.5
 
-        // Already hosting exactly these panes — just refresh.
+        // Already hosting exactly these panes — just refresh. Not a show, for
+        // the same reason as the refresh branch of `claimSingleWebView`.
         if hostedSplitMatches(members), let split = hostedSplitView {
             split.isHidden = false
             split.frame = hostedSplitFrame
@@ -1153,6 +1206,8 @@ class BrowserWindowController: NSWindowController {
             anchorLinkStatusBar(to: focusedWebView)
             return
         }
+        // Both panes are about to be attached, so both are shown (TASK-104).
+        for member in members { member.noteShown() }
 
         // Snapshot what the previous owner displayed (see claimSingleWebView).
         let snapshotTarget = containers.compactMap { $0.superview as? NSSplitView }.first
@@ -2874,6 +2929,10 @@ extension BrowserWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         selectedTab?.savePeekStateForPersistence()
+        // The tab leaves the screen with the window; see `setActiveSpace`.
+        if let outgoing = selectedTab {
+            stampDeselected(outgoing)
+        }
         hidePeekUI()
         // Detach the script message handlers we added to the owned web view's
         // userContentController. add(self, name:) retains this controller, so

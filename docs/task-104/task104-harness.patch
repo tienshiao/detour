@@ -1,0 +1,109 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 3b49ced..72bb1a0 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -1,5 +1,6 @@
+ import AppKit
+ import Sparkle
++import WebKit  // TEMPORARY TASK-104 harness
+ import os
+ 
+ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "app")
+@@ -98,6 +99,97 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++
++        // TEMPORARY TASK-104 harness: DETOUR_IOSURFACE_HARNESS=<fixture base URL>
++        // seeds tabs and cycles the selection through selectTab so an external
++        // vmmap loop can chart the GPU process's IOSurface count per phase.
++        if let base = ProcessInfo.processInfo.environment["DETOUR_IOSURFACE_HARNESS"] {
++            runIOSurfaceHarness(window: wc, base: base)
++        }
++    }
++
++    private func runIOSurfaceHarness(window wc: BrowserWindowController, base: String) {
++        let env = ProcessInfo.processInfo.environment
++        let logPath = env["DETOUR_HARNESS_LOG"] ?? "/tmp/detour-harness.log"
++        let tabCount = Int(env["DETOUR_HARNESS_TABS"] ?? "") ?? 4
++        let switches = Int(env["DETOUR_HARNESS_SWITCHES"] ?? "") ?? 150
++        let interval = Double(env["DETOUR_HARNESS_INTERVAL"] ?? "") ?? 0.7
++        let settle = Double(env["DETOUR_HARNESS_SETTLE"] ?? "") ?? 45
++        let fmt = ISO8601DateFormatter()
++        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        func mark(_ s: String) {
++            let line = "\(fmt.string(from: Date())) \(s)\n"
++            if let h = FileHandle(forWritingAtPath: logPath) {
++                h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
++            } else {
++                FileManager.default.createFile(atPath: logPath, contents: line.data(using: .utf8))
++            }
++            NSLog("[harness] %@", s)
++        }
++        func after(_ s: Double, _ block: @escaping () -> Void) {
++            DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: block)
++        }
++        let store = TabStore.shared
++        guard let space = store.spaces.first else { mark("no space"); return }
++        mark("PHASE seed pid=\(ProcessInfo.processInfo.processIdentifier) tabs=\(tabCount) switches=\(switches) interval=\(interval)")
++        // DETOUR_HARNESS_URLS: comma-separated absolute URLs (cycled); default = fixture page.
++        let urls = (env["DETOUR_HARNESS_URLS"] ?? "").split(separator: ",").map(String.init)
++        // DETOUR_HARNESS_AUTOPLAY=1: allow media to start without a gesture and
++        // poke every <video> to play after load (video playback experiments).
++        let autoplay = env["DETOUR_HARNESS_AUTOPLAY"] == "1"
++        var tabs: [BrowserTab] = []
++        for i in 0..<tabCount {
++            let url = urls.isEmpty ? "\(base)layers.html?n=400&tab=\(i)" : urls[i % urls.count]
++            if autoplay {
++                let config = space.makeWebViewConfiguration()
++                config.mediaTypesRequiringUserActionForPlayback = []
++                let webView = WKWebView(frame: .zero, configuration: config)
++                webView.load(URLRequest(url: URL(string: url)!))
++                tabs.append(store.addTab(in: space, webView: webView))
++            } else {
++                tabs.append(store.addTab(in: space, url: URL(string: url)!))
++            }
++        }
++        if autoplay {
++            for delay in [12.0, 30.0, 60.0] {
++                after(delay) {
++                    for t in tabs {
++                        t.webView?.evaluateJavaScript("[...document.querySelectorAll('video')].map(v => { v.play(); return v.currentTime.toFixed(1) + (v.paused ? 'p' : 'r'); }).join(' ')") { r, e in
++                            mark("autoplay poke t+\(Int(delay))s \(t.webView?.url?.host ?? "?") videos=[\(r ?? "nil")] err=\(e.map { "\($0)" } ?? "-")")
++                        }
++                    }
++                }
++            }
++        }
++        wc.selectTab(id: tabs[0].id)
++
++        func switchLoop(_ label: String, remaining: Int, index: Int, done: @escaping () -> Void) {
++            guard remaining > 0 else { mark("PHASE \(label)-end"); done(); return }
++            wc.selectTab(id: tabs[index % tabs.count].id)
++            after(interval) { switchLoop(label, remaining: remaining - 1, index: index + 1, done: done) }
++        }
++
++        after(20) {
++            mark("PHASE idle")
++            after(settle) {
++                mark("PHASE switch1")
++                switchLoop("switch1", remaining: switches, index: 1) {
++                    mark("PHASE settle1")
++                    after(settle) {
++                        mark("PHASE switch2")
++                        switchLoop("switch2", remaining: switches, index: 1) {
++                            mark("PHASE settle2")
++                            after(settle) {
++                                mark("PHASE close")
++                                wc.selectTab(id: tabs[0].id)
++                                for t in tabs.dropFirst() { store.closeTab(id: t.id, in: space, undoable: false) }
++                                after(settle) { mark("PHASE done") }
++                            }
++                        }
++                    }
++                }
++            }
++        }
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
