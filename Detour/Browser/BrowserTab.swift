@@ -44,7 +44,10 @@ class BrowserTab: NSObject {
             // plain WKWebView (TabStore.addExtensionTab), not a BrowserWebView.
             // Property observers do not run during init, so the two inits that
             // take a web view register theirs explicitly.
-            if let webView { ExtensionPageHostRegistry.register(webView) }
+            if let webView {
+                ExtensionPageHostRegistry.register(webView)
+                FaviconLinkBridge.register(webView, for: self)
+            }
         }
     }
 
@@ -294,6 +297,11 @@ class BrowserTab: NSObject {
     private var navigationPending = false
     private var previousHost: String?
     private var faviconGeneration: Int = 0
+    /// The generation whose page-declared icon (a `<link rel=icon>`) has
+    /// landed. The optimistic `/favicon.ico` guess must not overwrite it when
+    /// it finishes second — `FaviconLinkBridge` reports the link early enough
+    /// that the two downloads race (TASK-112).
+    private var declaredFaviconGeneration: Int?
 
     private static func makeWebView(configuration: WKWebViewConfiguration) -> BrowserWebView {
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
@@ -305,6 +313,7 @@ class BrowserTab: NSObject {
             configuration.setURLSchemeHandler(InternalPageSchemeHandler(), forURLScheme: InternalPage.scheme)
         }
         InternalPageBridge.install(on: configuration)
+        FaviconLinkBridge.install(on: configuration)
         let webView = BrowserWebView(frame: .zero, configuration: configuration)
         webView.isInspectable = true
         return webView
@@ -314,7 +323,10 @@ class BrowserTab: NSObject {
         self.id = id
         self.webView = Self.makeWebView(configuration: configuration)
         super.init()
-        if let webView { ExtensionPageHostRegistry.register(webView) }
+        if let webView {
+            ExtensionPageHostRegistry.register(webView)
+            FaviconLinkBridge.register(webView, for: self)
+        }
         webView?.navigationDelegate = self
         applyUserAgent()
         setupObservers()
@@ -327,6 +339,7 @@ class BrowserTab: NSObject {
         self.webView = webView
         super.init()
         ExtensionPageHostRegistry.register(webView)
+        FaviconLinkBridge.register(webView, for: self)
         webView.navigationDelegate = self
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state
@@ -564,7 +577,7 @@ class BrowserTab: NSObject {
                 let generation = self.faviconGeneration
                 self.previousHost = host
                 let optimisticURL = URL(string: "\(scheme)://\(host)/favicon.ico")!
-                self.downloadFavicon(from: optimisticURL, generation: generation)
+                self.downloadFavicon(from: optimisticURL, generation: generation, optimistic: true)
             }
             .store(in: &faviconCancellables)
 
@@ -579,7 +592,7 @@ class BrowserTab: NSObject {
     private func fetchFavicon() {
         guard let webView, webView.url?.scheme != ErrorPage.scheme else { return }
         let generation = self.faviconGeneration
-        let js = "document.querySelector(\"link[rel~='icon'], link[rel='shortcut icon']\")?.href"
+        let js = "document.querySelector(\"\(FaviconLinkBridge.iconLinkSelector)\")?.href"
         webView.evaluateJavaScript(js) { [weak self] result, _ in
             guard let self, self.faviconGeneration == generation else { return }
             if let urlString = result as? String,
@@ -588,6 +601,21 @@ class BrowserTab: NSObject {
                 self.downloadFavicon(from: url, generation: generation)
             }
         }
+    }
+
+    /// A `<link rel=icon>` the page's document reported through
+    /// `FaviconLinkBridge` — while it is still loading, which for a hidden
+    /// background tab can be until it is first shown (TASK-112). Ignored unless
+    /// it comes from the page the tab is showing now: a report still in flight
+    /// from the document being left must not land on the next page's row.
+    /// Downloads under the current generation, so a navigation that changes
+    /// host after this drops the result like any other stale download.
+    func pageDidReportFaviconLink(_ url: URL, originHost: String) {
+        guard let pageURL = webView?.url, let host = pageURL.host,
+              host.caseInsensitiveCompare(originHost) == .orderedSame,
+              pageURL.scheme != ErrorPage.scheme, !InternalPage.isInternal(pageURL),
+              url != faviconURL else { return }
+        downloadFavicon(from: url, generation: faviconGeneration)
     }
 
     /// Gives the tab an internal page's SF Symbol instead of a favicon, and
@@ -604,9 +632,14 @@ class BrowserTab: NSObject {
         favicon = NSImage(systemSymbolName: page.symbolName, accessibilityDescription: page.title)
     }
 
-    private func downloadFavicon(from url: URL, generation: Int) {
+    private func downloadFavicon(from url: URL, generation: Int, optimistic: Bool = false) {
         FaviconLoader.shared.load(from: url) { [weak self] image in
             guard let self, self.faviconGeneration == generation, let image else { return }
+            if optimistic {
+                guard self.declaredFaviconGeneration != generation else { return }
+            } else {
+                self.declaredFaviconGeneration = generation
+            }
             self.faviconURL = url
             self.favicon = image
         }
@@ -958,7 +991,7 @@ class BrowserTab: NSObject {
                 let generation = faviconGeneration
                 previousHost = host
                 let optimisticURL = URL(string: "\(scheme)://\(host)/favicon.ico")!
-                downloadFavicon(from: optimisticURL, generation: generation)
+                downloadFavicon(from: optimisticURL, generation: generation, optimistic: true)
             } else {
                 previousHost = host
             }
