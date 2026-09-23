@@ -38,16 +38,30 @@ macOS native browser (Swift 5.10, macOS 14+) using WebKit. Organized around **Pr
 
 ```
 Detour/
-├── App/                          AppDelegate, main
+├── App/                          AppDelegate (menus), main, MenuKeyEquivalentMatcher
 ├── Browser/
 │   ├── BrowserTab.swift          core tab model
-│   ├── TabStore.swift            core state singleton
-│   ├── Window/                   BrowserWindowController, BrowserWebView, FindBarView, ErrorSchemeHandler
-│   ├── Sidebar/                  TabSidebarViewController, TabCellView, FauxAddressBar, AddSpaceViewController
-│   ├── CommandPalette/           CommandPaletteView, SuggestionProvider, SuggestionItem, SearchSuggestionsService
+│   ├── TabStore.swift            core state singleton (+ Space, sleep/archive policy)
+│   ├── Profile.swift, Favorite.swift, PinnedEntry.swift, PinnedFolder.swift   models
+│   ├── TabInsertion.swift, TabCloseSelection.swift, DormantTileRefusal.swift  pure tab rules
+│   ├── Window/                   BrowserWindowController (+Navigation, +TabSidebar, +TabStore, +WKUIDelegate,
+│   │                             +ExternalApps, +RecentTabSwitcher), BrowserWebView, FindBarView, ErrorSchemeHandler,
+│   │                             PeekAnchor, SplitDropZoneView, SidebarVisibilityState,
+│   │                             RecentTabSwitcher + RecentTabOrder (Control+Tab MRU overlay)
+│   ├── Sidebar/                  TabSidebarViewController, TabCellView, FolderCellView, FavoritesBarView, FauxAddressBar,
+│   │                             SpacePageView, SpaceHeaderView, SidebarLayout, TabListItems, PinnedTreeFlattener,
+│   │                             SidebarDragDrop, TabNavigation (Cmd+Option+Up/Down order), AddProfileViewController
+│   ├── CommandPalette/           CommandPaletteView, SuggestionProvider, SuggestionItem, SearchSuggestionsService,
+│   │                             AddressInputClassifier
+│   ├── InternalPages/            detour:// pages (History): InternalPage, scheme handler, bridges
+│   ├── ContentBlocker/           ContentBlockerManager, ContentRuleStore, EasyListParser, ContentBlockerWhitelist
+│   ├── ExternalApps/             ExternalAppLaunchPolicy, ExternalAppPermissionStore
 │   ├── Downloads/                DownloadManager, DownloadPopoverViewController, DownloadCellView, DownloadAnimation
-│   ├── Settings/                 SettingsWindowController
-│   └── Shared/                   HoverButton, WindowDragView, ToastView, LinkStatusBar, PeekOverlayView, NSColor+Hex
+│   ├── Settings/                 SettingsWindowController + General/Profiles/Spaces/Extensions/ContentBlocker panes
+│   └── Shared/                   HoverButton, WindowDragView, ToastView, LinkStatusBar, PeekOverlayView,
+│                                 GlassContainerView, FaviconLoader, UIConstants, NSColor+Hex
+├── Extensions/                   Web Extensions: Installer/ (CRX), Model/ (manifest, permissions),
+│                                 Runtime/ (ExtensionManager, polyfills, native messaging, tab lifecycle), Storage/, UI/
 ├── Storage/
 │   ├── Database.swift            session DB singleton
 │   ├── HistoryDatabase.swift     history DB singleton

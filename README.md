@@ -27,6 +27,7 @@ A native macOS web browser built with Swift and WebKit.
 - **Incognito** — Private browsing with non-persistent data stores. No history recorded. Cleaned up on window close.
 - **Session Restore** — Tabs persist across launches with full scroll position and form state via WebKit interaction state archiving.
 - **Tab Management** — Drag-and-drop reordering, close tabs, reopen recently closed tabs (Cmd+Shift+T).
+- **Tab Switching** — Cmd+Option+Up/Down steps through the space's tabs in sidebar order. Control+Tab switches between recently used tabs like Cmd+Tab, with a preview overlay (Control+Shift+Tab goes backwards).
 - **Sidebar Auto-Hide** — Toggle sidebar visibility with Cmd+S; auto-hide mode reopens on edge hover.
 - **Context Menus** — Right-click links to open in a new tab or new window.
 - **Web Inspector** — Cmd+Option+I to open developer tools.

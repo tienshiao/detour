@@ -95,28 +95,46 @@ applicationDidFinishLaunching
 
 ```
 Detour/
-+-- App/                          AppDelegate, main entry point
++-- App/                          AppDelegate (menus), main entry point, MenuKeyEquivalentMatcher
 +-- Browser/
 |   +-- BrowserTab.swift          Tab model with WebView lifecycle
-|   +-- TabStore.swift            State singleton + Space class
+|   +-- TabStore.swift            State singleton + Space class, sleep/archive policy
 |   +-- Profile.swift             Profile settings + enums
+|   +-- Favorite.swift            Favorite model (profile-level tiles)
+|   +-- PinnedEntry.swift         Pinned tab model (dormant or live)
 |   +-- PinnedFolder.swift        Folder model for pinned tab hierarchy
 |   +-- TabInsertion.swift        Child tab grouping logic
+|   +-- TabCloseSelection.swift   Which tab to select after a close
+|   +-- DormantTileRefusal.swift  Why a dormant tile cannot open
 |   +-- Window/                   BrowserWindowController (+ extensions), BrowserWebView,
-|   |                             FindBarView, ErrorSchemeHandler
-|   +-- Sidebar/                  TabSidebarViewController, TabCellView, FauxAddressBar,
-|   |                             AddSpaceViewController, AddProfileViewController, layout
+|   |                             FindBarView, ErrorSchemeHandler, PeekAnchor, SplitDropZoneView,
+|   |                             SidebarVisibilityState, RecentTabSwitcher (Control+Tab
+|   |                             overlay) + RecentTabOrder
+|   +-- Sidebar/                  TabSidebarViewController, TabCellView, FolderCellView,
+|   |                             FavoritesBarView, FauxAddressBar, SpacePageView, SpaceHeaderView,
+|   |                             SidebarLayout, TabListItems, PinnedTreeFlattener, SidebarDragDrop,
+|   |                             TabNavigation (Cmd+Option+Up/Down order), AddProfileViewController
 |   +-- CommandPalette/           CommandPaletteView, SuggestionProvider, SuggestionItem,
-|   |                             SearchSuggestionsService
-|   +-- Downloads/                DownloadManager, DownloadItem, DownloadPopoverViewController
-|   +-- Settings/                 SettingsWindowController, ProfilesSettingsViewController,
-|   |                             ContentBlockerSettingsViewController
+|   |                             SearchSuggestionsService, AddressInputClassifier
+|   +-- InternalPages/            detour:// pages (History): InternalPage, scheme handler, bridges
+|   +-- Downloads/                DownloadManager, DownloadPopoverViewController, DownloadCellView,
+|   |                             DownloadAnimation
+|   +-- Settings/                 SettingsWindowController + General, Profiles, Spaces, Extensions,
+|   |                             ContentBlocker panes
 |   +-- ContentBlocker/           ContentBlockerManager, ContentRuleStore, EasyListParser,
 |   |                             ContentBlockerWhitelist
+|   +-- ExternalApps/             ExternalAppLaunchPolicy, ExternalAppPermissionStore
 |   +-- Shared/                   HoverButton, WindowDragView, ToastView, LinkStatusBar,
-|                                 PeekOverlayView, GlassContainerView, NSColor+Hex
+|                                 PeekOverlayView, GlassContainerView, FaviconLoader, UIConstants,
+|                                 NSColor+Hex
++-- Extensions/                   Web Extensions (see extensions.md)
+|   +-- Installer/                CRX unpacking and installation
+|   +-- Model/                    Manifest, permission descriptions, WebExtension
+|   +-- Runtime/                  ExtensionManager, API polyfills, native messaging, tab lifecycle
+|   +-- Storage/                  Extension record types
+|   +-- UI/                       Popovers and menu decisions
 +-- Storage/
-|   +-- Database.swift            Session DB (GRDB, 14 migrations)
+|   +-- Database.swift            Session DB (GRDB)
 |   +-- HistoryDatabase.swift     History DB (GRDB, FTS5)
 |   +-- Models/                   GRDB record types
 +-- Resources/                    Assets, entitlements

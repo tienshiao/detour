@@ -97,9 +97,17 @@ On provisional navigation failure, an error page is loaded via the `browser-erro
 
 Tabs are put to sleep to conserve memory. This preserves their state without keeping a `WKWebView` alive.
 
-**Triggers**:
-- The archive timer checks every 5 minutes for tabs whose `lastDeselectedAt` exceeds the profile's `sleepThreshold`
-- Tabs playing audio are never slept
+**Triggers**: `TabStore.sleepStaleTabs`, run by the archive timer every 5 minutes, sleeps a tab under either of two rules:
+- **Idle rule**: a normal (unpinned) tab whose `lastDeselectedAt` is older than the profile's `sleepThreshold`.
+- **Show-budget rule (TASK-104)**: any hidden tab, including pinned entries' and favourites' backing tabs, that has been shown at least `sleepShowBudget` times since it last woke (50 by default) and has been out of sight for `sleepShowBudgetGrace` (15 minutes by default). `BrowserTab.showsSinceWake` counts every time a window actually attaches the tab's web view and every time a hosting window comes back from being fully covered; waking resets it. The rule exists because WebKit's GPU process keeps IOSurfaces from every hidden-to-visible transition until the tab's WebContent process goes away. After a long session it hits the per-process limit of 16,384 surfaces, and WebGL and canvas stop working in every tab. The idle rule never reaches the tabs shown most often, so they need this second route.
+
+**Never slept**:
+- a tab playing audio
+- a tab that is selected somewhere (`lastDeselectedAt == nil`) or whose container is still in a window. Two windows on one space share a single timestamp.
+- one member of a split while its partner doesn't qualify too
+- any tab in a profile whose `sleepThreshold` is `.never`, under either rule
+
+A sleeping pinned entry or favourite keeps its tab, which is live but asleep, so selecting it wakes the tab from its saved state instead of reloading the page from scratch. For testing, `DETOUR_SLEEP_SHOW_BUDGET` and `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS` override the two constants when the app launches.
 
 **Process**:
 1. Serialize `webView.interactionState` via `NSKeyedArchiver`
@@ -112,6 +120,11 @@ Tabs are put to sleep to conserve memory. This preserves their state without kee
 2. Restore `interactionState` (restores scroll position, back/forward stack) or fall back to reloading the URL
 3. Re-setup observers
 4. Set `isSleeping = false`
+
+### Keyboard Switching
+
+- **Cmd+Option+Up/Down** steps through the space's sidebar rows (`Sidebar/TabNavigation.swift`): pinned rows, then normal items, a split being one stop, wrapping at both ends. It selects through the same paths as a row click, so a dormant pinned entry is activated. Dormant tiles that cannot open are skipped.
+- **Control+Tab** switches between recently used tabs (`Window/RecentTabSwitcher.swift`). It lists the current tab and every tab left since launch in the active space, newest first. That order comes from `BrowserTab.switcherPreviewAt`, an in-memory clock set in `stampDeselected`. The persisted `lastDeselectedAt` stays the sleep clock only. The card picture (`switcherPreview`) is taken with `WKWebView.takeSnapshot` as the tab is left, never by hosting a hidden tab, and it survives sleep.
 
 ### Archiving (Auto-Close)
 
