@@ -252,6 +252,14 @@ class BrowserTab: NSObject {
 
     var lastDeselectedAt: Date?
 
+    /// The Control+Tab switcher's picture of this tab (TASK-108), taken when
+    /// the tab was last left on screen, and when. In memory only: a tab not
+    /// left since launch is not offered by the switcher. Survives sleep.
+    var switcherPreview: NSImage?
+    var switcherPreviewAt: Date?
+    /// Bumped per capture so a slower, older snapshot never overwrites a newer one.
+    var switcherPreviewRequest = 0
+
     private var faviconCancellables = Set<AnyCancellable>()
     private var lastAttemptedURL: URL?
     /// Set from `wake()` until the fresh web view reports its first real URL.

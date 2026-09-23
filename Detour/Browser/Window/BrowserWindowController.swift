@@ -38,6 +38,8 @@ class BrowserWindowController: NSWindowController {
     /// Per-group memory of the last focused pane, so re-selecting a split row
     /// returns focus to the member the user was last in (default: left pane).
     var lastFocusedSplitMember: [UUID: UUID] = [:]
+    /// Control+Tab MRU switching (TASK-108); set up once the window exists.
+    var recentTabSwitcher: RecentTabSwitcher?
     private var splitFractionCommit: DispatchWorkItem?
     private var isApplyingSplitLayout = false
     /// Stored fraction that couldn't be applied yet because the split view had
@@ -208,6 +210,7 @@ class BrowserWindowController: NSWindowController {
         setupLinkStatusBar()
 
         window.delegate = self
+        setupRecentTabSwitcher(for: window)
 
         store.addObserver(self)
         DownloadManager.shared.addObserver(self)
@@ -1013,8 +1016,13 @@ class BrowserWindowController: NSWindowController {
     /// Must run while the tab still resolves in `activeSpace`, so a space
     /// switch stamps before it moves `activeSpaceID`.
     private func stampDeselected(_ tab: BrowserTab) {
+        let now = Date()
         for member in splitMembers(of: tab) {
-            member.lastDeselectedAt = Date()
+            member.lastDeselectedAt = now
+            // Leaving is also a visit for the Control+Tab switcher (TASK-108),
+            // pictured while the pane is still on screen.
+            captureSwitcherPreview(of: member)
+            member.switcherPreviewAt = now
         }
     }
 
@@ -2981,6 +2989,7 @@ extension BrowserWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         selectedTab?.savePeekStateForPersistence()
+        recentTabSwitcher?.invalidate()
         // The tab leaves the screen with the window; see `setActiveSpace`.
         if let outgoing = selectedTab {
             stampDeselected(outgoing)
