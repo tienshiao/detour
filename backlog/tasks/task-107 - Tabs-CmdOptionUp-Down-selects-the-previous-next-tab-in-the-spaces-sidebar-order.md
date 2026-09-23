@@ -3,11 +3,11 @@ id: TASK-107
 title: >-
   Tabs: Cmd+Option+Up/Down selects the previous/next tab in the space's sidebar
   order
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-23 06:22'
-updated_date: '2026-09-23 06:35'
+updated_date: '2026-09-23 07:27'
 labels:
   - tabs
   - keyboard
@@ -38,3 +38,9 @@ Implemented: pure tabNavigationStops/tabNavigationTarget in Sidebar/TabNavigatio
 
 Code review fix: tabNavigationStops() drops dormant pinned tiles that dormantTileRefusal says cannot open (e.g. a disabled extension's page) — otherwise Cmd+Option+Down re-targets the refused tile forever and toasts each press.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cmd+Option+Up/Down select the previous/next tab in the active space's sidebar order: pinned rows (folders flattened, collapsed children skipped, pinned splits as one stop) then normal items (splits as one stop), wrapping at both ends; with a favourite or nothing selected, Next starts at the top and Previous at the bottom. Selection reuses the sidebar click paths (remembered split pane, dormant pinned activation) and scrolls the row into view; dormant tiles that cannot open are skipped (review fix). Navigate menu items, disabled when there is no other stop. Verified with TabNavigationTests (11) and the app build; closed by the user without a separate manual pass recorded here.
+<!-- SECTION:FINAL_SUMMARY:END -->
