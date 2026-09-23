@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-23 07:52'
-updated_date: '2026-09-23 08:37'
+updated_date: '2026-09-23 08:43'
 labels:
   - website
 dependencies: []
@@ -38,4 +38,6 @@ Sep 23 2026: 2x captures via a temporary virtual display (CGVirtualDisplay) + in
 Fixed: the three loops had a ~9 pt dark strip on the left (virtual-display background + a neighbouring window) because the recording region came from the requested window frame, not the live one. Re-encoded with a 20 px left crop (spaces/pinned 1100x1360, favorites 1500x880; width attrs updated). Future captures: take the region from wins <pid> (docs/task-110/README.md).
 
 Re-recorded per user feedback (corners lacked concentricity with the CSS 18px radius): whole-window captures with native corners + shadow over a virtual-display wallpaper of #F7F2EA, page adds no framing. Spaces 808 KB, Pinned 195 KB, Favorites 419 KB, Split still 205 KB (WebP with alpha shadow). Loop background decodes to 248,241,234 vs page 247,242,234 (tone curve in encode.sh). The old dark strip was the Dock on the virtual display. Details in docs/task-110/README.md.
+
+Kit fix: the wallpaper command replaced the user's Aerial on every display/Space (restored from the store's untouched entries). demo.sh wallpaper now snapshots the store first, the harness refuses without the snapshot, demo.sh wallpaper-restore restores it.
 <!-- SECTION:NOTES:END -->
