@@ -497,6 +497,54 @@ class BrowserWindowController: NSWindowController {
         return target >= 0 && target < list.count
     }
 
+    @objc func selectNextTab(_ sender: Any?) { navigateTab(offset: 1) }
+
+    @objc func selectPreviousTab(_ sender: Any?) { navigateTab(offset: -1) }
+
+    /// The active space's rows in sidebar order, as keyboard stops (TASK-107).
+    private func tabNavigationStops() -> [TabNavigationStop] {
+        guard let space = activeSpace else { return [] }
+        let pinnedItems = flattenPinnedTree(
+            entries: space.pinnedEntries,
+            folders: space.pinnedFolders,
+            collapsedFolderIDs: Set(space.pinnedFolders.filter(\.isCollapsed).map(\.id)),
+            selectedTabID: selectedTabID
+        )
+        // A dormant tile that cannot become a tab (TASK-34/37) is no stop:
+        // selecting it only toasts and leaves the selection where it was, so
+        // every later press would re-target it and the keyboard could never
+        // step past it.
+        return Detour.tabNavigationStops(pinnedItems: pinnedItems, tabItems: tabListItems(from: space.tabs))
+            .filter { stop in
+                guard case .pinnedEntry(let entryID) = stop.target, stop.tabIDs.isEmpty,
+                      let entry = space.pinnedEntries.first(where: { $0.id == entryID }),
+                      entry.tab == nil else { return true }
+                return store.dormantTileRefusal(url: entry.pinnedURL, in: space.profile) == nil
+            }
+    }
+
+    /// Selects the row `offset` stops away, through the same paths a click on
+    /// that row takes — so a split focuses its remembered pane and a dormant
+    /// pinned entry is activated.
+    private func navigateTab(offset: Int) {
+        guard let space = activeSpace,
+              let stop = tabNavigationTarget(in: tabNavigationStops(), selectedTabID: selectedTabID, offset: offset)
+        else { return }
+        switch stop.target {
+        case .pinnedEntry(let entryID):
+            guard let index = space.pinnedEntries.firstIndex(where: { $0.id == entryID }) else { return }
+            tabSidebar(tabSidebar, didSelectPinnedTabAt: index)
+        case .tab(let tabID):
+            guard let index = space.tabs.firstIndex(where: { $0.id == tabID }) else { return }
+            tabSidebar(tabSidebar, didSelectTabAt: index)
+        }
+        // After the selection lands — a dormant pinned entry selects on the
+        // next turn of the main queue.
+        DispatchQueue.main.async { [weak self] in
+            self?.tabSidebar.scrollSelectedRowToVisible()
+        }
+    }
+
     @objc func selectSpaceFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
         tabSidebar.animateToSpace(id: id)
@@ -2766,6 +2814,10 @@ extension BrowserWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(previousSpace(_:)) {
             return !isIncognito && canNavigateSpace(offset: -1)
+        }
+        if menuItem.action == #selector(selectNextTab(_:))
+            || menuItem.action == #selector(selectPreviousTab(_:)) {
+            return tabNavigationTarget(in: tabNavigationStops(), selectedTabID: selectedTabID, offset: 1) != nil
         }
         if menuItem.action == #selector(selectSpaceFromMenu(_:))
             || menuItem.action == #selector(openSpacesSettings(_:)) {

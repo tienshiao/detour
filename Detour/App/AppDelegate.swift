@@ -351,6 +351,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         navigateMenu.addItem(withTitle: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "[")
         navigateMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
         navigateMenu.addItem(.separator())
+        let previousTabItem = navigateMenu.addItem(withTitle: "Previous Tab", action: #selector(BrowserWindowController.selectPreviousTab(_:)), keyEquivalent: "\u{F700}")
+        previousTabItem.keyEquivalentModifierMask = [.command, .option]
+        let nextTabItem = navigateMenu.addItem(withTitle: "Next Tab", action: #selector(BrowserWindowController.selectNextTab(_:)), keyEquivalent: "\u{F701}")
+        nextTabItem.keyEquivalentModifierMask = [.command, .option]
+        navigateMenu.addItem(.separator())
         // Safari's History menu, in the menu that already holds Back and
         // Forward rather than a second one beside it (TASK-86). Cmd+Y is free:
         // the Navigate menu is not delegate-driven, so AppKit matches it

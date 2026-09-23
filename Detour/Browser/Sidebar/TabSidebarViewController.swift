@@ -620,6 +620,13 @@ class TabSidebarViewController: NSViewController {
         }
     }
 
+    /// Keeps a keyboard-driven selection (TASK-107) on screen.
+    func scrollSelectedRowToVisible() {
+        let row = tableView.selectedRow
+        guard row >= 0 else { return }
+        tableView.scrollRowToVisible(row)
+    }
+
     var selectedPinnedTabIndex: Int {
         get {
             let row = tableView.selectedRow
