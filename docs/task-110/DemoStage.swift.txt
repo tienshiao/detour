@@ -1,0 +1,293 @@
+#if DEBUG
+import AppKit
+import WebKit
+
+// TEMPORARY (TASK-110): stages a demo world for website screenshots and
+// executes commands appended to <dir>/cmd, one per line. Enabled only with
+// DETOUR_DEMO_STAGE=<dir> and an isolated DETOUR_DATA_DIR. Not for commit.
+@MainActor
+final class DemoStage {
+    static var current: DemoStage?
+
+    let dir: String
+    weak var wc: BrowserWindowController?
+    private var offset: UInt64 = 0
+    private var timer: Timer?
+    private let store = TabStore.shared
+
+    init(dir: String, wc: BrowserWindowController) {
+        self.dir = dir
+        self.wc = wc
+        FileManager.default.createFile(atPath: dir + "/cmd", contents: Data())
+        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
+        }
+        log("ready pid=\(ProcessInfo.processInfo.processIdentifier) window=\(wc.window?.windowNumber ?? -1)")
+    }
+
+    func log(_ s: String) {
+        let line = "\(String(format: "%.2f", Date().timeIntervalSince1970)) \(s)\n"
+        let path = dir + "/log.txt"
+        if let h = FileHandle(forWritingAtPath: path) {
+            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8))
+        }
+    }
+
+    private func poll() {
+        guard let h = FileHandle(forReadingAtPath: dir + "/cmd") else { return }
+        defer { h.closeFile() }
+        h.seek(toFileOffset: offset)
+        let data = h.readDataToEndOfFile()
+        guard !data.isEmpty, let text = String(data: data, encoding: .utf8), text.hasSuffix("\n") else { return }
+        offset += UInt64(data.count)
+        for line in text.split(separator: "\n") where !line.isEmpty {
+            run(String(line))
+        }
+    }
+
+    private func after(_ t: Double, _ b: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: b)
+    }
+
+    private func space(named name: String) -> Space? {
+        store.spaces.first { $0.name.lowercased() == name.lowercased() }
+    }
+
+    private func findTab(_ needle: String, in space: Space) -> BrowserTab? {
+        let all = space.pinnedEntries.compactMap(\.tab) + (space.profile?.favorites.compactMap(\.tab) ?? []) + space.tabs
+        return all.first { ($0.url?.absoluteString ?? "").contains(needle) || $0.title.contains(needle) }
+    }
+
+    // MARK: - Commands
+
+    private func run(_ line: String) {
+        let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+        let cmd = parts[0], arg = parts.count > 1 ? parts[1] : ""
+        guard let wc, let window = wc.window else { return }
+        log("> \(line)")
+        switch cmd {
+        case "seed":
+            seed()
+        case "frame":
+            let v = arg.split(separator: " ").compactMap { Double($0) }
+            if v.count == 4 { window.setFrame(NSRect(x: v[0], y: v[1], width: v[2], height: v[3]), display: true) }
+            log("frame \(window.frame) window=\(window.windowNumber)")
+        case "to2x":
+            // Move onto the Retina (virtual) display, at its top-left with a margin.
+            guard let screen = NSScreen.screens.first(where: { $0.backingScaleFactor >= 2 }) else { log("no 2x screen"); return }
+            let v = arg.split(separator: " ").compactMap { Double($0) }
+            let size = v.count == 2 ? NSSize(width: v[0], height: v[1]) : window.frame.size
+            let f = screen.frame
+            window.setFrame(NSRect(x: f.minX + 40, y: f.maxY - 40 - size.height, width: size.width, height: size.height), display: true)
+            log("frame \(window.frame) scale=\(window.backingScaleFactor) window=\(window.windowNumber)")
+        case "visitall":
+            // Host every tab once so background pages finish loading (TASK-112).
+            guard let s = wc.activeSpace else { return }
+            let tabs = s.pinnedEntries.compactMap(\.tab) + (s.profile?.favorites.compactMap(\.tab) ?? []) + s.tabs
+            let back = wc.selectedTabID
+            for (i, t) in tabs.enumerated() { after(Double(i) * 2.5) { wc.selectTab(id: t.id) } }
+            after(Double(tabs.count) * 2.5 + 1) {
+                if let back { wc.selectTab(id: back) }
+                self.log("visitall done")
+            }
+        case "renamepinned":
+            let kv = arg.split(separator: "|").map(String.init)
+            guard kv.count == 2, let s = wc.activeSpace,
+                  let e = s.pinnedEntries.first(where: { $0.pinnedURL.absoluteString.contains(kv[0]) }) else { log("no pinned \(arg)"); return }
+            store.renamePinnedEntry(id: e.id, name: kv[1], in: s)
+        case "deleteprofile":
+            if let p = store.profiles.first(where: { $0.name == arg }) { _ = store.deleteProfile(id: p.id) } else { log("no profile \(arg)") }
+        case "settingsrow":
+            func tables(_ v: NSView) -> [NSTableView] { (v as? NSTableView).map { [$0] } ?? [] + v.subviews.flatMap(tables) }
+            guard let root = SettingsWindowController.shared.window?.contentView, let row = Int(arg),
+                  let table = tables(root).first else { log("no settings table"); return }
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        case "settingswidth":
+            guard let sw = SettingsWindowController.shared.window, let w = Double(arg) else { return }
+            var f = sw.frame; f.size.width = w
+            sw.setFrame(f, display: true)
+            log("settings window=\(sw.windowNumber) frame=\(sw.frame)")
+        case "wallpaper":
+            // wallpaper <RRGGBB> — solid desktop picture on the 2x (virtual) display only.
+            guard let screen = NSScreen.screens.first(where: { $0.backingScaleFactor >= 2 }),
+                  let v = Int(arg, radix: 16) else { log("wallpaper: no 2x screen / bad colour"); return }
+            let color = NSColor(srgbRed: CGFloat((v >> 16) & 255) / 255, green: CGFloat((v >> 8) & 255) / 255,
+                                blue: CGFloat(v & 255) / 255, alpha: 1)
+            let image = NSImage(size: NSSize(width: 64, height: 64), flipped: false) { r in color.setFill(); r.fill(); return true }
+            let url = URL(fileURLWithPath: dir + "/wallpaper-\(arg).png")
+            if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+                try? rep.representation(using: .png, properties: [:])?.write(to: url)
+            }
+            do { try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [.imageScaling: NSImageScaling.scaleAxesIndependently.rawValue]) ; log("wallpaper set") }
+            catch { log("wallpaper failed \(error)") }
+        case "front":
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        case "space":
+            let words = arg.split(separator: " ").map(String.init)
+            guard let s = space(named: words[0]) else { log("no space \(arg)"); return }
+            if words.count > 1, words[1] == "animate" { wc.tabSidebar.animateToSpace(id: s.id) } else { wc.setActiveSpace(id: s.id) }
+        case "select":
+            guard let s = wc.activeSpace, let tab = findTab(arg, in: s) else { log("no tab \(arg)"); return }
+            wc.selectTab(id: tab.id)
+        case "folder":
+            guard let s = wc.activeSpace, let f = s.pinnedFolders.first(where: { $0.name == arg }) else { log("no folder \(arg)"); return }
+            store.togglePinnedFolderCollapsed(id: f.id, in: s)
+        case "split":
+            let urls = arg.split(separator: " ").map(String.init)
+            guard let s = wc.activeSpace, urls.count == 2,
+                  let a = findTab(urls[0], in: s), let b = findTab(urls[1], in: s) else { log("split: tabs not found"); return }
+            store.createSplit(draggedTabID: b.id, targetTabID: a.id, edge: .right, in: s)
+            wc.selectTab(id: a.id)
+        case "appearance":
+            NSApp.appearance = NSAppearance(named: arg == "dark" ? .darkAqua : .aqua)
+        case "settings":
+            // settings <spaces|profiles|general> — opens the pane on the 2x display.
+            let sc = SettingsWindowController.shared
+            if arg == "spaces" { sc.showSpacesPane() } else { sc.showWindow(nil) }
+            if arg == "profiles", let tb = sc.window?.toolbar,
+               let item = tb.items.first(where: { $0.itemIdentifier.rawValue.lowercased().contains("profile") }),
+               let action = item.action {
+                NSApp.sendAction(action, to: item.target ?? sc, from: item)
+            }
+            after(0.5) {
+                guard let sw = sc.window else { return }
+                sw.orderFront(nil)
+                if let screen = NSScreen.screens.first(where: { $0.backingScaleFactor >= 2 }) {
+                    let f = screen.frame
+                    sw.setFrameTopLeftPoint(NSPoint(x: f.minX + 60, y: f.maxY - 60))
+                }
+                self.log("settings window=\(sw.windowNumber) frame=\(sw.frame)")
+            }
+        case "js":
+            wc.selectedTab?.webView?.evaluateJavaScript(arg) { r, e in self.log("js -> \(String(describing: r)) \(e.map { "\($0)" } ?? "")") }
+        case "key":
+            // key <keyCode> <ctrl|shift|cmd|opt...>
+            let w = arg.split(separator: " ").map(String.init)
+            var flags: NSEvent.ModifierFlags = []
+            for m in w.dropFirst() {
+                switch m { case "ctrl": flags.insert(.control); case "shift": flags.insert(.shift)
+                case "cmd": flags.insert(.command); case "opt": flags.insert(.option); default: break }
+            }
+            let chars = w[0] == "48" ? "\t" : ""
+            if let code = UInt16(w[0]) {
+                post(.flagsChanged, flags, code: 59)
+                post(.keyDown, flags, code: code, chars: chars)
+            }
+        case "release":
+            post(.flagsChanged, [], code: 59)
+        case "info":
+            for s in store.spaces {
+                log("space \(s.name) \(s.emoji) profile=\(s.profile?.name ?? "-") pinned=\(s.pinnedEntries.count) tabs=\(s.tabs.count) favs=\(s.profile?.favorites.count ?? 0)")
+            }
+            log("frame \(window.frame) window=\(window.windowNumber) selected=\(wc.selectedTab?.title ?? "-")")
+        default:
+            log("unknown \(cmd)")
+        }
+    }
+
+    private func post(_ type: NSEvent.EventType, _ flags: NSEvent.ModifierFlags, code: UInt16, chars: String = "") {
+        guard let window = wc?.window,
+              let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                       context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                                       isARepeat: false, keyCode: code) else { return }
+        NSApp.postEvent(e, atStart: false)
+    }
+
+    // MARK: - Seed
+
+    private struct Plan {
+        let name: String, emoji: String, color: String, profile: String
+        let favorites: [String]
+        let pinned: [String]
+        let folders: [(String, [String])]
+        let tabs: [String]
+    }
+
+    private func seed() {
+        guard space(named: "Work") == nil else { log("already seeded"); return }
+        let work = store.addProfile(name: "Work")
+        let personal = store.addProfile(name: "Personal")
+        let client = store.addProfile(name: "Client X")
+        let profiles = ["Work": work, "Personal": personal, "Client X": client]
+
+        let plans = [
+            Plan(name: "Work", emoji: "🍊", color: "FF7600", profile: "Work",
+                 favorites: ["https://slack.com", "https://linear.app", "https://www.notion.com", "https://github.com",
+                             "https://www.figma.com", "https://www.linkedin.com", "https://www.youtube.com", "https://www.apple.com"],
+                 pinned: ["https://developer.apple.com/documentation/webkit"],
+                 folders: [("Design", ["https://developer.apple.com/design/human-interface-guidelines", "https://www.figma.com/community"]),
+                           ("Research", ["https://webkit.org/blog/", "https://arstechnica.com"])],
+                 tabs: ["https://github.com/tienshiao/detour", "https://en.wikipedia.org/wiki/WebKit",
+                        "https://developer.apple.com/documentation/webkit/wkwebview",
+                        "https://docs.github.com/en", "https://news.ycombinator.com"]),
+            Plan(name: "Personal", emoji: "🌿", color: "7C5CFF", profile: "Personal",
+                 favorites: ["https://www.youtube.com", "https://www.reddit.com", "https://en.wikipedia.org", "https://www.apple.com"],
+                 pinned: [],
+                 folders: [("News", ["https://theoldreader.com", "https://www.reddit.com", "https://news.ycombinator.com"])],
+                 tabs: ["https://en.wikipedia.org/wiki/Tab_(interface)", "https://www.apple.com/mac/",
+                        "https://www.youtube.com"]),
+            Plan(name: "Reading", emoji: "📚", color: "1FB6A8", profile: "Personal",
+                 favorites: [], pinned: [], folders: [],
+                 tabs: ["https://en.wikipedia.org/wiki/Hypertext", "https://arstechnica.com",
+                        "https://www.theverge.com", "https://en.wikipedia.org/wiki/Web_browser",
+                        "https://daringfireball.net"]),
+            Plan(name: "Side", emoji: "🎨", color: "E94F8C", profile: "Client X",
+                 favorites: ["https://github.com", "https://linear.app"], pinned: [], folders: [],
+                 tabs: ["https://github.com/tienshiao/detour/releases", "https://sparkle-project.org"]),
+        ]
+
+        let original = store.spaces
+        // Pass 1: open every page so titles and favicons load before any of
+        // them becomes a pinned entry or a favourite tile (both snapshot the
+        // title at that moment).
+        var pending: [() -> Void] = []
+        var profileHasFavs = Set<UUID>()
+        for plan in plans {
+            let profile = profiles[plan.profile]!
+            let space = store.addSpace(name: plan.name, emoji: plan.emoji, colorHex: plan.color, profileID: profile.id)
+            if !profileHasFavs.contains(profile.id) {
+                profileHasFavs.insert(profile.id)
+                for url in plan.favorites {
+                    let tab = store.addTab(in: space, url: URL(string: url)!)
+                    pending.append {
+                        self.store.detachTab(id: tab.id, from: space)
+                        self.store.addFavorite(from: tab, profileID: profile.id)
+                    }
+                }
+            }
+            for url in plan.pinned {
+                let tab = store.addTab(in: space, url: URL(string: url)!)
+                pending.append { self.store.pinTab(id: tab.id, in: space) }
+            }
+            for (folderName, urls) in plan.folders {
+                let tabs = urls.map { self.store.addTab(in: space, url: URL(string: $0)!) }
+                pending.append {
+                    let folder = self.store.addPinnedFolder(name: folderName, in: space)
+                    for tab in tabs {
+                        self.store.pinTab(id: tab.id, in: space)
+                        if let entry = space.pinnedEntries.first(where: { $0.tab?.id == tab.id }) {
+                            self.store.movePinnedTabToFolder(tabID: entry.id, folderID: folder.id, in: space)
+                        }
+                    }
+                }
+            }
+            // Reversed: new tabs insert at the top, so the list reads in plan order.
+            for url in plan.tabs.reversed() {
+                _ = store.addTab(in: space, url: URL(string: url)!)
+            }
+        }
+        for s in original { store.deleteSpace(id: s.id) }
+        if let workSpace = space(named: "Work") { wc?.setActiveSpace(id: workSpace.id) }
+        log("seeded tabs; waiting for pages to load")
+        after(20) {
+            pending.forEach { $0() }
+            self.store.saveNow()
+            self.log("seed done")
+        }
+    }
+}
+#endif

@@ -19,7 +19,7 @@ A native macOS web browser built with Swift and WebKit.
 - **Command Palette** — Cmd+T for new tab, Cmd+L to navigate. Searches open tabs, browsing history (FTS5), and web suggestions in one unified input, with frecency-based autocomplete and a top-hit row.
 - **Downloads** — Built-in download manager with progress tracking, cancel, reveal in Finder, and persistence across sessions.
 - **Content Blocker** — Built-in ad and tracker blocking with EasyList support and per-site whitelist management.
-- **Peek Preview** — Long-click links to preview them in an overlay without leaving the current page. Expand to open in a new tab.
+- **Peek Preview** — Shift-click links to preview them in an overlay without leaving the current page. Expand to open in a new tab.
 - **Audio Controls** — Detects tabs playing audio and shows a mute toggle per tab.
 - **Link Status Bar** — Hovering over a link shows the destination URL at the bottom of the window.
 - **Find in Page** — Cmd+F with match counting and prev/next navigation.
