@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-23 21:17'
-updated_date: '2026-09-23 21:22'
+updated_date: '2026-09-23 21:37'
 labels:
   - bug
   - tabs
@@ -34,4 +34,6 @@ Fix direction: have BrowserTab's own WKNavigationDelegate forward didCommit to d
 
 <!-- SECTION:NOTES:BEGIN -->
 Fix (Sep 23 2026): BrowserTab's own WKNavigationDelegate (the unclaimed-web-view delegate) now forwards didCommit to didCommitNavigation(), skipping error pages the same way BrowserWindowController does. didCommitNavigation() now ignores the about:blank commit of a failed session restore (restoringSession && url == about:blank), the same rule as the URL observer's blankAfterFailedRestore. Without it, BrowserTabWakeTests.testFailedWakeOfARestoredTabKeepsItsSession failed (title became 'about:blank'), and the window's commit path had the same latent problem. Tests: DetourTests/BackgroundTabTitleTests (title at commit while a load never finishes; a script-set title while loading). BrowserTabWake, ContentBlockerWhitelist, HistoryTitleUpdate, FaviconLinkBridge, FavoriteFavicon, InternalPage(Integration), TabStore and TabNavigation pass (129 tests). /code-review --fix found nothing.
+
+Follow-up (Sep 23 2026): a review of d43f396 found that the about:blank guard also ignored a restore whose saved page really is about:blank (window.open(''), tabs.create about:blank). That left restoringSession set, so a later failed Back/Forward showed no error page. The guard now also requires the tab's own url to be something other than about:blank: a failed restore keeps the page being restored as its url, and a genuine blank restore has url == about:blank. New test: BrowserTabWakeTests.testAWakeRestoredOntoAboutBlankEndsTheRestoreAtCommit, which fails with the old guard. restoringSession is now private(set) so the test can read it.
 <!-- SECTION:NOTES:END -->

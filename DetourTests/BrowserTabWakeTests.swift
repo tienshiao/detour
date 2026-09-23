@@ -97,6 +97,26 @@ final class BrowserTabWakeTests: XCTestCase {
         XCTAssertNotNil(tab.currentInteractionStateData(), "the restored session state is still there")
     }
 
+    /// TASK-114: a session restored *onto* about:blank (`window.open('')`,
+    /// `tabs.create({url: 'about:blank'})`) commits about:blank because the
+    /// restore succeeded, not because it failed — so the commit ends the
+    /// restore, and a later failed navigation still earns its error page.
+    func testAWakeRestoredOntoAboutBlankEndsTheRestoreAtCommit() async throws {
+        let source = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        try await loadAndWait(source, URLRequest(url: blankURL))
+        let state = try XCTUnwrap(source.interactionState, "the source web view should have session state")
+        let archived = try NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
+
+        let tab = track(BrowserTab(
+            id: UUID(), title: "Blank", url: blankURL, faviconURL: nil,
+            cachedInteractionState: archived, spaceID: UUID()))
+        tab.wake()
+        XCTAssertTrue(tab.restoringSession)
+        tab.loadIfStalled()
+
+        try await waitUntil("the about:blank commit to end the restore") { !tab.restoringSession }
+    }
+
     /// TASK-45: the user asking to reload such a tab still retries the page,
     /// and *that* failure earns the error page — the user asked for it.
     func testReloadingATabWhoseWakeFailedRetriesItsURL() async throws {

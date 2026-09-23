@@ -279,7 +279,7 @@ class BrowserTab: NSObject {
     /// (TASK-45). `awaitingFirstURL` cannot stand in for this: the kick reports
     /// its URL synchronously, and the URL observer then also records it as
     /// `lastAttemptedURL`.
-    private var restoringSession = false
+    private(set) var restoringSession = false
     /// The internal page this tab may navigate to, set only by
     /// `loadInternalPage(_:)` and by `wake()` for a tab that was already showing
     /// one. `InternalPageNavigationPolicy` refuses every other navigation to the
@@ -1027,8 +1027,10 @@ class BrowserTab: NSObject {
         // A session restore that fails falls back to about:blank, and WebKit
         // commits that: it is not a page the tab is showing, so the restored
         // session, title and pending state stay (TASK-45, the URL observer's
-        // `blankAfterFailedRestore`).
-        if restoringSession, webView?.url == Self.blankURL { return }
+        // `blankAfterFailedRestore`). A session restored *onto* about:blank
+        // (`window.open('')`, `tabs.create({url: 'about:blank'})`) is the one
+        // exception: its commit is the restore succeeding.
+        if restoringSession, webView?.url == Self.blankURL, url != Self.blankURL { return }
         navigationPending = false
         restoringSession = false
         resetBlockedCount()
