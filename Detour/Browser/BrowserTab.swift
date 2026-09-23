@@ -1024,6 +1024,11 @@ class BrowserTab: NSObject {
     }
 
     func didCommitNavigation() {
+        // A session restore that fails falls back to about:blank, and WebKit
+        // commits that: it is not a page the tab is showing, so the restored
+        // session, title and pending state stay (TASK-45, the URL observer's
+        // `blankAfterFailedRestore`).
+        if restoringSession, webView?.url == Self.blankURL { return }
         navigationPending = false
         restoringSession = false
         resetBlockedCount()
@@ -1117,10 +1122,14 @@ class BrowserTab: NSObject {
 /// `tabs.create({active: false})` — loads before any window installs itself as
 /// delegate (`wireOwnedWebView` does that on claim), and with none WebKit uses
 /// the configuration's default preferences: the per-site content blocker
-/// switch would never be consulted for that page (TASK-69). Only the policy
-/// decision that carries the preferences is implemented, so every other
-/// callback stays at WebKit's default, exactly as with no delegate; a window
-/// replaces this the moment it claims the tab.
+/// switch would never be consulted for that page (TASK-69). Besides the policy
+/// decision that carries the preferences, only the commit is implemented — the
+/// tab's own bookkeeping, which the window forwards to `didCommitNavigation`
+/// once it owns the web view. Without it a background load that stalls (hidden
+/// web views can stay loading until first shown) kept the URL as its title
+/// until the load finished (TASK-114). Every other callback stays at WebKit's
+/// default, exactly as with no delegate; a window replaces this the moment it
+/// claims the tab.
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
@@ -1131,6 +1140,13 @@ extension BrowserTab: WKNavigationDelegate {
                                                    profile: profile)
         }
         return (.allow, preferences)
+    }
+
+    /// Mirrors `BrowserWindowController`'s `didCommit`: an error page is not a
+    /// page the tab is showing.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if webView.url?.scheme == ErrorPage.scheme { return }
+        didCommitNavigation()
     }
 }
 
