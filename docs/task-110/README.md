@@ -14,7 +14,8 @@ staged demo profile. Nothing here is compiled into Detour.
   so captures are Retina on a 1x monitor. `clang -fobjc-arc -framework Foundation
   -framework CoreGraphics vdisplay.m -o vdisplay`; the display lives until the
   process is killed.
-- `demo.sh` — `cmd "<command>"`, `shot <name>` (screencapture -l of the demo window).
+- `demo.sh` — `cmd "<command>"`, `shot <name>` (screencapture -l of the demo window),
+  `wallpaper <hex>` / `wallpaper-restore` (snapshot and restore the wallpaper store).
 - `encode.sh` — screencapture -v writes variable-frame-rate video: convert to
   30 fps first, then trim, then H.264 + WebP poster.
 - `wins.swift` — list a process's CGWindow IDs.
@@ -36,7 +37,9 @@ Second pass (user feedback: cropped windows + CSS rounding lacked concentricity)
 record the WHOLE window, sized to the shot (560x700 pt for Spaces/Pinned,
 760x480 for Favorites), placed mid-display away from the Dock (the Dock also
 lives on the virtual display's left edge — that was the old dark strip), with
-the virtual display's wallpaper set to the site background (`wallpaper F7F2EA`)
+the wallpaper set to the site background (`demo.sh wallpaper F7F2EA`; macOS applies it to
+every display and Space, so the script snapshots the wallpaper store first and
+`demo.sh wallpaper-restore` must be run when capturing is done)
 and a margin of 70 pt left/right, 60 top, 120 bottom so the native shadow
 fades to background inside the frame. The page adds no radius/shadow.
 Colour: screencapture's video records #F7F2EA as 246,241,230; encode.sh applies a

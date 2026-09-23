@@ -110,7 +110,12 @@ final class DemoStage {
             sw.setFrame(f, display: true)
             log("settings window=\(sw.windowNumber) frame=\(sw.frame)")
         case "wallpaper":
-            // wallpaper <RRGGBB> — solid desktop picture on the 2x (virtual) display only.
+            // wallpaper <RRGGBB> — solid desktop picture for captures. macOS applies it to
+            // EVERY display and Space, not only `screen`, so only `demo.sh wallpaper`
+            // (which snapshots the wallpaper store for `demo.sh wallpaper-restore`) may send it.
+            guard FileManager.default.fileExists(atPath: dir + "/wallpaper-backup.plist") else {
+                log("wallpaper refused: no wallpaper-backup.plist — use 'demo.sh wallpaper <hex>'"); return
+            }
             guard let screen = NSScreen.screens.first(where: { $0.backingScaleFactor >= 2 }),
                   let v = Int(arg, radix: 16) else { log("wallpaper: no 2x screen / bad colour"); return }
             let color = NSColor(srgbRed: CGFloat((v >> 16) & 255) / 255, green: CGFloat((v >> 8) & 255) / 255,
