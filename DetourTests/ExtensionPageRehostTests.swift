@@ -405,7 +405,7 @@ final class ExtensionPageRehostTests: XCTestCase {
         let space = makeSpace("Rehost No Reopen", in: profile)
         let context = try loadContext(profile, ext)
         let (tab, _) = try openExtensionPage(context, in: space, path: "options.html")
-        let stackBefore = TabStore.shared.closedTabStack.count
+        let stackBefore = TabStore.shared.closedTabRecords(in: space).count
         TabStore.shared.undoManager.removeAllActions()
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
@@ -413,7 +413,7 @@ final class ExtensionPageRehostTests: XCTestCase {
             !space.tabs.contains { $0.id == tab.id }
         }
 
-        XCTAssertEqual(TabStore.shared.closedTabStack.count, stackBefore,
+        XCTAssertEqual(TabStore.shared.closedTabRecords(in: space).count, stackBefore,
                        "a dead extension page must not land on the closed-tab stack")
         XCTAssertFalse(TabStore.shared.undoManager.canUndo,
                        "closing a dead extension page must not register an undo")

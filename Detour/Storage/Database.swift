@@ -302,17 +302,16 @@ struct AppDatabase {
 
     private static let closedTabCap = 100
 
+    /// `performRead` labels for the closed-tab reads, so tests can pin down that
+    /// launch reads none and a reopen reads one full row (TASK-117).
+    static let closedTabSummariesReadLabel = "load closed tab summaries"
+    static let closedTabReadLabel = "load closed tab"
+    static let closedTabsForSpaceReadLabel = "load closed tabs for space"
+
     func pushClosedTab(_ record: ClosedTabRecord) {
         performWrite("push closed tab") { db in
             try record.insert(db)
-            let count = try ClosedTabRecord.fetchCount(db)
-            if count > Self.closedTabCap {
-                let excess = count - Self.closedTabCap
-                try db.execute(
-                    sql: "DELETE FROM closedTab WHERE id IN (SELECT id FROM closedTab ORDER BY id ASC LIMIT ?)",
-                    arguments: [excess]
-                )
-            }
+            try Self.trimClosedTabs(db)
         }
     }
 
@@ -327,9 +326,70 @@ struct AppDatabase {
         }
     }
 
-    func loadClosedTabs() -> [ClosedTabRecord] {
-        performRead("load closed tabs", default: []) { db in
-            try ClosedTabRecord.order(Column("id").desc).fetchAll(db)
+    /// Closed-tab rows without their interactionState blobs, newest first —
+    /// what menu validation, the reopen scan and listings read (TASK-117).
+    /// `spaceID == nil` lists every space (tests only).
+    func closedTabSummaries(spaceID: String? = nil) -> [ClosedTabSummary] {
+        performRead(Self.closedTabSummariesReadLabel, default: []) { db in
+            var request = ClosedTabSummary.select(
+                Column("id"), Column("tabID"), Column("spaceID"), Column("url"),
+                Column("title"), Column("faviconURL"), Column("sortOrder"),
+                Column("archivedAt"), Column("extensionID"))
+            if let spaceID {
+                request = request.filter(Column("spaceID") == spaceID)
+            }
+            return try request.order(Column("id").desc).fetchAll(db)
+        }
+    }
+
+    /// The full closed-tab row, including its interactionState blob — the only
+    /// place a blob is read, for the one record a reopen picks (TASK-117).
+    func closedTab(id: Int64) -> ClosedTabRecord? {
+        performRead(Self.closedTabReadLabel, default: nil) { db in
+            try ClosedTabRecord.fetchOne(db, key: id)
+        }
+    }
+
+    /// Full rows of one space's closed tabs, oldest first — the Delete Space
+    /// undo snapshot.
+    func closedTabs(spaceID: String) -> [ClosedTabRecord] {
+        performRead(Self.closedTabsForSpaceReadLabel, default: []) { db in
+            try ClosedTabRecord
+                .filter(Column("spaceID") == spaceID)
+                .order(Column("id").asc)
+                .fetchAll(db)
+        }
+    }
+
+    func deleteClosedTab(id: Int64) {
+        performWrite("delete closed tab by id") { db in
+            _ = try ClosedTabRecord.deleteOne(db, key: id)
+        }
+    }
+
+    /// Re-inserts closed-tab rows keeping their ORIGINAL ids (Delete Space undo).
+    /// The ids were freed by the delete and AUTOINCREMENT never hands them to new
+    /// rows, so restoring them puts each record back at its exact place in the
+    /// newest-first reopen order, interleaved with anything closed since. (The old
+    /// undo re-pushed the records newest-first with fresh ids, reversing them.)
+    func insertClosedTabs(_ records: [ClosedTabRecord]) {
+        guard !records.isEmpty else { return }
+        performWrite("insert closed tabs") { db in
+            for record in records {
+                try record.insert(db)
+            }
+            try Self.trimClosedTabs(db)
+        }
+    }
+
+    private static func trimClosedTabs(_ db: GRDB.Database) throws {
+        let count = try ClosedTabRecord.fetchCount(db)
+        if count > closedTabCap {
+            let excess = count - closedTabCap
+            try db.execute(
+                sql: "DELETE FROM closedTab WHERE id IN (SELECT id FROM closedTab ORDER BY id ASC LIMIT ?)",
+                arguments: [excess]
+            )
         }
     }
 
@@ -342,8 +402,7 @@ struct AppDatabase {
     }
 
     /// Deletes the closed-tab row(s) for a specific tab. Used when undoing a tab
-    /// close so the in-memory stack and the DB stay in sync (otherwise the row is
-    /// reloaded on next launch and Cmd+Shift+T reopens a duplicate). A given tabID
+    /// close so Cmd+Shift+T does not reopen a duplicate of the restored tab. A given tabID
     /// appears at most once because reopen/undo always mint a fresh tab UUID.
     func deleteClosedTab(tabID: String) {
         performWrite("delete closed tab") { db in
@@ -829,6 +888,12 @@ struct AppDatabase {
                 t.column("scheme", .text).notNull()
                 t.uniqueKey(["profileID", "origin", "scheme"])
             }
+        }
+
+        migrator.registerMigration("v15") { db in
+            // TASK-117: the closed-tab stack is read from the DB only — serve the
+            // per-space newest-first scan (menu validation, Reopen Closed Tab).
+            try db.create(index: "closedTab_on_spaceID_id", on: "closedTab", columns: ["spaceID", "id"])
         }
 
         return migrator

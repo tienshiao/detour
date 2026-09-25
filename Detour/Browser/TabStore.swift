@@ -377,7 +377,6 @@ class TabStore {
 
     var nonIncognitoSpaces: [Space] { spaces.filter { !$0.isIncognito } }
 
-    private(set) var closedTabStack: [ClosedTabRecord] = []
     private var observers: [WeakObserver] = []
     private var tabSubscriptions: [UUID: Set<AnyCancellable>] = [:]
     private var saveWorkItem: DispatchWorkItem?
@@ -448,7 +447,6 @@ class TabStore {
         }
         let spaceIDString = id.uuidString
         appDB.deleteClosedTabs(spaceID: spaceIDString)
-        closedTabStack.removeAll { $0.spaceID == spaceIDString }
     }
 
     func space(withID id: UUID) -> Space? {
@@ -1019,17 +1017,11 @@ class TabStore {
                 ?? space.pinnedEntries.first(where: { $0.tab != nil })?.tab?.id
         }
 
-        // Load closed tab stack from DB. A closed extension page is resolved when
-        // it is reopened (`reopenClosedTab`), which skips (and keeps) a disabled
-        // extension's; one whose extension is not installed can never be reopened
-        // and is deleted now.
-        self.closedTabStack = appDB.loadClosedTabs().filter { record in
-            guard let space = UUID(uuidString: record.spaceID).flatMap({ self.space(withID: $0) }),
-                  persistedPage(record.url, extensionID: record.extensionID, in: space.profile) == .unavailable
-            else { return true }
-            appDB.deleteClosedTab(tabID: record.tabID)
-            return false
-        }
+        // Closed-tab records are not loaded: the closedTab table is the only
+        // store and is queried on demand (TASK-117). Nothing is lost by no
+        // longer purging uninstalled extensions' records here — `reopenClosedTab`
+        // discards an `.unavailable` record when its scan reaches it, and
+        // `canReopenClosedTab` already treats one as not reopenable.
 
         let activeID = session.lastActiveSpaceID.flatMap { UUID(uuidString: $0) } ?? self.spaces.first!.id
         self.lastActiveSpaceID = activeID
@@ -1844,8 +1836,9 @@ class TabStore {
                 sortOrder: folder.sortOrder
             )
         }
-        // Capture closed-tab records before they're purged so undo can restore them.
-        let savedClosedTabs = closedTabStack.filter { $0.spaceID == spaceIDString }
+        // Capture closed-tab records (full rows, with their ids) before they're
+        // purged so undo can restore them.
+        let savedClosedTabs = appDB.closedTabs(spaceID: spaceIDString)
 
         spaces.remove(at: index)
         for tab in space.tabs {
@@ -1871,7 +1864,6 @@ class TabStore {
         space.pinnedFolders.removeAll()
         // Clean up closed tab records for this space (captured above for undo)
         appDB.deleteClosedTabs(spaceID: spaceIDString)
-        closedTabStack.removeAll { $0.spaceID == spaceIDString }
 
         // `space` is captured strongly on purpose: the restored space must BE the
         // instance the older undo actions closed over (TASK-40).
@@ -2015,12 +2007,9 @@ class TabStore {
             let insertAt = min(savedIndex, self.spaces.count)
             self.spaces.insert(restored, at: insertAt)
 
-            // Restore closed-tab records to both the DB and the in-memory stack so
-            // Cmd+Shift+T works again after undo.
-            for record in savedClosedTabs {
-                self.appDB.pushClosedTab(record)
-            }
-            self.closedTabStack.insert(contentsOf: savedClosedTabs, at: 0)
+            // Restore the closed-tab records, with their original ids, so
+            // Cmd+Shift+T works again after undo in the original order.
+            self.appDB.insertClosedTabs(savedClosedTabs)
 
             self.registerUndo(actionName: "Add Space") { [weak self] in
                 self?.deleteSpace(id: id)
@@ -2343,11 +2332,6 @@ class TabStore {
                 extensionID: tabExtensionID
             )
             appDB.pushClosedTab(record)
-            closedTabStack.insert(record, at: 0)
-            // Trim in-memory stack to match cap
-            if closedTabStack.count > 100 {
-                closedTabStack = Array(closedTabStack.prefix(100))
-            }
         }
 
         tabSubscriptions.removeValue(forKey: tab.id)
@@ -2393,12 +2377,8 @@ class TabStore {
                 }
                 space.tabs.insert(restored, at: insertAt)
                 self.subscribeToTab(restored)
-                // Remove the corresponding closed-tab-stack entry from both the
-                // in-memory stack and the DB. Skipping the DB row would leave it to
-                // be reloaded on next launch, so Cmd+Shift+T would reopen a duplicate.
-                if let stackIdx = self.closedTabStack.firstIndex(where: { $0.tabID == id.uuidString }) {
-                    self.closedTabStack.remove(at: stackIdx)
-                }
+                // Remove the corresponding closed-tab record, or Cmd+Shift+T
+                // would reopen a duplicate of the restored tab.
                 self.appDB.deleteClosedTab(tabID: id.uuidString)
                 // Redo re-closes with the same stamp: an undone Archive Tab that
                 // is redone stays an archive record, not a plain close (TASK-115).
@@ -3139,11 +3119,7 @@ class TabStore {
                     extensionID: snapshot.extensionID
                 )
                 appDB.pushClosedTab(record)
-                closedTabStack.insert(record, at: 0)
             }
-        }
-        if closedTabStack.count > 100 {
-            closedTabStack = Array(closedTabStack.prefix(100))
         }
 
         // Remove highest index first so the captured lower index stays valid.
@@ -3193,9 +3169,6 @@ class TabStore {
                 }
                 space.tabs.insert(restored, at: insertAt)
                 self.subscribeToTab(restored)
-                if let stackIdx = self.closedTabStack.firstIndex(where: { $0.tabID == snapshot.tabID }) {
-                    self.closedTabStack.remove(at: stackIdx)
-                }
                 self.appDB.deleteClosedTab(tabID: snapshot.tabID)
                 self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
             }
@@ -4055,13 +4028,17 @@ class TabStore {
 
     // MARK: - Reopen Closed Tab
 
+    /// This space's closed-tab records, newest first, without their
+    /// interactionState blobs (TASK-117).
+    func closedTabRecords(in space: Space) -> [ClosedTabSummary] {
+        appDB.closedTabSummaries(spaceID: space.id.uuidString)
+    }
+
     func canReopenClosedTab(in space: Space) -> Bool {
-        let spaceIDString = space.id.uuidString
-        // Menu validation: one availability for the whole scan, which can reach
-        // every record in the stack.
+        // Menu validation: one blob-free query of the space's records and one
+        // availability for the whole scan, which can reach every record.
         let availability = ExtensionAvailability(appDB: appDB)
-        return closedTabStack.contains { record in
-            guard record.spaceID == spaceIDString else { return false }
+        return closedTabRecords(in: space).contains { record in
             switch closedTabPage(record, in: space, availability: availability) {
             case .notExtensionPage, .restorable: return true
             case .disabled, .unavailable: return false
@@ -4070,7 +4047,7 @@ class TabStore {
     }
 
     /// What a closed-tab record's page is now (TASK-24).
-    private func closedTabPage(_ record: ClosedTabRecord, in space: Space,
+    private func closedTabPage(_ record: ClosedTabSummary, in space: Space,
                                availability: ExtensionAvailability? = nil) -> PersistedExtensionPage {
         classifyCapturedPage(url: record.url.flatMap { URL(string: $0) }, extensionID: record.extensionID,
                              in: space, availability: availability)
@@ -4083,7 +4060,7 @@ class TabStore {
     /// (a restore, a menu validation, a drop, a reopen).
     ///
     /// Classification is a hot path — validating Reopen Closed Tab scans up to
-    /// 100 records, and drop validation runs per mouse move — and each
+    /// 100 closed-tab records, and drop validation runs per mouse move — and each
     /// classification otherwise opens two read transactions. Behaviour is
     /// unchanged: nothing installs, enables or disables an extension in the
     /// middle of one of these operations. Ordinary URLs never touch the database.
@@ -4240,36 +4217,31 @@ class TabStore {
 
     @discardableResult
     func reopenClosedTab(in space: Space) -> BrowserTab? {
-        let spaceIDString = space.id.uuidString
-
         // The most recent record of this space that can be reopened now. An
         // extension page (TASK-24) is judged by its saved extension id: one whose
         // extension has been uninstalled since can never load again and is
         // discarded; one whose extension is disabled is skipped but *kept*, so
-        // it can be reopened after the extension is enabled again.
-        var candidate: (index: Int, record: ClosedTabRecord, page: PersistedExtensionPage)?
-        var index = 0
+        // it can be reopened after the extension is enabled again. The scan reads
+        // blob-free summaries; only the chosen record's full row is fetched.
+        var candidate: (id: Int64, page: PersistedExtensionPage)?
         let availability = ExtensionAvailability(appDB: appDB)
-        scan: while index < closedTabStack.count {
-            let record = closedTabStack[index]
-            guard record.spaceID == spaceIDString else { index += 1; continue }
-            let page = closedTabPage(record, in: space, availability: availability)
+        scan: for summary in closedTabRecords(in: space) {
+            let page = closedTabPage(summary, in: space, availability: availability)
             switch page {
             case .unavailable:
-                closedTabStack.remove(at: index)
-                appDB.deleteClosedTab(tabID: record.tabID)
+                appDB.deleteClosedTab(id: summary.id)
             case .disabled:
-                index += 1
+                continue
             case .notExtensionPage, .restorable:
-                candidate = (index, record, page)
+                candidate = (summary.id, page)
                 break scan
             }
         }
-        guard let (stackIndex, record, page) = candidate else { return nil }
-        closedTabStack.remove(at: stackIndex)
-        // By tab id rather than popping the space's newest row: skipped records
+        guard let (recordID, page) = candidate,
+              let record = appDB.closedTab(id: recordID) else { return nil }
+        // By row id rather than popping the space's newest row: skipped records
         // may sit above this one.
-        appDB.deleteClosedTab(tabID: record.tabID)
+        appDB.deleteClosedTab(id: recordID)
 
         // The candidate is an ordinary page or a restorable one, so this builds a
         // tab; an extension page lands on its live origin (`restoredTab`).

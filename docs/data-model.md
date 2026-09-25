@@ -132,7 +132,7 @@ Favorites-bar tiles. Per **profile**, not per space: every space of the profile 
 
 Stack of closed tabs for Reopen Closed Tab (Cmd+Shift+T). Records are per space; incognito tabs are never recorded. The newest record has the highest `id`.
 
-Capped at **100 rows across all spaces** (`AppDatabase.closedTabCap`, lowest `id` deleted first). `TabStore` also keeps an in-memory mirror (`closedTabStack`), loaded in full at launch and trimmed to the same cap. See TASK-116..118 for planned changes (DB-only stack, `closedAt`, retention tied to history).
+Capped at **100 rows across all spaces** (`AppDatabase.closedTabCap`, lowest `id` deleted first). The table is the only store — nothing is loaded at launch and there is no in-memory mirror (TASK-117). Menu validation and the Reopen Closed Tab scan read blob-free `ClosedTabSummary` rows through the `closedTab_on_spaceID_id` index on `(spaceID, id)`; only the reopened row's `interactionState` is read. Undoing Delete Space re-inserts the space's rows with their original ids, keeping the reopen order. See TASK-116/118 for planned changes (`closedAt`, retention tied to history).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -303,6 +303,7 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 | v12 | `webKitStorageIdentifier` (TASK-36) |
 | v13 | Data-only: drop pre-TASK-25 `nativeMessaging` denials (TASK-44) |
 | v14 | `externalAppPermission` (TASK-84) |
+| v15 | index `closedTab(spaceID, id)` (TASK-117) |
 
 ### Persistence Strategy
 
@@ -446,7 +447,7 @@ The database records are plain structs. The live in-memory model uses richer cla
 | `Favorite` | Favorites-bar tile (per profile) | `url`, `title`, `sortOrder`; `tab: BrowserTab?` (nil = dormant) |
 | `Profile` | Settings + website data | `favorites: [Favorite]`, `isIncognito`, `lazy var dataStore: WKWebsiteDataStore` (persistent per profile, or non-persistent) |
 
-`TabStore.closedTabStack: [ClosedTabRecord]` mirrors the `closedTab` table in memory (see above).
+Closed-tab records are not held in memory; `TabStore.closedTabRecords(in:)` queries the `closedTab` table (see above).
 
 ### Record <-> Model Conversion
 

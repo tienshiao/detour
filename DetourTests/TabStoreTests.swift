@@ -555,10 +555,10 @@ final class TabStoreTests: XCTestCase {
 
         inUndoGroup(store) { store.closeTab(id: tab.id, in: space, archivedAt: archivedAt) }
 
-        let record = try XCTUnwrap(db.loadClosedTabs().first { $0.tabID == tab.id.uuidString })
+        let record = try XCTUnwrap(db.closedTabSummaries().first { $0.tabID == tab.id.uuidString })
         XCTAssertEqual(record.archivedAt, archivedAt.timeIntervalSince1970,
                        "a sidebar Archive Tab stamps the record as archived")
-        XCTAssertEqual(store.closedTabStack.first?.archivedAt, archivedAt.timeIntervalSince1970)
+        XCTAssertEqual(store.closedTabRecords(in: space).first?.archivedAt, archivedAt.timeIntervalSince1970)
         XCTAssertTrue(store.undoManager.canUndo, "a manual archive is undoable like a close")
         XCTAssertEqual(store.undoManager.undoActionName, "Archive Tab", "and is undone under its own name")
     }
@@ -573,13 +573,13 @@ final class TabStoreTests: XCTestCase {
         inUndoGroup(store) { store.closeTab(id: tab.id, in: space, archivedAt: archivedAt) }
         store.undoManager.undo()
         XCTAssertEqual(space.tabs.count, 2, "undo restores the archived tab")
-        XCTAssertFalse(db.loadClosedTabs().contains { $0.tabID == tab.id.uuidString })
+        XCTAssertFalse(db.closedTabSummaries().contains { $0.tabID == tab.id.uuidString })
         XCTAssertTrue(store.undoManager.canRedo)
 
         store.undoManager.redo()
 
         XCTAssertEqual(space.tabs.map(\.id), [other.id], "redo closes the restored tab again")
-        let record = try XCTUnwrap(db.loadClosedTabs().first)
+        let record = try XCTUnwrap(db.closedTabSummaries().first)
         XCTAssertEqual(record.archivedAt, archivedAt.timeIntervalSince1970,
                        "a redone archive is still an archive, not a plain close")
     }
@@ -602,7 +602,7 @@ final class TabStoreTests: XCTestCase {
         store.archiveStaleTabs(now: now)
 
         XCTAssertEqual(space.tabs.map(\.id), [fresh.id], "only the stale tab is archived")
-        let record = try XCTUnwrap(db.loadClosedTabs().first { $0.tabID == stale.id.uuidString })
+        let record = try XCTUnwrap(db.closedTabSummaries().first { $0.tabID == stale.id.uuidString })
         XCTAssertEqual(record.archivedAt, now.timeIntervalSince1970)
         XCTAssertFalse(store.undoManager.canUndo, "the archive sweep must not register an undo")
     }
@@ -615,7 +615,7 @@ final class TabStoreTests: XCTestCase {
 
         inUndoGroup(store) { store.closeTab(id: tab.id, in: space) }
 
-        let record = try XCTUnwrap(db.loadClosedTabs().first { $0.tabID == tab.id.uuidString })
+        let record = try XCTUnwrap(db.closedTabSummaries().first { $0.tabID == tab.id.uuidString })
         XCTAssertNil(record.archivedAt, "Cmd+W / Close Tab is not an archive")
         XCTAssertTrue(store.undoManager.canUndo)
         XCTAssertEqual(store.undoManager.undoActionName, "Close Tab")
@@ -630,8 +630,93 @@ final class TabStoreTests: XCTestCase {
 
         inUndoGroup(store) { store.closeTab(id: tab.id, in: space, archivedAt: Date()) }
 
-        XCTAssertFalse(db.loadClosedTabs().contains { $0.tabID == tab.id.uuidString })
-        XCTAssertFalse(store.closedTabStack.contains { $0.tabID == tab.id.uuidString })
+        XCTAssertFalse(db.closedTabSummaries().contains { $0.tabID == tab.id.uuidString })
+        XCTAssertFalse(store.closedTabRecords(in: space).contains { $0.tabID == tab.id.uuidString })
+    }
+
+    // MARK: - Closed-tab records live in the database only (TASK-117)
+
+    private func makeTab(_ url: String, spaceID: UUID) -> BrowserTab {
+        BrowserTab(id: UUID(), title: url, url: URL(string: url), faviconURL: nil,
+                   cachedInteractionState: nil, spaceID: spaceID)
+    }
+
+    func testDeleteSpaceUndoKeepsReopenOrder() throws {
+        let (db, store, space) = try makeArchiveFixture()
+        let profileID = try XCTUnwrap(space.profile).id
+        var otherSpace: Space?
+        inUndoGroup(store) {
+            otherSpace = store.addSpace(name: "Other", emoji: "🧪", colorHex: "007AFF", profileID: profileID)
+        }
+        let other = try XCTUnwrap(otherSpace)
+        store.undoManager.removeAllActions()
+        let a = makeTab("https://a.example/", spaceID: space.id)
+        let b = makeTab("https://b.example/", spaceID: space.id)
+        let keep = makeTab("https://keep.example/", spaceID: space.id)
+        space.tabs.append(contentsOf: [a, b, keep])
+        let elsewhere = makeTab("https://elsewhere.example/", spaceID: other.id)
+        let otherKeep = makeTab("https://other-keep.example/", spaceID: other.id)
+        other.tabs.append(contentsOf: [elsewhere, otherKeep])
+
+        inUndoGroup(store) { store.closeTab(id: a.id, in: space) }
+        inUndoGroup(store) { store.closeTab(id: b.id, in: space) }
+        inUndoGroup(store) { store.deleteSpace(id: space.id) }
+        XCTAssertTrue(db.closedTabSummaries(spaceID: space.id.uuidString).isEmpty,
+                      "precondition: Delete Space purges the space's closed-tab records")
+        // Closed while the space is deleted: its row gets a higher id than A's and B's.
+        inUndoGroup(store) { store.closeTab(id: elsewhere.id, in: other) }
+
+        store.undoManager.undo()  // the Close Tab in the other space
+        store.undoManager.undo()  // Delete Space
+        let restored = try XCTUnwrap(store.space(withID: space.id))
+
+        XCTAssertEqual(store.closedTabRecords(in: restored).map(\.url), ["https://b.example/", "https://a.example/"])
+        XCTAssertEqual(store.reopenClosedTab(in: restored)?.url?.absoluteString, "https://b.example/",
+                       "the newest close reopens first, as before the delete")
+        XCTAssertEqual(store.reopenClosedTab(in: restored)?.url?.absoluteString, "https://a.example/")
+        XCTAssertNil(store.reopenClosedTab(in: restored))
+    }
+
+    func testReopenReadsOnlyTheChosenRecordsFullRow() throws {
+        let (_, store, space) = try makeArchiveFixture()
+        let tabs = ["https://a.example/", "https://b.example/", "https://c.example/", "https://keep.example/"]
+            .map { makeTab($0, spaceID: space.id) }
+        space.tabs.append(contentsOf: tabs)
+        for tab in tabs.dropLast() { inUndoGroup(store) { store.closeTab(id: tab.id, in: space) } }
+
+        AppDatabase.resetReadCounts()
+        XCTAssertTrue(store.canReopenClosedTab(in: space))
+        let reopened = store.reopenClosedTab(in: space)
+
+        XCTAssertEqual(reopened?.url?.absoluteString, "https://c.example/")
+        XCTAssertEqual(AppDatabase.readCount(AppDatabase.closedTabReadLabel), 1,
+                       "only the reopened record's full row (and blob) is read")
+        XCTAssertEqual(AppDatabase.readCount(AppDatabase.closedTabsForSpaceReadLabel), 0)
+        XCTAssertEqual(AppDatabase.readCount(AppDatabase.closedTabSummariesReadLabel), 2,
+                       "validation and the reopen scan each read blob-free summaries once")
+    }
+
+    func testLaunchLoadsNoClosedTabRecordsAndReadsThemFromTheDatabase() throws {
+        let (db, store, space) = try makeArchiveFixture()
+        let tabs = ["https://a.example/", "https://b.example/", "https://keep.example/"]
+            .map { makeTab($0, spaceID: space.id) }
+        space.tabs.append(contentsOf: tabs)
+        for tab in tabs.dropLast() { inUndoGroup(store) { store.closeTab(id: tab.id, in: space) } }
+        store.saveNow()
+
+        AppDatabase.resetReadCounts()
+        let relaunched = TabStore(appDB: db)
+        XCTAssertNotNil(relaunched.restoreSession())
+        XCTAssertEqual(AppDatabase.readCount(AppDatabase.closedTabSummariesReadLabel), 0,
+                       "launch reads no closed-tab records")
+        XCTAssertEqual(AppDatabase.readCount(AppDatabase.closedTabReadLabel), 0)
+        XCTAssertEqual(AppDatabase.readCount(AppDatabase.closedTabsForSpaceReadLabel), 0)
+
+        let restoredSpace = try XCTUnwrap(relaunched.space(withID: space.id))
+        XCTAssertEqual(relaunched.closedTabRecords(in: restoredSpace).map(\.url),
+                       ["https://b.example/", "https://a.example/"])
+        XCTAssertTrue(relaunched.canReopenClosedTab(in: restoredSpace))
+        XCTAssertEqual(relaunched.reopenClosedTab(in: restoredSpace)?.url?.absoluteString, "https://b.example/")
     }
 
     // MARK: - Session-less launch (TASK-32/TASK-33)

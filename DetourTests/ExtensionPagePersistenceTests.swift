@@ -414,7 +414,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
         // Reopen skips the disabled extension's closed tab but keeps it.
         XCTAssertFalse(store2.canReopenClosedTab(in: space2))
         XCTAssertNil(store2.reopenClosedTab(in: space2))
-        XCTAssertEqual(store2.closedTabStack.map(\.url), [closedURL.absoluteString])
+        XCTAssertEqual(store2.closedTabRecords(in: space2).map(\.url), [closedURL.absoluteString])
 
         // A dormant tile of the disabled extension cannot be opened: a tab on its
         // pending origin would wake blank and be dropped at the next restore, so

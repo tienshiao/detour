@@ -224,7 +224,7 @@ final class AppDatabaseTests: XCTestCase {
             db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t\(i)", spaceID: "s1", url: nil, title: "Tab \(i)", faviconURL: nil, interactionState: nil, sortOrder: 0))
         }
 
-        let all = db.loadClosedTabs()
+        let all = db.closedTabSummaries()
         XCTAssertEqual(all.count, 100)
 
         // The oldest 5 (t1-t5) should have been trimmed; most recent should be t105
@@ -240,10 +240,58 @@ final class AppDatabaseTests: XCTestCase {
 
         db.deleteClosedTabs(spaceID: "s1")
 
-        let all = db.loadClosedTabs()
+        let all = db.closedTabSummaries()
         XCTAssertEqual(all.count, 1)
         XCTAssertEqual(all.first?.tabID, "t2")
         XCTAssertEqual(all.first?.spaceID, "s2")
+    }
+
+    // MARK: - Closed tabs read from the database only (TASK-117)
+
+    func testClosedTabSpaceIndexExists() throws {
+        let db = try makeDatabase()
+        let names = try db.dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'closedTab'")
+        }
+        XCTAssertTrue(names.contains("closedTab_on_spaceID_id"))
+    }
+
+    func testClosedTabSummariesAreNewestFirstPerSpaceAndFullRowCarriesTheBlob() throws {
+        let db = try makeDatabase()
+        let blob = Data("state".utf8)
+        db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: "https://a/", title: "A", faviconURL: nil, interactionState: blob, sortOrder: 0))
+        db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t2", spaceID: "s2", url: nil, title: "B", faviconURL: nil, interactionState: nil, sortOrder: 0))
+        db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t3", spaceID: "s1", url: nil, title: "C", faviconURL: nil, interactionState: nil, sortOrder: 1, archivedAt: 42, extensionID: "ext"))
+
+        let s1 = db.closedTabSummaries(spaceID: "s1")
+        XCTAssertEqual(s1.map(\.tabID), ["t3", "t1"])
+        XCTAssertEqual(s1.first?.archivedAt, 42)
+        XCTAssertEqual(s1.first?.extensionID, "ext")
+        XCTAssertEqual(db.closedTabSummaries().map(\.tabID), ["t3", "t2", "t1"])
+
+        let full = try XCTUnwrap(db.closedTab(id: try XCTUnwrap(s1.last).id))
+        XCTAssertEqual(full.tabID, "t1")
+        XCTAssertEqual(full.interactionState, blob)
+
+        db.deleteClosedTab(id: full.id!)
+        XCTAssertNil(db.closedTab(id: full.id!))
+        XCTAssertEqual(db.closedTabSummaries(spaceID: "s1").map(\.tabID), ["t3"])
+    }
+
+    func testInsertClosedTabsKeepsOriginalIds() throws {
+        let db = try makeDatabase()
+        db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: nil, title: "1", faviconURL: nil, interactionState: nil, sortOrder: 0))
+        db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t2", spaceID: "s1", url: nil, title: "2", faviconURL: nil, interactionState: nil, sortOrder: 0))
+        let snapshot = db.closedTabs(spaceID: "s1")
+        XCTAssertEqual(snapshot.map(\.tabID), ["t1", "t2"], "oldest first")
+        db.deleteClosedTabs(spaceID: "s1")
+        db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t3", spaceID: "s2", url: nil, title: "3", faviconURL: nil, interactionState: nil, sortOrder: 0))
+
+        db.insertClosedTabs(snapshot)
+
+        XCTAssertEqual(db.closedTabs(spaceID: "s1").map(\.id), snapshot.map(\.id))
+        XCTAssertEqual(db.closedTabSummaries().map(\.tabID), ["t3", "t2", "t1"],
+                       "restored rows keep their place in the global newest-first order")
     }
 
     // MARK: - Profile deletion with FK constraints

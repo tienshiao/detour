@@ -156,7 +156,6 @@ BrowserWindowController (one per window)
 TabStore.shared
   +-- Space[]                          Each with tabs[], pinnedTabs[], pinnedFolders[]
   +-- Profile[]                        Settings + WKWebsiteDataStore
-  +-- closedTabStack[]                 Reopenable closed tabs
   +-- TabStoreObserver[] (weak)        Window controllers
   +-- AppDatabase.shared               Session persistence
   +-- HistoryDatabase.shared           Visit recording

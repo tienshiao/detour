@@ -288,7 +288,7 @@ final class SplitTabTests: XCTestCase {
         store.closeSplitGroup(groupID: groupID, in: space)
 
         XCTAssertEqual(space.tabs.map(\.id), [tabs[0].id, tabs[3].id])
-        XCTAssertEqual(store.closedTabStack.filter { $0.spaceID == space.id.uuidString }.count, 2)
+        XCTAssertEqual(store.closedTabRecords(in: space).count, 2)
 
         store.undoManager.undo()
 
@@ -298,7 +298,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNotNil(restoredLeft.splitGroupID)
         XCTAssertEqual(restoredLeft.splitGroupID, restoredRight.splitGroupID)
         XCTAssertEqual(restoredLeft.splitFraction, 0.3)
-        XCTAssertEqual(store.closedTabStack.filter { $0.spaceID == space.id.uuidString }.count, 0,
+        XCTAssertEqual(store.closedTabRecords(in: space).count, 0,
                        "undo must remove both closed-tab records so Cmd+Shift+T can't duplicate")
     }
 
@@ -370,7 +370,7 @@ final class SplitTabTests: XCTestCase {
 
         XCTAssertEqual(space.tabs.map(\.id), [anchor.id])
         XCTAssertNil(anchor.splitGroupID)
-        XCTAssertTrue(store.closedTabStack.isEmpty,
+        XCTAssertTrue(store.closedTabRecords(in: space).isEmpty,
                       "undoing Open in Split must not leave a phantom closed-tab record")
     }
 

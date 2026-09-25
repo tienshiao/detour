@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-25 06:09'
+updated_date: '2026-09-25 06:36'
 labels:
   - tabs
   - privacy
@@ -43,3 +44,13 @@ Open design point: the per-URL deletion case (deleting one history row / all vis
 - [ ] #6 Optional blob stripping of old records (reopen by URL only) is decided and recorded in notes
 - [ ] #7 Unit tests cover expiry, range deletion, per-URL deletion, and the cap change
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Sep 24 2026 review (on hold by user decision; 115/117/116 proceed first). Design notes for when it resumes:
+- Coupling point: TabStore.historyDidDelete(_:spaceIDs:requestedAt:...) already receives HistoryDeletionResult.affectedURLs from HistoryPageBridge; delete closedTab rows there (AppDatabase, not HistoryDatabase — the two databases must stay independent). Range for allVisitsOfURL deletes = the bridge's window applied to closedAt; id-only deletes drop matching-url rows in scope with no range.
+- Per-URL matching: current url only. The interactionState blob is an opaque WebKit archive; live tabs' back/forward lists also survive history deletion, so this is consistent.
+- Cap: replace the row cap with retention (shared 90-day constant with expireOldVisits) plus blob stripping — keep interactionState only for the newest N (≈100, today's reopen depth) rows per space, strip older rows to url/title/favicon at push time via the (spaceID,id) index. Row count is then bounded by retention; no arbitrary per-space backstop needed. Rows without blobs reopen by URL only.
+- Orphan sweep: DELETE FROM closedTab WHERE spaceID NOT IN (live spaces ∪ spaceIDsDeletedThisSession), from the same deferred launch block as sweepHistoryOfDeletedSpaces. No FK to space: saveSession deletes and re-inserts every space row, so a cascade would wipe the table on each save.
+<!-- SECTION:NOTES:END -->

@@ -107,7 +107,7 @@ final class ExtensionPageUndoTests: XCTestCase {
 
         f.store.undoManager.removeAllActions()
         f.store.closeTab(id: page.id, in: f.space)
-        XCTAssertEqual(f.store.closedTabStack.first?.extensionID, f.ext.id)
+        XCTAssertEqual(f.store.closedTabRecords(in: f.space).first?.extensionID, f.ext.id)
 
         f.store.undoManager.undo()
 
@@ -119,14 +119,14 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertTrue(restored.isSleeping, "an extension page comes back sleeping, for wake to build from its context")
         XCTAssertNil(restored.webView)
         XCTAssertFalse(f.profile.isAwaitingExtensionContext(url))
-        XCTAssertTrue(f.store.closedTabStack.isEmpty, "the undo consumes the closed-tab record")
-        XCTAssertTrue(f.db.loadClosedTabs().isEmpty)
+        XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty, "the undo consumes the closed-tab record")
+        XCTAssertTrue(f.db.closedTabSummaries().isEmpty)
 
         // Redo closes it again, recording the id again.
         XCTAssertTrue(f.store.undoManager.canRedo)
         f.store.undoManager.redo()
         XCTAssertEqual(f.space.tabs.map(\.id), [web.id])
-        XCTAssertEqual(f.store.closedTabStack.map(\.extensionID), [f.ext.id])
+        XCTAssertEqual(f.store.closedTabRecords(in: f.space).map(\.extensionID), [f.ext.id])
     }
 
     func testUndoCloseTabAfterAContextReloadUsesTheNewBase() async throws {
@@ -148,7 +148,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(restored.url?.query, "q=1")
         XCTAssertEqual(restored.url?.fragment, "frag")
         XCTAssertTrue(restored.isSleeping)
-        XCTAssertTrue(f.store.closedTabStack.isEmpty)
+        XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty)
     }
 
     /// Enabled but with no loaded context at undo time (between an unload and
@@ -191,9 +191,9 @@ final class ExtensionPageUndoTests: XCTestCase {
 
         XCTAssertTrue(f.space.tabs.isEmpty, "no dead tab")
         XCTAssertFalse(f.store.undoManager.canRedo, "nothing was restored, so there is nothing to redo")
-        XCTAssertEqual(f.store.closedTabStack.map(\.url), [url.absoluteString],
+        XCTAssertEqual(f.store.closedTabRecords(in: f.space).map(\.url), [url.absoluteString],
                        "the record stays for a reopen after a later enable")
-        XCTAssertEqual(f.db.loadClosedTabs().count, 1)
+        XCTAssertEqual(f.db.closedTabSummaries().count, 1)
         XCTAssertFalse(f.store.canReopenClosedTab(in: f.space))
     }
 
@@ -213,7 +213,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertTrue(f.space.tabs.isEmpty, "no dead tab")
         XCTAssertFalse(f.store.undoManager.canRedo)
         XCTAssertNil(f.store.reopenClosedTab(in: f.space), "Reopen Closed Tab applies TASK-24's rules to the record")
-        XCTAssertTrue(f.store.closedTabStack.isEmpty, "and discards it")
+        XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty, "and discards it")
     }
 
     func testUndoCloseTabOfAnOrdinaryTabIsUnchanged() async throws {
@@ -227,7 +227,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         f.store.undoManager.removeAllActions()
         f.store.closeTab(id: tabs[2].id, in: f.space)
         XCTAssertNil(tabs[1].splitGroupID)
-        XCTAssertNil(f.store.closedTabStack.first?.extensionID)
+        XCTAssertNil(f.store.closedTabRecords(in: f.space).first?.extensionID)
 
         f.store.undoManager.undo()
 
@@ -239,8 +239,8 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertNotNil(tabs[1].splitGroupID, "and rejoins its split partner")
         XCTAssertEqual(restored.splitGroupID, tabs[1].splitGroupID)
         XCTAssertEqual(restored.splitFraction, 0.4)
-        XCTAssertTrue(f.store.closedTabStack.isEmpty)
-        XCTAssertTrue(f.db.loadClosedTabs().isEmpty)
+        XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty)
+        XCTAssertTrue(f.db.closedTabSummaries().isEmpty)
         XCTAssertTrue(f.store.undoManager.canRedo)
     }
 
@@ -272,7 +272,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(f.space.tabs[1].splitFraction, 0.3)
         XCTAssertFalse(f.space.tabs[0].isSleeping)
         XCTAssertTrue(f.space.tabs[1].isSleeping)
-        XCTAssertTrue(f.store.closedTabStack.isEmpty)
+        XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty)
 
         f.store.undoManager.redo()
         XCTAssertTrue(f.space.tabs.isEmpty, "redo closes both again")
@@ -304,7 +304,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(f.space.tabs.map(\.url), [before.url, webURL], "only the ordinary member comes back")
         XCTAssertNil(f.space.tabs[1].splitGroupID, "alone, without a split group")
         XCTAssertNil(f.space.tabs[1].splitFraction)
-        XCTAssertEqual(f.store.closedTabStack.map(\.url), [extURL.absoluteString],
+        XCTAssertEqual(f.store.closedTabRecords(in: f.space).map(\.url), [extURL.absoluteString],
                        "the web member's record is consumed, the extension member's is left alone")
 
         XCTAssertTrue(f.store.undoManager.canRedo)
@@ -332,7 +332,7 @@ final class ExtensionPageUndoTests: XCTestCase {
 
         XCTAssertTrue(f.space.tabs.isEmpty)
         XCTAssertFalse(f.store.undoManager.canRedo)
-        XCTAssertEqual(f.store.closedTabStack.count, 2)
+        XCTAssertEqual(f.store.closedTabRecords(in: f.space).count, 2)
     }
 
     // MARK: - Pinned entry Close Tab
