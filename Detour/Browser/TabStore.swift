@@ -4074,8 +4074,8 @@ class TabStore {
     /// database at most once each and then held for the length of one operation
     /// (a restore, a menu validation, a drop, a reopen).
     ///
-    /// Classification is a hot path — validating Reopen Closed Tab scans up to
-    /// 100 closed-tab records, and drop validation runs per mouse move — and each
+    /// Classification is a hot path — validating Reopen Closed Tab scans every
+    /// plain-close record of the space, and drop validation runs per mouse move — and each
     /// classification otherwise opens two read transactions. Behaviour is
     /// unchanged: nothing installs, enables or disables an extension in the
     /// middle of one of these operations. Ordinary URLs never touch the database.

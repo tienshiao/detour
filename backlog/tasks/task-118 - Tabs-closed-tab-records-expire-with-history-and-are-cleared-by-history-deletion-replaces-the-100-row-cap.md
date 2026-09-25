@@ -2,11 +2,11 @@
 id: TASK-118
 title: >-
   Tabs: closed-tab records expire with history and are cleared by history
-  deletion (replaces the 100-row cap)
+  deletion
 status: To Do
 assignee: []
 created_date: '2026-09-25 06:09'
-updated_date: '2026-09-25 06:36'
+updated_date: '2026-09-25 07:17'
 labels:
   - tabs
   - privacy
@@ -53,4 +53,6 @@ Sep 24 2026 review (on hold by user decision; 115/117/116 proceed first). Design
 - Per-URL matching: current url only. The interactionState blob is an opaque WebKit archive; live tabs' back/forward lists also survive history deletion, so this is consistent.
 - Cap: replace the row cap with retention (shared 90-day constant with expireOldVisits) plus blob stripping — keep interactionState only for the newest N (≈100, today's reopen depth) rows per space, strip older rows to url/title/favicon at push time via the (spaceID,id) index. Row count is then bounded by retention; no arbitrary per-space backstop needed. Rows without blobs reopen by URL only.
 - Orphan sweep: DELETE FROM closedTab WHERE spaceID NOT IN (live spaces ∪ spaceIDsDeletedThisSession), from the same deferred launch block as sweepHistoryOfDeletedSpaces. No FK to space: saveSession deletes and re-inserts every space row, so a cascade would wipe the table on each save.
+
+Sep 25 2026: the user removed the row cap outright (see the 'remove the closed-tab row cap' task) — AC #5 is moot; the Archived Tabs panel (TASK-119) gets a Clear Archive action. When this task resumes, retention/blob stripping is the only automatic bound.
 <!-- SECTION:NOTES:END -->

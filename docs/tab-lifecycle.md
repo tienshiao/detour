@@ -147,7 +147,7 @@ TabStore.shared.closeTab(id: tabID, in: space)
 2. If not incognito, archive to the closed tab stack:
    - Serialize current interaction state
    - Create `ClosedTabRecord` with all metadata
-   - Push to DB (capped per kind at 100 plain closes and 100 archived records, FIFO eviction within the kind — TASK-116; the table is the only store — TASK-117)
+   - Push to DB (no row cap — TASK-120; the table is the only store — TASK-117)
 3. Remove Combine subscriptions for this tab
 4. Notify observers via `tabStoreDidRemoveTab`
 5. Schedule save

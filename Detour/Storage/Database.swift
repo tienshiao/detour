@@ -300,24 +300,17 @@ struct AppDatabase {
 
     // MARK: - Closed Tab Stack
 
-    /// Applies per kind: at most 100 plain closes and 100 archived records
-    /// (archivedAt set), across all spaces, so an archive sweep never evicts a
-    /// tab the user closed and a run of closes never evicts archived records.
-    /// The closed side is the Cmd+Shift+T depth; the archived side is what the
-    /// Archived Tabs panel (TASK-119) lists, until TASK-118 replaces the cap
-    /// with retention (TASK-116).
-    private static let closedTabCap = 100
-
     /// `performRead` labels for the closed-tab reads, so tests can pin down that
     /// launch reads none and a reopen reads one full row (TASK-117).
     static let closedTabSummariesReadLabel = "load closed tab summaries"
     static let closedTabReadLabel = "load closed tab"
     static let closedTabsForSpaceReadLabel = "load closed tabs for space"
 
+    /// No row cap (TASK-120): records stay until the user clears them (Clear
+    /// Archive, TASK-119) or retention removes them (TASK-118).
     func pushClosedTab(_ record: ClosedTabRecord) {
         performWrite("push closed tab") { db in
             try record.insert(db)
-            try Self.trimClosedTabs(db, archived: record.archivedAt != nil)
         }
     }
 
@@ -389,22 +382,6 @@ struct AppDatabase {
             for record in records {
                 try record.insert(db)
             }
-            try Self.trimClosedTabs(db, archived: false)
-            try Self.trimClosedTabs(db, archived: true)
-        }
-    }
-
-    /// Evicts the oldest records of one kind (plain closes, or archived records)
-    /// beyond `closedTabCap`; the other kind is left alone (TASK-116).
-    private static func trimClosedTabs(_ db: GRDB.Database, archived: Bool) throws {
-        let kindFilter = archived ? "archivedAt IS NOT NULL" : "archivedAt IS NULL"
-        let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM closedTab WHERE \(kindFilter)") ?? 0
-        if count > closedTabCap {
-            let excess = count - closedTabCap
-            try db.execute(
-                sql: "DELETE FROM closedTab WHERE id IN (SELECT id FROM closedTab WHERE \(kindFilter) ORDER BY id ASC LIMIT ?)",
-                arguments: [excess]
-            )
         }
     }
 

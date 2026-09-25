@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-25 06:35'
-updated_date: '2026-09-25 06:43'
+updated_date: '2026-09-25 07:15'
 labels:
   - tabs
 dependencies:
@@ -30,4 +30,5 @@ Once Reopen Closed Tab skips archived records (TASK-116), archived tabs are only
 - [ ] #4 Records without closedAt (pre-TASK-116) still list, sorted by id, in an undated group
 - [ ] #5 Incognito spaces never show the panel entry point and never appear
 - [ ] #6 Unit tests cover the listing query, search filtering, restore and delete; the panel's row/section layout is pure and unit-tested like SidebarLayout
+- [ ] #7 A 'Clear Archive' button in the panel and a matching menu item delete the space's archived (and closed) records after confirmation; the closed-tab table has no row cap, so this is the user's way to bound it
 <!-- AC:END -->
