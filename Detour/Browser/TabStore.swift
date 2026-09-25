@@ -2329,6 +2329,8 @@ class TabStore {
                 interactionState: stateData,
                 sortOrder: index,
                 archivedAt: archivedAt?.timeIntervalSince1970,
+                // A manual/timer archive's close and archive stamps coincide.
+                closedAt: (archivedAt ?? Date()).timeIntervalSince1970,
                 extensionID: tabExtensionID
             )
             appDB.pushClosedTab(record)
@@ -3092,6 +3094,7 @@ class TabStore {
         }
 
         var snapshots: [MemberSnapshot] = []
+        let closedAt = Date().timeIntervalSince1970  // shared by both members
         for member in members {
             guard let index = space.tabs.firstIndex(where: { $0.id == member.id }) else { continue }
             let snapshot = MemberSnapshot(
@@ -3116,6 +3119,7 @@ class TabStore {
                     interactionState: snapshot.interactionState,
                     sortOrder: index,
                     archivedAt: nil,
+                    closedAt: closedAt,
                     extensionID: snapshot.extensionID
                 )
                 appDB.pushClosedTab(record)
@@ -4029,16 +4033,27 @@ class TabStore {
     // MARK: - Reopen Closed Tab
 
     /// This space's closed-tab records, newest first, without their
-    /// interactionState blobs (TASK-117).
+    /// interactionState blobs (TASK-117) — both plain closes and archived
+    /// records; the listing the Archived Tabs panel (TASK-119) will use.
     func closedTabRecords(in space: Space) -> [ClosedTabSummary] {
         appDB.closedTabSummaries(spaceID: space.id.uuidString)
     }
 
+    /// The records Reopen Closed Tab considers, newest first: plain closes only.
+    /// Archived records (archivedAt set) are skipped so Cmd+Shift+T always brings
+    /// back the tab the user closed, not one the archive timer took; they belong
+    /// to the Archived Tabs panel (TASK-119), and a manual archive is undoable
+    /// via Edit > Undo (TASK-116).
+    private func reopenableClosedTabRecords(in space: Space) -> [ClosedTabSummary] {
+        appDB.closedTabSummaries(spaceID: space.id.uuidString, includeArchived: false)
+    }
+
     func canReopenClosedTab(in space: Space) -> Bool {
-        // Menu validation: one blob-free query of the space's records and one
-        // availability for the whole scan, which can reach every record.
+        // Menu validation: one blob-free query of the space's plain-close records
+        // (archived ones are skipped, TASK-116) and one availability for the whole
+        // scan, which can reach every record.
         let availability = ExtensionAvailability(appDB: appDB)
-        return closedTabRecords(in: space).contains { record in
+        return reopenableClosedTabRecords(in: space).contains { record in
             switch closedTabPage(record, in: space, availability: availability) {
             case .notExtensionPage, .restorable: return true
             case .disabled, .unavailable: return false
@@ -4217,7 +4232,8 @@ class TabStore {
 
     @discardableResult
     func reopenClosedTab(in space: Space) -> BrowserTab? {
-        // The most recent record of this space that can be reopened now. An
+        // The most recent plain-close record of this space that can be reopened
+        // now; archived records are skipped (TASK-116). An
         // extension page (TASK-24) is judged by its saved extension id: one whose
         // extension has been uninstalled since can never load again and is
         // discarded; one whose extension is disabled is skipped but *kept*, so
@@ -4225,7 +4241,7 @@ class TabStore {
         // blob-free summaries; only the chosen record's full row is fetched.
         var candidate: (id: Int64, page: PersistedExtensionPage)?
         let availability = ExtensionAvailability(appDB: appDB)
-        scan: for summary in closedTabRecords(in: space) {
+        scan: for summary in reopenableClosedTabRecords(in: space) {
             let page = closedTabPage(summary, in: space, availability: availability)
             switch page {
             case .unavailable:

@@ -147,7 +147,7 @@ TabStore.shared.closeTab(id: tabID, in: space)
 2. If not incognito, archive to the closed tab stack:
    - Serialize current interaction state
    - Create `ClosedTabRecord` with all metadata
-   - Push to DB (capped at 100 records, FIFO eviction; the table is the only store — TASK-117)
+   - Push to DB (capped per kind at 100 plain closes and 100 archived records, FIFO eviction within the kind — TASK-116; the table is the only store — TASK-117)
 3. Remove Combine subscriptions for this tab
 4. Notify observers via `tabStoreDidRemoveTab`
 5. Schedule save
@@ -158,8 +158,8 @@ TabStore.shared.closeTab(id: tabID, in: space)
 TabStore.shared.reopenClosedTab(in: space)
 ```
 
-1. Find the most recent closed tab record for this space
-2. Remove from stack (both in-memory and DB)
+1. Find the most recent closed tab record for this space, skipping archived records (`archivedAt` set — timer or manual archives), which belong to the Archived Tabs panel (TASK-119, TASK-116)
+2. Remove it from the `closedTab` table
 3. Create a new `BrowserTab` with a **fresh UUID** but the archived state
 4. Insert at the original `sortOrder` position (clamped to current tab count)
 5. Subscribe to the new tab's properties

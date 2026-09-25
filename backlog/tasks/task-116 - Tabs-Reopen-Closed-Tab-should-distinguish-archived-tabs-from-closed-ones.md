@@ -1,10 +1,11 @@
 ---
 id: TASK-116
 title: 'Tabs: Reopen Closed Tab should distinguish archived tabs from closed ones'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-09-25 05:57'
-updated_date: '2026-09-25 06:46'
+updated_date: '2026-09-25 07:10'
 labels:
   - tabs
 dependencies:
@@ -28,14 +29,14 @@ Decision to make first: whether Reopen Closed Tab skips archived records entirel
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The skip-vs-deprioritize behavior is decided and recorded in the task notes
-- [ ] #2 Cmd+Shift+T after closing a tab reopens that tab even if an archive sweep ran after the close
-- [ ] #3 Archived records no longer evict explicitly closed tabs under the cap (e.g. separate caps, or eviction that prefers archived records)
-- [ ] #4 Space-scoped behavior (popClosedTab(spaceID:)) and incognito exclusion are unchanged
-- [ ] #5 Records written before this change (archivedAt NULL for manual archives) keep working
-- [ ] #6 Unit tests cover reopen ordering with mixed closed and archived records, and cap eviction
-- [ ] #7 closedTab gains a closedAt column (migration), set on every closed-tab record — plain close, manual archive, timer archive; existing rows backfill from archivedAt where present, else stay NULL and sort by id
-- [ ] #8 Ordering in the reopen path is unaffected by the column (still newest-first); closedAt is available for time-based retention and display
+- [x] #1 The skip-vs-deprioritize behavior is decided and recorded in the task notes
+- [x] #2 Cmd+Shift+T after closing a tab reopens that tab even if an archive sweep ran after the close
+- [x] #3 Archived records no longer evict explicitly closed tabs under the cap (e.g. separate caps, or eviction that prefers archived records)
+- [x] #4 Space-scoped behavior (popClosedTab(spaceID:)) and incognito exclusion are unchanged
+- [x] #5 Records written before this change (archivedAt NULL for manual archives) keep working
+- [x] #6 Unit tests cover reopen ordering with mixed closed and archived records, and cap eviction
+- [x] #7 closedTab gains a closedAt column (migration), set on every closed-tab record — plain close, manual archive, timer archive; existing rows backfill from archivedAt where present, else stay NULL and sort by id
+- [x] #8 Ordering in the reopen path is unaffected by the column (still newest-first); closedAt is available for time-based retention and display
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -55,4 +56,14 @@ Decisions (AC #1): Reopen Closed Tab SKIPS archived records (archivedAt IS NOT N
 
 <!-- SECTION:NOTES:BEGIN -->
 closedTab currently has no close timestamp: order comes only from the autoincrement id, and only timer-archived rows carry a time (archivedAt). With closedAt present, consider whether archivedAt should become a flag / archive-reason column instead of a second timestamp.
+
+Implemented (Opus subagent). Decision (AC #1): Reopen Closed Tab skips archived records; they stay listed by closedTabRecords(in:) for the Archived Tabs panel (TASK-119) and a manual archive is undoable. Migration v16 adds closedAt (backfilled from archivedAt; tested via migrate(upTo: v15)). closedTabSummaries(spaceID:includeArchived:) drives canReopenClosedTab/reopenClosedTab with includeArchived: false. Cap is per kind (100 closes + 100 archived) in trimClosedTabs(_:archived:); insertClosedTabs trims both. Side effect noted: an archived record of an uninstalled extension page is no longer discarded by the reopen scan (it never sees archived rows) — it ages out under the archived cap or through TASK-119. popClosedTab(spaceID:) still ignores archivedAt but has no production callers. AC #4 coverage: AppDatabaseTests.testPopFiltersBySpaceID, TabStoreTests.testDeleteSpaceUndoKeepsReopenOrder, testIncognitoArchiveWritesNoClosedTabRecord. Targeted suites: 210 tests, 0 failures.
+
+Review (/code-review --fix): no findings, nothing applied. Validation: full DetourTests suite passed (All tests passed, 0 failures).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Reopen Closed Tab (Cmd+Shift+T) and its menu validation now consider only plain-close records; archived records (archivedAt set) are skipped and remain listed for the Archived Tabs panel (TASK-119). Every closedTab row carries closedAt (migration v16, backfilled from archivedAt). The 100-row cap applies per kind (plain closes and archived records separately), so an archive sweep cannot evict the tab the user just closed. Verified with nine new tests (mixed reopen ordering, menu validation, closedAt on all three close paths, per-kind cap eviction, v16 backfill) and the full suite.
+<!-- SECTION:FINAL_SUMMARY:END -->

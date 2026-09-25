@@ -300,6 +300,12 @@ struct AppDatabase {
 
     // MARK: - Closed Tab Stack
 
+    /// Applies per kind: at most 100 plain closes and 100 archived records
+    /// (archivedAt set), across all spaces, so an archive sweep never evicts a
+    /// tab the user closed and a run of closes never evicts archived records.
+    /// The closed side is the Cmd+Shift+T depth; the archived side is what the
+    /// Archived Tabs panel (TASK-119) lists, until TASK-118 replaces the cap
+    /// with retention (TASK-116).
     private static let closedTabCap = 100
 
     /// `performRead` labels for the closed-tab reads, so tests can pin down that
@@ -311,7 +317,7 @@ struct AppDatabase {
     func pushClosedTab(_ record: ClosedTabRecord) {
         performWrite("push closed tab") { db in
             try record.insert(db)
-            try Self.trimClosedTabs(db)
+            try Self.trimClosedTabs(db, archived: record.archivedAt != nil)
         }
     }
 
@@ -328,15 +334,20 @@ struct AppDatabase {
 
     /// Closed-tab rows without their interactionState blobs, newest first —
     /// what menu validation, the reopen scan and listings read (TASK-117).
-    /// `spaceID == nil` lists every space (tests only).
-    func closedTabSummaries(spaceID: String? = nil) -> [ClosedTabSummary] {
+    /// `spaceID == nil` lists every space (tests only). `includeArchived: false`
+    /// leaves out archived records (archivedAt set) — the Reopen Closed Tab scan
+    /// (TASK-116).
+    func closedTabSummaries(spaceID: String? = nil, includeArchived: Bool = true) -> [ClosedTabSummary] {
         performRead(Self.closedTabSummariesReadLabel, default: []) { db in
             var request = ClosedTabSummary.select(
                 Column("id"), Column("tabID"), Column("spaceID"), Column("url"),
                 Column("title"), Column("faviconURL"), Column("sortOrder"),
-                Column("archivedAt"), Column("extensionID"))
+                Column("archivedAt"), Column("closedAt"), Column("extensionID"))
             if let spaceID {
                 request = request.filter(Column("spaceID") == spaceID)
+            }
+            if !includeArchived {
+                request = request.filter(Column("archivedAt") == nil)
             }
             return try request.order(Column("id").desc).fetchAll(db)
         }
@@ -378,16 +389,20 @@ struct AppDatabase {
             for record in records {
                 try record.insert(db)
             }
-            try Self.trimClosedTabs(db)
+            try Self.trimClosedTabs(db, archived: false)
+            try Self.trimClosedTabs(db, archived: true)
         }
     }
 
-    private static func trimClosedTabs(_ db: GRDB.Database) throws {
-        let count = try ClosedTabRecord.fetchCount(db)
+    /// Evicts the oldest records of one kind (plain closes, or archived records)
+    /// beyond `closedTabCap`; the other kind is left alone (TASK-116).
+    private static func trimClosedTabs(_ db: GRDB.Database, archived: Bool) throws {
+        let kindFilter = archived ? "archivedAt IS NOT NULL" : "archivedAt IS NULL"
+        let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM closedTab WHERE \(kindFilter)") ?? 0
         if count > closedTabCap {
             let excess = count - closedTabCap
             try db.execute(
-                sql: "DELETE FROM closedTab WHERE id IN (SELECT id FROM closedTab ORDER BY id ASC LIMIT ?)",
+                sql: "DELETE FROM closedTab WHERE id IN (SELECT id FROM closedTab WHERE \(kindFilter) ORDER BY id ASC LIMIT ?)",
                 arguments: [excess]
             )
         }
@@ -894,6 +909,14 @@ struct AppDatabase {
             // TASK-117: the closed-tab stack is read from the DB only — serve the
             // per-space newest-first scan (menu validation, Reopen Closed Tab).
             try db.create(index: "closedTab_on_spaceID_id", on: "closedTab", columns: ["spaceID", "id"])
+        }
+
+        migrator.registerMigration("v16") { db in
+            // TASK-116: when the tab was closed, on every record. Timer/manual
+            // archives already carried archivedAt; backfill from it. Older plain
+            // closes stay NULL and keep sorting by id.
+            try db.alter(table: "closedTab") { t in t.add(column: "closedAt", .double) }
+            try db.execute(sql: "UPDATE closedTab SET closedAt = archivedAt WHERE archivedAt IS NOT NULL")
         }
 
         return migrator

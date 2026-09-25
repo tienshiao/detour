@@ -634,6 +634,99 @@ final class TabStoreTests: XCTestCase {
         XCTAssertFalse(store.closedTabRecords(in: space).contains { $0.tabID == tab.id.uuidString })
     }
 
+    // MARK: - Reopen skips archived records (TASK-116)
+
+    func testReopenSkipsArchivedRecordsButListingKeepsThem() throws {
+        let (_, store, space) = try makeArchiveFixture()
+        let tabs = ["https://a.example/", "https://b.example/", "https://c.example/", "https://keep.example/"]
+            .map { makeTab($0, spaceID: space.id) }
+        space.tabs.append(contentsOf: tabs)
+        let archivedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        inUndoGroup(store) { store.closeTab(id: tabs[0].id, in: space) }
+        inUndoGroup(store) { store.closeTab(id: tabs[1].id, in: space, archivedAt: archivedAt) }
+        inUndoGroup(store) { store.closeTab(id: tabs[2].id, in: space) }
+
+        XCTAssertEqual(store.reopenClosedTab(in: space)?.url?.absoluteString, "https://c.example/")
+        XCTAssertEqual(store.reopenClosedTab(in: space)?.url?.absoluteString, "https://a.example/",
+                       "the archived B is skipped, never reopened")
+        XCTAssertNil(store.reopenClosedTab(in: space))
+
+        let listed = store.closedTabRecords(in: space)
+        XCTAssertEqual(listed.map(\.url), ["https://b.example/"], "the archived record stays listed")
+        XCTAssertEqual(listed.first?.archivedAt, archivedAt.timeIntervalSince1970)
+    }
+
+    func testCanReopenClosedTabIgnoresArchivedRecords() throws {
+        let (_, store, space) = try makeArchiveFixture()
+        let tabs = ["https://a.example/", "https://b.example/", "https://keep.example/"]
+            .map { makeTab($0, spaceID: space.id) }
+        space.tabs.append(contentsOf: tabs)
+
+        inUndoGroup(store) { store.closeTab(id: tabs[0].id, in: space, archivedAt: Date()) }
+        XCTAssertFalse(store.canReopenClosedTab(in: space), "only an archived record remains")
+
+        inUndoGroup(store) { store.closeTab(id: tabs[1].id, in: space) }
+        XCTAssertTrue(store.canReopenClosedTab(in: space))
+    }
+
+    func testTimerArchiveAfterACloseDoesNotChangeWhatReopens() throws {
+        let (_, store, space) = try makeArchiveFixture()
+        let threshold = try XCTUnwrap(space.profile).archiveThreshold
+        XCTAssertNotEqual(threshold, .never, "precondition: the profile archives")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let closed = makeTab("https://closed.example/", spaceID: space.id)
+        closed.lastDeselectedAt = now.addingTimeInterval(-60)
+        let stale = makeSleepingTab(spaceID: space.id)
+        stale.lastDeselectedAt = now.addingTimeInterval(-threshold.rawValue - 3600)
+        let fresh = makeSleepingTab(spaceID: space.id)
+        fresh.lastDeselectedAt = now.addingTimeInterval(-60)
+        space.tabs.append(contentsOf: [closed, stale, fresh])
+
+        inUndoGroup(store) { store.closeTab(id: closed.id, in: space) }
+        // Outside any undo group: see testTimerArchiveRecordsArchivedAtWithoutUndo.
+        store.archiveStaleTabs(now: now)
+        XCTAssertFalse(space.tabs.contains { $0.id == stale.id }, "precondition: the sweep archived a tab")
+
+        XCTAssertEqual(store.reopenClosedTab(in: space)?.url?.absoluteString, "https://closed.example/",
+                       "Cmd+Shift+T brings back the closed tab, not the one the sweep took later")
+    }
+
+    func testClosedAtIsSetOnCloseManualArchiveAndTimerArchive() throws {
+        let (db, store, space) = try makeArchiveFixture()
+        let threshold = try XCTUnwrap(space.profile).archiveThreshold
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let plain = makeSleepingTab(spaceID: space.id)
+        plain.lastDeselectedAt = now.addingTimeInterval(-60)
+        let manual = makeSleepingTab(spaceID: space.id)
+        manual.lastDeselectedAt = now.addingTimeInterval(-60)
+        let stale = makeSleepingTab(spaceID: space.id)
+        stale.lastDeselectedAt = now.addingTimeInterval(-threshold.rawValue - 3600)
+        let fresh = makeSleepingTab(spaceID: space.id)
+        fresh.lastDeselectedAt = now.addingTimeInterval(-60)
+        space.tabs.append(contentsOf: [plain, manual, stale, fresh])
+        let manualArchivedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let before = Date().timeIntervalSince1970
+        inUndoGroup(store) { store.closeTab(id: plain.id, in: space) }
+        let after = Date().timeIntervalSince1970
+        inUndoGroup(store) { store.closeTab(id: manual.id, in: space, archivedAt: manualArchivedAt) }
+        store.archiveStaleTabs(now: now)
+
+        func record(_ tab: BrowserTab) throws -> ClosedTabSummary {
+            try XCTUnwrap(db.closedTabSummaries().first { $0.tabID == tab.id.uuidString })
+        }
+        let plainClosedAt = try XCTUnwrap(try record(plain).closedAt)
+        XCTAssertGreaterThanOrEqual(plainClosedAt, before)
+        XCTAssertLessThanOrEqual(plainClosedAt, after, "a plain close is stamped now")
+        XCTAssertEqual(try record(manual).closedAt, manualArchivedAt.timeIntervalSince1970,
+                       "a manual archive's closedAt equals its archivedAt")
+        XCTAssertEqual(try record(stale).closedAt, now.timeIntervalSince1970,
+                       "a timer archive is stamped with the sweep's now")
+        XCTAssertEqual(try XCTUnwrap(db.closedTab(id: try record(stale).id)).closedAt, now.timeIntervalSince1970,
+                       "the full row carries closedAt too")
+    }
+
     // MARK: - Closed-tab records live in the database only (TASK-117)
 
     private func makeTab(_ url: String, spaceID: UUID) -> BrowserTab {

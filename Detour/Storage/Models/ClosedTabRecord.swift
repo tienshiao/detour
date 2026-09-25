@@ -13,6 +13,10 @@ struct ClosedTabRecord: Codable, FetchableRecord, PersistableRecord {
     var interactionState: Data?
     var sortOrder: Int
     var archivedAt: Double?
+    /// When the tab was closed (seconds since 1970), set on every record since
+    /// v16 — equal to archivedAt for archives. Rows written before v16 without
+    /// archivedAt stay nil and sort by id (TASK-116).
+    var closedAt: Double?
     /// Extension id of the extension page the record's URL names (TASK-24); nil otherwise.
     var extensionID: String? = nil
 }
@@ -30,5 +34,6 @@ struct ClosedTabSummary: Codable, FetchableRecord, TableRecord {
     var faviconURL: String?
     var sortOrder: Int
     var archivedAt: Double?
+    var closedAt: Double?
     var extensionID: String?
 }

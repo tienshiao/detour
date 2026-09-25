@@ -132,7 +132,7 @@ Favorites-bar tiles. Per **profile**, not per space: every space of the profile 
 
 Stack of closed tabs for Reopen Closed Tab (Cmd+Shift+T). Records are per space; incognito tabs are never recorded. The newest record has the highest `id`.
 
-Capped at **100 rows across all spaces** (`AppDatabase.closedTabCap`, lowest `id` deleted first). The table is the only store — nothing is loaded at launch and there is no in-memory mirror (TASK-117). Menu validation and the Reopen Closed Tab scan read blob-free `ClosedTabSummary` rows through the `closedTab_on_spaceID_id` index on `(spaceID, id)`; only the reopened row's `interactionState` is read. Undoing Delete Space re-inserts the space's rows with their original ids, keeping the reopen order. See TASK-116/118 for planned changes (`closedAt`, retention tied to history).
+Capped **per kind: 100 plain closes and 100 archived records** (`archivedAt` set), across all spaces (`AppDatabase.closedTabCap`, lowest `id` of the inserted row's kind deleted first), so an archive sweep never evicts a closed tab and a run of closes never evicts archived records (TASK-116). Reopen Closed Tab skips archived rows — it always brings back a tab the user closed; archived rows are listed by the Archived Tabs panel (TASK-119), and a manual archive is undoable via Edit > Undo. Manual archives recorded before TASK-115 carry a NULL `archivedAt` and behave as plain closes. The table is the only store — nothing is loaded at launch and there is no in-memory mirror (TASK-117). Menu validation and the Reopen Closed Tab scan read blob-free `ClosedTabSummary` rows through the `closedTab_on_spaceID_id` index on `(spaceID, id)`; only the reopened row's `interactionState` is read. Undoing Delete Space re-inserts the space's rows with their original ids, keeping the reopen order. See TASK-118 for planned retention tied to history.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -144,7 +144,8 @@ Capped at **100 rows across all spaces** (`AppDatabase.closedTabCap`, lowest `id
 | `faviconURL` | TEXT | | Last favicon URL |
 | `interactionState` | BLOB | | Archived interaction state (back/forward list) |
 | `sortOrder` | INTEGER | NOT NULL | Original position in the tab list (reopen inserts there) |
-| `archivedAt` | DOUBLE | | Set when the tab was archived — by the auto-archive timer or the sidebar's "Archive Tab" / "Archive Tabs Below" (TASK-115). NULL for Cmd+W / Close Tab. There is no close timestamp for other records (TASK-116 adds `closedAt`) |
+| `archivedAt` | DOUBLE | | Set when the tab was archived — by the auto-archive timer or the sidebar's "Archive Tab" / "Archive Tabs Below" (TASK-115). NULL for Cmd+W / Close Tab. |
+| `closedAt` | DOUBLE | | When the tab was closed, on every record since v16; earlier plain closes are NULL and sort by id. Equal to `archivedAt` for archives (TASK-116) |
 | `extensionID` | TEXT | | As on `tab` |
 
 #### `download`
@@ -304,6 +305,7 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 | v13 | Data-only: drop pre-TASK-25 `nativeMessaging` denials (TASK-44) |
 | v14 | `externalAppPermission` (TASK-84) |
 | v15 | index `closedTab(spaceID, id)` (TASK-117) |
+| v16 | closedAt on closedTab, backfilled from archivedAt (TASK-116) |
 
 ### Persistence Strategy
 

@@ -294,6 +294,104 @@ final class AppDatabaseTests: XCTestCase {
                        "restored rows keep their place in the global newest-first order")
     }
 
+    // MARK: - Archived vs closed records (TASK-116)
+
+    private func closedRecord(_ tabID: String, spaceID: String = "s1", archivedAt: Double? = nil) -> ClosedTabRecord {
+        ClosedTabRecord(id: nil, tabID: tabID, spaceID: spaceID, url: nil, title: tabID, faviconURL: nil,
+                        interactionState: nil, sortOrder: 0, archivedAt: archivedAt, closedAt: archivedAt)
+    }
+
+    func testClosedTabSummariesCanLeaveOutArchivedRecords() throws {
+        let db = try makeDatabase()
+        db.pushClosedTab(closedRecord("close1"))
+        db.pushClosedTab(closedRecord("arch", archivedAt: 42))
+        db.pushClosedTab(closedRecord("close2"))
+
+        XCTAssertEqual(db.closedTabSummaries(spaceID: "s1", includeArchived: false).map(\.tabID), ["close2", "close1"])
+        XCTAssertEqual(db.closedTabSummaries(spaceID: "s1").map(\.tabID), ["close2", "arch", "close1"])
+        XCTAssertEqual(db.closedTabSummaries(spaceID: "s1").first { $0.tabID == "arch" }?.closedAt, 42)
+    }
+
+    func testArchivedRecordsDoNotEvictPlainClosesUnderTheCap() throws {
+        let db = try makeDatabase()
+        db.pushClosedTab(closedRecord("close"))
+        for i in 1...101 {
+            db.pushClosedTab(closedRecord("a\(i)", spaceID: i.isMultiple(of: 2) ? "s1" : "s2", archivedAt: Double(i)))
+        }
+
+        let all = db.closedTabSummaries()
+        XCTAssertTrue(all.contains { $0.tabID == "close" }, "an archive sweep never evicts a plain close")
+        let archived = all.filter { $0.archivedAt != nil }
+        XCTAssertEqual(archived.count, 100, "archived records are capped on their own")
+        XCTAssertFalse(archived.contains { $0.tabID == "a1" }, "the oldest archived record is evicted")
+    }
+
+    func testPlainClosesDoNotEvictArchivedRecordsUnderTheCap() throws {
+        let db = try makeDatabase()
+        for i in 1...100 {
+            db.pushClosedTab(closedRecord("a\(i)", archivedAt: Double(i)))
+        }
+        db.pushClosedTab(closedRecord("first-close"))
+        XCTAssertEqual(db.closedTabSummaries().count, 101, "100 archived + 1 close: nothing is evicted")
+
+        for i in 1...100 {
+            db.pushClosedTab(closedRecord("c\(i)", spaceID: "s2"))
+        }
+
+        let all = db.closedTabSummaries()
+        XCTAssertEqual(all.filter { $0.archivedAt != nil }.count, 100, "archived records are untouched")
+        let closes = all.filter { $0.archivedAt == nil }
+        XCTAssertEqual(closes.count, 100)
+        XCTAssertFalse(closes.contains { $0.tabID == "first-close" }, "only the oldest plain close is evicted")
+        XCTAssertEqual(closes.last?.tabID, "c1")
+    }
+
+    func testInsertClosedTabsTrimsEachKind() throws {
+        let db = try makeDatabase()
+        for i in 1...100 {
+            db.pushClosedTab(closedRecord("c\(i)", spaceID: "s2"))
+            db.pushClosedTab(closedRecord("a\(i)", spaceID: "s2", archivedAt: Double(i)))
+        }
+        db.pushClosedTab(closedRecord("old-close"))
+        db.pushClosedTab(closedRecord("old-arch", archivedAt: 1))
+        XCTAssertEqual(db.closedTabSummaries().count, 200, "each push evicted the oldest of its kind")
+        // A space whose restored records carry the highest ids.
+        let snapshot = db.closedTabs(spaceID: "s1")
+        db.deleteClosedTabs(spaceID: "s1")
+        db.pushClosedTab(closedRecord("c-new", spaceID: "s2"))
+        db.pushClosedTab(closedRecord("a-new", spaceID: "s2", archivedAt: 500))
+
+        db.insertClosedTabs(snapshot)
+
+        let all = db.closedTabSummaries()
+        XCTAssertEqual(all.filter { $0.archivedAt == nil }.count, 100)
+        XCTAssertEqual(all.filter { $0.archivedAt != nil }.count, 100)
+        XCTAssertTrue(all.contains { $0.tabID == "old-close" } && all.contains { $0.tabID == "old-arch" },
+                      "the re-inserted rows keep their newer places")
+    }
+
+    /// v16 adds closedAt and backfills it from archivedAt; plain closes written
+    /// before it stay NULL and keep sorting by id.
+    func testMigrationV16BackfillsClosedAtFromArchivedAt() throws {
+        let dbQueue = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(dbQueue, upTo: "v15")
+        try dbQueue.write { db in
+            for (tabID, archivedAt) in [("plain", nil), ("archived", 1_800_000_000.0)] as [(String, Double?)] {
+                try db.execute(sql: """
+                    INSERT INTO closedTab (tabID, spaceID, title, sortOrder, archivedAt)
+                    VALUES (?, 's1', 'T', 0, ?)
+                    """, arguments: [tabID, archivedAt])
+            }
+        }
+
+        let db = try AppDatabase(dbQueue: dbQueue)
+
+        let summaries = db.closedTabSummaries(spaceID: "s1")
+        XCTAssertEqual(summaries.map(\.tabID), ["archived", "plain"])
+        XCTAssertEqual(summaries.first { $0.tabID == "archived" }?.closedAt, 1_800_000_000)
+        XCTAssertNil(try XCTUnwrap(summaries.first { $0.tabID == "plain" }).closedAt)
+    }
+
     // MARK: - Profile deletion with FK constraints
 
     private func makeProfile(id: String, name: String) -> ProfileRecord {
