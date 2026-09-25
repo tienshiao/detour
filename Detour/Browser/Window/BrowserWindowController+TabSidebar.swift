@@ -299,22 +299,24 @@ extension BrowserWindowController: TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestArchiveTabAt index: Int) {
         guard let space = activeSpace, index >= 0, index < space.tabs.count else { return }
         let tab = space.tabs[index]
+        let archivedAt = Date()
         if tab.id == selectedTabID {
-            closeTab(at: index, wasSelected: true)
+            closeTab(at: index, wasSelected: true, archivedAt: archivedAt)
         } else {
-            store.closeTab(id: tab.id, in: space)
+            store.closeTab(id: tab.id, in: space, archivedAt: archivedAt)
         }
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestArchiveTabsBelowIndex index: Int) {
         guard let space = activeSpace else { return }
         let tabs = space.tabs
+        let archivedAt = Date()
         for i in stride(from: tabs.count - 1, through: index + 1, by: -1) {
             let tab = tabs[i]
             if tab.id == selectedTabID {
-                closeTab(at: i, wasSelected: true)
+                closeTab(at: i, wasSelected: true, archivedAt: archivedAt)
             } else {
-                store.closeTab(id: tab.id, in: space)
+                store.closeTab(id: tab.id, in: space, archivedAt: archivedAt)
             }
         }
     }

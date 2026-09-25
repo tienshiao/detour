@@ -144,7 +144,7 @@ Capped at **100 rows across all spaces** (`AppDatabase.closedTabCap`, lowest `id
 | `faviconURL` | TEXT | | Last favicon URL |
 | `interactionState` | BLOB | | Archived interaction state (back/forward list) |
 | `sortOrder` | INTEGER | NOT NULL | Original position in the tab list (reopen inserts there) |
-| `archivedAt` | DOUBLE | | Set only when the **auto-archive timer** closed the tab. NULL for every user close, including the sidebar's "Archive Tab" / "Archive Tabs Below" (TASK-115). There is no close timestamp for other records |
+| `archivedAt` | DOUBLE | | Set when the tab was archived — by the auto-archive timer or the sidebar's "Archive Tab" / "Archive Tabs Below" (TASK-115). NULL for Cmd+W / Close Tab. There is no close timestamp for other records (TASK-116 adds `closedAt`) |
 | `extensionID` | TEXT | | As on `tab` |
 
 #### `download`

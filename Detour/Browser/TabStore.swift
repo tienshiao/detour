@@ -2304,7 +2304,12 @@ class TabStore {
     /// page whose context is gone: its origin dies with the context, and a
     /// restore would rebuild it from the space configuration, which cannot load
     /// the scheme at all).
-    func closeTab(id: UUID, in space: Space, archivedAt: Date? = nil, undoable: Bool = true) {
+    ///
+    /// `registersUndo: false` records the tab on the closed-tab stack but
+    /// registers no undo — the automatic archive sweep, which must not pollute
+    /// the undo stack. `archivedAt` only stamps the record (TASK-115): the
+    /// sidebar's "Archive Tab" / "Archive Tabs Below" set it and stay undoable.
+    func closeTab(id: UUID, in space: Space, archivedAt: Date? = nil, undoable: Bool = true, registersUndo: Bool = true) {
         guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = space.tabs[index]
 
@@ -2350,9 +2355,11 @@ class TabStore {
         tab.teardown()
         leaveSplitGroup(tab, in: space)
 
-        // Register undo (skip for automated archival)
-        if undoable, archivedAt == nil {
-            registerUndo(actionName: "Close Tab") { [weak self] in
+        // Register undo (skip for automated archival). A manual archive is
+        // undone under its own name, so Edit reads "Undo Archive Tab".
+        let undoActionName = archivedAt == nil ? "Close Tab" : "Archive Tab"
+        if undoable, registersUndo {
+            registerUndo(actionName: undoActionName) { [weak self] in
                 guard let self else { return }
                 // An extension page comes back on its extension's live origin. One
                 // whose extension was disabled or uninstalled since cannot come back
@@ -2393,8 +2400,10 @@ class TabStore {
                     self.closedTabStack.remove(at: stackIdx)
                 }
                 self.appDB.deleteClosedTab(tabID: id.uuidString)
-                self.registerUndo(actionName: "Close Tab") { [weak self] in
-                    self?.closeTab(id: restored.id, in: space)
+                // Redo re-closes with the same stamp: an undone Archive Tab that
+                // is redone stays an archive record, not a plain close (TASK-115).
+                self.registerUndo(actionName: undoActionName) { [weak self] in
+                    self?.closeTab(id: restored.id, in: space, archivedAt: archivedAt)
                 }
                 self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
                 self.scheduleSave()
@@ -4433,13 +4442,11 @@ class TabStore {
         scheduleSave()
     }
 
-    private func archiveStaleTabs() {
-        let now = Date()
-
+    func archiveStaleTabs(now: Date = Date()) {
         for space in spaces where !space.isIncognito {
             let threshold = space.profile?.archiveThreshold ?? .twelveHours
             guard threshold != .never else { continue }
-            let cutoff = Date().addingTimeInterval(-threshold.rawValue)
+            let cutoff = now.addingTimeInterval(-threshold.rawValue)
 
             func isStale(_ tab: BrowserTab) -> Bool {
                 guard let lastDeselected = tab.lastDeselectedAt else { return false }
@@ -4462,7 +4469,7 @@ class TabStore {
             let idsToArchive = remaining >= 1 ? staleTabIDs : Array(staleTabIDs.dropLast())
 
             for tabID in idsToArchive {
-                closeTab(id: tabID, in: space, archivedAt: now)
+                closeTab(id: tabID, in: space, archivedAt: now, registersUndo: false)
             }
         }
     }

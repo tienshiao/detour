@@ -523,6 +523,117 @@ final class TabStoreTests: XCTestCase {
                         "a favorite tab bound to a different space on the old profile must stay live")
     }
 
+    // MARK: - Archive vs close records (TASK-115)
+
+    /// A store whose undo manager groups manually, so `canUndo` reads what one
+    /// close registered: a test body never turns the run loop that closes an
+    /// event group. Every closing call goes through `inUndoGroup`.
+    private func makeArchiveFixture() throws -> (AppDatabase, TabStore, Space) {
+        let db = try makeDatabase()
+        let store = TabStore(appDB: db)
+        let profile = store.addProfile(name: "Archive")
+        let space = store.addSpace(name: "Archive", emoji: "🗄️", colorHex: "007AFF", profileID: profile.id)
+        // After the setup above: adding a space registers an undo of its own,
+        // and once grouping is manual that would happen outside any group.
+        store.undoManager.removeAllActions()
+        store.undoManager.groupsByEvent = false
+        return (db, store, space)
+    }
+
+    private func inUndoGroup(_ store: TabStore, _ body: () -> Void) {
+        store.undoManager.beginUndoGrouping()
+        body()
+        store.undoManager.endUndoGrouping()
+    }
+
+    func testManualArchiveRecordsArchivedAtAndRegistersUndo() throws {
+        let (db, store, space) = try makeArchiveFixture()
+        let tab = makeSleepingTab(spaceID: space.id)
+        let other = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(contentsOf: [tab, other])
+        let archivedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        inUndoGroup(store) { store.closeTab(id: tab.id, in: space, archivedAt: archivedAt) }
+
+        let record = try XCTUnwrap(db.loadClosedTabs().first { $0.tabID == tab.id.uuidString })
+        XCTAssertEqual(record.archivedAt, archivedAt.timeIntervalSince1970,
+                       "a sidebar Archive Tab stamps the record as archived")
+        XCTAssertEqual(store.closedTabStack.first?.archivedAt, archivedAt.timeIntervalSince1970)
+        XCTAssertTrue(store.undoManager.canUndo, "a manual archive is undoable like a close")
+        XCTAssertEqual(store.undoManager.undoActionName, "Archive Tab", "and is undone under its own name")
+    }
+
+    func testRedoOfUndoneArchiveKeepsArchivedAt() throws {
+        let (db, store, space) = try makeArchiveFixture()
+        let tab = makeSleepingTab(spaceID: space.id)
+        let other = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(contentsOf: [tab, other])
+        let archivedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        inUndoGroup(store) { store.closeTab(id: tab.id, in: space, archivedAt: archivedAt) }
+        store.undoManager.undo()
+        XCTAssertEqual(space.tabs.count, 2, "undo restores the archived tab")
+        XCTAssertFalse(db.loadClosedTabs().contains { $0.tabID == tab.id.uuidString })
+        XCTAssertTrue(store.undoManager.canRedo)
+
+        store.undoManager.redo()
+
+        XCTAssertEqual(space.tabs.map(\.id), [other.id], "redo closes the restored tab again")
+        let record = try XCTUnwrap(db.loadClosedTabs().first)
+        XCTAssertEqual(record.archivedAt, archivedAt.timeIntervalSince1970,
+                       "a redone archive is still an archive, not a plain close")
+    }
+
+    func testTimerArchiveRecordsArchivedAtWithoutUndo() throws {
+        let (db, store, space) = try makeArchiveFixture()
+        let threshold = try XCTUnwrap(space.profile).archiveThreshold
+        XCTAssertNotEqual(threshold, .never, "precondition: the profile archives")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let stale = makeSleepingTab(spaceID: space.id)
+        stale.lastDeselectedAt = now.addingTimeInterval(-threshold.rawValue - 3600)
+        let fresh = makeSleepingTab(spaceID: space.id)
+        fresh.lastDeselectedAt = now.addingTimeInterval(-60)
+        space.tabs.append(contentsOf: [stale, fresh])
+
+        // Outside any undo group on purpose: grouping is manual in this fixture,
+        // so a registration here would also trip NSUndoManager's "must begin a
+        // group" error, and an explicitly opened group would count as undoable
+        // even when nothing registers into it.
+        store.archiveStaleTabs(now: now)
+
+        XCTAssertEqual(space.tabs.map(\.id), [fresh.id], "only the stale tab is archived")
+        let record = try XCTUnwrap(db.loadClosedTabs().first { $0.tabID == stale.id.uuidString })
+        XCTAssertEqual(record.archivedAt, now.timeIntervalSince1970)
+        XCTAssertFalse(store.undoManager.canUndo, "the archive sweep must not register an undo")
+    }
+
+    func testPlainCloseRecordsNoArchivedAtAndRegistersUndo() throws {
+        let (db, store, space) = try makeArchiveFixture()
+        let tab = makeSleepingTab(spaceID: space.id)
+        let other = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(contentsOf: [tab, other])
+
+        inUndoGroup(store) { store.closeTab(id: tab.id, in: space) }
+
+        let record = try XCTUnwrap(db.loadClosedTabs().first { $0.tabID == tab.id.uuidString })
+        XCTAssertNil(record.archivedAt, "Cmd+W / Close Tab is not an archive")
+        XCTAssertTrue(store.undoManager.canUndo)
+        XCTAssertEqual(store.undoManager.undoActionName, "Close Tab")
+    }
+
+    func testIncognitoArchiveWritesNoClosedTabRecord() throws {
+        let (db, store, _) = try makeArchiveFixture()
+        let space = store.addIncognitoSpace()
+        let tab = makeSleepingTab(spaceID: space.id)
+        let other = makeSleepingTab(spaceID: space.id)
+        space.tabs.append(contentsOf: [tab, other])
+
+        inUndoGroup(store) { store.closeTab(id: tab.id, in: space, archivedAt: Date()) }
+
+        XCTAssertFalse(db.loadClosedTabs().contains { $0.tabID == tab.id.uuidString })
+        XCTAssertFalse(store.closedTabStack.contains { $0.tabID == tab.id.uuidString })
+    }
+
     // MARK: - Session-less launch (TASK-32/TASK-33)
 
     /// `loadSession` returns nil whenever the space table is empty — deleting the

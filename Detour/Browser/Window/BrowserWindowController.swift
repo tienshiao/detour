@@ -2275,7 +2275,7 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
-    func closeTab(at index: Int, wasSelected: Bool) {
+    func closeTab(at index: Int, wasSelected: Bool, archivedAt: Date? = nil) {
         guard let space = activeSpace else { return }
         let tabs = currentTabs
         guard index >= 0, index < tabs.count else { return }
@@ -2284,7 +2284,7 @@ class BrowserWindowController: NSWindowController {
             settlingSelectionForClose { settleSelectionLeaving(tabAt: index, in: space) }
         }
 
-        store.closeTab(id: tabs[index].id, in: space)
+        store.closeTab(id: tabs[index].id, in: space, archivedAt: archivedAt)
     }
 
     /// Runs `body`, which moves selection off a tab the caller closes right
