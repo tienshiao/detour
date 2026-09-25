@@ -3000,6 +3000,10 @@ extension BrowserWindowController: NSWindowDelegate {
         // without this the controller (and its notification observers) leak and
         // a zombie window can keep reacting to tab notifications after close.
         releaseOwnedWebViewHandlers()
+        // Not behind that method's ownership guard: this window is still the
+        // delegate of tabs it selected earlier even when another window has
+        // since claimed its selected tab.
+        handBackNavigationDelegates()
         flushPendingSplitFractionCommit()
         store.saveNow()
         store.removeObserver(self)
@@ -3022,6 +3026,24 @@ extension BrowserWindowController: NSWindowDelegate {
                 ucc.removeScriptMessageHandler(forName: name)
             }
             (webView as? BrowserWebView)?.isEditingWebContent = false
+        }
+    }
+
+    /// `wireOwnedWebView` (and `claimPeekWebView`) made this window the
+    /// navigation delegate of every web view it ever hosted, and nothing clears
+    /// that on a tab switch — `tab(owning:)` relies on it to keep reaching tabs
+    /// of spaces this window moved away from. The reference is weak, so once
+    /// the window is gone those web views would have no delegate at all: no
+    /// content-blocker preferences on the next load (TASK-69), no commit or
+    /// failure bookkeeping (TASK-114, TASK-122) until another window claims
+    /// them. Hand each one back to its tab, which is its own delegate while
+    /// unclaimed. Same collections as `TabStore.tab(hostingPeek:)`.
+    private func handBackNavigationDelegates() {
+        let hosts = store.spaces.flatMap { $0.tabs + $0.pinnedTabs } + store.profiles.flatMap(\.favoriteTabs)
+        for tab in hosts + hosts.compactMap(\.peekTab) {
+            if let webView = tab.webView, webView.navigationDelegate === self {
+                webView.navigationDelegate = tab
+            }
         }
     }
 }

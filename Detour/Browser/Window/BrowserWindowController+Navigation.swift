@@ -273,13 +273,15 @@ extension BrowserWindowController: WKNavigationDelegate {
         // Native WKWebExtension handles chrome.webNavigation events
     }
 
+    // Both failure callbacks forward as they are: the tab decides which
+    // failures earn an error page (`BrowserTab.didFailProvisionalNavigation`),
+    // the same way for an owned web view as for one it is its own delegate of.
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        guard !error.isIgnoredNavigationError else { return }
         tab(owning: webView)?.didFailProvisionalNavigation(error: error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        guard !error.isIgnoredNavigationError else { return }
         tab(owning: webView)?.didFailNavigation(error: error)
     }
 
@@ -452,6 +454,10 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 }
 
+/// WebKit's own navigation error domain (`WebKitErrorDomain` in
+/// WebKitErrors.h, a deprecated legacy-WebKit symbol — spelled out here).
+private let webKitErrorDomain = "WebKitErrorDomain"
+
 extension Error {
     /// Download-policy interruptions (WebKitErrorDomain 102) and cancellations
     /// (`NSURLErrorCancelled`, e.g. a page that navigates itself before its
@@ -462,7 +468,7 @@ extension Error {
     var isSupersededNavigationError: Bool {
         let nsError = self as NSError
         // WebKitErrorFrameLoadInterruptedByPolicyChange
-        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return true }
+        if nsError.domain == webKitErrorDomain, nsError.code == 102 { return true }
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return true }
         return false
     }
@@ -475,13 +481,14 @@ extension Error {
     /// `didFinish` follows (TASK-121).
     var isPlugInHandledLoadError: Bool {
         let nsError = self as NSError
-        return nsError.domain == "WebKitErrorDomain" && nsError.code == 204
+        return nsError.domain == webKitErrorDomain && nsError.code == 204
     }
 
-    /// The failures a window's navigation delegate must not turn into an error
-    /// page: the page either is still loading (superseded) or is showing fine
-    /// (media document). Callers that instead need "will another callback
-    /// follow?" want `isSupersededNavigationError` alone.
+    /// The failures a tab must not turn into an error page, whichever
+    /// navigation delegate reports them: the page either is still loading
+    /// (superseded) or is showing fine (media document). Callers that instead
+    /// need "will another callback follow?" want `isSupersededNavigationError`
+    /// alone.
     var isIgnoredNavigationError: Bool {
         isSupersededNavigationError || isPlugInHandledLoadError
     }

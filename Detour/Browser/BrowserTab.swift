@@ -1049,7 +1049,12 @@ class BrowserTab: NSObject {
         blockedCount = 0
     }
 
+    /// WebKit reported a failure before anything committed — through whichever
+    /// navigation delegate the web view had (the owning window's, or the tab's
+    /// own while unclaimed).
     func didFailProvisionalNavigation(error: Error) {
+        // A superseded load is followed by its replacement; nothing to show.
+        guard !error.isIgnoredNavigationError else { return }
         // The restore of a cached session dying before it commits is not a
         // failed request of the user's: keep the session, title and favicon
         // (TASK-45). `reload()` goes through `load(_:)`, so retrying it still
@@ -1058,7 +1063,12 @@ class BrowserTab: NSObject {
         showErrorPage(for: lastAttemptedURL, error: error)
     }
 
+    /// WebKit reported a failure of a committed navigation; see
+    /// `didFailProvisionalNavigation(error:)`.
     func didFailNavigation(error: Error) {
+        // Superseded, or a media document whose player took over the load
+        // (TASK-121): the page is still loading or showing fine.
+        guard !error.isIgnoredNavigationError else { return }
         guard let failedURL = webView?.url ?? lastAttemptedURL else { return }
         showErrorPage(for: failedURL, error: error)
     }
@@ -1132,7 +1142,10 @@ class BrowserTab: NSObject {
 /// finished (TASK-114). The two failures: without them a failing background
 /// load never showed the error page (TASK-122). Every other callback stays at
 /// WebKit's default, exactly as with no delegate; a window replaces this the
-/// moment it claims the tab.
+/// moment it claims the tab and hands it back when it closes while still
+/// owning the web view (`releaseOwnedWebViewHandlers`) — the delegate
+/// reference is weak, and a dead window would otherwise leave the web view
+/// with no delegate at all until another window claims it.
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
@@ -1154,16 +1167,15 @@ extension BrowserTab: WKNavigationDelegate {
 
     /// Mirrors `BrowserWindowController`'s failure handlers: a failing
     /// background load otherwise never shows the error page, and selecting the
-    /// tab later does not surface it (TASK-122).
+    /// tab later does not surface it (TASK-122). Which failures are ignored is
+    /// the tab's business (`didFailProvisionalNavigation(error:)`).
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
-        guard !error.isIgnoredNavigationError else { return }
         didFailProvisionalNavigation(error: error)
     }
 
     /// See `webView(_:didFailProvisionalNavigation:withError:)`.
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        guard !error.isIgnoredNavigationError else { return }
         didFailNavigation(error: error)
     }
 }

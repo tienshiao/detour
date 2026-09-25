@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:35'
-updated_date: '2026-09-25 18:47'
+updated_date: '2026-09-25 19:24'
 labels:
   - bug
   - navigation
@@ -46,6 +46,8 @@ Fix: give BrowserTab's delegate the same two failure callbacks the window contro
 Implemented by adding didFailProvisionalNavigation/didFail to BrowserTab's unclaimed-web-view delegate, guarded by isIgnoredNavigationError, forwarding to the tab's existing handlers (TASK-45 restoringSession guard holds). New BrowserTabUnclaimedNavigationTests (3 tests) use a just-freed loopback port for a real connection-refused failure and a held listen socket for a load that stays provisional. Mutation-checked: without the fix the error-page test fails; without the guard the superseded test fails; without the restoringSession guard the restore test fails. 19 tests pass (3 new + 7 BrowserTabWakeTests + 9 NavigationErrorClassificationTests).
 
 Finding while testing: http://127.0.0.1:1/ never fails in WebKit — port 1 is on WebKit's restricted-port list and it silently commits about:blank with didFinish and no failure callback. So BrowserTabWakeTests' 'connection-refused' comments describe that, not a real failure, and a restricted-port URL shows no error page in Detour at all (owned or unowned). Separate gap, not addressed here.
+
+Code review (/code-review --fix) follow-ups: (1) the isIgnoredNavigationError guard now lives once inside BrowserTab.didFailProvisionalNavigation/didFailNavigation; the tab's and the window's delegate methods are pure forwarders. (2) file-private webKitErrorDomain constant replaces the repeated literal. (3) Window close hands navigation delegates back: a window stays delegate of every web view it ever hosted (nothing clears it on tab switch; tab(owning:) relies on that), and the reference is weak, so after the window closed those web views had no delegate at all — no TASK-69 preferences, no TASK-114/122 bookkeeping. windowWillClose now calls handBackNavigationDelegates(), which resets navigationDelegate to the tab for every space/pinned/favourite tab and peek whose web view still names this window (widened from the review's selected-tab-only version, and moved out from behind releaseOwnedWebViewHandlers' ownership guard). 56 tests pass across BrowserTabUnclaimedNavigation, NavigationErrorClassification, BrowserTabWake, ExtensionActiveTab, ProductionDefaultsIsolation, SidebarVisibilityState, UnhandledKeyFallthrough. Correction to the description: a tab deselected within a live window keeps the window as delegate (reached via tab(owning:)); only never-claimed tabs and tabs of a closed window were delegate-less.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
