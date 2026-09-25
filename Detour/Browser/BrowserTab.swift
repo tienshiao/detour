@@ -1125,13 +1125,14 @@ class BrowserTab: NSObject {
 /// delegate (`wireOwnedWebView` does that on claim), and with none WebKit uses
 /// the configuration's default preferences: the per-site content blocker
 /// switch would never be consulted for that page (TASK-69). Besides the policy
-/// decision that carries the preferences, only the commit is implemented — the
-/// tab's own bookkeeping, which the window forwards to `didCommitNavigation`
-/// once it owns the web view. Without it a background load that stalls (hidden
-/// web views can stay loading until first shown) kept the URL as its title
-/// until the load finished (TASK-114). Every other callback stays at WebKit's
-/// default, exactly as with no delegate; a window replaces this the moment it
-/// claims the tab.
+/// decision that carries the preferences, only the tab's own bookkeeping is
+/// implemented — what the window forwards once it owns the web view. The
+/// commit: without it a background load that stalls (hidden web views can stay
+/// loading until first shown) kept the URL as its title until the load
+/// finished (TASK-114). The two failures: without them a failing background
+/// load never showed the error page (TASK-122). Every other callback stays at
+/// WebKit's default, exactly as with no delegate; a window replaces this the
+/// moment it claims the tab.
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
@@ -1149,6 +1150,21 @@ extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if webView.url?.scheme == ErrorPage.scheme { return }
         didCommitNavigation()
+    }
+
+    /// Mirrors `BrowserWindowController`'s failure handlers: a failing
+    /// background load otherwise never shows the error page, and selecting the
+    /// tab later does not surface it (TASK-122).
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+                 withError error: Error) {
+        guard !error.isIgnoredNavigationError else { return }
+        didFailProvisionalNavigation(error: error)
+    }
+
+    /// See `webView(_:didFailProvisionalNavigation:withError:)`.
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard !error.isIgnoredNavigationError else { return }
+        didFailNavigation(error: error)
     }
 }
 
