@@ -274,12 +274,12 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        guard !isIgnoredNavigationError(error) else { return }
+        guard !error.isIgnoredNavigationError else { return }
         tab(owning: webView)?.didFailProvisionalNavigation(error: error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        guard !isIgnoredNavigationError(error) else { return }
+        guard !error.isIgnoredNavigationError else { return }
         tab(owning: webView)?.didFailNavigation(error: error)
     }
 
@@ -383,10 +383,6 @@ extension BrowserWindowController: WKNavigationDelegate {
         }
     }
 
-    private func isIgnoredNavigationError(_ error: Error) -> Bool {
-        error.isIgnoredNavigationError
-    }
-
     internal func triggerDownloadAnimation(iconName: String = "doc.fill") {
         guard let window = self.window else { return }
         let contentBounds = contentContainerView.bounds
@@ -460,12 +456,33 @@ extension Error {
     /// Download-policy interruptions (WebKitErrorDomain 102) and cancellations
     /// (`NSURLErrorCancelled`, e.g. a page that navigates itself before its
     /// first load finishes) are not real navigation failures: a superseded load
-    /// is followed by the load that replaced it, so a navigation delegate must
-    /// not treat these as the end of the navigation.
-    var isIgnoredNavigationError: Bool {
+    /// is followed by the load that replaced it, so a delegate that waits for
+    /// a navigation to end must keep waiting for the replacement's
+    /// `didFinish`/`didFail` rather than settle on one of these.
+    var isSupersededNavigationError: Bool {
         let nsError = self as NSError
+        // WebKitErrorFrameLoadInterruptedByPolicyChange
         if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return true }
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return true }
         return false
+    }
+
+    /// A media document (a standalone video/audio URL): once the media player
+    /// takes over fetching, WebKit cancels the main-resource load with
+    /// `WebKitErrorPlugInWillHandleLoad` (204). The document is committed and
+    /// keeps playing, so it is not a failure — but unlike a superseded load it
+    /// IS the end of the navigation: WebKit reports it through `didFail` and no
+    /// `didFinish` follows (TASK-121).
+    var isPlugInHandledLoadError: Bool {
+        let nsError = self as NSError
+        return nsError.domain == "WebKitErrorDomain" && nsError.code == 204
+    }
+
+    /// The failures a window's navigation delegate must not turn into an error
+    /// page: the page either is still loading (superseded) or is showing fine
+    /// (media document). Callers that instead need "will another callback
+    /// follow?" want `isSupersededNavigationError` alone.
+    var isIgnoredNavigationError: Bool {
+        isSupersededNavigationError || isPlugInHandledLoadError
     }
 }
