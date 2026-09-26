@@ -95,7 +95,7 @@ final class ExtensionUpdater {
     }
 
     /// "131.0.0.0" from a Chrome user agent string; a fixed fallback otherwise.
-    static func chromeProductVersion(fromUserAgent userAgent: String) -> String {
+    nonisolated static func chromeProductVersion(fromUserAgent userAgent: String) -> String {
         guard let range = userAgent.range(of: #"Chrome/([0-9.]+)"#, options: .regularExpression) else {
             return "131.0.0.0"
         }

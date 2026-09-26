@@ -3,9 +3,11 @@ id: TASK-113
 title: >-
   Extensions: check for and install extension updates (Chrome Web Store CRX and
   unpacked)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-23 09:02'
+updated_date: '2026-09-26 02:51'
 labels:
   - extensions
   - enhancement
@@ -36,3 +38,12 @@ Open decisions: how often to check (and only while the app is running?); whether
 - [ ] #6 Unpacked extensions can be reloaded from their original folder (Develop menu / Extension settings)
 - [ ] #7 runtime.requestUpdateCheck and runtime.onUpdateAvailable behave per Chrome (or are explicitly out of scope with a follow-up); API Explorer extension and tests updated for any API added
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Decisions: check on launch (30 s in, if the last check is older than the interval) and every 5 h while running (Chrome's cadence), plus 'Check for Updates' in Settings; updates install silently in place; an update that adds permissions or host permissions (beyond what old patterns already cover; warning-free permissions ignored) installs DISABLED with a pending-approval record — Settings shows the new permissions with an Accept button and flipping Enabled prompts the same way; unpacked extensions record their source folder and get 'Reload' (Settings + Develop menu) instead of auto-update; runtime.requestUpdateCheck does a real, throttled check; runtime.onUpdateAvailable is defined but never fires (deferred apply is a follow-up).
+1. Core: ExtensionVersion; ExtensionSource + classifyCRX; ExtensionManifest.updateURL; extension row columns source/updateURL/sourcePath/pendingPermissionApprovalJSON + migration v17; ExtensionInstaller.Options; CRX3Verifier (RSA PKCS#1 v1.5 + ECDSA P-256 over the CRX3 SignedData preamble, SPKI→PKCS#1); ExtensionUpdatePolicy; UpdateManifest (update2 request/response); ExtensionUpdater (single-flight, throttle, schedule, appState last-check); ExtensionManager.applyUpdate / reloadUnpacked / approvePendingPermissions.
+2. Integration: source recorded at the install sites; Settings pane (source line, Check for Updates, Reload, pending-permissions banner + Accept, Enabled gate); Develop menu Reload items; Extensions menu 'Check for Extension Updates'; polyfill runtime.requestUpdateCheck + onUpdateAvailable; API Explorer; docs.
+3. Tests: version, update2 parsing, policy, CRX3 verification (in-test signed CRX builder), updater end-to-end with a fake fetcher, migration, polyfill.
+<!-- SECTION:PLAN:END -->
