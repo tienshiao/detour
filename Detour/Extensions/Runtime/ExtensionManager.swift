@@ -345,7 +345,6 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     static let extensionsDidChangeNotification = Notification.Name("ExtensionManagerExtensionsDidChange")
     static let tabShouldSelectNotification = Notification.Name("extensionTabShouldSelect")
     static let popupOpenURLNotification = Notification.Name("extensionPopupOpenURL")
-    static let openOptionsPageNotification = Notification.Name("extensionOpenOptionsPage")
     static let extensionActionDidChangeNotification = Notification.Name("extensionActionDidChange")
     static let extensionPinStateDidChangeNotification = Notification.Name("extensionPinStateDidChange")
 
@@ -1873,15 +1872,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         openOptionsPageFor extensionContext: WKWebExtensionContext,
         completionHandler: @escaping ((any Error)?) -> Void
     ) {
-        guard let optionsURL = extensionContext.optionsPageURL,
-              let extConfig = extensionContext.webViewConfiguration,
-              let space = space(for: controller) else {
+        // An options page the profile already shows is brought forward rather
+        // than duplicated (TASK-103, shared with the browser-side entry points).
+        guard let profile = profile(for: controller),
+              let opened = optionsPageTab(for: extensionContext, in: profile) else {
             completionHandler(nil)
             return
         }
 
-        let tab = TabStore.shared.addExtensionTab(in: space, url: optionsURL, configuration: extConfig)
-        selectTab(tab, in: space)
+        selectTab(opened.tab, in: opened.space)
         completionHandler(nil)
     }
 

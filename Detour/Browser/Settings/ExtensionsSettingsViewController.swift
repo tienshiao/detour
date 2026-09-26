@@ -1,5 +1,8 @@
 import AppKit
 import WebKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extensions")
 
 class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
@@ -212,7 +215,25 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         nameStack.alignment = .leading
         nameStack.spacing = 2
 
-        let headerStack = NSStackView(views: [iconView, nameStack])
+        var headerViews: [NSView] = [iconView, nameStack]
+
+        // "Settings…" opens the extension's options page (TASK-103). Hidden when
+        // it declares none; disabled when no profile with an open window has
+        // it on (see `ExtensionOptionsPageEntry.resolveProfile`).
+        if ExtensionOptionsPageEntry.hasOptionsPage(ext.manifest) {
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
+            let optionsButton = NSButton(title: "Settings…", target: self, action: #selector(openOptionsClicked))
+            optionsButton.controlSize = .regular
+            optionsButton.setContentHuggingPriority(.required, for: .horizontal)
+            if Self.optionsProfile(for: ext.id) == nil {
+                optionsButton.isEnabled = false
+                optionsButton.toolTip = "Turn the extension on in a profile with an open window to open its settings."
+            }
+            headerViews += [spacer, optionsButton]
+        }
+
+        let headerStack = NSStackView(views: headerViews)
         headerStack.orientation = .horizontal
         headerStack.alignment = .centerY
         headerStack.spacing = 10
@@ -469,6 +490,8 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             mainStack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
             // The note wraps rather than stretching the leading-aligned stack.
             privateNote.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
+            // Full width, so the header's spacer pushes "Settings…" to the trailing edge.
+            headerStack.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
             scrollView.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
             flippedDocView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             uninstallButton.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
@@ -641,6 +664,40 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
     @objc private func removeExtensionClicked() {
         uninstallClicked()
+    }
+
+    @objc private func openOptionsClicked() {
+        guard let ext = selectedExtension else { return }
+        guard let profile = Self.optionsProfile(for: ext.id),
+              ExtensionManager.shared.openOptionsPage(for: ext.id, in: profile) else {
+            log.error("Could not open the options page of \(ext.id, privacy: .public)")
+            return
+        }
+    }
+
+    /// The profile whose options page "Settings…" opens: the main browser
+    /// window's profile, then the last-active space's, then any profile with an
+    /// open space — the first with the extension on (a loaded context). Private
+    /// only when it is the main window's own (`ExtensionOptionsPageEntry.resolveProfile`).
+    private static func optionsProfile(for extensionID: String) -> Profile? {
+        let store = TabStore.shared
+        var candidates: [UUID] = []
+        // Settings is key while its button is clicked; the browser window
+        // behind it stays main.
+        if let wc = NSApp.mainWindow?.windowController as? BrowserWindowController,
+           let id = wc.activeSpace?.profileID {
+            candidates.append(id)
+        }
+        if let lastID = store.lastActiveSpaceID, let id = store.space(withID: lastID)?.profileID {
+            candidates.append(id)
+        }
+        candidates += store.spaces.map(\.profileID)
+        let resolved = ExtensionOptionsPageEntry.resolveProfile(
+            candidates: candidates,
+            isEnabled: { store.profile(withID: $0)?.extensionContext(for: extensionID) != nil },
+            isPrivate: { $0 == TabStore.incognitoProfileID }
+        )
+        return resolved.flatMap { store.profile(withID: $0) }
     }
 
     @objc private func uninstallClicked() {

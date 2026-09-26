@@ -275,13 +275,6 @@ class BrowserWindowController: NSWindowController {
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(handleExtensionOpenOptionsPage(_:)),
-            name: ExtensionManager.openOptionsPageNotification,
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
             selector: #selector(handleExtensionActionDidChange(_:)),
             name: ExtensionManager.extensionActionDidChangeNotification,
             object: nil
@@ -400,17 +393,6 @@ class BrowserWindowController: NSWindowController {
         guard let url = notification.userInfo?["url"] as? URL, !InternalPage.isInternal(url) else { return }
         guard let space = activeSpace else { return }
         let tab = store.addTab(in: space, url: url)
-        selectTab(id: tab.id)
-    }
-
-    @objc private func handleExtensionOpenOptionsPage(_ notification: Notification) {
-        guard let extensionID = notification.userInfo?["extensionID"] as? String,
-              let context = ExtensionManager.shared.context(for: extensionID),
-              let optionsURL = context.optionsPageURL,
-              let extConfig = context.webViewConfiguration,
-              let space = activeSpace else { return }
-
-        let tab = store.addExtensionTab(in: space, url: optionsURL, configuration: extConfig)
         selectTab(id: tab.id)
     }
 

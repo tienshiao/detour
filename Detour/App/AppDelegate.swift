@@ -201,6 +201,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerWindowController(wc)
     }
 
+    /// A new normal window on `space`, with no tab added — the caller selects
+    /// what it opened there (TASK-103: an extension's options page).
+    @discardableResult
+    func createNewWindow(showing space: Space) -> BrowserWindowController {
+        let wc = BrowserWindowController(incognito: false)
+        wc.setActiveSpace(id: space.id, selectTab: false)
+        wc.showWindow(nil)
+        registerWindowController(wc)
+        return wc
+    }
+
     @objc func createNewIncognitoWindow() {
         let wc = BrowserWindowController(incognito: true)
         wc.showWindow(nil)
@@ -243,7 +254,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(withTitle: "New Window", action: #selector(createNewWindow), keyEquivalent: "")
+        menu.addItem(withTitle: "New Window", action: #selector(createNewWindow as () -> Void), keyEquivalent: "")
         menu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "")
         return menu
     }
@@ -306,7 +317,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         reopenItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "Pin/Unpin Tab", action: #selector(BrowserWindowController.togglePinTab(_:)), keyEquivalent: "d")
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "New Window", action: #selector(createNewWindow), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "New Window", action: #selector(createNewWindow as () -> Void), keyEquivalent: "n")
         let privateWindowItem = fileMenu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "n")
         privateWindowItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenuItem.submenu = fileMenu
@@ -441,6 +452,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.show(relativeTo: addressBar.bounds, of: addressBar, preferredEdge: .minY)
         // Retain until closed
         objc_setAssociatedObject(wc, "extensionMenuPopover", popover, .OBJC_ASSOCIATION_RETAIN)
+    }
+
+    /// "Options…" in an extension's Extensions-menu submenu (TASK-103): opens
+    /// the options page in the key window's profile — the profile the menu was
+    /// built for.
+    @MainActor @objc func extensionOptionsMenuClicked(_ sender: NSMenuItem) {
+        guard let extID = sender.representedObject as? String,
+              let profile = keyBrowserWindowController?.activeSpace?.profile else { return }
+        ExtensionManager.shared.openOptionsPage(for: extID, in: profile)
     }
 
     // MARK: - Extension Inspector
@@ -628,6 +648,7 @@ extension AppDelegate: NSMenuDelegate {
             .forEach { menu.removeItem($0) }
 
         // Get extensions enabled for the current profile
+        let keyProfile = keyBrowserWindowController?.activeSpace?.profile
         let profileExtensions: [WebExtension]
         if let wc = keyBrowserWindowController,
            let profileID = wc.activeSpace?.profileID {
@@ -654,14 +675,34 @@ extension AppDelegate: NSMenuDelegate {
                 action: ExtensionManager.shared.context(for: ext.id)?.action(for: nil),
                 manifestDefaultPopup: ext.manifest.action?.defaultPopup
             )
-            let item = NSMenuItem(
-                title: displayName,
+            // Options live in the key window's profile (TASK-103): offered only
+            // when that profile holds a context to serve the page.
+            let hasOptions = ExtensionOptionsPageEntry.hasOptionsPage(ext.manifest)
+                && keyProfile?.extensionContext(for: ext.id) != nil
+
+            // The menu autoenables, so a nil action is what disables an item.
+            let popupItem = NSMenuItem(
+                title: "Show Popup",
                 action: hasPopup ? #selector(extensionMenuClicked(_:)) : nil,
                 keyEquivalent: ""
             )
-            item.target = self
+            let optionsItem = NSMenuItem(
+                title: "Options…",
+                action: hasOptions ? #selector(extensionOptionsMenuClicked(_:)) : nil,
+                keyEquivalent: ""
+            )
+            let submenu = NSMenu(title: displayName)
+            for child in [popupItem, optionsItem] {
+                child.target = self
+                child.representedObject = ext.id
+                child.tag = AppDelegate.extensionMenuTag
+                submenu.addItem(child)
+            }
+
+            let item = NSMenuItem(title: displayName, action: nil, keyEquivalent: "")
             item.representedObject = ext.id
             item.tag = AppDelegate.extensionMenuTag
+            item.submenu = submenu
 
             if let icon = ext.icon {
                 let size = NSSize(width: 16, height: 16)

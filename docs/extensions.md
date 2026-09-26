@@ -205,6 +205,16 @@ When the toolbar button is clicked, `ExtensionPopoverController`:
 4. Presents an `NSPopover` at the measured size (clamped 100–800 wide, 100–600 tall).
 5. Installs a `ResizeObserver` for dynamic size changes.
 
+### Options Page Entry Points
+
+An extension's options page (`options_page` or `options_ui.page`, see `ExtensionOptionsPageEntry.hasOptionsPage`) opens from three places, all through `ExtensionManager+OptionsPage.swift`:
+
+- **`runtime.openOptionsPage()`** — the controller delegate opens it in the calling controller's profile.
+- **Extensions menu** — each enabled extension is a submenu: "Show Popup" (still decided by `ExtensionMenuPopupDecision`, never reading `popupWebView`, TASK-55) and "Options…", enabled when the key window's profile has the extension loaded; it opens there.
+- **Settings → Extensions → "Settings…"** — hidden without an options page. The pane is global, so `ExtensionOptionsPageEntry.resolveProfile` picks the profile: the main browser window's, then the last-active space's, then any profile with an open space — the first with the extension on. Private qualifies only when the main window is Private, so a background Private window never captures the click. Disabled (with a tooltip) when nothing resolves.
+
+Options and extension storage are per profile: the page is loaded with that profile's context configuration, in one of its spaces. `optionsPageTab(for:in:preferring:)` reuses a tab already showing the page (same context origin and path, query/fragment ignored) instead of opening a duplicate; `openOptionsPage(for:in:)` then shows it in a window already on that space, else switches a normal window to it, else opens a new window (normal profiles only).
+
 ## Storage
 
 Extension metadata and storage live in `AppDatabase` (the app's main SQLite database via GRDB), not a separate database.
