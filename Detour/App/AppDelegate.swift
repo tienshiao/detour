@@ -783,22 +783,16 @@ extension AppDelegate: NSMenuDelegate {
 
         for ext in unpacked {
             let displayName = ExtensionManager.shared.displayName(for: ext.id)
-            let canReload = ext.sourcePath.map {
-                FileManager.default.fileExists(atPath: $0.appendingPathComponent("manifest.json").path)
-            } ?? false
+            let unavailableReason = ext.unpackedReloadUnavailableReason
             let item = NSMenuItem(
                 title: "Reload \"\(displayName)\"",
-                action: canReload ? #selector(reloadUnpackedExtension(_:)) : nil,
+                action: unavailableReason == nil ? #selector(reloadUnpackedExtension(_:)) : nil,
                 keyEquivalent: ""
             )
             item.target = self
             item.representedObject = ext.id
             item.tag = AppDelegate.extensionInspectorTag
-            if !canReload {
-                item.toolTip = ext.sourcePath == nil
-                    ? "The folder this extension was loaded from is not recorded."
-                    : "The folder this extension was loaded from no longer exists."
-            }
+            item.toolTip = unavailableReason
             menu.addItem(item)
         }
     }
@@ -809,7 +803,7 @@ extension AppDelegate: NSMenuDelegate {
             let result = try ExtensionManager.shared.reloadUnpacked(id: extID)
             if case .installedPendingPermissions = result {
                 let name = ExtensionManager.shared.displayName(for: extID)
-                keyOrMainBrowserWindowController?.toastManager.show(
+                NSApp.frontmostBrowserWindowController?.toastManager.show(
                     message: "Reloaded \(name) — approve its new permissions in Settings")
             }
         } catch {
@@ -828,7 +822,7 @@ extension AppDelegate: NSMenuDelegate {
             let outcomes = await ExtensionUpdater.shared.checkAllForUpdates()
             let message = AppDelegate.updateCheckSummary(outcomes)
             log.notice("Manual extension update check: \(message, privacy: .public)")
-            self.keyOrMainBrowserWindowController?.toastManager.show(message: message)
+            NSApp.frontmostBrowserWindowController?.toastManager.show(message: message)
         }
     }
 
@@ -856,9 +850,24 @@ extension AppDelegate: NSMenuDelegate {
         return parts.joined(separator: " · ")
     }
 
-    private var keyOrMainBrowserWindowController: BrowserWindowController? {
-        (NSApp.keyWindow?.windowController as? BrowserWindowController)
-            ?? (NSApp.mainWindow?.windowController as? BrowserWindowController)
-            ?? NSApp.orderedWindows.lazy.compactMap { $0.windowController as? BrowserWindowController }.first
+}
+
+extension NSApplication {
+    /// Every browser window controller, front to back: the key window's first,
+    /// then the main window's, then the rest in `orderedWindows` order, each
+    /// once. Windows that are not browser windows (Settings, panels) are
+    /// skipped, so with Settings key and main this still starts at the browser
+    /// window right behind it.
+    var browserWindowControllersFrontToBack: [BrowserWindowController] {
+        var seen = Set<ObjectIdentifier>()
+        return ([keyWindow, mainWindow].compactMap { $0 } + orderedWindows)
+            .compactMap { $0.windowController as? BrowserWindowController }
+            .filter { seen.insert(ObjectIdentifier($0)).inserted }
+    }
+
+    /// The browser window the user is looking at (or was, when a non-browser
+    /// window such as Settings is in front).
+    var frontmostBrowserWindowController: BrowserWindowController? {
+        browserWindowControllersFrontToBack.first
     }
 }

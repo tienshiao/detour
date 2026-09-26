@@ -921,11 +921,22 @@ struct AppDatabase {
                     .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                 let declaredUpdateURL = (manifest?["update_url"] as? String).flatMap(URL.init(string:))
                 let looksLikeCRXID = id.count == 32 && id.allSatisfy { ("a"..."p").contains($0) }
+                // A manifest `key` on disk pins an unpacked extension's id to the
+                // same 32-letter shape a CRX gets, and a developer's copy of a
+                // store manifest carries `update_url` too. The two cannot be told
+                // apart, so a keyed manifest reads as unpacked: the wrong call the
+                // other way would replace a developer's folder with the store's
+                // CRX on the next poll, while this way only costs a store install
+                // its auto-update (reinstalling from the store restores it).
+                let hasManifestKey = manifest?["key"] is String
                 let source: String
                 let updateURL: String?
-                if let declaredUpdateURL, looksLikeCRXID {
+                if let declaredUpdateURL, looksLikeCRXID, !hasManifestKey {
                     let host = declaredUpdateURL.host?.lowercased() ?? ""
-                    source = host.hasSuffix("google.com") || host.hasSuffix("googleusercontent.com") ? "webStore" : "crx"
+                    // On the domain boundary: "clients2.google.com" is the store,
+                    // "notgoogle.com" is not.
+                    let isUnder = { (domain: String) in host == domain || host.hasSuffix("." + domain) }
+                    source = isUnder("google.com") || isUnder("googleusercontent.com") ? "webStore" : "crx"
                     updateURL = declaredUpdateURL.absoluteString
                 } else if manifest == nil, looksLikeCRXID {
                     // The folder is gone but the id shape says CRX; the store is

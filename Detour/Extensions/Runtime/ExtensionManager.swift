@@ -1440,6 +1440,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                         notifyExistingTabs(for: profile)
                     }
                 }
+                // The synchronous post below went out before any context existed;
+                // UI that needs a loaded context (the Settings pane's options-page
+                // button, the Extensions menu) refreshes on this one (TASK-113).
+                NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
             } catch {
                 log.error("Failed to load WKWebExtension after install: \(error.localizedDescription, privacy: .public)")
                 // The old contexts are already unloaded; nothing will replace

@@ -19,13 +19,8 @@ enum ExtensionUpdatePolicy {
 
         /// Both deltas' entries, deduplicated, in first-seen order.
         func merged(with other: PermissionDelta) -> PermissionDelta {
-            PermissionDelta(permissions: Self.union(permissions, other.permissions),
-                            hostPermissions: Self.union(hostPermissions, other.hostPermissions))
-        }
-
-        private static func union(_ a: [String], _ b: [String]) -> [String] {
-            var seen = Set<String>()
-            return (a + b).filter { seen.insert($0).inserted }
+            PermissionDelta(permissions: ExtensionUpdatePolicy.dedupe(permissions + other.permissions),
+                            hostPermissions: ExtensionUpdatePolicy.dedupe(hostPermissions + other.hostPermissions))
         }
     }
 
@@ -78,7 +73,8 @@ enum ExtensionUpdatePolicy {
         return existing.contains { $0.matches(candidate) }
     }
 
-    private static func dedupe(_ values: [String]) -> [String] {
+    /// `values` without repeats, in first-seen order.
+    static func dedupe(_ values: [String]) -> [String] {
         var seen = Set<String>()
         return values.filter { seen.insert($0).inserted }
     }

@@ -188,6 +188,21 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(fetcher.requests.count, 1, "nothing is downloaded")
     }
 
+    func testAServerSideUpdateCheckErrorIsReportedAsAFailureNotAsUpToDate() async throws {
+        let fixture = try await installVersionOne()
+        let fetcher = FakeFetcher()
+        let updater = makeUpdater(fetcher)
+        fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = Data("""
+        <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+          <app appid="\(fixture.id)" status="ok"><updatecheck status="error-internal"/></app>
+        </gupdate>
+        """.utf8)
+        let outcome = await updater.checkForUpdate(extensionID: fixture.id)
+        XCTAssertEqual(outcome, .failed("update server: error-internal"))
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
+        XCTAssertEqual(fetcher.requests.count, 1, "nothing is downloaded")
+    }
+
     // MARK: - AC #3: rejected candidates
 
     func testAnAnnouncedVersionThatIsNotNewerIsNotDownloaded() async throws {

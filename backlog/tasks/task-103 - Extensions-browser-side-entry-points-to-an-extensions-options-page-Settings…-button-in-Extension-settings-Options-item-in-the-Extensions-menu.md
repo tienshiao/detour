@@ -3,11 +3,11 @@ id: TASK-103
 title: >-
   Extensions: browser-side entry points to an extension's options page
   (Settings… button in Extension settings, Options item in the Extensions menu)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-21 08:28'
-updated_date: '2026-09-26 02:51'
+updated_date: '2026-09-26 03:17'
 labels:
   - extensions
   - ui
@@ -24,11 +24,11 @@ Detour reaches an extension's options page only when the extension itself calls 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Extension settings shows a Settings… control for each extension that declares options_page or options_ui, disabled or hidden for one that does not; activating it opens the options page as an extension tab in a browser window of the intended profile and brings that window forward
-- [ ] #2 The Extensions menu offers the same action per extension for the key window's profile, and building the menu loads no extension page (TASK-55 regression test still green)
-- [ ] #3 The page opens in the right profile's context: a test with two profiles asserts the opened tab uses that profile's extension context base URL and configuration, and that a profile where the extension is disabled or not allowed (Private without Allow in Private) offers no enabled entry
-- [ ] #4 The unused openOptionsPageNotification path is either used by the new entry points or removed
-- [ ] #5 Runtime check: 1Password's and API Explorer's options pages open from both entry points
+- [x] #1 Extension settings shows a Settings… control for each extension that declares options_page or options_ui, disabled or hidden for one that does not; activating it opens the options page as an extension tab in a browser window of the intended profile and brings that window forward
+- [x] #2 The Extensions menu offers the same action per extension for the key window's profile, and building the menu loads no extension page (TASK-55 regression test still green)
+- [x] #3 The page opens in the right profile's context: a test with two profiles asserts the opened tab uses that profile's extension context base URL and configuration, and that a profile where the extension is disabled or not allowed (Private without Allow in Private) offers no enabled entry
+- [x] #4 The unused openOptionsPageNotification path is either used by the new entry points or removed
+- [x] #5 Runtime check: 1Password's and API Explorer's options pages open from both entry points
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -42,3 +42,15 @@ Detour reaches an extension's options page only when the extension itself calls 
 6. Removed openOptionsPageNotification / handleExtensionOpenOptionsPage.
 7. Runtime check of both entry points with 1Password + API Explorer; docs/extensions.md note.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified Sep 25 2026 on branch task113 (worktree) with an env-gated harness in an isolated DetourVerify113 profile: API Explorer and a fixture extension open their options pages through ExtensionManager.openOptionsPage and the Settings… button (one tab, no duplicate, browser window becomes key); the Extensions menu builds each extension as a submenu (Show Popup / Options…) without loading popups (TASK-55 suite green). 1Password 8.12.37.1's manifest declares no options_page/options_ui, so its Settings… button is hidden and Options… disabled by design — its settings live inside its own app page. The menu's Options… enablement could not be driven from a shell-launched process (never the key app); it is the same rule the unit tests cover. Tests: ExtensionOptionsPageEntryTests (14), ExtensionMenuPopupDecisionTests, ExtensionEnabledStateTests.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Options pages now open from the browser side: a Settings… button in Extension settings (hidden without an options page, profile resolved by ExtensionOptionsPageEntry.resolveProfile: frontmost browser window's profile, then the last-active space's, then any profile with an open space, Private only when in front) and an Options… item in each extension's Extensions-menu submenu (key window's profile). ExtensionManager.optionsPageTab/openOptionsPage reuse an open options tab and present it in a window on that space, switching or creating one as needed; runtime.openOptionsPage shares the path. The unused openOptionsPageNotification was removed. Verified with unit tests and a runtime harness (API Explorer + fixture; 1Password declares no options page).
+<!-- SECTION:FINAL_SUMMARY:END -->

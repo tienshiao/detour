@@ -38,17 +38,20 @@ enum ExtensionSource: String, Codable, Equatable {
     /// default — because store extensions are meant to update. Any other CRX
     /// updates only from a URL its manifest names; without one it stays put.
     static func classifyCRX(downloadURL: URL?, manifestUpdateURL: String?) -> (source: ExtensionSource, updateURL: URL?) {
-        let declared = manifestUpdateURL.flatMap { URL(string: $0) }.filter { $0.scheme?.lowercased() == "https" }
+        let declared = pollableUpdateURL(manifestUpdateURL)
         if let downloadURL, isWebStoreURL(downloadURL) {
             return (.webStore, declared ?? webStoreUpdateURL)
         }
         return (.crx, declared)
     }
-}
 
-private extension Optional {
-    /// `Optional.filter`: nil unless the wrapped value passes `predicate`.
-    func filter(_ predicate: (Wrapped) -> Bool) -> Wrapped? {
-        flatMap { predicate($0) ? $0 : nil }
+    /// A manifest `update_url` worth polling: an https URL. Anything else is
+    /// dropped — the same rule at first install and at every update, so a newer
+    /// manifest cannot move the poll onto plain http, where whoever is on the
+    /// path answers the check.
+    static func pollableUpdateURL(_ manifestUpdateURL: String?) -> URL? {
+        guard let manifestUpdateURL, let url = URL(string: manifestUpdateURL),
+              url.scheme?.lowercased() == "https" else { return nil }
+        return url
     }
 }

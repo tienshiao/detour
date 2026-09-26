@@ -212,8 +212,13 @@ final class ExtensionUpdater {
                 return .failed("update server: \(appStatus)")
             }
             if entry.updateStatus == "noupdate" { return .upToDate }
+            // Any other non-"ok" status is a server-side error (`error-…`), not
+            // a current install; self-hosted manifests may omit the attribute.
+            if let updateStatus = entry.updateStatus, updateStatus != "ok" {
+                return .failed("update server: \(updateStatus)")
+            }
             guard let version = entry.version, let codebase = entry.codebase else {
-                return .upToDate
+                return .failed("the update server announced an update without a version or download URL")
             }
             guard ExtensionVersion.isNewer(version, than: installedVersion) else { return .upToDate }
 

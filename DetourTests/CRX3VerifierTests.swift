@@ -123,6 +123,25 @@ final class CRX3VerifierTests: XCTestCase {
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx2), .failed(.malformed("version 2")))
     }
 
+    /// A length varint above Int.max must fail the parse, not trap on `Int(_:)`:
+    /// the bytes come from the update server.
+    func testAFieldLengthAboveIntMaxIsMalformedNotACrash() {
+        // Field 2 (RSA proof), wire type 2, length UInt64.max, and one zip byte
+        // after the header so the container itself is well-formed.
+        let header = CRX3TestBuilder.Protobuf.varint(2 << 3 | 2) + CRX3TestBuilder.Protobuf.varint(UInt64.max)
+        var crx = Data("Cr24".utf8)
+        var version = UInt32(3).littleEndian
+        crx.append(Data(bytes: &version, count: 4))
+        var headerLen = UInt32(header.count).littleEndian
+        crx.append(Data(bytes: &headerLen, count: 4))
+        crx.append(header)
+        crx.append(Data([0]))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .failed(.malformed("field overruns header")))
+
+        // The shared protobuf field reader takes the same bytes.
+        XCTAssertNil(CRXUnpacker.extractFieldBytes(from: header, fieldNumber: 2))
+    }
+
     // MARK: - DER
 
     func testSPKIUnwrappingYieldsThePKCS1KeySecurityAccepts() throws {

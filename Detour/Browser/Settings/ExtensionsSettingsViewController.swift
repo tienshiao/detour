@@ -564,11 +564,9 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         case .unpacked:
             let button = NSButton(title: "Reload", target: self, action: #selector(reloadUnpackedClicked(_:)))
             button.setContentHuggingPriority(.required, for: .horizontal)
-            if !Self.unpackedSourceExists(ext) {
+            if let unavailableReason = ext.unpackedReloadUnavailableReason {
                 button.isEnabled = false
-                button.toolTip = ext.sourcePath == nil
-                    ? "The folder this extension was loaded from is not recorded."
-                    : "The folder this extension was loaded from no longer exists."
+                button.toolTip = unavailableReason
             }
             views.append(Self.buttonRow(button, statusLabel))
         }
@@ -611,11 +609,6 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             guard let path = ext.sourcePath else { return "Loaded unpacked (folder not recorded)" }
             return "Loaded unpacked from \((path.path as NSString).abbreviatingWithTildeInPath)"
         }
-    }
-
-    private static func unpackedSourceExists(_ ext: WebExtension) -> Bool {
-        guard let path = ext.sourcePath else { return false }
-        return FileManager.default.fileExists(atPath: path.appendingPathComponent("manifest.json").path)
     }
 
     /// The highlighted box an update's added permissions put above the Enabled
@@ -923,17 +916,18 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         }
     }
 
-    /// The profile whose options page "Settings…" opens: the main browser
+    /// The profile whose options page "Settings…" opens: the frontmost browser
     /// window's profile, then the last-active space's, then any profile with an
     /// open space — the first with the extension on (a loaded context). Private
-    /// only when it is the main window's own (`ExtensionOptionsPageEntry.resolveProfile`).
+    /// only when it is the frontmost browser window's own
+    /// (`ExtensionOptionsPageEntry.resolveProfile`).
     private static func optionsProfile(for extensionID: String) -> Profile? {
         let store = TabStore.shared
         var candidates: [UUID] = []
-        // Settings is key while its button is clicked; the browser window
-        // behind it stays main.
-        if let wc = NSApp.mainWindow?.windowController as? BrowserWindowController,
-           let id = wc.activeSpace?.profileID {
+        // Settings is key — and, being a titled window, main — while its button
+        // is clicked, so the browser window is found by z-order: the one right
+        // behind Settings.
+        if let id = NSApp.frontmostBrowserWindowController?.activeSpace?.profileID {
             candidates.append(id)
         }
         if let lastID = store.lastActiveSpaceID, let id = store.space(withID: lastID)?.profileID {

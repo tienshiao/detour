@@ -3,11 +3,11 @@ id: TASK-113
 title: >-
   Extensions: check for and install extension updates (Chrome Web Store CRX and
   unpacked)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-23 09:02'
-updated_date: '2026-09-26 02:51'
+updated_date: '2026-09-26 03:17'
 labels:
   - extensions
   - enhancement
@@ -30,13 +30,13 @@ Open decisions: how often to check (and only while the app is running?); whether
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each installed extension records its source (Web Store / other CRX / unpacked) and, for CRX installs, the update URL (manifest update_url or the Web Store default); existing installs are migrated sensibly
-- [ ] #2 A background check (at launch and on an interval) plus a manual 'Check for Updates' in Extension settings query the update URL and install a newer version in place through the existing install(from:) replace path
-- [ ] #3 A downloaded update is rejected unless its CRX signature/public key derives the same extension id and its version is higher than the installed one
-- [ ] #4 An update that adds permissions or host permissions does not silently gain them: the chosen policy (e.g. disable until approved, as Chrome does) is implemented and tested with positive and negative cases
-- [ ] #5 Updating keeps per-profile enablement, Private-window opt-in, saved permission decisions and open extension pages, and fires runtime.onInstalled with reason 'update' and previousVersion
-- [ ] #6 Unpacked extensions can be reloaded from their original folder (Develop menu / Extension settings)
-- [ ] #7 runtime.requestUpdateCheck and runtime.onUpdateAvailable behave per Chrome (or are explicitly out of scope with a follow-up); API Explorer extension and tests updated for any API added
+- [x] #1 Each installed extension records its source (Web Store / other CRX / unpacked) and, for CRX installs, the update URL (manifest update_url or the Web Store default); existing installs are migrated sensibly
+- [x] #2 A background check (at launch and on an interval) plus a manual 'Check for Updates' in Extension settings query the update URL and install a newer version in place through the existing install(from:) replace path
+- [x] #3 A downloaded update is rejected unless its CRX signature/public key derives the same extension id and its version is higher than the installed one
+- [x] #4 An update that adds permissions or host permissions does not silently gain them: the chosen policy (e.g. disable until approved, as Chrome does) is implemented and tested with positive and negative cases
+- [x] #5 Updating keeps per-profile enablement, Private-window opt-in, saved permission decisions and open extension pages, and fires runtime.onInstalled with reason 'update' and previousVersion
+- [x] #6 Unpacked extensions can be reloaded from their original folder (Develop menu / Extension settings)
+- [x] #7 runtime.requestUpdateCheck and runtime.onUpdateAvailable behave per Chrome (or are explicitly out of scope with a follow-up); API Explorer extension and tests updated for any API added
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,3 +47,15 @@ Decisions: check on launch (30 s in, if the last check is older than the interva
 2. Integration: source recorded at the install sites; Settings pane (source line, Check for Updates, Reload, pending-permissions banner + Accept, Enabled gate); Develop menu Reload items; Extensions menu 'Check for Extension Updates'; polyfill runtime.requestUpdateCheck + onUpdateAvailable; API Explorer; docs.
 3. Tests: version, update2 parsing, policy, CRX3 verification (in-test signed CRX builder), updater end-to-end with a fake fetcher, migration, polyfill.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Runtime verification Sep 25 2026 (isolated profile, harness): the real 1Password 8.12.37.1 store CRX (18 MB) passed CRX3Verifier (RSA) and derived the expected id; a live update2 check against clients2.google.com answered noupdate → Settings shows 'Installed from the Chrome Web Store · Last checked just now' + 'Up to date'; Extensions > Check for Extension Updates ran all three installs; Settings Reload of the unpacked API Explorer replaced it under the same id; editing a fixture's manifest to add history + a host pattern and reloading installed it disabled with the pending-permissions banner, Accept and Enable re-enabled it and loaded its context; chrome.runtime.requestUpdateCheck from an options page answered {status: no_update}. Code review (--fix medium) findings applied: varint length overflow in CRX3 header parsing (remote crash), frontmost-window resolution shared via NSApplication.frontmostBrowserWindowController, server-side updatecheck errors surface as failures, https-only update URLs on update too, store-host check on the domain boundary, deduplicated reload-availability rule. Migration decision: a manifest with a key reads as unpacked even with update_url (never auto-replace a developer's folder). Follow-up TASK-123 (deferred apply + onUpdateAvailable) was created — delete it if unwanted.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Extensions now update. Each install records its source (webStore/crx/unpacked), update URL and, for unpacked loads, the source folder (migration v17 classifies existing installs; keyed manifests stay unpacked). ExtensionUpdater polls update2 at launch (if due) and every 5 h, plus Settings > Check for Updates, Extensions > Check for Extension Updates and chrome.runtime.requestUpdateCheck (throttled); a candidate is taken only when its CRX3 signatures verify (RSA/ECDSA, CRX3Verifier), the declared key derives the installed id, the version is newer and the announced SHA-256 matches, then ExtensionManager.applyUpdate replaces it in place through install(from:) keeping per-profile rows, saved permission decisions, open pages and the onInstalled 'update' ledger. An update or reload that adds permissions/host access installs disabled with a pending-approval record; Settings shows the delta with Accept and Enable (Enabled switch prompts too). Unpacked extensions get Reload in Settings and the Develop menu. runtime.onUpdateAvailable is defined but never fires (TASK-123). 60+ new tests incl. an in-test CRX3 builder; verified at runtime against the real 1Password store CRX.
+<!-- SECTION:FINAL_SUMMARY:END -->

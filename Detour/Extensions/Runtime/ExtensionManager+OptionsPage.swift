@@ -75,10 +75,7 @@ extension ExtensionManager {
     @MainActor
     @discardableResult
     func openOptionsPage(for extensionID: String, in profile: Profile) -> Bool {
-        let key = NSApp.keyWindow?.windowController as? BrowserWindowController
-        let main = NSApp.mainWindow?.windowController as? BrowserWindowController
-        let frontToBack = NSApp.orderedWindows.compactMap { $0.windowController as? BrowserWindowController }
-        let windows = [key, main].compactMap { $0 } + frontToBack
+        let windows = NSApp.browserWindowControllersFrontToBack
 
         let preferredSpaceID = windows.first { $0.activeSpace?.profileID == profile.id }?.activeSpaceID
         guard let opened = optionsPageTab(for: extensionID, in: profile,

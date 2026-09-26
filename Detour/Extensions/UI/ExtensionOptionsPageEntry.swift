@@ -21,7 +21,7 @@ enum ExtensionOptionsPageEntry {
     ///
     /// The rule: walk `candidates` in order and return the first profile in
     /// which the extension is enabled. The caller orders the candidates by
-    /// preference — the main browser window's active-space profile, then the
+    /// preference — the frontmost browser window's active-space profile, then the
     /// last-active space's profile, then every profile with an open space —
     /// and duplicates are harmless.
     ///

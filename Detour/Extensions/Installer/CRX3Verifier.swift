@@ -90,8 +90,12 @@ enum CRX3Verifier {
                     return .failed(.malformed("bad length"))
                 }
                 offset += lenSize
+                // Bounds-checked in UInt64: `Int(length)` would trap on a varint
+                // above Int.max, and a hostile update server controls this file.
+                guard length <= UInt64(header.count - offset) else {
+                    return .failed(.malformed("field overruns header"))
+                }
                 let end = offset + Int(length)
-                guard end <= header.count else { return .failed(.malformed("field overruns header")) }
                 let payload = header.subdata(in: offset..<end)
                 switch field {
                 case 2, 3:

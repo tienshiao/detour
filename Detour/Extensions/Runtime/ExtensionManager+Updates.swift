@@ -48,7 +48,7 @@ extension ExtensionManager {
         log.notice("Updating \(extensionID, privacy: .public) from \(installed.manifest.version, privacy: .public) to \(manifest.version, privacy: .public)")
         return try replace(installed, from: unpackedDir, publicKey: publicKey, manifest: manifest,
                            forcedID: nil, source: installed.source,
-                           updateURL: manifest.updateURL.flatMap(URL.init(string:)) ?? installed.updateURL,
+                           updateURL: ExtensionSource.pollableUpdateURL(manifest.updateURL) ?? installed.updateURL,
                            sourcePath: installed.sourcePath)
     }
 

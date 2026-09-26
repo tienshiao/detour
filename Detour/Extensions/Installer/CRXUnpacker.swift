@@ -193,8 +193,10 @@ struct CRXUnpacker {
             guard let (length, lenSize) = readVarint(from: data, at: offset) else { return nil }
             offset += lenSize
 
+            // Bounds-checked in UInt64: `Int(length)` traps on a varint above
+            // Int.max, and the bytes come from a download.
+            guard length <= UInt64(data.count - offset) else { return nil }
             let end = offset + Int(length)
-            guard end <= data.count else { return nil }
 
             if fNum == fieldNumber {
                 return data.subdata(in: offset..<end)

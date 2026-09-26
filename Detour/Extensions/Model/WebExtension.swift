@@ -24,6 +24,17 @@ class WebExtension {
     /// accept them; the extension stays disabled until `approvePendingPermissions`.
     var pendingPermissionApproval: ExtensionUpdatePolicy.PendingApproval?
 
+    /// Why Reload (Develop menu, Extension settings) is unavailable for an
+    /// unpacked extension, as the disabled item's tooltip; nil when the recorded
+    /// source folder still holds a manifest.json and it can be reloaded.
+    var unpackedReloadUnavailableReason: String? {
+        guard let sourcePath else { return "The folder this extension was loaded from is not recorded." }
+        guard FileManager.default.fileExists(atPath: sourcePath.appendingPathComponent("manifest.json").path) else {
+            return "The folder this extension was loaded from no longer exists."
+        }
+        return nil
+    }
+
     /// The native WKWebExtension, loaded asynchronously. Shared across profiles.
     var wkExtension: WKWebExtension?
 

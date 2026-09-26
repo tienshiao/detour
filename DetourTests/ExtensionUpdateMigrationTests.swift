@@ -30,19 +30,24 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
         let selfHostedID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         let goneID = "cccccccccccccccccccccccccccccccc"
         let keyedUnpackedID = "dddddddddddddddddddddddddddddddd"
+        let keyedWithUpdateURLID = "ffffffffffffffffffffffffffffffff"
+        let lookalikeHostID = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         let uuidID = UUID().uuidString
 
         let storeDir = try folder(manifest: #"{"manifest_version":3,"name":"s","version":"1","update_url":"https://clients2.google.com/service/update2/crx"}"#)
         let selfHostedDir = try folder(manifest: #"{"manifest_version":3,"name":"h","version":"1","update_url":"https://updates.example.test/manifest.xml"}"#)
         let goneDir = try folder(manifest: nil)
         let keyedDir = try folder(manifest: #"{"manifest_version":3,"name":"k","version":"1","key":"abc"}"#)
+        let keyedWithUpdateURLDir = try folder(manifest: #"{"manifest_version":3,"name":"k2","version":"1","key":"abc","update_url":"https://clients2.google.com/service/update2/crx"}"#)
+        let lookalikeDir = try folder(manifest: #"{"manifest_version":3,"name":"l","version":"1","update_url":"https://notgoogle.com/updates.xml"}"#)
         let uuidDir = try folder(manifest: #"{"manifest_version":3,"name":"u","version":"1","update_url":"https://clients2.google.com/service/update2/crx"}"#)
 
         let dbQueue = try DatabaseQueue(configuration: Configuration())
         try AppDatabase.migrator.migrate(dbQueue, upTo: "v16")
         try dbQueue.write { db in
             for (id, dir) in [(storeID, storeDir), (selfHostedID, selfHostedDir), (goneID, goneDir),
-                              (keyedUnpackedID, keyedDir), (uuidID, uuidDir)] {
+                              (keyedUnpackedID, keyedDir), (keyedWithUpdateURLID, keyedWithUpdateURLDir),
+                              (lookalikeHostID, lookalikeDir), (uuidID, uuidDir)] {
                 try db.execute(sql: """
                     INSERT INTO "extension" (id, name, version, manifestJSON, basePath, isEnabled, installedAt)
                     VALUES (?, 'Ext', '1.0', x'7b7d', ?, 1, 0)
@@ -52,7 +57,7 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
 
         let db = try AppDatabase(dbQueue: dbQueue)
         let rows = Dictionary(uniqueKeysWithValues: db.loadExtensions().map { ($0.id, $0) })
-        XCTAssertEqual(rows.count, 5)
+        XCTAssertEqual(rows.count, 7)
 
         XCTAssertEqual(rows[storeID]?.source, "webStore")
         XCTAssertEqual(rows[storeID]?.updateURL, "https://clients2.google.com/service/update2/crx")
@@ -60,11 +65,18 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
         XCTAssertEqual(rows[selfHostedID]?.source, "crx")
         XCTAssertEqual(rows[selfHostedID]?.updateURL, "https://updates.example.test/manifest.xml")
 
+        XCTAssertEqual(rows[lookalikeHostID]?.source, "crx", "the store check is on the domain boundary")
+        XCTAssertEqual(rows[lookalikeHostID]?.updateURL, "https://notgoogle.com/updates.xml")
+
         XCTAssertEqual(rows[goneID]?.source, "webStore", "a CRX-shaped id with no folder left can only be a store install")
         XCTAssertEqual(rows[goneID]?.updateURL, ExtensionSource.webStoreUpdateURL.absoluteString)
 
         XCTAssertEqual(rows[keyedUnpackedID]?.source, "unpacked", "a keyed manifest without update_url was loaded unpacked")
         XCTAssertNil(rows[keyedUnpackedID]?.updateURL)
+
+        XCTAssertEqual(rows[keyedWithUpdateURLID]?.source, "unpacked",
+                       "a keyed manifest is a developer's folder even when it carries the store's update_url: never auto-replaced")
+        XCTAssertNil(rows[keyedWithUpdateURLID]?.updateURL)
 
         XCTAssertEqual(rows[uuidID]?.source, "unpacked", "a UUID id is never a CRX, whatever its manifest says")
         XCTAssertNil(rows[uuidID]?.updateURL)
@@ -123,5 +135,17 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
         let insecure = ExtensionSource.classifyCRX(downloadURL: URL(string: "https://example.test/ext.crx")!,
                                                    manifestUpdateURL: "http://example.test/updates.xml")
         XCTAssertNil(insecure.updateURL, "an http update URL is not polled")
+    }
+
+    /// The same rule gates the `update_url` a newer manifest brings (`applyUpdate`).
+    func testPollableUpdateURLAcceptsOnlyHTTPS() {
+        XCTAssertEqual(ExtensionSource.pollableUpdateURL("https://example.test/updates.xml"),
+                       URL(string: "https://example.test/updates.xml"))
+        XCTAssertEqual(ExtensionSource.pollableUpdateURL("HTTPS://example.test/updates.xml"),
+                       URL(string: "HTTPS://example.test/updates.xml"))
+        XCTAssertNil(ExtensionSource.pollableUpdateURL("http://example.test/updates.xml"))
+        XCTAssertNil(ExtensionSource.pollableUpdateURL("not a url"))
+        XCTAssertNil(ExtensionSource.pollableUpdateURL(""))
+        XCTAssertNil(ExtensionSource.pollableUpdateURL(nil))
     }
 }
