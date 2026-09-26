@@ -39,7 +39,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         // Tall enough for the header, description, update section, a pending-
         // permissions banner, the switches and a usable permissions list; the
         // window is not resizable, so the pane has to fit at rest (TASK-113).
-        preferredContentSize = NSSize(width: 740, height: 620)
+        preferredContentSize = NSSize(width: 740, height: 640)
         let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
         self.view = container
 
@@ -681,12 +681,15 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 10
-        row.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
         row.translatesAutoresizingMaskIntoConstraints = false
         // The text column fills the box (gravity areas would size it to its
         // widest line), so the button row can reach the trailing edge.
         row.distribution = .fill
         textStack.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
+        // The stack's own bottom inset is only a hugging-priority constraint,
+        // so a height-constrained column ate it (the button ended up on the
+        // border). The text column's bottom is pinned to the row's, required.
+        textStack.bottomAnchor.constraint(equalTo: row.bottomAnchor).isActive = true
 
         // A plain layer-backed container rather than an NSBox: the box's content
         // view is autoresizing-sized, so the box never grew to the stack's
@@ -694,11 +697,13 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         let banner = TintedBannerView()
         banner.translatesAutoresizingMaskIntoConstraints = false
         banner.addSubview(row)
+        // Insets as required constraints of our own, not the stack's soft ones.
+        let inset: CGFloat = 14
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: banner.topAnchor),
-            row.leadingAnchor.constraint(equalTo: banner.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: banner.trailingAnchor),
-            row.bottomAnchor.constraint(equalTo: banner.bottomAnchor),
+            row.topAnchor.constraint(equalTo: banner.topAnchor, constant: inset),
+            row.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: inset),
+            row.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -inset),
+            row.bottomAnchor.constraint(equalTo: banner.bottomAnchor, constant: -inset),
         ])
         return banner
     }
