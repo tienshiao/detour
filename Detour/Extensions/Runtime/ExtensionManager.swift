@@ -411,6 +411,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
 
             let ext = WebExtension(id: record.id, manifest: manifest, basePath: basePath, isEnabled: record.isEnabled)
+            ext.source = ExtensionSource(rawValue: record.source) ?? .unpacked
+            ext.updateURL = record.updateURL.flatMap(URL.init(string:))
+            ext.sourcePath = record.sourcePath.map { URL(fileURLWithPath: $0) }
+            ext.pendingPermissionApproval = record.pendingPermissionApprovalJSON.flatMap {
+                try? JSONDecoder().decode(ExtensionUpdatePolicy.PendingApproval.self, from: $0)
+            }
             pendingExtensions.append(ext)
         }
 
@@ -1342,8 +1348,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     // MARK: - Install
 
     @discardableResult
-    func install(from sourceURL: URL, publicKey: Data? = nil) throws -> WebExtension {
-        let ext = try ExtensionInstaller.install(from: sourceURL, publicKey: publicKey)
+    func install(from sourceURL: URL, publicKey: Data? = nil,
+                 options: ExtensionInstaller.Options = ExtensionInstaller.Options()) throws -> WebExtension {
+        let ext = try ExtensionInstaller.install(from: sourceURL, publicKey: publicKey, options: options)
 
         // Clean up existing extension with same ID. An update replaces the
         // context, so the origins its pages are open on are noted here and those

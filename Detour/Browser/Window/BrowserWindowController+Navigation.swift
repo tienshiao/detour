@@ -188,14 +188,14 @@ extension BrowserWindowController: WKNavigationDelegate {
                 let wasCancelled = item.state == .cancelled
                 DownloadManager.shared.removeDownload(item)
                 guard !wasCancelled else { return }
-                self?.finishCRXInstall(data: data, error: error)
+                self?.finishCRXInstall(data: data, error: error, downloadURL: url)
             }
         }
         item.observeURLSessionTask(task)
         task.resume()
     }
 
-    private func finishCRXInstall(data: Data?, error: Error?) {
+    private func finishCRXInstall(data: Data?, error: Error?, downloadURL: URL) {
         guard let data, error == nil else {
             let alert = NSAlert()
             alert.messageText = "Failed to Download Extension"
@@ -230,7 +230,13 @@ extension BrowserWindowController: WKNavigationDelegate {
 
             guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
 
-            try ExtensionManager.shared.install(from: unpackedDir, publicKey: crxResult.publicKey)
+            // Where it came from decides whether it updates (TASK-113): a store
+            // download polls the store; another CRX polls only a URL its
+            // manifest names.
+            var options = ExtensionInstaller.Options()
+            (options.source, options.updateURL) = ExtensionSource.classifyCRX(
+                downloadURL: downloadURL, manifestUpdateURL: manifest.updateURL)
+            try ExtensionManager.shared.install(from: unpackedDir, publicKey: crxResult.publicKey, options: options)
 
             let successAlert = NSAlert()
             successAlert.messageText = "Extension Installed"

@@ -172,7 +172,7 @@ struct CRXUnpacker {
     }
 
     /// Extract a bytes field from a protobuf message by field number.
-    private static func extractFieldBytes(from data: Data, fieldNumber: UInt64) -> Data? {
+    static func extractFieldBytes(from data: Data, fieldNumber: UInt64) -> Data? {
         var offset = 0
         while offset < data.count {
             guard let (tag, tagSize) = readVarint(from: data, at: offset) else { return nil }
@@ -206,7 +206,7 @@ struct CRXUnpacker {
     }
 
     /// Read a protobuf varint from data at a given offset. Returns (value, bytesRead).
-    private static func readVarint(from data: Data, at offset: Int) -> (UInt64, Int)? {
+    static func readVarint(from data: Data, at offset: Int) -> (UInt64, Int)? {
         var result: UInt64 = 0
         var shift: UInt64 = 0
         var pos = offset

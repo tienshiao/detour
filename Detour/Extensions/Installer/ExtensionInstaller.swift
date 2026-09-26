@@ -23,12 +23,34 @@ struct ExtensionInstaller {
         }
     }
 
+    /// What an install records beyond the files (TASK-113). The defaults describe
+    /// an unpacked load whose folder is not remembered, which is what every
+    /// install was before the source was tracked.
+    struct Options {
+        var source: ExtensionSource = .unpacked
+        /// The update2 endpoint to poll; nil means the install never updates.
+        var updateURL: URL? = nil
+        /// The folder an unpacked extension can be reloaded from.
+        var sourcePath: URL? = nil
+        /// Keep this id instead of deriving one — a reload of an unpacked
+        /// extension whose manifest has no key must not mint a new UUID.
+        var forcedID: String? = nil
+        /// The global enabled flag to record. An update that adds permissions
+        /// installs disabled, with `pendingPermissionApproval` saying why.
+        var enabled: Bool = true
+        var pendingPermissionApproval: ExtensionUpdatePolicy.PendingApproval? = nil
+
+        init() {}
+    }
+
     /// Install an unpacked extension from a source directory.
     /// Copies files to Application Support and creates a database record.
     /// - Parameters:
     ///   - sourceURL: The directory containing the unpacked extension files.
     ///   - publicKey: Optional DER-encoded public key from a CRX3 header.
-    static func install(from sourceURL: URL, publicKey: Data? = nil) throws -> WebExtension {
+    ///   - options: source bookkeeping; see `Options`.
+    static func install(from sourceURL: URL, publicKey: Data? = nil,
+                        options: Options = Options()) throws -> WebExtension {
         log.info("Installing extension from \(sourceURL.path)")
         let manifestURL = sourceURL.appendingPathComponent("manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
@@ -46,9 +68,11 @@ struct ExtensionInstaller {
             throw InstallerError.notMV3
         }
 
-        // Derive extension ID: CRX public key > manifest "key" field > fallback UUID
+        // Derive extension ID: forced (reload) > CRX public key > manifest "key" field > fallback UUID
         let extensionID: String
-        if let publicKey {
+        if let forcedID = options.forcedID {
+            extensionID = forcedID
+        } else if let publicKey {
             extensionID = deriveExtensionID(from: publicKey)
         } else if let manifestKey = manifest.key,
                   let keyData = Data(base64Encoded: manifestKey) {
@@ -59,6 +83,11 @@ struct ExtensionInstaller {
 
         // Copy extension files to Application Support
         let destDir = detourDataDirectory().appendingPathComponent("Extensions/\(extensionID)")
+        // A reload from the install folder itself would delete the files it is
+        // about to copy.
+        guard sourceURL.standardizedFileURL.resolvingSymlinksInPath() != destDir.standardizedFileURL.resolvingSymlinksInPath() else {
+            throw InstallerError.copyFailed("the source folder is the installed copy")
+        }
 
         do {
             try FileManager.default.createDirectory(at: destDir.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -76,19 +105,29 @@ struct ExtensionInstaller {
 
         // Save to database
         let manifestData = try manifest.toJSONData()
+        let pendingJSON = try options.pendingPermissionApproval.map { try JSONEncoder().encode($0) }
         let record = ExtensionRecord(
             id: extensionID,
             name: resolvedName,
             version: manifest.version,
             manifestJSON: manifestData,
             basePath: destDir.path,
-            isEnabled: true,
-            installedAt: Date().timeIntervalSince1970
+            isEnabled: options.enabled,
+            installedAt: Date().timeIntervalSince1970,
+            source: options.source,
+            updateURL: options.updateURL?.absoluteString,
+            sourcePath: options.sourcePath?.path,
+            pendingPermissionApprovalJSON: pendingJSON
         )
         AppDatabase.shared.saveExtension(record)
 
-        log.info("Install complete: \(manifest.name, privacy: .public) (\(extensionID, privacy: .public))")
-        return WebExtension(id: extensionID, manifest: manifest, basePath: destDir, isEnabled: true)
+        log.info("Install complete: \(manifest.name, privacy: .public) (\(extensionID, privacy: .public)) from \(options.source.rawValue, privacy: .public)")
+        let ext = WebExtension(id: extensionID, manifest: manifest, basePath: destDir, isEnabled: options.enabled)
+        ext.source = options.source
+        ext.updateURL = options.updateURL
+        ext.sourcePath = options.sourcePath
+        ext.pendingPermissionApproval = options.pendingPermissionApproval
+        return ext
     }
 
     /// Derive a Chrome-compatible 32-character extension ID from a DER-encoded public key.

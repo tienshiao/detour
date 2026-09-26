@@ -19,6 +19,9 @@ struct ExtensionManifest: Codable {
     let icons: [String: String]?
     let commands: [String: Command]?
     let key: String?
+    /// `update_url`: where a CRX-installed extension's updates are polled from
+    /// (TASK-113). Chrome Web Store manifests carry the store's update2 endpoint.
+    let updateURL: String?
 
     struct Command: Codable {
         let suggestedKey: SuggestedKey?
@@ -213,6 +216,7 @@ struct ExtensionManifest: Codable {
         case optionsPage = "options_page"
         case optionsUI = "options_ui"
         case icons
+        case updateURL = "update_url"
     }
 
     /// Parse a manifest.json file at the given URL.

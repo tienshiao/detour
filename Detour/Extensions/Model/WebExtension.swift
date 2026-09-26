@@ -12,6 +12,18 @@ class WebExtension {
     let basePath: URL
     var isEnabled: Bool
 
+    /// Where the files came from (TASK-113). Set from the DB row at launch and by
+    /// the installer; decides between polling for updates and folder reload.
+    var source: ExtensionSource = .unpacked
+    /// The update2 endpoint a CRX install polls; nil when it cannot update.
+    var updateURL: URL?
+    /// The folder an unpacked extension was loaded from, for Reload; nil when
+    /// unknown (installed before TASK-113), in which case Reload is unavailable.
+    var sourcePath: URL?
+    /// Non-nil while an update that added permissions waits for the user to
+    /// accept them; the extension stays disabled until `approvePendingPermissions`.
+    var pendingPermissionApproval: ExtensionUpdatePolicy.PendingApproval?
+
     /// The native WKWebExtension, loaded asynchronously. Shared across profiles.
     var wkExtension: WKWebExtension?
 

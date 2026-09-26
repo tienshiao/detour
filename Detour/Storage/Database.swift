@@ -896,6 +896,52 @@ struct AppDatabase {
             try db.execute(sql: "UPDATE closedTab SET closedAt = archivedAt WHERE archivedAt IS NOT NULL")
         }
 
+        migrator.registerMigration("v17") { db in
+            // TASK-113: where an extension came from, where its updates are
+            // polled, the folder an unpacked one reloads from, and an update's
+            // not-yet-accepted new permissions (`ExtensionRecord`).
+            try db.alter(table: "extension") { t in
+                t.add(column: "source", .text).notNull().defaults(to: "unpacked")
+                t.add(column: "updateURL", .text)
+                t.add(column: "sourcePath", .text)
+                t.add(column: "pendingPermissionApprovalJSON", .blob)
+            }
+            // Classify the installs that predate the column. The stored
+            // manifestJSON never carried update_url (the model had no field), so
+            // the on-disk manifest is read; an install whose folder is gone falls
+            // back to the id: a CRX id is 32 letters a–p, an unpacked install
+            // without a manifest key got a UUID. Literals rather than
+            // `ExtensionSource` so a later rename cannot change what this wrote.
+            let rows = try Row.fetchAll(db, sql: "SELECT id, basePath FROM extension")
+            for row in rows {
+                let id: String = row["id"]
+                let basePath: String = row["basePath"]
+                let manifestURL = URL(fileURLWithPath: basePath).appendingPathComponent("manifest.json")
+                let manifest = (try? Data(contentsOf: manifestURL))
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let declaredUpdateURL = (manifest?["update_url"] as? String).flatMap(URL.init(string:))
+                let looksLikeCRXID = id.count == 32 && id.allSatisfy { ("a"..."p").contains($0) }
+                let source: String
+                let updateURL: String?
+                if let declaredUpdateURL, looksLikeCRXID {
+                    let host = declaredUpdateURL.host?.lowercased() ?? ""
+                    source = host.hasSuffix("google.com") || host.hasSuffix("googleusercontent.com") ? "webStore" : "crx"
+                    updateURL = declaredUpdateURL.absoluteString
+                } else if manifest == nil, looksLikeCRXID {
+                    // The folder is gone but the id shape says CRX; the store is
+                    // the only place such an id could have come from without a
+                    // manifest key on disk to say otherwise.
+                    source = "webStore"
+                    updateURL = "https://clients2.google.com/service/update2/crx"
+                } else {
+                    source = "unpacked"
+                    updateURL = nil
+                }
+                try db.execute(sql: "UPDATE extension SET source = ?, updateURL = ? WHERE id = ?",
+                               arguments: [source, updateURL, id])
+            }
+        }
+
         return migrator
     }
 
@@ -940,6 +986,34 @@ struct AppDatabase {
             try ExtensionRecord.filter(Column("id") == id).deleteAll(db)
             // A reinstall under the same id (a manifest key) is a new install.
             try ExtensionInstalledEventRecord.filter(Column("extensionID") == id).deleteAll(db)
+        }
+    }
+
+    /// Record or clear the new permissions an update is waiting on (TASK-113).
+    func setExtensionPendingPermissionApproval(id: String, json: Data?) {
+        performWrite("set extension pending permission approval") { db in
+            try db.execute(sql: "UPDATE extension SET pendingPermissionApprovalJSON = ? WHERE id = ?",
+                           arguments: [json, id])
+        }
+    }
+
+    private static let extensionUpdateLastCheckKey = "extensionUpdateLastCheckAt"
+
+    /// When the last scheduled or manual update check finished, across launches.
+    func extensionUpdateLastCheckAt() -> Date? {
+        performRead("read extension update last check", default: nil) { db in
+            try Double.fetchOne(db, sql: "SELECT CAST(value AS REAL) FROM appState WHERE key = ?",
+                                arguments: [Self.extensionUpdateLastCheckKey])
+                .map { Date(timeIntervalSince1970: $0) }
+        }
+    }
+
+    func setExtensionUpdateLastCheckAt(_ date: Date) {
+        performWrite("save extension update last check") { db in
+            try db.execute(
+                sql: "INSERT INTO appState (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                arguments: [Self.extensionUpdateLastCheckKey, String(date.timeIntervalSince1970)]
+            )
         }
     }
 

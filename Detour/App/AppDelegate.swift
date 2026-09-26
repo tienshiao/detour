@@ -71,6 +71,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Initialize extension manager before window creation so toolbar
         // items are available when the toolbar delegate is first queried
         ExtensionManager.shared.initialize()
+        // Extension updates: a check once the extensions have loaded if one is
+        // due, then on Chrome's cadence while the app runs (TASK-113). Never in
+        // the test host, which must not reach the network.
+        if !Self.isRunningUnitTests {
+            ExtensionUpdater.shared.startPeriodicChecks()
+        }
 
         let wc = BrowserWindowController(incognito: false)
         windowControllers.append(wc)
