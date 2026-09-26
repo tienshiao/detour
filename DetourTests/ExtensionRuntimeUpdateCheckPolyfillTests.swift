@@ -92,8 +92,9 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
                        "a second check inside the throttle window must be throttled: \(second)")
     }
 
-    /// Callback form: `callback(status, details)` — here `('no_update')` with no
-    /// details — no lastError, and nothing returned.
+    /// Callback form: Chrome's current `callback(result)` with one
+    /// `{status, version?}` object — here `{status: 'no_update'}` — no lastError,
+    /// and nothing returned.
     func testRequestUpdateCheckCallbackReceivesStatus() async throws {
         let (_, webView) = try await makeExtensionPage()
 
@@ -102,8 +103,8 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
         """), in: webView)
         XCTAssertEqual(outcome["timedOut"] as? Bool, false, "the callback must run: \(outcome)")
         XCTAssertEqual(outcome["returnedType"] as? String, "undefined")
-        XCTAssertEqual(outcome["arg0"] as? String, "\"no_update\"", "status first: \(outcome)")
-        XCTAssertEqual(outcome["argc"] as? Int, 1, "no details without an update: \(outcome)")
+        XCTAssertEqual(outcome["arg0"] as? String, "{\"status\":\"no_update\"}", "one result object: \(outcome)")
+        XCTAssertEqual(outcome["argc"] as? Int, 1, "one argument: \(outcome)")
         XCTAssertNil(outcome["lastErrorInCallback"] as? String, "no lastError on success: \(outcome)")
         XCTAssertEqual(outcome["unhandled"] as? [String], [])
     }

@@ -581,10 +581,12 @@ struct ExtensionAPIPolyfill {
     /// (TASK-113). WebKit implements neither; both are only filled in when absent.
     ///
     /// `requestUpdateCheck` runs a real check through `ExtensionUpdater` (throttled
-    /// per extension natively). The promise resolves `{status, version?}` with
-    /// status `'throttled' | 'no_update' | 'update_available'`; the callback form
-    /// gets `(status, details)` with `details = {version}` only for
-    /// `update_available`, and `runtime.lastError` on failure.
+    /// per extension natively). Both forms hand back Chrome's current shape: one
+    /// `result` object `{status, version?}` with status
+    /// `'throttled' | 'no_update' | 'update_available'` and `version` only for
+    /// `update_available` (Chrome dropped the older `(status, details)` callback
+    /// form in MV3's docs). A failed request sets `runtime.lastError` and calls
+    /// the callback with no arguments.
     ///
     /// `onUpdateAvailable` is a real event object that Detour never fires: an
     /// update is applied the moment it is downloaded (the running context is
@@ -607,17 +609,7 @@ struct ExtensionAPIPolyfill {
                 if (reply && typeof reply.version === 'string') result.version = reply.version;
                 return result;
             });
-            if (typeof callback !== 'function') return promise;
-            return __detourSettle(promise, function() {
-                // No arguments: the check failed and runtime.lastError is set.
-                if (arguments.length === 0) { callback(); return; }
-                const result = arguments[0];
-                if (result.version !== undefined) {
-                    callback(result.status, { version: result.version });
-                } else {
-                    callback(result.status);
-                }
-            });
+            return __detourSettle(promise, callback);
         };
 
         const patch = function(runtime) {
