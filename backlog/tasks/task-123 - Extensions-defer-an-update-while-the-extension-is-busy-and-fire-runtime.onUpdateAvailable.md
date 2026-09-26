@@ -3,11 +3,11 @@ id: TASK-123
 title: >-
   Extensions: defer an update while the extension is busy and fire
   runtime.onUpdateAvailable
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 02:51'
-updated_date: '2026-09-26 05:06'
+updated_date: '2026-09-26 05:13'
 labels:
   - extensions
   - enhancement
@@ -25,9 +25,9 @@ TASK-113 installs an update the moment it is verified, so runtime.onUpdateAvaila
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A verified update for an extension with an open extension page or a busy worker is staged, not installed; runtime.onUpdateAvailable fires in its background context with the new version
-- [ ] #2 The staged update installs when the extension becomes idle, when it calls runtime.reload(), or at the next launch, through ExtensionManager.applyUpdate
-- [ ] #3 An idle extension still updates immediately as in TASK-113; tests cover both paths and the API Explorer logs onUpdateAvailable
+- [x] #1 A verified update for an extension with an open extension page or a busy worker is staged, not installed; runtime.onUpdateAvailable fires in its background context with the new version
+- [x] #2 The staged update installs when the extension becomes idle, when it calls runtime.reload(), or at the next launch, through ExtensionManager.applyUpdate
+- [x] #3 An idle extension still updates immediately as in TASK-113; tests cover both paths and the API Explorer logs onUpdateAvailable
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -46,4 +46,12 @@ TASK-113 installs an update the moment it is verified, so runtime.onUpdateAvaila
 
 <!-- SECTION:NOTES:BEGIN -->
 Review (--fix): the reload heuristic misfired on any ordinary worker start — the extension's top-level addListener arms runtime.awaitUpdateAvailable at script evaluation, which is answered at once when a copy is staged, and the start-up claim runs on a later task, so backgroundContextDidStart saw a fresh delivery and installed the update on every event wake (defeating the deferral). Fix: the polyfill mints __detourContextInstance per evaluation and stamps it on the wait and the claim; a delivery to the same incarnation no longer counts as the one a reload followed. Also: uninstall discards the staged copy and parked waits; a check that finds a staged copy for an idle extension installs it instead of reporting .deferred; the detour-staged.json marker is removed from the installed copy (the installer copies the directory whole); resetUpdateAvailableStateForTesting renamed forgetUpdateAvailableState.
+
+Design: WebKit's chrome.runtime.reload is a read-only static value of the runtime wrapper (an own property is masked, unlike static functions such as getURL), so it cannot be intercepted; a reload keeps the context's base URL (WebExtensionContext::reload = controller unload + load), so its only trace is the background restart. A restart within 15 s of an onUpdateAvailable delivery, from a different polyfill incarnation (__detourContextInstance), installs the staged copy; other reloads leave it for the idle poll. Busy = open pages/popup/live native hosts/background polyfill traffic in the last 60 s. Verified by tests (updater deferral suite, polyfill worker suite: 331 extension tests green on the second run; one unidentified failure in the first wide run did not recur). Not exercised at runtime in the app: the Settings 'Install Now' row and a real store update landing while an extension is busy.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Updates no longer tear down a busy extension. ExtensionUpdater stages a verified update (<data>/Extensions/<id>.staged) when ExtensionUpdateDeferral says the extension is in use, reports it as .deferred, and installs it once idle (30 s poll), at the next launch, via Settings > Install Now, or on the background restart that follows a runtime.onUpdateAvailable delivery (the extension's reload). onUpdateAvailable is delivered through a parked runtime.awaitUpdateAvailable request from the background context, re-armed after each delivery and suppressed for the incarnation it was already delivered to. Added-permissions policy unchanged. Follow-ups noted in the task: permission rows for launch-time applies, and keep-alive extensions only update at launch or Install Now.
+<!-- SECTION:FINAL_SUMMARY:END -->
