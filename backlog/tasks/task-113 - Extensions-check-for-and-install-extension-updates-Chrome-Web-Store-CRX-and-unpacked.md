@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-23 09:02'
-updated_date: '2026-09-26 04:03'
+updated_date: '2026-09-26 04:09'
 labels:
   - extensions
   - enhancement
@@ -56,6 +56,8 @@ Runtime verification Sep 25 2026 (isolated profile, harness): the real 1Password
 Banner layout reworked after the user's review of the capture (commit on task113): 14 pt insets, 13 pt semibold title with a matching warning symbol, 3 pt line spacing in the permission list, Accept and Enable on its own trailing row 12 pt below the list (stack distribution .fill so the text column spans the box), source path middle-truncated on one line with a tooltip, and the Reload/Update status drops the '— new permissions need your approval' suffix while the banner shows. Re-captured in the isolated profile.
 
 Banner container: NSBox replaced by a layer-backed TintedBannerView that sizes from its content — NSBox's autoresizing content view never grew to the stack's fitting height, so the vertical insets collapsed. Re-captured: 14 pt top/bottom now hold. (A dark-appearance cacheDisplay capture comes out with a transparent window background, so dark mode was not visually assessed.)
+
+Banner padding root cause: the Settings window is a fixed 740x480 and the detail column overflowed once the update section and banner existed — the permissions list compressed to zero, then the banner's insets. Fixed by a 620-tall Extensions pane, a 96 pt floor under the permissions list and required vertical compression resistance on the banner's contents; measured 14 pt edge-to-title in the running app.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
