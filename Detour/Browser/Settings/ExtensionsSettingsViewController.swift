@@ -539,13 +539,24 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
     /// the extension can move to a newer version, the button that does it with
     /// the result of its last click next to it.
     private func makeUpdateSection(for ext: WebExtension) -> NSView {
-        let sourceLabel = NSTextField(wrappingLabelWithString: Self.sourceDescription(for: ext))
+        // One line: a long unpacked folder path is truncated in the middle and
+        // shown whole in the tooltip, rather than wrapped mid-word.
+        let sourceLabel = NSTextField(labelWithString: Self.sourceDescription(for: ext))
         sourceLabel.font = .systemFont(ofSize: 12)
         sourceLabel.textColor = .secondaryLabelColor
-        sourceLabel.lineBreakMode = .byCharWrapping
+        sourceLabel.lineBreakMode = .byTruncatingMiddle
+        sourceLabel.maximumNumberOfLines = 1
+        sourceLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sourceLabel.toolTip = ext.sourcePath?.path ?? ext.updateURL?.absoluteString
 
         var views: [NSView] = [sourceLabel]
-        let statusLabel = NSTextField(labelWithString: updateStatusByID[ext.id] ?? "")
+        // While the pending-permissions banner is showing, the status line does
+        // not repeat what the banner says.
+        var statusText = updateStatusByID[ext.id] ?? ""
+        if ext.pendingPermissionApproval != nil, let range = statusText.range(of: " — new permissions need your approval") {
+            statusText.removeSubrange(range)
+        }
+        let statusLabel = NSTextField(labelWithString: statusText)
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -618,29 +629,49 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         let icon = NSImageView(image: NSImage(systemSymbolName: "exclamationmark.triangle.fill",
                                               accessibilityDescription: "Warning") ?? NSImage())
         icon.contentTintColor = .systemOrange
+        icon.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
-        let title = NSTextField(wrappingLabelWithString: "Version \(pending.version) needs new permissions:")
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        let title = NSTextField(wrappingLabelWithString: "Version \(pending.version) needs new permissions")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
 
-        let details = NSTextField(wrappingLabelWithString: Self.pendingPermissionsText(pending))
-        details.font = .systemFont(ofSize: 12)
-        details.textColor = .secondaryLabelColor
+        // The permission list, with a little air between its lines.
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 3
+        let details = NSTextField(wrappingLabelWithString: "")
+        details.attributedStringValue = NSAttributedString(
+            string: Self.pendingPermissionsText(pending),
+            attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor,
+                         .paragraphStyle: paragraph])
 
+        // The one action, on its own row at the trailing edge, set apart from
+        // the list it answers.
         let accept = NSButton(title: "Accept and Enable", target: self, action: #selector(acceptPendingPermissionsClicked))
         accept.bezelStyle = .rounded
+        accept.keyEquivalent = ""
+        let buttonSpacer = NSView()
+        buttonSpacer.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
+        let buttonRow = NSStackView(views: [buttonSpacer, accept])
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
 
-        let textStack = NSStackView(views: [title, details, accept])
+        let textStack = NSStackView(views: [title, details, buttonRow])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 4
+        textStack.spacing = 6
+        textStack.setCustomSpacing(12, after: details)
+        buttonRow.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
 
         let row = NSStackView(views: [icon, textStack])
         row.orientation = .horizontal
         row.alignment = .top
-        row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        row.spacing = 10
+        row.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
         row.translatesAutoresizingMaskIntoConstraints = false
+        // The text column fills the box (gravity areas would size it to its
+        // widest line), so the button row can reach the trailing edge.
+        row.distribution = .fill
+        textStack.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
 
         let box = NSBox()
         box.boxType = .custom
