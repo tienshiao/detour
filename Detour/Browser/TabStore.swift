@@ -51,6 +51,12 @@ protocol TabStoreObserver: AnyObject {
     /// or the built-in Default/Private profile created on demand). Not sent for
     /// the saved profiles `restoreSession` loads.
     func tabStoreDidAddProfile(_ profile: Profile)
+
+    /// The closedTab table changed — a close pushed a record, a reopen, restore,
+    /// undo, delete or clear removed some, or a space delete (or its undo) took
+    /// its records out or put them back. Carries no detail: the Archived Tabs
+    /// page (TASK-119) re-reads the listing, coalesced, when it next shows.
+    func tabStoreDidUpdateClosedTabRecords()
 }
 
 extension TabStoreObserver {
@@ -68,6 +74,7 @@ extension TabStoreObserver {
     func tabStoreDidUnpinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {}
     func tabStoreDidUpdateFavorites(for profile: Profile) {}
     func tabStoreDidUpdatePinnedFolders(in space: Space) {}
+    func tabStoreDidUpdateClosedTabRecords() {}
     func tabStoreDidAddProfile(_ profile: Profile) {}
 }
 
@@ -447,6 +454,7 @@ class TabStore {
         }
         let spaceIDString = id.uuidString
         appDB.deleteClosedTabs(spaceID: spaceIDString)
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
     }
 
     func space(withID id: UUID) -> Space? {
@@ -1864,6 +1872,7 @@ class TabStore {
         space.pinnedFolders.removeAll()
         // Clean up closed tab records for this space (captured above for undo)
         appDB.deleteClosedTabs(spaceID: spaceIDString)
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
 
         // `space` is captured strongly on purpose: the restored space must BE the
         // instance the older undo actions closed over (TASK-40).
@@ -2010,6 +2019,7 @@ class TabStore {
             // Restore the closed-tab records, with their original ids, so
             // Cmd+Shift+T works again after undo in the original order.
             self.appDB.insertClosedTabs(savedClosedTabs)
+            self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
 
             self.registerUndo(actionName: "Add Space") { [weak self] in
                 self?.deleteSpace(id: id)
@@ -2345,8 +2355,16 @@ class TabStore {
         // undone under its own name, so Edit reads "Undo Archive Tab".
         let undoActionName = archivedAt == nil ? "Close Tab" : "Archive Tab"
         if undoable, registersUndo {
+            let pushedRecord = !space.isIncognito
             registerUndo(actionName: undoActionName) { [weak self] in
                 guard let self else { return }
+                // The close's record is the tab's one life after closing: once it
+                // is consumed — restored from the Archived Tabs page or by Reopen
+                // Closed Tab — or deleted (Delete, Clear Archive), the undo does
+                // nothing. Otherwise it would bring back a duplicate of a restored
+                // tab, or a tab the user threw away (TASK-119). Incognito closes
+                // push no record and always undo.
+                if pushedRecord, !self.appDB.hasClosedTab(tabID: id.uuidString) { return }
                 // An extension page comes back on its extension's live origin. One
                 // whose extension was disabled or uninstalled since cannot come back
                 // at all (TASK-28): the undo does nothing, and leaves the closed-tab
@@ -2382,6 +2400,7 @@ class TabStore {
                 // Remove the corresponding closed-tab record, or Cmd+Shift+T
                 // would reopen a duplicate of the restored tab.
                 self.appDB.deleteClosedTab(tabID: id.uuidString)
+                self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
                 // Redo re-closes with the same stamp: an undone Archive Tab that
                 // is redone stays an archive record, not a plain close (TASK-115).
                 self.registerUndo(actionName: undoActionName) { [weak self] in
@@ -2394,6 +2413,9 @@ class TabStore {
         }
 
         notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: space) }
+        if undoable, !space.isIncognito {
+            notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+        }
         scheduleSave()
     }
 
@@ -3139,8 +3161,13 @@ class TabStore {
             // close cannot come back (TASK-28). It stays closed, its closed-tab
             // record left to Reopen Closed Tab's rules, and the other member comes
             // back on its own: a split needs both panes.
+            //
+            // Likewise a member whose closed-tab record is gone — restored from
+            // the Archived Tabs page or by Reopen Closed Tab, or deleted — stays
+            // as it is (TASK-119); the other member comes back alone.
             let rebuilt: [(snapshot: MemberSnapshot, tab: BrowserTab)] = snapshots
                 .sorted(by: { $0.index < $1.index })
+                .filter { space.isIncognito || self.appDB.hasClosedTab(tabID: $0.tabID) }
                 .compactMap { snapshot in
                     self.restoredTab(
                         url: snapshot.url.flatMap { URL(string: $0) },
@@ -3176,6 +3203,7 @@ class TabStore {
                 self.appDB.deleteClosedTab(tabID: snapshot.tabID)
                 self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
             }
+            self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
             if rejoinsSplit {
                 self.registerUndo(actionName: "Close Both Splits") { [weak self] in
                     self?.closeSplitGroup(groupID: newGroupID, in: space)
@@ -3198,6 +3226,9 @@ class TabStore {
                     observer.tabStoreDidRemoveTab(member, at: snapshot.index, in: space)
                 }
             }
+        }
+        if !space.isIncognito {
+            notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
         }
         scheduleSave()
     }
@@ -4034,7 +4065,7 @@ class TabStore {
 
     /// This space's closed-tab records, newest first, without their
     /// interactionState blobs (TASK-117) — both plain closes and archived
-    /// records; the listing the Archived Tabs panel (TASK-119) will use.
+    /// records, unclassified. The Archived Tabs page reads `archiveEntries()`.
     func closedTabRecords(in space: Space) -> [ClosedTabSummary] {
         appDB.closedTabSummaries(spaceID: space.id.uuidString)
     }
@@ -4240,12 +4271,13 @@ class TabStore {
         // it can be reopened after the extension is enabled again. The scan reads
         // blob-free summaries; only the chosen record's full row is fetched.
         var candidate: (id: Int64, page: PersistedExtensionPage)?
+        var purged: [Int64] = []
         let availability = ExtensionAvailability(appDB: appDB)
         scan: for summary in reopenableClosedTabRecords(in: space) {
             let page = closedTabPage(summary, in: space, availability: availability)
             switch page {
             case .unavailable:
-                appDB.deleteClosedTab(id: summary.id)
+                purged.append(summary.id)
             case .disabled:
                 continue
             case .notExtensionPage, .restorable:
@@ -4253,14 +4285,31 @@ class TabStore {
                 break scan
             }
         }
-        guard let (recordID, page) = candidate,
-              let record = appDB.closedTab(id: recordID) else { return nil }
-        // By row id rather than popping the space's newest row: skipped records
-        // may sit above this one.
-        appDB.deleteClosedTab(id: recordID)
+        if !purged.isEmpty {
+            appDB.deleteClosedTabs(ids: purged)
+        }
+        guard let (recordID, page) = candidate else {
+            if !purged.isEmpty {
+                notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+            }
+            return nil
+        }
+        return reopenClosedTabRecord(id: recordID, page: page, in: space)
+    }
 
-        // The candidate is an ordinary page or a restorable one, so this builds a
-        // tab; an extension page lands on its live origin (`restoredTab`).
+    /// The shared tail of Reopen Closed Tab and the Archived Tabs page's restore:
+    /// fetches the record's full row (the only blob read), deletes it — by row id
+    /// rather than popping the space's newest row, since skipped records may sit
+    /// above it — and inserts the rebuilt tab where it was closed, snapped out of
+    /// any split group that now spans that index. `page` must be an ordinary or
+    /// restorable page (`closedTabPage` of the record), so a tab is built; an
+    /// extension page lands on its live origin (`restoredTab`).
+    private func reopenClosedTabRecord(id recordID: Int64, page: PersistedExtensionPage,
+                                       in space: Space) -> BrowserTab? {
+        guard let record = appDB.closedTab(id: recordID) else { return nil }
+        appDB.deleteClosedTab(id: recordID)
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+
         guard let tab = restoredTab(
             url: record.url.flatMap { URL(string: $0) },
             title: record.title,
@@ -4278,6 +4327,98 @@ class TabStore {
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
         scheduleSave()
         return tab
+    }
+
+    // MARK: - Archived Tabs (TASK-119)
+
+    /// Every closed-tab record of every current non-incognito space — plain
+    /// closes and archived records alike — as the Archived Tabs page lists them,
+    /// newest first. Records of spaces that no longer exist are left out.
+    ///
+    /// Extension pages are classified with one shared availability: a disabled
+    /// extension's page is listed but not restorable (the record is kept for
+    /// when it is enabled again); an uninstalled extension's page can never load
+    /// again, so its record is deleted here, silently — the listing already
+    /// omits it, and a notification would only make the page reload the list.
+    func archiveEntries() -> [ArchiveEntry] {
+        let spacesByID = Dictionary(uniqueKeysWithValues: nonIncognitoSpaces.map { ($0.id.uuidString, $0) })
+        guard !spacesByID.isEmpty else { return [] }
+        let availability = ExtensionAvailability(appDB: appDB)
+        var entries: [ArchiveEntry] = []
+        var purged: [Int64] = []
+        for summary in appDB.closedTabSummaries() {
+            guard let space = spacesByID[summary.spaceID] else { continue }
+            let isRestorable: Bool
+            switch closedTabPage(summary, in: space, availability: availability) {
+            case .unavailable:
+                purged.append(summary.id)
+                continue
+            case .disabled:
+                isRestorable = false
+            case .notExtensionPage, .restorable:
+                isRestorable = true
+            }
+            entries.append(ArchiveEntry(
+                id: summary.id,
+                spaceID: space.id,
+                title: summary.title,
+                url: summary.url,
+                faviconURL: summary.faviconURL.flatMap { URL(string: $0) },
+                closedAt: summary.closedAt.map { Date(timeIntervalSince1970: $0) },
+                isRestorable: isRestorable
+            ))
+        }
+        if !purged.isEmpty {
+            appDB.deleteClosedTabs(ids: purged)
+        }
+        return entries
+    }
+
+    /// Whether any current non-incognito space has a closed-tab record — menu
+    /// validation for Clear Archived Tabs, so blob-free and unclassified.
+    func hasClosedTabRecords() -> Bool {
+        let spaceIDs = Set(nonIncognitoSpaces.map(\.id.uuidString))
+        guard !spaceIDs.isEmpty else { return false }
+        return appDB.closedTabSummaries().contains { spaceIDs.contains($0.spaceID) }
+    }
+
+    /// Restores one closed-tab record from the Archived Tabs page into the space
+    /// it was closed from (which need not be the window's active space), at its
+    /// original index — archived records included, unlike Reopen Closed Tab.
+    /// Returns nil, changing nothing, when the record's space is gone or
+    /// incognito, or its page belongs to a disabled extension (the record is
+    /// kept for when the extension is enabled again). An uninstalled extension's
+    /// record is deleted and nil returned.
+    @discardableResult
+    func restoreClosedTab(recordID: Int64) -> BrowserTab? {
+        guard let summary = appDB.closedTabSummary(id: recordID),
+              let spaceID = UUID(uuidString: summary.spaceID),
+              let space = space(withID: spaceID), !space.isIncognito else { return nil }
+        let page = closedTabPage(summary, in: space)
+        switch page {
+        case .unavailable:
+            appDB.deleteClosedTab(id: recordID)
+            notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+            return nil
+        case .disabled:
+            return nil
+        case .notExtensionPage, .restorable:
+            return reopenClosedTabRecord(id: recordID, page: page, in: space)
+        }
+    }
+
+    /// Deletes one closed-tab record (the Archived Tabs page's Delete).
+    func deleteClosedTabRecord(id: Int64) {
+        appDB.deleteClosedTab(id: id)
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+    }
+
+    /// Deletes every closed-tab record of the given spaces (Clear Archive). Not
+    /// undoable: the user confirmed a permanent delete.
+    func clearClosedTabRecords(spaceIDs: [UUID]) {
+        guard !spaceIDs.isEmpty else { return }
+        appDB.deleteClosedTabs(spaceIDs: spaceIDs.map(\.uuidString))
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
     }
 
     // MARK: - Tab Archiving

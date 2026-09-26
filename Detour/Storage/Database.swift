@@ -305,6 +305,7 @@ struct AppDatabase {
     static let closedTabSummariesReadLabel = "load closed tab summaries"
     static let closedTabReadLabel = "load closed tab"
     static let closedTabsForSpaceReadLabel = "load closed tabs for space"
+    static let closedTabSummaryReadLabel = "load closed tab summary"
 
     /// No row cap (TASK-120): records stay until the user clears them (Clear
     /// Archive, TASK-119) or retention removes them (TASK-118).
@@ -327,7 +328,7 @@ struct AppDatabase {
 
     /// Closed-tab rows without their interactionState blobs, newest first —
     /// what menu validation, the reopen scan and listings read (TASK-117).
-    /// `spaceID == nil` lists every space (tests only). `includeArchived: false`
+    /// `spaceID == nil` lists every space (the Archived Tabs page, TASK-119). `includeArchived: false`
     /// leaves out archived records (archivedAt set) — the Reopen Closed Tab scan
     /// (TASK-116).
     func closedTabSummaries(spaceID: String? = nil, includeArchived: Bool = true) -> [ClosedTabSummary] {
@@ -343,6 +344,19 @@ struct AppDatabase {
                 request = request.filter(Column("archivedAt") == nil)
             }
             return try request.order(Column("id").desc).fetchAll(db)
+        }
+    }
+
+    /// One closed-tab row without its blob — what an Archived Tabs restore
+    /// classifies before fetching the full row (TASK-119).
+    func closedTabSummary(id: Int64) -> ClosedTabSummary? {
+        performRead(Self.closedTabSummaryReadLabel, default: nil) { db in
+            try ClosedTabSummary.select(
+                Column("id"), Column("tabID"), Column("spaceID"), Column("url"),
+                Column("title"), Column("faviconURL"), Column("sortOrder"),
+                Column("archivedAt"), Column("closedAt"), Column("extensionID"))
+                .filter(Column("id") == id)
+                .fetchOne(db)
         }
     }
 
@@ -385,11 +399,40 @@ struct AppDatabase {
         }
     }
 
+    /// Deletes the given closed-tab rows in one write (purging uninstalled
+    /// extensions' records found by a scan).
+    func deleteClosedTabs(ids: [Int64]) {
+        guard !ids.isEmpty else { return }
+        performWrite("delete closed tabs by id") { db in
+            _ = try ClosedTabRecord.deleteAll(db, keys: ids)
+        }
+    }
+
+    /// Deletes every closed-tab row of the given spaces in one write (Clear
+    /// Archive, TASK-119).
+    func deleteClosedTabs(spaceIDs: [String]) {
+        guard !spaceIDs.isEmpty else { return }
+        performWrite("delete closed tabs for spaces") { db in
+            _ = try ClosedTabRecord
+                .filter(spaceIDs.contains(Column("spaceID")))
+                .deleteAll(db)
+        }
+    }
+
     func deleteClosedTabs(spaceID: String) {
         performWrite("delete closed tabs for space") { db in
             try ClosedTabRecord
                 .filter(Column("spaceID") == spaceID)
                 .deleteAll(db)
+        }
+    }
+
+    /// Whether a closed-tab row for `tabID` still exists — a close undo checks
+    /// it, since the record may have been consumed (restored from the Archived
+    /// Tabs page or by Reopen Closed Tab) or deleted since the close.
+    func hasClosedTab(tabID: String) -> Bool {
+        performRead("has closed tab", default: false) { db in
+            try ClosedTabSummary.filter(Column("tabID") == tabID).fetchCount(db) > 0
         }
     }
 

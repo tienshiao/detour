@@ -131,6 +131,20 @@ extension BrowserWindowController: TabSidebarDelegate {
         setActiveSpace(id: spaceID)
     }
 
+    // MARK: Archived Tabs page (TASK-119)
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRestoreArchivedTab recordID: Int64) {
+        restoreArchivedTab(recordID: recordID)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64) {
+        store.deleteClosedTabRecord(id: recordID)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int) {
+        confirmClearArchive(spaceIDs: spaceIDs, count: count)
+    }
+
     func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {
         SettingsWindowController.shared.showSpacesPane()
     }

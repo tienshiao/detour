@@ -382,6 +382,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // the Navigate menu is not delegate-driven, so AppKit matches it
         // natively and `MenuKeyEquivalentMatcher` never sees it.
         navigateMenu.addItem(withTitle: "Show All History", action: #selector(BrowserWindowController.showHistory(_:)), keyEquivalent: "y")
+        // The sidebar's Archived Tabs page (TASK-119), also reached by swiping
+        // right past the first space.
+        navigateMenu.addItem(withTitle: "Show Archived Tabs", action: #selector(BrowserWindowController.showArchivedTabs(_:)), keyEquivalent: "")
+        navigateMenu.addItem(withTitle: "Clear Archived Tabs…", action: #selector(BrowserWindowController.clearArchivedTabs(_:)), keyEquivalent: "")
         navigateMenuItem.submenu = navigateMenu
 
         // Spaces menu

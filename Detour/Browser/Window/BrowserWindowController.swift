@@ -2086,6 +2086,75 @@ class BrowserWindowController: NSWindowController {
         selectTab(id: tab.id)
     }
 
+    // MARK: - Archived Tabs (TASK-119)
+
+    /// Navigate > Show Archived Tabs: reveals a hidden sidebar and slides it to
+    /// the Archived Tabs page; with the page already on screen, slides back.
+    @objc func showArchivedTabs(_ sender: Any?) {
+        guard !isIncognito else { return }
+        let wasHidden = sidebarItem.isCollapsed
+        if wasHidden {
+            toggleSidebarAutoHide()
+        }
+        if tabSidebar.isShowingArchivePage && !wasHidden {
+            tabSidebar.dismissArchivePage(animated: true)
+        } else {
+            tabSidebar.showArchivePage(animated: true)
+        }
+    }
+
+    /// Navigate > Clear Archived Tabs…: every space's records, after confirming.
+    @objc func clearArchivedTabs(_ sender: Any?) {
+        guard !isIncognito else { return }
+        let count = store.archiveEntries().count
+        guard count > 0 else { return }
+        confirmClearArchive(spaceIDs: store.nonIncognitoSpaces.map(\.id), count: count)
+    }
+
+    /// Restores a closed-tab record from the Archived Tabs page into its own
+    /// space — switching this window there if it is not the active one — and
+    /// selects it. The space switch already slides the sidebar off the archive
+    /// page; otherwise it is dismissed here. A record that cannot come back (a
+    /// disabled extension's page) beeps.
+    func restoreArchivedTab(recordID: Int64) {
+        guard let tab = store.restoreClosedTab(recordID: recordID) else {
+            NSSound.beep()
+            return
+        }
+        if let spaceID = tab.spaceID, spaceID != activeSpaceID {
+            setActiveSpace(id: spaceID, selectTab: false)
+        }
+        selectTab(id: tab.id)
+        tabSidebar.dismissArchivePage(animated: true)
+    }
+
+    /// Confirms, as a sheet, then permanently deletes the closed-tab records of
+    /// `spaceIDs` (`count` of them — the caller's listing).
+    func confirmClearArchive(spaceIDs: [UUID], count: Int) {
+        guard !spaceIDs.isEmpty, count > 0 else { return }
+        let alert = NSAlert()
+        alert.messageText = "Clear archived tabs?"
+        let tabs = count == 1 ? "1 tab" : "\(count) tabs"
+        if spaceIDs.count == 1, let space = store.space(withID: spaceIDs[0]) {
+            alert.informativeText = "This permanently deletes \(tabs) from the archive of \u{201C}\(space.emoji) \(space.name)\u{201D}."
+        } else {
+            alert.informativeText = "This permanently deletes \(tabs) from the archive of all spaces."
+        }
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        let clear = { [weak self] in
+            self?.store.clearClosedTabRecords(spaceIDs: spaceIDs)
+        }
+        if let window {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn { clear() }
+            }
+        } else if alert.runModal() == .alertFirstButtonReturn {
+            clear()
+        }
+    }
+
     @objc func newTab(_ sender: Any?) {
         if let palette = commandPaletteView {
             if palette.isAnchored {
@@ -2786,6 +2855,12 @@ extension BrowserWindowController: NSMenuItemValidation {
             }
             menuItem.title = store.undoManager.redoMenuItemTitle
             return store.undoManager.canRedo
+        }
+        if menuItem.action == #selector(showArchivedTabs(_:)) {
+            return !isIncognito
+        }
+        if menuItem.action == #selector(clearArchivedTabs(_:)) {
+            return !isIncognito && store.hasClosedTabRecords()
         }
         if menuItem.action == #selector(reopenClosedTab(_:)) {
             guard let space = activeSpace else { return false }

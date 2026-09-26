@@ -67,6 +67,12 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeletePinnedFolder folderID: UUID)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMovePinnedTabToFolder tabID: UUID, folderID: UUID?, beforeItemID: UUID?)
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMovePinnedFolder folderID: UUID, parentFolderID: UUID?, beforeItemID: UUID?)
+
+    // Archived Tabs page (TASK-119): closed-tab records by row id.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRestoreArchivedTab recordID: Int64)
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64)
+    /// Clear Archive… for `spaceIDs`, which hold `count` records; the receiver confirms.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int)
 }
 
 extension TabSidebarDelegate {
@@ -109,6 +115,9 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeletePinnedFolder folderID: UUID) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMovePinnedTabToFolder tabID: UUID, folderID: UUID?, beforeItemID: UUID?) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestMovePinnedFolder folderID: UUID, parentFolderID: UUID?, beforeItemID: UUID?) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRestoreArchivedTab recordID: Int64) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int) {}
 }
 
 class TabSidebarViewController: NSViewController {
@@ -223,9 +232,41 @@ class TabSidebarViewController: NSViewController {
     // Page strip: all spaces laid out side-by-side, clipped by pageClipView
     private let pageClipView = NSView()
     private let pageStripView = NSView()
+    /// Holds the address bar at the top of the page clip, above the strip. It is
+    /// frame-based like the strip: it stays put between spaces but slides off
+    /// with the first space's page onto the archive page, which has no address
+    /// bar (`SidebarPageStrip.spaceChromeX`). Space pages start below it; the
+    /// archive page uses the full height, its search row in the bar's place.
+    private let addressBarHost = NSView()
+    /// The address bar's height plus the gap below it.
+    private static let addressBarRowHeight: CGFloat = 38
     private var spacePages: [SpacePageView] = []
     private var pageSpaceIDs: [UUID] = []
+    /// Index of the ACTIVE SPACE's page in `spacePages` — it backs `tableView` /
+    /// `scrollView` and the inactive-page bookkeeping, and keeps meaning that
+    /// while the Archived Tabs page is showing. Never a strip index: strip
+    /// positions go through `pageStrip` / `currentStripIndex`.
     private var activePageIndex = 0
+
+    /// The Archived Tabs page (TASK-119), at strip index 0 left of the first
+    /// space. nil in an incognito sidebar, which has no archive.
+    private var archivePage: ArchivePageView?
+    /// True while the strip rests on (or is sliding to) the Archived Tabs page.
+    /// The active space is unchanged underneath: the window keeps showing its
+    /// tabs, and `activePageIndex` still names its page.
+    private(set) var isShowingArchivePage = false {
+        didSet {
+            if oldValue, !isShowingArchivePage { resignArchivePageFocus() }
+        }
+    }
+    /// The closed-tab records changed since the archive page last loaded them.
+    private var archiveNeedsReload = true
+    private var archiveReloadScheduled = false
+    private var archiveLoadedAt: Date?
+    /// Bumped by every strip transition, so a superseded transition's
+    /// completion handler does nothing.
+    private var stripAnimationGeneration = 0
+    private static let archiveTintColor = NSColor.gray
 
     /// What a non-active page's table was last loaded with. The active page's
     /// data source is the controller's own model; a non-active page renders its
@@ -240,7 +281,18 @@ class TabSidebarViewController: NSViewController {
     private var inactivePageReloadScheduled = false
 
     var activeSpaceID: UUID? {
-        didSet { updateActivePage() }
+        didSet {
+            // A real space change (a restore into another space, a keyboard
+            // space switch) leaves the archive page for the new space. Setting
+            // the same value — rebuildPages and friends do, often — keeps it.
+            guard isShowingArchivePage, activeSpaceID != oldValue else {
+                updateActivePage()
+                return
+            }
+            isShowingArchivePage = false
+            updateActivePage(snapStrip: false)
+            slideStripToCurrentPage(duration: 0.2)
+        }
     }
 
     var pinnedEntries: [PinnedEntry] = []
@@ -576,12 +628,7 @@ class TabSidebarViewController: NSViewController {
         didSet {
             safeTintColor = tintColor?.sidebarSafe(darkBackground: isDarkBackground)
             let safeColor = safeTintColor
-            view.wantsLayer = true
-            if let color = safeColor ?? tintColor {
-                view.layer?.backgroundColor = color.withAlphaComponent(0.1).cgColor
-            } else {
-                view.layer?.backgroundColor = nil
-            }
+            applyRestingBackground()
             tableView.enumerateAvailableRowViews { rowView, row in
                 (rowView as? TabRowView)?.selectionColor = safeColor
                 if let folderCell = rowView.view(atColumn: 0) as? FolderCellView {
@@ -752,10 +799,11 @@ class TabSidebarViewController: NSViewController {
         pageClipView.layer?.masksToBounds = true
         pageClipView.translatesAutoresizingMaskIntoConstraints = false
         pageClipView.addSubview(pageStripView)
+        addressBarHost.addSubview(fauxAddressBar)
+        pageClipView.addSubview(addressBarHost, positioned: .above, relativeTo: pageStripView)
 
         container.addSubview(sidebarToggleButton)
         container.addSubview(navStack)
-        container.addSubview(fauxAddressBar)
         container.addSubview(pageClipView)
         container.addSubview(bottomBar)
 
@@ -775,15 +823,15 @@ class TabSidebarViewController: NSViewController {
             navStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
             navStack.heightAnchor.constraint(equalToConstant: Self.navButtonHeight),
 
-            // Address field: below the nav row (38pt from top on Tahoe)
-            fauxAddressBar.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 8),
-            fauxAddressBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            fauxAddressBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            // Address field: top of the page clip (inside `addressBarHost`),
+            // below the nav row (38pt from top on Tahoe)
+            fauxAddressBar.topAnchor.constraint(equalTo: addressBarHost.topAnchor),
+            fauxAddressBar.leadingAnchor.constraint(equalTo: addressBarHost.leadingAnchor, constant: 10),
+            fauxAddressBar.trailingAnchor.constraint(equalTo: addressBarHost.trailingAnchor, constant: -10),
+            fauxAddressBar.heightAnchor.constraint(equalToConstant: Self.addressBarRowHeight - 4),
 
-            // Page clip: below address field, above bottom bar
-            fauxAddressBar.heightAnchor.constraint(equalToConstant: 34),
-
-            pageClipView.topAnchor.constraint(equalTo: fauxAddressBar.bottomAnchor, constant: 4),
+            // Page clip: from below the nav row (address bar included), above bottom bar
+            pageClipView.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 8),
             pageClipView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             pageClipView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -847,6 +895,7 @@ class TabSidebarViewController: NSViewController {
     // MARK: - Page Management
 
     func rebuildPages() {
+        updateArchivePagePresence()
         let spaces = relevantSpaces
         let newIDs = spaces.map { $0.id }
         guard newIDs != pageSpaceIDs else {
@@ -969,17 +1018,25 @@ class TabSidebarViewController: NSViewController {
         let pageH = pageClipView.bounds.height
         guard pageW > 0 else { return }
 
+        let strip = pageStrip
+        let spacePageH = max(0, pageH - Self.addressBarRowHeight)
+        archivePage?.frame = NSRect(x: CGFloat(strip.stripIndex(for: .archive)) * pageW, y: 0,
+                                    width: pageW, height: pageH)
         for (i, page) in spacePages.enumerated() {
-            page.frame = NSRect(x: CGFloat(i) * pageW, y: 0, width: pageW, height: pageH)
+            page.frame = NSRect(x: CGFloat(strip.stripIndex(for: .space(i))) * pageW, y: 0,
+                                width: pageW, height: spacePageH)
         }
         pageStripView.frame = NSRect(
-            x: -CGFloat(activePageIndex) * pageW,
-            y: 0,
-            width: CGFloat(max(1, spacePages.count)) * pageW,
+            x: 0, y: 0,
+            width: CGFloat(max(1, strip.pageCount)) * pageW,
             height: pageH)
+        addressBarHost.frame = NSRect(x: 0, y: spacePageH, width: pageW, height: Self.addressBarRowHeight)
+        setStripX(-CGFloat(currentStripIndex) * pageW)
     }
 
-    private func updateActivePage() {
+    /// `snapStrip: false` leaves the strip where it is, for a caller that
+    /// animates it to `currentStripIndex` itself.
+    private func updateActivePage(snapStrip: Bool = true) {
         let spaces = relevantSpaces
         let newIndex: Int
         if let id = activeSpaceID, let idx = spaces.firstIndex(where: { $0.id == id }) {
@@ -1001,10 +1058,12 @@ class TabSidebarViewController: NSViewController {
             reloadInactivePage(at: previousIndex)
         }
 
-        // Snap strip to active page (no animation)
+        // Snap strip to the current page (no animation) — the active space's,
+        // or the archive's while it shows. Not while a transition animates it
+        // there: a snap mid-flight would cut the slide short.
         let pageW = pageClipView.bounds.width
-        if pageW > 0 {
-            pageStripView.frame.origin.x = -CGFloat(newIndex) * pageW
+        if snapStrip, pageW > 0, !isAnimatingSwipe {
+            setStripX(-CGFloat(currentStripIndex) * pageW)
         }
 
         updateFadeShadows()
@@ -1015,6 +1074,291 @@ class TabSidebarViewController: NSViewController {
         for (i, page) in spacePages.enumerated() where i < spaces.count {
             page.update(emoji: spaces[i].emoji, name: spaces[i].name)
         }
+        archivePage?.updateSpaces(archiveSpaceInfos)
+    }
+
+    // MARK: - Archived Tabs Page (TASK-119)
+
+    /// Page ↔ strip-position mapping for this sidebar's current pages.
+    private var pageStrip: SidebarPageStrip {
+        SidebarPageStrip(hasArchivePage: archivePage != nil, spaceCount: spacePages.count)
+    }
+
+    /// Moves the page strip to `x` and the address bar with it
+    /// (`SidebarPageStrip.spaceChromeX`). Inside an animation group, pass
+    /// `animated` so both animate together.
+    private func setStripX(_ x: CGFloat, animated: Bool = false) {
+        let pageW = pageClipView.bounds.width
+        var stripFrame = pageStripView.frame
+        stripFrame.origin.x = x
+        var barFrame = addressBarHost.frame
+        barFrame.origin.x = pageStrip.spaceChromeX(forStripX: x, pageWidth: pageW)
+        if animated {
+            pageStripView.animator().frame = stripFrame
+            addressBarHost.animator().frame = barFrame
+        } else {
+            pageStripView.frame = stripFrame
+            addressBarHost.frame = barFrame
+        }
+    }
+
+    /// The strip index the strip rests on: the archive page's while it shows,
+    /// else the active space's page.
+    private var currentStripIndex: Int {
+        isShowingArchivePage
+            ? pageStrip.stripIndex(for: .archive)
+            : pageStrip.stripIndex(for: .space(activePageIndex))
+    }
+
+    /// `currentStripIndex` as a (possibly negative) space-button index.
+    private var currentSpaceButtonIndex: CGFloat {
+        pageStrip.spaceButtonIndex(forFractionalStripIndex: CGFloat(currentStripIndex))
+    }
+
+    /// The tint a strip page shows while the strip moves (raw space colours,
+    /// as the swipe has always blended; the archive's neutral grey).
+    private func stripTintColor(atStripIndex index: Int) -> NSColor? {
+        switch pageStrip.page(atStripIndex: index) {
+        case .archive:
+            return Self.archiveTintColor
+        case .space(let spaceIndex):
+            let spaces = relevantSpaces
+            return spaceIndex < spaces.count ? spaces[spaceIndex].color : nil
+        case nil:
+            return nil
+        }
+    }
+
+    /// The sidebar background at rest: the archive's grey while it shows, else
+    /// the active space's (sidebar-safe) tint.
+    private func applyRestingBackground() {
+        view.wantsLayer = true
+        if isShowingArchivePage {
+            view.layer?.backgroundColor = Self.archiveTintColor.withAlphaComponent(0.1).cgColor
+        } else if let color = safeTintColor ?? tintColor {
+            view.layer?.backgroundColor = color.withAlphaComponent(0.1).cgColor
+        } else {
+            view.layer?.backgroundColor = nil
+        }
+    }
+
+    private var archiveSpaceInfos: [ArchivePageView.SpaceInfo] {
+        relevantSpaces.map { ArchivePageView.SpaceInfo(id: $0.id, emoji: $0.emoji, name: $0.name) }
+    }
+
+    /// Creates the archive page for a non-incognito sidebar (removes it for an
+    /// incognito one). Called by every rebuild; keeps an existing page, and
+    /// with it `isShowingArchivePage`.
+    private func updateArchivePagePresence() {
+        if isIncognito {
+            guard let page = archivePage else { return }
+            isShowingArchivePage = false
+            page.removeFromSuperview()
+            archivePage = nil
+            relayoutPages()
+            return
+        }
+        guard archivePage == nil else { return }
+        let page = ArchivePageView(onScrollWheel: { [weak self] in self?.handleSpaceSwipe($0) ?? false })
+        page.onRestore = { [weak self] entry in
+            guard let self else { return }
+            self.delegate?.tabSidebar(self, didRequestRestoreArchivedTab: entry.id)
+        }
+        page.onDelete = { [weak self] entry in
+            guard let self else { return }
+            self.delegate?.tabSidebar(self, didRequestDeleteArchivedTab: entry.id)
+        }
+        page.onClear = { [weak self] spaceIDs, count in
+            guard let self else { return }
+            self.delegate?.tabSidebar(self, didRequestClearArchiveOf: spaceIDs, count: count)
+        }
+        pageStripView.addSubview(page)
+        archivePage = page
+        archiveNeedsReload = true
+    }
+
+    /// Re-reads the closed-tab records into the archive page.
+    private func reloadArchivePage() {
+        guard let archivePage else { return }
+        archiveNeedsReload = false
+        archiveReloadScheduled = false
+        archiveLoadedAt = Date()
+        archivePage.update(entries: TabStore.shared.archiveEntries(), spaces: archiveSpaceInfos)
+    }
+
+    /// Reloads the archive page if its records changed since it last loaded,
+    /// or it loaded on an earlier day (its relative-date headers moved on).
+    private func reloadArchivePageIfNeeded() {
+        guard archivePage != nil else { return }
+        let isStale = archiveLoadedAt.map { !Calendar.current.isDateInToday($0) } ?? true
+        guard archiveNeedsReload || isStale else { return }
+        reloadArchivePage()
+    }
+
+    /// The closed-tab records changed (`TabStoreObserver`, forwarded by the
+    /// window). Coalesced: the page reloads once, on the next turn of the run
+    /// loop, if it can be seen — showing, or the strip moving — and otherwise
+    /// lazily, when a swipe starts or `showArchivePage` runs.
+    func closedTabRecordsDidChange() {
+        guard archivePage != nil else { return }
+        archiveNeedsReload = true
+        guard isShowingArchivePage || isPageStripInMotion, !archiveReloadScheduled else { return }
+        archiveReloadScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.archiveReloadScheduled else { return }
+            self.archiveReloadScheduled = false
+            if self.isShowingArchivePage || self.isPageStripInMotion {
+                self.reloadArchivePageIfNeeded()
+            }
+        }
+    }
+
+    /// Slides the strip to the Archived Tabs page (from wherever it is),
+    /// reloading the list first. Focuses nothing. A no-op in an incognito
+    /// sidebar or when the page already shows.
+    func showArchivePage(animated: Bool) {
+        guard archivePage != nil, !isShowingArchivePage else { return }
+        reloadArchivePage()
+        isShowingArchivePage = true
+        if animated {
+            reloadInactivePages()
+            slideStripToCurrentPage(duration: 0.25)
+        } else {
+            snapStripToCurrentPage()
+        }
+    }
+
+    /// Slides the strip back from the Archived Tabs page to the active space's.
+    func dismissArchivePage(animated: Bool) {
+        guard isShowingArchivePage else { return }
+        isShowingArchivePage = false
+        if animated {
+            reloadInactivePages()
+            slideStripToCurrentPage(duration: 0.2)
+        } else {
+            snapStripToCurrentPage()
+        }
+    }
+
+    /// Puts the page strip, the space buttons and the background at rest on
+    /// `currentStripIndex`, without animation.
+    private func snapStripToCurrentPage() {
+        stopSpaceClickAnimation()
+        stripAnimationGeneration += 1
+        isAnimatingSwipe = false
+        let pageW = pageClipView.bounds.width
+        if pageW > 0 {
+            setStripX(-CGFloat(currentStripIndex) * pageW)
+        }
+        positionSpaceStrip(forButtonIndex: currentSpaceButtonIndex)
+        updateSpaceButtonAppearances(activeIndex: currentSpaceButtonIndex)
+        applyRestingBackground()
+        updateFadeShadows()
+    }
+
+    /// Animates the strip onto `currentStripIndex` (ease-out), then settles.
+    /// Snaps instead while the strip cannot animate (no width yet, or a swipe
+    /// is tracking — the swipe owns the strip then).
+    private func slideStripToCurrentPage(duration: Double) {
+        guard pageClipView.bounds.width > 0, !isTrackingHorizontalSwipe else {
+            snapStripToCurrentPage()
+            return
+        }
+        let target = currentStripIndex
+        animateStrip(toStripIndex: target, duration: duration,
+                     timing: CAMediaTimingFunction(name: .easeOut)) { [weak self] in
+            // A swipe that started meanwhile owns the strip.
+            guard let self, !self.isTrackingHorizontalSwipe else { return }
+            // Settle on whatever is current now (the flag may have flipped
+            // again mid-flight).
+            if self.currentStripIndex == target {
+                self.positionSpaceStrip(forButtonIndex: self.currentSpaceButtonIndex)
+                self.updateSpaceButtonAppearances(activeIndex: self.currentSpaceButtonIndex)
+                self.applyRestingBackground()
+                self.updateFadeShadows()
+            } else {
+                self.snapStripToCurrentPage()
+            }
+        }
+    }
+
+    /// Moves the page strip to `targetStripIndex`: the strip frame and the
+    /// background tint animate, and a timer drives the space-button highlight
+    /// through the fractional button indices on the way (its stretch, and its
+    /// fade onto the archive page). `completion` runs unless another
+    /// transition superseded this one.
+    private func animateStrip(toStripIndex targetStripIndex: Int, duration: Double,
+                              timing: CAMediaTimingFunction, completion: @escaping () -> Void) {
+        stopSpaceClickAnimation()
+        let pageW = pageClipView.bounds.width
+        let strip = pageStrip
+        stripAnimationGeneration += 1
+        let generation = stripAnimationGeneration
+        isAnimatingSwipe = true
+        let targetX = -CGFloat(targetStripIndex) * pageW
+        let startIndex = strip.spaceButtonIndex(forFractionalStripIndex: pageW > 0 ? -pageStripView.frame.origin.x / pageW : 0)
+        let endIndex = strip.spaceButtonIndex(forFractionalStripIndex: CGFloat(targetStripIndex))
+        let targetColor = stripTintColor(atStripIndex: targetStripIndex)
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = duration
+            ctx.timingFunction = timing
+            setStripX(targetX, animated: true)
+            if let targetColor {
+                view.animator().layer?.backgroundColor = targetColor.withAlphaComponent(0.1).cgColor
+            }
+        }, completionHandler: { [weak self] in
+            guard let self, self.stripAnimationGeneration == generation else { return }
+            self.isAnimatingSwipe = false
+            completion()
+        })
+
+        let startTime = CACurrentMediaTime()
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let elapsed = CACurrentMediaTime() - startTime
+            let rawT = (elapsed / duration).clamped(to: 0...1)
+            let t = rawT < 0.5 ? 2 * rawT * rawT : 1 - pow(-2 * rawT + 2, 2) / 2
+            let currentIndex = startIndex + (endIndex - startIndex) * CGFloat(t)
+            if let x = self.spaceStripX(forIndex: currentIndex) {
+                self.spaceStripView.frame.origin.x = x
+            }
+            self.updateSpaceButtonAppearances(activeIndex: currentIndex)
+            if rawT >= 1 {
+                timer.invalidate()
+                self.spaceClickAnimation = nil
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        spaceClickAnimation = (timer, startIndex, endIndex, startTime, duration)
+    }
+
+    /// Ends a strip transition on the page of the space at `index`: leaves the
+    /// archive page, then either settles (the space is already active) or
+    /// asks the window to switch — after clearing the flag, so the resulting
+    /// `activeSpaceID` change snaps rather than slides again.
+    private func finishTransition(onSpaceAt index: Int) {
+        let spaces = relevantSpaces
+        guard index < spaces.count else {
+            snapStripToCurrentPage()
+            return
+        }
+        let spaceID = spaces[index].id
+        isShowingArchivePage = false
+        if spaceID == activeSpaceID {
+            snapStripToCurrentPage()
+        } else {
+            delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: spaceID)
+        }
+    }
+
+    /// Keyboard focus in the archive page (its search field or list) must not
+    /// stay behind on a page that slid off screen.
+    private func resignArchivePageFocus() {
+        guard let archivePage, let window = view.window,
+              let responder = window.firstResponder as? NSView,
+              responder.isDescendant(of: archivePage) else { return }
+        window.makeFirstResponder(nil)
     }
 
     @objc private func scrollViewDidScroll(_ notification: Notification) {
@@ -1170,8 +1514,10 @@ class TabSidebarViewController: NSViewController {
         }
 
         bottomBar.layoutSubtreeIfNeeded()
-        positionSpaceStrip(forActiveIndex: activeIndex)
-        updateSpaceButtonAppearances(activeIndex: CGFloat(activeIndex))
+        // -1 (no highlight) while the archive page shows.
+        let buttonIndex = isShowingArchivePage ? currentSpaceButtonIndex : CGFloat(activeIndex)
+        positionSpaceStrip(forButtonIndex: buttonIndex)
+        updateSpaceButtonAppearances(activeIndex: buttonIndex)
     }
 
     /// Computes the clamped strip X position for a given fractional space index.
@@ -1186,9 +1532,11 @@ class TabSidebarViewController: NSViewController {
         return max(clipW - totalWidth, min(0, x))
     }
 
-    private func positionSpaceStrip(forActiveIndex activeIndex: Int) {
+    /// `buttonIndex` is a space-button index (`SidebarPageStrip.spaceButtonIndex`),
+    /// negative on the archive page.
+    private func positionSpaceStrip(forButtonIndex buttonIndex: CGFloat) {
         guard !relevantSpaces.isEmpty,
-              let x = spaceStripX(forIndex: CGFloat(activeIndex)) else { return }
+              let x = spaceStripX(forIndex: buttonIndex) else { return }
         spaceStripView.frame.origin.x = x
     }
 
@@ -1247,7 +1595,10 @@ class TabSidebarViewController: NSViewController {
         // Edge visibility for the highlight
         let hlCenterInClip = highlightFrame.midX + spaceStripView.frame.origin.x
         let hlEdgeT = (min(hlCenterInClip, clipW - hlCenterInClip) / halfBtn).clamped(to: 0...1)
-        spaceHighlightView.alphaValue = hlEdgeT
+        // Moving onto the archive page (a negative index) the highlight keeps
+        // its overscroll squish but fades out: the archive has no button.
+        let archiveFade = pageStrip.hasArchivePage && activeIndex < 0 ? 1 - min(1, -activeIndex) : 1
+        spaceHighlightView.alphaValue = hlEdgeT * archiveFade
 
         for (i, button) in spaceButtons.enumerated() {
             guard i < spaceButtonColors.count else { continue }
@@ -1345,61 +1696,27 @@ class TabSidebarViewController: NSViewController {
         stopSpaceClickAnimation()
         let spaces = relevantSpaces
         guard let targetIndex = spaces.firstIndex(where: { $0.id == id }),
-              targetIndex != activePageIndex,
-              !isAnimatingSwipe else {
+              !isAnimatingSwipe, pageClipView.bounds.width > 0 else {
+            if isShowingArchivePage, id == activeSpaceID {
+                dismissArchivePage(animated: false)
+            }
+            delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
+            return
+        }
+        let targetStripIndex = pageStrip.stripIndex(for: .space(targetIndex))
+        guard targetStripIndex != currentStripIndex else {
             delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
             return
         }
 
         let pageW = pageClipView.bounds.width
-        guard pageW > 0 else {
-            delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
-            return
-        }
-
         reloadInactivePages()
-        isAnimatingSwipe = true
-        let targetX = -CGFloat(targetIndex) * pageW
-        let distance = abs(pageStripView.frame.origin.x - targetX)
+        let distance = abs(pageStripView.frame.origin.x + CGFloat(targetStripIndex) * pageW)
         let duration = min(0.15, max(0.08, Double(distance / pageW) * 0.12))
-        let targetColor = spaces[targetIndex].color
-
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = duration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            var frame = pageStripView.frame
-            frame.origin.x = targetX
-            pageStripView.animator().frame = frame
-            view.animator().layer?.backgroundColor = targetColor.withAlphaComponent(0.1).cgColor
-        }, completionHandler: { [weak self] in
-            guard let self else { return }
-            self.isAnimatingSwipe = false
-            self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: id)
-        })
-
-        // Drive highlight through fractional positions so the stretch effect is visible
-        let startIndex = CGFloat(activePageIndex)
-        let endIndex = CGFloat(targetIndex)
-        let startTime = CACurrentMediaTime()
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            let elapsed = CACurrentMediaTime() - startTime
-            let rawT = (elapsed / duration).clamped(to: 0...1)
-            let t = rawT < 0.5 ? 2 * rawT * rawT : 1 - pow(-2 * rawT + 2, 2) / 2
-            let currentIndex = startIndex + (endIndex - startIndex) * CGFloat(t)
-
-            if let x = self.spaceStripX(forIndex: currentIndex) {
-                self.spaceStripView.frame.origin.x = x
-            }
-            self.updateSpaceButtonAppearances(activeIndex: currentIndex)
-
-            if rawT >= 1 {
-                timer.invalidate()
-                self.spaceClickAnimation = nil
-            }
+        animateStrip(toStripIndex: targetStripIndex, duration: duration,
+                     timing: CAMediaTimingFunction(name: .easeInEaseOut)) { [weak self] in
+            self?.finishTransition(onSpaceAt: targetIndex)
         }
-        RunLoop.main.add(timer, forMode: .common)
-        spaceClickAnimation = (timer, startIndex, endIndex, startTime, duration)
     }
 
     @objc private func downloadButtonClicked() {
@@ -1433,7 +1750,6 @@ class TabSidebarViewController: NSViewController {
 
     private var swipeAccumulatedX: CGFloat = 0
     private var isTrackingHorizontalSwipe = false
-    private var swipeStartTintColor: NSColor?
     private var swipeEventMonitor: Any?
     private var lastProcessedSwipeEvent: NSEvent?
 
@@ -1454,17 +1770,19 @@ class TabSidebarViewController: NSViewController {
         if event.phase.contains(.began) {
             // If the previous gesture left the strip displaced, snap it back
             if isAnimatingSwipe {
+                // The interrupted transition's completion must not run (it would
+                // switch spaces or settle mid-swipe).
+                stripAnimationGeneration += 1
+                stopSpaceClickAnimation()
                 isAnimatingSwipe = false
                 isSwipingSpaces = false
-                positionSpaceStrip(forActiveIndex: activePageIndex)
-                updateSpaceButtonAppearances(activeIndex: CGFloat(activePageIndex))
+                positionSpaceStrip(forButtonIndex: currentSpaceButtonIndex)
+                updateSpaceButtonAppearances(activeIndex: currentSpaceButtonIndex)
                 let pageW = pageClipView.bounds.width
                 if pageW > 0 {
-                    pageStripView.frame.origin.x = -CGFloat(activePageIndex) * pageW
+                    setStripX(-CGFloat(currentStripIndex) * pageW)
                 }
-                if let startColor = swipeStartTintColor {
-                    view.layer?.backgroundColor = startColor.withAlphaComponent(0.1).cgColor
-                }
+                applyRestingBackground()
             }
             swipeAccumulatedX = 0
         }
@@ -1475,10 +1793,10 @@ class TabSidebarViewController: NSViewController {
         guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
               event.scrollingDeltaX != 0 else { return false }
         isTrackingHorizontalSwipe = true
-        swipeStartTintColor = tintColor
         isSwipingSpaces = true
         stopSpaceClickAnimation()
         reloadInactivePages()
+        reloadArchivePageIfNeeded()
         installSwipeMonitor()
         return processSwipeEvent(event)
     }
@@ -1525,9 +1843,10 @@ class TabSidebarViewController: NSViewController {
         let pageW = pageClipView.bounds.width
         guard pageW > 0 else { return }
 
-        let baseX = -CGFloat(activePageIndex) * pageW
+        let strip = pageStrip
+        let baseX = -CGFloat(currentStripIndex) * pageW
         let maxX: CGFloat = 0
-        let minX = -CGFloat(max(0, spacePages.count - 1)) * pageW
+        let minX = -CGFloat(max(0, strip.pageCount - 1)) * pageW
 
         var targetX = baseX + swipeAccumulatedX
         // Rubber-band at edges — logarithmic curve for gradually increasing resistance
@@ -1539,30 +1858,33 @@ class TabSidebarViewController: NSViewController {
             targetX = minX - pageW * (1 - 1 / (overflow / pageW + 1))
         }
 
-        pageStripView.frame.origin.x = targetX
+        setStripX(targetX)
 
-        // Interpolate tint color between adjacent space colors
+        // Interpolate tint color between adjacent pages' colors (the archive
+        // page's grey included)
         let fractionalPage = -targetX / pageW
         let leftIndex = Int(floor(fractionalPage))
         let rightIndex = leftIndex + 1
         let fraction = fractionalPage - CGFloat(leftIndex)
-        let spaces = relevantSpaces
-        if leftIndex >= 0, rightIndex < spaces.count {
-            let leftColor = spaces[leftIndex].color
-            let rightColor = spaces[rightIndex].color
+        if leftIndex >= 0, rightIndex < strip.pageCount,
+           let leftColor = stripTintColor(atStripIndex: leftIndex),
+           let rightColor = stripTintColor(atStripIndex: rightIndex) {
             if let blended = leftColor.blended(withFraction: fraction, of: rightColor) {
                 view.layer?.backgroundColor = blended.withAlphaComponent(0.1).cgColor
             }
-        } else if !spaces.isEmpty {
-            // Edge rubber-band: use the edge space's color
-            let edgeIndex = fractionalPage < 0 ? 0 : spaces.count - 1
-            view.layer?.backgroundColor = spaces[edgeIndex].color.withAlphaComponent(0.1).cgColor
+        } else if strip.pageCount > 0 {
+            // Edge rubber-band: use the edge page's color
+            let edgeIndex = fractionalPage < 0 ? 0 : strip.pageCount - 1
+            if let edgeColor = stripTintColor(atStripIndex: edgeIndex) {
+                view.layer?.backgroundColor = edgeColor.withAlphaComponent(0.1).cgColor
+            }
         }
 
         // Drive space button strip position and appearances proportionally to swipe
-        updateSpaceButtonsDuringSwipe(fractionalPage: fractionalPage)
+        updateSpaceButtonsDuringSwipe(fractionalPage: strip.spaceButtonIndex(forFractionalStripIndex: fractionalPage))
     }
 
+    /// `fractionalPage` is a fractional space-button index, not a strip index.
     private func updateSpaceButtonsDuringSwipe(fractionalPage: CGFloat) {
         guard isSwipingSpaces,
               let x = spaceStripX(forIndex: fractionalPage) else { return }
@@ -1574,60 +1896,66 @@ class TabSidebarViewController: NSViewController {
         let pageW = pageClipView.bounds.width
         guard pageW > 0 else { return }
 
+        let strip = pageStrip
+        let startStripIndex = currentStripIndex
         let currentOffset = -pageStripView.frame.origin.x
         let fractionalPage = currentOffset / pageW
+        let lastStripIndex = max(0, strip.pageCount - 1)
 
         // Snap to nearest page, biased toward the swipe direction
-        let targetPage: Int
+        let targetStripIndex: Int
         if abs(swipeAccumulatedX) > pageW * 0.5 {
             if swipeAccumulatedX > 0 {
-                targetPage = max(0, activePageIndex - 1)
+                targetStripIndex = max(0, startStripIndex - 1)
             } else {
-                targetPage = min(spacePages.count - 1, activePageIndex + 1)
+                targetStripIndex = min(lastStripIndex, startStripIndex + 1)
             }
         } else {
-            targetPage = Int(round(fractionalPage)).clamped(to: 0...(max(0, spacePages.count - 1)))
+            targetStripIndex = Int(round(fractionalPage)).clamped(to: 0...lastStripIndex)
         }
 
-        let targetX = -CGFloat(targetPage) * pageW
+        let targetX = -CGFloat(targetStripIndex) * pageW
         let distance = abs(pageStripView.frame.origin.x - targetX)
         let duration = min(0.25, max(0.08, Double(distance / pageW) * 0.25))
 
         isAnimatingSwipe = true
+        stripAnimationGeneration += 1
+        let generation = stripAnimationGeneration
 
-        let committing = targetPage != activePageIndex
-
-        let spaceTargetX = spaceStripX(forIndex: CGFloat(targetPage)) ?? spaceStripView.frame.origin.x
+        let committing = targetStripIndex != startStripIndex
+        let targetButtonIndex = strip.spaceButtonIndex(forFractionalStripIndex: CGFloat(targetStripIndex))
+        let spaceTargetX = spaceStripX(forIndex: targetButtonIndex) ?? spaceStripView.frame.origin.x
 
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = duration
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             ctx.allowsImplicitAnimation = true
 
-            var frame = pageStripView.frame
-            frame.origin.x = targetX
-            pageStripView.animator().frame = frame
+            setStripX(targetX, animated: true)
 
             // Animate space button strip to target position
             var spaceFrame = spaceStripView.frame
             spaceFrame.origin.x = spaceTargetX
             spaceStripView.animator().frame = spaceFrame
         }, completionHandler: { [weak self] in
-            guard let self else { return }
+            guard let self, self.stripAnimationGeneration == generation else { return }
             self.isAnimatingSwipe = false
             self.isSwipingSpaces = false
 
-            if committing {
-                let spaces = self.relevantSpaces
-                guard targetPage < spaces.count else { return }
-                self.delegate?.tabSidebarDidRequestSwitchToSpace(self, spaceID: spaces[targetPage].id)
-            } else {
-                // Cancelled — restore button appearances and tint
-                self.positionSpaceStrip(forActiveIndex: self.activePageIndex)
-                self.updateSpaceButtonAppearances(activeIndex: CGFloat(self.activePageIndex))
-                if let startColor = self.swipeStartTintColor {
-                    self.view.layer?.backgroundColor = startColor.withAlphaComponent(0.1).cgColor
-                }
+            switch committing ? strip.page(atStripIndex: targetStripIndex) : nil {
+            case .archive:
+                // Onto the archive page: the active space stays as it is.
+                self.isShowingArchivePage = true
+                self.reloadArchivePageIfNeeded()
+                self.snapStripToCurrentPage()
+            case .space(let spaceIndex):
+                self.finishTransition(onSpaceAt: spaceIndex)
+            case nil:
+                // Cancelled — restore the prior page (archive or space),
+                // button appearances and tint. Re-snapped rather than assumed:
+                // `updateActivePage` does not snap while this animation runs,
+                // so an active-space change meanwhile lands here.
+                self.snapStripToCurrentPage()
             }
         })
 

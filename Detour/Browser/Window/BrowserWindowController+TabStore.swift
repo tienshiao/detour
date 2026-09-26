@@ -163,6 +163,10 @@ extension BrowserWindowController: TabStoreObserver {
         tabSidebar.updateFavorites(profile.favorites, selectedTabID: selectedTabID)
     }
 
+    func tabStoreDidUpdateClosedTabRecords() {
+        tabSidebar.closedTabRecordsDidChange()
+    }
+
     func tabStoreDidUpdateSpaces() {
         if isIncognito {
             // Incognito windows only show their own space; never switch away
