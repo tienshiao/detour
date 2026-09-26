@@ -673,24 +673,19 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         row.distribution = .fill
         textStack.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
 
-        let box = NSBox()
-        box.boxType = .custom
-        box.titlePosition = .noTitle
-        box.cornerRadius = 6
-        box.borderWidth = 1
-        box.borderColor = NSColor.systemOrange.withAlphaComponent(0.6)
-        box.fillColor = NSColor.systemOrange.withAlphaComponent(0.12)
-        box.contentViewMargins = .zero
-        box.contentView?.addSubview(row)
-        if let content = box.contentView {
-            NSLayoutConstraint.activate([
-                row.topAnchor.constraint(equalTo: content.topAnchor),
-                row.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-                row.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-                row.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            ])
-        }
-        return box
+        // A plain layer-backed container rather than an NSBox: the box's content
+        // view is autoresizing-sized, so the box never grew to the stack's
+        // fitting height and the vertical insets were the constraints that gave.
+        let banner = TintedBannerView()
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        banner.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: banner.topAnchor),
+            row.leadingAnchor.constraint(equalTo: banner.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: banner.trailingAnchor),
+            row.bottomAnchor.constraint(equalTo: banner.bottomAnchor),
+        ])
+        return banner
     }
 
     private static func pendingPermissionsText(_ pending: ExtensionUpdatePolicy.PendingApproval) -> String {
@@ -1056,6 +1051,30 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         selectedIndex = row
         selectedExtensionID = row < extensions.count ? extensions[row].id : nil
         updateDetail()
+    }
+}
+
+/// The rounded, tinted box behind a notice (the pending-permissions banner):
+/// its height follows its subviews' constraints, and its colours are resolved
+/// for the current appearance on every `updateLayer`.
+private final class TintedBannerView: NSView {
+    var tint: NSColor = .systemOrange { didSet { needsDisplay = true } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.borderWidth = 1
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let resolved = tint.usingColorSpace(.deviceRGB) ?? tint
+        layer?.backgroundColor = resolved.withAlphaComponent(0.12).cgColor
+        layer?.borderColor = resolved.withAlphaComponent(0.6).cgColor
     }
 }
 
