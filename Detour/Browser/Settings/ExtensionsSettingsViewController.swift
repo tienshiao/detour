@@ -36,7 +36,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
     }
 
     override func loadView() {
-        preferredContentSize = NSSize(width: 740, height: 480)
+        // Tall enough for the header, description, update section, a pending-
+        // permissions banner, the switches and a usable permissions list; the
+        // window is not resizable, so the pane has to fit at rest (TASK-113).
+        preferredContentSize = NSSize(width: 740, height: 620)
         let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
         self.view = container
 
@@ -531,6 +534,14 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             mainStack.bottomAnchor.constraint(equalTo: uninstallButton.topAnchor, constant: -12),
         ])
         pendingBanner?.widthAnchor.constraint(equalTo: detailContainer.widthAnchor).isActive = true
+        // When the column is short of room, the permissions list is what gives
+        // (its compression resistance is low), but never below a few rows — the
+        // notice above the switches must keep its size and its insets.
+        let permsFloor = scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 96)
+        permsFloor.priority = .defaultHigh
+        permsFloor.isActive = true
+        updateSection.setContentCompressionResistancePriority(.required, for: .vertical)
+        pendingBanner?.setContentCompressionResistancePriority(.required, for: .vertical)
     }
 
     // MARK: - Updates (TASK-113)
@@ -660,6 +671,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         textStack.alignment = .leading
         textStack.spacing = 6
         textStack.setCustomSpacing(12, after: details)
+        // Nothing in the banner may be squeezed to make room elsewhere.
+        for view in [title, details, buttonRow, icon] as [NSView] {
+            view.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
         buttonRow.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
 
         let row = NSStackView(views: [icon, textStack])
