@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-23 09:02'
-updated_date: '2026-09-26 04:09'
+updated_date: '2026-09-26 04:20'
 labels:
   - extensions
   - enhancement
@@ -58,6 +58,8 @@ Banner layout reworked after the user's review of the capture (commit on task113
 Banner container: NSBox replaced by a layer-backed TintedBannerView that sizes from its content — NSBox's autoresizing content view never grew to the stack's fitting height, so the vertical insets collapsed. Re-captured: 14 pt top/bottom now hold. (A dark-appearance cacheDisplay capture comes out with a transparent window background, so dark mode was not visually assessed.)
 
 Banner padding root cause: the Settings window is a fixed 740x480 and the detail column overflowed once the update section and banner existed — the permissions list compressed to zero, then the banner's insets. Fixed by a 620-tall Extensions pane, a 96 pt floor under the permissions list and required vertical compression resistance on the banner's contents; measured 14 pt edge-to-title in the running app.
+
+Banner bottom inset: NSStackView applies cross-axis edgeInsets at hugging priority only, so the height-constrained column dropped the bottom inset (top survived as required). Insets are now the banner's own required constraints with the text column pinned to the row's bottom; pane 640 tall. Measured in the app: top 14 pt, bottom 14 pt, zero unsatisfiable-constraint logs.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
