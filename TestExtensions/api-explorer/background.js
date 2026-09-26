@@ -1,7 +1,7 @@
 // API Explorer — Background Service Worker
 // Exercises: chrome.tabs, chrome.webNavigation, chrome.webRequest, chrome.storage,
 //            chrome.scripting, chrome.i18n, chrome.contextMenus, chrome.offscreen,
-//            chrome.runtime.onInstalled, chrome.runtime.onStartup, chrome.runtime.connect/onConnect,
+//            chrome.runtime.onInstalled, chrome.runtime.onStartup, chrome.runtime.onUpdateAvailable, chrome.runtime.connect/onConnect,
 //            chrome.storage.onChanged, chrome.extension.getBackgroundPage,
 //            chrome.alarms, chrome.action, chrome.commands, chrome.windows,
 //            chrome.fontSettings, chrome.permissions
@@ -94,6 +94,15 @@ chrome.runtime.onInstalled.addListener((details) => {
 chrome.runtime.onStartup.addListener(() => {
   console.log('[API Explorer] runtime.onStartup');
   appendLog({ event: 'runtime.onStartup' });
+});
+
+// --- runtime.onUpdateAvailable ---
+// Detour applies updates immediately, so this never fires there; kept to show
+// the event exists and to log if it ever does.
+
+chrome.runtime.onUpdateAvailable.addListener((details) => {
+  console.log('[API Explorer] runtime.onUpdateAvailable ' + JSON.stringify(details));
+  appendLog({ event: 'runtime.onUpdateAvailable', version: details && details.version });
 });
 
 // --- Set uninstall URL ---

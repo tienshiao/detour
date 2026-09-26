@@ -244,6 +244,21 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
+    /// Chrome's `runtime.requestUpdateCheck` answer for an updater outcome.
+    /// An extension that cannot update, and a check that failed, both read as
+    /// `no_update` — Chrome reports no error for either. An update Detour just
+    /// installed (even one held for permission approval) is `update_available`.
+    static func requestUpdateCheckReply(for outcome: ExtensionUpdateOutcome) -> [String: Any] {
+        switch outcome {
+        case .throttled:
+            return ["status": "throttled"]
+        case .upToDate, .notUpdatable, .failed:
+            return ["status": "no_update"]
+        case .updated(let version), .updatedPendingPermissions(let version, _):
+            return ["status": "update_available", "version": version]
+        }
+    }
+
     // MARK: - Entry Points
 
     /// Entry point for web view contexts (popup, options) via WKScriptMessageHandlerWithReply.
@@ -633,6 +648,15 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             // permission. Capped so a runaway string is not carried through IPC.
             let message = (params["message"] as? String).map { String($0.prefix(Self.lastErrorRelayMessageLimit)) } ?? ""
             replyHandler(nil, message.isEmpty ? "Unknown error" : message)
+
+        // MARK: - runtime.requestUpdateCheck
+        case "runtime.requestUpdateCheck":
+            // A real check (TASK-113), throttled per extension by the updater.
+            // Any context of the extension may ask, as in Chrome.
+            Task { @MainActor in
+                let outcome = await ExtensionUpdater.shared.requestUpdateCheck(extensionID: extensionID)
+                replyHandler(Self.requestUpdateCheckReply(for: outcome), nil)
+            }
 
         // MARK: - runtime.onInstalled
         case "runtime.claimInstalledEvent":

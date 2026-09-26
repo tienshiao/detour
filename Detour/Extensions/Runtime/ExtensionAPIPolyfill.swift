@@ -64,6 +64,7 @@ struct ExtensionAPIPolyfill {
             webSocketRelayJS,
             nativePortKeepAliveJS,
             missingStubsJS,
+            runtimeUpdateCheckJS,
             runtimeOnInstalledJS,
             contentPolyfillBridgeJS,
             idleJS,
@@ -570,6 +571,80 @@ struct ExtensionAPIPolyfill {
             Object.defineProperty(chrome, 'runtime', {
                 value: runtime, writable: false, configurable: true, enumerable: true
             });
+        }
+    })();
+    """
+
+    // MARK: - runtime.requestUpdateCheck / onUpdateAvailable
+
+    /// `chrome.runtime.requestUpdateCheck` and `chrome.runtime.onUpdateAvailable`
+    /// (TASK-113). WebKit implements neither; both are only filled in when absent.
+    ///
+    /// `requestUpdateCheck` runs a real check through `ExtensionUpdater` (throttled
+    /// per extension natively). The promise resolves `{status, version?}` with
+    /// status `'throttled' | 'no_update' | 'update_available'`; the callback form
+    /// gets `(status, details)` with `details = {version}` only for
+    /// `update_available`, and `runtime.lastError` on failure.
+    ///
+    /// `onUpdateAvailable` is a real event object that Detour never fires: an
+    /// update is applied the moment it is downloaded (the running context is
+    /// replaced and `runtime.onInstalled` delivers `update`), so there is never a
+    /// pending update for the extension to be told about. Deferring the apply
+    /// until the extension is idle or calls `runtime.reload()` is a follow-up.
+    ///
+    /// `chrome.runtime` was pinned by `missingStubsJS`, so members set on it
+    /// survive GC. A distinct `browser.runtime` wrapper, where there is one, is
+    /// patched too and rooted in `__detourHeldWrappers`.
+    private static let runtimeUpdateCheckJS = """
+    (function() {
+        const g = globalThis;
+        const updateAvailableListeners = [];
+        const onUpdateAvailable = __detourMakeEventEmitter(updateAvailableListeners);
+
+        const requestUpdateCheck = function(callback) {
+            const promise = __detourPolyfillRequest('runtime.requestUpdateCheck', {}).then(function(reply) {
+                const result = { status: (reply && typeof reply.status === 'string') ? reply.status : 'no_update' };
+                if (reply && typeof reply.version === 'string') result.version = reply.version;
+                return result;
+            });
+            if (typeof callback !== 'function') return promise;
+            return __detourSettle(promise, function() {
+                // No arguments: the check failed and runtime.lastError is set.
+                if (arguments.length === 0) { callback(); return; }
+                const result = arguments[0];
+                if (result.version !== undefined) {
+                    callback(result.status, { version: result.version });
+                } else {
+                    callback(result.status);
+                }
+            });
+        };
+
+        const patch = function(runtime) {
+            if (!runtime) return false;
+            let patched = false;
+            try {
+                if (typeof runtime.requestUpdateCheck !== 'function') {
+                    __detourDefine(runtime, 'requestUpdateCheck', requestUpdateCheck);
+                    patched = true;
+                }
+            } catch (e) {}
+            try {
+                if (!runtime.onUpdateAvailable) {
+                    __detourDefine(runtime, 'onUpdateAvailable', onUpdateAvailable);
+                    patched = true;
+                }
+            } catch (e) {}
+            return patched;
+        };
+
+        let chromeRuntime = null;
+        try { chromeRuntime = g.chrome && g.chrome.runtime; } catch (e) {}
+        patch(chromeRuntime);
+        let browserRuntime = null;
+        try { browserRuntime = g.browser && g.browser.runtime; } catch (e) {}
+        if (browserRuntime && browserRuntime !== chromeRuntime && patch(browserRuntime)) {
+            __detourHoldWrapper('browserRuntime', browserRuntime);
         }
     })();
     """

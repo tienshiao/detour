@@ -163,7 +163,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
 
-                try ExtensionManager.shared.install(from: url)
+                // Record the folder so Develop > Reload can reinstall from it (TASK-113).
+                var options = ExtensionInstaller.Options()
+                options.source = .unpacked
+                options.sourcePath = url
+                try ExtensionManager.shared.install(from: url, options: options)
                 // Toolbar rebuild is handled by extensionsDidChangeNotification
                 let alert = NSAlert()
                 alert.messageText = "Extension Installed"
@@ -400,6 +404,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         extensionsMenu.delegate = self
         extensionsMenu.addItem(withTitle: "Add Extensions…", action: #selector(openChromeWebStore), keyEquivalent: "")
         extensionsMenu.addItem(withTitle: "Manage Extensions…", action: #selector(showExtensionsSettings), keyEquivalent: "")
+        extensionsMenu.addItem(withTitle: "Check for Extension Updates", action: #selector(checkForExtensionUpdates), keyEquivalent: "")
         extensionsMenuItem.submenu = extensionsMenu
 
         // Develop menu. Deliberately not delegate-driven: its dynamic items
@@ -479,6 +484,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Tag used to identify dynamically-added extension inspector menu items.
     private static let extensionInspectorTag = 9000
+
+    /// How many static items end the Extensions menu (the dynamic per-extension
+    /// items are inserted above them).
+    private static let extensionsMenuStaticItemCount = 3
 
     /// The Develop menu, rebuilt on `extensionsDidChangeNotification` rather
     /// than by an `NSMenuDelegate` (see `setupMainMenu`).
@@ -665,9 +674,9 @@ extension AppDelegate: NSMenuDelegate {
 
         guard !profileExtensions.isEmpty else { return }
 
-        // Insert extension items before the separator + "Add Extensions…"
-        // The static items are at the end: "Add Extensions…", "Manage Extensions…"
-        let insertIndex = max(menu.items.count - 2, 0)
+        // Insert extension items before the static items at the end: "Add
+        // Extensions…", "Manage Extensions…", "Check for Extension Updates".
+        let insertIndex = max(menu.items.count - AppDelegate.extensionsMenuStaticItemCount, 0)
 
         for (i, ext) in profileExtensions.enumerated() {
             let displayName = ExtensionManager.shared.displayName(for: ext.id)
@@ -737,6 +746,8 @@ extension AppDelegate: NSMenuDelegate {
             .filter { $0.tag == AppDelegate.extensionInspectorTag }
             .forEach { menu.removeItem($0) }
 
+        defer { addUnpackedReloadItems(to: menu) }
+
         let extensions = ExtensionManager.shared.enabledExtensions
         guard !extensions.isEmpty else { return }
 
@@ -756,5 +767,98 @@ extension AppDelegate: NSMenuDelegate {
             item.tag = AppDelegate.extensionInspectorTag
             menu.addItem(item)
         }
+    }
+
+    /// Develop > Reload "<name>" for every unpacked extension, enabled or not
+    /// (TASK-113). Reads only the extension list and the file system — never an
+    /// extension page (TASK-55). A nil action (the menu autoenables) disables
+    /// the item when the source folder is not recorded or has no manifest.
+    private func addUnpackedReloadItems(to menu: NSMenu) {
+        let unpacked = ExtensionManager.shared.extensions.filter { $0.source == .unpacked }
+        guard !unpacked.isEmpty else { return }
+
+        let separator = NSMenuItem.separator()
+        separator.tag = AppDelegate.extensionInspectorTag
+        menu.addItem(separator)
+
+        for ext in unpacked {
+            let displayName = ExtensionManager.shared.displayName(for: ext.id)
+            let canReload = ext.sourcePath.map {
+                FileManager.default.fileExists(atPath: $0.appendingPathComponent("manifest.json").path)
+            } ?? false
+            let item = NSMenuItem(
+                title: "Reload \"\(displayName)\"",
+                action: canReload ? #selector(reloadUnpackedExtension(_:)) : nil,
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = ext.id
+            item.tag = AppDelegate.extensionInspectorTag
+            if !canReload {
+                item.toolTip = ext.sourcePath == nil
+                    ? "The folder this extension was loaded from is not recorded."
+                    : "The folder this extension was loaded from no longer exists."
+            }
+            menu.addItem(item)
+        }
+    }
+
+    @MainActor @objc func reloadUnpackedExtension(_ sender: NSMenuItem) {
+        guard let extID = sender.representedObject as? String else { return }
+        do {
+            let result = try ExtensionManager.shared.reloadUnpacked(id: extID)
+            if case .installedPendingPermissions = result {
+                let name = ExtensionManager.shared.displayName(for: extID)
+                keyOrMainBrowserWindowController?.toastManager.show(
+                    message: "Reloaded \(name) — approve its new permissions in Settings")
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Failed to Reload Extension"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .critical
+            alert.runModal()
+        }
+    }
+
+    /// Extensions > Check for Extension Updates: a full check now, with a
+    /// non-blocking summary toast in the frontmost browser window.
+    @objc func checkForExtensionUpdates() {
+        Task { @MainActor in
+            let outcomes = await ExtensionUpdater.shared.checkAllForUpdates()
+            let message = AppDelegate.updateCheckSummary(outcomes)
+            log.notice("Manual extension update check: \(message, privacy: .public)")
+            self.keyOrMainBrowserWindowController?.toastManager.show(message: message)
+        }
+    }
+
+    /// One line summing up a full update check.
+    static func updateCheckSummary(_ outcomes: [String: ExtensionUpdateOutcome]) -> String {
+        var updated = 0, pending = 0, failed = 0, checked = 0
+        for outcome in outcomes.values {
+            switch outcome {
+            case .updated: updated += 1; checked += 1
+            case .updatedPendingPermissions: updated += 1; pending += 1; checked += 1
+            case .failed: failed += 1; checked += 1
+            case .upToDate, .throttled: checked += 1
+            case .notUpdatable: break
+            }
+        }
+        if checked == 0 { return "No extensions to update" }
+        var parts: [String] = []
+        if updated == 0 {
+            parts.append("Extensions are up to date")
+        } else {
+            parts.append(updated == 1 ? "1 extension updated" : "\(updated) extensions updated")
+        }
+        if pending > 0 { parts.append("\(pending) need\(pending == 1 ? "s" : "") permission approval") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var keyOrMainBrowserWindowController: BrowserWindowController? {
+        (NSApp.keyWindow?.windowController as? BrowserWindowController)
+            ?? (NSApp.mainWindow?.windowController as? BrowserWindowController)
+            ?? NSApp.orderedWindows.lazy.compactMap { $0.windowController as? BrowserWindowController }.first
     }
 }

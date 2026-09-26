@@ -17,6 +17,17 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
     }
 
     private var selectedIndex: Int = 0
+    /// The selected extension by id. An update or reload replaces the extension
+    /// and `install` appends the replacement, so the index alone would jump to
+    /// another extension; `reloadList` reselects by this id first.
+    private var selectedExtensionID: String?
+
+    /// Per-extension result of the last "Check for Updates" / "Reload" click,
+    /// kept here because the detail view is rebuilt on every
+    /// `extensionsDidChangeNotification` (which an update itself posts).
+    private var updateStatusByID: [String: String] = [:]
+    /// Extensions whose "Check for Updates" is still running.
+    private var checkingIDs: Set<String> = []
 
     private var selectedExtension: WebExtension? {
         let list = extensions
@@ -150,6 +161,9 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
         NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
                                                 name: ExtensionManager.extensionsDidChangeNotification, object: nil)
+        // "Last checked" and any update a background check installed.
+        NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
+                                                name: ExtensionUpdater.didFinishCheckNotification, object: nil)
     }
 
     override func viewWillAppear() {
@@ -166,6 +180,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
     }
 
     private func reloadList() {
+        // Captured first: `reloadData` can post a selection change of its own
+        // when rows go away, which would overwrite the id with whatever row the
+        // table landed on.
+        let wantedID = selectedExtensionID
         tableView.reloadData()
         let exts = extensions
         if exts.isEmpty {
@@ -176,7 +194,12 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             emptyStateView.isHidden = true
             listContainer.isHidden = false
             detailContainer.isHidden = false
-            selectedIndex = min(selectedIndex, exts.count - 1)
+            if let id = wantedID, let index = exts.firstIndex(where: { $0.id == id }) {
+                selectedIndex = index
+            } else {
+                selectedIndex = max(0, min(selectedIndex, exts.count - 1))
+            }
+            selectedExtensionID = exts[selectedIndex].id
             tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)
             updateDetail()
         }
@@ -246,6 +269,12 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         // Separator
         let sep = NSBox()
         sep.boxType = .separator
+
+        // Where the extension came from, and how it moves to a newer version (TASK-113).
+        let updateSection = makeUpdateSection(for: ext)
+
+        // An update or reload that added permissions installed it disabled.
+        let pendingBanner = ext.pendingPermissionApproval.map { makePendingPermissionsBanner(for: ext, pending: $0) }
 
         // Enabled switch
         let enabledSwitch = NSSwitch()
@@ -475,8 +504,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         detailContainer.addSubview(uninstallButton)
 
         // Main stack (everything above uninstall)
-        let mainStack = NSStackView(views: [headerStack, descLabel, sep, enabledRow,
-                                            privateRow, privateNote, permsStack])
+        var mainViews: [NSView] = [headerStack, descLabel, sep, updateSection]
+        if let pendingBanner { mainViews.append(pendingBanner) }
+        mainViews += [enabledRow, privateRow, privateNote, permsStack]
+        let mainStack = NSStackView(views: mainViews)
         mainStack.orientation = .vertical
         mainStack.alignment = .leading
         mainStack.spacing = 12
@@ -490,6 +521,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             mainStack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
             // The note wraps rather than stretching the leading-aligned stack.
             privateNote.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
+            updateSection.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
             // Full width, so the header's spacer pushes "Settings…" to the trailing edge.
             headerStack.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
             scrollView.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
@@ -498,6 +530,200 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             uninstallButton.bottomAnchor.constraint(equalTo: detailContainer.bottomAnchor),
             mainStack.bottomAnchor.constraint(equalTo: uninstallButton.topAnchor, constant: -12),
         ])
+        pendingBanner?.widthAnchor.constraint(equalTo: detailContainer.widthAnchor).isActive = true
+    }
+
+    // MARK: - Updates (TASK-113)
+
+    /// The source line ("Installed from…", "Loaded unpacked from…") and, where
+    /// the extension can move to a newer version, the button that does it with
+    /// the result of its last click next to it.
+    private func makeUpdateSection(for ext: WebExtension) -> NSView {
+        let sourceLabel = NSTextField(wrappingLabelWithString: Self.sourceDescription(for: ext))
+        sourceLabel.font = .systemFont(ofSize: 12)
+        sourceLabel.textColor = .secondaryLabelColor
+        sourceLabel.lineBreakMode = .byCharWrapping
+
+        var views: [NSView] = [sourceLabel]
+        let statusLabel = NSTextField(labelWithString: updateStatusByID[ext.id] ?? "")
+        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        switch ext.source {
+        case .webStore, .crx:
+            if ext.updateURL != nil {
+                let checking = checkingIDs.contains(ext.id)
+                let button = NSButton(title: checking ? "Checking…" : "Check for Updates",
+                                      target: self, action: #selector(checkForUpdatesClicked(_:)))
+                button.isEnabled = !checking
+                button.setContentHuggingPriority(.required, for: .horizontal)
+                views.append(Self.buttonRow(button, statusLabel))
+            }
+        case .unpacked:
+            let button = NSButton(title: "Reload", target: self, action: #selector(reloadUnpackedClicked(_:)))
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            if !Self.unpackedSourceExists(ext) {
+                button.isEnabled = false
+                button.toolTip = ext.sourcePath == nil
+                    ? "The folder this extension was loaded from is not recorded."
+                    : "The folder this extension was loaded from no longer exists."
+            }
+            views.append(Self.buttonRow(button, statusLabel))
+        }
+
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        sourceLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return stack
+    }
+
+    private static func buttonRow(_ button: NSButton, _ statusLabel: NSTextField) -> NSView {
+        let row = NSStackView(views: [button, statusLabel])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        return row
+    }
+
+    /// "Installed from the Chrome Web Store · Last checked 2 hours ago", etc.
+    static func sourceDescription(for ext: WebExtension, lastCheckAt: Date? = nil, now: Date = Date()) -> String {
+        switch ext.source {
+        case .webStore, .crx:
+            let origin = ext.source == .webStore ? "Installed from the Chrome Web Store" : "Installed from a CRX file"
+            guard ext.updateURL != nil else {
+                return origin + " · It declares no update URL, so it is not updated"
+            }
+            let last = lastCheckAt ?? ExtensionUpdater.shared.lastCheckAt
+            let when: String
+            if let last {
+                let formatter = RelativeDateTimeFormatter()
+                formatter.unitsStyle = .full
+                when = now.timeIntervalSince(last) < 60 ? "just now" : formatter.localizedString(for: last, relativeTo: now)
+            } else {
+                when = "never"
+            }
+            return origin + " · Last checked \(when)"
+        case .unpacked:
+            guard let path = ext.sourcePath else { return "Loaded unpacked (folder not recorded)" }
+            return "Loaded unpacked from \((path.path as NSString).abbreviatingWithTildeInPath)"
+        }
+    }
+
+    private static func unpackedSourceExists(_ ext: WebExtension) -> Bool {
+        guard let path = ext.sourcePath else { return false }
+        return FileManager.default.fileExists(atPath: path.appendingPathComponent("manifest.json").path)
+    }
+
+    /// The highlighted box an update's added permissions put above the Enabled
+    /// switch, with the one button that accepts them.
+    private func makePendingPermissionsBanner(for ext: WebExtension,
+                                              pending: ExtensionUpdatePolicy.PendingApproval) -> NSView {
+        let icon = NSImageView(image: NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                              accessibilityDescription: "Warning") ?? NSImage())
+        icon.contentTintColor = .systemOrange
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+
+        let title = NSTextField(wrappingLabelWithString: "Version \(pending.version) needs new permissions:")
+        title.font = .systemFont(ofSize: 12, weight: .semibold)
+
+        let details = NSTextField(wrappingLabelWithString: Self.pendingPermissionsText(pending))
+        details.font = .systemFont(ofSize: 12)
+        details.textColor = .secondaryLabelColor
+
+        let accept = NSButton(title: "Accept and Enable", target: self, action: #selector(acceptPendingPermissionsClicked))
+        accept.bezelStyle = .rounded
+
+        let textStack = NSStackView(views: [title, details, accept])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 4
+
+        let row = NSStackView(views: [icon, textStack])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let box = NSBox()
+        box.boxType = .custom
+        box.titlePosition = .noTitle
+        box.cornerRadius = 6
+        box.borderWidth = 1
+        box.borderColor = NSColor.systemOrange.withAlphaComponent(0.6)
+        box.fillColor = NSColor.systemOrange.withAlphaComponent(0.12)
+        box.contentViewMargins = .zero
+        box.contentView?.addSubview(row)
+        if let content = box.contentView {
+            NSLayoutConstraint.activate([
+                row.topAnchor.constraint(equalTo: content.topAnchor),
+                row.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                row.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                row.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            ])
+        }
+        return box
+    }
+
+    private static func pendingPermissionsText(_ pending: ExtensionUpdatePolicy.PendingApproval) -> String {
+        ExtensionPermissionDescriptions.formatForAlert(permissions: pending.delta.permissions,
+                                                       hostPermissions: pending.delta.hostPermissions)
+    }
+
+    @objc private func checkForUpdatesClicked(_ sender: NSButton) {
+        guard let ext = selectedExtension else { return }
+        let id = ext.id
+        checkingIDs.insert(id)
+        updateStatusByID[id] = nil
+        sender.isEnabled = false
+        sender.title = "Checking…"
+        Task { @MainActor [weak self] in
+            let outcome = await ExtensionUpdater.shared.checkForUpdate(extensionID: id)
+            guard let self else { return }
+            self.checkingIDs.remove(id)
+            self.updateStatusByID[id] = Self.statusText(for: outcome)
+            self.reloadList()
+        }
+    }
+
+    static func statusText(for outcome: ExtensionUpdateOutcome) -> String {
+        switch outcome {
+        case .upToDate: return "Up to date"
+        case .updated(let version): return "Updated to \(version)"
+        case .updatedPendingPermissions(let version, _):
+            return "Updated to \(version) — new permissions need your approval"
+        case .notUpdatable(let reason): return "Not updatable: \(reason)"
+        case .throttled: return "Checked too recently; try again later"
+        case .failed(let message): return "Update failed: \(message)"
+        }
+    }
+
+    @objc private func reloadUnpackedClicked(_ sender: NSButton) {
+        guard let ext = selectedExtension else { return }
+        do {
+            let result = try ExtensionManager.shared.reloadUnpacked(id: ext.id)
+            switch result {
+            case .installed:
+                updateStatusByID[ext.id] = "Reloaded"
+            case .installedPendingPermissions:
+                updateStatusByID[ext.id] = "Reloaded — new permissions need your approval"
+            }
+        } catch {
+            updateStatusByID[ext.id] = "Reload failed: \(error.localizedDescription)"
+        }
+        reloadList()
+    }
+
+    @objc private func acceptPendingPermissionsClicked() {
+        guard let ext = selectedExtension else { return }
+        ExtensionManager.shared.approvePendingPermissions(id: ext.id)
+        // `setEnabled` posts extensionsDidChange; reload anyway in case it was
+        // already on globally and nothing changed.
+        reloadList()
     }
 
     /// The label a host match pattern is shown under.
@@ -522,6 +748,23 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
     @objc private func enabledToggled(_ sender: NSSwitch) {
         guard let ext = selectedExtension else { return }
         let enabled = sender.state == .on
+        // Turning on an extension an update left off for added permissions is
+        // accepting them: say which, and only then clear the hold (TASK-113).
+        if enabled, let pending = ext.pendingPermissionApproval {
+            let alert = NSAlert()
+            alert.messageText = "Allow \"\(ExtensionManager.shared.displayName(for: ext.id))\" \(pending.version) New Permissions?"
+            alert.informativeText = Self.pendingPermissionsText(pending)
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Accept and Enable")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                ExtensionManager.shared.approvePendingPermissions(id: ext.id)
+                reloadList()
+            } else {
+                sender.state = .off
+            }
+            return
+        }
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: enabled)
     }
 
@@ -637,7 +880,11 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
                 guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
 
-                try ExtensionManager.shared.install(from: url)
+                // Record the folder so the extension can be reloaded from it (TASK-113).
+                var options = ExtensionInstaller.Options()
+                options.source = .unpacked
+                options.sourcePath = url
+                let installed = try ExtensionManager.shared.install(from: url, options: options)
 
                 let alert = NSAlert()
                 alert.messageText = "Extension Installed"
@@ -645,8 +892,9 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
                 alert.alertStyle = .informational
                 alert.runModal()
 
-                // List reloads via notification
-                self?.selectedIndex = (self?.extensions.count ?? 1) - 1
+                // The list already reloaded via notification; select the new one.
+                self?.selectedExtensionID = installed.id
+                self?.reloadList()
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "Failed to Load Extension"
@@ -713,8 +961,9 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        ExtensionManager.shared.uninstall(id: ext.id)
+        selectedExtensionID = nil
         selectedIndex = max(0, selectedIndex - 1)
+        ExtensionManager.shared.uninstall(id: ext.id)
         // List reloads via notification
     }
 
@@ -780,6 +1029,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         let row = tableView.selectedRow
         guard row >= 0 else { return }
         selectedIndex = row
+        selectedExtensionID = row < extensions.count ? extensions[row].id : nil
         updateDetail()
     }
 }

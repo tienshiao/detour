@@ -84,6 +84,7 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 | `chrome.notifications` | **Polyfill** → `ExtensionNotificationManager` (UNUserNotificationCenter) |
 | `chrome.history.search` | **Polyfill** → `HistoryDatabase` |
 | `chrome.management` (getSelf, getAll) | **Polyfill** → `ExtensionManager` |
+| `chrome.runtime.requestUpdateCheck`, `onUpdateAvailable` | **Polyfill** → `ExtensionUpdater` (the event never fires) |
 | `chrome.fontSettings.getFontList` | **Polyfill** → `NSFontManager` (filtered to system fonts) |
 | `chrome.sessions.restore` | **Polyfill** → `TabStore.reopenClosedTab` |
 | `chrome.search.query` | **Polyfill** → profile's search engine |
@@ -139,6 +140,20 @@ Extensions can be toggled globally (`AppDatabase.setEnabled`) or per-profile (`A
 ### Uninstall
 
 `ExtensionManager.uninstall(id:)` opens the uninstall URL if set, cancels background tasks, unloads from all profiles, deletes the DB record (cascading to storage), and removes extension files from disk.
+
+### Updates
+
+Every installed extension records its **source** (`ExtensionSource`): `webStore` (a CRX downloaded from a Chrome Web Store host), `crx` (any other CRX), or `unpacked` (a folder loaded with Develop → Load Unpacked Extension, whose path is kept as `sourcePath`). CRX installs also record an `updateURL`: the manifest's `update_url` (HTTPS only), or the Web Store's update2 endpoint for store downloads that declare none. A non-store CRX without `update_url` never updates.
+
+**Checking.** `ExtensionUpdater` polls each CRX install's update URL with an update2 (`x=id=…&v=…`) request. It runs ~30 s after launch when the last full check is older than 5 hours, then on the same 5-hour cadence while the app runs, and on demand from Settings → Extensions → Check for Updates, Extensions → Check for Extension Updates, and `chrome.runtime.requestUpdateCheck` (throttled to one real check per extension per 5 minutes; answers `throttled` / `no_update` / `update_available`).
+
+**Verification.** A candidate CRX must match the response's SHA-256 (when given), pass CRX3 signature verification (`CRX3Verifier`), and its signing key must derive the installed extension id; its manifest version must be strictly newer (`ExtensionVersion`). `ExtensionManager.applyUpdate` re-checks id and version before installing over the old copy through the normal `install` path (per-profile enablement, saved permission decisions and open extension pages are kept; `runtime.onInstalled` gets `update`).
+
+**Added permissions.** If the new manifest adds API permissions that carry a Chrome install warning, or new host permissions (`ExtensionUpdatePolicy.addedPermissions`), the update is installed **disabled** with a `pendingPermissionApproval`. Settings shows a banner listing them with "Accept and Enable"; turning the Enabled switch on asks the same question. A later update's additions merge into a pending approval rather than replacing it.
+
+**Unpacked reload.** Unpacked extensions are never polled. Settings → Reload and Develop → Reload "<name>" reinstall from `sourcePath` keeping the id (`reloadUnpacked`); any version is accepted, and added permissions are held for approval the same way.
+
+**`runtime.onUpdateAvailable`** is defined (an event object) but never fires: updates are applied as soon as they are downloaded, so an extension is never told about a pending one.
 
 ## WebKit Integration
 

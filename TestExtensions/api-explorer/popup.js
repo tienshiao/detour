@@ -268,6 +268,25 @@ document.getElementById('btn-bg-page').addEventListener('click', async () => {
   }
 });
 
+// runtime.requestUpdateCheck: promise form, then the callback form
+// (status, details). Unpacked installs always answer 'no_update'; a second
+// click within 5 minutes answers 'throttled'.
+document.getElementById('btn-update-check').addEventListener('click', async () => {
+  try {
+    const result = await chrome.runtime.requestUpdateCheck();
+    chrome.runtime.requestUpdateCheck((status, details) => {
+      const err = chrome.runtime.lastError;
+      showResult('res-runtime-info', {
+        promise: result,
+        callback: err ? { lastError: err.message } : { status, details: details === undefined ? '(none)' : details },
+        onUpdateAvailable: typeof chrome.runtime.onUpdateAvailable?.addListener,
+      });
+    });
+  } catch (e) {
+    showResult('res-runtime-info', e.message, true);
+  }
+});
+
 // --- Open Options Page ---
 
 document.getElementById('btn-open-options').addEventListener('click', async () => {
