@@ -593,6 +593,23 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             views.append(Self.buttonRow(button, statusLabel))
         }
 
+        // An update held back because the extension was busy (TASK-123): say so
+        // and offer to install it regardless.
+        if let staged = ExtensionManager.shared.stagedUpdate(for: ext.id) {
+            if statusLabel.stringValue == Self.statusText(for: .deferred(version: staged.version)) {
+                statusLabel.stringValue = ""
+            }
+            let stagedLabel = NSTextField(labelWithString:
+                "Version \(staged.version) is downloaded and installs when the extension is idle")
+            stagedLabel.font = .systemFont(ofSize: 12)
+            stagedLabel.textColor = .secondaryLabelColor
+            stagedLabel.lineBreakMode = .byTruncatingTail
+            stagedLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let installButton = NSButton(title: "Install Now", target: self, action: #selector(installStagedUpdateClicked(_:)))
+            installButton.setContentHuggingPriority(.required, for: .horizontal)
+            views.append(Self.buttonRow(installButton, stagedLabel))
+        }
+
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -735,6 +752,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         case .updated(let version): return "Updated to \(version)"
         case .updatedPendingPermissions(let version, _):
             return "Updated to \(version) — new permissions need your approval"
+        case .deferred(let version): return "Version \(version) is downloaded and installs when the extension is idle"
         case .notUpdatable(let reason): return "Not updatable: \(reason)"
         case .throttled: return "Checked too recently; try again later"
         case .failed(let message): return "Update failed: \(message)"
@@ -753,6 +771,26 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             }
         } catch {
             updateStatusByID[ext.id] = "Reload failed: \(error.localizedDescription)"
+        }
+        reloadList()
+    }
+
+    /// Install the update `ExtensionUpdater` staged while the extension was busy,
+    /// without waiting for it to go idle.
+    @objc private func installStagedUpdateClicked(_ sender: NSButton) {
+        guard let ext = selectedExtension else { return }
+        do {
+            switch try ExtensionManager.shared.applyStagedUpdate(for: ext.id) {
+            case .installed(let version):
+                updateStatusByID[ext.id] = Self.statusText(for: .updated(version: version))
+            case .installedPendingPermissions(let version, let delta):
+                updateStatusByID[ext.id] = Self.statusText(for: .updatedPendingPermissions(version: version, delta: delta))
+            case nil:
+                // Nothing staged any more, or the staged copy no longer applies.
+                updateStatusByID[ext.id] = nil
+            }
+        } catch {
+            updateStatusByID[ext.id] = "Update failed: \(error.localizedDescription)"
         }
         reloadList()
     }

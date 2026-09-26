@@ -84,7 +84,7 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 | `chrome.notifications` | **Polyfill** → `ExtensionNotificationManager` (UNUserNotificationCenter) |
 | `chrome.history.search` | **Polyfill** → `HistoryDatabase` |
 | `chrome.management` (getSelf, getAll) | **Polyfill** → `ExtensionManager` |
-| `chrome.runtime.requestUpdateCheck`, `onUpdateAvailable` | **Polyfill** → `ExtensionUpdater` (the event never fires) |
+| `chrome.runtime.requestUpdateCheck`, `onUpdateAvailable` | **Polyfill** → `ExtensionUpdater` / staged updates (`onUpdateAvailable` fires in the background context when an update is deferred; `reload()` stays WebKit's — a reload that follows the event installs the staged copy) |
 | `chrome.fontSettings.getFontList` | **Polyfill** → `NSFontManager` (filtered to system fonts) |
 | `chrome.sessions.restore` | **Polyfill** → `TabStore.reopenClosedTab` |
 | `chrome.search.query` | **Polyfill** → profile's search engine |
@@ -153,7 +153,17 @@ Every installed extension records its **source** (`ExtensionSource`): `webStore`
 
 **Unpacked reload.** Unpacked extensions are never polled. Settings → Reload and Develop → Reload "<name>" reinstall from `sourcePath` keeping the id (`reloadUnpacked`); any version is accepted, and added permissions are held for approval the same way.
 
-**`runtime.onUpdateAvailable`** is defined (an event object) but never fires: updates are applied as soon as they are downloaded, so an extension is never told about a pending one.
+**Deferral (TASK-123).** A verified update is not installed while the extension is busy, because replacing a running context tears its pages down and restarts its worker. `ExtensionUpdateDeferral.shouldDefer` holds it when any of these is true (`ExtensionManager.activity(for:)`): one of the extension's pages is open in a tab, pinned tile or peek in any profile; its action popup is showing; a native messaging host is connected on its behalf; or its background context made a polyfill request in the last 60 s (`noteBackgroundActivity`, recorded for every background-context request). The check then reports `.deferred(version:)` ("Version X is downloaded and installs when the extension is idle") and the unpacked, verified copy is **staged** on disk at `<data>/Extensions/<id>.staged/` with its version, signing key and time (`StagedExtensionUpdate`), so it survives a relaunch. A newer update replaces an older staged one.
+
+A staged update is applied by whichever comes first:
+- `chrome.runtime.reload()` in response to the event — WebKit's `reload` is a read-only static of the runtime wrapper and cannot be shadowed by the polyfill, and a reload keeps the context's base URL, so Detour recognises it by its only trace: the background context restarting within 15 s of an `onUpdateAvailable` delivery made to an *earlier incarnation* of it (`ExtensionManager.backgroundContextDidStart`, called from the polyfill's start-up `runtime.claimInstalledEvent`; the polyfill mints a `__detourContextInstance` token per evaluation and stamps it on both the wait and the claim, since a listener added at script evaluation is answered before the claim runs and that answer must not pass for the delivery a reload followed). That installs the staged copy at once, whatever the extension has open, which is Chrome's documented pattern. A reload made for any other reason is indistinguishable from an event waking the worker and leaves the copy for the idle poll;
+- the idle poll — `ExtensionUpdater.applyStagedUpdatesIfIdle()` every 30 s while the app runs, installing any staged update whose extension is now idle (and posting `didFinishCheckNotification` so Settings and the menu summary update);
+- the next launch — `applyStagedUpdatesBeforeLoad()` installs every staged copy through the installer before extension records are read;
+- Settings → Extensions → **Install Now**, shown under the update row with the staged version while one is waiting.
+
+Every path re-validates id and version (a staged copy the extension has since overtaken is discarded) and goes through the same added-permissions policy: an update that adds permissions still installs disabled pending approval. `requestUpdateCheck` reports a deferred update as `update_available` with its version.
+
+**`runtime.onUpdateAvailable`** fires with `{version}` when an update is staged. WebKit has no push channel into a worker, so the first `addListener` in the background context parks a `runtime.awaitUpdateAvailable` request with Detour (`ExtensionManager.awaitUpdateAvailable`, one per profile and extension; a newer one supersedes the old). `stageUpdate` answers it (`notifyUpdateAvailable`) — at once if an update is already staged when the listener is added, unless that version was delivered to the same context in the last 15 s, which is the reloaded worker re-adding its listener — the listeners run, and the request is parked again. Only the background context may park one: requests from popups, options pages, tabs or iframes are refused, quietly, so the event exists there but never fires. As in Chrome, an extension that ignores the event gets the update when it next goes idle.
 
 ## WebKit Integration
 

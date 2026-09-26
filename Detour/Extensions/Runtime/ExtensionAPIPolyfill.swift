@@ -362,6 +362,14 @@ struct ExtensionAPIPolyfill {
             return extensionID;
         };
 
+        // One token per evaluation of this global: a `runtime.reload()` (or any
+        // other restart) evaluates the polyfill afresh and mints a new one, so
+        // the native side can tell "this context" from "the one before it"
+        // (TASK-123: `runtime.claimInstalledEvent`, `runtime.awaitUpdateAvailable`).
+        if (typeof g.__detourContextInstance !== 'string') {
+            g.__detourContextInstance = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        }
+
         g.__detourPolyfillRequest = function(type, params) {
             const msg = { type: type, params: params || {}, extensionID: currentExtensionID() };
 
@@ -588,11 +596,24 @@ struct ExtensionAPIPolyfill {
     /// form in MV3's docs). A failed request sets `runtime.lastError` and calls
     /// the callback with no arguments.
     ///
-    /// `onUpdateAvailable` is a real event object that Detour never fires: an
-    /// update is applied the moment it is downloaded (the running context is
-    /// replaced and `runtime.onInstalled` delivers `update`), so there is never a
-    /// pending update for the extension to be told about. Deferring the apply
-    /// until the extension is idle or calls `runtime.reload()` is a follow-up.
+    /// `onUpdateAvailable` (TASK-123): an update for a busy extension is staged
+    /// rather than installed, and the background context is told. WebKit has no
+    /// push channel to a worker, so the first `addListener` parks a
+    /// `runtime.awaitUpdateAvailable` request with Detour, which answers it when
+    /// an update is staged (at once if one already is); the listeners run and the
+    /// request is parked again. Only the background context may park one (the
+    /// native side refuses others), and the promise settling keeps nothing alive.
+    ///
+    /// `runtime.reload()` is WebKit's and cannot be shadowed: `reload` is a
+    /// read-only static *value* of the runtime wrapper (an own property is
+    /// masked, unlike the static functions `getURL` and friends), so a JS
+    /// intercept never takes. A reload made in response to this event is
+    /// recognised natively instead — a background start, in another
+    /// incarnation of the context (`__detourContextInstance`), soon after the
+    /// delivery — and installs the staged update
+    /// (`ExtensionManager.backgroundContextDidStart`). The wait and the
+    /// start-up claim both carry the incarnation token so a delivery this very
+    /// start asked for is never mistaken for the one it is reloading over.
     ///
     /// `chrome.runtime` was pinned by `missingStubsJS`, so members set on it
     /// survive GC. A distinct `browser.runtime` wrapper, where there is one, is
@@ -602,6 +623,33 @@ struct ExtensionAPIPolyfill {
         const g = globalThis;
         const updateAvailableListeners = [];
         const onUpdateAvailable = __detourMakeEventEmitter(updateAvailableListeners);
+
+        let waiting = false;
+        const dispatchUpdateAvailable = function(details) {
+            for (let i = 0; i < updateAvailableListeners.length; i++) {
+                try { updateAvailableListeners[i](details); } catch (e) {
+                    try { console.error('[chrome.runtime.onUpdateAvailable] listener error:', e); } catch (e2) {}
+                }
+            }
+        };
+        const waitForUpdate = function() {
+            if (waiting) return;
+            waiting = true;
+            __detourPolyfillRequest('runtime.awaitUpdateAvailable', { instance: g.__detourContextInstance }).then(function(reply) {
+                waiting = false;
+                if (reply && typeof reply.version === 'string') dispatchUpdateAvailable({ version: reply.version });
+                if (updateAvailableListeners.length > 0) waitForUpdate();
+            }, function() {
+                // Refused (not the background context) or superseded: stay quiet.
+                waiting = false;
+            });
+        };
+        const nativeAddListener = onUpdateAvailable.addListener;
+        onUpdateAvailable.addListener = function(cb) {
+            nativeAddListener(cb);
+            waitForUpdate();
+        };
+
 
         const requestUpdateCheck = function(callback) {
             const promise = __detourPolyfillRequest('runtime.requestUpdateCheck', {}).then(function(reply) {
@@ -774,7 +822,7 @@ struct ExtensionAPIPolyfill {
             claimCount += 1;
             let request;
             try {
-                request = g.__detourPolyfillRequest('runtime.claimInstalledEvent', {});
+                request = g.__detourPolyfillRequest('runtime.claimInstalledEvent', { instance: g.__detourContextInstance });
             } catch (e) {
                 return Promise.resolve(null);
             }

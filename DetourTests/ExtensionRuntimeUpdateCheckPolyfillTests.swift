@@ -133,7 +133,7 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
 
     // MARK: - onUpdateAvailable
 
-    /// The event exists and its listener bookkeeping works; Detour never fires it.
+    /// The event exists and its listener bookkeeping works (delivery: ExtensionRuntimeUpdateAvailablePolyfillTests).
     func testOnUpdateAvailableIsAnEventObject() async throws {
         let (_, webView) = try await makeExtensionPage()
 

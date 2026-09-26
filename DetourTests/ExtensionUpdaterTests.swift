@@ -31,9 +31,17 @@ final class ExtensionUpdaterTests: XCTestCase {
     private var installedIDs: [String] = []
     private var tempDirs: [URL] = []
     private var createdProfiles: [Profile] = []
+    private var createdSpaceIDs: [UUID] = []
 
     override func tearDown() {
+        for spaceID in createdSpaceIDs {
+            guard let space = TabStore.shared.space(withID: spaceID) else { continue }
+            for tab in space.tabs + space.pinnedTabs { tab.teardown() }
+            TabStore.shared.forceRemoveSpace(id: spaceID)
+        }
+        createdSpaceIDs.removeAll()
         for id in installedIDs {
+            ExtensionManager.shared.stagedUpdate(for: id)?.discard()
             ExtensionManager.shared.uninstall(id: id)
         }
         installedIDs.removeAll()
@@ -423,6 +431,247 @@ final class ExtensionUpdaterTests: XCTestCase {
             }
             XCTAssertEqual(url, source)
         }
+    }
+
+    // MARK: - TASK-123: a busy extension's update waits
+
+    /// The fixture, a profile that loads it, and one of its options pages open in
+    /// a space of that profile — an extension the user is in the middle of using.
+    private func busyFixture() async throws -> (fixture: Fixture, profile: Profile, space: Space, tab: BrowserTab) {
+        let fixture = try await installVersionOne()
+        let profile = TabStore.shared.addProfile(name: "Busy Updater Test")
+        createdProfiles.append(profile)
+        // The test host's manager does not load extensions into added profiles;
+        // load the context by hand, as the other extension-page suites do.
+        let context = try loadTestContext(try XCTUnwrap(ExtensionManager.shared.extension(withID: fixture.id)), in: profile)
+        let space = TabStore.shared.addSpace(name: "Busy", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
+        createdSpaceIDs.append(space.id)
+        let tab = TabStore.shared.addExtensionTab(in: space, url: try XCTUnwrap(context.optionsPageURL),
+                                                  configuration: try XCTUnwrap(context.webViewConfiguration))
+        return (fixture, profile, space, tab)
+    }
+
+    func testActivityCountsOpenPagesPopupsHostsAndBackgroundTraffic() async throws {
+        let (fixture, profile, space, tab) = try await busyFixture()
+        var activity = ExtensionManager.shared.activity(for: fixture.id)
+        XCTAssertEqual(activity.openPages, 1)
+        XCTAssertFalse(activity.popupOpen)
+        XCTAssertEqual(activity.liveNativeHosts, 0)
+        XCTAssertNil(activity.lastBackgroundRequestAt)
+        XCTAssertTrue(ExtensionUpdateDeferral.shouldDefer(activity))
+
+        tab.teardown()
+        TabStore.shared.closeTab(id: tab.id, in: space, undoable: false, registersUndo: false)
+        activity = ExtensionManager.shared.activity(for: fixture.id)
+        XCTAssertEqual(activity.openPages, 0, "the page is closed (\(profile.name))")
+        XCTAssertFalse(ExtensionUpdateDeferral.shouldDefer(activity))
+
+        ExtensionManager.shared.noteBackgroundActivity(extensionID: fixture.id)
+        XCTAssertTrue(ExtensionUpdateDeferral.shouldDefer(ExtensionManager.shared.activity(for: fixture.id)),
+                      "a worker that just spoke counts as busy")
+        ExtensionManager.shared.noteBackgroundActivity(extensionID: fixture.id, at: Date(timeIntervalSince1970: 0))
+        XCTAssertFalse(ExtensionUpdateDeferral.shouldDefer(ExtensionManager.shared.activity(for: fixture.id)))
+    }
+
+    func testABusyExtensionsUpdateIsStagedThenInstalledWhenIdle() async throws {
+        let (fixture, profile, space, tab) = try await busyFixture()
+        let fetcher = FakeFetcher()
+        let updater = makeUpdater(fetcher)
+        let crx = try crx(fixture, version: "2.0")
+        let checkURL = try requestURL(fixture, version: "1.0", updater: updater)
+        fetcher.responses[checkURL] = updateXML(fixture, version: "2.0", crx: crx)
+        fetcher.responses[fixture.codebase] = crx
+
+        // A background context waiting for the event hears about the staged copy.
+        var delivered: [String: Any]?
+        ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id) { reply, _ in
+            delivered = reply as? [String: Any]
+        }
+        XCTAssertEqual(ExtensionManager.shared.updateAvailableWaiterCountForTesting(extensionID: fixture.id), 1)
+
+        let outcome = await updater.checkForUpdate(extensionID: fixture.id)
+        XCTAssertEqual(outcome, .deferred(version: "2.0"))
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0", "not installed yet")
+        let staged = try XCTUnwrap(ExtensionManager.shared.stagedUpdate(for: fixture.id))
+        XCTAssertEqual(staged.version, "2.0")
+        XCTAssertEqual(staged.publicKey, fixture.pair.publicKeySPKI)
+        XCTAssertEqual(delivered?["version"] as? String, "2.0", "runtime.onUpdateAvailable fired (AC #1)")
+        XCTAssertEqual(ExtensionManager.shared.updateAvailableWaiterCountForTesting(extensionID: fixture.id), 0)
+        XCTAssertEqual(ExtensionPolyfillHandler.requestUpdateCheckReply(for: outcome)["status"] as? String, "update_available")
+
+        // A waiter that arrives while a copy is staged is answered at once — once
+        // the reload window after the last delivery to that context has passed.
+        var immediate: [String: Any]?
+        ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id, reply: { reply, _ in
+            immediate = reply as? [String: Any]
+        }, now: Date().addingTimeInterval(ExtensionManager.reloadAfterUpdateAvailableWindow + 1))
+        XCTAssertEqual(immediate?["version"] as? String, "2.0")
+        ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id)
+
+        // Still busy: the poll leaves it, and a second check does not download again.
+        XCTAssertTrue(updater.applyStagedUpdatesIfIdle().isEmpty)
+        let again = await updater.checkForUpdate(extensionID: fixture.id)
+        XCTAssertEqual(again, .deferred(version: "2.0"))
+        XCTAssertEqual(fetcher.requests.filter { $0 == fixture.codebase }.count, 1, "downloaded once")
+
+        // Idle: the poll installs it (AC #2).
+        tab.teardown()
+        TabStore.shared.closeTab(id: tab.id, in: space, undoable: false, registersUndo: false)
+        let applied = updater.applyStagedUpdatesIfIdle()
+        XCTAssertEqual(applied[fixture.id], .updated(version: "2.0"))
+        let updated = try XCTUnwrap(ExtensionManager.shared.extension(withID: fixture.id))
+        XCTAssertEqual(updated.manifest.version, "2.0")
+        XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "the staged copy is consumed")
+        try await waitUntil("the update to load") { updated.wkExtension != nil }
+    }
+
+    func testRuntimeReloadAppliesAStagedUpdateNow() async throws {
+        let (fixture, _, _, _) = try await busyFixture()
+        let fetcher = FakeFetcher()
+        let updater = makeUpdater(fetcher)
+        let crx = try crx(fixture, version: "2.0")
+        fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: crx)
+        fetcher.responses[fixture.codebase] = crx
+        let outcome = await updater.checkForUpdate(extensionID: fixture.id)
+        XCTAssertEqual(outcome, .deferred(version: "2.0"))
+
+        // What the polyfill's runtime.reload() asks for: apply whatever is staged.
+        XCTAssertEqual(try ExtensionManager.shared.applyStagedUpdate(for: fixture.id), .installed(version: "2.0"))
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "2.0")
+        XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id))
+        XCTAssertNil(try ExtensionManager.shared.applyStagedUpdate(for: fixture.id), "nothing left to apply")
+    }
+
+    /// `runtime.reload()` cannot be intercepted, so the reload an extension makes
+    /// in answer to `onUpdateAvailable` is recognised by the background start
+    /// that follows the delivery; that start installs the staged copy.
+    func testABackgroundStartSoonAfterTheEventIsTheReloadThatInstallsTheUpdate() async throws {
+        let (fixture, profile, _, _) = try await busyFixture()
+        defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
+        let fetcher = FakeFetcher()
+        let updater = makeUpdater(fetcher)
+        let crx = try crx(fixture, version: "2.0")
+        fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: crx)
+        fetcher.responses[fixture.codebase] = crx
+
+        let t0 = Date()
+        var delivered: [String: Any]?
+        ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id, reply: { reply, _ in
+            delivered = reply as? [String: Any]
+        }, now: t0)
+        let outcome = await updater.checkForUpdate(extensionID: fixture.id)
+        XCTAssertEqual(outcome, .deferred(version: "2.0"))
+        XCTAssertEqual(delivered?["version"] as? String, "2.0")
+
+        // The reloaded worker re-adds its listener: not answered again (no reload loop)…
+        var again: [String: Any]?
+        ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id, reply: { reply, _ in
+            again = reply as? [String: Any]
+        }, now: t0.addingTimeInterval(1))
+        XCTAssertNil(again, "the same version was just delivered to this context")
+        XCTAssertEqual(ExtensionManager.shared.updateAvailableWaiterCountForTesting(extensionID: fixture.id), 1, "parked instead")
+
+        // …and a start from another profile, or long after, is not a reload.
+        XCTAssertFalse(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: UUID(),
+                                                                          now: t0.addingTimeInterval(1)))
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
+
+        // The start that follows the delivery installs it, pages open or not (AC #2).
+        XCTAssertTrue(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: profile.id,
+                                                                         now: t0.addingTimeInterval(2)))
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "2.0")
+        XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id))
+        XCTAssertFalse(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: profile.id,
+                                                                          now: t0.addingTimeInterval(3)), "nothing left")
+    }
+
+    func testABackgroundStartLongAfterTheEventIsNotAReload() async throws {
+        let (fixture, profile, _, _) = try await busyFixture()
+        defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
+        let crx = try crx(fixture, version: "2.0")
+        let unpacked = try CRXUnpacker.unpack(data: crx)
+        let t0 = Date()
+        ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id, reply: { _, _ in }, now: t0)
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+                                                    version: "2.0", for: fixture.id)
+        let late = t0.addingTimeInterval(ExtensionManager.reloadAfterUpdateAvailableWindow + 1)
+        XCTAssertFalse(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: profile.id, now: late),
+                       "an event waking the worker a minute later is not the reload")
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
+        XCTAssertNotNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "still waiting for idle")
+    }
+
+    /// The listener is added at script evaluation and answered at once when a
+    /// copy is already staged; the claim runs on a later task of the same start.
+    /// That answer is not the delivery a reload followed: the incarnation that
+    /// asked for it does not install the copy, only a later incarnation does.
+    func testAStartWhoseOwnListenerWasAnsweredIsNotAReload() async throws {
+        let (fixture, profile, _, _) = try await busyFixture()
+        defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
+        let crx = try crx(fixture, version: "2.0")
+        let unpacked = try CRXUnpacker.unpack(data: crx)
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+                                                    version: "2.0", for: fixture.id)
+        let t0 = Date()
+        var delivered: [String: Any]?
+        ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id, instance: "wake-1",
+                                                     reply: { reply, _ in delivered = reply as? [String: Any] }, now: t0)
+        XCTAssertEqual(delivered?["version"] as? String, "2.0", "answered at once: a copy is staged")
+        XCTAssertFalse(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: profile.id,
+                                                                          instance: "wake-1", now: t0.addingTimeInterval(0.1)),
+                       "the same incarnation's claim: an event woke the worker, nothing reloaded")
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
+        XCTAssertNotNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "left for the idle poll")
+
+        XCTAssertTrue(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: profile.id,
+                                                                         instance: "reload-2", now: t0.addingTimeInterval(1)),
+                      "a start in another incarnation soon after is the reload")
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "2.0")
+        XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id))
+    }
+
+    func testAStagedUpdateInstallsAtTheNextLaunch() async throws {
+        let fixture = try await installVersionOne()
+        let db = AppDatabase.shared
+        db.savePermission(ExtensionPermissionRecord(extensionID: fixture.id, key: "storage", type: .apiPermission, status: .denied))
+
+        // Stage a verified copy by hand, as the updater would have at the last quit.
+        let crx = try crx(fixture, version: "2.0", permissions: ["storage", "history"])
+        let unpacked = try CRXUnpacker.unpack(data: crx)
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+                                                    version: "2.0", for: fixture.id)
+
+        // The launch path: before any record is read or context loaded.
+        ExtensionManager.shared.applyStagedUpdatesBeforeLoad()
+
+        let row = try XCTUnwrap(db.loadExtensions().first { $0.id == fixture.id })
+        XCTAssertEqual(row.version, "2.0")
+        XCTAssertEqual(row.source, "webStore")
+        XCTAssertEqual(row.updateURL, fixture.updateURL.absoluteString)
+        XCTAssertFalse(row.isEnabled, "it added history: installed disabled pending approval, as a live update would")
+        XCTAssertEqual(try JSONDecoder().decode(ExtensionUpdatePolicy.PendingApproval.self,
+                                                from: XCTUnwrap(row.pendingPermissionApprovalJSON)).delta.permissions, ["history"])
+        XCTAssertEqual(db.permissionStatus(extensionID: fixture.id, key: "storage", type: .apiPermission), .denied)
+        XCTAssertEqual(try ExtensionManifest.parse(at: URL(fileURLWithPath: row.basePath).appendingPathComponent("manifest.json")).version, "2.0")
+        XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id))
+
+        // A staged copy for an extension that is no longer installed is dropped.
+        let orphanDir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-orphan-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: orphanDir, withIntermediateDirectories: true)
+        try manifestJSON(version: "1.0").write(to: orphanDir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        let orphan = try StagedExtensionUpdate.stage(unpackedDirectory: orphanDir, publicKey: Data([1]), version: "1.0", for: "gone-extension")
+        ExtensionManager.shared.applyStagedUpdatesBeforeLoad()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.directory.path))
+    }
+
+    func testAStaleStagedCopyIsDiscardedWhenTheExtensionMovedOn() async throws {
+        let (fixture, _, _, _) = try await busyFixture()
+        let crx = try crx(fixture, version: "1.0")
+        let unpacked = try CRXUnpacker.unpack(data: crx)
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+                                                    version: "1.0", for: fixture.id)
+        XCTAssertNil(try ExtensionManager.shared.applyStagedUpdate(for: fixture.id), "not newer: rejected, not installed")
+        XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "and gone")
     }
 
     func testReloadRefusesACRXInstall() async throws {

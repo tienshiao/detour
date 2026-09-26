@@ -287,6 +287,19 @@ document.getElementById('btn-update-check').addEventListener('click', async () =
   }
 });
 
+// runtime.reload: WebKit restarts the extension. Called within 15 s of an
+// onUpdateAvailable delivery (see background.js) Detour installs the staged
+// update on that restart. Either way this popup closes or goes stale, so the
+// result line is written first.
+document.getElementById('btn-runtime-reload').addEventListener('click', () => {
+  try {
+    showResult('res-runtime-info', 'runtime.reload() called');
+    chrome.runtime.reload();
+  } catch (e) {
+    showResult('res-runtime-info', e.message, true);
+  }
+});
+
 // --- Open Options Page ---
 
 document.getElementById('btn-open-options').addEventListener('click', async () => {

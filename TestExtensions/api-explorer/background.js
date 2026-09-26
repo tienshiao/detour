@@ -97,8 +97,10 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 // --- runtime.onUpdateAvailable ---
-// Detour applies updates immediately, so this never fires there; kept to show
-// the event exists and to log if it ever does.
+// Detour stages an update that arrives while the extension is busy (open
+// pages, popup, live native hosts, recent background traffic) and fires this
+// with {version}; a chrome.runtime.reload() that follows (the popup's button,
+// within 15 s) installs it on the restart, as in Chrome.
 
 chrome.runtime.onUpdateAvailable.addListener((details) => {
   console.log('[API Explorer] runtime.onUpdateAvailable ' + JSON.stringify(details));

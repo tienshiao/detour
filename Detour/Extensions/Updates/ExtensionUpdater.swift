@@ -38,6 +38,8 @@ enum ExtensionUpdateOutcome: Equatable {
     case updated(version: String)
     /// Installed disabled; the user has to accept the added permissions in Settings.
     case updatedPendingPermissions(version: String, delta: ExtensionUpdatePolicy.PermissionDelta)
+    /// Downloaded and verified, but held until the extension is idle (TASK-123).
+    case deferred(version: String)
     /// `runtime.requestUpdateCheck` asked again too soon.
     case throttled
     case failed(String)
@@ -65,6 +67,8 @@ final class ExtensionUpdater {
     var checkInterval: TimeInterval = 5 * 60 * 60
     /// How soon `runtime.requestUpdateCheck` may ask again for the same extension.
     var requestUpdateCheckThrottle: TimeInterval = 5 * 60
+    /// How often staged updates are re-examined for an idle extension (TASK-123).
+    var stagedApplyInterval: TimeInterval = 30
     /// `prodversion` for the store: the Chrome release Detour presents as.
     var prodVersion: String = chromeProductVersion(fromUserAgent: UserAgentMode.chromeUserAgent)
 
@@ -77,6 +81,7 @@ final class ExtensionUpdater {
     private var inFlight: [String: Task<ExtensionUpdateOutcome, Never>] = [:]
     private var lastRequestUpdateCheck: [String: Date] = [:]
     private var timer: Timer?
+    private var stagedTimer: Timer?
 
     init(fetcher: any ExtensionUpdateFetching, now: @escaping () -> Date = Date.init,
          database: AppDatabase = .shared, manager: ExtensionManager = .shared) {
@@ -119,11 +124,48 @@ final class ExtensionUpdater {
         timer.tolerance = pollInterval / 10
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+
+        let stagedTimer = Timer(timeInterval: stagedApplyInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in _ = self?.applyStagedUpdatesIfIdle() }
+        }
+        stagedTimer.tolerance = stagedApplyInterval / 5
+        RunLoop.main.add(stagedTimer, forMode: .common)
+        self.stagedTimer = stagedTimer
     }
 
     func stopPeriodicChecks() {
         timer?.invalidate()
         timer = nil
+        stagedTimer?.invalidate()
+        stagedTimer = nil
+    }
+
+    /// Install every staged update whose extension is idle now (TASK-123). Posts
+    /// `didFinishCheckNotification` for what it installed so the UI refreshes.
+    @discardableResult
+    func applyStagedUpdatesIfIdle() -> [String: ExtensionUpdateOutcome] {
+        var outcomes: [String: ExtensionUpdateOutcome] = [:]
+        for staged in StagedExtensionUpdate.all() {
+            let id = staged.extensionID
+            guard manager.extension(withID: id) != nil else { staged.discard(); continue }
+            guard !ExtensionUpdateDeferral.shouldDefer(manager.activity(for: id), now: now()) else { continue }
+            do {
+                switch try manager.applyStagedUpdate(for: id) {
+                case .installed(let version)?: outcomes[id] = .updated(version: version)
+                case .installedPendingPermissions(let version, let delta)?:
+                    outcomes[id] = .updatedPendingPermissions(version: version, delta: delta)
+                case nil: break
+                }
+            } catch {
+                log.error("Staged update for \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                outcomes[id] = .failed(error.localizedDescription)
+            }
+        }
+        if !outcomes.isEmpty {
+            NotificationCenter.default.post(name: Self.didFinishCheckNotification, object: self,
+                                            userInfo: ["outcomes": outcomes])
+        }
+        return outcomes
     }
 
     private func runScheduledCheckIfDue() {
@@ -222,6 +264,20 @@ final class ExtensionUpdater {
             }
             guard ExtensionVersion.isNewer(version, than: installedVersion) else { return .upToDate }
 
+            // Already downloaded and waiting: nothing to fetch again. Idle by
+            // now, it installs here rather than at the next poll.
+            if let staged = manager.stagedUpdate(for: ext.id), !ExtensionVersion.isNewer(version, than: staged.version) {
+                guard !ExtensionUpdateDeferral.shouldDefer(manager.activity(for: ext.id), now: now()) else {
+                    return .deferred(version: staged.version)
+                }
+                switch try manager.applyStagedUpdate(for: ext.id) {
+                case .installed(let installedNow)?: return .updated(version: installedNow)
+                case .installedPendingPermissions(let installedNow, let delta)?:
+                    return .updatedPendingPermissions(version: installedNow, delta: delta)
+                case nil: break // stale after all: fetch the announced version below
+                }
+            }
+
             log.notice("Update available for \(ext.id, privacy: .public): \(installedVersion, privacy: .public) -> \(version, privacy: .public)")
             let crx = try await fetcher.fetch(codebase)
             try ExtensionUpdatePolicy.validateSHA256(expected: entry.sha256, of: crx)
@@ -236,6 +292,15 @@ final class ExtensionUpdater {
 
             let unpacked = try CRXUnpacker.unpack(data: crx)
             defer { try? FileManager.default.removeItem(at: unpacked.directory) }
+
+            // An extension in the middle of something is not torn down under the
+            // user: the verified copy waits until it is idle (TASK-123).
+            if ExtensionUpdateDeferral.shouldDefer(manager.activity(for: ext.id), now: now()) {
+                let staged = try manager.stageUpdate(from: unpacked.directory, publicKey: publicKey,
+                                                     version: version, for: ext.id)
+                return .deferred(version: staged.version)
+            }
+
             // The installed extension may have changed while the download ran
             // (another check, an uninstall): applyUpdate re-reads and re-validates.
             switch try manager.applyUpdate(from: unpacked.directory, publicKey: publicKey, to: ext.id) {

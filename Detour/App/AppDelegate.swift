@@ -828,11 +828,12 @@ extension AppDelegate: NSMenuDelegate {
 
     /// One line summing up a full update check.
     static func updateCheckSummary(_ outcomes: [String: ExtensionUpdateOutcome]) -> String {
-        var updated = 0, pending = 0, failed = 0, checked = 0
+        var updated = 0, pending = 0, failed = 0, checked = 0, deferred = 0
         for outcome in outcomes.values {
             switch outcome {
             case .updated: updated += 1; checked += 1
             case .updatedPendingPermissions: updated += 1; pending += 1; checked += 1
+            case .deferred: deferred += 1; checked += 1
             case .failed: failed += 1; checked += 1
             case .upToDate, .throttled: checked += 1
             case .notUpdatable: break
@@ -840,11 +841,12 @@ extension AppDelegate: NSMenuDelegate {
         }
         if checked == 0 { return "No extensions to update" }
         var parts: [String] = []
-        if updated == 0 {
+        if updated == 0 && deferred == 0 {
             parts.append("Extensions are up to date")
-        } else {
+        } else if updated > 0 {
             parts.append(updated == 1 ? "1 extension updated" : "\(updated) extensions updated")
         }
+        if deferred > 0 { parts.append("\(deferred) install\(deferred == 1 ? "s" : "") when idle") }
         if pending > 0 { parts.append("\(pending) need\(pending == 1 ? "s" : "") permission approval") }
         if failed > 0 { parts.append("\(failed) failed") }
         return parts.joined(separator: " · ")

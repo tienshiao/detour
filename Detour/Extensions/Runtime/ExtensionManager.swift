@@ -39,6 +39,26 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Retained popover controllers for extension-initiated popups.
     private var activePopovers: [String: ExtensionPopoverController] = [:]
 
+    /// The last time each extension's background context sent Detour a polyfill
+    /// request — the nearest thing to "its worker is running" that WebKit lets
+    /// Detour see (TASK-123, `ExtensionUpdateDeferral`).
+    private(set) var backgroundActivity: [String: Date] = [:]
+
+    func noteBackgroundActivity(extensionID: String, at date: Date = Date()) {
+        backgroundActivity[extensionID] = date
+    }
+
+    /// Whether the action popup for `extensionID` is on screen.
+    func isPopupOpen(extensionID: String) -> Bool {
+        activePopovers[extensionID] != nil
+    }
+
+    /// Real native messaging hosts connected for `extensionID`, across every
+    /// profile's controller.
+    func liveNativeHostCount(extensionID: String) -> Int {
+        liveNativeHosts.filter { $0.key.extensionID == extensionID }.values.reduce(0) { $0 + $1.count }
+    }
+
     /// A one-shot `sendNativeMessage` in flight: the host plus the reply WebKit is
     /// waiting for, answered at most once — by the host's response, by its exit,
     /// or by a nativeMessaging denial that tears it down (TASK-25).
@@ -393,6 +413,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     @MainActor
     private func loadInstalledExtensions() async {
+        // An update held back at the last quit installs now, before anything
+        // reads the records or loads a context (TASK-123).
+        applyStagedUpdatesBeforeLoad()
         let records = AppDatabase.shared.loadExtensions()
 
         // Parse manifests and create models (fast, synchronous)
@@ -1482,6 +1505,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         let extDir = detourDataDirectory().appendingPathComponent("Extensions/\(id)")
         try? FileManager.default.removeItem(at: extDir)
+        // An update staged for it has nothing to install over, and no background
+        // context of it will be told about one (TASK-123).
+        stagedUpdate(for: id)?.discard()
+        forgetUpdateAvailableState(extensionID: id)
 
         invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)

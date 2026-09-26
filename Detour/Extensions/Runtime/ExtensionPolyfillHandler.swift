@@ -254,7 +254,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             return ["status": "throttled"]
         case .upToDate, .notUpdatable, .failed:
             return ["status": "no_update"]
-        case .updated(let version), .updatedPendingPermissions(let version, _):
+        case .updated(let version), .updatedPendingPermissions(let version, _), .deferred(let version):
             return ["status": "update_available", "version": version]
         }
     }
@@ -371,6 +371,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             log.error("Invalid polyfill message: missing or non-string type (\(Self.envelopeSummary(body), privacy: .public))")
             replyHandler(nil, "Invalid message format: missing type")
             return
+        }
+
+        // Traffic from the background context is the one sign Detour has that
+        // its worker is running; an update waits while it is (TASK-123).
+        if Self.senderIsBackgroundContext(sender, background: ExtensionManager.shared.extension(withID: extensionID)?.manifest.background) {
+            ExtensionManager.shared.noteBackgroundActivity(extensionID: extensionID)
         }
 
         // A self-reported id that disagrees with the verified one means the
@@ -649,6 +655,19 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             let message = (params["message"] as? String).map { String($0.prefix(Self.lastErrorRelayMessageLimit)) } ?? ""
             replyHandler(nil, message.isEmpty ? "Unknown error" : message)
 
+        // MARK: - runtime.onUpdateAvailable (TASK-123)
+        case "runtime.awaitUpdateAvailable":
+            // The background polyfill parks this request; it is answered when an
+            // update is staged for the extension (or at once if one already is).
+            // Only the background context may wait: the event is its.
+            let registered = ExtensionManager.shared.extension(withID: extensionID)
+            guard Self.senderIsBackgroundContext(sender, background: registered?.manifest.background), let profile else {
+                replyHandler(nil, "runtime.onUpdateAvailable: only the background context receives the event")
+                return
+            }
+            ExtensionManager.shared.awaitUpdateAvailable(extensionID: extensionID, profileID: profile.id,
+                                                         instance: params["instance"] as? String, reply: replyHandler)
+
         // MARK: - runtime.requestUpdateCheck
         case "runtime.requestUpdateCheck":
             // A real check (TASK-113), throttled per extension by the updater.
@@ -683,6 +702,18 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                     ?? registered?.manifest.version else {
                 replyHandler([:] as [String: Any], nil)
                 return
+            }
+            // Every background start passes here once (TASK-43); a start that
+            // follows an `onUpdateAvailable` delivery to an earlier incarnation
+            // of the context is the extension's `runtime.reload()`, which
+            // installs the staged update (TASK-123). The incarnation token tells
+            // that delivery from one this start's own listener asked for.
+            // Deferred to the next turn so this start's reply goes out first.
+            let startedProfileID = profile.id
+            let startedInstance = params["instance"] as? String
+            Task { @MainActor in
+                ExtensionManager.shared.backgroundContextDidStart(extensionID: extensionID, profileID: startedProfileID,
+                                                                  instance: startedInstance)
             }
             // The Private profile never gets the event (TASK-29): the claim
             // answers nothing there and writes no ledger row.
