@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-23 09:02'
-updated_date: '2026-09-26 03:17'
+updated_date: '2026-09-26 03:54'
 labels:
   - extensions
   - enhancement
@@ -52,6 +52,8 @@ Decisions: check on launch (30 s in, if the last check is older than the interva
 
 <!-- SECTION:NOTES:BEGIN -->
 Runtime verification Sep 25 2026 (isolated profile, harness): the real 1Password 8.12.37.1 store CRX (18 MB) passed CRX3Verifier (RSA) and derived the expected id; a live update2 check against clients2.google.com answered noupdate → Settings shows 'Installed from the Chrome Web Store · Last checked just now' + 'Up to date'; Extensions > Check for Extension Updates ran all three installs; Settings Reload of the unpacked API Explorer replaced it under the same id; editing a fixture's manifest to add history + a host pattern and reloading installed it disabled with the pending-permissions banner, Accept and Enable re-enabled it and loaded its context; chrome.runtime.requestUpdateCheck from an options page answered {status: no_update}. Code review (--fix medium) findings applied: varint length overflow in CRX3 header parsing (remote crash), frontmost-window resolution shared via NSApplication.frontmostBrowserWindowController, server-side updatecheck errors surface as failures, https-only update URLs on update too, store-host check on the domain boundary, deduplicated reload-availability rule. Migration decision: a manifest with a key reads as unpacked even with update_url (never auto-replace a developer's folder). Follow-up TASK-123 (deferred apply + onUpdateAvailable) was created — delete it if unwanted.
+
+Banner layout reworked after the user's review of the capture (commit on task113): 14 pt insets, 13 pt semibold title with a matching warning symbol, 3 pt line spacing in the permission list, Accept and Enable on its own trailing row 12 pt below the list (stack distribution .fill so the text column spans the box), source path middle-truncated on one line with a tooltip, and the Reload/Update status drops the '— new permissions need your approval' suffix while the banner shows. Re-captured in the isolated profile.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
