@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-23 06:49'
+updated_date: '2026-09-28 18:55'
 labels:
   - webkit
   - performance
@@ -24,5 +25,13 @@ Follow-up to TASK-104, feeds TASK-105. Same system WebKit as Safari, so any Safa
 <!-- AC:BEGIN -->
 - [ ] #1 Over a long Detour session, count lowMemoryHandler / prepareToSuspend events for Detour's own GPU pid (/usr/bin/log show filtered by processIdentifier, sandbox off) and compare with other apps' GPU processes
 - [ ] #2 Optional: run the docs/task-104 switching pattern against Safari via AppleScript (set current tab of window 1) and sample its GPU process with vmmap
-- [ ] #3 Conclusion recorded; if Detour misses flushes, evaluate a memory-pressure warning as a cheaper TASK-105 valve than killing the GPU process
+- [x] #3 Conclusion recorded; if Detour misses flushes, evaluate a memory-pressure warning as a cheaper TASK-105 valve than killing the GPU process
 <!-- AC:END -->
+
+
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Sep 28 2026 (prod Detour 2d11h, show-budget build of Sep 26 installed): GPU pid 43948 at 16,681 IOSurfaces (15,796 PURGE=E), 3,341 'per client IOSurface limit' errors in 2h, YouTube broken again. Posted 'notifyutil -p org.WebKit.lowMemory' (global darwin notification; WebKit's MemoryPressureHandler simulation hook): GPU log shows 'GPUProcess::lowMemoryHandler: critical=1, synchronous=1' but the count only fell 16,681 -> 14,230 and 13,321 PURGE=E surfaces stayed. So the shipped WebKit's low-memory flush does NOT release the bulk; most surfaces are live buffers still referenced on behalf of WebContent processes (volatile backing stores), not idle IOSurfacePool entries. AC3 conclusion: a memory-pressure warning is not a viable valve; TASK-105 (GPU-process exit) is.
+<!-- SECTION:NOTES:END -->
