@@ -90,6 +90,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start periodic tab archival
         TabStore.shared.startArchiveTimer()
 
+        // Recycle WebKit's GPU process before it runs out of IOSurfaces (TASK-105)
+        GPUProcessRecycler.shared.start()
+
         // Set the window's active space from the restored session
         if let restored, TabStore.shared.space(withID: restored.spaceID) != nil {
             wc.setActiveSpace(id: restored.spaceID)
