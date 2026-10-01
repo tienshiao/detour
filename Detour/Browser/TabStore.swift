@@ -4702,6 +4702,16 @@ class TabStore {
             }
             .store(in: &cancellables)
 
+        tab.$isLoadProgressStalled
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak tab] _ in
+                guard let tab else { return }
+                notify(tab)
+            }
+            .store(in: &cancellables)
+
         tabSubscriptions[tab.id] = cancellables
     }
 }

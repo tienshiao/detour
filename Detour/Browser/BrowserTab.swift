@@ -98,6 +98,19 @@ class BrowserTab: NSObject {
     /// resource is counted once per page (TASK-69).
     private var blockedURLs: Set<URL> = []
     @Published var estimatedProgress: Double = 0
+    /// A load is in flight in a web view no window is showing, and its
+    /// `estimatedProgress` has not moved for `loadStallInterval`. WebKit drops a
+    /// hidden page's web process to background priority about a second after the
+    /// navigation commits, so on a busy machine a script-heavy page can sit
+    /// part-loaded until the tab is shown (TASK-124). The load is still real —
+    /// `isLoading` stays true — this only tells the sidebar to stop drawing a
+    /// bar that is going nowhere.
+    @Published private(set) var isLoadProgressStalled = false
+    /// How long a hidden load's progress may sit still before it counts as stalled.
+    static var loadStallInterval: TimeInterval = 2
+    private var loadStallWorkItem: DispatchWorkItem?
+    /// The progress the sidebar row draws: nothing once a hidden load has stalled.
+    var sidebarProgress: Double { isLoadProgressStalled ? 0 : estimatedProgress }
     @Published var favicon: NSImage?
     private(set) var faviconURL: URL?
     /// The space this tab belongs to. `wake()` resolves it to pick the
@@ -557,6 +570,12 @@ class BrowserTab: NSObject {
         webView.publisher(for: \.estimatedProgress)
             .assign(to: &$estimatedProgress)
 
+        // Any movement — a progress step, or the load starting or ending —
+        // clears the stall and restarts the clock.
+        $isLoading.combineLatest($estimatedProgress)
+            .sink { [weak self] loading, _ in self?.restartLoadStallTimer(isLoading: loading) }
+            .store(in: &faviconCancellables)
+
         webView.addObserver(self, forKeyPath: "_isPlayingAudio", options: [.new], context: nil)
 
         webView.publisher(for: \.url)
@@ -587,6 +606,25 @@ class BrowserTab: NSObject {
             .dropFirst()
             .sink { [weak self] _ in self?.fetchFavicon() }
             .store(in: &faviconCancellables)
+    }
+
+    private func restartLoadStallTimer(isLoading: Bool) {
+        loadStallWorkItem?.cancel()
+        loadStallWorkItem = nil
+        if isLoadProgressStalled { isLoadProgressStalled = false }
+        guard isLoading else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.isLoading else { return }
+            // A web view on screen runs at foreground priority; keep watching
+            // in case the tab goes to the background mid-load.
+            guard self.webView?.window == nil else {
+                self.restartLoadStallTimer(isLoading: true)
+                return
+            }
+            self.isLoadProgressStalled = true
+        }
+        loadStallWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadStallInterval, execute: item)
     }
 
     private func fetchFavicon() {
@@ -677,6 +715,7 @@ class BrowserTab: NSObject {
         awaitingFirstURL = false
         restoringSession = false
         faviconCancellables.removeAll()
+        restartLoadStallTimer(isLoading: false)
         webView.removeFromSuperview()
         webViewContainer?.removeFromSuperview()
         webViewContainer = nil
@@ -688,6 +727,10 @@ class BrowserTab: NSObject {
     /// meaningful while `webView != nil`; the count is reset by the next wake.
     func noteShown() {
         showsSinceWake += 1
+        // A load that stalled while hidden is on screen again: draw its bar
+        // without waiting for the next progress step, which may never come
+        // (a hung request, a slow first byte) (TASK-124).
+        if isLoadProgressStalled { restartLoadStallTimer(isLoading: isLoading) }
     }
 
     /// Whether this tab is showing a page from the `webkit-extension://<host>/`

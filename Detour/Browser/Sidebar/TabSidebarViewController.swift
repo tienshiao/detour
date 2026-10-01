@@ -2019,7 +2019,7 @@ class TabSidebarViewController: NSViewController {
             cell.updateSplitPane(favicon: nil, title: nil)
             cell.updateSleeping(tab.isSleeping)
             cell.updateLoading(tab.isLoading)
-            cell.updateProgress(tab.estimatedProgress)
+            cell.updateProgress(tab.sidebarProgress)
             cell.updateAudio(isPlaying: tab.isPlayingAudio, isMuted: tab.isMuted)
             return
         }
@@ -2058,7 +2058,7 @@ class TabSidebarViewController: NSViewController {
             cell.updateSplitPane(favicon: nil, title: nil)
             cell.updateSleeping((tab?.isSleeping ?? false) || !entry.isLive)
             cell.updateLoading(tab?.isLoading ?? false)
-            cell.updateProgress(tab?.estimatedProgress ?? 0)
+            cell.updateProgress(tab?.sidebarProgress ?? 0)
             cell.updateAudio(isPlaying: tab?.isPlayingAudio ?? false, isMuted: tab?.isMuted ?? false)
             cell.updatePinnedMode(entry: entry)
             cell.onClose = { [weak self] in
@@ -2560,7 +2560,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 let favicon = entry.displayFavicon
                 let isLoading = tab?.isLoading ?? false
                 let isSleeping = tab?.isSleeping ?? false
-                let progress = tab?.estimatedProgress ?? 0
+                let progress = tab?.sidebarProgress ?? 0
                 let isPlayingAudio = tab?.isPlayingAudio ?? false
                 let isMuted = tab?.isMuted ?? false
                 cell.titleLabel.stringValue = title
@@ -2724,7 +2724,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             tooltip: "\(left.title) — \(right.title)",
             isSleeping: members.allSatisfy { $0.isSleeping },
             isLoading: members.contains { $0.isLoading },
-            progress: members.map(\.estimatedProgress).max() ?? 0,
+            progress: members.map(\.sidebarProgress).max() ?? 0,
             audioIsPlaying: audioMember?.isPlayingAudio ?? false,
             audioIsMuted: audioMember?.isMuted ?? false,
             indentLevel: 0,
@@ -2751,7 +2751,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             tooltip: "\(left.displayTitle) — \(right.displayTitle)",
             isSleeping: entries.allSatisfy { !$0.isLive || $0.tab?.isSleeping == true },
             isLoading: entries.contains { $0.tab?.isLoading == true },
-            progress: entries.compactMap { $0.tab?.estimatedProgress }.max() ?? 0,
+            progress: entries.compactMap { $0.tab?.sidebarProgress }.max() ?? 0,
             audioIsPlaying: audioTab?.isPlayingAudio ?? false,
             audioIsMuted: audioTab?.isMuted ?? false,
             indentLevel: depth,
@@ -2816,7 +2816,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                              departingFavicon: departingFavicon, departingTitle: departingTitle)
         cell.updateSleeping(tab.isSleeping)
         cell.updateLoading(tab.isLoading)
-        cell.updateProgress(tab.estimatedProgress)
+        cell.updateProgress(tab.sidebarProgress)
         cell.updateAudio(isPlaying: tab.isPlayingAudio, isMuted: tab.isMuted)
         cell.updatePinnedMode(entry: nil)
         cell.indentLevel = indentLevel

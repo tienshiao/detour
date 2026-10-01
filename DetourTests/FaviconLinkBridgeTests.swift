@@ -173,4 +173,11 @@ final class StallingSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
         held.removeValue(forKey: ObjectIdentifier(urlSchemeTask))
     }
+
+    /// Fails every held request, letting the loads waiting on them finish.
+    func releaseHeld() {
+        let tasks = held.values
+        held.removeAll()
+        for task in tasks { task.didFailWithError(URLError(.fileDoesNotExist)) }
+    }
 }
