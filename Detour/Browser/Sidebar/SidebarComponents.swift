@@ -43,6 +43,16 @@ class DraggableTableView: NSTableView {
         return image
     }
 
+    /// A drag-source table delays window ordering on every mouse-down — rows or
+    /// not — so a row can be dragged out of a background window without raising
+    /// it. Off the rows our mouse-down moves the window instead, so order it
+    /// front first; otherwise a background window is dragged around underneath
+    /// the others and only comes forward on mouse-up.
+    override func shouldDelayWindowOrdering(for event: NSEvent) -> Bool {
+        guard row(at: convert(event.locationInWindow, from: nil)) >= 0 else { return false }
+        return super.shouldDelayWindowOrdering(for: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         lastMouseDownPoint = point
