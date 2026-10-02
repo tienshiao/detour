@@ -51,17 +51,20 @@ final class ArchivePageView: NSView {
     private let bottomFadeShadow = FadeShadowView(flipped: false)
     private let onScrollWheel: (NSEvent) -> Bool
 
-    /// Whether the page's search field and list can take keyboard focus. Off
-    /// while the page is off screen: it is the first page of the strip, so
-    /// its search field is the window's first key view — the one AppKit
-    /// focuses by itself when a window is first shown, and the one Tab from
-    /// the end of a web page lands on (TASK-128).
+    /// Whether the page's controls can take keyboard focus. Off while the
+    /// page is off screen: its views are in the key-view loop AppKit builds
+    /// when the window is first shown, with the search field first — the view
+    /// AppKit then focuses by itself, and the one Tab reaches when nothing
+    /// has focus (TASK-128). The buttons are key views only with Full
+    /// Keyboard Access on.
     var acceptsKeyboardFocus = false {
         didSet { applyKeyboardFocus() }
     }
 
     private func applyKeyboardFocus() {
         searchField.refusesFirstResponder = !acceptsKeyboardFocus
+        clearButton.refusesFirstResponder = !acceptsKeyboardFocus
+        filterButton.refusesFirstResponder = !acceptsKeyboardFocus
         tableView.allowsKeyboardFocus = acceptsKeyboardFocus
     }
 
@@ -539,15 +542,11 @@ extension ArchivePageView: NSMenuDelegate {
 
 /// The archive list's table: Return restores the selected row, Delete and
 /// Backspace delete it.
-final class ArchiveTableView: NSTableView {
+final class ArchiveTableView: FocusGatedTableView {
     var onReturn: (() -> Void)?
     var onDelete: (() -> Void)?
 
     override var mouseDownCanMoveWindow: Bool { false }
-
-    /// See `ArchivePageView.acceptsKeyboardFocus`.
-    var allowsKeyboardFocus = true
-    override var acceptsFirstResponder: Bool { allowsKeyboardFocus && super.acceptsFirstResponder }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {

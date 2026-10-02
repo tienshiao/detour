@@ -15,6 +15,13 @@ class SpacePageView: NSView {
     private var favoritesBarHeightConstraint: NSLayoutConstraint!
     private var isShowingFavoriteDropHint = false
 
+    /// Whether the page's tab list can take keyboard focus. Off while the page
+    /// is not the one the strip rests on: a list nobody can see must not hold
+    /// the keyboard, where arrow keys would walk its rows (TASK-130).
+    var acceptsKeyboardFocus = false {
+        didSet { tableView.allowsKeyboardFocus = acceptsKeyboardFocus }
+    }
+
     init(tableViewDataSource: NSTableViewDataSource,
          tableViewDelegate: NSTableViewDelegate,
          menuDelegate: NSMenuDelegate,
@@ -29,6 +36,7 @@ class SpacePageView: NSView {
         tableView.delegate = tableViewDelegate
         tableView.registerForDraggedTypes([tabReorderPasteboardType, favoritePasteboardType])
         tableView.draggingDestinationFeedbackStyle = .sourceList
+        tableView.allowsKeyboardFocus = false
 
         let menu = NSMenu()
         menu.delegate = menuDelegate

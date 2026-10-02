@@ -116,13 +116,16 @@ final class InitialWindowFocusTests: XCTestCase {
         let page = ArchivePageView(onScrollWheel: { _ in false })
         XCTAssertFalse(page.searchField.acceptsFirstResponder)
         XCTAssertFalse(page.tableView.acceptsFirstResponder)
+        XCTAssertTrue(page.filterButton.refusesFirstResponder)
 
         page.acceptsKeyboardFocus = true
         XCTAssertTrue(page.searchField.acceptsFirstResponder)
         XCTAssertTrue(page.tableView.acceptsFirstResponder)
+        XCTAssertFalse(page.filterButton.refusesFirstResponder)
 
         page.acceptsKeyboardFocus = false
         XCTAssertFalse(page.searchField.acceptsFirstResponder)
         XCTAssertFalse(page.tableView.acceptsFirstResponder)
+        XCTAssertTrue(page.filterButton.refusesFirstResponder)
     }
 }

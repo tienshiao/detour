@@ -73,6 +73,9 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64)
     /// Clear Archive… for `spaceIDs`, which hold `count` records; the receiver confirms.
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int)
+    /// A sidebar page that held keyboard focus left the screen, and the
+    /// sidebar gave the focus up: nothing holds it now.
+    func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController)
 }
 
 extension TabSidebarDelegate {
@@ -118,6 +121,7 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestRestoreArchivedTab recordID: Int64) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int) {}
+    func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController) {}
 }
 
 class TabSidebarViewController: NSViewController {
@@ -275,10 +279,7 @@ class TabSidebarViewController: NSViewController {
     /// The active space is unchanged underneath: the window keeps showing its
     /// tabs, and `activePageIndex` still names its page.
     private(set) var isShowingArchivePage = false {
-        didSet {
-            if oldValue, !isShowingArchivePage { resignArchivePageFocus() }
-            archivePage?.acceptsKeyboardFocus = isShowingArchivePage
-        }
+        didSet { updatePageKeyboardFocus() }
     }
     /// The closed-tab records changed since the archive page last loaded them.
     private var archiveNeedsReload = true
@@ -1200,6 +1201,7 @@ class TabSidebarViewController: NSViewController {
             setStripX(-CGFloat(currentStripIndex) * pageW)
         }
 
+        updatePageKeyboardFocus()
         updateFadeShadows()
     }
 
@@ -1306,7 +1308,6 @@ class TabSidebarViewController: NSViewController {
             guard let self else { return }
             self.delegate?.tabSidebar(self, didRequestClearArchiveOf: spaceIDs, count: count)
         }
-        page.acceptsKeyboardFocus = isShowingArchivePage
         pageStripView.addSubview(page)
         archivePage = page
         archiveNeedsReload = true
@@ -1487,13 +1488,35 @@ class TabSidebarViewController: NSViewController {
         }
     }
 
-    /// Keyboard focus in the archive page (its search field or list) must not
-    /// stay behind on a page that slid off screen.
-    private func resignArchivePageFocus() {
-        guard let archivePage, let window = view.window,
+    /// The page the strip rests on (or is sliding to): the archive page while
+    /// it shows, else the active space's.
+    private var currentPage: NSView? {
+        if isShowingArchivePage { return archivePage }
+        return activePageIndex < spacePages.count ? spacePages[activePageIndex] : nil
+    }
+
+    /// Only the current page takes keyboard focus. The others are off screen,
+    /// where a focused list would still answer the arrow keys — switching
+    /// tabs behind the archive page, or walking the rows of a space the user
+    /// has left (TASK-128, TASK-130). By state, not per control: which of the
+    /// strip's views AppKit links into its key-view loop depends on what
+    /// existed when the window was first shown.
+    private func updatePageKeyboardFocus() {
+        archivePage?.acceptsKeyboardFocus = isShowingArchivePage
+        for (index, page) in spacePages.enumerated() {
+            page.acceptsKeyboardFocus = !isShowingArchivePage && index == activePageIndex
+        }
+        resignOffscreenPageFocus()
+    }
+
+    /// Keyboard focus must not stay behind on a page that slid off screen.
+    private func resignOffscreenPageFocus() {
+        guard let window = view.window,
               let responder = window.firstResponder as? NSView,
-              responder.isDescendant(of: archivePage) else { return }
-        window.makeFirstResponder(nil)
+              responder.isDescendant(of: pageStripView) else { return }
+        if let currentPage, responder.isDescendant(of: currentPage) { return }
+        guard window.makeFirstResponder(nil) else { return }
+        delegate?.tabSidebarDidReleaseKeyboardFocus(self)
     }
 
     @objc private func scrollViewDidScroll(_ notification: Notification) {

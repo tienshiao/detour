@@ -153,6 +153,12 @@ extension BrowserWindowController: TabSidebarDelegate {
         SettingsWindowController.shared.showSpacesPane(selectSpaceID: spaceID)
     }
 
+    /// The page takes the keyboard a sidebar page gave up — as it does when
+    /// nothing holds it after a tab switch (TASK-128).
+    func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController) {
+        restoreWebContentFocus()
+    }
+
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {
         let popover = NSPopover()
         popover.behavior = .transient

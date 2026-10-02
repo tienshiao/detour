@@ -1,6 +1,16 @@
 import AppKit
 
-class DraggableTableView: NSTableView {
+/// A sidebar page's list, whose keyboard focus the page switches off while it
+/// is off screen (`SpacePageView.acceptsKeyboardFocus`,
+/// `ArchivePageView.acceptsKeyboardFocus`). `becomeFirstResponder` too:
+/// `makeFirstResponder` does not ask `acceptsFirstResponder`.
+class FocusGatedTableView: NSTableView {
+    var allowsKeyboardFocus = true
+    override var acceptsFirstResponder: Bool { allowsKeyboardFocus && super.acceptsFirstResponder }
+    override func becomeFirstResponder() -> Bool { allowsKeyboardFocus && super.becomeFirstResponder() }
+}
+
+class DraggableTableView: FocusGatedTableView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     /// Last mouse-down location in table coordinates. `pasteboardWriterForRow`
