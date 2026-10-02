@@ -166,6 +166,22 @@ enum SidebarDropCommand: Equatable {
     case removeFromPinnedSplit(entryID: UUID, folderID: UUID?, beforeItemID: UUID?)
 }
 
+extension SidebarDropCommand {
+    /// Whether the dragged row arrives at the drop as a row of its own, so its
+    /// drag image can land on it. Split create/break drops don't — the dragged
+    /// tab merges into the target's row, or one pane leaves a row and the other
+    /// stays — and animate inside the row instead.
+    var landsAsWholeRow: Bool {
+        switch self {
+        case .reorderNormalTab, .pinTab, .unpinEntry, .movePinnedEntry, .movePinnedFolder,
+             .pinSplitGroup, .unpinSplitGroup, .movePinnedSplitGroup:
+            return true
+        case .createSplit, .removeFromSplit, .unpinSplitMember, .removeFromPinnedSplit:
+            return false
+        }
+    }
+}
+
 // MARK: - Drop Geometry
 
 /// Where within a normal-tab row an `.on` drop sits, from the pointer position

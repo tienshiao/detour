@@ -201,6 +201,16 @@ class TabSidebarViewController: NSViewController {
     /// feedback can only mark the whole row, so this draws the half itself.
     private var splitDropOverlay: NSView?
     private var pendingInsertionOrigin: NSPoint?
+
+    /// The image of the row being dragged out of the table, and its frame
+    /// relative to that row's rect. Kept for the length of the drag session so
+    /// a drop can carry the drag image on as a landing proxy.
+    private var rowDragImage: (image: NSImage, frameInRow: NSRect)?
+
+    /// A drop in flight: the drag image, taken over at the release point as an
+    /// overlay view, waiting for the dropped item's row to exist in the table
+    /// (`landDroppedRowIfNeeded`). `itemIDs` identify that row in either section.
+    private var pendingDropLanding: (itemIDs: Set<UUID>, proxy: NSImageView, frameInRow: NSRect)?
     private var bottomBar = DraggableBarView()
     private let spaceClipView = NSView()
     private let spaceStripView = NSView()
@@ -413,6 +423,13 @@ class TabSidebarViewController: NSViewController {
             // This ensures beginUpdates captures the old state, operations describe
             // the transition, and the data source reflects the new state at endUpdates.
             let insertAnimation: NSTableView.AnimationOptions = insertionOrigin != nil ? [] : .slideDown
+            // A landing drop paces the rows to its proxy's flight, so the gap
+            // is open and the hidden row in place when the proxy arrives.
+            let isLanding = pendingDropLanding != nil
+            if isLanding {
+                NSAnimationContext.beginGrouping()
+                NSAnimationContext.current.duration = Self.dropLandingDuration
+            }
             tableView.beginUpdates()
             tableView.removeRows(at: diff.removedRows, withAnimation: .effectFade)
             tableView.insertRows(at: diff.insertedRows, withAnimation: insertAnimation)
@@ -424,8 +441,11 @@ class TabSidebarViewController: NSViewController {
             tabs = newTabs
             flattenedPinnedItems = newPinnedItems
             tableView.endUpdates()
+            if isLanding {
+                NSAnimationContext.endGrouping()
+            }
 
-            // Animate inserted row from the favorite tile's origin
+            // Animate inserted row from where the favorite tile was released
             if let origin = insertionOrigin, let insertedRow = diff.insertedRows.first {
                 let finalRect = tableView.rect(ofRow: insertedRow)
                 if let rowView = tableView.rowView(atRow: insertedRow, makeIfNecessary: false) {
@@ -442,6 +462,7 @@ class TabSidebarViewController: NSViewController {
                     }
                 }
             }
+            landDroppedRowIfNeeded()
         } else {
             pinnedFolders = newFolders
             pinnedEntries = newPinned
@@ -577,6 +598,106 @@ class TabSidebarViewController: NSViewController {
                     tableView.selectRowIndexes(IndexSet(integer: rowForNormalTab(at: itemIdx)), byExtendingSelection: false)
                 }
             }
+        }
+    }
+
+    // MARK: - Drop Landing
+
+    private static let dropLandingDuration: TimeInterval = 0.2
+
+    /// Takes the drag image over from the drag session at the moment of release:
+    /// an overlay copy at the same spot, which `landDroppedRowIfNeeded` then
+    /// flies to the dropped row. The session's own image vanishes when the drop
+    /// is accepted, so without this the row would be seen travelling from where
+    /// it was picked up. A proxy of our own (rather than
+    /// `animatesToDestination`) because the destination row may only exist a
+    /// run loop tick later — see `applyPendingState`.
+    private func beginDropLanding(for info: any NSDraggingInfo, itemIDs: Set<UUID>) {
+        cancelDropLanding()
+        guard let drag = rowDragImage else { return }
+
+        let pointer = view.convert(info.draggingLocation, from: nil)
+        var frame = NSRect(x: pointer.x - drag.frameInRow.width / 2, y: pointer.y - drag.frameInRow.height / 2,
+                           width: drag.frameInRow.width, height: drag.frameInRow.height)
+        // Prefer where the session is actually showing the image. The pointer
+        // grabbed the row, so a frame that isn't under it is not that image.
+        info.enumerateDraggingItems(options: [], for: view, classes: [NSPasteboardItem.self], searchOptions: [:]) { item, _, stop in
+            if item.draggingFrame.insetBy(dx: -8, dy: -8).contains(pointer) {
+                frame.origin = item.draggingFrame.origin
+            }
+            stop.pointee = true
+        }
+
+        let proxy = NSImageView(frame: frame)
+        proxy.image = drag.image
+        proxy.imageScaling = .scaleAxesIndependently
+        view.addSubview(proxy)
+        pendingDropLanding = (itemIDs, proxy, drag.frameInRow)
+    }
+
+    /// Removes a landing proxy whose drop produced no state change (the store
+    /// refused it), so there is no row for it to land on.
+    private func cancelDropLanding() {
+        guard let landing = pendingDropLanding else { return }
+        pendingDropLanding = nil
+        landing.proxy.removeFromSuperview()
+    }
+
+    /// The row showing any of `ids`, matched as a pinned item, a pinned
+    /// entry or its backing tab, or a normal tab — a drop can move the item
+    /// across sections, and an entry's tab keeps its own ID.
+    private func row(containingAnyOf ids: Set<UUID>) -> Int? {
+        if let index = flattenedPinnedItems.firstIndex(where: { item in
+            ids.contains(pinnedItemID(item)) || item.entries.contains { entry in
+                ids.contains(entry.id) || entry.tab.map { ids.contains($0.id) } == true
+            }
+        }) {
+            return rowForPinnedItem(at: index)
+        }
+        if let index = tabItems.firstIndex(where: { $0.tabs.contains { ids.contains($0.id) } }) {
+            return rowForNormalTab(at: index)
+        }
+        return nil
+    }
+
+    /// Flies the pending landing proxy from the release point to the dropped
+    /// item's row. The real row stays hidden until the proxy arrives: the
+    /// table still moves it from its origin, but only the neighbours are seen
+    /// shifting to make room.
+    private func landDroppedRowIfNeeded() {
+        guard let landing = pendingDropLanding else { return }
+        pendingDropLanding = nil
+        let proxy = landing.proxy
+
+        guard let row = row(containingAnyOf: landing.itemIDs),
+              let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) else {
+            // Nowhere visible to land (e.g. dropped into a collapsed folder).
+            fadeOutDropProxy(proxy)
+            return
+        }
+
+        let rowRect = tableView.rect(ofRow: row)
+        let destination = view.convert(landing.frameInRow.offsetBy(dx: rowRect.minX, dy: rowRect.minY), from: tableView)
+        rowView.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Self.dropLandingDuration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            proxy.animator().frame = destination
+        } completionHandler: { [weak self, weak rowView] in
+            rowView?.alphaValue = 1
+            self?.fadeOutDropProxy(proxy)
+            self?.recheckHoverForVisibleCells()
+        }
+    }
+
+    /// The proxy carries the drag image's hover background, which the landed
+    /// row only has if the pointer is on it — fade rather than cut.
+    private func fadeOutDropProxy(_ proxy: NSView) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            proxy.animator().alphaValue = 0
+        } completionHandler: {
+            proxy.removeFromSuperview()
         }
     }
 
@@ -2241,22 +2362,29 @@ extension TabSidebarViewController: NSTableViewDataSource {
 
         image.unlockFocus()
 
+        let rowOrigin = tableView.rect(ofRow: row).origin
+        rowDragImage = (image, tableView.convert(visualRect, from: cellView).offsetBy(dx: -rowOrigin.x, dy: -rowOrigin.y))
+
         // Replace the dragging item's image with our rounded-corner version
         session.enumerateDraggingItems(options: [], for: tableView, classes: [NSPasteboardItem.self], searchOptions: [:]) { draggingItem, _, _ in
             let origin = NSPoint(x: draggingItem.draggingFrame.origin.x - 6, y: draggingItem.draggingFrame.origin.y)
             draggingItem.setDraggingFrame(NSRect(origin: origin, size: imageSize), contents: image)
         }
 
-        // Show favorites drop zone on active page
+        // Show the favorites drop hint on the active page
         if activePageIndex < spacePages.count {
-            spacePages[activePageIndex].setDragSessionActive(true)
+            let kind = session.draggingPasteboard.pasteboardItems?.first?.string(forType: tabReorderPasteboardType)
+                .flatMap(SidebarDragPayload.init(pasteboardString:))?.kind
+            spacePages[activePageIndex].setDragSessionActive(true, canAddFavorite: kind.map(FavoritesBarView.canFavorite) ?? false)
         }
     }
 
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-        // Hide favorites drop zone
-        if activePageIndex < spacePages.count {
-            spacePages[activePageIndex].setDragSessionActive(false)
+        rowDragImage = nil
+        // Hide the favorites drop hint. Every page, not just the active one:
+        // the page that showed it need not still be active.
+        for page in spacePages {
+            page.setDragSessionActive(false)
         }
         // Not gated on activePageIndex — the begin/end pair must always balance.
         delegate?.tabSidebar(self, dragSessionDidChangeActive: false)
@@ -2327,7 +2455,8 @@ extension TabSidebarViewController: NSTableViewDataSource {
         let operation: SidebarDropOperation = dropOperation == .on ? .on : .above
 
         if let favorite = localFavoritePayload(from: info) {
-            return acceptFavoriteDrop(favorite, row: destRow, operation: operation)
+            return acceptFavoriteDrop(favorite, row: destRow, operation: operation,
+                                      dropPoint: tableView.convert(info.draggingLocation, from: nil))
         }
 
         guard let payload = localDragPayload(from: info),
@@ -2339,6 +2468,19 @@ extension TabSidebarViewController: NSTableViewDataSource {
               ),
               let command = resolveSidebarDrop(source: source, destination: destination, items: flattenedPinnedItems)
         else { return false }
+
+        // A pane dragged out of a split carries the whole row's image, which
+        // matches no row at the destination.
+        if command.landsAsWholeRow, payload.kind != .splitMember, payload.kind != .pinnedSplitMember {
+            var itemIDs: Set<UUID> = [payload.itemID]
+            if let tabID = pinnedEntries.first(where: { $0.id == payload.itemID })?.tab?.id {
+                itemIDs.insert(tabID)
+            }
+            beginDropLanding(for: info, itemIDs: itemIDs)
+        }
+        // Queued behind any deferred state application the command issues
+        // below: a landing still pending by then had no state change to land on.
+        defer { DispatchQueue.main.async { [weak self] in self?.cancelDropLanding() } }
 
         switch command {
         // Single-delegate cases: let the observer's applyState animate directly.
@@ -2468,10 +2610,11 @@ extension TabSidebarViewController: NSTableViewDataSource {
     }
 
     /// Handles a favorite tile dropped into the table (restore as tab or pinned entry).
-    private func acceptFavoriteDrop(_ payload: FavoriteDragPayload, row destRow: SidebarRow, operation: SidebarDropOperation) -> Bool {
+    private func acceptFavoriteDrop(_ payload: FavoriteDragPayload, row destRow: SidebarRow, operation: SidebarDropOperation,
+                                    dropPoint: NSPoint) -> Bool {
         guard activePageIndex < spacePages.count else { return false }
         let favBar = spacePages[activePageIndex].favoritesBar
-        guard let favoriteIndex = favBar.index(ofFavoriteID: payload.favoriteID),
+        guard favBar.index(ofFavoriteID: payload.favoriteID) != nil,
               let destination = sidebarDropDestination(row: destRow, operation: operation, items: flattenedPinnedItems)
         else { return false }
         // A final drop can arrive before a retargeted proposal: re-check that the
@@ -2479,23 +2622,20 @@ extension TabSidebarViewController: NSTableViewDataSource {
         let targets = delegate?.tabSidebar(self, dropTargetsForFavorite: payload.favoriteID) ?? []
         guard targets.contains(favoriteDropSection(destination: destination)) else { return false }
 
-        let animOrigin: NSPoint? = favBar.tileFrame(at: favoriteIndex).map { frame in
-            tableView.convert(NSPoint(x: frame.midX, y: frame.midY), from: favBar)
-        }
-
         switch destination {
         case .beforeNormalTab(let gapIndex):
-            pendingInsertionOrigin = animOrigin
+            // The new row animates in from where the tile was released.
+            pendingInsertionOrigin = dropPoint
             // gapIndex is an item-space gap; restore inserts into the tabs array.
             delegate?.tabSidebar(self, didDragFavorite: payload.favoriteID, toTabGapIndex: tabGapIndex(forItemGap: gapIndex, in: tabItems))
         case .beforePinnedItem(let flatIndex):
             dropFavoriteIntoPinned(favoriteID: payload.favoriteID,
                                    folderID: folderIDForFlattenedIndex(flatIndex),
                                    beforeItemID: itemIDAtDropIndex(flatIndex, in: flattenedPinnedItems),
-                                   insertionOrigin: animOrigin)
+                                   insertionOrigin: dropPoint)
         case .intoFolder(let folderID):
             dropFavoriteIntoPinned(favoriteID: payload.favoriteID, folderID: folderID,
-                                   beforeItemID: nil, insertionOrigin: animOrigin)
+                                   beforeItemID: nil, insertionOrigin: dropPoint)
         case .intoSplit:
             // Favorites never validate as split sources (and this path passes no
             // drop geometry, so the destination can't produce .intoSplit anyway).
@@ -3295,27 +3435,15 @@ extension TabSidebarViewController: FavoritesBarDelegate {
     func favoritesBar(_ bar: FavoritesBarView, didReceiveDropOfTab payload: SidebarDragPayload, at index: Int) {
         guard payload.spaceID == activeSpaceID else { return }
 
-        let sourceRow: Int?
         let isPinned: Bool
         switch payload.kind {
         case .normalTab:
-            sourceRow = itemIndex(containingTabID: payload.itemID, in: tabItems).map { rowForNormalTab(at: $0) }
             isPinned = false
         case .pinnedEntry:
-            sourceRow = flattenedPinnedItems.firstIndex { pinnedItemID($0) == payload.itemID }.map(rowForPinnedItem)
             isPinned = true
         case .pinnedFolder, .splitGroup, .splitMember, .pinnedSplitGroup, .pinnedSplitMember:
             // FavoritesBarView already rejects these at the drop gate; defense here too.
             return
-        }
-
-        // Capture the source row's position so the new tile can animate from it
-        if let sourceRow {
-            let rowRect = tableView.rect(ofRow: sourceRow)
-            if !rowRect.isEmpty {
-                let rowCenter = NSPoint(x: rowRect.midX, y: rowRect.midY)
-                bar.setAnimationOrigin(bar.convert(rowCenter, from: tableView))
-            }
         }
         delegate?.tabSidebar(self, didDragTabToFavorite: payload.itemID, isPinned: isPinned, at: index)
     }

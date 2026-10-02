@@ -7,11 +7,13 @@ class SpacePageView: NSView {
 
     private let header = SpaceHeaderView()
     let favoritesBar = FavoritesBarView()
+    private let favoriteDropHint = FavoriteDropHintView()
     let scrollView: DraggableScrollView
     let tableView: DraggableTableView
     private let topFadeShadow: NSView
     private let bottomFadeShadow: NSView
     private var favoritesBarHeightConstraint: NSLayoutConstraint!
+    private var isShowingFavoriteDropHint = false
 
     init(tableViewDataSource: NSTableViewDataSource,
          tableViewDelegate: NSTableViewDelegate,
@@ -56,6 +58,12 @@ class SpacePageView: NSView {
         addSubview(favoritesBar)
         addSubview(header)
         addSubview(scrollView)
+        // Over the header, which it replaces while shown (see setDragSessionActive).
+        favoriteDropHint.favoritesBar = favoritesBar
+        favoriteDropHint.translatesAutoresizingMaskIntoConstraints = false
+        favoriteDropHint.isHidden = true
+        favoriteDropHint.alphaValue = 0
+        addSubview(favoriteDropHint, positioned: .above, relativeTo: header)
         addSubview(topFadeShadow, positioned: .above, relativeTo: scrollView)
         addSubview(bottomFadeShadow, positioned: .above, relativeTo: scrollView)
 
@@ -72,6 +80,14 @@ class SpacePageView: NSView {
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
+
+            // The header's footprint on a page without favorites. A fixed
+            // height rather than the header's edges: a drop grows the bar and
+            // moves the header while the hint is still fading out.
+            favoriteDropHint.topAnchor.constraint(equalTo: topAnchor),
+            favoriteDropHint.leadingAnchor.constraint(equalTo: leadingAnchor),
+            favoriteDropHint.trailingAnchor.constraint(equalTo: trailingAnchor),
+            favoriteDropHint.heightAnchor.constraint(equalToConstant: Self.headerTopPad + 6 + Self.headerHeight),
 
             scrollView.topAnchor.constraint(equalTo: header.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -110,8 +126,23 @@ class SpacePageView: NSView {
         favoritesBar.refreshTile(forTabID: tabID)
     }
 
-    func setDragSessionActive(_ active: Bool) {
-        favoritesBar.showDropZone(active)
+    /// Shows the "Drop to add favorite" hint in place of the space header for
+    /// the length of a drag that could add the page's first favorite. Nothing
+    /// changes size, so the tab list stays put under the pointer.
+    func setDragSessionActive(_ active: Bool, canAddFavorite: Bool = false) {
+        let showHint = active && canAddFavorite && favoritesBar.isEmpty
+        guard showHint != isShowingFavoriteDropHint else { return }
+        isShowingFavoriteDropHint = showHint
+        if showHint { favoriteDropHint.isHidden = false }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            favoriteDropHint.animator().alphaValue = showHint ? 1 : 0
+            header.animator().alphaValue = showHint ? 0 : 1
+        } completionHandler: { [weak self] in
+            // Hidden, not just transparent: a visible view keeps taking drags.
+            guard let self, !self.isShowingFavoriteDropHint else { return }
+            self.favoriteDropHint.isHidden = true
+        }
     }
 
     func updateFadeShadows() {

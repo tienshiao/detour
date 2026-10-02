@@ -166,6 +166,36 @@ final class SidebarDragDropTests: XCTestCase {
                      ".on a non-folder row is not a destination")
     }
 
+    // MARK: - Drop landing
+
+    func testWholeRowCommandsLandAndSplitRewritesDoNot() {
+        let id = UUID()
+        let landing: [SidebarDropCommand] = [
+            .reorderNormalTab(tabID: id, fromIndex: 0, toGapIndex: 2),
+            .pinTab(tabID: id, folderID: nil, beforeItemID: nil),
+            .unpinEntry(entryID: id, toGapIndex: 0),
+            .movePinnedEntry(entryID: id, folderID: nil, beforeItemID: nil),
+            .movePinnedFolder(folderID: id, parentFolderID: nil, beforeItemID: nil),
+            .pinSplitGroup(groupID: id, firstMemberTabID: id, folderID: nil, beforeItemID: nil),
+            .unpinSplitGroup(groupID: id, toGapIndex: 0),
+            .movePinnedSplitGroup(groupID: id, firstMemberEntryID: id, folderID: nil, beforeItemID: nil),
+        ]
+        for command in landing {
+            XCTAssertTrue(command.landsAsWholeRow, "\(command)")
+        }
+        // The dragged tab merges into another row, or leaves one pane behind:
+        // no row matches the drag image.
+        let inRow: [SidebarDropCommand] = [
+            .createSplit(draggedTabID: id, targetTabID: UUID(), edge: .left),
+            .removeFromSplit(tabID: id, toGapIndex: 0),
+            .unpinSplitMember(entryID: id, toGapIndex: 0),
+            .removeFromPinnedSplit(entryID: id, folderID: nil, beforeItemID: nil),
+        ]
+        for command in inRow {
+            XCTAssertFalse(command.landsAsWholeRow, "\(command)")
+        }
+    }
+
     // MARK: - resolveSidebarDrop: normal tab reorder
 
     func testReorderNoOpGaps() {

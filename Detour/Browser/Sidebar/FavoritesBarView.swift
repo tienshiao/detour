@@ -26,9 +26,6 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
     private var favorites: [Favorite] = []
     private(set) var tileViews: [FavoriteTileView] = []
-    private var dropZoneLabel: NSTextField?
-    private var dropZoneBorder: CAShapeLayer?
-    private var isDragHighlighted = false
     private var dragInsertionIndex: Int? { didSet { updateInsertionIndicator() } }
     private var isAnimatingTileUpdate = false
 
@@ -36,7 +33,8 @@ class FavoritesBarView: NSView, NSDraggingSource {
     private var dragSourceIndex: Int?
     private var insertionIndicator: CALayer?
 
-    /// Local-coordinate origin for animating a newly added tile from its source position.
+    /// Local-coordinate point the next added tile animates from: where the
+    /// drag that created it was released.
     private var pendingAnimationOrigin: NSPoint?
 
     private(set) var heightConstraintRef: NSLayoutConstraint?
@@ -115,7 +113,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
                 tile.isSelected = fav.tab?.id == selectedTabID
                 if index < targetFrames.count {
                     if let origin = animOrigin {
-                        // Start at the source position (e.g. where the tab was)
+                        // Start where the drag was released
                         let target = targetFrames[index]
                         tile.frame = NSRect(x: origin.x - target.width / 2,
                                             y: origin.y - target.height / 2,
@@ -192,42 +190,15 @@ class FavoritesBarView: NSView, NSDraggingSource {
         }
     }
 
-    /// Returns the frame of the tile at `index` in this view's coordinate space.
-    func tileFrame(at index: Int) -> NSRect? {
-        guard index < tileViews.count else { return nil }
-        return tileViews[index].frame
-    }
-
     /// Returns the current index of the favorite with the given ID, if present.
     func index(ofFavoriteID id: UUID) -> Int? {
         favorites.firstIndex(where: { $0.id == id })
-    }
-
-    /// Sets the origin point (in this view's coordinates) for the next tile addition animation.
-    func setAnimationOrigin(_ point: NSPoint) {
-        pendingAnimationOrigin = point
     }
 
     func updateSelection(selectedTabID: UUID?) {
         self.selectedFavoriteID = selectedTabID
         for tile in tileViews {
             tile.isSelected = tile.favorite.tab?.id == selectedTabID
-        }
-    }
-
-    func showDropZone(_ show: Bool) {
-        if show && favorites.isEmpty {
-            isDragHighlighted = true
-            animateHeightTo(44)
-            setupDropZoneAppearance()
-        } else if !show {
-            isDragHighlighted = false
-            teardownDropZoneAppearance()
-            // If favorites were added during the drag, the bar already has the right height
-            // from update(favorites:). Only collapse if still empty.
-            if favorites.isEmpty {
-                animateHeightTo(0)
-            }
         }
     }
 
@@ -238,7 +209,6 @@ class FavoritesBarView: NSView, NSDraggingSource {
         if !isAnimatingTileUpdate {
             layoutTiles()
         }
-        updateDropZoneBorderPath()
     }
 
     private func computeHeight() -> CGFloat {
@@ -304,55 +274,6 @@ class FavoritesBarView: NSView, NSDraggingSource {
         return rowEnd
     }
 
-    // MARK: - Drop Zone Appearance
-
-    private func setupDropZoneAppearance() {
-        if dropZoneLabel == nil {
-            let label = NSTextField(labelWithString: "Drop to add favorite")
-            label.font = .systemFont(ofSize: 11, weight: .medium)
-            label.textColor = .secondaryLabelColor
-            label.alignment = .center
-            label.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(label)
-            NSLayoutConstraint.activate([
-                label.centerXAnchor.constraint(equalTo: centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            ])
-            dropZoneLabel = label
-        }
-
-        if dropZoneBorder == nil {
-            wantsLayer = true
-            let border = CAShapeLayer()
-            border.strokeColor = NSColor.secondaryLabelColor.withAlphaComponent(0.3).cgColor
-            border.fillColor = nil
-            border.lineDashPattern = [6, 4]
-            border.lineWidth = 1.5
-            layer?.addSublayer(border)
-            dropZoneBorder = border
-        }
-
-        updateDropZoneBorderPath()
-    }
-
-    private func teardownDropZoneAppearance() {
-        dropZoneLabel?.removeFromSuperview()
-        dropZoneLabel = nil
-        dropZoneBorder?.removeFromSuperlayer()
-        dropZoneBorder = nil
-    }
-
-    override func updateLayer() {
-        super.updateLayer()
-        updateDropZoneBorderPath()
-    }
-
-    private func updateDropZoneBorderPath() {
-        guard let border = dropZoneBorder else { return }
-        let inset = bounds.insetBy(dx: 16, dy: 4)
-        border.path = NSBezierPath(roundedRect: inset, xRadius: 8, yRadius: 8).cgPath
-    }
-
     // MARK: - Insertion Indicator
 
     private func updateInsertionIndicator() {
@@ -396,16 +317,6 @@ class FavoritesBarView: NSView, NSDraggingSource {
         insertionIndicator = nil
     }
 
-    private func animateHeightTo(_ height: CGFloat) {
-        guard let constraint = heightConstraintRef, constraint.constant != height else { return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            context.allowsImplicitAnimation = true
-            constraint.animator().constant = height
-            superview?.layoutSubtreeIfNeeded()
-        }
-    }
-
     // MARK: - Dragging Source (for favorite tiles)
 
     func beginDraggingFavorite(at index: Int, event: NSEvent) {
@@ -435,10 +346,6 @@ class FavoritesBarView: NSView, NSDraggingSource {
     // MARK: - Dragging Destination
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        if favorites.isEmpty {
-            isDragHighlighted = true
-            setupDropZoneAppearance()
-        }
         return .move
     }
 
@@ -457,11 +364,10 @@ class FavoritesBarView: NSView, NSDraggingSource {
         defer {
             dragInsertionIndex = nil
             removeInsertionIndicator()
-            isDragHighlighted = false
-            teardownDropZoneAppearance()
         }
 
         let pasteboard = sender.draggingPasteboard
+        let dropPoint = convert(sender.draggingLocation, from: nil)
 
         // Internal favorite reorder — resolve the source index by ID at drop time
         if let data = pasteboard.string(forType: favoritePasteboardType),
@@ -473,29 +379,139 @@ class FavoritesBarView: NSView, NSDraggingSource {
             // API removes the source first then inserts; shift down for forward moves.
             let destIdx = srcIdx < rawDest ? rawDest - 1 : rawDest
             guard srcIdx != destIdx else { return false }
+            // Put the tile where the drag was released, so the reorder animates
+            // it in from there rather than from its old slot. `update` animates
+            // reused tiles from their current frames; if the store refuses the
+            // reorder, the layout pass puts the tile back.
+            if srcIdx < tileViews.count {
+                let tile = tileViews[srcIdx]
+                tile.frame.origin = NSPoint(x: dropPoint.x - tile.frame.width / 2,
+                                            y: dropPoint.y - tile.frame.height / 2)
+                addSubview(tile)  // above the tiles it passes over
+                needsLayout = true
+            }
             delegate?.favoritesBar(self, didReorderFavoriteFrom: srcIdx, to: destIdx)
             return true
         }
 
-        // Tab drop → add favorite
-        if let data = pasteboard.string(forType: tabReorderPasteboardType),
-           let payload = SidebarDragPayload(pasteboardString: data) {
-            // Only lone tabs and lone pinned entries can become favorites —
-            // folders and split rows/members (normal or pinned) can't (a split
-            // row is two tabs; favoriting only one would silently scatter the
-            // group). Allow-list, so new payload kinds default to rejected.
-            guard payload.sidebarID == sidebarID,
-                  payload.kind == .normalTab || payload.kind == .pinnedEntry else { return false }
-            let destIdx = dragInsertionIndex ?? favorites.count
-            delegate?.favoritesBar(self, didReceiveDropOfTab: payload, at: destIdx)
-            return true
-        }
+        return performTabDrop(sender, at: dragInsertionIndex ?? favorites.count)
+    }
 
-        return false
+    /// Whether a dragged sidebar item of this kind can become a favorite.
+    /// Only lone tabs and lone pinned entries can — folders and split
+    /// rows/members (normal or pinned) can't (a split row is two tabs;
+    /// favoriting only one would silently scatter the group). Allow-list, so
+    /// new payload kinds default to rejected.
+    static func canFavorite(_ kind: SidebarDragPayload.Kind) -> Bool {
+        kind == .normalTab || kind == .pinnedEntry
+    }
+
+    /// The tab payload on `pasteboard` if dropping it here would add a favorite.
+    func favoritableTabPayload(from pasteboard: NSPasteboard) -> SidebarDragPayload? {
+        guard let data = pasteboard.string(forType: tabReorderPasteboardType),
+              let payload = SidebarDragPayload(pasteboardString: data),
+              payload.sidebarID == sidebarID, Self.canFavorite(payload.kind) else { return nil }
+        return payload
+    }
+
+    /// Tab drop → add favorite at `index`. Shared with `FavoriteDropHintView`,
+    /// which stands in as the drop target while the bar is empty.
+    func performTabDrop(_ sender: any NSDraggingInfo, at index: Int) -> Bool {
+        guard let payload = favoritableTabPayload(from: sender.draggingPasteboard) else { return false }
+        pendingAnimationOrigin = convert(sender.draggingLocation, from: nil)
+        delegate?.favoritesBar(self, didReceiveDropOfTab: payload, at: index)
+        // An accepted drop consumed the origin in `update` (the store notifies
+        // synchronously). A refused one must not leave it for the next,
+        // unrelated tile to fly in from.
+        pendingAnimationOrigin = nil
+        return true
     }
 
     override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         return true
+    }
+}
+
+// MARK: - FavoriteDropHintView
+
+/// Dashed "Drop to add favorite" target shown while a tab drag is live on a
+/// page that has no favorites yet. It overlays the space header instead of
+/// taking height of its own, so starting a drag never shifts the tab list.
+final class FavoriteDropHintView: NSView {
+    /// The bar the drop is forwarded to (it has no height while empty, so it
+    /// can't be the drop target itself).
+    weak var favoritesBar: FavoritesBarView?
+
+    private let label = NSTextField(labelWithString: "Drop to add favorite")
+    private let border = CAShapeLayer()
+    private var isTargeted = false { didSet { if isTargeted != oldValue { needsDisplay = true } } }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override var wantsUpdateLayer: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+
+        border.lineDashPattern = [6, 4]
+        border.lineWidth = 1.5
+        layer?.addSublayer(border)
+
+        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        registerForDraggedTypes([tabReorderPasteboardType])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        border.frame = bounds
+        border.path = NSBezierPath(roundedRect: bounds.insetBy(dx: 16, dy: 4), xRadius: 8, yRadius: 8).cgPath
+    }
+
+    /// CGColor doesn't track appearance changes — AppKit calls this again on
+    /// theme switches, and `isTargeted` invalidates it.
+    override func updateLayer() {
+        if isTargeted {
+            border.strokeColor = UIConstants.splitDropAccentBorderColor.cgColor
+            border.fillColor = UIConstants.splitDropAccentFillColor.cgColor
+            label.textColor = .labelColor
+        } else {
+            border.strokeColor = NSColor.secondaryLabelColor.withAlphaComponent(0.3).cgColor
+            border.fillColor = nil
+            label.textColor = .secondaryLabelColor
+        }
+    }
+
+    // MARK: Dragging Destination
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard favoritesBar?.favoritableTabPayload(from: sender.draggingPasteboard) != nil else { return [] }
+        isTargeted = true
+        return .move
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        isTargeted = false
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        isTargeted = false
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        isTargeted = false
+        return favoritesBar?.performTabDrop(sender, at: 0) ?? false
     }
 }
 
