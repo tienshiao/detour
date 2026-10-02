@@ -8,6 +8,7 @@ import Foundation
 /// hover — Toggle Sidebar, dragging the split view divider, the split view
 /// autosave restoring a collapsed sidebar at launch — sets `autoHides` to the
 /// new collapsed state. Hover reveal and hover auto-hide never change the mode.
+/// While a popover is open on the window, a hover-revealed sidebar stays put.
 ///
 /// `BrowserWindowController` feeds events in and applies the returned actions;
 /// it never mutates the mode directly.
@@ -24,6 +25,10 @@ struct SidebarVisibilityState: Equatable {
     /// fires synchronously inside `toggleSidebar` or later); a different value
     /// came from outside — a divider drag or an autosave restore.
     private(set) var expectedCollapsed = false
+    /// A popover anchored to this window is open. Hover auto-hide waits for it
+    /// to close: collapsing the sidebar takes a sidebar-anchored popover's
+    /// positioning view away, and the popover with it (TASK-127).
+    private(set) var heldOpen = false
 
     enum Event: Equatable {
         /// View > Toggle Sidebar, Cmd+S, or the sidebar button.
@@ -37,6 +42,10 @@ struct SidebarVisibilityState: Equatable {
         /// collapsed sidebar without a KVO notification: with `expectedCollapsed`
         /// still at its initial `false`, that restore is adopted as external.
         case collapsedChanged(Bool)
+        /// The window's first popover was shown.
+        case holdBegan
+        /// The window's last popover closed.
+        case holdEnded(pointerInSidebar: Bool)
     }
 
     enum Action: Equatable {
@@ -50,6 +59,9 @@ struct SidebarVisibilityState: Equatable {
         /// Start the short grace period that ignores the sidebar exit right
         /// after a hover reveal.
         case startHoverGrace
+        /// Start the hover auto-hide delay, as if the pointer had just left
+        /// the sidebar.
+        case scheduleAutoHide
     }
 
     mutating func reduce(_ event: Event) -> [Action] {
@@ -75,7 +87,8 @@ struct SidebarVisibilityState: Equatable {
             return [.setCollapsed(false), .startHoverGrace]
 
         case .hoverHide(let isCollapsed):
-            guard openedByHover else { return [] }
+            // Held: the hover session stays open; `holdEnded` reschedules.
+            guard openedByHover, !heldOpen else { return [] }
             openedByHover = false
             guard !isCollapsed else { return [] }
             expectedCollapsed = true
@@ -89,6 +102,16 @@ struct SidebarVisibilityState: Equatable {
                 return []
             }
             return adoptExternal(collapsed: collapsed)
+
+        case .holdBegan:
+            heldOpen = true
+            return openedByHover ? [.cancelAutoHide] : []
+
+        case .holdEnded(let pointerInSidebar):
+            heldOpen = false
+            // The pointer left for the popover while it was open, and that
+            // exit was ignored. Back inside the sidebar, the next exit hides.
+            return openedByHover && !pointerInSidebar ? [.scheduleAutoHide] : []
         }
     }
 

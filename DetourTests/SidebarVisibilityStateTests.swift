@@ -15,6 +15,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         var isCollapsed = false
         var safeAreaAdjusts: Bool?
         var toggleSidebarCalls = 0
+        var autoHideScheduled = false
         var log: [SidebarVisibilityState.Action] = []
 
         mutating func send(_ event: SidebarVisibilityState.Event) {
@@ -30,9 +31,20 @@ final class SidebarVisibilityStateTests: XCTestCase {
                         let nested = state.reduce(.collapsedChanged(v))
                         XCTAssertEqual(nested, [], "own toggle must not re-enter with actions")
                     }
-                case .cancelAutoHide, .startHoverGrace: break
+                case .cancelAutoHide: autoHideScheduled = false
+                case .scheduleAutoHide: autoHideScheduled = true
+                case .startHoverGrace: break
                 }
             }
+        }
+
+        /// The pointer left the sidebar: the controller starts the hide delay.
+        mutating func pointerExited() { autoHideScheduled = true }
+        /// The hide delay elapsed (if it was not cancelled meanwhile).
+        mutating func autoHideDelayElapsed() {
+            guard autoHideScheduled else { return }
+            autoHideScheduled = false
+            hoverHide()
         }
 
         mutating func toggle() { send(.toggle(isCollapsed: isCollapsed)) }
@@ -182,6 +194,93 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertEqual(h.toggleSidebarCalls, calls)
         h.hoverHide()
         XCTAssertFalse(h.isCollapsed, "a stale auto-hide does nothing after pinning")
+    }
+
+    // MARK: - TASK-127: an open popover holds a hover-revealed sidebar
+
+    private func hoverRevealedHarness() -> Harness {
+        var h = Harness()
+        h.toggle()        // auto-hide mode, collapsed
+        h.hoverReveal()
+        XCTAssertFalse(h.isCollapsed)
+        return h
+    }
+
+    func testPopoverHoldsHoverRevealedSidebarOpen() {
+        var h = hoverRevealedHarness()
+        h.send(.holdBegan)
+        // The pointer moves from the sidebar into the popover.
+        h.pointerExited()
+        h.autoHideDelayElapsed()
+        XCTAssertFalse(h.isCollapsed, "the sidebar anchors the popover")
+        XCTAssertTrue(h.state.openedByHover, "still a hover session")
+        XCTAssertTrue(h.state.autoHides)
+    }
+
+    func testHoldCancelsAHideAlreadyPending() {
+        var h = hoverRevealedHarness()
+        // The pointer left before the popover finished appearing.
+        h.pointerExited()
+        h.send(.holdBegan)
+        XCTAssertFalse(h.autoHideScheduled)
+        h.autoHideDelayElapsed()
+        XCTAssertFalse(h.isCollapsed)
+    }
+
+    func testSidebarHidesAfterPopoverClosesWithPointerOutside() {
+        var h = hoverRevealedHarness()
+        h.send(.holdBegan)
+        h.pointerExited()
+        h.autoHideDelayElapsed()
+        h.send(.holdEnded(pointerInSidebar: false))
+        XCTAssertTrue(h.autoHideScheduled, "no further exit event will come")
+        h.autoHideDelayElapsed()
+        XCTAssertTrue(h.isCollapsed)
+        XCTAssertFalse(h.state.openedByHover)
+        XCTAssertTrue(h.state.autoHides, "hover never changes the mode")
+    }
+
+    func testSidebarStaysAfterPopoverClosesWithPointerInside() {
+        var h = hoverRevealedHarness()
+        h.send(.holdBegan)
+        h.send(.holdEnded(pointerInSidebar: true))
+        XCTAssertFalse(h.autoHideScheduled)
+        XCTAssertFalse(h.isCollapsed)
+        // The next exit hides as usual.
+        h.pointerExited()
+        h.autoHideDelayElapsed()
+        XCTAssertTrue(h.isCollapsed)
+    }
+
+    func testHoldDoesNothingToAPinnedSidebar() {
+        var h = Harness()
+        h.send(.holdBegan)
+        h.send(.holdEnded(pointerInSidebar: false))
+        XCTAssertEqual(h.log, [])
+        XCTAssertFalse(h.isCollapsed)
+        XCTAssertFalse(h.state.autoHides)
+    }
+
+    func testToggleWhileHeldPinsTheSidebar() {
+        var h = hoverRevealedHarness()
+        h.send(.holdBegan)
+        h.toggle()
+        XCTAssertFalse(h.isCollapsed)
+        XCTAssertFalse(h.state.autoHides)
+        h.send(.holdEnded(pointerInSidebar: false))
+        XCTAssertFalse(h.autoHideScheduled, "pinned sidebars never auto-hide")
+    }
+
+    func testPopoverOpenedWhileCollapsedDoesNotBlockLaterHover() {
+        var h = Harness()
+        h.toggle()
+        h.send(.holdBegan)
+        h.send(.holdEnded(pointerInSidebar: false))
+        XCTAssertFalse(h.autoHideScheduled)
+        h.hoverReveal()
+        h.pointerExited()
+        h.autoHideDelayElapsed()
+        XCTAssertTrue(h.isCollapsed)
     }
 
     // MARK: - AC4: autosave restore

@@ -51,9 +51,24 @@ final class ArchivePageView: NSView {
     private let bottomFadeShadow = FadeShadowView(flipped: false)
     private let onScrollWheel: (NSEvent) -> Bool
 
+    /// Whether the page's search field and list can take keyboard focus. Off
+    /// while the page is off screen: it is the first page of the strip, so
+    /// its search field is the window's first key view — the one AppKit
+    /// focuses by itself when a window is first shown, and the one Tab from
+    /// the end of a web page lands on (TASK-128).
+    var acceptsKeyboardFocus = false {
+        didSet { applyKeyboardFocus() }
+    }
+
+    private func applyKeyboardFocus() {
+        searchField.refusesFirstResponder = !acceptsKeyboardFocus
+        tableView.allowsKeyboardFocus = acceptsKeyboardFocus
+    }
+
     init(onScrollWheel: @escaping (NSEvent) -> Bool) {
         self.onScrollWheel = onScrollWheel
         super.init(frame: .zero)
+        applyKeyboardFocus()
 
         searchPill.wantsLayer = true
         searchPill.layer?.cornerRadius = UIConstants.defaultCornerRadius
@@ -529,6 +544,10 @@ final class ArchiveTableView: NSTableView {
     var onDelete: (() -> Void)?
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    /// See `ArchivePageView.acceptsKeyboardFocus`.
+    var allowsKeyboardFocus = true
+    override var acceptsFirstResponder: Bool { allowsKeyboardFocus && super.acceptsFirstResponder }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {

@@ -123,6 +123,16 @@ extension TabSidebarDelegate {
 class TabSidebarViewController: NSViewController {
     private static let navSymbolConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .bold)
 
+    /// The bottom bar's Downloads and Add Space buttons draw a 27pt hover
+    /// circle. They are a point wider than it (and already taller: the
+    /// button's alignment rect is inset vertically), so the whole circle takes
+    /// clicks — a frame narrower than its circle leaves a dead rim that moves
+    /// the window instead (TASK-126). The diameter is stated, not derived from
+    /// the frame: the frame's height is AppKit's to choose.
+    private static let bottomBarButtonWidth: CGFloat = 28
+    private static let bottomBarButtonHoverDiameter: CGFloat = 27
+    private static let bottomBarButtonInset: CGFloat = 6
+
     weak var delegate: TabSidebarDelegate?
     var isIncognito = false
     private var isBatchUpdating = false
@@ -267,6 +277,7 @@ class TabSidebarViewController: NSViewController {
     private(set) var isShowingArchivePage = false {
         didSet {
             if oldValue, !isShowingArchivePage { resignArchivePageFocus() }
+            archivePage?.acceptsKeyboardFocus = isShowingArchivePage
         }
     }
     /// The closed-tab records changed since the archive page last loaded them.
@@ -869,6 +880,7 @@ class TabSidebarViewController: NSViewController {
         addSpaceButton.isBordered = false
         addSpaceButton.imagePosition = .imageOnly
         addSpaceButton.circular = true
+        addSpaceButton.fixedHoverSize = Self.bottomBarButtonHoverDiameter
         addSpaceButton.target = self
         addSpaceButton.action = #selector(addSpaceClicked)
         addSpaceButton.translatesAutoresizingMaskIntoConstraints = false
@@ -882,6 +894,7 @@ class TabSidebarViewController: NSViewController {
         downloadButton.isBordered = false
         downloadButton.imagePosition = .imageOnly
         downloadButton.circular = true
+        downloadButton.fixedHoverSize = Self.bottomBarButtonHoverDiameter
         downloadButton.target = self
         downloadButton.action = #selector(downloadButtonClicked)
         downloadButton.translatesAutoresizingMaskIntoConstraints = false
@@ -899,19 +912,19 @@ class TabSidebarViewController: NSViewController {
             spaceStripView.heightAnchor.constraint(equalTo: spaceClipView.heightAnchor),
             // Leading is NOT constrained — we position it manually via frame.origin.x
 
-            downloadButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 8),
+            downloadButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: Self.bottomBarButtonInset),
             downloadButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
-            downloadButton.widthAnchor.constraint(equalToConstant: 24),
+            downloadButton.widthAnchor.constraint(equalToConstant: Self.bottomBarButtonWidth),
             downloadButton.heightAnchor.constraint(equalToConstant: 24),
 
-            addSpaceButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -8),
+            addSpaceButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -Self.bottomBarButtonInset),
             addSpaceButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor, constant: 0.5),
-            addSpaceButton.widthAnchor.constraint(equalToConstant: 24),
+            addSpaceButton.widthAnchor.constraint(equalToConstant: Self.bottomBarButtonWidth),
             addSpaceButton.heightAnchor.constraint(equalToConstant: 24),
 
             downloadBadge.widthAnchor.constraint(equalToConstant: 6),
             downloadBadge.heightAnchor.constraint(equalToConstant: 6),
-            downloadBadge.leadingAnchor.constraint(equalTo: downloadButton.trailingAnchor, constant: -9),
+            downloadBadge.leadingAnchor.constraint(equalTo: downloadButton.trailingAnchor, constant: -11),
             downloadBadge.topAnchor.constraint(equalTo: downloadButton.topAnchor, constant: 1),
         ])
 
@@ -1293,6 +1306,7 @@ class TabSidebarViewController: NSViewController {
             guard let self else { return }
             self.delegate?.tabSidebar(self, didRequestClearArchiveOf: spaceIDs, count: count)
         }
+        page.acceptsKeyboardFocus = isShowingArchivePage
         pageStripView.addSubview(page)
         archivePage = page
         archiveNeedsReload = true
@@ -1544,7 +1558,7 @@ class TabSidebarViewController: NSViewController {
         addSpaceButton.isHidden = isIncognito
 
         // Calculate how many buttons fit in the available space
-        let availableWidth = addSpaceButton.frame.minX - downloadButton.frame.maxX - 16
+        let availableWidth = addSpaceButton.frame.minX - downloadButton.frame.maxX - 12
         let needsDots = spaces.count > max(1, Int((availableWidth + spaceButtonSpacing) / (spaceButtonWidth + spaceButtonSpacing)))
         let dotSpace: CGFloat = needsDots ? 18 : 0  // 5px dot + 4px gap on each side
         let effectiveWidth = availableWidth - dotSpace

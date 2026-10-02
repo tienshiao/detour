@@ -20,6 +20,9 @@ class BrowserWindowController: NSWindowController {
     private(set) var sidebarVisibility = SidebarVisibilityState()
     private var sidebarHoverGraceActive = false
     private var autoHideWorkItem: DispatchWorkItem?
+    private var hasSettledInitialFocus = false
+    /// Popovers of this window that are on screen (see `popoverDidShow`).
+    private var sidebarHoldingPopovers: Set<ObjectIdentifier> = []
 
     var selectedTabID: UUID?
     private var activeTabSubscriptions = Set<AnyCancellable>()
@@ -245,6 +248,10 @@ class BrowserWindowController: NSWindowController {
             name: .webViewOwnershipChanged,
             object: nil
         )
+        NotificationCenter.default.addObserver(self, selector: #selector(popoverDidShow(_:)),
+                                               name: NSPopover.didShowNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(popoverDidClose(_:)),
+                                               name: NSPopover.didCloseNotification, object: nil)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleContentBlockerRulesChanged),
@@ -653,7 +660,11 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func setupEdgeHoverTracking() {
-        let edgeView = NSView()
+        // Tracking only. The strip lies over the sidebar's (or, with the
+        // sidebar hidden, the page's) leading edge, and a plain view there
+        // takes every click in it — the left of the Downloads button, for one
+        // (TASK-126). Tracking areas do not depend on hit-testing.
+        let edgeView = ClickThroughView()
         edgeView.translatesAutoresizingMaskIntoConstraints = false
         splitViewController.view.addSubview(edgeView)
         NSLayoutConstraint.activate([
@@ -708,8 +719,50 @@ class BrowserWindowController: NSWindowController {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     self?.sidebarHoverGraceActive = false
                 }
+            case .scheduleAutoHide:
+                scheduleSidebarAutoHide()
             }
         }
+    }
+
+    /// Hides a hover-revealed sidebar after the hover delay, unless the
+    /// pointer comes back (or a popover opens) first.
+    private func scheduleSidebarAutoHide() {
+        autoHideWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.handleSidebarEvent(.hoverHide(isCollapsed: self.sidebarItem.isCollapsed))
+        }
+        autoHideWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+    }
+
+    // MARK: - Popover hold
+
+    /// A popover on this window is on screen: keep a hover-revealed sidebar
+    /// where it is until the popover closes (TASK-127). Every popover of the
+    /// window counts, not only sidebar-anchored ones — `NSPopover` does not
+    /// say what it is anchored to, and while the sidebar is hover-revealed
+    /// the pointer is in it, so that is where a popover comes from.
+    @objc private func popoverDidShow(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, let window,
+              popover.contentViewController?.view.window?.parent === window else { return }
+        let wasHolding = !sidebarHoldingPopovers.isEmpty
+        sidebarHoldingPopovers.insert(ObjectIdentifier(popover))
+        if !wasHolding { handleSidebarEvent(.holdBegan) }
+    }
+
+    @objc private func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover,
+              sidebarHoldingPopovers.remove(ObjectIdentifier(popover)) != nil,
+              sidebarHoldingPopovers.isEmpty else { return }
+        handleSidebarEvent(.holdEnded(pointerInSidebar: isPointerInSidebar))
+    }
+
+    private var isPointerInSidebar: Bool {
+        guard let window, !sidebarItem.isCollapsed else { return false }
+        let sidebarView = tabSidebar.view
+        return sidebarView.bounds.contains(sidebarView.convert(window.mouseLocationOutsideOfEventStream, from: nil))
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -727,12 +780,7 @@ class BrowserWindowController: NSWindowController {
         guard let userInfo = event.trackingArea?.userInfo,
               let zone = userInfo["zone"] as? String else { return }
         if zone == "sidebar" && sidebarVisibility.openedByHover && !sidebarHoverGraceActive {
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.handleSidebarEvent(.hoverHide(isCollapsed: self.sidebarItem.isCollapsed))
-            }
-            autoHideWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+            scheduleSidebarAutoHide()
         }
     }
 
@@ -993,7 +1041,22 @@ class BrowserWindowController: NSWindowController {
         // reported active (TASK-51).
         announceExtensionActiveTabIfChanged()
 
-        if paletteWasShowing { restoreWebContentFocus() }
+        // Also when nothing holds keyboard focus — the selection at launch, or
+        // a switch away from a page that had it (its web view just left the
+        // window) — so the page takes keys without a click (TASK-128). Focus
+        // held by a control, such as the sidebar row just clicked, stays.
+        if paletteWasShowing || isKeyboardFocusUnheld { restoreWebContentFocus() }
+    }
+
+    /// Whether keyboard focus is on nothing the user is looking at: the window
+    /// itself, or the outgoing page while it stays parented for its PiP
+    /// capture (`pipContentView`) — that one never left the window, so it would
+    /// keep the keys, and drop them on the window when the hold ends.
+    private var isKeyboardFocusUnheld: Bool {
+        guard let window else { return false }
+        if window.firstResponder === window { return true }
+        guard let pipping = pipContentView, let responder = window.firstResponder as? NSView else { return false }
+        return responder.isDescendant(of: pipping)
     }
 
     /// Marks the tab as having just left this window's screen — the timestamp
@@ -2238,6 +2301,20 @@ class BrowserWindowController: NSWindowController {
         if wasShowing && restoringFocus { restoreWebContentFocus() }
     }
 
+    /// The first time a window is shown, AppKit gives keyboard focus to its
+    /// first key view — a sidebar control nobody chose, where typing then
+    /// lands instead of on the page (TASK-128). Hand it to the page, or to
+    /// nothing when there is no page.
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        guard !hasSettledInitialFocus, let window else { return }
+        hasSettledInitialFocus = true
+        restoreWebContentFocus()
+        if let responder = window.firstResponder as? NSView, responder.isDescendant(of: tabSidebar.view) {
+            window.makeFirstResponder(nil)
+        }
+    }
+
     /// Hands keyboard focus to the page the user is looking at: the presented
     /// peek, else the selected tab — in a split, the focused pane, which is what
     /// `selectedTabID` names. Skipped when this window shows a snapshot instead
@@ -2908,8 +2985,9 @@ extension BrowserWindowController: NSMenuItemValidation {
     }
 }
 
-/// Click-through container for the split-formation veneer — purely visual, it
-/// must never intercept events destined for the live panes beneath it.
+/// A view that never takes mouse events: the split-formation veneer's
+/// container (purely visual, over the live panes) and the sidebar's edge
+/// hover strip (a tracking area only).
 private final class ClickThroughView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

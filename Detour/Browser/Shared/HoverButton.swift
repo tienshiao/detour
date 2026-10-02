@@ -5,6 +5,8 @@ class HoverButton: NSButton {
     private let hoverBackground = NSView()
     var circular: Bool = false { didSet { needsLayout = true } }
     var circularPadding: CGFloat = 3 { didSet { needsLayout = true } }
+    /// The hover background's side — a circle's diameter when `circular`,
+    /// instead of one derived from the bounds and `circularPadding`.
     var fixedHoverSize: CGFloat? { didSet { needsLayout = true } }
 
     override init(frame frameRect: NSRect) {
@@ -20,7 +22,7 @@ class HoverButton: NSButton {
     override func layout() {
         super.layout()
         if circular {
-            let side = min(bounds.width, bounds.height) + circularPadding
+            let side = fixedHoverSize ?? (min(bounds.width, bounds.height) + circularPadding)
             hoverBackground.frame = CGRect(
                 x: (bounds.width - side) / 2,
                 y: (bounds.height - side) / 2,
