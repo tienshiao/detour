@@ -93,7 +93,7 @@ class BrowserWindowController: NSWindowController {
     private var findMatchIndex = 0
     private var lastFindQuery = ""
 
-    private var commandPaletteView: CommandPaletteView?
+    private(set) var commandPaletteView: CommandPaletteView?
     var commandPaletteNavigatesInPlace = false
     private var splitScrimView: NSView?
     private var contentScrimView: NSView?
@@ -899,7 +899,10 @@ class BrowserWindowController: NSWindowController {
     func selectTab(id: UUID) {
         guard let tab = activeSpace?.displayableTab(id: id) else { return }
 
-        dismissCommandPalette()
+        // Not the outgoing page: focusing it here would leave keys on it when
+        // it stays parented for PiP. The incoming one gets focus at the end.
+        let paletteWasShowing = commandPaletteView != nil
+        dismissCommandPalette(restoringFocus: false)
 
         if let previousTab = selectedTab {
             // Enter PiP for peek before hidePeekUI() removes it from the hierarchy.
@@ -989,6 +992,8 @@ class BrowserWindowController: NSWindowController {
         // claimed, so a freshly woken tab is reported open before it is
         // reported active (TASK-51).
         announceExtensionActiveTabIfChanged()
+
+        if paletteWasShowing { restoreWebContentFocus() }
     }
 
     /// Marks the tab as having just left this window's screen — the timestamp
@@ -2219,7 +2224,8 @@ class BrowserWindowController: NSWindowController {
         palette.show(in: window!.contentView!, initialText: initialText, anchorFrame: anchorFrame)
     }
 
-    func dismissCommandPalette() {
+    func dismissCommandPalette(restoringFocus: Bool = true) {
+        let wasShowing = commandPaletteView != nil
         commandPaletteView?.removeFromSuperview()
         commandPaletteView = nil
         commandPaletteNavigatesInPlace = false
@@ -2227,10 +2233,20 @@ class BrowserWindowController: NSWindowController {
         splitScrimView = nil
         contentScrimView?.removeFromSuperview()
         contentScrimView = nil
-        // Return focus to the peek webview so keys go to it, not the tab behind
-        if peekOverlayView != nil, let peekWebView = selectedTab?.peekTab?.webView {
-            window?.makeFirstResponder(peekWebView)
-        }
+        // The palette's field held first responder; without this the window
+        // keeps it and the page gets no keys until clicked (TASK-78).
+        if wasShowing && restoringFocus { restoreWebContentFocus() }
+    }
+
+    /// Hands keyboard focus to the page the user is looking at: the presented
+    /// peek, else the selected tab — in a split, the focused pane, which is what
+    /// `selectedTabID` names. Skipped when this window shows a snapshot instead
+    /// of hosting the web view.
+    func restoreWebContentFocus() {
+        let peekWebView = peekOverlayView != nil ? selectedTab?.peekTab?.webView : nil
+        guard let webView = peekWebView ?? selectedTab?.webView,
+              let window, webView.window === window else { return }
+        window.makeFirstResponder(webView)
     }
 
     func deselectAllTabs() {
@@ -3129,6 +3145,9 @@ extension BrowserWindowController: CommandPaletteDelegate {
     private func paletteLoadURL(_ url: URL, typed: Bool) {
         let navigateInPlace = commandPaletteNavigatesInPlace
         dismissCommandPalette()
+        // Again once the target is hosted: a new tab's web view only joins the
+        // window in `selectTab`, and an in-place load may first reclaim it.
+        defer { restoreWebContentFocus() }
 
         // Typed input is the user's own, so an internal page they asked for is
         // armed rather than refused by `load(_:)` — which is what keeps every
@@ -3166,6 +3185,7 @@ extension BrowserWindowController: CommandPaletteDelegate {
             setActiveSpace(id: spaceID)
         }
         selectTab(id: tabID)
+        restoreWebContentFocus()
     }
 }
 
