@@ -3,11 +3,11 @@ id: TASK-127
 title: >-
   Sidebar: with auto-hide on, the downloads popover disappears when the sidebar
   hides
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-02 01:27'
-updated_date: '2026-10-02 06:53'
+updated_date: '2026-10-02 06:57'
 labels:
   - sidebar
   - downloads
@@ -49,3 +49,9 @@ NOT exercised with a real pointer.
 
 Code review (Oct 1), two gaps left open: (a) the hold starts at NSPopover.didShowNotification, so a hide already due can fire before a popover that is presented late (an extension popup waits for its page to load) — same class as the settings-to-extension-popup gap above; at willShow the popover window is not yet a child of the browser window, so there is no simple earlier hook. (b) the hold is released only by didClose; a standalone probe showed a .semitransient popover staying shown with no didClose when its sidebar is collapsed under it (Cmd+S), which would leave heldOpen set until that popover closes — not reproduced in the app. Re-ran the in-app harness on the final code: held while the downloads popover is up, sidebar stays through an injected hover-hide, collapses after the popover closes with the pointer outside.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+While a popover is open on the window, a hover-revealed sidebar no longer auto-hides and takes the popover with it. SidebarVisibilityState gains heldOpen with holdBegan / holdEnded(pointerInSidebar:) and a scheduleAutoHide action; BrowserWindowController holds for any NSPopover whose window is a child of the browser window, and restarts the hide delay when the last one closes with the pointer outside the sidebar. 7 new reducer tests; verified in-app with the real downloads popover and injected hover events, not with a real pointer. AC5 is left unchecked: the site settings and extension popovers go through the same mechanism but were not exercised individually, and nothing was ticketed. Known gaps, recorded in the notes: the hold starts only at didShow, so a hide already due can fire before a late-presented popover; a popover whose sidebar is collapsed under it may post no didClose and leave the hold set; sidebar context menus are not covered.
+<!-- SECTION:FINAL_SUMMARY:END -->

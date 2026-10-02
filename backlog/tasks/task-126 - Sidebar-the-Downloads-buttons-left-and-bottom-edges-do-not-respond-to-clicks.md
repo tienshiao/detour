@@ -1,11 +1,11 @@
 ---
 id: TASK-126
 title: 'Sidebar: the Downloads button''s left and bottom edges do not respond to clicks'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-02 01:27'
-updated_date: '2026-10-02 06:53'
+updated_date: '2026-10-02 06:57'
 labels:
   - sidebar
   - downloads
@@ -46,3 +46,9 @@ NOT exercised with a real pointer: clicking the button edge, dragging the bottom
 
 Code review (Oct 1): the hover circle's 27 pt is now stated with HoverButton.fixedHoverSize (honoured in circular mode) instead of derived as frame height + circularPadding −1, which gave 27 only while AppKit's alignment insets keep the frame at least 28 pt tall. Re-ran the in-app hit-test map on the final code: Downloads frame 28x31 and Add Space 28x28, both with a 27x27 hover circle inside the frame and nothing over them. Still not exercised with a real pointer. Open from the review: the space-strip budget (−12) and badge offset (−11) are literals that depend on bottomBarButtonWidth / bottomBarButtonInset.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Clicks on the Downloads button's left edge hit the sidebar's edge hover strip, a plain 20 pt view over the window's leading edge that took every click there and moved the window; the strip is now click-through (tracking only). The Downloads and Add Space buttons are 28 pt wide with their 27 pt hover circle stated through HoverButton.fixedHoverSize, so the circle lies inside the frame and no dead rim remains. The window's resize region does not reach the button and is unchanged. Verified with an in-app hit-test map (1 pt grid) of both buttons on the final build; not exercised with a real pointer — clicking the button edge, resizing from the corner, and hover reveal through the click-through strip.
+<!-- SECTION:FINAL_SUMMARY:END -->

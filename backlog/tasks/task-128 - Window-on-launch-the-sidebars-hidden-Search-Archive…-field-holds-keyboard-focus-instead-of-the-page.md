@@ -3,11 +3,11 @@ id: TASK-128
 title: >-
   Window: on launch the sidebar's hidden 'Search Archive…' field holds keyboard
   focus instead of the page
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-02 01:47'
-updated_date: '2026-10-02 06:53'
+updated_date: '2026-10-02 06:57'
 labels:
   - window
   - sidebar
@@ -41,3 +41,9 @@ NOT exercised: actual typing / space-to-scroll after launch, a restored split or
 
 Code review (Oct 1): selectTab restored page focus only when the window itself was first responder, so switching away from a tab playing audio left focus on the outgoing page (it stays parented 0.5 s as pipContentView) and then on nothing. selectTab now also treats focus inside pipContentView as unheld (isKeyboardFocusUnheld); new test testSwitchingAwayFromATabPlayingAudioFocusesTheIncomingPage fails without it (InitialWindowFocusTests is now 7 tests). Verified in-app: after the switch the incoming web view is first responder, both while the outgoing page is still parented and after it leaves. Gap left open: the focus gate covers only the archive page's search field and list; inactive space pages' table views and the archive page's buttons are still in the key-view loop, so Tab from the end of a web page can land on an off-screen control.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A newly shown window no longer leaves keyboard focus on the off-screen archive search field (AppKit focused it as the window's first key view). showWindow hands focus to the page the first time, or to nothing when there is no page; selectTab restores page focus when nothing holds it — the window itself, or the outgoing page kept parented for its PiP capture — and leaves focus held by a control alone; the archive page's search field and list refuse first responder while the page is off screen. InitialWindowFocusTests (7 tests) covers it; verified in-app for an empty profile, a seeded tab, and a switch away from a tab playing audio. Not exercised: real typing or space-to-scroll after launch, a restored split or peek at launch, clicking the archive search field while its page shows. Gap recorded in the notes: other off-screen strip pages' tables and the archive page's buttons are still in the key-view loop.
+<!-- SECTION:FINAL_SUMMARY:END -->
