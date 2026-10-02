@@ -1038,6 +1038,18 @@ class TabSidebarViewController: NSViewController {
             updateActivePage()
             return
         }
+
+        // Recreating the pages must not show: the active space's new list
+        // takes over its predecessor's selected row — the highlight, and
+        // where the arrow keys start from — and its keyboard focus, which
+        // tearing the old list out of the window would leave with nothing
+        // (TASK-131). Only while the active page stays on the same space:
+        // with that space gone the page falls back to another one, whose
+        // list has neither that row nor the user's focus — the window then
+        // switches space, and the web page takes the keyboard (TASK-130).
+        let carriedSpaceID = activePageSpaceID
+        let selectedRow = tableView.selectedRow
+        let activeListHadFocus = activeSpacePageHoldsKeyboardFocus
         pageSpaceIDs = newIDs
 
         // Tear down old pages
@@ -1075,6 +1087,16 @@ class TabSidebarViewController: NSViewController {
 
         relayoutPages()
         updateActivePage()
+        if let carriedSpaceID, activePageSpaceID == carriedSpaceID {
+            if selectedRow >= 0, selectedRow < tableView.numberOfRows {
+                suppressingSelectionCallbacks {
+                    tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
+                }
+            }
+            if activeListHadFocus {
+                view.window?.makeFirstResponder(tableView)
+            }
+        }
 
         // Observe scroll (clip view bounds changes) to fix hover state on scroll
         for page in spacePages {
@@ -1493,6 +1515,19 @@ class TabSidebarViewController: NSViewController {
     private var currentPage: NSView? {
         if isShowingArchivePage { return archivePage }
         return activePageIndex < spacePages.count ? spacePages[activePageIndex] : nil
+    }
+
+    /// Whether keyboard focus is inside the active space's page — its tab
+    /// list, or a row being renamed.
+    private var activeSpacePageHoldsKeyboardFocus: Bool {
+        guard !isShowingArchivePage, let page = currentPage,
+              let responder = view.window?.firstResponder as? NSView else { return false }
+        return responder.isDescendant(of: page)
+    }
+
+    /// The space whose page `activePageIndex` names, nil before any page exists.
+    private var activePageSpaceID: UUID? {
+        activePageIndex < pageSpaceIDs.count ? pageSpaceIDs[activePageIndex] : nil
     }
 
     /// Only the current page takes keyboard focus. The others are off screen,
