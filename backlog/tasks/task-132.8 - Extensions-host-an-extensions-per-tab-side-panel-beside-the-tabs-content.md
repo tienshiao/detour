@@ -4,6 +4,7 @@ title: 'Extensions: host an extension''s per-tab side panel beside the tab''s co
 status: To Do
 assignee: []
 created_date: '2026-10-03 23:08'
+updated_date: '2026-10-03 23:21'
 labels: []
 dependencies:
   - TASK-132.1
@@ -30,3 +31,9 @@ Show an extension side panel (chrome.sidePanel) as a trailing pane of the conten
 - [ ] #8 In a Private window the panel appears only when the extension is allowed in Private
 - [ ] #9 An extension without the sidePanel permission gets no chrome.sidePanel; tests cover both, and API Explorer has a side panel section
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decision from TASK-132.1 (2026-10-03): polyfill. Released WebKit compiles its sidePanel implementation out, so chrome.sidePanel is a Detour own-property module (setOptions / getOptions / open / close / setPanelBehavior / getPanelBehavior, state kept natively per profile + extension + tab/window) and the panel is a Detour-built WKWebView made from context.webViewConfiguration, the way OffscreenDocumentHost builds its page. WebKit will not grant activeTab on panel interaction, will not report the panel anywhere, and does not know the sidePanel permission (it is absent from WKWebExtension.requestedPermissions), so gate the module on the manifest's permission list. Because the panel web view is not a tab, tabs.getCurrent() in it must answer undefined — confirm when built.
+<!-- SECTION:NOTES:END -->

@@ -1,10 +1,10 @@
 ---
 id: TASK-132
 title: 'Epic: support the Claude extension (side panel, tab groups, chrome.debugger)'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-03 23:06'
-updated_date: '2026-10-03 23:09'
+updated_date: '2026-10-03 23:17'
 labels: []
 dependencies: []
 priority: medium
