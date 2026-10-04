@@ -4,7 +4,7 @@ title: Extension updates must pass CRX3 verification
 description: Why an extension update is installed only if its CRX3 signatures verify and its signing key derives the installed id, why a manifest with a key is classified as unpacked, and how the first-install path came to verify too.
 tags: [extensions, updates, security, crx, decision]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:05:00Z }
 sources:
   - id: verifier
     resource: ../../Detour/Extensions/Installer/CRX3Verifier.swift
@@ -49,8 +49,8 @@ sources:
 Before updates existed, the only thing between a CRX file and an installed
 extension was a person: a Chrome Web Store download is intercepted, unpacked
 and shown in a confirmation prompt that lists its permissions. The id is
-derived from the public key the CRX header *declares*
-(`CRXUnpacker.extractPublicKey`); the signatures are not checked.
+derived from the public key the CRX header *declares*; the signatures are
+not checked.
 
 An update is different. It is fetched in the background from a URL the
 extension's own manifest names, replaces running code, and nobody is asked.

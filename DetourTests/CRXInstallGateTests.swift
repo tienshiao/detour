@@ -352,7 +352,7 @@ final class CRXInstallGateTests: XCTestCase {
             guard parts.count == 2 else { continue }
             let data = try Data(contentsOf: URL(fileURLWithPath: parts[1]))
             XCTAssertEqual(CRX3Verifier.verify(crxData: data, format: .webStore),
-                           CRX3Verifier.verify(crxData: data), "\(parts[1]) must carry the store's proof")
+                           CRX3Verifier.verify(crxData: data, format: .developerProof), "\(parts[1]) must carry the store's proof")
             // The real key, not the stand-in: `storeFormat` is left at its default.
             let candidate = try CRXInstallGate.admit(crxData: data, downloadURL: Self.storeURLs[0]) { _ in nil }
             addTeardownBlock { try? FileManager.default.removeItem(at: candidate.directory) }

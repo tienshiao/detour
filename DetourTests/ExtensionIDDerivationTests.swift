@@ -52,42 +52,6 @@ final class ExtensionIDDerivationTests: XCTestCase {
         XCTAssertEqual(id, expected)
     }
 
-    // MARK: - CRX3 Public Key Extraction
-
-    func testExtractPublicKeyFromValidProtobuf() {
-        // Build a minimal CRX3 protobuf header:
-        // Field 2 (sha256_with_rsa), wire type 2 → tag byte = (2 << 3) | 2 = 18
-        // Inner: field 1 (public_key), wire type 2 → tag byte = (1 << 3) | 2 = 10
-        let publicKeyBytes: [UInt8] = [0x30, 0x82, 0x01, 0x22] // fake DER prefix
-        var innerProof = Data()
-        innerProof.append(10) // tag for field 1, wire type 2
-        innerProof.append(UInt8(publicKeyBytes.count)) // length
-        innerProof.append(contentsOf: publicKeyBytes)
-        // Add field 2 (signature) — just some dummy data
-        innerProof.append(18) // tag for field 2, wire type 2
-        innerProof.append(4) // length
-        innerProof.append(contentsOf: [0xDE, 0xAD, 0xBE, 0xEF])
-
-        var header = Data()
-        header.append(18) // tag for field 2 of CrxFileHeader, wire type 2
-        header.append(UInt8(innerProof.count)) // length
-        header.append(innerProof)
-
-        let result = CRXUnpacker.extractPublicKey(from: header)
-        XCTAssertNotNil(result)
-        XCTAssertEqual(result, Data(publicKeyBytes))
-    }
-
-    func testExtractPublicKeyReturnsNilForEmptyData() {
-        let result = CRXUnpacker.extractPublicKey(from: Data())
-        XCTAssertNil(result)
-    }
-
-    func testExtractPublicKeyReturnsNilForMalformedData() {
-        let result = CRXUnpacker.extractPublicKey(from: Data([0xFF, 0xFF, 0xFF]))
-        XCTAssertNil(result)
-    }
-
     // MARK: - NativeMessaging Protocol Encoding/Decoding
 
     func testNativeMessageEncoding() {

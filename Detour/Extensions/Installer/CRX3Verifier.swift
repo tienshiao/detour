@@ -21,9 +21,9 @@ import Security
 ///   store signed the file, whatever host served it (TASK-157).
 ///
 /// Both ways a CRX gets installed go through here: an update
-/// (`ExtensionUpdater`) and a first install (`CRXInstallGate`, TASK-151).
-/// `CRXUnpacker.extractPublicKey` still returns the *declared* key without any
-/// signature check; nothing may derive an extension id from it.
+/// (`ExtensionUpdater`) and a first install (`CRXInstallGate`, TASK-151). This
+/// is the only code that reads a key out of a CRX header (TASK-158):
+/// `CRXUnpacker` skips the header and returns files, never an identity.
 enum CRX3Verifier {
 
     enum Failure: Error, Equatable, CustomStringConvertible {
@@ -92,7 +92,10 @@ enum CRX3Verifier {
         let signature: Data
     }
 
-    static func verify(crxData data: Data, format: Format = .developerProof) -> Outcome {
+    /// `format` has no default on purpose: which proofs a file needs depends on
+    /// what it is about to become (a Web Store install or update needs
+    /// `.webStore`), and a call that forgot to say would get the weaker check.
+    static func verify(crxData data: Data, format: Format) -> Outcome {
         guard data.count >= 12 else { return .failed(.malformed("too small")) }
         guard data[0..<4] == Data([0x43, 0x72, 0x32, 0x34]) else { return .failed(.malformed("bad magic")) }
         let version = data.subdata(in: 4..<8).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian

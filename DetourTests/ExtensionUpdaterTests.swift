@@ -278,7 +278,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
         let developerOnly = try crx(fixture, version: "2.0", storeSigned: false)
-        XCTAssertEqual(CRX3Verifier.verify(crxData: developerOnly), .verified(publicKey: fixture.pair.publicKeySPKI),
+        XCTAssertEqual(CRX3Verifier.verify(crxData: developerOnly, format: .developerProof), .verified(publicKey: fixture.pair.publicKeySPKI),
                        "the file itself is correctly signed by the developer")
         fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: developerOnly)
         fetcher.responses[fixture.codebase] = developerOnly
@@ -668,7 +668,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         let unpacked = try CRXUnpacker.unpack(data: crx)
         let t0 = Date()
         ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id, reply: { _, _ in }, now: t0)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "2.0", for: fixture.id)
         let late = t0.addingTimeInterval(ExtensionManager.reloadAfterUpdateAvailableWindow + 1)
         XCTAssertFalse(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: profile.id, now: late),
@@ -686,7 +686,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
         let crx = try crx(fixture, version: "2.0")
         let unpacked = try CRXUnpacker.unpack(data: crx)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "2.0", for: fixture.id)
         let t0 = Date()
         var delivered: [String: Any]?
@@ -714,7 +714,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         // Stage a verified copy by hand, as the updater would have at the last quit.
         let crx = try crx(fixture, version: "2.0", permissions: ["storage", "history"])
         let unpacked = try CRXUnpacker.unpack(data: crx)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "2.0", for: fixture.id)
 
         // The launch path: before any record is read or context loaded.
@@ -744,7 +744,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         let (fixture, _, _, _) = try await busyFixture()
         let crx = try crx(fixture, version: "1.0")
         let unpacked = try CRXUnpacker.unpack(data: crx)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "1.0", for: fixture.id)
         XCTAssertNil(try ExtensionManager.shared.applyStagedUpdate(for: fixture.id), "not newer: rejected, not installed")
         XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "and gone")

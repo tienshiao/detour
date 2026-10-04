@@ -18,19 +18,18 @@ final class CRX3VerifierTests: XCTestCase {
     func testAnRSASignedFileVerifiesAndYieldsTheDeclaredKey() throws {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: pair.publicKeySPKI))
-        // The declared key is what the id is derived from, so a file signed with a
-        // key derives the same id the unpacker reports for it.
-        let unpacked = try CRXUnpacker.unpack(data: crx)
-        defer { try? FileManager.default.removeItem(at: unpacked.directory) }
-        XCTAssertEqual(unpacked.publicKey, pair.publicKeySPKI)
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: pair.publicKeySPKI))
         XCTAssertEqual(ExtensionInstaller.deriveExtensionID(from: pair.publicKeySPKI).count, 32)
+        // The unpacker hands back the files and nothing about who signed them.
+        let directory = try CRXUnpacker.unpack(data: crx)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path))
     }
 
     func testAnECDSASignedFileVerifies() throws {
         let key = P256.Signing.PrivateKey()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.ecdsa(key)])
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: key.publicKey.derRepresentation))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: key.publicKey.derRepresentation))
     }
 
     /// A store CRX carries the developer's proof and the store's; `crx_id` names
@@ -40,7 +39,7 @@ final class CRX3VerifierTests: XCTestCase {
         let store = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(store), .rsa(developer)],
                                             declaredKey: developer.publicKeySPKI)
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: developer.publicKeySPKI))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: developer.publicKeySPKI))
     }
 
     func testAPKCS1KeyInTheHeaderIsAccepted() throws {
@@ -48,7 +47,7 @@ final class CRX3VerifierTests: XCTestCase {
         // so the SPKI unwrapping must pass it through untouched.
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsaDeclaring(publicKey: pair.publicKeyPKCS1, signingWith: pair)])
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: pair.publicKeyPKCS1))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: pair.publicKeyPKCS1))
     }
 
     // MARK: - The publisher's proof (TASK-157)
@@ -74,7 +73,7 @@ final class CRX3VerifierTests: XCTestCase {
             XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: format),
                            .verified(publicKey: developer.publicKeySPKI))
             // The developer format does not mind the extra proof.
-            XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: developer.publicKeySPKI))
+            XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: developer.publicKeySPKI))
         }
     }
 
@@ -84,7 +83,7 @@ final class CRX3VerifierTests: XCTestCase {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let publisher = P256.Signing.PrivateKey()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(developer)])
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: developer.publicKeySPKI))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: developer.publicKeySPKI))
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))),
                        .failed(.noPublisherProof))
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .webStore), .failed(.noPublisherProof))
@@ -147,15 +146,15 @@ final class CRX3VerifierTests: XCTestCase {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         var crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         crx[crx.count - 1] ^= 0x01
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .failed(.badSignature))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
     }
 
     func testACorruptSignatureFails() throws {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)], corruptSignatures: true)
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .failed(.badSignature))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
         let ecdsa = try CRX3TestBuilder.build(zip: zip, signers: [.ecdsa(P256.Signing.PrivateKey())], corruptSignatures: true)
-        XCTAssertEqual(CRX3Verifier.verify(crxData: ecdsa), .failed(.badSignature))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: ecdsa, format: .developerProof), .failed(.badSignature))
     }
 
     /// The attack the check exists for: a header that *declares* the installed
@@ -165,14 +164,14 @@ final class CRX3VerifierTests: XCTestCase {
         let attacker = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(
             zip: zip, signers: [.rsaDeclaring(publicKey: installed.publicKeySPKI, signingWith: attacker)])
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .failed(.badSignature))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
     }
 
     func testAValidProofForADifferentKeyThanCRXIDFails() throws {
         let signer = try CRX3TestBuilder.RSAKeyPair.generate()
         let other = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(signer)], declaredKey: other.publicKeySPKI)
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .failed(.noProofMatchesCRXID))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.noProofMatchesCRXID))
     }
 
     func testOneBadProofAmongGoodOnesFailsTheWholeFile() throws {
@@ -183,12 +182,12 @@ final class CRX3VerifierTests: XCTestCase {
             zip: zip,
             signers: [.rsa(developer), .rsaDeclaring(publicKey: store.publicKeySPKI, signingWith: forger)],
             declaredKey: developer.publicKeySPKI)
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .failed(.badSignature))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
     }
 
     func testAFileWithoutProofsOrSignedHeaderDataFails() throws {
         let noProofs = try CRX3TestBuilder.build(zip: zip, signers: [], declaredKey: Data([1, 2, 3]))
-        XCTAssertEqual(CRX3Verifier.verify(crxData: noProofs), .failed(.noProofs))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: noProofs, format: .developerProof), .failed(.noProofs))
 
         // Magic and version right, header a single unknown field: no signed data.
         var header = CRX3TestBuilder.Protobuf.bytesField(7, Data([0xAA]))
@@ -199,18 +198,18 @@ final class CRX3VerifierTests: XCTestCase {
         file.append(Data(bytes: &len, count: 4))
         file.append(header)
         file.append(zip)
-        XCTAssertEqual(CRX3Verifier.verify(crxData: file), .failed(.noSignedHeaderData))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: file, format: .developerProof), .failed(.noSignedHeaderData))
         header.removeAll()
     }
 
     func testMalformedContainersFail() {
-        XCTAssertEqual(CRX3Verifier.verify(crxData: Data("Cr24".utf8)), .failed(.malformed("too small")))
-        XCTAssertEqual(CRX3Verifier.verify(crxData: Data(repeating: 0, count: 64)), .failed(.malformed("bad magic")))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: Data("Cr24".utf8), format: .developerProof), .failed(.malformed("too small")))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: Data(repeating: 0, count: 64), format: .developerProof), .failed(.malformed("bad magic")))
         var crx2 = Data("Cr24".utf8)
         var v = UInt32(2).littleEndian
         crx2.append(Data(bytes: &v, count: 4))
         crx2.append(Data(repeating: 0, count: 8))
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx2), .failed(.malformed("version 2")))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx2, format: .developerProof), .failed(.malformed("version 2")))
     }
 
     /// A length varint above Int.max must fail the parse, not trap on `Int(_:)`:
@@ -226,29 +225,15 @@ final class CRX3VerifierTests: XCTestCase {
         crx.append(Data(bytes: &headerLen, count: 4))
         crx.append(header)
         crx.append(Data([0]))
-        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .failed(.malformed("field overruns header")))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.malformed("field overruns header")))
 
         // The shared protobuf field reader takes the same bytes.
         XCTAssertNil(CRXUnpacker.extractFieldBytes(from: header, fieldNumber: 2))
     }
 
-    /// The unpacker walks the same header on the first-install path, before any
-    /// signature check, and must reject the same lengths (TASK-139): above
-    /// Int.max `Int(length)` traps, and at Int.max `offset + length` overflows.
-    func testTheUnpackerRejectsOversizedHeaderFieldLengthsWithoutCrashing() {
-        let lengths: [UInt64] = [.max, UInt64(Int.max) + 1, UInt64(Int.max), UInt64(Int.max) - 1, 1 << 32, 3]
-        for length in lengths {
-            for field in [2, 3, 7, 10000] as [UInt64] {
-                let header = CRX3TestBuilder.Protobuf.varint(field << 3 | 2)
-                    + CRX3TestBuilder.Protobuf.varint(length) + Data([0x0A, 0x01])
-                XCTAssertNil(CRXUnpacker.extractPublicKey(from: header), "field \(field) length \(length)")
-            }
-        }
-    }
-
-    /// The same bytes through the entry point the install path calls.
-    func testUnpackingAFileWithAnOversizedHeaderFieldLengthThrows() {
-        let header = CRX3TestBuilder.Protobuf.varint(2 << 3 | 2) + CRX3TestBuilder.Protobuf.varint(UInt64.max)
+    /// A CRX3 container around `header`, with one byte of "archive" so the
+    /// container itself is well-formed.
+    private func container(header: Data) -> Data {
         var crx = Data("Cr24".utf8)
         var version = UInt32(3).littleEndian
         crx.append(Data(bytes: &version, count: 4))
@@ -256,7 +241,69 @@ final class CRX3VerifierTests: XCTestCase {
         crx.append(Data(bytes: &headerLen, count: 4))
         crx.append(header)
         crx.append(Data([0]))
-        XCTAssertThrowsError(try CRXUnpacker.unpack(data: crx))
+        return crx
+    }
+
+    private static let hostileLengths: [UInt64] = [.max, UInt64(Int.max) + 1, UInt64(Int.max), UInt64(Int.max) - 1, 1 << 32, 3]
+
+    /// Every length in the header comes from the download. Above Int.max
+    /// `Int(length)` traps, and at Int.max `offset + length` overflows; a
+    /// length that merely overruns the bytes left must not read past them.
+    /// These cases guarded `CRXUnpacker.extractPublicKey` (TASK-139) until that
+    /// parser was removed (TASK-158); the verifier is now the only reader of a
+    /// header, and takes all of them.
+    func testTheVerifierRejectsOversizedHeaderFieldLengthsWithoutCrashing() {
+        for length in Self.hostileLengths {
+            for field in [2, 3, 7, 10000] as [UInt64] {
+                let header = CRX3TestBuilder.Protobuf.varint(field << 3 | 2)
+                    + CRX3TestBuilder.Protobuf.varint(length) + Data([0x0A, 0x01])
+                XCTAssertEqual(CRX3Verifier.verify(crxData: container(header: header), format: .developerProof),
+                               .failed(.malformed("field overruns header")), "field \(field) length \(length)")
+            }
+        }
+    }
+
+    /// The same lengths one level down, where `extractFieldBytes` reads them:
+    /// the key or the signature inside a proof, and the crx_id inside
+    /// `signed_header_data`.
+    func testTheVerifierRejectsOversizedLengthsInsideAProofAndTheSignedHeader() throws {
+        let pair = try CRX3TestBuilder.RSAKeyPair.generate()
+        let goodProof = CRX3TestBuilder.Protobuf.bytesField(1, pair.publicKeySPKI)
+            + CRX3TestBuilder.Protobuf.bytesField(2, Data(repeating: 1, count: 8))
+        for length in Self.hostileLengths {
+            for innerField in [1, 2] as [UInt64] {
+                // A proof whose key (1) or signature (2) claims `length` bytes.
+                var proof = Data()
+                if innerField == 2 { proof += CRX3TestBuilder.Protobuf.bytesField(1, pair.publicKeySPKI) }
+                proof += CRX3TestBuilder.Protobuf.varint(innerField << 3 | 2)
+                    + CRX3TestBuilder.Protobuf.varint(length) + Data([0x0A, 0x01])
+                for proofField in [2, 3] as [UInt64] {
+                    let header = CRX3TestBuilder.Protobuf.bytesField(proofField, proof)
+                    XCTAssertEqual(CRX3Verifier.verify(crxData: container(header: header), format: .developerProof),
+                                   .failed(.malformed("proof without key or signature")),
+                                   "proof field \(proofField), inner field \(innerField), length \(length)")
+                    XCTAssertNil(CRXUnpacker.extractFieldBytes(from: proof, fieldNumber: innerField))
+                }
+            }
+            // signed_header_data whose crx_id claims `length` bytes.
+            let signedHeader = CRX3TestBuilder.Protobuf.varint(1 << 3 | 2)
+                + CRX3TestBuilder.Protobuf.varint(length) + Data([0x0A, 0x01])
+            let header = CRX3TestBuilder.Protobuf.bytesField(2, goodProof)
+                + CRX3TestBuilder.Protobuf.bytesField(10000, signedHeader)
+            XCTAssertEqual(CRX3Verifier.verify(crxData: container(header: header), format: .developerProof),
+                           .failed(.malformed("signed_header_data without a 16-byte crx_id")), "crx_id length \(length)")
+        }
+    }
+
+    /// The unpacker does not read the header at all, so a hostile one cannot
+    /// reach it: the same bytes get as far as unzip, which refuses the archive.
+    func testUnpackingAFileWithAnOversizedHeaderFieldLengthThrows() {
+        let header = CRX3TestBuilder.Protobuf.varint(2 << 3 | 2) + CRX3TestBuilder.Protobuf.varint(UInt64.max)
+        XCTAssertThrowsError(try CRXUnpacker.unpack(data: container(header: header))) { error in
+            guard case CRXUnpacker.CRXError.zipExtractionFailed = error else {
+                return XCTFail("expected the archive to be refused, got \(error)")
+            }
+        }
     }
 
     // MARK: - DER

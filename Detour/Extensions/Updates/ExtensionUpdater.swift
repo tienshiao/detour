@@ -298,20 +298,20 @@ final class ExtensionUpdater {
             try ExtensionUpdatePolicy.validateCandidate(installedID: ext.id, installedVersion: installedVersion,
                                                         candidateID: candidateID, candidateVersion: version)
 
-            let unpacked = try CRXUnpacker.unpack(data: crx)
-            defer { try? FileManager.default.removeItem(at: unpacked.directory) }
+            let unpackedDirectory = try CRXUnpacker.unpack(data: crx)
+            defer { try? FileManager.default.removeItem(at: unpackedDirectory) }
 
             // An extension in the middle of something is not torn down under the
             // user: the verified copy waits until it is idle (TASK-123).
             if ExtensionUpdateDeferral.shouldDefer(manager.activity(for: ext.id), now: now()) {
-                let staged = try manager.stageUpdate(from: unpacked.directory, publicKey: publicKey,
+                let staged = try manager.stageUpdate(from: unpackedDirectory, publicKey: publicKey,
                                                      version: version, for: ext.id)
                 return .deferred(version: staged.version)
             }
 
             // The installed extension may have changed while the download ran
             // (another check, an uninstall): applyUpdate re-reads and re-validates.
-            switch try manager.applyUpdate(from: unpacked.directory, publicKey: publicKey, to: ext.id) {
+            switch try manager.applyUpdate(from: unpackedDirectory, publicKey: publicKey, to: ext.id) {
             case .installed(let installedNow):
                 return .updated(version: installedNow)
             case .installedPendingPermissions(let installedNow, let delta):

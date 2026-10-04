@@ -5,7 +5,7 @@ description: How an extension gets from a Chrome Web Store download or an unpack
 resource: ../../Detour/Extensions/Installer
 tags: [extensions, install, crx, security]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:05:00Z }
 sources:
   - id: installer
     resource: ../../Detour/Extensions/Installer/ExtensionInstaller.swift
@@ -43,6 +43,9 @@ sources:
   - id: task-157
     resource: backlog:TASK-157
     title: A CRX is called 'From the Chrome Web Store' by its download host; the store's publisher proof is not checked
+  - id: task-158
+    resource: backlog:TASK-158
+    title: Remove CRXUnpacker.extractPublicKey and UnpackResult.publicKey, the unverified key nothing uses
   - id: notes-updates
     resource: "Agent session notes, 2026-09-26 (not in the repository)"
     title: Extension updates — design decisions and what the real 1Password CRX taught
@@ -159,10 +162,11 @@ field 3, each an `AsymmetricKeyProof { public_key, signature }`, and
 store CRX carries more than one key (the store's and the developer's). The
 extension's key is the one whose SHA-256 begins with `crx_id`.
 
-`CRXUnpacker.unpack` checks the magic and version, extracts the ZIP with
-`/usr/bin/unzip` into a temporary directory, checks `manifest.json` exists, and
-returns the directory with the key `extractPublicKey` picked. The caller
-removes the directory.
+`CRXUnpacker.unpack` checks the magic and version, skips the header, extracts
+the ZIP with `/usr/bin/unzip` into a temporary directory, checks
+`manifest.json` exists, and returns the directory. The caller removes it. The
+unpacker returns files and nothing about who signed them: the header is read
+in one place only, `CRX3Verifier`.[^task-158]
 
 ## Extension id
 
@@ -246,9 +250,11 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   install and every update must carry a verified proof by the store's
   publisher key. An update correctly signed by the developer's key alone is
   refused.[^task-157]
-- `CRXUnpacker.extractPublicKey` returns the key the header *declares*,
-  without checking a signature. No install path uses it for the id any more;
-  do not derive an id from `UnpackResult.publicKey`.
+- An extension's key, and so its id, comes from `CRX3Verifier` and from
+  nowhere else. The unpacker used to return the key the header merely
+  *declared* beside the directory; no install path used it any more, and a
+  field that looks like an identity and is not one was removed rather than
+  left to be picked up.[^task-158]
 - The installed copy is Detour's to modify (the polyfill import and the
   manifest edit, see [Polyfill layer](./polyfill-layer.md)); the source folder
   is never written.
@@ -259,15 +265,13 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   traps above `Int.max`, so they are bounds-checked as `UInt64` first. A
   review of the update work found this as a remote crash;
   `testAFieldLengthAboveIntMaxIsMalformedNotACrash` guards the verifier.[^task-113]
-  The outer loop of `CRXUnpacker.extractPublicKey` was missed then: it computed
-  `offset + Int(length)` before its bounds check, which traps above `Int.max`
-  and overflows just below it, on bytes from the network. It now has the same
-  `UInt64` check, guarded by
-  `testTheUnpackerRejectsOversizedHeaderFieldLengthsWithoutCrashing`.[^task-139]
+  A second parser of the same header, in the unpacker, was missed then and
+  had the same trap until TASK-139 fixed it;[^task-139] it has since been
+  removed, so the verifier is the only reader, guarded by
+  `testTheVerifierRejectsOversizedHeaderFieldLengthsWithoutCrashing` and its
+  companion for the lengths inside a proof and inside `signed_header_data`.
   The rule for any new parsing here: compare a length against the bytes that
   remain, as `UInt64`, before converting or adding it.
-- Without a `crx_id` match `extractPublicKey` falls back to the last key in
-  the header. That is one more reason its result is not an identity.
 - An install recorded as `webStore` before TASK-157 was classified by its
   host alone and is not re-checked; its next update has to carry the store's
   proof like any other. A copy that was already staged for it under the old
@@ -294,5 +298,6 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
 [^task-113]: Check for and install extension updates
 [^task-139]: A crafted CRX header can crash the app at install
 [^task-151]: A first install from a CRX does not verify its signature
+[^task-158]: Remove CRXUnpacker.extractPublicKey and UnpackResult.publicKey, the unverified key nothing uses
 [^task-157]: A CRX is called 'From the Chrome Web Store' by its download host; the store's publisher proof is not checked
 [^notes-updates]: Extension updates — design decisions and what the real 1Password CRX taught

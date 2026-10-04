@@ -136,17 +136,17 @@ enum CRXInstallGate {
             throw Refusal.alreadyInstalled(existing)
         }
 
-        let unpacked = try CRXUnpacker.unpack(data: crxData)
+        let directory = try CRXUnpacker.unpack(data: crxData)
         do {
-            let manifest = try ExtensionManifest.parse(at: unpacked.directory.appendingPathComponent("manifest.json"))
+            let manifest = try ExtensionManifest.parse(at: directory.appendingPathComponent("manifest.json"))
             if let manifestKey = manifest.key,
                Data(base64Encoded: manifestKey, options: .ignoreUnknownCharacters) != verified.publicKey {
                 throw Refusal.manifestKeyMismatch
             }
-            return Candidate(directory: unpacked.directory, publicKey: verified.publicKey,
+            return Candidate(directory: directory, publicKey: verified.publicKey,
                              extensionID: verified.extensionID, manifest: manifest, origin: verified.origin)
         } catch {
-            try? FileManager.default.removeItem(at: unpacked.directory)
+            try? FileManager.default.removeItem(at: directory)
             throw error
         }
     }
