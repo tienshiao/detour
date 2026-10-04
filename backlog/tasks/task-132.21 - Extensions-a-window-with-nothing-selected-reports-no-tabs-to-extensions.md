@@ -4,8 +4,10 @@ title: 'Extensions: a window with nothing selected reports no tabs to extensions
 status: To Do
 assignee: []
 created_date: '2026-10-04 00:10'
+updated_date: '2026-10-04 00:27'
 labels: []
-dependencies: []
+dependencies:
+  - TASK-132.23
 parent_task_id: TASK-132
 priority: high
 ordinal: 153000
@@ -29,3 +31,9 @@ Direction: whenever the window's tab list is non-empty, report an active tab tha
 - [ ] #6 Detour's own selection (selectedTabID) and what is on screen are unchanged by the stand-in
 - [ ] #7 Tests cover the nothing-selected window in a real extension context; ExtensionActiveTabTests still pass; docs/extensions.md states the rule
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Parked 2026-10-03 behind TASK-132.23 (space as WebKit window). The user does not want an active tab reported when nothing is selected, so the 'announce the stand-in as active' direction in the description is superseded; the candidate is a stand-in masked from extensions in the polyfill, to be confirmed in TASK-132.23.
+<!-- SECTION:NOTES:END -->

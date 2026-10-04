@@ -4,8 +4,10 @@ title: 'Extensions: tell WebKit when a browser window opens or closes'
 status: To Do
 assignee: []
 created_date: '2026-10-04 00:10'
+updated_date: '2026-10-04 00:27'
 labels: []
-dependencies: []
+dependencies:
+  - TASK-132.23
 parent_task_id: TASK-132
 priority: medium
 ordinal: 154000
@@ -26,3 +28,9 @@ Found during TASK-132.2 (2026-10-03). Detour calls context.didOpenWindow only wh
 - [ ] #5 Private windows are announced only to contexts loaded in the Private profile
 - [ ] #6 Tests cover open, close and background-open; API Explorer logs windows.onCreated and onRemoved
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Parked 2026-10-03 behind TASK-132.23: if a space becomes the WebKit window, window open/close becomes space created/deleted and this task is rewritten or closed.
+<!-- SECTION:NOTES:END -->
