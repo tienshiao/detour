@@ -205,6 +205,10 @@ class Space {
         )
         config.userContentController.addUserScript(cwsScript)
 
+        // `chrome.runtime` on the pages this profile's loaded extensions list in
+        // `externally_connectable` (TASK-132.6). Nothing is added while none does.
+        profile?.externallyConnectablePages.install(on: config.userContentController)
+
         // Set Detour app name as default; Safari/Custom modes override via
         // webView.customUserAgent in BrowserTab.applyUserAgent()
         config.applicationNameForUserAgent = UserAgentMode.detourAppName

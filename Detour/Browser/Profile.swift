@@ -282,6 +282,10 @@ class Profile {
     /// Extension contexts loaded in this profile's controller. ExtensionID → context.
     var extensionContexts: [String: WKWebExtensionContext] = [:]
 
+    /// Which pages the loaded extensions list in `externally_connectable`, and
+    /// the `chrome.runtime` shim on this profile's tab web views (TASK-132.6).
+    let externallyConnectablePages = ExternallyConnectablePages()
+
     /// errorsDidUpdate observer tokens per extension id, removed in `unloadExtension`
     /// so a reload does not accumulate observers.
     private var extensionErrorObservers: [String: NSObjectProtocol] = [:]
@@ -461,6 +465,10 @@ class Profile {
         do {
             try extensionController.load(context)
             extensionContexts[ext.id] = context
+            // The pages this extension lists in `externally_connectable` get
+            // `chrome.runtime` from now on (TASK-132.6).
+            externallyConnectablePages.extensionDidLoad(
+                ext.id, matchPatterns: ExternallyConnectable.matchPatterns(for: ext))
             // Observe extension context errors for debugging. `context.errors` is
             // cumulative but WebKit consolidates repeats and may clear it, so the
             // *log* is deduped by error content rather than by position; the set
@@ -532,6 +540,8 @@ class Profile {
     @discardableResult
     func unloadExtension(id: String, removeData: Bool = false) -> URL? {
         guard let context = extensionContexts.removeValue(forKey: id) else { return nil }
+        // No page may reach it through `chrome.runtime` any more (TASK-132.6).
+        externallyConnectablePages.extensionDidUnload(id)
         if let token = extensionErrorObservers.removeValue(forKey: id) {
             NotificationCenter.default.removeObserver(token)
         }

@@ -332,6 +332,24 @@
     <div class="result" id="res-interim"></div>
   </section>
 
+  <!-- Externally connectable -->
+  <section>
+    <h2>Externally Connectable (web page &rarr; extension)</h2>
+    <div class="row" style="font-size:11px;color:#555">
+      Serve external-page/ on 127.0.0.1 or localhost, open it in a tab and send from there
+      (python3 -m http.server 8765 --bind 127.0.0.1 -d external-page).
+    </div>
+    <div class="row">
+      <input type="text" id="input-external-id" readonly style="width:260px"/>
+      <button id="btn-external-copy" class="secondary">Copy ID</button>
+    </div>
+    <div class="row">
+      <button id="btn-external-received">Show Received</button>
+      <button id="btn-external-clear" class="secondary">Clear</button>
+    </div>
+    <div class="result" id="res-external"></div>
+  </section>
+
   <!-- Commands -->
   <section>
     <h2>Commands</h2>

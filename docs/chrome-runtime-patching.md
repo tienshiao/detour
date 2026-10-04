@@ -306,6 +306,18 @@ an own property on `chrome` is read normally. It defines constants (`tabGroups`)
 events (`debugger`) only, each gated on its manifest permission, and never touches a namespace that
 already exists.
 
+### Web pages are a different case
+
+Everything above is about *extension* contexts, where WebKit owns `chrome` / `browser` and reads them back
+to dispatch events. A web page listed in an extension's `externally_connectable` gets from WebKit a
+`browser` global only (`WebExtensionAPIWebPageNamespace`: `runtime.sendMessage` and `runtime.connect`) and
+no `chrome` at all, so the page shim (`ExternallyConnectable.swift`, TASK-132.6) *defines* `chrome.runtime`
+there as plain JS objects that call WebKit's two functions. Nothing native is patched or pinned and WebKit's
+`browser` is left as it is — WebKit never reads a web page's globals back (replies and port events arrive
+through the callback and the port object), so the Option 2 hazard does not apply. The shim holds the
+`browser.runtime` wrapper and its two functions in its closure from document start, which is also what keeps
+that weakly cached wrapper alive. See docs/extensions.md, "Externally connectable pages".
+
 ### Bottom line
 
 Patch members in place on the native wrappers where the IDL allows it (Option 1), accept that

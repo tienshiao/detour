@@ -60,6 +60,7 @@ Detour/Extensions/
 │   ├── ExtensionActiveTab.swift          which tab a window reports as active (Peek-aware)
 │   ├── ExtensionTabHandleRegistry.swift  WebKit tab id → BrowserTab bridge (handles, resolve arms)
 │   ├── ExtensionHeaderRules.swift        declarativeNetRequest session header rules Detour applies itself
+│   ├── ExternallyConnectable.swift       chrome.runtime on the web pages an extension lists (externally_connectable)
 │   ├── ExtensionPageURL.swift            webkit-extension:// pages open in tabs
 │   ├── ExtensionPageHostRegistry.swift   web views Detour hosts (tells pages from the background)
 │   ├── RuntimeInstalledEvent.swift       Detour's runtime.onInstalled rule
@@ -116,6 +117,7 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 | `chrome.alarms` | WebKit native |
 | `chrome.declarativeNetRequest` (static, dynamic and session rules) | WebKit native; **Polyfill** adds Chrome's enums and applies `modifyHeaders` session rules to the extension's own requests (see "declarativeNetRequest") |
 | `chrome.runtime.OnInstalledReason` | **Polyfill** (constants; WebKit vends the event without the enum) |
+| `runtime.onMessageExternal` / `onConnectExternal` (`externally_connectable`) | WebKit native delivery; **Detour** adds the `chrome.runtime` a listed web page calls (WebKit gives pages only `browser.runtime`) — see "Externally connectable pages" |
 | `chrome.tabGroups`, `chrome.debugger` | **Interim stand-ins only** — constants / never-firing events, no methods (see "Interim stand-ins") |
 | `chrome.idle` | **Polyfill** → `IdleMonitor` (CGEventSource) |
 | `chrome.notifications` | **Polyfill** → `ExtensionNotificationManager` (UNUserNotificationCenter) |
@@ -135,7 +137,7 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 
 ## Polyfill Injection
 
-The polyfill JS (`ExtensionAPIPolyfill.polyfillJS`) only reaches extension-owned contexts, not web pages. Content scripts get a separate, much smaller script (`ExtensionAPIPolyfill.contentPolyfillJS`):
+The polyfill JS (`ExtensionAPIPolyfill.polyfillJS`) only reaches extension-owned contexts, not web pages (the one script Detour puts in a web page's own world for extensions is the `externally_connectable` shim, see "Externally connectable pages"). Content scripts get a separate, much smaller script (`ExtensionAPIPolyfill.contentPolyfillJS`):
 
 | Context | Injection method | World | Communication channel |
 |---------|-----------------|-------|----------------------|
@@ -297,6 +299,40 @@ This is what the Claude extension's start-up needs: its rule sets `User-Agent`, 
 - The enums and wrappers are installed when a context starts. An extension that gains the permission later (`optional_permissions` + `permissions.request`) gets them in contexts started after that.
 - Session rules only, in memory, dropped when the context unloads (as WebKit drops its own). Dynamic and static rules are WebKit's alone and are not wrapped; `updateDynamicRules` runs the same WebKit validation, so a custom header name is expected to be refused there (read from WebKit's source, not measured).
 
+## Externally connectable pages
+
+A web page an extension lists in `externally_connectable.matches` can message it: `chrome.runtime.sendMessage(extensionId, message)` reaches `runtime.onMessageExternal`, `chrome.runtime.connect(extensionId)` reaches `runtime.onConnectExternal`. The Claude extension's sign-in ends this way — claude.ai's `/oauth/authorize` page sends `{type: 'oauth_redirect', redirect_uri}` to the extension (TASK-132.6). Everything is in `ExternallyConnectable.swift`.
+
+**What WebKit does by itself** (measured on macOS 26.7; the two canaries in `ExtensionExternallyConnectableTests` pin the parts the design rests on):
+
+- Every web page of a profile that has an extension controller gets a `browser` global at document start — listed or not, extensions loaded or not — whose only member is `runtime`, with `sendMessage(extensionId, message[, options][, callback])` and `connect(extensionId[, connectInfo])`. There is no `chrome` global, no `runtime.id`, no `runtime.lastError`.
+- Delivery is decided in the UI process for every message (`WebExtensionContext::runtimeWebPageSendMessage`): the id must be a context loaded in *that profile's* controller, the sending frame's URL must match the extension's `externally_connectable.matches`, and the extension must have host access to that URL. The listener then gets `sender.origin`, `sender.url`, `sender.frameId`, `sender.documentId` and `sender.tab`, and no `sender.id`. Listeners in the service worker and in open extension pages are both reached.
+- A message it will not deliver — unknown id, an extension that does not list the page, one that is not loaded in the profile, one without host access — is answered with `undefined` after a random delay (100–500 ms) and no error, so a page cannot tell which extensions are installed. A refused `connect` returns a port that never connects; for an unknown id the port disconnects, without an error, after the same kind of delay.
+- WebKit drops `<all_urls>`, all-host patterns and public-suffix hosts (`*://*.com/*`) from `externally_connectable`, as Chrome does.
+
+**What Detour adds.** A page-world user script on tab web views (`ExternallyConnectable.userScriptSource`, installed by `Space.makeWebViewConfiguration`, all frames, document start). It carries the ids and patterns of the extensions *loaded in that profile* (`Profile.externallyConnectablePages`), and in each document:
+
+1. works out which of them list the document's URL (the same scheme / host / path-glob match WebKit makes; `ExternallyConnectableShimTests` checks the two agree) and stops, having touched nothing, when none does;
+2. defines `chrome.runtime` with `sendMessage`, `connect` and `lastError` — plain objects, nothing native is patched. `window.chrome` is created only if the page has none (as an ordinary writable, configurable property, so a page that assigns or declares `chrome` gets its own); an existing `chrome` is extended, an existing `chrome.runtime` is left alone;
+3. forwards a call for a listed id to WebKit's `browser.runtime` functions, captured at document start, and answers a call for any other id itself, as Chrome does: the callback runs with `runtime.lastError` set, the promise rejects, a port disconnects with `lastError` — "Could not establish connection. Receiving end does not exist." WebKit is never asked about such an id. Calls without an extension id throw Chrome's `TypeError`.
+
+Step 3 is not cosmetic. claude.ai tries its internal extension id before the public one and treats *any* answer other than `{success: false}` — `undefined` included — as "signed in"; WebKit's silent `undefined` for the id that is not installed would end the loop before the installed extension was ever asked.
+
+When an extension is loaded or unloaded in a profile (install, uninstall, enable, disable, update, Allow in Private), `ExternallyConnectablePages` replaces the script on that profile's live tab content controllers, and tells each open document whose answer changed which ids it may reach now (a DOM event the shim listens for). So a page that was open when the extension was disabled keeps its `chrome.runtime` and gets Chrome's error for that id; a page loaded afterwards gets no `chrome.runtime`.
+
+Replacing the script on a live controller means emptying it and putting the other scripts back, because a controller has no call to remove one script. Two things WebKit does there are load-bearing (measured, guarded by `testOtherExtensionsContentScriptsSurviveTheScriptReplacement`): `userScripts` also lists the content scripts WebKit injected for every extension of the profile — manifest ones and `scripting.registerContentScripts` ones live on the same controller — and `removeAllUserScripts()` leaves exactly those in place. Putting the whole earlier list back therefore added each extension content script a second time and doubled them again on every replacement, so `ExternallyConnectablePages.apply` puts back only what the call actually removed.
+
+**Scoping.** The script decides what a page is *shown*; WebKit decides what is *delivered*, per message, whatever the page calls — the shim gives a page nothing `browser.runtime` does not already give it (no extension URLs, no other API, no id of an extension that does not list the page: the table is in the script's closure, and the ids a document keeps are the ones that list that very page). A page can dispatch the update event itself; that only changes which ids its own shim passes on to WebKit. A page can also listen for it: a document an extension lists then sees the ids of the extensions that list it when one of them is enabled or disabled. The update checks `location.href` before it dispatches, so it reaches only the document the ids were matched against — not the page still showing while a navigation to a listed one is provisional (`WKWebView.url` is the pending URL then). With no listing extension loaded in the profile no script is installed, and a web view without an extension controller has no `browser.runtime`, so the shim defines nothing there. Private follows the usual rule: only contexts loaded in the Private profile count.
+
+**Limits.**
+
+- An extension that lists a page it has **no host access** to is not reachable (WebKit's third check; Chrome has none): the page gets `chrome.runtime` and the message is answered with `undefined`, no `lastError`. Detour does not grant access on the strength of `externally_connectable`.
+- A listed, loaded extension with **no listener** also answers `undefined`, where Chrome reports the error. (For `connect`, WebKit reports the missing listener as `port.error`, which the shim shows as `lastError` in `onDisconnect`.)
+- The port `connect` returns for a listed id is WebKit's own, with WebKit's behaviour: calling `port.disconnect()` fires that port's own `onDisconnect` listeners (Chrome fires only the other end's).
+- A document is matched once, at document start: a same-document navigation to a path the pattern does not cover keeps `chrome.runtime` (WebKit then refuses delivery, silently).
+- A document already open when the *first* listing extension is enabled gets `chrome.runtime` on its next load, as in Chrome. That includes a tab restored at launch whose document is created before the extensions have loaded (in the runtime check the restored claude.ai tab did get it; nothing orders the two). Live updates reach the main frame only.
+- On a listed page `window.chrome` exists, which a site may read as "this is Chrome".
+
 ## Interim stand-ins: tabGroups and debugger
 
 Neither `chrome.tabGroups` nor `chrome.debugger` is implemented yet (TASK-132.12 and TASK-132.13), and WebKit vends neither. The Claude extension's service worker reads `chrome.tabGroups.Color` in a class's static field and calls `chrome.debugger.onEvent.addListener` in a constructor, both while its modules are being evaluated, so without the namespaces the worker fails to load and nothing else about the extension can run. `ExtensionAPIPolyfill.interimNamespacesJS` therefore defines, for an extension whose manifest declares the permission:
@@ -377,7 +413,7 @@ Three test extensions live under `TestExtensions/` (a fourth directory, `1passwo
 
 - **hello-world** — Minimal extension with a content script, background service worker, popup, and storage permission. Verifies basic lifecycle and injection.
 - **hello-world-module** — The same with a `type: "module"` service worker that imports other modules. Verifies module worker support.
-- **api-explorer** — Comprehensive extension exercising all implemented APIs. Interactive popup sections for each API, background event logging to storage. Its "Declarative Net Request" section adds a session header rule (with or without a header name WebKit refuses) and fetches a URL of your choice from the worker, the popup's `fetch` and the popup's XHR, so a header-echoing endpoint shows what each context sent.
+- **api-explorer** — Comprehensive extension exercising all implemented APIs. Interactive popup sections for each API, background event logging to storage. Its "Declarative Net Request" section adds a session header rule (with or without a header name WebKit refuses) and fetches a URL of your choice from the worker, the popup's `fetch` and the popup's XHR, so a header-echoing endpoint shows what each context sent. Its manifest lists `http://127.0.0.1/*` and `http://localhost/*` in `externally_connectable`: serve `external-page/` on loopback (`python3 -m http.server 8765 --bind 127.0.0.1 -d external-page`), open it in a tab and send to the id shown in the popup's "Externally Connectable" section, which also lists what the worker received and from which origin and tab.
 
 ## Limitations
 
@@ -385,6 +421,7 @@ Three test extensions live under `TestExtensions/` (a fourth directory, `1passwo
 - **`chrome.webNavigation`** — `getAllFrames`/`getFrame` are WebKit's; `srcdoc` and `about:blank` frames are enumerated with an empty URL and get no content script. The synthesized `onHistoryStateUpdated`/`onReferenceFragmentUpdated` events report `frameId: 0` for the top frame and `-1` for any subframe, not WebKit's frame id.
 - **`chrome.permissions.request()`** — Declared permissions and host permissions are granted at install time. A runtime request shows a plain Allow / Deny alert, with no per-site or time-limited choices.
 - **`chrome.declarativeNetRequest`** — WebKit's implementation, with gaps Detour fills only for session rules that modify request headers on the extension's own requests; see "declarativeNetRequest" for what applies where.
+- **`externally_connectable`** — Web pages only (`matches`); the extension needs host access to the page, and a listed extension without a listener answers nothing instead of failing. See "Externally connectable pages".
 - **`chrome.tabGroups`, `chrome.debugger`** — Not implemented; constants and never-firing events only, so a worker that reads them while loading does not die (see "Interim stand-ins").
 - **`chrome.tabs.detectLanguage`** — May not be implemented by WebKit in all versions.
 - **Offscreen document AudioContext** — Shimmed to route through native `AVAudioPlayer`. The shim covers `decodeAudioData`/`createBufferSource`/`start`/`stop`/`onended` but not the full Web Audio API graph.

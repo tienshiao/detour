@@ -647,6 +647,40 @@ document.getElementById('btn-interim-probe').addEventListener('click', async () 
   }
 });
 
+// --- Externally connectable (TASK-132.6) ---
+//
+// The receiving side lives in the worker (runtime.onMessageExternal /
+// onConnectExternal); the sending side is a web page on 127.0.0.1 or localhost
+// (external-page/index.html). This section shows the id to send to and what
+// the worker received from which origin and tab.
+
+document.getElementById('input-external-id').value = chrome.runtime.id;
+
+document.getElementById('btn-external-copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(chrome.runtime.id);
+    showResult('res-external', 'Copied ' + chrome.runtime.id);
+  } catch (e) {
+    showResult('res-external', e.message, true);
+  }
+});
+
+document.getElementById('btn-external-received').addEventListener('click', async () => {
+  try {
+    showResult('res-external', await sendBg({ type: 'externalReceived' }));
+  } catch (e) {
+    showResult('res-external', e.message, true);
+  }
+});
+
+document.getElementById('btn-external-clear').addEventListener('click', async () => {
+  try {
+    showResult('res-external', await sendBg({ type: 'externalClear' }));
+  } catch (e) {
+    showResult('res-external', e.message, true);
+  }
+});
+
 // --- Commands ---
 
 document.getElementById('btn-commands-getall').addEventListener('click', async () => {

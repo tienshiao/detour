@@ -47,6 +47,7 @@ class BrowserTab: NSObject {
             if let webView {
                 ExtensionPageHostRegistry.register(webView)
                 FaviconLinkBridge.register(webView, for: self)
+                ExternallyConnectablePages.track(webView)
             }
         }
     }
@@ -379,6 +380,7 @@ class BrowserTab: NSObject {
         if let webView {
             ExtensionPageHostRegistry.register(webView)
             FaviconLinkBridge.register(webView, for: self)
+            ExternallyConnectablePages.track(webView)
         }
         webView?.navigationDelegate = self
         applyUserAgent()
@@ -393,6 +395,7 @@ class BrowserTab: NSObject {
         super.init()
         ExtensionPageHostRegistry.register(webView)
         FaviconLinkBridge.register(webView, for: self)
+        ExternallyConnectablePages.track(webView)
         webView.navigationDelegate = self
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state

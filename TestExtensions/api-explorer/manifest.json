@@ -8,6 +8,9 @@
   "host_permissions": ["<all_urls>"],
   "optional_permissions": ["cookies"],
   "optional_host_permissions": ["https://example.org/*"],
+  "externally_connectable": {
+    "matches": ["http://127.0.0.1/*", "http://localhost/*"]
+  },
   "commands": {
     "test-command": {
       "suggested_key": {"default": "Alt+Shift+E", "mac": "Alt+Shift+E"},

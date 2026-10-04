@@ -2,6 +2,7 @@
 // Exercises: chrome.tabs, chrome.webNavigation, chrome.webRequest, chrome.storage,
 //            chrome.scripting, chrome.i18n, chrome.contextMenus, chrome.offscreen,
 //            chrome.runtime.onInstalled, chrome.runtime.onStartup, chrome.runtime.onUpdateAvailable, chrome.runtime.connect/onConnect,
+//            chrome.runtime.onMessageExternal/onConnectExternal (externally_connectable),
 //            chrome.storage.onChanged, chrome.extension.getBackgroundPage,
 //            chrome.alarms, chrome.action, chrome.commands, chrome.windows,
 //            chrome.fontSettings, chrome.permissions
@@ -293,6 +294,62 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => {
     console.log('[API Explorer] port.onDisconnect', port.name);
     appendLog({ event: 'port.onDisconnect', portName: port.name });
+  });
+});
+
+// --- runtime.onMessageExternal / onConnectExternal (externally_connectable, TASK-132.6) ---
+//
+// The manifest lists http://127.0.0.1/* and http://localhost/*: a page served
+// from either (external-page/index.html, see the popup's "Externally
+// Connectable" section) can call chrome.runtime.sendMessage(<this id>, …) and
+// chrome.runtime.connect(<this id>). What arrives is answered with how the
+// sender looked and kept in storage.local (`externalMessages`, newest last) so
+// the popup can show it.
+
+const MAX_EXTERNAL_MESSAGES = 20;
+
+function describeExternalSender(sender) {
+  return {
+    id: sender && sender.id,
+    origin: sender && sender.origin,
+    url: sender && sender.url,
+    frameId: sender && sender.frameId,
+    tabId: sender && sender.tab ? sender.tab.id : undefined,
+  };
+}
+
+async function recordExternal(entry) {
+  const { externalMessages = [] } = await chrome.storage.local.get('externalMessages');
+  externalMessages.push({ ...entry, at: new Date().toISOString() });
+  if (externalMessages.length > MAX_EXTERNAL_MESSAGES) {
+    externalMessages.splice(0, externalMessages.length - MAX_EXTERNAL_MESSAGES);
+  }
+  await chrome.storage.local.set({ externalMessages });
+}
+
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  const from = describeExternalSender(sender);
+  console.log('[API Explorer] runtime.onMessageExternal', JSON.stringify(message), JSON.stringify(from));
+  recordExternal({ event: 'onMessageExternal', message, sender: from });
+  // { type: 'silent' } is left unanswered, to show what a page gets then.
+  if (message && message.type === 'silent') return false;
+  sendResponse({
+    ok: true,
+    from: 'api-explorer',
+    version: chrome.runtime.getManifest().version,
+    echo: message,
+    sender: from,
+  });
+  return false;
+});
+
+chrome.runtime.onConnectExternal.addListener((port) => {
+  const from = describeExternalSender(port.sender);
+  console.log('[API Explorer] runtime.onConnectExternal, port:', port.name, JSON.stringify(from));
+  recordExternal({ event: 'onConnectExternal', portName: port.name, sender: from });
+  port.onMessage.addListener((message) => {
+    recordExternal({ event: 'external port message', portName: port.name, message });
+    port.postMessage({ echo: message, from: 'api-explorer', portName: port.name, sender: from });
   });
 });
 
@@ -696,6 +753,24 @@ async function handleMessage(message) {
     }
 
     // --- tabGroups / debugger interim stand-ins (TASK-132.4) ---
+
+    // --- externally_connectable (TASK-132.6) ---
+
+    case 'externalReceived': {
+      const { externalMessages = [] } = await chrome.storage.local.get('externalMessages');
+      return {
+        extensionId: chrome.runtime.id,
+        listsPages: (chrome.runtime.getManifest().externally_connectable || {}).matches || [],
+        onMessageExternal: typeof (chrome.runtime.onMessageExternal && chrome.runtime.onMessageExternal.addListener),
+        onConnectExternal: typeof (chrome.runtime.onConnectExternal && chrome.runtime.onConnectExternal.addListener),
+        received: externalMessages,
+      };
+    }
+
+    case 'externalClear': {
+      await chrome.storage.local.remove('externalMessages');
+      return { cleared: true };
+    }
 
     case 'interimNamespacesProbe': {
       const tg = chrome.tabGroups;

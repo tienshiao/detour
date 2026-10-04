@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>API Explorer — externally connectable page</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; max-width: 720px; margin: 24px auto; color: #222; }
+    h1 { font-size: 18px; }
+    button { background: #2563eb; color: white; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+    button.secondary { background: #6b7280; }
+    input { border: 1px solid #ccc; border-radius: 4px; padding: 4px 8px; font-size: 12px; width: 300px; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+    pre { background: #f4f4f5; border-radius: 4px; padding: 8px; white-space: pre-wrap; word-break: break-all; min-height: 2em; }
+    p { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Externally connectable page</h1>
+  <p>
+    A web page, not an extension page. API Explorer lists <code>http://127.0.0.1/*</code> and
+    <code>http://localhost/*</code> in <code>externally_connectable</code>, so served from either this page gets
+    <code>chrome.runtime.sendMessage</code> / <code>connect</code>. Served from anywhere else (try
+    <code>http://[::1]:PORT/</code>) it gets no <code>chrome.runtime</code>.
+    Paste the id shown in the popup's "Externally Connectable" section (or pass <code>?id=…</code>).
+  </p>
+  <div class="row">
+    <input type="text" id="extension-id" placeholder="extension id"/>
+    <button id="probe" class="secondary">Probe globals</button>
+  </div>
+  <div class="row">
+    <button id="send-callback">sendMessage (callback)</button>
+    <button id="send-promise">sendMessage (promise)</button>
+    <button id="send-silent" class="secondary">sendMessage (no reply)</button>
+    <button id="connect">connect + post</button>
+  </div>
+  <div class="row">
+    <button id="send-unknown" class="secondary">sendMessage to an unknown id</button>
+    <button id="connect-unknown" class="secondary">connect to an unknown id</button>
+    <button id="send-no-id" class="secondary">sendMessage without an id</button>
+  </div>
+  <pre id="result"></pre>
+
+  <script>
+    const idInput = document.getElementById('extension-id');
+    idInput.value = new URLSearchParams(location.search).get('id') || '';
+    const UNKNOWN_ID = 'nopnopnopnopnopnopnopnopnopnopno';   // 32 letters a–p, nobody's id
+
+    const show = (data) => {
+      document.getElementById('result').textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    };
+    const run = (id, body) => document.getElementById(id).addEventListener('click', async () => {
+      try {
+        if (!window.chrome || !chrome.runtime) {
+          show('No chrome.runtime on this page: no enabled extension lists ' + location.origin + ' in externally_connectable.');
+          return;
+        }
+        show(await body());
+      } catch (e) {
+        show((e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e)));
+      }
+    });
+
+    document.getElementById('probe').addEventListener('click', () => show({
+      origin: location.origin,
+      chrome: typeof window.chrome,
+      'chrome.runtime': typeof (window.chrome && chrome.runtime),
+      'chrome.runtime keys': window.chrome && chrome.runtime ? Object.keys(chrome.runtime) : null,
+      'chrome.runtime.id': window.chrome && chrome.runtime ? String(chrome.runtime.id) : null,
+      browser: typeof window.browser,
+      'browser.runtime': typeof (window.browser && browser.runtime),
+    }));
+
+    // Callback form: the reply, or runtime.lastError.
+    const viaCallback = (id, message) => new Promise((resolve) => {
+      chrome.runtime.sendMessage(id, message, (reply) => {
+        const lastError = chrome.runtime.lastError;
+        resolve(lastError ? { lastError: lastError.message } : { reply: reply === undefined ? '(undefined)' : reply });
+      });
+    });
+    // Promise form: the reply, or the rejection.
+    const viaPromise = async (id, message) => {
+      try {
+        const reply = await chrome.runtime.sendMessage(id, message);
+        return { reply: reply === undefined ? '(undefined)' : reply };
+      } catch (e) {
+        return { rejected: e.message };
+      }
+    };
+    // connect: the first thing that happens on the port.
+    const viaPort = (id) => new Promise((resolve) => {
+      const port = chrome.runtime.connect(id, { name: 'external-page' });
+      const timer = setTimeout(() => resolve({ port: port.name, nothingAfter: '5 s' }), 5000);
+      // Resolve before disconnecting: WebKit's port fires its own onDisconnect
+      // when this side disconnects (Chrome's does not).
+      port.onMessage.addListener((message) => { clearTimeout(timer); resolve({ port: port.name, message }); port.disconnect(); });
+      port.onDisconnect.addListener(() => {
+        clearTimeout(timer);
+        resolve({ port: port.name, disconnected: true, lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+      });
+      port.postMessage({ hello: 'from ' + location.origin, at: Date.now() });
+    });
+
+    run('send-callback', () => viaCallback(idInput.value.trim(), { type: 'ping', via: 'callback', at: Date.now() }));
+    run('send-promise', () => viaPromise(idInput.value.trim(), { type: 'ping', via: 'promise', at: Date.now() }));
+    run('send-silent', () => viaCallback(idInput.value.trim(), { type: 'silent' }));
+    run('connect', () => viaPort(idInput.value.trim()));
+    run('send-unknown', async () => ({ callback: await viaCallback(UNKNOWN_ID, { type: 'ping' }), promise: await viaPromise(UNKNOWN_ID, { type: 'ping' }) }));
+    run('connect-unknown', () => viaPort(UNKNOWN_ID));
+    run('send-no-id', () => chrome.runtime.sendMessage({ type: 'ping' }));
+  </script>
+</body>
+</html>
