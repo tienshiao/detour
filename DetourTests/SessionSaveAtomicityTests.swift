@@ -6,11 +6,14 @@ import GRDB
 /// fails part-way leaves the complete previous state, never the new spaces and
 /// tabs without their pinned entries, folders or favourites.
 ///
-/// The failure is injected from the test with a SQLite trigger that raises on
-/// the write of one table, so the save throws from inside its transaction at a
-/// chosen step without any test-only seam in the app. The store is driven
-/// through `saveNow()` only, which is why the same file runs against the code
-/// before the fix.
+/// The failure is injected from the test with a SQLite trigger on the write of
+/// one table, so the save throws from inside its transaction at a chosen step
+/// without any test-only seam in the app. The trigger calls a SQL function that
+/// fails with SQLITE_FULL: the kind of failure that is not about one row, where
+/// no part of the save can be written. A row the database refuses (a
+/// constraint failure) is handled differently since TASK-154 — the unit it
+/// belongs to keeps its previous rows and the rest is saved — and is covered
+/// by `SessionSaveFailureTests`.
 final class SessionSaveAtomicityTests: XCTestCase {
 
     // MARK: - Fixture
@@ -146,13 +149,17 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     // MARK: - Failure injection
 
-    /// Makes every `event` on `table` fail, the way a full disk or a constraint
-    /// violation would: the statement throws inside the save's transaction.
+    /// Makes every `event` on `table` fail the way a full disk would: the
+    /// statement throws inside the save's transaction, with an error that is
+    /// not a constraint failure (`RAISE` in a trigger would be one).
     private func injectFailure(on table: String, event: String, in db: AppDatabase) throws {
         try db.dbQueue.write { conn in
+            conn.add(function: DatabaseFunction("injected_failure", argumentCount: 0) { _ in
+                throw DatabaseError(resultCode: .SQLITE_FULL, message: "injected failure")
+            })
             try conn.execute(sql: """
                 CREATE TRIGGER injectedFailure BEFORE \(event) ON \(table)
-                BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+                BEGIN SELECT injected_failure(); END
                 """)
         }
     }
@@ -180,8 +187,12 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
         try mutateToStateB(fixture)
         try injectFailure(on: table, event: event, in: fixture.db)
-        fixture.store.saveNow()
+        let outcome = fixture.store.saveNow()
         try removeInjectedFailure(in: fixture.db)
+        guard case .failed = outcome else {
+            return XCTFail("a save that failed writing \(table) reported \(outcome)", file: file, line: line)
+        }
+        XCTAssertEqual(fixture.store.lastSaveOutcome, outcome, file: file, line: line)
 
         let rowsAfterFailure = try dump(fixture.db)
         for name in Self.sessionTables {
@@ -193,7 +204,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
                        file: file, line: line)
 
         // The same save, uninterrupted, writes state B in full.
-        fixture.store.saveNow()
+        XCTAssertEqual(fixture.store.saveNow(), .saved, file: file, line: line)
         let rowsB = try dump(fixture.db)
         XCTAssertNotEqual(rowsB["space"], rowsA["space"], file: file, line: line)
         XCTAssertNotEqual(rowsB["tab"], rowsA["tab"], file: file, line: line)
@@ -245,8 +256,8 @@ final class SessionSaveAtomicityTests: XCTestCase {
         let lateIndex = try XCTUnwrap(space.pinnedFolders.firstIndex { $0.id == late.id })
         XCTAssertLessThan(outerIndex, lateIndex, "premise: the child is ahead of its parent in the store")
 
-        XCTAssertTrue(fixture.db.saveSessionSnapshot(store.makeSessionSnapshot()),
-                      "a child folder ahead of its parent must not fail the save")
+        XCTAssertNoThrow(try fixture.db.saveSessionSnapshot(store.makeSessionSnapshot()),
+                         "a child folder ahead of its parent must not fail the save")
 
         let relaunched = TabStore(appDB: fixture.db)
         _ = relaunched.restoreSession()
@@ -257,8 +268,8 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
         // The rows load by their per-level sort order, which is not parent-first
         // either: the relaunched store's own save has to go through as well.
-        XCTAssertTrue(fixture.db.saveSessionSnapshot(relaunched.makeSessionSnapshot()),
-                      "the save after a relaunch must not fail on the folders' load order")
+        XCTAssertNoThrow(try fixture.db.saveSessionSnapshot(relaunched.makeSessionSnapshot()),
+                         "the save after a relaunch must not fail on the folders' load order")
         XCTAssertEqual(try XCTUnwrap(try dump(fixture.db)["pinnedFolder"]).count, 3)
     }
 
@@ -280,7 +291,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
                        "premise: the restored parent is behind its child in the store")
         XCTAssertEqual(inner.parentFolderID, outer.id)
 
-        XCTAssertTrue(fixture.db.saveSessionSnapshot(store.makeSessionSnapshot()))
+        XCTAssertNoThrow(try fixture.db.saveSessionSnapshot(store.makeSessionSnapshot()))
         XCTAssertEqual(try XCTUnwrap(try dump(fixture.db)["pinnedFolder"]).count, 2)
     }
 
@@ -332,7 +343,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
         // space rows reference them.
         for profile in stateA.profiles { reference.saveProfile(profile) }
         savePerPiece(stateA)
-        XCTAssertTrue(fixture.db.saveSessionSnapshot(stateA))
+        try fixture.db.saveSessionSnapshot(stateA)
         let rowsA = try dump(fixture.db)
         XCTAssertEqual(rowsA, try dump(reference))
         XCTAssertEqual(rowsA["space"]?.count, 2)
@@ -345,7 +356,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
         try mutateToStateB(fixture)
         let stateB = fixture.store.makeSessionSnapshot()
         savePerPiece(stateB)
-        XCTAssertTrue(fixture.db.saveSessionSnapshot(stateB))
+        try fixture.db.saveSessionSnapshot(stateB)
         let rowsB = try dump(fixture.db)
         XCTAssertEqual(rowsB, try dump(reference))
         XCTAssertNotEqual(rowsB, rowsA)

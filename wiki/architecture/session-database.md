@@ -5,7 +5,7 @@ description: The tables of browser.db, what each is for, the foreign keys that s
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:57Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:36:35Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -34,6 +34,9 @@ sources:
   - id: task-149
     resource: backlog:TASK-149
     title: One session save is one transaction
+  - id: task-154
+    resource: backlog:TASK-154
+    title: A session save that fails is handled, not only logged
 ---
 
 `browser.db` is the session database: `AppDatabase.shared`, a struct around a
@@ -90,6 +93,13 @@ Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
 - `pinnedFolder.parentFolderID → pinnedFolder`, checked immediately. Folder
   rows are inserted parent-first (`AppDatabase.parentFirst`), whatever order
   the store holds them in; see [persistence](./persistence.md).
+- `pinnedFolder.parentFolderID` and `pinnedTab.folderID` refuse a row that
+  names a folder with no row. A folder with a missing parent, a parent cycle
+  or an entry in a missing folder is therefore moved to the root in the
+  snapshot before it is written (`repairingInvalidRows`, TASK-154).
+- Because `tab`, `pinnedTab` and `pinnedFolder` cascade from `space`, a space
+  and those rows are one unit when a save has to isolate a refused row: they
+  are replaced together or left as last saved.
 
 Profile deletion does **not** rely on cascades. `deleteProfileRows` is the
 one function that deletes a profile row, and it deletes `profileExtension`,
@@ -167,10 +177,15 @@ Records are plain `Codable` structs. The live model (`Profile`, `Space`,
 
 # Conventions of `AppDatabase`
 
-- Every method goes through `performWrite` or `performRead`. Both catch,
-  log to the `storage` log category, and return a default. **A failed write
-  is silent to the caller** unless the method returns a value that says so
-  (`deleteProfile` returns `Bool` for this reason).
+- Every method but two goes through `performWrite` or `performRead`. Both
+  catch, log to the `storage` log category, and return a default. **A failed
+  write is silent to the caller** unless the method returns a value that says
+  so (`deleteProfile` returns `Bool` for this reason).
+- The two are the session save: `saveSessionSnapshot` and
+  `saveSessionSnapshotIsolatingFailures` throw, because a save that wrote
+  nothing must not pass unnoticed (TASK-154). `TabStore.saveNow()` handles the
+  error; `isConstraintFailure` tells a refused row from every other error. See
+  [persistence](./persistence.md).
 - In DEBUG builds `performRead` counts reads per label
   (`AppDatabase.readCount(_:)`, `resetReadCounts()`). Tests use it to pin a
   query count, for example one enabled-state read per profile at startup

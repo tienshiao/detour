@@ -304,11 +304,15 @@ struct AppDatabase {
         }
 
         if let activeID = lastActiveSpaceID {
-            try db.execute(
-                sql: "INSERT INTO appState (key, value) VALUES ('lastActiveSpaceID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                arguments: [activeID]
-            )
+            try writeLastActiveSpaceID(activeID, in: db)
         }
+    }
+
+    private static func writeLastActiveSpaceID(_ activeID: String, in db: GRDB.Database) throws {
+        try db.execute(
+            sql: "INSERT INTO appState (key, value) VALUES ('lastActiveSpaceID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            arguments: [activeID]
+        )
     }
 
     /// Everything one `TabStore.saveNow()` writes, as records (TASK-149).
@@ -350,13 +354,13 @@ struct AppDatabase {
     /// folders. In one transaction an interrupted save rolls back as a whole,
     /// so the database holds either the previous save or this one.
     ///
-    /// That also means one failing step now fails the whole save, where before
-    /// the other steps were still written.
-    ///
-    /// Returns whether the save was committed.
-    @discardableResult
-    func saveSessionSnapshot(_ snapshot: SessionSnapshot) -> Bool {
-        performWrite("save session snapshot", default: false) { db in
+    /// That also means one failing statement fails the whole save. The error
+    /// is thrown, not logged and dropped (TASK-154): the caller decides what
+    /// to do about a save that wrote nothing — `TabStore.saveNow()` falls back
+    /// to `saveSessionSnapshotIsolatingFailures` when it is a row the database
+    /// refused (`isConstraintFailure`).
+    func saveSessionSnapshot(_ snapshot: SessionSnapshot) throws {
+        try dbQueue.write { db in
             try Self.writeSession(spaces: snapshot.spaces, lastActiveSpaceID: snapshot.lastActiveSpaceID, in: db)
             try Self.writeProfiles(snapshot.profiles, in: db)
             for pinned in snapshot.pinnedItems {
@@ -366,7 +370,175 @@ struct AppDatabase {
             for favorites in snapshot.favorites {
                 try Self.writeFavorites(favorites.records, profileID: favorites.profileID, in: db)
             }
-            return true
+        }
+    }
+
+    /// A part of a session save that `saveSessionSnapshotIsolatingFailures`
+    /// could not write.
+    struct SessionSaveFailure: Equatable {
+        /// What is written, or not, as a whole.
+        enum Unit: Equatable {
+            /// A space row with its tab rows and its pinned folders and entries.
+            case space(id: String)
+            /// The profile rows, and the sweep of profiles the store no longer has.
+            case profiles
+            /// One profile's favourites.
+            case favorites(profileID: String)
+        }
+
+        let unit: Unit
+        /// The database's error.
+        let reason: String
+    }
+
+    /// Whether `error` is the database refusing a row — a foreign key, a
+    /// uniqueness or a NOT NULL violation, or a trigger raising. Such a failure
+    /// belongs to the row and comes back on every save of that row; anything
+    /// else (a full disk, an I/O error, a locked or damaged file) is not about
+    /// one row, and no part of the save can be expected to go through.
+    static func isConstraintFailure(_ error: Error) -> Bool {
+        (error as? DatabaseError)?.resultCode == .SQLITE_CONSTRAINT
+    }
+
+    /// Writes as much of a save as the database accepts (TASK-154), for a
+    /// snapshot `saveSessionSnapshot` failed on with a constraint failure.
+    /// Still ONE transaction, so an interrupted save still leaves the previous
+    /// one whole; inside it each unit (`SessionSaveFailure.Unit`) is written in
+    /// its own savepoint:
+    ///
+    /// - each space: the space row, its tab rows, its pinned folders and
+    ///   entries. They are one unit because deleting the space row to rewrite
+    ///   it cascades to the other three, so they are replaced together or not
+    ///   at all;
+    /// - the profiles;
+    /// - each profile's favourites.
+    ///
+    /// A unit that fails with a constraint failure is rolled back to its
+    /// savepoint, which leaves its rows as the last good save wrote them — a
+    /// space that was never saved is simply not there — and is returned. Every
+    /// other unit is written. Any other error is thrown and rolls the whole
+    /// save back.
+    ///
+    /// One exception to "as the last good save wrote them": a favourites unit
+    /// that fails after the space hosting its live favourites was written.
+    /// Rewriting that space deleted its tab rows, and the cascade set
+    /// `favorite.tabID` to NULL in the favourite rows that the rollback then
+    /// keeps. Those favourites are kept, but dormant, until a later save
+    /// writes the unit; the re-inserted backing tab rows go unreferenced until
+    /// then (found in review, not repaired: it takes a refused favourite row
+    /// in the same save as a rewritten host space).
+    ///
+    /// Two things keep the units independent of each other:
+    ///
+    /// - A row that changed unit (a tab moved to another space) may still be
+    ///   held, under the same primary key, by a unit that is not rewritten in
+    ///   this pass. Before a unit inserts its rows, such stale copies are
+    ///   deleted from every unit this pass has not written. Copies in a unit
+    ///   it has written are left to fail the insert: that is a real duplicate.
+    /// - A live favourite's backing tab row belongs to the space that hosts
+    ///   it. When that space was not written and the row is not among the ones
+    ///   it kept, the favourite is saved dormant rather than failing its
+    ///   profile's favourites on `favorite.tabID`.
+    ///
+    /// What a relaunch loads after a partial save is a valid session by the
+    /// schema's own rules: every statement ran with the foreign keys enforced.
+    func saveSessionSnapshotIsolatingFailures(_ snapshot: SessionSnapshot) throws -> [SessionSaveFailure] {
+        try dbQueue.write { db in
+            var failures: [SessionSaveFailure] = []
+            /// Runs `work` in a savepoint; returns whether it was kept.
+            func write(_ unit: SessionSaveFailure.Unit, _ work: () throws -> Void) throws -> Bool {
+                do {
+                    try db.inSavepoint {
+                        try work()
+                        return .commit
+                    }
+                    return true
+                } catch where Self.isConstraintFailure(error) {
+                    failures.append(SessionSaveFailure(unit: unit, reason: "\(error)"))
+                    return false
+                }
+            }
+
+            // Spaces the store no longer has go, with their tabs and pinned
+            // rows (cascade), as they do in the one-step save.
+            let spaceIDs = snapshot.spaces.map(\.0.id)
+            try SpaceRecord.filter(!spaceIDs.contains(Column("id"))).deleteAll(db)
+
+            let pinnedBySpace = Dictionary(snapshot.pinnedItems.map { ($0.spaceID, $0) }, uniquingKeysWith: { first, _ in first })
+            var writtenSpaceIDs: [String] = []
+            for (space, tabs) in snapshot.spaces {
+                let pinned = pinnedBySpace[space.id]
+                let written = try write(.space(id: space.id)) {
+                    // Cascades to the space's tab, pinnedFolder and pinnedTab rows.
+                    _ = try SpaceRecord.deleteOne(db, key: space.id)
+                    try Self.deleteStaleRows(TabRecord.self, ids: tabs.map(\.id),
+                                             ownerColumn: "spaceID", writtenOwners: writtenSpaceIDs, in: db)
+                    try space.insert(db)
+                    for tab in tabs {
+                        try tab.insert(db)
+                    }
+                    guard let pinned else { return }
+                    try Self.deleteStaleRows(PinnedFolderRecord.self, ids: pinned.folders.map(\.id),
+                                             ownerColumn: "spaceID", writtenOwners: writtenSpaceIDs, in: db)
+                    try Self.deleteStaleRows(PinnedTabRecord.self, ids: pinned.tabs.map(\.id),
+                                             ownerColumn: "spaceID", writtenOwners: writtenSpaceIDs, in: db)
+                    try Self.writePinnedFoldersAndTabs(folders: pinned.folders, tabs: pinned.tabs,
+                                                       spaceID: space.id, in: db)
+                }
+                if written { writtenSpaceIDs.append(space.id) }
+            }
+            // Pinned rows of a space the snapshot does not hold have no space
+            // row to hang from. `TabStore` never builds any; reported, not dropped.
+            for pinned in snapshot.pinnedItems where !spaceIDs.contains(pinned.spaceID) {
+                _ = try write(.space(id: pinned.spaceID)) {
+                    try Self.writePinnedFoldersAndTabs(folders: pinned.folders, tabs: pinned.tabs,
+                                                       spaceID: pinned.spaceID, in: db)
+                }
+            }
+
+            if let activeID = snapshot.lastActiveSpaceID {
+                try Self.writeLastActiveSpaceID(activeID, in: db)
+            }
+
+            // After the spaces, as in the one-step save: a profile is swept
+            // only when no space row references it, and a space that kept its
+            // previous rows still references its previous profile.
+            _ = try write(.profiles) {
+                try Self.writeProfiles(snapshot.profiles, in: db)
+            }
+
+            var writtenProfileIDs: [String] = []
+            for favorites in snapshot.favorites {
+                let written = try write(.favorites(profileID: favorites.profileID)) {
+                    try Self.deleteStaleRows(FavoriteRecord.self, ids: favorites.records.map(\.id),
+                                             ownerColumn: "profileID", writtenOwners: writtenProfileIDs, in: db)
+                    let records = try favorites.records.map { record -> FavoriteRecord in
+                        guard let tabID = record.tabID, try !TabRecord.exists(db, key: tabID) else { return record }
+                        log.error("Session save: favourite \(record.id, privacy: .public) is saved dormant, its tab's row was not written")
+                        var dormant = record
+                        dormant.tabID = nil
+                        return dormant
+                    }
+                    try Self.writeFavorites(records, profileID: favorites.profileID, in: db)
+                }
+                if written { writtenProfileIDs.append(favorites.profileID) }
+            }
+
+            return failures
+        }
+    }
+
+    /// Deletes the rows of `record`'s table that have one of `ids` and belong
+    /// to an owner (`ownerColumn`: a space or a profile) outside `writtenOwners`.
+    /// See `saveSessionSnapshotIsolatingFailures`.
+    private static func deleteStaleRows<Record: TableRecord>(_ record: Record.Type, ids: [String], ownerColumn: String,
+                                                             writtenOwners: [String], in db: GRDB.Database) throws {
+        // In chunks, to stay far below SQLite's limit on bound values.
+        for start in stride(from: 0, to: ids.count, by: 500) {
+            let chunk = Array(ids[start ..< min(start + 500, ids.count)])
+            try record
+                .filter(chunk.contains(Column("id")) && !writtenOwners.contains(Column(ownerColumn)))
+                .deleteAll(db)
         }
     }
 
@@ -661,7 +833,9 @@ struct AppDatabase {
     ///
     /// A folder whose parent is not among `folders` is placed as a root, and
     /// the folders of a parent cycle go last in the order given: neither can
-    /// be made valid here, so the insert reports them.
+    /// be made valid here, so the insert reports them. `TabStore.saveNow()`
+    /// never hands either in: `SessionSnapshot.repairingInvalidRows()` moves
+    /// such folders to the root first (TASK-154).
     private static func parentFirst(_ folders: [PinnedFolderRecord]) -> [PinnedFolderRecord] {
         let ids = Set(folders.map(\.id))
         var placed = Set<String>()
