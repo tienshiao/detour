@@ -4,7 +4,7 @@ title: Build and test
 description: How to generate the project, build, and run the test suite without clobbering another build, another test run or the machine's memory.
 tags: [playbook, build, tests, xcodebuild]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:57Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -139,6 +139,7 @@ Variables the tests read (name as seen in the host):
 | `DETOUR_MEASURE_WORKER_UNLOAD=1`, `DETOUR_MEASURE_WORKER_UNLOAD_SECONDS` | the worker unload leg (default 300 s) |
 | `DETOUR_MEASURE_PRIVATE_WORKER=1`, `DETOUR_MEASURE_PRIVATE_WORKER_SECONDS` | the long Private-store worker leg in `ExtensionPrivateStoreTests` (90 s instead of 5) |
 | `HISTORY_BENCH=1` | `HistoryBenchmarkTests` |
+| `SESSION_SAVE_BENCH=1` | `SessionSaveBenchmarkTests`: the cost of one `saveNow()` on a 2,000-tab session, about 5 s |
 
 The gated legs skip themselves otherwise. Leave them off in ordinary runs
 and reviews. What the unload legs measure is on

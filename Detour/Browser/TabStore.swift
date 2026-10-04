@@ -569,10 +569,21 @@ class TabStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
 
+    /// Writes the whole session — spaces, tabs, profiles, pinned folders and
+    /// entries, favourites — as one database transaction (TASK-149). A save
+    /// that fails or is cut short leaves the previous save's state complete;
+    /// before, the space rows were replaced in a first transaction, which
+    /// cascade-deleted the pinned rows that later transactions put back.
     func saveNow() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
+        appDB.saveSessionSnapshot(makeSessionSnapshot())
+    }
 
+    /// Everything one save writes, as records, in the order it is written.
+    /// Reads the store and changes nothing. Internal so tests can compare it
+    /// with the per-piece `AppDatabase` writes.
+    func makeSessionSnapshot() -> AppDatabase.SessionSnapshot {
         let persistentSpaces = spaces.filter { !$0.isIncognito }
 
         var sessionData: [(SpaceRecord, [TabRecord])] = []
@@ -636,17 +647,12 @@ class TabStore {
             }
         }
 
-        appDB.saveSession(
-            spaces: sessionData,
-            lastActiveSpaceID: lastActiveSpaceID?.uuidString
-        )
-
-        // Save profiles AFTER session so that stale profiles (no longer referenced
-        // by any space) can be deleted without hitting FK constraint violations.
+        // Profiles are written AFTER the session so that stale profiles (no longer
+        // referenced by any space) can be deleted without hitting FK constraint violations.
         let profileRecords = profiles.filter { !$0.isIncognito || $0.id == Self.incognitoProfileID }.map { $0.toRecord() }
-        appDB.saveProfiles(profileRecords)
 
-        // Save pinned folders and entries together in one transaction (entries FK → folders)
+        // Pinned folders and entries per space (entries FK → folders)
+        var pinnedItems: [AppDatabase.SessionSnapshot.PinnedItems] = []
         for space in persistentSpaces {
             var folderRecords: [PinnedFolderRecord] = []
             for folder in space.pinnedFolders {
@@ -677,10 +683,11 @@ class TabStore {
                 ))
             }
 
-            appDB.savePinnedFoldersAndTabs(folders: folderRecords, tabs: pinnedRecords, spaceID: space.id.uuidString)
+            pinnedItems.append(.init(spaceID: space.id.uuidString, folders: folderRecords, tabs: pinnedRecords))
         }
 
-        // Save favorites per profile (AFTER session so tab FKs exist)
+        // Favorites per profile (written AFTER the session so tab FKs exist)
+        var favorites: [AppDatabase.SessionSnapshot.Favorites] = []
         savedProfileIDs.removeAll()
         for profile in profiles where !profile.isIncognito && !savedProfileIDs.contains(profile.id) {
             savedProfileIDs.insert(profile.id)
@@ -696,8 +703,16 @@ class TabStore {
                     extensionID: profile.extensionID(forPageURL: fav.url)
                 )
             }
-            appDB.saveFavorites(records, profileID: profile.id.uuidString)
+            favorites.append(.init(profileID: profile.id.uuidString, records: records))
         }
+
+        return AppDatabase.SessionSnapshot(
+            spaces: sessionData,
+            lastActiveSpaceID: lastActiveSpaceID?.uuidString,
+            profiles: profileRecords,
+            pinnedItems: pinnedItems,
+            favorites: favorites
+        )
     }
 
     /// Restores session. Returns (activeSpaceID, selectedTabID) for the window to use.

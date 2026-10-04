@@ -317,12 +317,16 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 
 ### Persistence Strategy
 
-`TabStore.saveNow()` writes the session in several steps:
+`TabStore.saveNow()` builds one `AppDatabase.SessionSnapshot` (`makeSessionSnapshot()`) and writes it with `AppDatabase.saveSessionSnapshot`, in **one transaction** (TASK-149). The steps inside it, in the order the foreign keys dictate:
 
-1. **Session** (`saveSession`, one transaction): delete all `space` rows (cascading to `tab`, `pinnedTab`, `pinnedFolder`), re-insert every persistent space with its normal tabs, pinned backing tabs (`sortOrder = -1`) and favorite backing tabs (`sortOrder = -2`), then upsert `lastActiveSpaceID`.
-2. **Profiles** (`saveProfiles`), after the session so profiles no longer referenced by any space can be deleted without FK violations.
-3. **Pinned items** per space (`savePinnedFoldersAndTabs`, one transaction): folders before entries, since entries reference folders.
-4. **Favorites** per profile (`saveFavorites`).
+1. **Session**: delete all `space` rows (cascading to `tab`, `pinnedTab`, `pinnedFolder`), re-insert every persistent space with its normal tabs, pinned backing tabs (`sortOrder = -1`) and favorite backing tabs (`sortOrder = -2`), then upsert `lastActiveSpaceID`.
+2. **Profiles**, after the session so profiles no longer referenced by any space can be deleted without FK violations.
+3. **Pinned items** per space: folders before entries, since entries reference folders.
+4. **Favorites** per profile.
+
+Step 1's cascade removes the pinned rows that step 3 puts back, so the steps must commit together: a save that fails or is cut short rolls back as a whole and the database keeps the previous save's complete state. A failure in any step therefore fails the whole save (it is logged; the next save tries again).
+
+`saveSession`, `saveProfiles`, `savePinnedFoldersAndTabs` and `saveFavorites` still exist as single-step writes, each its own transaction, and share the step code with `saveSessionSnapshot`; only tests call them.
 
 Saves are **debounced**: mutations call `scheduleSave()`, which waits 1 second before writing, so rapid changes coalesce. `saveNow()` also runs on app termination.
 

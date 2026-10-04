@@ -5,7 +5,7 @@ description: The tables of browser.db, what each is for, the foreign keys that s
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:57Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -31,6 +31,9 @@ sources:
   - id: task-113
     resource: backlog:TASK-113
     title: Extension updates (source, update URL, pending permission approval)
+  - id: task-149
+    resource: backlog:TASK-149
+    title: One session save is one transaction
 ---
 
 `browser.db` is the session database: `AppDatabase.shared`, a struct around a
@@ -74,15 +77,16 @@ Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
   session before the profiles, and why `TabStore.deleteProfile` calls
   `saveNow()` first: a space moved off the profile less than a save interval
   ago still references it in the database.
-- `tab`, `pinnedTab`, `pinnedFolder` cascade from `space`. `saveSession`
-  deletes all spaces and re-inserts them, so every save clears and rebuilds
-  those three tables.
+- `tab`, `pinnedTab`, `pinnedFolder` cascade from `space`. The session step
+  of a save deletes all spaces and re-inserts them, so every save clears and
+  rebuilds those three tables. That is why the whole save is one transaction
+  (`saveSessionSnapshot`, TASK-149): committed on its own, the session step
+  leaves every space without pinned rows.
 - `pinnedTab.tabID` and `favorite.tabID` reference `tab`. The backing tab row
   must be inserted first, so backing tabs travel in the session step and the
   pinned and favorite rows follow.
-- `pinnedTab.folderID → pinnedFolder`. Folders and entries are saved in one
-  transaction: delete entries, delete folders, insert folders, insert
-  entries.
+- `pinnedTab.folderID → pinnedFolder`. Within a space the order is: delete
+  entries, delete folders, insert folders, insert entries.
 
 Profile deletion does **not** rely on cascades. `deleteProfileRows` is the
 one function that deletes a profile row, and it deletes `profileExtension`,

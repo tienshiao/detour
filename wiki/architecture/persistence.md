@@ -1,14 +1,14 @@
 ---
 type: Concept
 title: Persistence
-description: What Detour saves, where and when — the two databases, the debounced session save and its write order, session restore, interaction state, and the DETOUR_DATA_DIR switch.
+description: What Detour saves, where and when — the two databases, the debounced one-transaction session save and its write order, session restore, interaction state, and the DETOUR_DATA_DIR switch.
 tags: [architecture, storage, session, restore]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:57Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
-    title: TabStore.swift (scheduleSave, saveNow, restoreSession)
+    title: TabStore.swift (scheduleSave, saveNow, makeSessionSnapshot, restoreSession)
   - id: database
     resource: ../../Detour/Storage/Database.swift
     title: Database.swift
@@ -36,6 +36,15 @@ sources:
   - id: task-117
     resource: backlog:TASK-117
     title: Closed-tab stack reads from the database only
+  - id: task-149
+    resource: backlog:TASK-149
+    title: One session save is one transaction
+  - id: atomicity-tests
+    resource: ../../DetourTests/SessionSaveAtomicityTests.swift
+    title: SessionSaveAtomicityTests.swift
+  - id: save-benchmark
+    resource: ../../DetourTests/SessionSaveBenchmarkTests.swift
+    title: SessionSaveBenchmarkTests.swift (env-gated)
 ---
 
 # Summary
@@ -75,18 +84,26 @@ space, and by Peek state changes.
 
 ## `saveNow()` write order
 
-Four steps, each its own write transaction, in an order the foreign keys
-dictate:
+`saveNow()` turns the store into one value, `AppDatabase.SessionSnapshot`
+(`TabStore.makeSessionSnapshot()`, which only reads), and hands it to
+`AppDatabase.saveSessionSnapshot`, which writes it in **one transaction**
+(TASK-149). Four steps inside it, in an order the foreign keys dictate:
 
-1. **Session** (`saveSession`): `DELETE` every `space` row — which cascades
-   to `tab`, `pinnedTab` and `pinnedFolder` — then insert each persistent
-   space and its tab rows, then upsert `lastActiveSpaceID`.
-2. **Profiles** (`saveProfiles`): after the session, so a profile no space
-   references any more can be dropped without a foreign key violation.
-3. **Pinned folders and entries**, per space, in one transaction: folders
-   before entries, because entries reference folders.
+1. **Session**: `DELETE` every `space` row — which cascades to `tab`,
+   `pinnedTab` and `pinnedFolder`, and sets `favorite.tabID` to NULL — then
+   insert each persistent space and its tab rows, then upsert
+   `lastActiveSpaceID`.
+2. **Profiles**: after the session, so a profile no space references any
+   more can be dropped without a foreign key violation.
+3. **Pinned folders and entries**, per space: folders before entries,
+   because entries reference folders.
 4. **Favorites**, per profile: after the session, because `favorite.tabID`
    references a `tab` row.
+
+Each step is a private static function of `AppDatabase` that takes the open
+transaction. `saveSession`, `saveProfiles`, `savePinnedFoldersAndTabs` and
+`saveFavorites` remain as single-step writes over the same functions, each
+its own transaction; only tests call them.
 
 Tab rows come in three kinds, told apart by `sortOrder`:
 
@@ -103,12 +120,26 @@ Incognito spaces are filtered out before step 1. The built-in Private
 
 Things to know about this design:
 
-- The save is **not atomic across the four steps**. Step 1's cascade removes
-  the pinned rows that step 3 puts back. All four run synchronously in one
-  call on the main thread, so the gap is small, but a crash inside it would
-  lose pinned entries. This is read from the code, not something observed.
-- `performWrite` logs a failure and carries on. A failed step does not stop
-  the later ones.
+- The save is **all or nothing**. Step 1's cascade removes the pinned rows
+  that step 3 puts back, so the steps have to commit together: after a save
+  that failed or was cut short (a crash, a kill, a failed statement) the
+  database holds the complete previous save. `SessionSaveAtomicityTests`
+  makes a save fail at each step with a SQLite trigger and compares every
+  session table with its contents before the save. Until TASK-149 the four
+  steps were 2 + spaces + profiles separate transactions, and an
+  interruption after the first left spaces without pinned entries and
+  folders.
+- The other side of that: **a failure in any step fails the whole save**.
+  `performWrite` logs it and `saveNow()` returns normally; nothing retries
+  until the next `scheduleSave()` or `saveNow()`. Before, a failed step was
+  skipped and the later ones were still written.
+- One transaction costs no more than many. Measured once, Debug build, a
+  file database, 20 spaces, 2,000 tabs with 4 KB of interaction state each,
+  300 pinned entries, 60 folders, 200 favourites: a save went from 262 ms
+  in 26 commits to 232 ms in 1 (medians of nine).[^task-149] Most of a
+  save is building and inserting the tab rows, not committing. Rerun with
+  `TEST_RUNNER_SESSION_SAVE_BENCH=1` and `SessionSaveBenchmarkTests`
+  ([build and test](../playbooks/build-and-test.md)).
 - `saveProfiles` treats its argument as the complete set of profiles and
   drops stored profiles that are missing from it (unless a space still
   references one). A store that saves before it has loaded the profiles would
@@ -222,10 +253,10 @@ it. See [history database](./history-database.md).
 
 | What | Where |
 |---|---|
-| `scheduleSave`, `saveNow`, `restoreSession` | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
-| `saveSession`, `saveProfiles`, `savePinnedFoldersAndTabs`, `saveFavorites`, `loadSession` | [Database.swift](../../Detour/Storage/Database.swift) |
+| `scheduleSave`, `saveNow`, `makeSessionSnapshot`, `restoreSession` | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
+| `SessionSnapshot`, `saveSessionSnapshot`, the single-step saves, `loadSession` | [Database.swift](../../Detour/Storage/Database.swift) |
 | The tab row factory | [TabRecord+BrowserTab.swift](../../Detour/Browser/TabRecord+BrowserTab.swift) |
-| Tests | `AppDatabaseTests`, `TabStoreTests`, `TabRecordFactoryTests`, `ExtensionPagePersistenceTests`, `FavoritePeekPersistenceTests`, `ProfileDataRemovalTests` |
+| Tests | `SessionSaveAtomicityTests`, `AppDatabaseTests`, `TabStoreTests`, `TabRecordFactoryTests`, `ExtensionPagePersistenceTests`, `FavoritePeekPersistenceTests`, `ProfileDataRemovalTests`; `SessionSaveBenchmarkTests` (env-gated) |
 
 # Related
 
@@ -237,3 +268,4 @@ it. See [history database](./history-database.md).
 - [Build and test](../playbooks/build-and-test.md) — passing `DETOUR_DATA_DIR` to a test run.
 
 [^task-36]: Stop the test host writing WebKit data into the production app's WebKit directory
+[^task-149]: One session save is one transaction

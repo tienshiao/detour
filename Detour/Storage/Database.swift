@@ -268,33 +268,105 @@ struct AppDatabase {
     /// pending removal (TASK-32).
     func saveProfiles(_ records: [ProfileRecord]) {
         performWrite("save profiles") { db in
-            let savedIDs = Set(records.map(\.id))
-            let removedIDs = try String.fetchAll(db, sql: "SELECT id FROM profile").filter { !savedIDs.contains($0) }
-            _ = try Self.deleteProfileRows(ids: removedIDs, in: db, recordingPendingDataRemoval: false)
-            for record in records {
-                try record.save(db)
-            }
+            try Self.writeProfiles(records, in: db)
+        }
+    }
+
+    private static func writeProfiles(_ records: [ProfileRecord], in db: GRDB.Database) throws {
+        let savedIDs = Set(records.map(\.id))
+        let removedIDs = try String.fetchAll(db, sql: "SELECT id FROM profile").filter { !savedIDs.contains($0) }
+        _ = try deleteProfileRows(ids: removedIDs, in: db, recordingPendingDataRemoval: false)
+        for record in records {
+            try record.save(db)
         }
     }
 
     func saveSession(spaces: [(SpaceRecord, [TabRecord])], lastActiveSpaceID: String?) {
         performWrite("save session") { db in
-            try db.execute(sql: "PRAGMA foreign_keys = ON")
-            try SpaceRecord.deleteAll(db)
+            try Self.writeSession(spaces: spaces, lastActiveSpaceID: lastActiveSpaceID, in: db)
+        }
+    }
 
-            for (spaceRecord, tabRecords) in spaces {
-                try spaceRecord.insert(db)
-                for tabRecord in tabRecords {
-                    try tabRecord.insert(db)
-                }
-            }
+    /// Replaces every space and tab row. Deleting the space rows cascades to
+    /// `tab`, `pinnedTab` and `pinnedFolder`, so on its own this leaves the
+    /// spaces without pinned rows until `writePinnedFoldersAndTabs` runs —
+    /// which is why a whole save goes through `saveSessionSnapshot`.
+    private static func writeSession(spaces: [(SpaceRecord, [TabRecord])], lastActiveSpaceID: String?,
+                                     in db: GRDB.Database) throws {
+        try db.execute(sql: "PRAGMA foreign_keys = ON")
+        try SpaceRecord.deleteAll(db)
 
-            if let activeID = lastActiveSpaceID {
-                try db.execute(
-                    sql: "INSERT INTO appState (key, value) VALUES ('lastActiveSpaceID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    arguments: [activeID]
-                )
+        for (spaceRecord, tabRecords) in spaces {
+            try spaceRecord.insert(db)
+            for tabRecord in tabRecords {
+                try tabRecord.insert(db)
             }
+        }
+
+        if let activeID = lastActiveSpaceID {
+            try db.execute(
+                sql: "INSERT INTO appState (key, value) VALUES ('lastActiveSpaceID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                arguments: [activeID]
+            )
+        }
+    }
+
+    /// Everything one `TabStore.saveNow()` writes, as records (TASK-149).
+    struct SessionSnapshot {
+        /// One space's pinned folders and entries.
+        struct PinnedItems {
+            let spaceID: String
+            let folders: [PinnedFolderRecord]
+            let tabs: [PinnedTabRecord]
+        }
+
+        /// One profile's favourites, in bar order.
+        struct Favorites {
+            let profileID: String
+            let records: [FavoriteRecord]
+        }
+
+        /// Persistent spaces in order, each with its tab rows: normal tabs,
+        /// pinned backing tabs (`sortOrder` -1) and favourite backing tabs (-2).
+        var spaces: [(SpaceRecord, [TabRecord])]
+        var lastActiveSpaceID: String?
+        /// The complete set of profiles; see `saveProfiles` for what happens
+        /// to a stored profile that is missing from it.
+        var profiles: [ProfileRecord]
+        var pinnedItems: [PinnedItems]
+        var favorites: [Favorites]
+    }
+
+    /// Writes a whole save in ONE transaction (TASK-149), in the order the
+    /// foreign keys dictate: spaces and tabs, profiles, each space's pinned
+    /// folders and entries, each profile's favourites. The steps are the ones
+    /// `saveSession`, `saveProfiles`, `savePinnedFoldersAndTabs` and
+    /// `saveFavorites` run, and write the same rows.
+    ///
+    /// The first step deletes every space row, which cascades to the pinned
+    /// rows the third step puts back, and sets `favorite.tabID` to NULL until
+    /// the fourth step rewrites it. Run as separate transactions, a crash or a
+    /// failed step in between left spaces without their pinned entries and
+    /// folders. In one transaction an interrupted save rolls back as a whole,
+    /// so the database holds either the previous save or this one.
+    ///
+    /// That also means one failing step now fails the whole save, where before
+    /// the other steps were still written.
+    ///
+    /// Returns whether the save was committed.
+    @discardableResult
+    func saveSessionSnapshot(_ snapshot: SessionSnapshot) -> Bool {
+        performWrite("save session snapshot", default: false) { db in
+            try Self.writeSession(spaces: snapshot.spaces, lastActiveSpaceID: snapshot.lastActiveSpaceID, in: db)
+            try Self.writeProfiles(snapshot.profiles, in: db)
+            for pinned in snapshot.pinnedItems {
+                try Self.writePinnedFoldersAndTabs(folders: pinned.folders, tabs: pinned.tabs,
+                                                   spaceID: pinned.spaceID, in: db)
+            }
+            for favorites in snapshot.favorites {
+                try Self.writeFavorites(favorites.records, profileID: favorites.profileID, in: db)
+            }
+            return true
         }
     }
 
@@ -553,20 +625,25 @@ struct AppDatabase {
     /// Saves both folders and tabs in a single transaction to avoid FK violations.
     func savePinnedFoldersAndTabs(folders: [PinnedFolderRecord], tabs: [PinnedTabRecord], spaceID: String) {
         performWrite("save pinned folders and tabs") { db in
-            // Delete tabs first (they reference folders), then folders
-            try PinnedTabRecord
-                .filter(Column("spaceID") == spaceID)
-                .deleteAll(db)
-            try PinnedFolderRecord
-                .filter(Column("spaceID") == spaceID)
-                .deleteAll(db)
-            // Insert folders first (tabs reference them)
-            for record in folders {
-                try record.insert(db)
-            }
-            for record in tabs {
-                try record.insert(db)
-            }
+            try Self.writePinnedFoldersAndTabs(folders: folders, tabs: tabs, spaceID: spaceID, in: db)
+        }
+    }
+
+    private static func writePinnedFoldersAndTabs(folders: [PinnedFolderRecord], tabs: [PinnedTabRecord],
+                                                  spaceID: String, in db: GRDB.Database) throws {
+        // Delete tabs first (they reference folders), then folders
+        try PinnedTabRecord
+            .filter(Column("spaceID") == spaceID)
+            .deleteAll(db)
+        try PinnedFolderRecord
+            .filter(Column("spaceID") == spaceID)
+            .deleteAll(db)
+        // Insert folders first (tabs reference them)
+        for record in folders {
+            try record.insert(db)
+        }
+        for record in tabs {
+            try record.insert(db)
         }
     }
 
@@ -1003,12 +1080,16 @@ struct AppDatabase {
 
     func saveFavorites(_ records: [FavoriteRecord], profileID: String) {
         performWrite("save favorites") { db in
-            try FavoriteRecord
-                .filter(Column("profileID") == profileID)
-                .deleteAll(db)
-            for record in records {
-                try record.insert(db)
-            }
+            try Self.writeFavorites(records, profileID: profileID, in: db)
+        }
+    }
+
+    private static func writeFavorites(_ records: [FavoriteRecord], profileID: String, in db: GRDB.Database) throws {
+        try FavoriteRecord
+            .filter(Column("profileID") == profileID)
+            .deleteAll(db)
+        for record in records {
+            try record.insert(db)
         }
     }
 
