@@ -1,10 +1,10 @@
 ---
 id: TASK-133
 title: 'Tabs: the Control+Tab switcher does not swallow the keys it handles'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 01:24'
-updated_date: '2026-10-04 08:46'
+updated_date: '2026-10-04 09:02'
 labels:
   - bug
 dependencies: []
@@ -27,10 +27,10 @@ Not yet observed in the app, and what it visibly breaks is unknown. Candidates t
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A test fails on the current code: a key the switcher handles (Control+Tab; and Escape, Return, an arrow and a letter while it is active) is returned as nil by the monitor's closure, and a key it does not handle is returned unchanged
-- [ ] #2 With the fix those keys no longer reach the first responder: verified in the running app that Control+Tab does not move keyboard focus or reach the page, and that Return, Escape, arrows and letters typed while the overlay is up do not reach the page or the sidebar
+- [x] #2 With the fix those keys no longer reach the first responder: verified in the running app that Control+Tab does not move keyboard focus or reach the page, and that Return, Escape, arrows and letters typed while the overlay is up do not reach the page or the sidebar
 - [x] #3 When the switcher has been deallocated the monitor passes events through unchanged
 - [x] #4 Control+Tab switching itself (TASK-108) behaves as before, and RecentTabOrderTests and the switcher's tests pass
-- [ ] #5 The task records what the leak visibly caused before the fix, or that nothing was observable
+- [x] #5 The task records what the leak visibly caused before the fix, or that nothing was observable
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -52,4 +52,17 @@ Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated
 AC #2 and AC #5 NOT done: they need real key events reaching a page, which a locked screen does not deliver. Owed: with a page focused, Control+Tab (does focus move, does the page see Tab), and Return / Escape / arrows / letters while the overlay is up; and the same on main to record what the leak caused.
 
 Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix. Left In Progress for AC #2 and #5 (real key events against a page, which need an unlocked screen). wiki/tabs/tab-switching.md no longer lists the leak as an open defect.
+
+Runtime check with real key events, 2026-10-04 (screen unlocked): a temporary harness in a Debug build of the batch branch, isolated profile, posts NSEvents with NSApp.postEvent to a tab whose page logs every keydown; a temporary environment switch puts the old monitor expression back, so both behaviours ran in the same build (2 runs old, 4 runs fixed; the app was the active app in one of the fixed runs, results were the same).
+
+What the leak caused (AC #5), old expression: holding Control+Tab and typing x, Right arrow and Escape, the page received keydown for Control+Tab, Control+x, Control+ArrowRight and Control+Escape, on top of what the switcher did with them. A later 'Control+Tab, Return' did not switch tabs in either old run (it did in every fixed run); my reading, not verified, is that the leaked Control+Tab comes back from the page unhandled and reaches the switcher a second time. Keyboard focus did not move in these runs: the first responder stayed the page's web view.
+
+With the fix (AC #2): the page's key log holds only the plain letter typed before the test and the Control modifier's own flagsChanged (passed on by design); no Tab, letter, arrow or Escape. The first responder stays the selected web view throughout, never the sidebar. Control+Tab tap flips to the previous tab, Control+Tab then Return commits, Escape cancels (AC #4 at runtime).
+Limit: Return while switching could not be observed directly at the page, because the commit switches tabs before a leaked Return would be delivered; it takes the same path as the other swallowed keys (the monitor returning nil), which RecentTabSwitcherMonitorTests pins for Return too.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The Control+Tab switcher's event monitor returned 'self?.handle(event) ?? event', which turned every swallowed key (handle's nil) back into the event, so keys the switcher acted on also went to the page. The monitor now calls RecentTabSwitcher.monitorResult(for:switcher:), which passes events on only when the switcher is gone. Unit tests failed before the fix (6 of 10). Measured in the launched app with real posted key events: before, the page received Control+Tab, the letter, the arrow and Escape, and a later Control+Tab + Return failed to switch; after, the page receives none of them, focus stays on the page, and switching works.
+<!-- SECTION:FINAL_SUMMARY:END -->
