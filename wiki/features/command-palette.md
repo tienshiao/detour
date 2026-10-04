@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:06:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -155,9 +155,10 @@ whatever was under it.
 
 # Edge cases
 
-- **Incognito**: `gatherTabInfos` offers only the active space's tabs when the
-  profile is incognito, so a private window does not list other spaces' tabs.
-  Outside incognito the list covers every space, pinned entries included.
+- **Incognito**: a Private window's palette lists only its own space's open
+  tabs; a normal window's palette lists the tabs of every non-incognito space
+  (pinned entries included) and never a Private window's. The rule is
+  `PaletteTabScope`, see [suggestion pipeline](./suggestion-pipeline.md).
 - **`currentTabID` is excluded from the top hit**, so Cmd+L on a page does not
   autocomplete to that same tab.
 - **No selected tab**: only the split-view scrim is added.

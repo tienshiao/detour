@@ -45,7 +45,7 @@ A `.searchInput` row holding the text exactly as typed. It shows a globe icon wh
 
 ### 3. Open Tabs (max 3)
 
-Searches across all spaces' tabs (both regular and pinned) for URL or title matches against the query; an incognito window offers only its own space's tabs. Results show a "Switch to Tab" badge. Activating switches to the matching tab's space and selects it.
+Searches across the tabs (both regular and pinned) of every non-incognito space for URL or title matches against the query. A Private window's tabs are never offered in another window, and a Private window offers only its own space's tabs (`PaletteTabScope`); the same scope applies to the top hit and to the default list. Results show a "Switch to Tab" badge. Activating switches to the matching tab's space and selects it.
 
 ### 4. History Search (max 8)
 

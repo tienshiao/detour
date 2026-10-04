@@ -279,9 +279,16 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         updateSuggestions(items)
     }
 
-    private func gatherTabInfos() -> [SuggestionProvider.TabInfo] {
-        let isIncognito = profile?.isIncognito ?? false
-        let spaces = (tabStore?.spaces ?? []).filter { !isIncognito || $0.id == activeSpaceID }
+    /// The open tabs this palette may offer. Every tab the suggestion pipeline
+    /// sees (default list, typed query, top hit) comes from here, so the
+    /// Private-window boundary is `PaletteTabScope`'s rule and nothing else.
+    func gatherTabInfos() -> [SuggestionProvider.TabInfo] {
+        let allSpaces = tabStore?.spaces ?? []
+        let offered = PaletteTabScope.offeredSpaceIDs(
+            spaces: allSpaces.map { .init(id: $0.id, isIncognito: $0.isIncognito) },
+            windowIsPrivate: profile?.isIncognito ?? false,
+            activeSpaceID: activeSpaceID)
+        let spaces = allSpaces.filter { offered.contains($0.id) }
         return spaces.flatMap { space in
             (space.tabs + space.pinnedEntries.compactMap(\.tab)).map { tab in
                 SuggestionProvider.TabInfo(

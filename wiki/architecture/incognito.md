@@ -21,6 +21,12 @@ sources:
   - id: palette
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
     title: CommandPaletteView.swift (gatherTabInfos)
+  - id: palette-scope
+    resource: ../../Detour/Browser/CommandPalette/PaletteTabScope.swift
+    title: PaletteTabScope.swift
+  - id: task-137
+    resource: backlog:TASK-137
+    title: A normal window's open-tab suggestions include tabs from open Private windows
   - id: downloads
     resource: ../../Detour/Browser/Downloads/DownloadManager.swift
     title: DownloadManager.swift
@@ -136,6 +142,30 @@ its whole interaction state; landing in a persistent space would write that
 to the session database (TASK-38). The sidebar does not offer the menu in a
 Private window; the store-level refusal is the invariant behind it.
 
+## What other windows see of a Private window's tabs: nothing
+
+The command palette offers open tabs as "Switch to Tab" rows, as the top hit
+and as an inline completion. `PaletteTabScope.offeredSpaceIDs` decides which
+spaces those tabs may come from:
+
+| Palette's window | Spaces whose tabs it is handed |
+|---|---|
+| Normal | every non-incognito space |
+| Private | its own space and no other, not even another Private window's |
+
+A window counts as Private when its profile says so **or** when the space it
+is showing is incognito, so a missing profile cannot widen the list.
+`CommandPaletteView.gatherTabInfos` is the only place that builds the
+pipeline's tab list, and it goes through this rule for the empty-query list
+and for typed queries alike.
+
+Before TASK-137 the filter only narrowed the list when the palette's own
+window was Private; a normal window was handed every space in
+`TabStore.spaces`, so a Private tab's URL, title and favicon could be listed,
+completed inline, and switched to from another window. Found by reading the
+code and fixed with unit tests; the leak itself was never observed in the
+running app.[^task-137]
+
 ## UI restrictions in a Private window
 
 Disabled or hidden: switching space (menu, shortcuts and swipe), the add
@@ -160,10 +190,6 @@ windows answer `isPrivate(for:)` with true. Details:
 
 Read from the code; none of these was exercised at runtime for this page.
 
-- **Open-tab suggestions in other windows.** `CommandPaletteView.gatherTabInfos`
-  narrows the tab list only when the palette's own window is Private. A
-  normal window's list is built from every space in `TabStore.spaces`, which
-  includes the spaces of open Private windows.
 - **Shared network caches.** Favicon downloads and search suggestions go
   through `URLSession.shared`, whose cache and cookie storage are the app's,
   not the profile's.
@@ -184,7 +210,8 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 | Menu validation | `BrowserWindowController.validateMenuItem` |
 | Entry points | File > New Private Window (Cmd+Shift+N) and the Dock menu, `AppDelegate.createNewIncognitoWindow` |
 | Download scope rules | `DownloadScope` in [DownloadManager.swift](../../Detour/Browser/Downloads/DownloadManager.swift), `BrowserWindowController.downloadScope` |
-| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests` |
+| The palette's open-tab scope | `PaletteTabScope` in [PaletteTabScope.swift](../../Detour/Browser/CommandPalette/PaletteTabScope.swift), called by `CommandPaletteView.gatherTabInfos` |
+| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests`, `PaletteTabScopeTests`, `PaletteTabScopeWiringTests` |
 
 # Related
 
@@ -194,5 +221,7 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 - [Data store and ITP](../extensions/data-store-and-itp.md) — why extension pages need the profile's store set explicitly.
 - [History page](../features/history-page.md) — its incognito reply.
 - [Downloads](../features/downloads.md) — the per-window download list and what happens to it on close.
+- [Suggestion pipeline](../features/suggestion-pipeline.md) — where the palette's open-tab candidates come from.
 
 [^private-notes]: Session notes on the Private profile and extensions
+[^task-137]: A normal window's open-tab suggestions include tabs from open Private windows

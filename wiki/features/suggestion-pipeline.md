@@ -5,7 +5,7 @@ description: How the command palette's rows are produced - open tabs, space-scop
 resource: ../../Detour/Browser/CommandPalette/SuggestionProvider.swift
 tags: [command-palette, history, search, frecency, performance]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:06:00Z }
 sources:
   - id: provider
     resource: ../../Detour/Browser/CommandPalette/SuggestionProvider.swift
@@ -16,6 +16,9 @@ sources:
   - id: classifier
     resource: ../../Detour/Browser/CommandPalette/AddressInputClassifier.swift
     title: AddressInputClassifier.swift
+  - id: tab-scope
+    resource: ../../Detour/Browser/CommandPalette/PaletteTabScope.swift
+    title: PaletteTabScope.swift
   - id: search-service
     resource: ../../Detour/Browser/CommandPalette/SearchSuggestionsService.swift
     title: SearchSuggestionsService.swift
@@ -34,6 +37,12 @@ sources:
   - id: task-97
     resource: backlog:TASK-97
     title: Recent history aggregates every visit in the space
+  - id: task-137
+    resource: backlog:TASK-137
+    title: A normal window's open-tab suggestions include tabs from open Private windows
+  - id: tab-scope-tests
+    resource: ../../DetourTests/PaletteTabScopeTests.swift
+    title: PaletteTabScopeTests.swift
   - id: provider-tests
     resource: ../../DetourTests/SuggestionProviderTests.swift
     title: SuggestionProviderTests.swift
@@ -80,6 +89,24 @@ slash).
 
 For an empty query `defaultSuggestions` returns `recentHistory(limit: 12)`,
 with a row turned into `.openTab` when a tab already shows that URL.
+
+## Which open tabs are candidates
+
+The provider never reads `TabStore`. The view hands it `[TabInfo]` built by
+`CommandPaletteView.gatherTabInfos`: the normal tabs and the live pinned
+entries' tabs of the spaces `PaletteTabScope.offeredSpaceIDs` allows.
+
+| Palette's window | Spaces |
+|---|---|
+| Normal | every non-incognito space, not only the active one |
+| Private | its own space only |
+
+So open tabs are suggested across spaces (history is not, see below), but
+never across the Private boundary in either direction. `gatherTabInfos` is the
+only constructor of `TabInfo` outside the tests; a new caller that hands tabs
+to the provider has to go through the same rule. Until TASK-137 a normal
+window's list included the spaces of open Private windows.[^task-137] The
+rule and its fail-closed cases are on [incognito](../architecture/incognito.md).
 
 ## Two passes per keystroke
 
@@ -185,6 +212,8 @@ it. Errors yield an empty list silently.
 - A history row's title comes only from the asking space's own visits, or from
   the shared title when no other space has visited the URL.
 - The current tab is never the top hit.
+- No row, top hit or inline completion comes from a tab of an incognito space
+  unless the palette belongs to that space's own Private window.
 - A URL appears once: tab matches and the top hit are excluded from the
   history rows.
 - Stale results never land: both asynchronous passes are guarded
@@ -225,6 +254,11 @@ it. Errors yield an empty list silently.
   suppression, and the cross-profile label and match cases.
 - `AddressInputClassifierTests` - every row of the table above, including the
   false positives.
+- `PaletteTabScopeTests` - the space rule in both directions (a normal window
+  with a Private window open; a Private window with normal spaces and with
+  another Private window) and its fail-closed cases.
+  `PaletteTabScopeWiringTests` - `gatherTabInfos` on a real store with both
+  kinds of space.
 - `HistoryDatabaseTests` - `searchHistory`, `recentHistory` and
   `bestURLCompletion` isolation and ordering
   (`testSearchHistoryNeverMatchesThroughAnotherProfilesTitle`,
@@ -238,7 +272,9 @@ it. Errors yield an empty list silently.
 - [History recording and search](./history-recording-and-search.md) - typed visits, and the other query families.
 - [History database](../architecture/history-database.md) - the tables and indexes behind the three lookups.
 - [Favicons](./favicons.md) - `FaviconLoader`, which loads the icons of history rows.
+- [Incognito](../architecture/incognito.md) - the Private-window boundary the tab candidates respect.
 
 [^task-83]: Treat host:port and localhost input as a URL
+[^task-137]: A normal window's open-tab suggestions include tabs from open Private windows
 [^task-96]: Index every title a URL has had
 [^task-97]: Recent history aggregates every visit in the space
