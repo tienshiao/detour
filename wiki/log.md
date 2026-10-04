@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-10-04
+* **Update**: TASK-151 — a first install from a CRX now passes `CRXInstallGate` (verified signatures, id from the verified key, never over an installed extension, manifest key must agree); updated [Installer and CRX](extensions/installer-and-crx.md) and the consequences of [CRX verification gate](decisions/crx-verification-gate.md).
 * **Update**: TASK-139 — `CRXUnpacker.extractPublicKey` now bounds-checks header field lengths as `UInt64` before converting them; [Installer and CRX](extensions/installer-and-crx.md) no longer lists it as an open gap and states the rule for new parsing code.
 * **Update**: `scripts/build-release.sh` and `scripts/deploy-1password-test.sh` now resolve the built app from the build settings; updated [Release and website](playbooks/release-and-website.md) and [Runtime verification](playbooks/runtime-verification.md).
 * **Update**: The `/verify` skill now resolves the built app from the build settings; [Runtime verification](playbooks/runtime-verification.md) no longer says the skill is out of date.

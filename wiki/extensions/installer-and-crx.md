@@ -31,6 +31,15 @@ sources:
   - id: task-139
     resource: backlog:TASK-139
     title: A crafted CRX header can crash the app at install
+  - id: gate
+    resource: ../../Detour/Extensions/Installer/CRXInstallGate.swift
+    title: CRXInstallGate.swift
+  - id: gate-tests
+    resource: ../../DetourTests/CRXInstallGateTests.swift
+    title: CRXInstallGateTests
+  - id: task-151
+    resource: backlog:TASK-151
+    title: A first install from a CRX does not verify its signature
   - id: notes-updates
     resource: "Agent session notes, 2026-09-26 (not in the repository)"
     title: Extension updates — design decisions and what the real 1Password CRX taught
@@ -44,8 +53,9 @@ sources:
 
 Installing an extension means producing a private copy of its files under
 `<data>/Extensions/<id>/`, deciding its id, and writing an `extension` row.
-Three types do it: `CRXUnpacker` opens a CRX3 file, `CRX3Verifier` checks its
-signatures, and `ExtensionInstaller` copies and records. Loading the result
+Four types do it: `CRX3Verifier` checks a CRX3 file's signatures,
+`CRXInstallGate` decides whether a downloaded one may be offered for install,
+`CRXUnpacker` opens it, and `ExtensionInstaller` copies and records. Loading the result
 into WebKit is [ExtensionManager](./extension-manager.md)'s job.
 
 # How it works
@@ -61,8 +71,35 @@ into WebKit is [ExtensionManager](./extension-manager.md)'s job.
 
 `handleCRXDownload` fetches the file itself with `URLSession` and a Chrome
 user agent (it shows as a manual item in [Downloads](../features/downloads.md)),
-unpacks it, shows the manifest's permissions in a confirmation alert, and only
-then calls `ExtensionManager.install`.
+passes it through the install gate below, shows where it came from and the
+manifest's permissions in a confirmation alert, and only then calls
+`ExtensionManager.install`.
+
+## The install gate
+
+The interception has no host check: any site can serve a `.crx`. What the
+file may claim is therefore decided by `CRXInstallGate.admit(crxData:installed:)`
+before anything is unzipped or shown:[^task-151]
+
+1. `CRX3Verifier.verify` must return `.verified`. The id is derived from the
+   verified key, never from a key the header merely declares.
+2. No installed extension has that id. The file is refused whatever its
+   version: an install over an installed copy would inherit its per-profile
+   enablement, saved permission decisions and storage. Moving to a newer
+   version is the updater's job ([Updates](./updates.md)).
+3. A manifest `key`, when present, equals the verified key (decoded leniently;
+   an undecodable key counts as a mismatch).
+
+A refusal is a `CRXInstallGate.Refusal`, shown as "Extension Not Installed"
+with the reason and the origin. The lookup in step 2 is repeated after the
+confirmation alert, because the alert runs a modal loop in which the same
+file could have been installed.
+
+The prompt's first line is `CRXInstallGate.originDescription(downloadURL:)`:
+"From the Chrome Web Store." for a store host, otherwise the host by name
+with "not from the Chrome Web Store". The URL is the final one of the
+`URLSession` fetch (after its redirects), and the same URL feeds
+`ExtensionSource.classifyCRX`.
 
 ## CRX3 layout
 
@@ -155,9 +192,13 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   derives the installed id. That is what stops an update URL, or a network
   position in front of one, from replacing an extension with another
   publisher's files.
-- The first-install path does **not** verify signatures.
-  `CRXUnpacker.extractPublicKey` returns the *declared* key. The user confirms
-  a first install by hand; an update installs unattended.
+- A first install is taken only from a CRX whose signatures verify, under
+  the id of the verified key, and never over an installed extension. Native
+  messaging hosts authorise by id, so an id must not be claimable by a file
+  that merely carries another extension's public key.[^task-151]
+- `CRXUnpacker.extractPublicKey` returns the key the header *declares*,
+  without checking a signature. No install path uses it for the id any more;
+  do not derive an id from `UnpackResult.publicKey`.
 - The installed copy is Detour's to modify (the polyfill import and the
   manifest edit, see [Polyfill layer](./polyfill-layer.md)); the source folder
   is never written.
@@ -176,7 +217,11 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   The rule for any new parsing here: compare a length against the bytes that
   remain, as `UInt64`, before converting or adding it.
 - Without a `crx_id` match `extractPublicKey` falls back to the last key in
-  the header.
+  the header. That is one more reason its result is not an identity.
+- "From the Chrome Web Store" in the prompt means the bytes came from a store
+  host, not that the store's own key signed them. Chrome additionally
+  requires the store's publisher proof for store installs; Detour does not
+  check for it.
 - Requests to the store go out with a Chrome user agent, which its endpoints
   expect, and a `prodversion`, which the store gates newer manifests on.
 - A real-store check can be scripted: the download URL is
@@ -186,6 +231,7 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
 
 - [ExtensionIDDerivationTests](../../DetourTests/ExtensionIDDerivationTests.swift) — the id algorithm against a known value, and key extraction.
 - [CRX3VerifierTests](../../DetourTests/CRX3VerifierTests.swift) — RSA and ECDSA, tampering, a valid proof for the wrong key, one bad proof among good ones, malformed containers. `CRX3TestSupport` builds signed CRX3 files in the test.
+- [CRXInstallGateTests](../../DetourTests/CRXInstallGateTests.swift) — each refusal (a header key that did not sign the file, a forged proof beside a valid one, a tampered archive, unsigned, CRX2, truncated header, an installed id, a disagreeing manifest key), that nothing is unpacked or looked up for an unverified file, and the origin line. One test, off by default, runs real store files through the gate (`TEST_RUNNER_DETOUR_REAL_CRX_FILES`).
 - `ExtensionUpdateMigrationTests` — the v17 classification.
 
 # Related
@@ -197,4 +243,5 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
 
 [^task-113]: Check for and install extension updates
 [^task-139]: A crafted CRX header can crash the app at install
+[^task-151]: A first install from a CRX does not verify its signature
 [^notes-updates]: Extension updates — design decisions and what the real 1Password CRX taught

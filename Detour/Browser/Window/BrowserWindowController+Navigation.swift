@@ -183,12 +183,15 @@ extension BrowserWindowController: WKNavigationDelegate {
         // Download CRX data via URLSession with Chrome UA
         var request = URLRequest(url: url)
         request.setValue(UserAgentMode.chromeUserAgent, forHTTPHeaderField: "User-Agent")
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 let wasCancelled = item.state == .cancelled
                 DownloadManager.shared.removeDownload(item)
                 guard !wasCancelled else { return }
-                self?.finishCRXInstall(data: data, error: error, downloadURL: url)
+                // The URL the bytes were served from, after this fetch's own
+                // redirects: it is what the prompt names and what decides
+                // whether this counts as a store install.
+                self?.finishCRXInstall(data: data, error: error, downloadURL: response?.url ?? url)
             }
         }
         item.observeURLSessionTask(task)
@@ -206,13 +209,14 @@ extension BrowserWindowController: WKNavigationDelegate {
         }
 
         do {
-            let crxResult = try CRXUnpacker.unpack(data: data)
-            let unpackedDir = crxResult.directory
+            // Nothing is unpacked, shown or installed from a file that does not
+            // pass the gate: verified signatures, an id that is not installed,
+            // and a manifest key that agrees with the signing key (TASK-151).
+            let candidate = try CRXInstallGate.admit(crxData: data) { Self.installedExtension(withID: $0) }
+            let unpackedDir = candidate.directory
             defer { try? FileManager.default.removeItem(at: unpackedDir) }
 
-            // Parse manifest for display name
-            let manifestURL = unpackedDir.appendingPathComponent("manifest.json")
-            let manifest = try ExtensionManifest.parse(at: manifestURL)
+            let manifest = candidate.manifest
             let displayName = WebExtension.resolveI18nName(manifest.name, basePath: unpackedDir, defaultLocale: manifest.defaultLocale)
 
             let permissionSummary = ExtensionPermissionDescriptions.formatForAlert(
@@ -223,12 +227,19 @@ extension BrowserWindowController: WKNavigationDelegate {
 
             let confirmAlert = NSAlert()
             confirmAlert.messageText = "Install \"\(displayName)\"?"
-            confirmAlert.informativeText = permissionSummary
+            confirmAlert.informativeText = CRXInstallGate.originDescription(downloadURL: downloadURL)
+                + "\n\n" + permissionSummary
             confirmAlert.alertStyle = .warning
             confirmAlert.addButton(withTitle: "Install")
             confirmAlert.addButton(withTitle: "Cancel")
 
             guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
+
+            // The prompt ran a modal loop: the id may have been installed
+            // meanwhile (a second download of the same file).
+            if let existing = Self.installedExtension(withID: candidate.extensionID) {
+                throw CRXInstallGate.Refusal.alreadyInstalled(existing)
+            }
 
             // Where it came from decides whether it updates (TASK-113): a store
             // download polls the store; another CRX polls only a URL its
@@ -236,7 +247,7 @@ extension BrowserWindowController: WKNavigationDelegate {
             var options = ExtensionInstaller.Options()
             (options.source, options.updateURL) = ExtensionSource.classifyCRX(
                 downloadURL: downloadURL, manifestUpdateURL: manifest.updateURL)
-            try ExtensionManager.shared.install(from: unpackedDir, publicKey: crxResult.publicKey, options: options)
+            try ExtensionManager.shared.install(from: unpackedDir, publicKey: candidate.publicKey, options: options)
 
             let successAlert = NSAlert()
             successAlert.messageText = "Extension Installed"
@@ -245,10 +256,18 @@ extension BrowserWindowController: WKNavigationDelegate {
             successAlert.runModal()
         } catch {
             let alert = NSAlert()
-            alert.messageText = "Failed to Install Extension"
+            alert.messageText = error is CRXInstallGate.Refusal ? "Extension Not Installed" : "Failed to Install Extension"
             alert.informativeText = error.localizedDescription
+                + "\n\n" + CRXInstallGate.originDescription(downloadURL: downloadURL)
             alert.alertStyle = .critical
             alert.runModal()
+        }
+    }
+
+    /// The installed extension with `id`, as the CRX install gate reports it.
+    private static func installedExtension(withID id: String) -> CRXInstallGate.Installed? {
+        ExtensionManager.shared.extension(withID: id).map {
+            CRXInstallGate.Installed(name: $0.resolveI18n($0.manifest.name), version: $0.manifest.version)
         }
     }
 

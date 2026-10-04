@@ -28,6 +28,9 @@ struct CRXUnpacker {
     /// Result of unpacking a CRX3 file.
     struct UnpackResult {
         let directory: URL
+        /// The key the header *declares* (`extractPublicKey`). No signature was
+        /// checked to get it, so it is not an identity: an extension id comes
+        /// from `CRX3Verifier`'s verified key (TASK-151).
         let publicKey: Data?
     }
 

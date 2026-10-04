@@ -3,7 +3,7 @@ import CryptoKit
 import Security
 
 /// Verifies a CRX3 file's signatures (TASK-113), the way Chrome's `crx_verifier.cc`
-/// does before it will install an update:
+/// does before it will install a file:
 ///
 /// - the header's `signed_header_data` names a `crx_id` (the first 16 bytes of
 ///   the SHA-256 of the extension's public key);
@@ -16,9 +16,10 @@ import Security
 ///   which is what stops an update URL (or a network position in front of one)
 ///   from replacing an extension with a different publisher's files.
 ///
-/// `CRXUnpacker.extractPublicKey` keeps returning the *declared* key without any
-/// signature check, for the first install a user confirms by hand; an update
-/// installs unattended, so it must be verified.
+/// Both ways a CRX gets installed go through here: an update
+/// (`ExtensionUpdater`) and a first install (`CRXInstallGate`, TASK-151).
+/// `CRXUnpacker.extractPublicKey` still returns the *declared* key without any
+/// signature check; nothing may derive an extension id from it.
 enum CRX3Verifier {
 
     enum Failure: Error, Equatable, CustomStringConvertible {
