@@ -109,6 +109,22 @@ Drag pasteboards carry ID-based payloads (`SidebarDragPayload` / `FavoriteDragPa
 * When adding/updating extension permissions, make sure to add/update the corresponding tests with both positive and negative cases.
 * When implementing polyfills, prefer `let`/`const` over `var`.
 
+## Test-Driven Development
+
+Prefer TDD where it makes sense:
+
+* **State and rule logic** — `TabStore` mutations and their invariants (split groups, pinned entries, sleep/archive policy), the pure rule functions (`SidebarLayout`, `TabListItems`, `TabInsertion`, `TabCloseSelection`, the `SidebarDragDrop` resolvers, the update and launch policies), storage and migrations: write the failing test first, make it pass, then refactor. A change that adds behavior without a test that would have failed before it needs a stated reason, recorded in the Backlog task.
+* **Shared rules are driven by their existing suites.** Sidebar row and drop behavior is extended through the resolver enums and `SidebarLayoutTests` / `SplitTabTests` / `SidebarDragDropTests`: add or extend the test, then make the pure function pass it, rather than branching in a view controller.
+* **Web Extension APIs** (polyfill JS, native polyfill handlers, WebKit delegate methods): every new or changed API has tests in a real extension context (the `ExtensionPolyfillIntegrationTests` / `ExtensionPolyfillProfileWiringTests` style), in addition to JS-level unit tests (`ExtensionPolyfillTests`). They cover permission gating (an extension without the permission does not get the API), isolation (another extension's or another profile's objects are refused), the happy path from both transports (service worker and extension page), and the common error cases (bad arguments, an unknown or closed tab, both the promise rejection and the callback `runtime.lastError` form). Unit tests do not exercise WebKit's wrappers, the message bridge or sender verification, so these are not optional. Update the API Explorer extension as well.
+* **UI (AppKit views, layout, animation)**: TDD is optional. Test behavior that matters — selection, keyboard focus, web view ownership hand-off, row and drop resolution — and check appearance at runtime with `/verify`; view code and styling do not need tests first.
+* Tests use XCTest (the `DetourTests` scheme). Keep them deterministic: inject the clock, use local fixture servers and fake native messaging hosts rather than real sites or apps, and keep long measurement legs behind a `TEST_RUNNER_…` environment variable.
+
+### Before committing a code change
+
+Run `/code-review --fix` first, then `/verify`, and the test suites the change could affect. Commit only when the review findings are resolved, the tests pass and the runtime check is clean; if any of them shows a gap, fix it through normal editing and run it again. Summarize the results in the Backlog task (tests run with counts, what was checked at runtime, what was not verified). Docs-only and Backlog-only commits skip this.
+
+The `/verify` skill lives in `.claude/skills/verify/SKILL.md`: build, launch in an isolated profile (`DETOUR_DATA_DIR`), observe. When a change touches the UI in ways the tests cannot cover (layout, hosting, focus, animation, anything only visible on screen), `/verify` must exercise that UI in the running app rather than stop at "it builds and launches".
+
 ## Model delegation when running as Fable
 
 If the task's complexity does not require Fable to solve, do the planning/analysis with Fable, then delegate the execution/implementation to a subagent running Opus (pass `model: "opus"` on the Agent call). Reserve Fable itself for the genuinely hard parts (e.g. WKWebView ownership-transfer and snapshot semantics across windows, extension permission security reviews, tab-index offset math and other invariant-heavy state logic in TabStore).
