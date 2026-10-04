@@ -4,7 +4,7 @@ title: Release and website
 description: How a signed, notarized Detour DMG is built and published through Sparkle, and how the website's screenshots and feature loops are captured from a staged demo profile.
 tags: [playbook, release, sparkle, notarization, website, capture]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:31:43Z }
 sources:
   - id: build-release
     resource: ../../scripts/build-release.sh
@@ -90,16 +90,17 @@ What it does, in order:
 | Version | with an argument: sets `CFBundleShortVersionString` and increments `CFBundleVersion` in `Detour/Resources/Info.plist` (an edit you then commit) |
 | Project | `xcodegen generate` |
 | Build | `xcodebuild -scheme Detour -configuration Release clean build` |
-| Locate | the first `Detour.app` under `DerivedData/Detour-*/Build/Products/Release` whose bundle id is `com.detourbrowser.mac` |
+| Locate | `Detour.app` in the `BUILT_PRODUCTS_DIR` that `xcodebuild -showBuildSettings` reports for this checkout, checked for bundle id `com.detourbrowser.mac` |
 | Sign | `codesign --force --deep --timestamp -o runtime` with the entitlements file, then `codesign --verify --deep --strict` |
 | Package | a DMG with the app and an `/Applications` symlink, at `build/Detour-<version>.dmg` |
 | Notarize | `xcrun notarytool submit … --wait`, then `xcrun stapler staple` |
 
 Success ends with `Release artifact: build/Detour-<version>.dmg` and the
-two remaining manual steps:
+two remaining manual steps. The script prints the first with the real path
+of this checkout's DerivedData directory:
 
 ```bash
-~/Library/Developer/Xcode/DerivedData/Detour-*/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast build/
+<DerivedData directory of this checkout>/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast build/
 ```
 
 then upload the DMG and `appcast.xml`. The running app looks for updates
@@ -110,14 +111,15 @@ at `SUFeedURL` in `Info.plist`.
 - **It is not a script for an agent to run unprompted.** It needs the
   signing identity and the notary credentials, edits `Info.plist`, and
   submits to Apple's notary service.
-- **The app it signs may not be the one it just built.** The lookup takes
-  the first matching `Detour-*` directory in glob order. With several
-  checkouts or worktrees there are several such directories, and an older
-  Release product in an earlier one would be picked. This follows from
-  reading the script; the same lookup has launched stale Debug builds
-  ([runtime verification](./runtime-verification.md)). Before a release,
-  check that only one DerivedData directory holds a Release product, or
-  compare the signed app's version and build number with `Info.plist`.
+- **Until 2026-10-04 the app it signed might not be the one it just
+  built.** Both this script and `deploy-1password-test.sh` took the first
+  `Detour-*` DerivedData directory in glob order that held a Release
+  product, which with several checkouts or worktrees can be another
+  checkout's older build. They now ask `xcodebuild -showBuildSettings` for
+  this checkout's products directory. The new lookup was exercised on its
+  own (real and stubbed `xcodebuild` output); a full release run with it
+  has not been made yet, so on the first one compare the signed app's
+  version and build number with `Info.plist`.
 - **The version edit is uncommitted.** A release built from a dirty tree
   cannot be reproduced; commit the bump.
 - **`--timestamp` needs the network.** The local-test workaround
