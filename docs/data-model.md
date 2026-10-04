@@ -150,7 +150,7 @@ Stack of closed tabs for Reopen Closed Tab (Cmd+Shift+T). Records are per space;
 
 #### `download`
 
-File download records. `DownloadManager` writes a row once a download has finished, failed or been cancelled; a download still in progress is not written.
+File download records. `DownloadManager` writes a row once a download has finished, failed or been cancelled; a download still in progress is not written, and a download started in a Private window is never written (TASK-148).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|

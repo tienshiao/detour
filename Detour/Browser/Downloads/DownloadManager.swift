@@ -2,6 +2,39 @@ import Foundation
 import WebKit
 import Combine
 
+// MARK: - DownloadScope
+
+/// Which windows list a download, and whether it is saved (TASK-148).
+enum DownloadScope: Equatable {
+    /// Started in a normal window: listed in every normal window and saved to
+    /// the `download` table once it has ended.
+    case normal
+    /// Started in the Private window whose incognito space has this id: listed
+    /// and badged in that window only, never saved, and dropped from the list
+    /// when the space is removed (the window closed).
+    case incognito(spaceID: UUID)
+
+    /// Only a normal window's downloads are written to the `download` table.
+    var isPersisted: Bool {
+        self == .normal
+    }
+
+    /// A window lists, and counts in its badge, the downloads of its own scope
+    /// only: normal windows share one list, each Private window has its own.
+    func isListed(inWindowWith windowScope: DownloadScope) -> Bool {
+        self == windowScope
+    }
+
+    /// True for a Private download whose incognito space is no longer among
+    /// the live ones: its window closed, so nothing may list it any more.
+    func isOrphaned(liveIncognitoSpaceIDs: Set<UUID>) -> Bool {
+        switch self {
+        case .normal: false
+        case .incognito(let spaceID): !liveIncognitoSpaceIDs.contains(spaceID)
+        }
+    }
+}
+
 // MARK: - DownloadItem
 
 class DownloadItem: NSObject {
@@ -31,6 +64,8 @@ class DownloadItem: NSObject {
 
     let id: UUID
     let createdAt: Date
+    /// Fixed at creation: the window the download started in (TASK-148).
+    let scope: DownloadScope
     /// When the download finished. Set once, by `markCompleted(at:)`, and
     /// carried through every later save and a relaunch (TASK-143). Nil for a
     /// download that is in flight, failed or was cancelled.
@@ -48,9 +83,10 @@ class DownloadItem: NSObject {
 
     private var progressObservation: AnyCancellable?
 
-    init(download: WKDownload, sourceURL: URL?, createdAt: Date = Date()) {
+    init(download: WKDownload, sourceURL: URL?, scope: DownloadScope = .normal, createdAt: Date = Date()) {
         self.id = UUID()
         self.createdAt = createdAt
+        self.scope = scope
         self.download = download
         self.sourceURL = sourceURL
         super.init()
@@ -65,9 +101,10 @@ class DownloadItem: NSObject {
             }
     }
 
-    init(filename: String, sourceURL: URL?, createdAt: Date = Date()) {
+    init(filename: String, sourceURL: URL?, scope: DownloadScope = .normal, createdAt: Date = Date()) {
         self.id = UUID()
         self.createdAt = createdAt
+        self.scope = scope
         super.init()
         self.filename = filename
         self.sourceURL = sourceURL
@@ -87,10 +124,12 @@ class DownloadItem: NSObject {
             }
     }
 
-    /// Restore from a persisted record (terminal state only)
+    /// Restore from a persisted record (terminal state only). Only normal
+    /// downloads are ever saved, so a restored item is always `.normal`.
     init(record: DownloadRecord) {
         self.id = UUID(uuidString: record.id) ?? UUID()
         self.createdAt = record.createdAt
+        self.scope = .normal
         self.filename = record.filename
         self.sourceURL = record.sourceURL.flatMap { URL(string: $0) }
         self.destinationURL = URL(fileURLWithPath: record.destinationURL)
@@ -111,6 +150,11 @@ class DownloadItem: NSObject {
         if completedAt == nil { completedAt = date }
         state = .completed
     }
+
+    /// Whether a save writes this item: it has ended, and its scope is saved.
+    var isPersisted: Bool {
+        scope.isPersisted && state != .downloading
+    }
 }
 
 // MARK: - Observer Protocol
@@ -130,7 +174,11 @@ extension DownloadManagerObserver {
 // MARK: - DownloadManager
 
 class DownloadManager: NSObject {
-    static let shared = DownloadManager(database: .shared)
+    static let shared: DownloadManager = {
+        let manager = DownloadManager(database: .shared)
+        manager.observeIncognitoSpaces(of: .shared)
+        return manager
+    }()
 
     /// Runs `work` after `delay` unless the returned closure (cancel) is called
     /// first. Injected so tests drive the save debounce without waiting.
@@ -144,16 +192,30 @@ class DownloadManager: NSObject {
         return { item.cancel() }
     }
 
+    /// Every listed download, newest first, whatever window it belongs to. A
+    /// window reads its own list through `items(in:)`.
     private(set) var items: [DownloadItem] = []
+    /// Private downloads still running after their window closed (TASK-148).
+    /// No window lists them and they are never saved; they are held only so
+    /// the `WKDownload` stays retained and its delegate callbacks resolve, and
+    /// each is dropped when it ends.
+    private(set) var unlistedItems: [DownloadItem] = []
     private var observers: [WeakDownloadObserver] = []
+    private weak var observedStore: TabStore?
     private let database: AppDatabase
     private let now: () -> Date
     private let scheduleAfter: SaveScheduler
     /// Cancels the debounced save. Non-nil exactly while a save is pending.
     private var cancelPendingSave: (() -> Void)?
 
-    var hasActiveDownloads: Bool {
-        items.contains { $0.state == .downloading }
+    /// The downloads a window with `scope` lists, newest first.
+    func items(in scope: DownloadScope) -> [DownloadItem] {
+        items.filter { $0.scope.isListed(inWindowWith: scope) }
+    }
+
+    /// Whether a window with `scope` shows the in-flight badge.
+    func hasActiveDownloads(in scope: DownloadScope) -> Bool {
+        items.contains { $0.state == .downloading && $0.scope.isListed(inWindowWith: scope) }
     }
 
     init(database: AppDatabase,
@@ -192,14 +254,16 @@ class DownloadManager: NSObject {
 
     // MARK: - Download Management
 
+    /// `scope` is the window the download started in
+    /// (`BrowserWindowController.downloadScope`).
     @discardableResult
-    func handleNewDownload(_ download: WKDownload, sourceURL: URL?) -> DownloadItem {
-        insertAndNotify(DownloadItem(download: download, sourceURL: sourceURL, createdAt: now()))
+    func handleNewDownload(_ download: WKDownload, sourceURL: URL?, scope: DownloadScope) -> DownloadItem {
+        insertAndNotify(DownloadItem(download: download, sourceURL: sourceURL, scope: scope, createdAt: now()))
     }
 
     @discardableResult
-    func addManualItem(filename: String, sourceURL: URL?) -> DownloadItem {
-        insertAndNotify(DownloadItem(filename: filename, sourceURL: sourceURL, createdAt: now()))
+    func addManualItem(filename: String, sourceURL: URL?, scope: DownloadScope) -> DownloadItem {
+        insertAndNotify(DownloadItem(filename: filename, sourceURL: sourceURL, scope: scope, createdAt: now()))
     }
 
     private func insertAndNotify(_ item: DownloadItem) -> DownloadItem {
@@ -214,8 +278,7 @@ class DownloadManager: NSObject {
         item.state = .cancelled
         item.download = nil
         item.urlSessionTask = nil
-        notifyObservers { $0.downloadManagerDidUpdateItem(item) }
-        scheduleSave()
+        itemDidEnd(item)
     }
 
     /// The download behind `item` ended on its own: it finished or failed. The
@@ -229,24 +292,71 @@ class DownloadManager: NSObject {
             item.fractionCompleted = 1.0
         }
         item.download = nil
+        itemDidEnd(item)
+    }
+
+    /// `item` just reached a terminal state.
+    private func itemDidEnd(_ item: DownloadItem) {
+        // Its Private window is gone: nothing lists it, so there is nobody to
+        // tell and nothing to save. The file stays on disk.
+        if let index = unlistedItems.firstIndex(where: { $0 === item }) {
+            unlistedItems.remove(at: index)
+            return
+        }
         notifyObservers { $0.downloadManagerDidUpdateItem(item) }
-        scheduleSave()
+        if item.isPersisted { scheduleSave() }
     }
 
     func removeDownload(_ item: DownloadItem) {
+        if let index = unlistedItems.firstIndex(where: { $0 === item }) {
+            unlistedItems.remove(at: index)
+            return
+        }
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         items.remove(at: index)
-        database.deleteDownload(id: item.id.uuidString)
+        if item.scope.isPersisted { database.deleteDownload(id: item.id.uuidString) }
         notifyObservers { $0.downloadManagerDidRemoveItem(item) }
     }
 
-    func clearCompleted() {
-        let inactive = items.filter { $0.state != .downloading }
-        items.removeAll { $0.state != .downloading }
-        for item in inactive {
-            database.deleteDownload(id: item.id.uuidString)
+    /// Removes the ended downloads a window with `scope` lists; the lists of
+    /// other scopes are left alone.
+    func clearCompleted(in scope: DownloadScope) {
+        let cleared = items.filter { $0.state != .downloading && $0.scope.isListed(inWindowWith: scope) }
+        guard !cleared.isEmpty else { return }
+        items.removeAll { item in cleared.contains { $0 === item } }
+        for item in cleared {
+            if item.scope.isPersisted { database.deleteDownload(id: item.id.uuidString) }
             notifyObservers { $0.downloadManagerDidRemoveItem(item) }
         }
+    }
+
+    // MARK: - Private windows (TASK-148)
+
+    /// Follows `store` so that removing an incognito space (its Private window
+    /// closed) drops that window's downloads.
+    func observeIncognitoSpaces(of store: TabStore) {
+        observedStore?.removeObserver(self)
+        observedStore = store
+        store.addObserver(self)
+    }
+
+    /// Drops every Private download whose incognito space is not in
+    /// `liveSpaceIDs`. One that has ended is discarded. One still in flight
+    /// keeps running, unlisted, until it ends (`unlistedItems`).
+    func discardIncognitoDownloads(keeping liveSpaceIDs: Set<UUID>) {
+        let orphaned = items.filter { $0.scope.isOrphaned(liveIncognitoSpaceIDs: liveSpaceIDs) }
+        guard !orphaned.isEmpty else { return }
+        items.removeAll { item in orphaned.contains { $0 === item } }
+        for item in orphaned {
+            if item.state == .downloading { unlistedItems.append(item) }
+            notifyObservers { $0.downloadManagerDidRemoveItem(item) }
+        }
+    }
+
+    /// The item behind a `WKDownload` callback: listed, or still running after
+    /// its Private window closed.
+    private func trackedItem(for download: WKDownload) -> DownloadItem? {
+        items.first { $0.download === download } ?? unlistedItems.first { $0.download === download }
     }
 
     // MARK: - Persistence
@@ -282,7 +392,7 @@ class DownloadManager: NSObject {
         cancelPendingSave?()
         cancelPendingSave = nil
 
-        for item in items where item.state != .downloading {
+        for item in items where item.isPersisted {
             let record = DownloadRecord(
                 id: item.id.uuidString,
                 filename: item.filename,
@@ -320,7 +430,7 @@ extension DownloadManager: WKDownloadDelegate {
         }
 
         // Update the corresponding DownloadItem
-        if let item = items.first(where: { $0.download === download }) {
+        if let item = trackedItem(for: download) {
             await MainActor.run {
                 item.filename = destURL.lastPathComponent
                 item.destinationURL = destURL
@@ -335,13 +445,24 @@ extension DownloadManager: WKDownloadDelegate {
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        guard let item = items.first(where: { $0.download === download }) else { return }
+        guard let item = trackedItem(for: download) else { return }
         downloadDidEnd(item)
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        guard let item = items.first(where: { $0.download === download }) else { return }
+        guard let item = trackedItem(for: download) else { return }
         downloadDidEnd(item, failure: error.localizedDescription)
+    }
+}
+
+// MARK: - TabStoreObserver
+
+extension DownloadManager: TabStoreObserver {
+    /// The only signal `removeIncognitoSpace` sends. Reconciling against the
+    /// spaces that still exist covers every path that removes one.
+    func tabStoreDidUpdateSpaces() {
+        guard let store = observedStore else { return }
+        discardIncognitoDownloads(keeping: Set(store.spaces.lazy.filter(\.isIncognito).map(\.id)))
     }
 }
 

@@ -176,7 +176,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         guard let url else { return }
 
         let filename = url.lastPathComponent.hasSuffix(".crx") ? url.lastPathComponent : "Extension.crx"
-        let item = DownloadManager.shared.addManualItem(filename: filename, sourceURL: url)
+        let item = DownloadManager.shared.addManualItem(filename: filename, sourceURL: url, scope: downloadScope)
 
         triggerDownloadAnimation(iconName: "puzzlepiece.extension.fill")
 
@@ -274,7 +274,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         let sourceURL = navigationResponse.response.url
         download.delegate = DownloadManager.shared
-        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL)
+        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
         _ = item // suppress unused warning
         triggerDownloadAnimation()
     }
@@ -282,7 +282,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         let sourceURL = navigationAction.request.url
         download.delegate = DownloadManager.shared
-        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL)
+        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
         _ = item
         triggerDownloadAnimation()
     }

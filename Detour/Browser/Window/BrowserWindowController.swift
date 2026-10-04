@@ -106,6 +106,13 @@ class BrowserWindowController: NSWindowController {
 
     private(set) var isIncognito = false
     private var incognitoSpaceID: UUID?
+    /// Which downloads this window starts, lists and badges (TASK-148): a
+    /// Private window's own, a normal window's the shared normal list. Keyed on
+    /// the space the window was created with, so it still answers while the
+    /// window closes and the space is already gone.
+    var downloadScope: DownloadScope {
+        incognitoSpaceID.map { .incognito(spaceID: $0) } ?? .normal
+    }
 
     enum ContextMenuLinkAction {
         case none, openInNewTab, openInNewWindow
@@ -3333,7 +3340,7 @@ extension BrowserWindowController: DownloadManagerObserver {
     }
 
     private func updateDownloadBadge() {
-        tabSidebar.updateDownloadBadge(hasActive: DownloadManager.shared.hasActiveDownloads)
+        tabSidebar.updateDownloadBadge(hasActive: DownloadManager.shared.hasActiveDownloads(in: downloadScope))
     }
 }
 

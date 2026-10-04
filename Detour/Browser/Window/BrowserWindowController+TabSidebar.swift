@@ -163,7 +163,7 @@ extension BrowserWindowController: TabSidebarDelegate {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 320, height: 300)
-        popover.contentViewController = DownloadPopoverViewController()
+        popover.contentViewController = DownloadPopoverViewController(scope: downloadScope)
         popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .minY)
     }
 

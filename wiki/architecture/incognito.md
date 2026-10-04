@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:45:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -33,6 +33,9 @@ sources:
   - id: task-38
     resource: backlog:TASK-38
     title: Moving a tab to another space
+  - id: task-148
+    resource: backlog:TASK-148
+    title: Private window downloads are not saved and are listed only in their window
   - id: private-notes
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on the Private profile and extensions
@@ -103,6 +106,27 @@ until quit.[^private-notes]
 | `runtime.onInstalled` for extensions | Never delivered or recorded for the Private profile. |
 | Auto-archive | `archiveStaleTabs` skips incognito spaces. |
 | Favorites of the Private profile | `saveNow` skips incognito profiles when saving favorites. |
+| Download records | `DownloadScope.isPersisted`: a download started in a Private window is never written to the `download` table. See below. |
+
+## Downloads
+
+A download started in a Private window carries
+`DownloadScope.incognito(spaceID:)`, the window's own space (TASK-148):
+
+- it is **never saved**: not by the debounced save, not by the flush at app
+  termination;
+- it is **listed only in that window's** downloads popover, and only that
+  window's badge shows it. Other Private windows and normal windows never see
+  it, and a Private window does not list normal downloads;
+- it **leaves the list when the window closes**. `DownloadManager` observes
+  the store and drops the downloads of an incognito space that is gone. One
+  still in flight keeps running to completion, listed nowhere, and its item
+  is discarded when it ends;
+- the **file stays** in `~/Downloads`, as in Safari and Chrome.
+
+This is per window, unlike the Private profile's cookies, which every Private
+window shares until quit. The mechanics are on
+[downloads](../features/downloads.md).
 
 ## What crosses the boundary: nothing may move
 
@@ -136,9 +160,6 @@ windows answer `isPrivate(for:)` with true. Details:
 
 Read from the code; none of these was exercised at runtime for this page.
 
-- **Downloads.** `DownloadManager` has no incognito check. A download started
-  in a Private window is listed and saved to the `download` table like any
-  other.
 - **Open-tab suggestions in other windows.** `CommandPaletteView.gatherTabInfos`
   narrows the tab list only when the palette's own window is Private. A
   normal window's list is built from every space in `TabStore.spaces`, which
@@ -162,7 +183,8 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 | Window setup and teardown | `BrowserWindowController.init(incognito:)`, `windowWillClose` |
 | Menu validation | `BrowserWindowController.validateMenuItem` |
 | Entry points | File > New Private Window (Cmd+Shift+N) and the Dock menu, `AppDelegate.createNewIncognitoWindow` |
-| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests` |
+| Download scope rules | `DownloadScope` in [DownloadManager.swift](../../Detour/Browser/Downloads/DownloadManager.swift), `BrowserWindowController.downloadScope` |
+| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests` |
 
 # Related
 
@@ -171,5 +193,6 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 - [Private profile extensions](../extensions/private-profile-extensions.md) — the extension side.
 - [Data store and ITP](../extensions/data-store-and-itp.md) — why extension pages need the profile's store set explicitly.
 - [History page](../features/history-page.md) — its incognito reply.
+- [Downloads](../features/downloads.md) — the per-window download list and what happens to it on close.
 
 [^private-notes]: Session notes on the Private profile and extensions
