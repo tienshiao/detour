@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-10-04
+* **Update**: TASK-135 — the two-window hand-off was run with the screen unlocked, with and without the focus call: [Keyboard focus](sidebar/keyboard-focus.md) now states what was seen, and [Runtime verification](playbooks/runtime-verification.md) says how to run a check that needs key windows.
 * **Update**: follow-up batch runtime check — two traps added to [Runtime verification](playbooks/runtime-verification.md): an extension page in a harness must be opened with the extension's configuration (`addExtensionTab`), and a real download check needs a loopback server that controls the pace.
 * **Update**: TASK-159 review — a page's `target=_blank` link or `window.open` to a `data:` URL opens no tab: `createWebViewWith` loads a page's new-window request itself, which WebKit allows where it refuses the page's own top-level navigation, so it refuses `data:` there. [External application links](features/external-apps.md) says why.
 * **Update**: TASK-158 — `CRXUnpacker` no longer reads the CRX header: the declared-key parser and `UnpackResult.publicKey` are removed and `unpack` returns the directory; [Installer and CRX](extensions/installer-and-crx.md) and [CRX verification gate](decisions/crx-verification-gate.md) no longer describe the function, and the oversized-length guard is recorded against the verifier.

@@ -179,7 +179,12 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   ([in-process UI automation](./in-process-ui-automation.md)).
 - **The isolated app is not the key application** when launched from a
   shell, so behaviour keyed on `NSApp.keyWindow` cannot be driven that
-  way.[^notes-updates]
+  way.[^notes-updates] A check that needs key windows (the web view hand-off
+  between two windows, TASK-135) is launched by the user with `open -n`
+  (no `-g`) and the screen unlocked: the app is then active, windows become
+  key, and a posted Cmd+backtick cycles them. The harness waits for
+  `NSApp.isActive` before its first step and logs `NSApp.keyWindow` at every
+  step, so a run another app interrupted shows in its own log.
 - **Write outputs to a directory you can read back later.** A sandboxed and
   an unsandboxed command can see different `$TMPDIR` values; use one
   absolute path for everything.
