@@ -4,7 +4,7 @@ title: Web Extension support
 description: How Detour runs Chrome MV3 extensions — WebKit's native WKWebExtension runtime, Detour's polyfill layer for the APIs WebKit lacks, and the host integration around them — with a file map and the known gaps.
 tags: [extensions, webkit, polyfill, overview]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:40Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: docs-extensions
     resource: ../../docs/extensions.md
@@ -83,6 +83,9 @@ The decision to build on WebKit's runtime, and what it replaced, is in
 | Tabs and windows as WebKit sees them | `Runtime/WKExtensionTabConformance.swift`, `WKExtensionWindowConformance.swift`, `ExtensionTabLifecycle.swift`, `ExtensionTabObserver.swift`, `ExtensionActiveTab.swift` | [Tab and window bridge](./tab-and-window-bridge.md) |
 | `runtime.onInstalled` | `Runtime/RuntimeInstalledEvent.swift`, `Storage/Models/ExtensionInstalledEventRecord.swift`, `ExtensionPageHostRegistry.swift` | [runtime.onInstalled](./runtime-installed-event.md) |
 | Offscreen documents | `Runtime/OffscreenDocumentHost.swift` | [Offscreen documents](./offscreen-documents.md) |
+| Side panel | `Runtime/ExtensionSidePanelState.swift`, `ExtensionSidePanel.swift`, `ExtensionPolyfillHandler+SidePanel.swift`; the window's half is `SidePanelLayoutView.swift` and `BrowserWindowController+SidePanel.swift` in `Detour/Browser/Window` | [Side panel](./side-panel.md) |
+| `runtime.getContexts` | `Runtime/ExtensionOpenContexts.swift`, `runtimeGetContextsJS` | [runtime.getContexts](./runtime-get-contexts.md) |
+| Command shortcuts | `Runtime/ExtensionCommandDispatch.swift` | [Command shortcuts](./command-shortcuts.md) |
 | Popup, Extensions menu, options page | `UI/ExtensionPopoverController.swift`, `ExtensionMenuPopupDecision.swift`, `ExtensionOptionsPageEntry.swift` | [Popup and options UI](./popup-and-options-ui.md) |
 | Extension pages open in tabs | `Runtime/ExtensionPageURL.swift`, `Profile.retargetExtensionPages` | [Extension pages](./extension-pages.md) |
 | Frames and content scripts | `webNavigationJS`, `contentPolyfillJS` | [Frames and content scripts](./frames-and-content-scripts.md) |
@@ -103,7 +106,8 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 |---|---|---|
 | Content script injection, service worker / background page lifecycle | WebKit | |
 | `runtime` messaging, ports, `sendNativeMessage`, `connectNative` | WebKit | Detour answers native messaging through the delegate |
-| `tabs`, `windows`, `scripting`, `action`, `alarms`, `commands`, `contextMenus`, `i18n` | WebKit | Driven by Detour's [tab and window bridge](./tab-and-window-bridge.md) |
+| `tabs`, `windows`, `scripting`, `action`, `alarms`, `contextMenus`, `i18n` | WebKit | Driven by Detour's [tab and window bridge](./tab-and-window-bridge.md) |
+| `commands` | WebKit | Detour has to notice the key press and hand it to WebKit ([Command shortcuts](./command-shortcuts.md)) |
 | `storage.local` / `sync` / `session` | WebKit | [Storage](./storage.md) |
 | `storage.managed` | Polyfill | Always empty, read-only |
 | `permissions` | WebKit, patched | `contains` / `request` / `remove` drop a port from origin patterns ([Permissions](./permissions.md)) |
@@ -111,7 +115,9 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 | `runtime.onInstalled` | Detour | WebKit's is suppressed ([runtime.onInstalled](./runtime-installed-event.md)) |
 | `runtime.requestUpdateCheck`, `runtime.onUpdateAvailable` | Polyfill | [Updates](./updates.md) |
 | `runtime.getURL('/_favicon/…')` | Polyfill | Rewritten to `detour-favicon://`, served by `FaviconSchemeHandler` to extensions with the `favicon` permission |
+| `runtime.getContexts`, `runtime.ContextType` | Polyfill | Lists what Detour hosts for the calling extension in the calling profile ([runtime.getContexts](./runtime-get-contexts.md)) |
 | `offscreen` | Polyfill | Shipped WebKit has none ([Offscreen documents](./offscreen-documents.md)) |
+| `sidePanel` | Polyfill | Only with the `sidePanel` permission; the panel is a web view Detour hosts beside the tab ([Side panel](./side-panel.md)) |
 | `idle` | Polyfill | `IdleMonitor` |
 | `notifications` | Polyfill | `ExtensionNotificationManager` (`UNUserNotificationCenter`) |
 | `history` | Polyfill | Only `search` is real; `getVisits` answers `[]`, the writes are no-ops |
@@ -146,9 +152,14 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 
 - `chrome.webRequest` cannot observe or block anything. On `main` the
   polyfill adds nothing for `declarativeNetRequest`, `downloads`, `identity`,
-  `sidePanel`, `tabGroups` or `chrome.debugger`: an extension gets whatever
+  `tabGroups` or `chrome.debugger`: an extension gets whatever
   WebKit itself vends for those, if anything. Several are the subject of the
   [Claude extension epic](./claude-extension-epic.md).
+- `chrome.sidePanel` has no `onOpened` / `onClosed` / `getLayout`, `open()`
+  needs no user gesture, and a window is named by its active tab
+  ([Side panel](./side-panel.md)). `runtime.getContexts` reports no
+  `documentId`, lists no extension frames inside web pages, and always lists
+  the background ([runtime.getContexts](./runtime-get-contexts.md)).
 - `history.search` reads the shared `historyURL` table with no profile filter,
   so it is not profile-scoped the way the History page is.
 - The polyfilled `idle`, `notifications`, `history` and `management` event

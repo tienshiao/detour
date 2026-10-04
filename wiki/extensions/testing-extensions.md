@@ -4,7 +4,7 @@ title: Testing extensions
 description: Which kind of extension test proves what — pure rules, the polyfill in a bare web view, a real WebKit extension context, the production Profile wiring, a runtime check with API Explorer, and the signed build — with the fixtures and the traps.
 tags: [extensions, testing, playbook, fixtures]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -21,6 +21,9 @@ sources:
   - id: wiring
     resource: ../../DetourTests/ExtensionPolyfillProfileWiringTests.swift
     title: ExtensionPolyfillProfileWiringTests.swift
+  - id: side-panel-support
+    resource: ../../DetourTests/ExtensionSidePanelTestSupport.swift
+    title: ExtensionSidePanelTestSupport.swift (recording bridge, SidePanelTestWorld)
   - id: setup
     resource: ../../DetourTests/TestEnvironmentSetup.swift
     title: TestEnvironmentSetup.swift
@@ -71,10 +74,10 @@ Explorer update). This page explains the test kinds that policy refers to.
 
 | Level | Suites | Environment | Proves | Cannot prove |
 |---|---|---|---|---|
-| 1. Pure rules | `NativeHostKeepAliveTests`, `ConsoleBridgeLimiterTests`, `NativeConnectLogLimiterTests`, `ExtensionUpdatePolicyTests`, `CRX3VerifierTests`, `RuntimeInstalledEventTests`, `ExtensionActiveTabTests` | No WebKit; injected clock | Every ordering of a state machine or rule | That anything is wired to it |
-| 2. Polyfill JS | `ExtensionPolyfillTests` | A bare `WKWebView` at `https://test.example.com` with a shim for `chrome.runtime` and a fake `connectNative`, then the real polyfill; `OriginMappingProfile` stands in for sender attribution | Module logic, callback and promise forms, the native handler's dispatch | WebKit's wrapper objects, the worker transport, sender verification by context |
+| 1. Pure rules | `NativeHostKeepAliveTests`, `ConsoleBridgeLimiterTests`, `NativeConnectLogLimiterTests`, `ExtensionUpdatePolicyTests`, `CRX3VerifierTests`, `RuntimeInstalledEventTests`, `ExtensionActiveTabTests`, `ExtensionSidePanelStateTests` | No WebKit; injected clock | Every ordering of a state machine or rule | That anything is wired to it |
+| 2. Polyfill JS | `ExtensionPolyfillTests`, `ExtensionSidePanelPolyfillTests`, `ExtensionRuntimeGetContextsPolyfillTests` | A bare `WKWebView` at `https://test.example.com` with a shim for `chrome.runtime` and a fake `connectNative`, then the real polyfill; `OriginMappingProfile` stands in for sender attribution. The two newer suites use a *recording bridge* instead of the real handler, so they assert exactly what the JavaScript sends | Module logic, callback and promise forms, the native handler's dispatch | WebKit's wrapper objects, the worker transport, sender verification by context |
 | 3. Real context | `ExtensionPolyfillIntegrationTests`, `WKExtensionIntegrationTests` | A real `WKWebExtensionContext` in a controller built by the test | The patch coexists with native APIs and **survives garbage collection**; real worker round trips; a page cannot claim another extension's id | Detour's own controller configuration |
-| 4. Production wiring | `ExtensionPolyfillProfileWiringTests`, `NativeMessagingEnforcementTests`, `ExtensionPrivateStoreTests`, `ExtensionOriginTrackingPreventionTests`, `NewProfileExtensionLoadTests` | `Profile.extensionController` and `Profile.loadExtensionContext`, `ExtensionManager` as delegate | That deleting the wiring in `Profile` or `ExtensionManager` fails a test; per-profile isolation; native hosts and ports | Behaviour over minutes, unless an env-gated leg is run |
+| 4. Production wiring | `ExtensionPolyfillProfileWiringTests`, `NativeMessagingEnforcementTests`, `ExtensionPrivateStoreTests`, `ExtensionOriginTrackingPreventionTests`, `NewProfileExtensionLoadTests`, `ExtensionSidePanelTests`, `ExtensionRuntimeGetContextsTests` | `Profile.extensionController` and `Profile.loadExtensionContext`, `ExtensionManager` as delegate; the last two also use `TabStore.shared` and real `BrowserWindowController`s that are never shown | That deleting the wiring in `Profile` or `ExtensionManager` fails a test; per-profile isolation; native hosts and ports | Behaviour over minutes, unless an env-gated leg is run |
 | 5. Running app | API Explorer in an isolated profile | Debug build, `DETOUR_DATA_DIR` | Real windows, tabs, menus, timers | Anything needing a trusted native host |
 | 6. Signed build | The real extension | `/Applications` build | What users get | Repeatability |
 
@@ -102,6 +105,13 @@ All in `ExtensionTestSupport.swift` unless noted.
 | `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin |
 | `LoopbackWebSocketServer` | An echo server for the [relay](./websocket-relay.md) |
 | `CRX3TestSupport.swift` | Builds signed CRX3 files in the test |
+| `RecordingPolyfillBridge`, `makeRecordingPolyfillWebView` (`ExtensionSidePanelTestSupport.swift`) | A bare web view running the whole polyfill against a bridge that records every request and answers from a table. For asserting what a module sends, in what order, and when |
+| `SidePanelTestWorld` (same file) | A real extension in production profiles with real tabs and never-shown windows. `run(.worker / .page, …)` runs one op from either transport; `tabID(of:)` finds WebKit's id for a tab; `loadMarker(of:)` tells whether a panel page loaded again |
+
+A window that is never shown is never key, so the side panel suites move web
+view ownership by calling `windowDidBecomeKey` themselves, and hand key
+events straight to `ExtensionCommandDispatch.perform`. What that leaves
+unproved is in the [side panel runtime check](../playbooks/side-panel-runtime-check.md).
 
 `TestEnvironmentSetup` wipes the extension table and the data directory's
 `Extensions/` folder at bundle start and turns off
@@ -130,7 +140,7 @@ Leave them off in normal runs.
 |---|---|
 | `hello-world` | Minimal MV3: classic service worker, content script, popup, `storage` |
 | `hello-world-module` | The same with a `type: module` worker. The only one an automated test reads (`ModuleBundlerTests`) |
-| `api-explorer` | One popup section per API, a background that logs events to storage |
+| `api-explorer` | One popup section per API, a background that logs events to storage, and a side panel page (`sidepanel.html`) |
 | `1password/1password.crx` | A checked-in store CRX. No test references it |
 
 Load one with Develop → Load Unpacked Extension, or seed it into an isolated
@@ -145,6 +155,13 @@ API Explorer details that show up in logs and are easy to misread:
 - It does **not** declare `nativeMessaging`, so its keep-alive probe is
   expected to report `installMode: 'none'`, `installDetail:
   'no-nativeMessaging-permission'`.
+- It declares the `sidePanel` permission and `side_panel.default_path`. The
+  popup's "Side Panel" section opens, closes and reads the options of a tab
+  panel (`sidepanel.html?tabId=N`) and the window panel, from the popup or
+  through the worker; "runtime.getContexts" lists the open contexts as both
+  see them. The panel page reports `tabs.getCurrent()` (expected: undefined),
+  when it was loaded (it must not change across a tab switch) and its own
+  context.
 - Each `runtime.onInstalled` delivery is appended to
   `storage.local.onInstalledEvents`, and the history is logged at every
   worker start.
@@ -191,6 +208,7 @@ API Explorer details that show up in logs and are easy to misread:
 # Related
 
 - [Polyfill layer](./polyfill-layer.md) — what levels 2 to 4 exercise
+- [Side panel](./side-panel.md), [runtime.getContexts](./runtime-get-contexts.md), [command shortcuts](./command-shortcuts.md) — the suites built on the recording bridge and `SidePanelTestWorld`
 - [Permissions](./permissions.md) — positive and negative permission cases
 - [Build and test](../playbooks/build-and-test.md) — commands, one build at a time, the memory watchdog
 - [Test host crashes](../playbooks/test-host-crashes.md) — "TEST FAILED" with zero failures

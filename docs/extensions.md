@@ -67,6 +67,7 @@ Detour/Extensions/
 │   ├── ExtensionSidePanelState.swift     chrome.sidePanel rules: options, open panels, which shows, layout (pure)
 │   ├── ExtensionSidePanel.swift          the panel's web view, its header view, the per-profile controller
 │   ├── ExtensionPolyfillHandler+SidePanel.swift  sidePanel.* bridge messages
+│   ├── ExtensionOpenContexts.swift       what runtime.getContexts lists
 │   ├── ExtensionCommandDispatch.swift    command shortcuts (chrome.commands) from key equivalents
 │   ├── RuntimeInstalledEvent.swift       Detour's runtime.onInstalled rule
 │   ├── ExtensionOriginInteractionKeeper.swift  tracking-prevention guard for extension origins
@@ -125,6 +126,7 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 | `runtime.onMessageExternal` / `onConnectExternal` (`externally_connectable`) | WebKit native delivery; **Detour** adds the `chrome.runtime` a listed web page calls (WebKit gives pages only `browser.runtime`) — see "Externally connectable pages" |
 | `chrome.tabGroups`, `chrome.debugger` | **Interim stand-ins only** — constants / never-firing events, no methods (see "Interim stand-ins") |
 | `chrome.sidePanel` | **Polyfill** → `ExtensionSidePanelController`, only with the `sidePanel` permission; the panel is a web view Detour hosts beside the tab (see "Side panel") |
+| `chrome.runtime.getContexts`, `runtime.ContextType` | **Polyfill** → `ExtensionPolyfillHandler.openContexts` (see "runtime.getContexts") |
 | `chrome.idle` | **Polyfill** → `IdleMonitor` (CGEventSource) |
 | `chrome.notifications` | **Polyfill** → `ExtensionNotificationManager` (UNUserNotificationCenter) |
 | `chrome.history.search` | **Polyfill** → `HistoryDatabase` |
@@ -386,6 +388,28 @@ Another extension's panel in the same place (the same tab, or the same window) r
 - `close({tabId})` closes the tab's own panel, else the window panel showing beside it.
 - A tab panel on a Peek closes when the Peek is parked with its sleeping host.
 
+## runtime.getContexts
+
+`chrome.runtime.getContexts(filter)` and `chrome.runtime.ContextType` are Detour's too (TASK-132.9, `ExtensionAPIPolyfill.runtimeGetContextsJS`): WebKit vends neither, and the Claude extension's shortcut handler reads both to see whether its panel is already open. They are added in place to the `chrome.runtime` wrapper WebKit vends, which is rooted (docs/chrome-runtime-patching.md).
+
+`ExtensionPolyfillHandler.openContexts` lists the calling extension's contexts in the calling profile — nothing else is reachable from a handler, which belongs to one profile and is given a verified extension id:
+
+| `contextType` | What | `tabId` / `windowId` | Document |
+|---|---|---|---|
+| `BACKGROUND` | the worker or background page, whenever the manifest declares one | -1 / -1 | none for a worker (`frameId` -1); the page's URL for a background page |
+| `TAB` | an extension page in a tab, pinned entry, favourite or Peek with a live web view | the tab / its window | the page |
+| `POPUP` | the action popup while its popover is showing | -1 / the window it is attached to | the popup page |
+| `OFFSCREEN_DOCUMENT` | the offscreen document once loaded | -1 / -1 | the document |
+| `SIDE_PANEL` | every open side panel, on screen or hidden with its tab | -1 / its tab's window, or its own | the panel page, query included |
+
+Each context has `contextType`, `contextId` (stable for the context's lifetime), `documentUrl` and `documentOrigin` where there is a document, `frameId`, `incognito`, `tabId` and `windowId`. All of Chrome's filters are honoured (`contextTypes`, `contextIds`, `tabIds`, `windowIds`, `documentUrls`, `documentOrigins`, `documentIds`, `frameIds`, `incognito`); a context matches when every filter given lists its value.
+
+Detour knows tabs, not WebKit's ids, so the bridge answers with tab *handles* and the polyfill turns them into ids: `tabId` with `__detourFindTabIdForHandle`, `windowId` as the `windowId` `tabs.get` reports for the tab that stands for the context's window. Either is -1 when WebKit lists no such tab (a tab in a space no window shows).
+
+The request is sent in the `getContexts` call itself, before anything is awaited, so the answer is what was open at the moment of the call — the Claude handler calls `getContexts`, then `setOptions` and `open`, then reads the answer.
+
+**Limits.** No `documentId` (WebKit does not tell the host one), so a `documentIds` filter matches nothing. An extension frame inside a web page is not listed. The background is listed whether or not its worker is running at this instant: WebKit does not say, and starts one on demand.
+
 ## Command shortcuts
 
 WebKit keeps an extension's `commands` and fires `commands.onCommand`, but the app has to notice the key press and call `WKWebExtensionContext.performCommand(for:)`. Until TASK-132.8 nothing did, so no shortcut ever fired. `BrowserWindow.performKeyEquivalent` now offers a key equivalent that nothing in the window's view tree took to `ExtensionCommandDispatch`:
@@ -478,5 +502,6 @@ Three test extensions live under `TestExtensions/` (a fourth directory, `1passwo
 - **`externally_connectable`** — Web pages only (`matches`); the extension needs host access to the page, and a listed extension without a listener answers nothing instead of failing. See "Externally connectable pages".
 - **`chrome.tabGroups`, `chrome.debugger`** — Not implemented; constants and never-firing events only, so a worker that reads them while loading does not die (see "Interim stand-ins").
 - **`chrome.sidePanel`** — No `onOpened` / `onClosed` / `getLayout`; `open()` needs no user gesture; a window is named by its active tab. See "Side panel".
+- **`chrome.runtime.getContexts`** — No `documentId`; extension frames inside web pages are not listed; the background is always listed. See "runtime.getContexts".
 - **`chrome.tabs.detectLanguage`** — May not be implemented by WebKit in all versions.
 - **Offscreen document AudioContext** — Shimmed to route through native `AVAudioPlayer`. The shim covers `decodeAudioData`/`createBufferSource`/`start`/`stop`/`onended` but not the full Web Audio API graph.

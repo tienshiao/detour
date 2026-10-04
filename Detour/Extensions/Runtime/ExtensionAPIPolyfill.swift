@@ -65,6 +65,7 @@ struct ExtensionAPIPolyfill {
             nativePortKeepAliveJS,
             missingStubsJS,
             runtimeConstantsJS,
+            runtimeGetContextsJS,
             runtimeUpdateCheckJS,
             runtimeOnInstalledJS,
             contentPolyfillBridgeJS,
@@ -138,6 +139,9 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.sidePanel = globalThis.__detourSidePanelInstall; } catch(e) { __detourPolyfillDiag.apis.sidePanel = 'error: ' + e.message; }
         // Whether runtime.OnInstalledReason is WebKit's or Detour's (TASK-132.4).
         try { __detourPolyfillDiag.apis.runtimeOnInstalledReason = globalThis.__detourRuntimeConstantsInstall; } catch(e) { __detourPolyfillDiag.apis.runtimeOnInstalledReason = 'error: ' + e.message; }
+        // runtime.getContexts / runtime.ContextType (TASK-132.9): 'polyfill' for
+        // Detour's, 'native' if WebKit ever vends them.
+        try { __detourPolyfillDiag.apis.runtimeGetContexts = globalThis.__detourRuntimeGetContextsInstall; } catch(e) { __detourPolyfillDiag.apis.runtimeGetContexts = 'error: ' + e.message; }
         // Which chrome.offscreen is in force: Detour's polyfill, Detour's over a
         // native/foreign one it shadowed, or an error if the define did not take (TASK-71).
         try { __detourPolyfillDiag.apis.offscreenInstall = globalThis.__detourOffscreenInstall; } catch(e) { __detourPolyfillDiag.apis.offscreenInstall = 'error: ' + e.message; }
@@ -615,9 +619,9 @@ struct ExtensionAPIPolyfill {
     /// `browser.runtime` (rooted through `__detourHoldWrapper`, like
     /// `runtimeUpdateCheckJS`'s members).
     ///
-    /// `runtime.ContextType` is deliberately not here: it belongs to
-    /// `runtime.getContexts` (TASK-132.9), and an enum without its API would
-    /// make a feature test for the API lie.
+    /// `runtime.ContextType` is not here: it comes with `runtime.getContexts`
+    /// (`runtimeGetContextsJS`, TASK-132.9), since an enum without its API
+    /// would make a feature test for the API lie.
     private static let runtimeConstantsJS = """
     (function() {
         const g = globalThis;
@@ -661,6 +665,228 @@ struct ExtensionAPIPolyfill {
             install = 'error: ' + (e && e.message ? e.message : String(e));
         }
         g.__detourRuntimeConstantsInstall = install;
+    })();
+    """
+
+    // MARK: - runtime.getContexts / runtime.ContextType
+
+    /// `chrome.runtime.getContexts(filter)` and `chrome.runtime.ContextType`
+    /// (TASK-132.9). WebKit vends neither, and the Claude extension's
+    /// shortcut handler reads both to find out whether its side panel is
+    /// already open — with `ContextType` undefined it threw.
+    ///
+    /// Detour lists the extension's open contexts in the calling profile
+    /// (`runtime.getContexts`, `ExtensionPolyfillHandler.openContexts`): its
+    /// background, its pages in tabs, its action popup, its offscreen document
+    /// and its side panels. Each is `{ contextType, contextId, documentUrl,
+    /// documentOrigin, frameId, incognito, tabId, windowId }` — `documentUrl`
+    /// in full, query included; no `documentId` (WebKit does not tell the host
+    /// a document's id), so a `documentIds` filter matches nothing.
+    ///
+    /// **Ids.** Detour knows tabs, not WebKit's ids, so a context arrives with
+    /// tab *handles* (docs/extensions.md, "Tab id bridge"): `tabHandle` for a
+    /// page in a tab, and `windowTabHandle` for the tab that stands for the
+    /// context's window (the tab itself; a panel's tab, or its window's active
+    /// tab; the tab a popup was opened over). `tabId` is the id behind the
+    /// first (`__detourFindTabIdForHandle`) and `windowId` the `windowId`
+    /// `tabs.get` reports for the second; either is -1 when there is none or
+    /// WebKit lists no such tab.
+    ///
+    /// **Filters** are applied here, the ones that need no id first, so a call
+    /// for one context type resolves ids only for contexts of that type.
+    ///
+    /// **Timing.** The request leaves in the call itself, before anything is
+    /// awaited, so the answer is the contexts open when `getContexts` was
+    /// called — the Claude extension calls it, then opens its panel, then
+    /// reads the answer, and must not find the panel it just opened.
+    ///
+    /// Both members are added in place to the `chrome.runtime` wrapper WebKit
+    /// vends, only when absent; the wrapper is pinned by `missingStubsJS` and
+    /// rooted again here under `runtime` (`__detourHoldWrapper`), so the patch
+    /// outlives garbage collection (docs/chrome-runtime-patching.md). A
+    /// distinct `browser.runtime` is patched too and rooted as `browserRuntime`.
+    ///
+    /// `globalThis.__detourRuntimeGetContextsInstall`: `'polyfill'` | `'native'`
+    /// | `'absent'` (no runtime) | `'define-failed'` | `'polyfill-not-visible'`
+    /// | `'error: …'`.
+    private static let runtimeGetContextsJS = """
+    (function() {
+        const g = globalThis;
+        let install = 'absent';
+        try {
+            const contextTypes = {
+                TAB: 'TAB', POPUP: 'POPUP', BACKGROUND: 'BACKGROUND',
+                OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT', SIDE_PANEL: 'SIDE_PANEL',
+                DEVELOPER_TOOLS: 'DEVELOPER_TOOLS'
+            };
+            // Marked without adding an enumerable key: Object.values() of the
+            // enum must stay Chrome's six types.
+            Object.defineProperty(contextTypes, '_detourPolyfill', { value: true, enumerable: false });
+            Object.freeze(contextTypes);
+
+            const request = function(type, params) {
+                try {
+                    return Promise.resolve(g.__detourPolyfillRequest(type, params || {}));
+                } catch (e) {
+                    return Promise.reject(e);
+                }
+            };
+
+            const listFilters = ['contextIds', 'contextTypes', 'documentIds', 'documentOrigins',
+                                 'documentUrls', 'frameIds', 'tabIds', 'windowIds'];
+
+            const checkedFilter = function(filter) {
+                if (filter === null || typeof filter !== 'object' || Array.isArray(filter)) {
+                    throw new TypeError('Error in invocation of runtime.getContexts: a filter object is required');
+                }
+                for (let i = 0; i < listFilters.length; i++) {
+                    const value = filter[listFilters[i]];
+                    if (value !== undefined && !Array.isArray(value)) {
+                        throw new TypeError('Error in invocation of runtime.getContexts: ' + listFilters[i] + ' must be an array');
+                    }
+                }
+                if (filter.incognito !== undefined && typeof filter.incognito !== 'boolean') {
+                    throw new TypeError('Error in invocation of runtime.getContexts: incognito must be a boolean');
+                }
+                return filter;
+            };
+
+            // An absent filter matches everything; a present one matches only
+            // a value it lists (so a context without the value never matches).
+            const listed = function(list, value) {
+                return list === undefined || list.indexOf(value) !== -1;
+            };
+
+            // The filters that need no id from WebKit.
+            const matchesOwnFields = function(entry, filter) {
+                return listed(filter.contextTypes, entry.contextType)
+                    && listed(filter.contextIds, entry.contextId)
+                    && listed(filter.documentIds, entry.documentId)
+                    && listed(filter.documentOrigins, entry.documentOrigin)
+                    && listed(filter.documentUrls, entry.documentUrl)
+                    && listed(filter.frameIds, entry.frameId)
+                    && (filter.incognito === undefined || filter.incognito === entry.incognito);
+            };
+
+            const tabIdFor = async function(handle, cache) {
+                if (!Number.isInteger(handle)) return -1;
+                if (cache.has(handle)) return cache.get(handle);
+                let tabId;
+                try {
+                    if (typeof g.__detourFindTabIdForHandle === 'function') {
+                        tabId = await g.__detourFindTabIdForHandle(handle);
+                    }
+                } catch (e) {}
+                const id = Number.isInteger(tabId) ? tabId : -1;
+                cache.set(handle, id);
+                return id;
+            };
+
+            const windowIdFor = async function(tabId, cache) {
+                if (!(tabId >= 0)) return -1;
+                if (cache.has(tabId)) return cache.get(tabId);
+                let windowId = -1;
+                try {
+                    const tab = await g.chrome.tabs.get(tabId);
+                    if (tab && Number.isInteger(tab.windowId)) windowId = tab.windowId;
+                } catch (e) {}
+                cache.set(tabId, windowId);
+                return windowId;
+            };
+
+            const describe = async function(entry, caches) {
+                const tabId = await tabIdFor(entry.tabHandle, caches.tabs);
+                const windowTabId = await tabIdFor(entry.windowTabHandle, caches.tabs);
+                const context = {
+                    contextType: entry.contextType,
+                    contextId: entry.contextId,
+                    frameId: Number.isInteger(entry.frameId) ? entry.frameId : -1,
+                    incognito: entry.incognito === true,
+                    tabId: tabId,
+                    windowId: await windowIdFor(windowTabId, caches.windows)
+                };
+                if (typeof entry.documentUrl === 'string') context.documentUrl = entry.documentUrl;
+                if (typeof entry.documentOrigin === 'string') context.documentOrigin = entry.documentOrigin;
+                if (typeof entry.documentId === 'string') context.documentId = entry.documentId;
+                return context;
+            };
+
+            const getContexts = function(filter, callback) {
+                let checked;
+                try {
+                    checked = checkedFilter(filter);
+                } catch (e) {
+                    return __detourSettle(Promise.reject(e), callback);
+                }
+                // Sent now, not after an await: the answer is what is open at
+                // the moment of the call.
+                const asked = request('runtime.getContexts', {});
+                const promise = asked.then(async function(reply) {
+                    const entries = reply && Array.isArray(reply.contexts) ? reply.contexts : [];
+                    const caches = { tabs: new Map(), windows: new Map() };
+                    const contexts = [];
+                    for (let i = 0; i < entries.length; i++) {
+                        const entry = entries[i];
+                        if (!entry || !matchesOwnFields(entry, checked)) continue;
+                        const context = await describe(entry, caches);
+                        if (!listed(checked.tabIds, context.tabId)) continue;
+                        if (!listed(checked.windowIds, context.windowId)) continue;
+                        contexts.push(context);
+                    }
+                    return contexts;
+                });
+                return __detourSettle(promise, callback);
+            };
+            getContexts._detourPolyfill = true;
+
+            // Adds what is missing to one runtime wrapper.
+            const patch = function(runtime) {
+                if (!runtime || typeof runtime !== 'object') return 'absent';
+                let status = 'native';
+                const current = runtime.getContexts;
+                if (typeof current !== 'function') {
+                    __detourDefine(runtime, 'getContexts', getContexts);
+                    // `__detourDefine` only warns when the wrapper refuses.
+                    if (runtime.getContexts !== getContexts) return 'define-failed';
+                    status = 'polyfill';
+                } else if (current._detourPolyfill === true) {
+                    status = 'polyfill';
+                }
+                let existing;
+                try { existing = runtime.ContextType; } catch (e) {}
+                if (existing === undefined || existing === null) {
+                    try {
+                        Object.defineProperty(runtime, 'ContextType', {
+                            value: contextTypes, writable: false, configurable: true, enumerable: true
+                        });
+                    } catch (e) {
+                        return 'define-failed';
+                    }
+                    if (status === 'native') status = 'polyfill';
+                }
+                return status;
+            };
+
+            let chromeRuntime = null;
+            try { chromeRuntime = g.chrome && g.chrome.runtime; } catch (e) {}
+            install = patch(chromeRuntime);
+            if (install === 'polyfill') __detourHoldWrapper('runtime', chromeRuntime);
+            let browserRuntime = null;
+            try { browserRuntime = g.browser && g.browser.runtime; } catch (e) {}
+            if (browserRuntime && browserRuntime !== chromeRuntime && patch(browserRuntime) === 'polyfill') {
+                __detourHoldWrapper('browserRuntime', browserRuntime);
+            }
+            if (install === 'polyfill') {
+                const again = g.chrome.runtime;
+                if (!again || typeof again.getContexts !== 'function'
+                    || !again.ContextType || again.ContextType.SIDE_PANEL !== 'SIDE_PANEL') {
+                    install = 'polyfill-not-visible';
+                }
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+        g.__detourRuntimeGetContextsInstall = install;
     })();
     """
 

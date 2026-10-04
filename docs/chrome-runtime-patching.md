@@ -313,6 +313,13 @@ permission and never over a namespace that is already there; its state (`apis.si
 `polyfill`, `native` or `define-failed`. The module also wraps `window.close` in a top-level extension
 page — a plain function assignment on the page's own `window`, nothing of WebKit's extension bindings.
 
+`runtimeGetContextsJS` (TASK-132.9) adds `runtime.getContexts` and `runtime.ContextType` to the pinned
+`chrome.runtime` wrapper the way `runtimeUpdateCheckJS` adds its members, only when absent, and roots the
+wrapper a second time under `runtime` in `__detourHeldWrappers` (and `browserRuntime` for a distinct
+`browser.runtime`), so `__detourHeldWrappers.runtime === chrome.runtime` can be asserted before and after
+a collection (`ExtensionRuntimeGetContextsTests.testThePatchSurvivesGarbageCollection`). Its state
+(`apis.runtimeGetContexts`) reads `polyfill`, `native`, `absent`, `define-failed` or `polyfill-not-visible`.
+
 ### Web pages are a different case
 
 Everything above is about *extension* contexts, where WebKit owns `chrome` / `browser` and reads them back

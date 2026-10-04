@@ -730,6 +730,37 @@ for (const [id, op] of [
   });
 }
 
+// --- runtime.getContexts (TASK-132.9) ---
+//
+// Also Detour's: the extension's open contexts in this profile — the worker,
+// extension pages in tabs, this popup, the offscreen document, side panels.
+
+async function showContexts(filter) {
+  try {
+    if (typeof chrome.runtime.getContexts !== 'function') throw new Error('chrome.runtime.getContexts is missing');
+    showResult('res-contexts', {
+      install: globalThis.__detourRuntimeGetContextsInstall || '(no Detour polyfill)',
+      ContextType: chrome.runtime.ContextType,
+      popup: await chrome.runtime.getContexts(filter),
+      worker: await sendBg({ type: 'getContexts', filter }),
+    });
+  } catch (e) {
+    showResult('res-contexts', e.message, true);
+  }
+}
+
+document.getElementById('btn-contexts-all').addEventListener('click', () => showContexts({}));
+document.getElementById('btn-contexts-panels').addEventListener('click',
+  () => showContexts({ contextTypes: [chrome.runtime.ContextType.SIDE_PANEL] }));
+document.getElementById('btn-contexts-window').addEventListener('click', async () => {
+  try {
+    const { windowId } = await sidePanelTarget();
+    await showContexts({ windowIds: [windowId] });
+  } catch (e) {
+    showResult('res-contexts', e.message, true);
+  }
+});
+
 // --- Externally connectable (TASK-132.6) ---
 //
 // The receiving side lives in the worker (runtime.onMessageExternal /

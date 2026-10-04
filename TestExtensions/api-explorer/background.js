@@ -815,6 +815,11 @@ async function handleMessage(message) {
       throw new Error('unknown side panel op ' + op);
     }
 
+    case 'getContexts': {
+      // runtime.getContexts as the worker sees it (TASK-132.9).
+      return await chrome.runtime.getContexts(message.filter || {});
+    }
+
     case 'interimNamespacesProbe': {
       const tg = chrome.tabGroups;
       const dbg = chrome.debugger;

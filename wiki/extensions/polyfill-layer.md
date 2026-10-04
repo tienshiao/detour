@@ -5,7 +5,7 @@ description: The JavaScript bundle Detour evaluates in every extension context a
 resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
 tags: [extensions, polyfill, security, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: polyfill
     resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
@@ -13,6 +13,12 @@ sources:
   - id: handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift
+  - id: handler-side-panel
+    resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler+SidePanel.swift
+    title: ExtensionPolyfillHandler+SidePanel.swift (sidePanel.* messages)
+  - id: handler-open-contexts
+    resource: ../../Detour/Extensions/Runtime/ExtensionOpenContexts.swift
+    title: ExtensionOpenContexts.swift (runtime.getContexts)
   - id: extension-manager
     resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
     title: ExtensionManager.swift (polyfill file injection, sendMessage delegate)
@@ -61,7 +67,7 @@ pages. What it may and may not patch is governed by WebKit's wrappers
 
 | Context | How the bundle gets there | Transport to Swift |
 |---|---|---|
-| Extension pages: popup, options, extension tabs, offscreen documents, and a background *page* | A `WKUserScript` at document start, all frames, on the controller configuration's `userContentController` (`Profile.extensionController`) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` → `userContentController(_:didReceive:replyHandler:)` |
+| Extension pages: popup, options, extension tabs, offscreen documents, side panels, and a background *page* | A `WKUserScript` at document start, all frames, on the controller configuration's `userContentController` (`Profile.extensionController`) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` → `userContentController(_:didReceive:replyHandler:)` |
 | Service worker | No user script reaches a worker. `ExtensionManager.injectServiceWorkerPolyfill` writes the bundle next to the worker file in the *installed copy* and prepends an import to the worker source: `importScripts('_detour_polyfill.js')` for a classic worker, `import './_detour_polyfill_module.js'` for a module worker | `browser.runtime.sendNativeMessage('detourPolyfill', msg)` → the controller delegate's `sendMessage` → `handleNativeMessage` |
 | Content scripts | `_detour_content_polyfill.js` (`contentPolyfillJS`, a much smaller script) is written to the installed copy and inserted first in every manifest `content_scripts[].js` list | None. It sends `runtime.sendMessage` to the background, where `contentPolyfillBridgeJS` forwards to Swift |
 
@@ -91,6 +97,22 @@ diagnostics are written to `chrome.storage.local` under `_polyfillDiag`, which
 is how a worker's result can be read at all; the API Explorer popup shows them.
 `apis.<name>` says which path each gap-filling module took (`native`,
 `polyfill`, `absent`, `polyfill-not-visible`, `error: …`).
+
+Two modules have native state large enough for their own handler files and
+pages:
+
+| Module | Diag key | Native side | Page |
+|---|---|---|---|
+| `runtimeGetContextsJS` | `apis.runtimeGetContexts` | `ExtensionPolyfillHandler.openContexts` in `ExtensionOpenContexts.swift` | [runtime.getContexts](./runtime-get-contexts.md) |
+| `sidePanelJS` | `apis.sidePanel` | `handleSidePanelRequest` in `ExtensionPolyfillHandler+SidePanel.swift`, which only forwards to the profile's `ExtensionSidePanelController` | [Side panel](./side-panel.md) |
+
+They also show two patterns the older modules did not need:
+
+- **Ordering.** `sidePanelJS` chains the calls of one context so they reach
+  Detour in call order, because each first resolves a tab id asynchronously.
+- **Timing.** `runtimeGetContextsJS` sends its request in the call itself,
+  before anything is awaited, so the answer is the state at the moment of the
+  call.
 
 Preamble helpers every module uses:
 
@@ -156,12 +178,20 @@ does:
 - `history.search`, `management.getAll`, `management.setEnabled` require the
   manifest permission (`hasPermission`).
 - `offscreen.*` uses only the handler's own profile's context.
+- `sidePanel.*` requires the manifest's `sidePanel` permission, which WebKit
+  does not know; a tab arrives as a handle and is refused unless this profile
+  lists it. `sidePanel.closeSelf` is honoured only from the main frame of a
+  web view that is one of this profile's panels, which is why `dispatch` is
+  handed the sending web view.
+- `runtime.getContexts` has no permission gate, as in Chrome. It can only
+  answer with the verified extension's contexts in the handler's own profile.
 - `sessions.restore` and `search.query` act in `targetSpace()`: the last-active
   space when it belongs to this profile, else the profile's first space, never
   another profile's.
 - Gap-filling namespaces that Chrome leaves undefined without a permission
   (`privacy`, `webRequest`) are installed only when the manifest declares it,
-  so feature detection stays truthful.[^task-3]
+  so feature detection stays truthful.[^task-3] `sidePanel` follows the same
+  rule.
 
 ## Callback form and `runtime.lastError`
 
@@ -238,7 +268,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 - [Chrome runtime patching](./chrome-runtime-patching.md) — which members can be patched at all.
 - [Web Extension support](./overview.md) — the full list of polyfilled APIs.
 - [Native messaging](./native-messaging.md) — the other thing the `sendMessage` delegate routes.
-- [Offscreen documents](./offscreen-documents.md), [Storage](./storage.md), [Permissions](./permissions.md), [Updates](./updates.md) — the modules with their own pages.
+- [Offscreen documents](./offscreen-documents.md), [Side panel](./side-panel.md), [runtime.getContexts](./runtime-get-contexts.md), [Storage](./storage.md), [Permissions](./permissions.md), [Updates](./updates.md) — the modules with their own pages.
 
 [^task-10]: Verify polyfill bridge sender by context base URL, not extension id
 [^task-13]: Give ExtensionPolyfillHandler a profile back-reference

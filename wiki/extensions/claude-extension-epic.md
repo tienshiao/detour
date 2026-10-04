@@ -4,7 +4,7 @@ title: Claude extension epic
 description: The in-flight epic to make Anthropic's Claude extension install, sign in and drive pages in Detour — what the extension needs, the sub-task map, and the decisions and measurements so far. None of this code is on main.
 tags: [extensions, epic, side-panel, tab-groups, debugger, planning]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 stale_after: 2026-11-03T00:00:00Z
 sources:
   - id: task-132
@@ -28,6 +28,9 @@ sources:
   - id: task-132-8
     resource: backlog:TASK-132.8
     title: Host an extension's per-tab side panel beside the tab's content
+  - id: task-132-9
+    resource: backlog:TASK-132.9
+    title: runtime.getContexts and runtime.ContextType
   - id: task-132-10
     resource: backlog:TASK-132.10
     title: Tab group model in TabStore
@@ -61,6 +64,12 @@ sources:
   - id: commit-parking
     resource: commit:96756a5
     title: Epic-branch commit for TASK-132.3 (automation-attached tabs)
+  - id: side-panel-code
+    resource: ../../Detour/Extensions/Runtime/ExtensionSidePanel.swift
+    title: ExtensionSidePanel.swift (the side panel as built)
+  - id: runtime-check
+    resource: "Runtime check, 2026-10-04 (isolated profile, harness in .claude/task132.8-harness.patch; not in the repository)"
+    title: Runtime check of the side panel with the real Claude extension, signed out
 ---
 
 # Summary
@@ -72,13 +81,16 @@ WebKit does not provide at all — a side panel, tab groups and
 `chrome.debugger` — plus a handful of smaller APIs.
 
 **All code for the epic lives on the branch `epic-claude-extension`, not on
-`main`.** Every other page in this wiki describes `main`. This page is built
+`main`.** Most pages in this wiki describe `main`. Three parts of the epic
+have been ingested from the branch's code and have pages of their own:
+the [side panel](./side-panel.md),
+[`runtime.getContexts`](./runtime-get-contexts.md) and
+[command shortcuts](./command-shortcuts.md). The rest of this page is built
 from the Backlog tasks only; where it cites findings, they come from task
-notes, and the notes for the three sub-tasks already worked on exist only in
-the branch's copy of those tasks until the branch merges. New tasks for the
-epic are still committed to `main` first, so task numbers cannot collide.
+notes. New tasks for the epic are still committed to `main` first, so task
+numbers cannot collide.
 
-Re-check this page against the branch before relying on it.
+Re-check the task-derived parts against the branch before relying on them.
 
 # What the extension uses
 
@@ -109,6 +121,10 @@ It has no action popup.
   permission is not recognised (it is absent from
   `WKWebExtension.requestedPermissions`), `chrome.sidePanel` is undefined in
   pages and workers, and `sidebarForTab:` returns nil.[^commit-sidepanel]
+- **Nothing fired an extension's command shortcut.** WebKit keeps the manifest
+  `commands` and raises `commands.onCommand`, but only when the host calls
+  `performCommand(for:)`, and Detour never did
+  ([command shortcuts](./command-shortcuts.md)).
 - **`WebExtensionWindow::tabs()` returns nothing unless the window names an
   active tab that is in the list.** Detour reports no active tab when nothing
   is selected, which is a normal state, so such a window's tabs vanish from
@@ -164,22 +180,58 @@ Read a task with `backlog task view TASK-132.N --plain`.
 
 # Decisions and measurements so far
 
-## Side panel: polyfill (132.1)
+## Side panel: a polyfill, hosted by Detour (132.1, 132.8)
 
 Detour defines `chrome.sidePanel` itself and hosts the panel page in its own
 web view built from the context's configuration, the way
-[offscreen documents](./offscreen-documents.md) are hosted. The probe
-confirmed that the own property sticks in both the worker and an extension
-page (`chrome === browser` there), and that a web view built from
-`context.webViewConfiguration` runs the controller's user scripts, so it gets
-the polyfill and the profile's data store.[^commit-sidepanel]
+[offscreen documents](./offscreen-documents.md) are hosted. The spike's
+evidence and the alternative it ruled out are in
+[chrome.sidePanel is polyfilled](../decisions/polyfilled-side-panel.md); what
+was built is on [side panel](./side-panel.md).[^commit-sidepanel]
 
-Consequences noted for the hosting task: the module must be gated on the
-manifest's permission list (WebKit does not know the permission); WebKit will
-not grant `activeTab` on panel interaction and will not report the panel
-anywhere; the panel is not a `BrowserTab`, has no sidebar row and is never
-the selected tab.[^task-132-8] WebKit is still developing the feature, so the
-probe should be re-run on new macOS releases.
+How the code met the consequences the spike listed:
+
+- The module and the native handler are both gated on the manifest's
+  `sidePanel` permission, which WebKit does not know.
+- The panel is not a `BrowserTab`: no sidebar row, never the selected tab,
+  never reported to WebKit.
+- The Claude extension sets tab-specific options
+  (`sidepanel.html?tabId=N`), so its panel is a *tab panel*: it shows only
+  with its tab and only in the window that owns the tab's live web view.
+- `setOptions` and `open` are called back to back without awaiting; the
+  polyfill serialises the calls of one context so they arrive in order.
+
+One difference from the task's wording: the task asked to reuse the split
+view's hosting, "frame-based NSSplitView, divider, remembered fraction". The
+code is frame-based and has a draggable divider, but it is a custom
+`SidePanelLayoutView` rather than an `NSSplitView`, and it remembers a width
+in points, one for all panels, rather than a fraction.[^side-panel-code]
+
+Still true, and not worked around: WebKit grants no `activeTab` on
+interaction with the panel.[^task-132-8] WebKit is still developing its own
+side panel, so the probe should be re-run on new macOS releases.
+
+## `runtime.getContexts` and the Cmd+E toggle (132.9, 132.8)
+
+The extension's `toggle-side-panel` handler calls
+`runtime.getContexts({contextTypes: [SIDE_PANEL]})`, then `setOptions` and
+`open` without awaiting, then reads each context's `documentUrl` to see
+whether a panel for that tab is already open;[^task-132-9] if one is, it sends
+the panel page `{type: "close_side_panel", tabId}`.[^runtime-check] Detour
+provides
+[`runtime.getContexts`](./runtime-get-contexts.md), sends its request in the
+call itself so the answer cannot include the panel the same handler is about
+to open, and dispatches the shortcut
+([command shortcuts](./command-shortcuts.md)).
+
+Checked with the real extension, signed out: Cmd+E opened the panel; pressed
+again, the worker found the panel and the page received `close_side_panel`,
+but the panel stayed open, because the listener that calls `window.close()`
+is part of the extension's signed-in components and the "Log in" screen does
+not mount it. With a stand-in listener of the same body the panel closed and
+the next press opened a fresh page.[^runtime-check] The closing half of the
+toggle is therefore unverified with the real extension until it is checked
+signed in ([side panel runtime check](../playbooks/side-panel-runtime-check.md)).
 
 ## Tab id resolution through `tabs.getZoom` (132.2)
 
@@ -263,7 +315,8 @@ stand-in, and a placeholder blank tab.[^task-132-21]
 - [Extensions overview](./overview.md) — the system on `main` this extends
 - [Polyfill layer](./polyfill-layer.md) and [chrome runtime patching](./chrome-runtime-patching.md) — the rules new namespaces must follow
 - [1Password integration](./1password-integration.md) — the previous extension-driven effort
-- [Split tabs hosting](../tabs/split-tabs-hosting.md) — the frame-based hosting the side panel is meant to reuse
+- [Split tabs hosting](../tabs/split-tabs-hosting.md) — the frame-based hosting whose approach the side panel reuses
+- [Side panel](./side-panel.md), [runtime.getContexts](./runtime-get-contexts.md), [command shortcuts](./command-shortcuts.md) — the parts of the epic ingested from the code
 - [Sidebar row layout](../sidebar/row-layout.md) — where group stripes and headers must go through
 - [Testing extensions](./testing-extensions.md) — the test bar each new API has to meet
 
@@ -271,6 +324,9 @@ stand-in, and a placeholder blank tab.[^task-132-21]
 [^task-132-3]: Unselected tabs stay renderable and able to take synthesized input
 [^task-132-6]: externally_connectable pages get chrome.runtime
 [^task-132-8]: Host an extension's per-tab side panel beside the tab's content
+[^task-132-9]: runtime.getContexts and runtime.ContextType
+[^side-panel-code]: ExtensionSidePanel.swift (the side panel as built)
+[^runtime-check]: Runtime check of the side panel with the real Claude extension, signed out
 [^task-132-21]: A window with nothing selected reports no tabs to extensions
 [^task-132-22]: Tell WebKit when a browser window opens or closes
 [^task-132-23]: Design: report each space as a WebKit window

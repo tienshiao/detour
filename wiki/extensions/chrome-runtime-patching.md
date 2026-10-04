@@ -4,7 +4,7 @@ title: Patching WebKit's chrome.* wrappers
 description: WebKit vends chrome.* objects from a weak wrapper cache and serves many members through class callbacks, so a JavaScript patch can vanish at the next garbage collection or never take at all; which members can be patched, how to keep a patch alive, and what must be done natively instead.
 tags: [extensions, webkit, polyfill, javascriptcore, quirk]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:53Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: docs-patching
@@ -34,6 +34,18 @@ sources:
   - id: integration-tests
     resource: ../../DetourTests/ExtensionPolyfillIntegrationTests.swift
     title: ExtensionPolyfillIntegrationTests
+  - id: task-132-1
+    resource: backlog:TASK-132.1
+    title: "Spike: can WebKit's native sidePanel be used (own-property probe)"
+  - id: task-132-9
+    resource: backlog:TASK-132.9
+    title: runtime.getContexts and runtime.ContextType
+  - id: get-contexts-tests
+    resource: ../../DetourTests/ExtensionRuntimeGetContextsTests.swift
+    title: ExtensionRuntimeGetContextsTests (testThePatchSurvivesGarbageCollection)
+  - id: side-panel-tests
+    resource: ../../DetourTests/ExtensionSidePanelTests.swift
+    title: ExtensionSidePanelTests (the tabs.getCurrent canary)
 ---
 
 The [polyfill layer](./polyfill-layer.md) works by patching members onto the
@@ -110,6 +122,14 @@ the static getter; the probes showed otherwise, and it now says so.
 - When WebKit vends nothing for a namespace — `chrome.webRequest` on
   macOS 26 — there is nothing to shadow, and an own property on `chrome` is
   read normally. That is how the full `webRequest` stub is installed.
+- `chrome.sidePanel` is the same case. Released WebKit compiles it out, and a
+  probe on macOS 26.7 found that an own property defined on `chrome` under
+  that name sticks in the worker and in an extension page, survives
+  allocation churn, and is visible as `browser.sidePanel`.[^task-132-1]
+- `tabs.getCurrent()` answers `null`, not Chrome's `undefined`, in an
+  extension page that is not a tab (measured in a side panel, promise and
+  callback forms; `ExtensionSidePanelTests` keeps a canary on it). It is a
+  member inside a namespace, so it is patched in place and `tabs` is rooted.
 - An event object such as `runtime.onInstalled` is itself a weakly cached
   wrapper. Its methods (`addListener`, …) live on its class, so own properties
   under those names shadow them while the wrapper is held. Measured with a
@@ -120,12 +140,25 @@ the static getter; the probes showed otherwise, and it now says so.
 
 | Goal | What works |
 |---|---|
-| Add a member to `chrome.runtime` (e.g. `requestUpdateCheck`), or wrap `runtime.getURL` | Patch the wrapper, then pin it: `Object.defineProperty(chrome, 'runtime', { value: runtime, … })` (`missingStubsJS`) |
+| Add a member to `chrome.runtime` (e.g. `requestUpdateCheck`, `getContexts`, `ContextType`), or wrap `runtime.getURL` | Patch the wrapper, then pin it: `Object.defineProperty(chrome, 'runtime', { value: runtime, … })` (`missingStubsJS`). `runtimeGetContextsJS` roots the same wrapper a second time, below |
 | Add a member to `chrome.action`, `chrome.storage`, `chrome.permissions`, a native `chrome.webRequest` | Patch in place, root with `__detourHoldWrapper(name, wrapper)`, re-read the namespace and check the patch is visible |
 | Add events to `chrome.webNavigation` | Patch in place and root it as an own property on `chrome` (`webNavigationJS`). That `defineProperty` looks like a no-op and is load-bearing. |
-| Replace a whole missing namespace (`idle`, `offscreen`, `privacy`, …) | `__detourDefine(chrome, name, obj)` |
+| Replace a whole missing namespace (`idle`, `offscreen`, `privacy`, `sidePanel`, …) | `__detourDefine(chrome, name, obj)` |
 | Take over `runtime.onInstalled` | Shadow the four listener methods on the event wrapper and hold the wrapper; never touch `chrome.runtime` for it |
 | Intercept `connectNative`, set `lastError`, intercept `reload` | Not possible from JavaScript. Do it natively: the delegate's `connectUsing`, the `runtime.lastErrorRelay` round trip, the background-restart heuristic in [Updates](./updates.md) |
+
+## The runtime wrapper is rooted twice
+
+`chrome.runtime` was first kept alive only by the pin: the own property on
+`chrome` that holds the wrapper WebKit vends. `runtimeGetContextsJS` adds
+`getContexts` and `ContextType` to that wrapper, only when absent, and also
+roots it under the key `runtime` in `__detourHeldWrappers` (a distinct
+`browser.runtime` under `browserRuntime`).[^task-132-9] The second root does
+not depend on the pin having taken, and it makes the wrapper addressable, so
+a test can assert `__detourHeldWrappers.runtime === chrome.runtime` before
+and after a forced collection
+(`ExtensionRuntimeGetContextsTests.testThePatchSurvivesGarbageCollection`),
+the same identity check the other rooted namespaces get.
 
 # Workaround
 
@@ -164,3 +197,5 @@ the static getter; the probes showed otherwise, and it now says so.
 [^task-75]: Origin patterns with a port make chrome.permissions calls throw in WebKit
 [^task-123]: Defer an update while the extension is busy and fire runtime.onUpdateAvailable
 [^task-29]: runtime.onInstalled parity gaps left by TASK-22
+[^task-132-1]: Spike: can WebKit's native sidePanel be used (own-property probe)
+[^task-132-9]: runtime.getContexts and runtime.ContextType

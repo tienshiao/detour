@@ -813,6 +813,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             handleSidePanelRequest(type, params: params, extensionID: extensionID,
                                    sender: sender, senderWebView: senderWebView, replyHandler: replyHandler)
 
+        // MARK: - runtime.getContexts (TASK-132.9)
+        case "runtime.getContexts":
+            // The extension's own contexts in this profile, as they are right
+            // now. Any context of the extension may ask, as in Chrome; the
+            // polyfill turns the tab handles into WebKit's ids and applies the
+            // filter.
+            replyHandler(["contexts": openContexts(extensionID: extensionID)] as [String: Any], nil)
+
         // MARK: - runtime.lastError relay
         case Self.lastErrorRelayType:
             // Always fails, with the caller's own message as the error. The
