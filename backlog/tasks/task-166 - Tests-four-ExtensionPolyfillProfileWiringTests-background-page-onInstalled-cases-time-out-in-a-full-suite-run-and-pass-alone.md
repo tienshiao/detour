@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-04 21:51'
+updated_date: '2026-10-04 22:12'
 labels:
   - bug
   - tests
@@ -52,3 +53,15 @@ Where to start: bisect the suite order with -only-testing (the wiring suite plus
 - [ ] #4 The fix is in the right place: test isolation if the leak is the test's, product code with a regression test if a real extension would hit it
 - [ ] #5 A full DetourTests run passes these four cases three times in a row, and wiki/playbooks/build-and-test.md section 8 is updated with the cause
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-04, after merging main into epic-claude-extension (6cb00e3): a full run (2,382 tests, 12 skipped) fails seven cases of this suite, not four. The four in the description, plus:
+
+- testAnExtensionTabNavigatedToTheBackgroundPathCannotClaimTheInstalledEvent
+- testAnIframeOfTheBackgroundPagePathDoesNotClaimTheInstalledEvent
+- testASupersededKeepAlivePortStopsInsteadOfReconnecting
+
+The first two fail at the same shared wait (line 3362, 'timed out after 20.0 s waiting for the background page to be dispatched the install'); the third fails with 'no heartbeat from the real background page' (line 2987). So the common symptom is a background page that does not answer, not onInstalled in particular. The suite alone on the same build passes: 50 tests, 7 skipped, 0 failures. No other suite failed in the full run. The suite runs 41st of 141. Not checked: whether the three extra cases come from main's changes or from the changed set of suites that run before this one; main alone has still not had a full run.
+<!-- SECTION:NOTES:END -->
