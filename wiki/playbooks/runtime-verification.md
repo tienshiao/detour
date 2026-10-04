@@ -4,7 +4,7 @@ title: Runtime verification
 description: How to build, launch and observe Detour in an isolated profile (the /verify skill), including how to be sure the app you launched is the build you just made.
 tags: [playbook, verify, runtime, isolation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:23:52Z }
 sources:
   - id: verify-skill
     resource: ../../.claude/skills/verify/SKILL.md
@@ -69,12 +69,14 @@ APP="$(xcodebuild -scheme Detour -configuration Debug -showBuildSettings \
 Pass the same `-derivedDataPath` to both commands if you built into a
 private directory ([build and test](./build-and-test.md)).
 
-The skill file still resolves the app with
-`ls -d ~/Library/Developer/Xcode/DerivedData/Detour-*/… | head -1`. Do not
-use that form. A machine that has had several checkouts or worktrees has
-several `Detour-*` directories, the first one in glob order can hold a
-weeks-old build, and sorting by directory mtime (`ls -td`) picked a stale
-one too.[^notes-stale][^notes-harness]
+Never glob DerivedData for the app
+(`ls -d ~/Library/Developer/Xcode/DerivedData/Detour-*/… | head -1`). A
+machine that has had several checkouts or worktrees has several `Detour-*`
+directories, the first one in glob order can hold a weeks-old build, and
+sorting by directory mtime (`ls -td`) picked a stale one
+too.[^notes-stale][^notes-harness] The skill file resolved the app that way
+until 2026-10-04; the release and deploy scripts still do (see
+[release and website](./release-and-website.md)).
 
 ## 2. Launch against an isolated data directory
 

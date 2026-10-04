@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-10-04
+* **Update**: The `/verify` skill now resolves the built app from the build settings; [Runtime verification](playbooks/runtime-verification.md) no longer says the skill is out of date.
 * **Ingest**: TASK-141 — WebKit's `removePort` wipes a page's whole port entry when one port closes, confirmed in the source and by three measurement legs; rewrote that section of [Service worker unload rules](platform/service-worker-unload-rules.md) and the matching limit in [Native port keep-alive](extensions/native-port-keep-alive.md).
 * **Update**: TASK-140 — `docs/` was corrected against the code, so the doc-versus-code notes were removed from the architecture, tabs, sidebar, features and extensions pages that carried them. [Session database](architecture/session-database.md) and [Persistence](architecture/persistence.md) now say the `extensionStorage` table is unused.
 * **Initialization**: Created the wiki as an OKF v0.2 bundle, with its schema in [Wiki conventions](meta/conventions.md) and a lint script at `scripts/wiki-lint.py` (TASK-136).
