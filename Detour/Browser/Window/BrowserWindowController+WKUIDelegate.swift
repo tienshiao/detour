@@ -21,6 +21,15 @@ extension BrowserWindowController: WKUIDelegate {
                 appDelegate.createNewWindowWithURL(url)
             }
         case .none:
+            // A page's own new-window request (a `target=_blank` link, a
+            // script's window.open) for a `data:` URL. Everything below loads
+            // the URL into a tab or a peek itself, and a load the app asks for
+            // is one WebKit allows — where it refuses a page's top-level
+            // navigation to a `data:` URL. Refused here to keep that rule
+            // (TASK-159). The context menu's own actions, above, are the
+            // user's choice and still open one.
+            if url.scheme?.lowercased() == "data" { return nil }
+
             // A tab-style window.open from a pinned tab or favourite peeks, like
             // a target=_blank link does in decidePolicy (TASK-85).
             if let host = peekHostTab(firing: webView),

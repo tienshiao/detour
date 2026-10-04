@@ -99,12 +99,12 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .cancel
         }
 
-        // Non-HTTP(S) URLs (App Store, mailto, zoommtg, etc.) belong to an
-        // external application — only after the user confirms (TASK-84).
+        // URLs a web view does not load itself (App Store, mailto, zoommtg,
+        // etc.) belong to an external application — only after the user
+        // confirms (TASK-84). Which schemes those are is the policy's rule.
         if let url = navigationAction.request.url,
            let scheme = url.scheme,
-           scheme != "http", scheme != "https",
-           scheme != "about", scheme != "blob", scheme != "webkit-extension", scheme != ErrorPage.scheme {
+           ExternalAppLaunchPolicy.isForExternalApp(scheme: scheme) {
             handleExternalAppNavigation(to: url, action: navigationAction, in: webView)
             return .cancel
         }
