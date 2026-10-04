@@ -5,7 +5,7 @@ description: How Detour keeps an extension's background alive while it holds a n
 resource: ../../Detour/Extensions/Runtime/NativeHostKeepAlive.swift
 tags: [extensions, service-worker, native-messaging, webkit, 1password]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:10:19Z }
 sources:
   - id: state
     resource: ../../Detour/Extensions/Runtime/NativeHostKeepAlive.swift
@@ -46,6 +46,9 @@ sources:
   - id: task-70
     resource: backlog:TASK-70
     title: Tracking prevention deletes an extension origin's script-written storage
+  - id: task-141
+    resource: backlog:TASK-141
+    title: Does removePort drop a page's whole port entry when one port closes
   - id: task-123
     resource: backlog:TASK-123
     title: Defer an update while the extension is busy
@@ -198,13 +201,21 @@ once per background start through the [console bridge](./console-bridge.md).
   background has no keep-alive port, so the state reads `connectedHosts: 1,
   portOpen: false, armed: false` and no ping is sent. Pinned by
   `testWorkerWebSocketIsRelayedAndReleasedThroughTheProductionWiring`.
-- **Suspected, untested: closing one of several ports ends the hold.** By
-  WebKit's source, removing any one of a background's ports makes it forget
-  the rest for its open-ports check, and the next 30 s tick unloads whatever
-  the pings do. See
-  [service worker unload rules](../platform/service-worker-unload-rules.md).
-  It would matter for an extension that closes a relayed socket or a second
-  native port while its host stays connected.
+- **Any other port of the background closing ends the hold.** WebKit drops
+  a page's whole port entry when one of its ports goes, so its open-ports
+  check fails and the next 30 s tick unloads the background while the
+  keep-alive is armed and answered. Measured on a background page: one of
+  two native ports disconnected at +10 s, unloaded at +29.7 s; a
+  `runtime.connect` port closed by the other end at +10.6 s, unloaded at
+  +30.2 s.[^task-141] WebKit reports no disconnect for the surviving ports,
+  so the host and the armed state linger until the missed-reply recovery
+  drops them (15 to 30 s) and reloads the background (about 60 s after the
+  unload); an extension that repeats the pattern cycles. A content script's
+  port ending with its tab, a second native port, or a relayed socket
+  closing are all enough. The mechanism and the measurements are on
+  [service worker unload rules](../platform/service-worker-unload-rules.md);
+  the fix is tracked as TASK-142. Not yet measured for a service worker or
+  in a signed build.
 - **Registries are per extension, not per context.** A `connectNative` port
   held by a still-open popup or options page is torn down with the
   background's on a supersede or a restart; the page sees an ordinary
@@ -227,6 +238,7 @@ once per background start through the [console bridge](./console-bridge.md).
 | 2026-09-13 | Tests, 300 s leg, Detour-driven pings | 11 pings, 11 replies in 0–3 ms; after release WebKit closed the port 149.4 s later[^task-68] |
 | 2026-09-13 | Signed build, run 2 | Two workers answered replies #1–#33 over 16 min with no relayed socket open; the third was killed by the ITP purge 1 s after launch and recovered[^task-68] |
 | 2026-09-21 | Signed build, after TASK-67/68/73 | Three workers (one in Private) held 19–23 min, every ping answered (max 74 ms). With hosts at zero: unload 30.0 s after the disarm, clean restart on the next event, exactly three host processes[^task-21] |
+| 2026-10-03 | Tests, background page, another port closing | Unloaded at +29.7 s (second native port disconnected at +10 s, with and without the keep-alive armed) and at +30.2 s (runtime port closed at +10.6 s, keep-alive armed)[^task-141] |
 
 The restart path is reproduced in tests with a worker that calls
 `registration.unregister()` on itself, which reaches WebKit's teardown from
@@ -250,10 +262,9 @@ in the 2026-09-21 run.[^task-21]
 
 # Gotchas
 
-- **Stale comments.** The doc comment on `restartUnresponsiveBackground`, a
-  paragraph in `nativePortKeepAliveJS`, and the relay section of the plan
-  document still say a `chrome.offscreen` document's close terminates the
-  worker. TASK-68's own correction found that a coincidence; the trigger was
+- **Stale comments.** The doc comment on `restartUnresponsiveBackground` and
+  a paragraph in `nativePortKeepAliveJS` still say a `chrome.offscreen`
+  document's close terminates the worker. TASK-68's own correction found that a coincidence; the trigger was
   the ITP pass that ran in the same millisecond.[^task-68]
 - **Take the registry entry before disconnecting.** Every teardown removes
   the whole entry first, so the callbacks it sets off find nothing to
@@ -297,3 +308,4 @@ in the 2026-09-21 run.[^task-21]
 [^task-68]: The armed keep-alive does not stop WebKit unloading a worker (production)
 [^task-70]: Tracking prevention deletes an extension origin's script-written storage
 [^task-123]: Defer an update while the extension is busy
+[^task-141]: Does removePort drop a page's whole port entry when one port closes

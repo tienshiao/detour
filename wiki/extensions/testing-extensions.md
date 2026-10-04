@@ -4,7 +4,7 @@ title: Testing extensions
 description: Which kind of extension test proves what — pure rules, the polyfill in a bare web view, a real WebKit extension context, the production Profile wiring, a runtime check with API Explorer, and the signed build — with the fixtures and the traps.
 tags: [extensions, testing, playbook, fixtures]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -115,7 +115,7 @@ host, and strips the prefix.
 
 | Variable | What runs |
 |---|---|
-| `TEST_RUNNER_DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1` | Three background-page unload legs, about 37 s, 127 s and 300 s[^task-62] |
+| `TEST_RUNNER_DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1` | Six background-page unload legs: three baseline legs, about 37 s, 127 s and 300 s,[^task-62] and three that close one of the background's ports (TASK-141), about 47 s, 128 s and 38 s; see [service worker unload rules](../platform/service-worker-unload-rules.md) |
 | `TEST_RUNNER_DETOUR_MEASURE_WORKER_UNLOAD=1` (and `…_SECONDS`, default 300) | A worker held only by the keep-alive, then released |
 | `TEST_RUNNER_DETOUR_MEASURE_PRIVATE_WORKER=1` (and `…_SECONDS`) | The Private-profile worker answering after 90 s instead of a few |
 | `TEST_RUNNER_DETOUR_DATA_DIR=<name>` | A private data directory, needed when two test runs overlap |
@@ -186,8 +186,7 @@ API Explorer details that show up in logs and are easy to misread:
   a playbook greps for, check it by eye.
 - **Stale comments.** The class comment on `ExtensionPolyfillIntegrationTests`
   says service worker messaging cannot be tested in the test process; the
-  same class contains real worker round trips. `docs/extensions.md` lists two
-  test extensions; there are four directories.
+  same class contains real worker round trips.
 
 # Related
 

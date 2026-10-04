@@ -1561,10 +1561,17 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// `nativeHost` makes it hold one real native messaging port, open and silent,
     /// the way 1Password's background holds its helpers'. What the polyfill's own
     /// keep-alive made of the context is reported next to it.
-    private static func measurementBackgroundJS(nativeHost: String? = nil) -> String {
+    ///
+    /// `closingSecondPortAfterMs` makes it open a *second* port to the same host
+    /// and disconnect that one after the delay, leaving the first open (TASK-141).
+    private static func measurementBackgroundJS(
+        nativeHost: String? = nil, closingSecondPortAfterMs: Int? = nil
+    ) -> String {
         let host = nativeHost.map { "'\($0)'" } ?? "null"
+        let closeSecondAfter = closingSecondPortAfterMs.map(String.init) ?? "null"
         return """
         const NATIVE_HOST = \(host);
+        const CLOSE_SECOND_PORT_AFTER_MS = \(closeSecondAfter);
 
         let loads = 0;
         try {
@@ -1572,7 +1579,10 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             localStorage.setItem('__detourLoads', String(loads));
         } catch (e) {}
         const startedAt = Date.now();
-        const state = { nativePort: 'none' };
+        const state = {
+            nativePort: 'none', secondPort: 'none', secondClosedAtMs: null,
+            runtimePortsOpened: 0, runtimePortsClosed: 0, runtimePortClosedAtMs: null
+        };
 
         function status() {
             const keepAlive = globalThis.__detourNativePortKeepAlive;
@@ -1583,6 +1593,11 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                 isWorker: typeof ServiceWorkerGlobalScope !== 'undefined',
                 contextKind: globalThis.__detourContextKind || 'none',
                 nativePort: state.nativePort,
+                secondPort: state.secondPort,
+                secondClosedAtMs: state.secondClosedAtMs,
+                runtimePortsOpened: state.runtimePortsOpened,
+                runtimePortsClosed: state.runtimePortsClosed,
+                runtimePortClosedAtMs: state.runtimePortClosedAtMs,
                 installMode: keepAlive ? keepAlive.installMode : 'missing',
                 installDetail: keepAlive ? keepAlive.installDetail : 'missing',
                 armed: keepAlive ? keepAlive.armed : false
@@ -1604,6 +1619,38 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                 state.nativePort = 'error: ' + (e && e.message ? e.message : e);
             }
         }
+
+        if (NATIVE_HOST && CLOSE_SECOND_PORT_AFTER_MS !== null) {
+            try {
+                const secondPort = chrome.runtime.connectNative(NATIVE_HOST);
+                state.secondPort = 'open';
+                secondPort.onDisconnect.addListener(() => { state.secondPort = 'disconnected'; beat(); });
+                globalThis.__detourMeasurementSecondNativePort = secondPort;
+                setTimeout(() => {
+                    secondPort.disconnect();
+                    state.secondPort = 'closed';
+                    state.secondClosedAtMs = Date.now() - startedAt;
+                    beat();
+                }, CLOSE_SECOND_PORT_AFTER_MS);
+            } catch (e) {
+                state.secondPort = 'error: ' + (e && e.message ? e.message : e);
+            }
+        }
+
+        // A runtime port another context opens to this one (TASK-141 leg f): held,
+        // counted, and its disconnect stamped.
+        globalThis.__detourMeasurementRuntimePorts = [];
+        chrome.runtime.onConnect.addListener((port) => {
+            if (port.name !== 'task141') return;
+            globalThis.__detourMeasurementRuntimePorts.push(port);
+            state.runtimePortsOpened += 1;
+            port.onDisconnect.addListener(() => {
+                state.runtimePortsClosed += 1;
+                state.runtimePortClosedAtMs = Date.now() - startedAt;
+                beat();
+            });
+            beat();
+        });
 
         beat();
         setInterval(beat, 500);
@@ -1629,12 +1676,14 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         permissions: [String] = ["nativeMessaging"],
         manifestVersion: Int = 3,
         persistent: Bool? = false,
-        nativeHost: String? = nil
+        nativeHost: String? = nil,
+        closingSecondPortAfterMs: Int? = nil
     ) async throws -> WebExtension {
         try await makeBackgroundPageExtension(
             .scripts, id: id,
             permissions: permissions, manifestVersion: manifestVersion, persistent: persistent,
-            backgroundJS: Self.measurementBackgroundJS(nativeHost: nativeHost))
+            backgroundJS: Self.measurementBackgroundJS(
+                nativeHost: nativeHost, closingSecondPortAfterMs: closingSecondPortAfterMs))
     }
 
     /// Put `source` in front of the polyfill user script that
@@ -1864,6 +1913,173 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             ExtensionManager.shared.keepAlivePingCountForTesting(
                 controller: controller, extensionID: ext.id), 2)
+    }
+
+    // MARK: - TASK-141: one of a background's ports closes while others stay open
+    //
+    // WebKit's `WebExtensionContext::removePort` removes the page's whole entry
+    // from `m_pagePortMap` when any one port's count reaches zero, so
+    // `pageHasOpenPorts` is false from then on and the next 30 s unload tick
+    // closes the background whatever else it holds open — the keep-alive's port
+    // and replies included. These legs pin that down; if one starts failing,
+    // WebKit has changed and the wiki page
+    // `wiki/platform/service-worker-unload-rules.md` needs another look.
+
+    /// Leg (d): leg (b)'s page with *two* silent native ports, one of which it
+    /// disconnects 10 s after start; the polyfill's keep-alive is out of the way
+    /// as in leg (b). By WebKit's stated rule the page still has an open port and
+    /// last "posted" (opened a port) at load, so it should live to +120 s like
+    /// leg (b). WebKit's `removePort` drops the page's whole port entry when any
+    /// one port's count reaches zero, which unloads it at the next 30 s tick
+    /// instead. Measured 2026-10-03: unloaded at +29.7 s, the first port still
+    /// reading 'open' in the last heartbeat (no `onDisconnect`), and Detour still
+    /// holding that port's host 10 s later because WebKit reported no disconnect.
+    func testMeasureBackgroundPageUnloadAfterClosingOneOfTwoSilentNativePorts() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let id = measurementExtensionID("task141-silent")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(
+            id: id, nativeHost: host.name, closingSecondPortAfterMs: 10_000)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let started = try await startMeasurement(
+            ext, profileName: "TASK-141 Two Silent Ports",
+            prepending: """
+            globalThis.__detourResolveNativeRuntime = function() {
+                return { runtime: null, detail: 'no-runtime' };
+            };
+            """)
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+
+        try await waitUntil("both fake hosts to be spawned for the background page", timeout: 30) {
+            manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 2
+                && host.processCount() == 2
+        }
+
+        let life = try await watchBackgroundPage(
+            "d: two silent ports, one closed at +10 s", from: started.page, limit: 200)
+        let closedAt = (life.lastBeat["secondClosedAtMs"] as? Double ?? -1) / 1000
+        print("TASK-141 measurement [d]: unloaded=\(life.unloaded) at +\(life.lastAliveSeconds) s; second port closed at +\(closedAt) s; first port '\(life.lastBeat["nativePort"] ?? "?")'; live hosts now \(manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id)), host processes \(host.processCount())")
+        try await Task.sleep(nanoseconds: 10_000_000_000)
+        print("TASK-141 measurement [d]: 10 s later: live hosts \(manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id)), host processes \(host.processCount())")
+        XCTAssertEqual(life.lastBeat["installDetail"] as? String, "no-runtime",
+                       "the polyfill's own keep-alive port must be out of the way for this leg")
+        XCTAssertGreaterThan(closedAt, 0, "the second port must have been closed before the page went away")
+        XCTAssertTrue(life.unloaded, "closing one of two ports must still let WebKit unload the page")
+        XCTAssertLessThan(life.lastAliveSeconds, 60,
+                          "with one port closed the page goes at the next 30 s tick, not at leg (b)'s 120 s")
+        XCTAssertEqual(life.lastBeat["nativePort"] as? String, "open",
+                       "the surviving port gets no onDisconnect before the page is closed")
+    }
+
+    /// Leg (e): leg (c)'s page — the production keep-alive armed and pinging every
+    /// 15 s — with two native ports, one disconnected 10 s after start. A host is
+    /// still connected, so Detour keeps the keep-alive armed and the page keeps
+    /// answering. Closing one port makes WebKit forget the others, so the page is
+    /// unloaded anyway. Measured 2026-10-03: unloaded at +29.7 s with the
+    /// keep-alive armed and two replies received; Detour kept the surviving host
+    /// for 15 to 30 s more, until the missed-reply recovery dropped it, restarted
+    /// the page about 60 s after the unload, and the restarted page (which runs
+    /// the same script) was unloaded at +29.7 s again.
+    func testMeasureBackgroundPageClosingOneOfTwoNativePortsWithTheKeepAliveArmed() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let id = measurementExtensionID("task141-keepalive")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(
+            id: id, nativeHost: host.name, closingSecondPortAfterMs: 10_000)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        ExtensionManager.shared.keepAlivePingInterval = 15
+        let started = try await startMeasurement(ext, profileName: "TASK-141 Armed Keep-alive")
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+
+        try await waitUntil("both fake hosts to be spawned for the background page", timeout: 30) {
+            manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 2
+                && host.processCount() == 2
+        }
+        try await waitUntil("Detour to arm the background page's keep-alive", timeout: 30) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+
+        func snapshot() -> String {
+            "keep-alive \(String(describing: manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id))), "
+                + "ports open \(manager.keepAlivePortOpenCountForTesting(controller: controller, extensionID: ext.id)), "
+                + "replies \(manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id)), "
+                + "live hosts \(manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id)), "
+                + "host processes \(host.processCount())"
+        }
+
+        let life = try await watchBackgroundPage(
+            "e: keep-alive armed, one of two ports closed at +10 s", from: started.page, limit: 200)
+        let closedAt = (life.lastBeat["secondClosedAtMs"] as? Double ?? -1) / 1000
+        print("TASK-141 measurement [e]: unloaded=\(life.unloaded) at +\(life.lastAliveSeconds) s; second port closed at +\(closedAt) s; last beat \(life.lastBeat); \(snapshot())")
+        // What Detour is left holding, and whether it recovers, over the next
+        // minute and a half.
+        for step in 1...6 {
+            try await Task.sleep(nanoseconds: 15_000_000_000)
+            let beat = try await backgroundHeartbeat(from: started.page)
+            print("TASK-141 measurement [e]: +\(step * 15) s after the watch ended: \(snapshot()); heartbeat loads=\(beat?["loads"] ?? "?") aliveMs=\(beat?["aliveMs"] ?? "?") nativePort=\(beat?["nativePort"] ?? "?")")
+        }
+        XCTAssertGreaterThan(closedAt, 0, "the second port must have been closed during the watch")
+        XCTAssertTrue(life.unloaded, "the armed keep-alive does not survive one of the page's ports closing")
+        XCTAssertLessThan(life.lastAliveSeconds, 60, "the page goes at the next 30 s tick")
+        XCTAssertEqual(life.lastBeat["armed"] as? Bool, true, "the keep-alive was armed when the page went")
+    }
+
+    /// Leg (f): leg (c)'s page exactly — one silent native port, the production
+    /// keep-alive armed and pinging every 15 s — plus an ordinary `runtime.connect`
+    /// port that an extension page opens to it and disconnects 10 s later, the
+    /// way a content script's port ends when its tab closes. Leg (c) is the
+    /// control: without that port the page is still running at +300 s. Measured
+    /// 2026-10-03: the port closed at +10.6 s and the page was unloaded at
+    /// +30.2 s, keep-alive armed, three replies received, host still connected.
+    func testMeasureBackgroundPageWithTheKeepAliveArmedAfterARuntimePortCloses() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let id = measurementExtensionID("task141-runtime-port")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(id: id, nativeHost: host.name)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        ExtensionManager.shared.keepAlivePingInterval = 15
+        let started = try await startMeasurement(ext, profileName: "TASK-141 Runtime Port")
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+
+        try await waitUntil("the fake host to be spawned for the background page", timeout: 30) {
+            manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 1
+                && host.processCount() == 1
+        }
+        try await waitUntil("Detour to arm the background page's keep-alive", timeout: 30) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+
+        _ = try await started.page.callAsyncJavaScript(
+            "globalThis.__task141Port = chrome.runtime.connect({ name: 'task141' }); return true;",
+            arguments: [:], contentWorld: .page)
+        try await waitUntil("the background page to receive the runtime port", timeout: 15) {
+            try await self.backgroundHeartbeat(from: started.page)?["runtimePortsOpened"] as? Int == 1
+        }
+        try await Task.sleep(nanoseconds: 10_000_000_000)
+        _ = try await started.page.callAsyncJavaScript(
+            "globalThis.__task141Port.disconnect(); return true;", arguments: [:], contentWorld: .page)
+
+        let life = try await watchBackgroundPage(
+            "f: keep-alive armed, a runtime port closed", from: started.page, limit: 200)
+        let closedAt = (life.lastBeat["runtimePortClosedAtMs"] as? Double ?? -1) / 1000
+        print("TASK-141 measurement [f]: unloaded=\(life.unloaded) at +\(life.lastAliveSeconds) s; runtime port closed at +\(closedAt) s; last beat \(life.lastBeat); keep-alive \(String(describing: manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id))), replies \(manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id)), host processes \(host.processCount())")
+        XCTAssertEqual(life.lastBeat["runtimePortsClosed"] as? Int, 1,
+                       "the background page must have seen the runtime port disconnect")
+        XCTAssertTrue(life.unloaded, "the armed keep-alive does not survive a runtime port closing")
+        XCTAssertLessThan(life.lastAliveSeconds, 90, "the page goes at the next 30 s tick after the close")
+        XCTAssertEqual(life.lastBeat["armed"] as? Bool, true, "the keep-alive was armed when the page went")
     }
 
     /// The helper legs (b) and (c) depend on, run fast and on its own: the

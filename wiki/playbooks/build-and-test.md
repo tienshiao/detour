@@ -4,7 +4,7 @@ title: Build and test
 description: How to generate the project, build, and run the test suite without clobbering another build, another test run or the machine's memory.
 tags: [playbook, build, tests, xcodebuild]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -135,7 +135,7 @@ Variables the tests read (name as seen in the host):
 | Variable | Effect |
 |---|---|
 | `DETOUR_DATA_DIR` | data directory name; override per run with `TEST_RUNNER_DETOUR_DATA_DIR=DetourTests-<tag>` |
-| `DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1` | three background-page unload legs in `ExtensionPolyfillProfileWiringTests`, about 37 s, 127 s and 300 s[^notes-env] |
+| `DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1` | six background-page unload legs in `ExtensionPolyfillProfileWiringTests`: the original three, about 37 s, 127 s and 300 s,[^notes-env] and the three port-closing legs of TASK-141, about 47 s, 128 s and 38 s. Pick legs with `-only-testing` |
 | `DETOUR_MEASURE_WORKER_UNLOAD=1`, `DETOUR_MEASURE_WORKER_UNLOAD_SECONDS` | the worker unload leg (default 300 s) |
 | `DETOUR_MEASURE_PRIVATE_WORKER=1`, `DETOUR_MEASURE_PRIVATE_WORKER_SECONDS` | the long Private-store worker leg in `ExtensionPrivateStoreTests` (90 s instead of 5) |
 | `HISTORY_BENCH=1` | `HistoryBenchmarkTests` |

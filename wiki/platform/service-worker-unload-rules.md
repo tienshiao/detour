@@ -4,7 +4,7 @@ title: Service worker unload rules
 description: WebKit's rules for unloading an extension's background — the 30-second timer, the 2-minute inactive-ports rule and what counts as activity — plus the ways a worker dies without its page closing and the native ports WebKit drops without telling anyone.
 tags: [webkit, extensions, service-worker, native-messaging, platform]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
 stale_after: 2027-01-01T00:00:00Z
 sources:
   - id: webkit-cocoa
@@ -15,7 +15,16 @@ sources:
     title: WebKit WebExtensionContext.cpp (scheduleBackgroundContentToUnload; read 2026-10-04)
   - id: webkit-port
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIPortCocoa.mm
-    title: WebKit WebExtensionContextAPIPortCocoa.mm (portPostMessage, addPorts, removePort; read 2026-10-04)
+    title: WebKit WebExtensionContextAPIPortCocoa.mm (portPostMessage, addPorts, removePort; read 2026-10-04 on main and on the safari-7624 and safari-7623 branches)
+  - id: webkit-countedset
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/HashCountedSet.h
+    title: WTF HashCountedSet.h (remove returns true when a value's count reaches zero)
+  - id: task-141
+    resource: backlog:TASK-141
+    title: Does removePort drop a page's whole port entry when one port closes
+  - id: wiring-tests
+    resource: ../../DetourTests/ExtensionPolyfillProfileWiringTests.swift
+    title: ExtensionPolyfillProfileWiringTests.swift (TASK-141 legs d, e, f)
   - id: plan
     resource: ../../docs/1password-integration-plan.md
     title: 1Password integration plan, Phase 1
@@ -100,6 +109,9 @@ the background answer.
 | Ports open, background's last post at T | T + 2 min, rounded up to the next 30 s tick: 149.4 s after the last post in a test; 151 s after load in production, where the last post was about a second after load[^task-68] |
 | Background posts at least every 30 s | Not unloaded: 300 s in tests, 23 min in the signed build[^task-21] |
 | A native port closes at T while another port stays open | 30.0 s after T in all three recorded cases (see below)[^task-16] |
+| Two silent native ports, the background disconnects one at +10 s | +29.7 s, the first tick after load, instead of +120 s[^task-141] |
+| Keep-alive armed and answered every 15 s, one of two native ports disconnected at +10 s | +29.7 s[^task-141] |
+| Keep-alive armed and answered, a `runtime.connect` port closed by the other end at +10.6 s | +30.2 s[^task-141] |
 
 The shorter delays in WebKit's source (3 s and 6 s) apply only inside
 WebKit's own test runner, chosen by bundle id. Detour's tests get the
@@ -126,31 +138,63 @@ above).
 
 ## Closing one port makes WebKit forget the others
 
-This is read from WebKit's source and fits the measurements; it has not been
-tested on its own.
+Confirmed in WebKit's source and at runtime on 2026-10-03 (local date), on
+macOS 26.7 with WebKit framework 21624.5.1.11.3, in the Debug test host
+(legs d, e and f of `ExtensionPolyfillProfileWiringTests`, run twice with the
+same timings).
 
-`removePort` keeps a counted set of ports per page. When removing a port
-brings *that port's* count to zero, it removes the **page's whole entry**
-from the map, not just that port (the same code is in the revision of
-2026-05-02 and on `main`).[^webkit-port] Two things follow:
+`m_pagePortMap` holds, per page, a counted set of that page's ports.
+`removePort` ends with:
 
-- `pageHasOpenPorts` is false from then on, whatever else the background
-  still has open, so the 2-minute rule no longer applies and the next tick
-  unloads. Observed three times: the background was closed 30.0 s after its
-  last real native port closed, although Detour's keep-alive port was still
-  open and had been posted on less than a minute earlier.[^task-16][^task-21]
-  The exact 30.0 s suggests the disconnect also re-arms the timer.
-- When the page then closes, `disconnectPortsForPage` finds no entry and
-  reports nothing, so the embedder is **not** told the remaining ports
-  ended. Observed once: the next worker's keep-alive port arrived while the
-  old one was still registered, two seconds after the page closed.[^task-21]
+```cpp
+auto& pagePorts = entry->value;
+if (pagePorts.remove({ sourceContentWorldType, targetContentWorldType, channelIdentifier }))
+    m_pagePortMap.remove(webPageProxyIdentifier);
+```
 
-Open question: a background that holds several ports and closes one while
-Detour is still keeping it alive would, by this reading, be unloaded at the
-next tick regardless of the pings. Whether that happens has not been
-checked. It is a candidate explanation for the worker cycling seen after a
-1Password lock on 2026-09-13, which was attributed to the worker's own
-timers by elimination and never reproduced.[^task-68]
+`HashCountedSet::remove` returns true when *that value's* count reaches
+zero, not when the set becomes empty.[^webkit-countedset] So the first port
+of a page to go takes the page's whole entry with it. The code is identical
+on `main` and on the `safari-7624` and `safari-7623` branches.[^webkit-port]
+Three things follow, each measured:[^task-141]
+
+- **The open-ports rule stops applying.** `pageHasOpenPorts` is false from
+  then on, whatever the background still holds, so the next 30 s tick
+  unloads it. A background page with two silent native ports that
+  disconnected one at +10 s was closed at +29.7 s; with one port it lives
+  120 s.
+- **Posting does not help.** The same page with Detour's keep-alive armed,
+  a host still connected and every ping answered was closed at +29.7 s. The
+  control without the port close was still running at +300 s.
+- **Any port counts, whoever closes it.** A `runtime.connect` port opened by
+  an extension page and disconnected by that page 10 s later (the shape of a
+  content script's port ending when its tab closes) had the armed,
+  answering background closed at +30.2 s.
+
+The entry is re-created only by `addPorts`, that is, when the page opens or
+receives a new port. Ports that were open before the loss are not put back.
+
+When the page then closes, `disconnectPortsForPage` finds no entry and
+reports nothing, so the embedder is **not** told the surviving ports ended:
+in the two-port legs Detour still held the surviving port's host process
+after the unload, and the port's `onDisconnect` never ran in the page (its
+last heartbeat still read "open"). Seen once before in the signed build: the
+next worker's keep-alive port arrived while the old one was still
+registered, two seconds after the page closed.[^task-21]
+
+Which tick it is depends on what re-arms the timer. A disconnect that is
+delivered *to* the background as an event wakes it, and a wake re-arms the
+30 s timer: that is the "30.0 s after the last real native port closed" seen
+three times when the host side ended the port.[^task-16][^task-21] A port
+the background closes itself re-arms nothing, so the tick already scheduled
+applies (the +29.7 s above).
+
+Not measured: a service worker background (the bookkeeping is per hidden
+page and shared, and the earlier worker observations fit), a signed build,
+and how often real extensions close a port while they are being held. It is
+a candidate explanation for the worker cycling seen after a 1Password lock
+on 2026-09-13, which was attributed to the worker's own timers by
+elimination and never reproduced.[^task-68]
 
 A related gap: WebKit does not deliver the error an embedder disconnects a
 native port with to an *established* port. Neither `port.error` nor
@@ -207,6 +251,7 @@ state above.
 | Problem | What Detour does | Page |
 |---|---|---|
 | Unload while a native host or relayed socket is live | Pings the background on a built-in port every 30 s; the *reply* is the background post WebKit counts | [Native port keep-alive](../extensions/native-port-keep-alive.md) |
+| One port closing wipes the page's port entry | Nothing yet. The missed-reply recovery below notices 15 to 30 s after the unload and reloads the background about 60 s after it; a fix is tracked as TASK-142 | same |
 | No disconnect on a context reload | Treats a second keep-alive port for the same extension as a replaced background and tears down everything held for the old one | same |
 | Worker dead under a live page | Two unanswered pings: drop all ports so WebKit's next 30 s tick closes the page, then `loadBackgroundContent` 35 s later | same |
 | Stuck registration, code 6 | Unload and reload the context, which gets a fresh origin; at most 3 times per 10 minutes per extension | same |
@@ -234,6 +279,8 @@ the revision closest to the then-shipped macOS WebKit.[^notes-webkit]
 [^manager]: ExtensionManager.swift (keep-alive, supersede teardown, restart)
 [^task-2]: Service worker restart after idle termination
 [^task-16]: Keep the background worker alive while a native host is connected
+[^task-141]: Does removePort drop a page's whole port entry when one port closes
+[^webkit-countedset]: WTF HashCountedSet.h
 [^task-21]: Signed-build verification of the keep-alive and the WebSocket relay
 [^task-62]: Extend the keep-alive to background pages (unload measurements)
 [^task-67]: A replaced worker leaks its native hosts
