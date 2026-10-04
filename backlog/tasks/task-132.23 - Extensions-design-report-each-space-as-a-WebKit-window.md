@@ -4,6 +4,7 @@ title: 'Extensions design: report each space as a WebKit window'
 status: To Do
 assignee: []
 created_date: '2026-10-04 00:27'
+updated_date: '2026-10-04 00:30'
 labels: []
 dependencies: []
 parent_task_id: TASK-132
@@ -37,7 +38,13 @@ To design (each needs a stated rule):
 - [ ] #1 A design document states the rule for every item under 'To design', with the WebKit behaviour each rule relies on cited from source or measured
 - [ ] #2 The design says what tabs.query, windows.getAll, windows.getCurrent / getLastFocused, tab.windowId and the tabs/windows events report for: one window with several spaces, two windows on one space, a space no window shows, a Private window, and a space switch
 - [ ] #3 The favourite home-space rule and the pinned-tab rule above are written into the design
-- [ ] #4 The nothing-selected rule is confirmed with the user and TASK-132.21 is rewritten or closed to match
+- [x] #4 The nothing-selected rule is confirmed with the user and TASK-132.21 is rewritten or closed to match
 - [ ] #5 TASK-132.22 is rewritten or closed in terms of space lifecycle
 - [ ] #6 Implementation is split into follow-up tasks with tests named; nothing is implemented in this task
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-03: nothing-selected rule confirmed by the user as 'we can try your proposal' — the masked stand-in. TASK-132.21 is rewritten to that approach and records the three alternatives (leave it; unmasked stand-in; placeholder blank tab) plus the weak points to watch, as the starting point if it does not hold up in testing. The design should carry the same rule and alternatives.
+<!-- SECTION:NOTES:END -->
