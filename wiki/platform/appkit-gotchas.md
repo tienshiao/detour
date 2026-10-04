@@ -4,9 +4,12 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T19:22:07Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
+  - id: task-132-8
+    resource: backlog:TASK-132.8
+    title: Host an extension's per-tab side panel beside the tab's content
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
     title: BrowserWindowController.swift
@@ -104,6 +107,7 @@ Related.
 | `canBecomeKeyView` is false for `NSScrollView` / `NSClipView` and, with Full Keyboard Access off, for buttons. Full Keyboard Access cannot be forced for one process: the `-AppleKeyboardUIMode 2` launch argument and swizzling `isFullKeyboardAccessEnabled` both had no effect.[^notes-keyloop] | Full Keyboard Access behaviour of the sidebar is unmeasured | Gate buttons with `refusesFirstResponder` anyway; say "unmeasured" in notes |
 | The last responder's `keyDown` calls `noResponderFor(keyDown:)`, which is `NSBeep()`. `WKWebView` re-dispatches every key the page declines up the chain, so each one beeped: arrows at a scroll limit, letters with no field focused, YouTube hotkeys with the player unfocused.[^task-76] | TASK-76 | `BrowserWindowController.keyDown` returns without calling `super` when `keyWasDeclinedByWebContent(firstResponder:)` — the first responder is a `WKWebView` or inside one. Native first responders still fall through and beep. `noResponderFor` beeps only for `keyDown:`; WebKit's editor-command replay is already silenced by its own `WKResponderChainSink` |
 | A popover's window has no window controller, so its responder chain ends at the popover window itself: web view → content view controller → popover window → beep. This is TASK-77's analysis from the code; which object receives the fall-through has not been confirmed at runtime.[^task-77] | Extension popups: keys the popup page declines still beep. `ExtensionPopoverController` has no key handling. An override of `noResponderFor` on the view controller would not be reached | Confirm the terminating responder first (a breakpoint on `NSBeep`), then end the chain there with `keyWasDeclinedByWebContent` |
+| When a page focuses an element (an `autofocus` field, `focus()`), WebKit's web process sends `MakeFirstResponder` and the `WKWebView` makes itself first responder — with no user input, and for a web view that is merely on screen. A mouse press in the page asks the same way.[^task-132-8] | An extension side panel took the keys from the tab as soon as its page loaded; a focus test failed 4 runs in 6 (TASK-132.8) | For a web view that must not take focus on its own, `_setShouldSuppressFirstResponderChanges:` (SPI, guard with `responds(to:)`), and take first responder in `mouseDown` yourself, since the suppression covers clicks too (`ExtensionSidePanelWebView`) |
 | Esc reaches a responder as a raw `keyDown` or as `cancelOperation(_:)`, depending on how AppKit interprets the event. | Esc-closes-Peek | Override both |
 | An `NSMenuDelegate` that does not implement `menuHasKeyEquivalent` gets `menuNeedsUpdate` on **every** key-equivalent dispatch. Returning `false` from it is not a veto (AppKit scans the existing items itself); returning `true` is trusted with no validation.[^task-56] | Spaces and Extensions menus were rebuilt on every Cmd+key press | `MenuKeyEquivalentMatcher`; see [app shell](../architecture/app-shell.md) |
 
@@ -196,6 +200,7 @@ from a probe or a measurement.
 [^task-76]: Keys a web page declines reach the end of the responder chain and play the unhandled-key beep
 [^task-77]: Keys the extension popup page declines still play the unhandled-key beep
 [^task-113]: Check for and install extension updates
+[^task-132-8]: Host an extension's per-tab side panel beside the tab's content
 [^task-126]: The Downloads button's left and bottom edges do not respond to clicks
 [^task-127]: With auto-hide on, the downloads popover disappears when the sidebar hides
 [^task-128]: On launch the sidebar's hidden Search Archive field holds keyboard focus instead of the page

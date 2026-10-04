@@ -18,6 +18,13 @@ final class ExtensionUpdateDeferralTests: XCTestCase {
         XCTAssertTrue(ExtensionUpdateDeferral.shouldDefer(c, now: now))
     }
 
+    /// TASK-132.8: a side panel is one of the extension's pages, on screen or
+    /// hidden with its tab; replacing the context would tear it down.
+    func testAnOpenSidePanelDefers() {
+        var a = ExtensionUpdateDeferral.Activity(); a.openSidePanels = 1
+        XCTAssertTrue(ExtensionUpdateDeferral.shouldDefer(a, now: now))
+    }
+
     func testRecentBackgroundTrafficDefersUntilItAges() {
         var a = ExtensionUpdateDeferral.Activity()
         a.lastBackgroundRequestAt = now.addingTimeInterval(-10)

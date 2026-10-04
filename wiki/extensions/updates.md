@@ -4,7 +4,7 @@ title: Extension updates
 description: How installed extensions move to newer versions — the update2 poll, the verification gate, the added-permissions hold, deferring an update while the extension is busy, runtime.onUpdateAvailable, and why runtime.reload has to be recognised natively.
 tags: [extensions, updates, crx, polyfill]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: updater
     resource: ../../Detour/Extensions/Updates/ExtensionUpdater.swift
@@ -129,6 +129,9 @@ WebKit exposes no "background content is running" signal, so
 - a tab, pinned tile, favourite or peek in any profile shows one of the
   extension's pages;
 - its popup is open;
+- it has a [side panel](./side-panel.md) open in any profile, on screen or
+  hidden with its tab (`openSidePanels`, counted from
+  `ExtensionSidePanelController.allPanels`);
 - a real native messaging host is connected for it;
 - its background context made a polyfill request in the last 60 s
   (`noteBackgroundActivity`, recorded for every background-context request).
@@ -209,6 +212,10 @@ re-adding its listener, and answering again would loop.
   `ExtensionManager.activePopovers`, which only `presentActionPopup`
   (`action.openPopup()`) fills; a popup the user opened from the sidebar button
   or the Extensions menu is retained elsewhere and is not counted.
+- An extension whose side panel stays open is never idle, like one that keeps
+  a native host connected: its update waits for the panel to close, the next
+  launch, or Install Now. Applying the update unloads the context, which
+  closes the panel.
 - Uninstall discards the staged copy and the parked waits.
 - A non-store CRX without an `https` `update_url` never updates.
 - Not exercised in the running app: the Install Now row, and a real store

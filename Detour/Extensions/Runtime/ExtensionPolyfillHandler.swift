@@ -198,7 +198,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// The (percent-encoded) path the extension's background *document* loads
     /// at, or nil when the manifest declares no document shape. `page` wins over
     /// `scripts` when both are declared, as in the polyfill.
-    private static func backgroundDocumentPath(_ background: ExtensionManifest.Background) -> String? {
+    static func backgroundDocumentPath(_ background: ExtensionManifest.Background) -> String? {
         if let page = background.page, !page.isEmpty {
             // Resolved against the extension *root*, because that is what a
             // manifest path is relative to: Chrome accepts './bg.html' and
@@ -303,6 +303,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                                 // be WebKit's untouched background view, so it
                                 // fails closed as hosted (TASK-66).
                                 isDetourHosted: message.webView.map(ExtensionPageHostRegistry.isDetourHosted) ?? true),
+                 senderWebView: message.webView,
                  replyHandler: replyHandler)
     }
 
@@ -378,9 +379,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// establish one, so the body's `extensionID` is never trusted. `sender` is
     /// how the request arrived (a frame, or the worker's native-message
     /// bridge), which the background-context-only requests need on top of the
-    /// identity (TASK-64).
+    /// identity (TASK-64). `senderWebView` is the web view a frame sender's
+    /// message came from, for the requests that are about the sending page
+    /// itself (a side panel closing itself; nil for the worker).
     private func dispatch(_ body: [String: Any], verifiedExtensionID extensionID: String,
-                          sender: PolyfillSender, replyHandler: @escaping (Any?, String?) -> Void) {
+                          sender: PolyfillSender, senderWebView: WKWebView? = nil,
+                          replyHandler: @escaping (Any?, String?) -> Void) {
         guard let type = body["type"] as? String else {
             // Values and foreign key names are extension data (storage values,
             // message payloads) that must not land in the log.
@@ -804,6 +808,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                                         includingAcceptedByWebKit: sender == .nativeMessage)
             replyHandler(["changes": changes.map(\.payload)] as [String: Any], nil)
 
+        // MARK: - Side panel (TASK-132.8)
+        case _ where type.hasPrefix("sidePanel."):
+            handleSidePanelRequest(type, params: params, extensionID: extensionID,
+                                   sender: sender, senderWebView: senderWebView, replyHandler: replyHandler)
+
         // MARK: - runtime.lastError relay
         case Self.lastErrorRelayType:
             // Always fails, with the caller's own message as the error. The
@@ -1016,7 +1025,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// Whether the extension declared a given manifest permission. Used to gate
     /// polyfilled APIs (history, management) that WKWebExtension doesn't itself
     /// permission-check because they're implemented natively here.
-    private func hasPermission(_ permission: String, extensionID: String) -> Bool {
+    func hasPermission(_ permission: String, extensionID: String) -> Bool {
         ExtensionManager.shared.extension(withID: extensionID)?.manifest.permissions?.contains(permission) ?? false
     }
 

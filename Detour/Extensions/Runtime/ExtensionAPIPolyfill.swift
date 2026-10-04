@@ -80,6 +80,7 @@ struct ExtensionAPIPolyfill {
             tabResolveJS,
             declarativeNetRequestJS,
             interimNamespacesJS,
+            sidePanelJS,
             fontSettingsJS,
             sessionsJS,
             searchJS,
@@ -132,6 +133,9 @@ struct ExtensionAPIPolyfill {
         // events-only namespace, 'native' once something real is there.
         try { __detourPolyfillDiag.apis.tabGroups = globalThis.__detourInterimNamespaces.tabGroups; } catch(e) { __detourPolyfillDiag.apis.tabGroups = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.debugger = globalThis.__detourInterimNamespaces.debugger; } catch(e) { __detourPolyfillDiag.apis.debugger = 'error: ' + e.message; }
+        // chrome.sidePanel (TASK-132.8): 'absent' without the permission, 'polyfill'
+        // for Detour's, 'native' if WebKit ever vends one.
+        try { __detourPolyfillDiag.apis.sidePanel = globalThis.__detourSidePanelInstall; } catch(e) { __detourPolyfillDiag.apis.sidePanel = 'error: ' + e.message; }
         // Whether runtime.OnInstalledReason is WebKit's or Detour's (TASK-132.4).
         try { __detourPolyfillDiag.apis.runtimeOnInstalledReason = globalThis.__detourRuntimeConstantsInstall; } catch(e) { __detourPolyfillDiag.apis.runtimeOnInstalledReason = 'error: ' + e.message; }
         // Which chrome.offscreen is in force: Detour's polyfill, Detour's over a
@@ -3261,6 +3265,315 @@ struct ExtensionAPIPolyfill {
             })
         };
         g.__detourInterimNamespaces = Object.freeze(state);
+    })();
+    """
+
+    // MARK: - chrome.sidePanel
+
+    /// `chrome.sidePanel` (TASK-132.8). Released WebKit compiles its side panel
+    /// out (TASK-132.1: no namespace in any context, the `sidePanel` permission
+    /// unrecognised), so this is the whole API; the panel itself is a web view
+    /// Detour hosts (`ExtensionSidePanelController`, docs/extensions.md "Side
+    /// panel").
+    ///
+    /// Defined only when the manifest declares the `sidePanel` permission, as
+    /// Chrome leaves an undeclared namespace out, and only when nothing is
+    /// there: a namespace WebKit vends one day is left alone and reads
+    /// `'native'`. WebKit vends none, so an own property on `chrome` is read
+    /// normally (docs/chrome-runtime-patching.md, as for `webRequest`); a
+    /// distinct `browser` global gets the same object. Neither global is
+    /// replaced (TASK-15).
+    ///
+    /// `setOptions`, `getOptions`, `open`, `close`, `setPanelBehavior`,
+    /// `getPanelBehavior`, each with a promise and a callback form
+    /// (`runtime.lastError` through `__detourSettle`). A bad argument rejects
+    /// (or sets `lastError`) where Chrome throws.
+    ///
+    /// **Tab ids** go through the tab id bridge (`__detourResolveTab`): Detour
+    /// is sent the tab's handle, never WebKit's id.
+    ///
+    /// **Window ids** cannot be bridged — WebKit mints them and has no lookup,
+    /// and Detour has no window bridge yet — so a window is named by its
+    /// active tab: `windows.get(windowId, { populate: true })` (WebKit's own,
+    /// which also validates the id and answers `WINDOW_ID_CURRENT`), then the
+    /// handle of that window's active tab. A window with no tab is sent as
+    /// "a window, but which one is unknown", and Detour falls back to the
+    /// calling page's window, then the key window.
+    ///
+    /// **Order.** The Claude extension calls `setOptions(...)` and `open(...)`
+    /// back to back without awaiting either, and each first resolves its tab
+    /// id, so the calls of one JS context are run one at a time, in call
+    /// order.
+    ///
+    /// **`window.close()`.** A panel's page closes its panel by closing its
+    /// window. WebKit passes `close()` on to the host only for a window with a
+    /// single history entry, so in a top-level extension page the function is
+    /// wrapped to tell Detour as well (`sidePanel.closeSelf`, ignored unless
+    /// the sender is a panel) before calling WebKit's.
+    ///
+    /// **`tabs.getCurrent()`.** In a page that is not a tab Chrome answers
+    /// `undefined`; WebKit answers `null` (measured in a panel, promise and
+    /// callback forms). In a top-level extension page the function is wrapped
+    /// in place to turn that `null` into `undefined` — WebKit's function stays
+    /// on `_detourNative`, the `tabs` namespace is rooted.
+    ///
+    /// `globalThis.__detourSidePanelInstall`: `'absent'` (no permission) |
+    /// `'polyfill'` | `'native'` | `'define-failed'` | `'error: …'`.
+    private static let sidePanelJS = """
+    (function() {
+        const g = globalThis;
+        const chrome = g.chrome;
+        let install = 'absent';
+        try {
+            let existing;
+            try { existing = chrome.sidePanel; } catch (e) {}
+            if (existing !== undefined && existing !== null) {
+                install = existing._detourPolyfill === true ? 'polyfill' : 'native';
+            } else if (__detourManifestPermissions().indexOf('sidePanel') !== -1) {
+                const noop = function() {};
+
+                // The bridge is looked up per call: a later run of the polyfill
+                // in this realm replaces it.
+                const request = function(type, params) {
+                    try {
+                        return Promise.resolve(g.__detourPolyfillRequest(type, params || {}));
+                    } catch (e) {
+                        return Promise.reject(e);
+                    }
+                };
+
+                // One call at a time, in call order.
+                let chain = Promise.resolve();
+                const inOrder = function(work) {
+                    const run = chain.then(work);
+                    chain = run.then(noop, noop);
+                    return run;
+                };
+
+                const invalid = function(api, what) {
+                    return new TypeError('Error in invocation of sidePanel.' + api + ': ' + what);
+                };
+                const objectArgument = function(value, api) {
+                    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+                        throw invalid(api, 'an options object is required');
+                    }
+                    return value;
+                };
+                const optionalInteger = function(value, name, api) {
+                    if (value === undefined || value === null) return undefined;
+                    if (!Number.isInteger(value)) throw invalid(api, name + ' must be an integer');
+                    return value;
+                };
+                const optionalOfType = function(value, type, name, api) {
+                    if (value === undefined || value === null) return undefined;
+                    if (typeof value !== type) throw invalid(api, name + ' must be a ' + type);
+                    return value;
+                };
+
+                const resolveTab = function(tabId) {
+                    if (typeof g.__detourResolveTab !== 'function') {
+                        return Promise.reject(new Error('sidePanel: tab ids cannot be resolved in this context'));
+                    }
+                    return g.__detourResolveTab(tabId);
+                };
+
+                // What Detour is told about a window: the handle of its active
+                // tab, or only that there is one.
+                const windowAnchor = async function(windowId, tabId) {
+                    let win = null;
+                    try {
+                        win = await g.chrome.windows.get(windowId, { populate: true });
+                    } catch (e) {}
+                    if (!win) throw new Error('No window with id: ' + windowId + '.');
+                    const tabs = Array.isArray(win.tabs) ? win.tabs : [];
+                    if (tabId !== undefined && !tabs.some(function(tab) { return tab && tab.id === tabId; })) {
+                        throw new Error('The specified tab does not belong to the specified window.');
+                    }
+                    let anchor = null;
+                    for (let i = 0; i < tabs.length; i++) {
+                        if (tabs[i] && tabs[i].active && Number.isInteger(tabs[i].id)) { anchor = tabs[i]; break; }
+                    }
+                    if (!anchor && tabs.length > 0 && tabs[0] && Number.isInteger(tabs[0].id)) anchor = tabs[0];
+                    const anchored = { hasWindow: true };
+                    if (anchor) anchored.windowTabHandle = await resolveTab(anchor.id);
+                    return anchored;
+                };
+
+                // `open` and `close` name their target the same way.
+                const target = async function(options, api) {
+                    const details = objectArgument(options, api);
+                    const tabId = optionalInteger(details.tabId, 'tabId', api);
+                    const windowId = optionalInteger(details.windowId, 'windowId', api);
+                    if (tabId === undefined && windowId === undefined) {
+                        throw new Error('At least one of "tabId" and "windowId" must be provided');
+                    }
+                    const params = {};
+                    if (tabId !== undefined) params.tabHandle = await resolveTab(tabId);
+                    if (windowId !== undefined) Object.assign(params, await windowAnchor(windowId, tabId));
+                    return { params: params, tabId: tabId, windowId: windowId };
+                };
+
+                // Detour does not know WebKit's ids, so its "no panel" errors
+                // get them here, in Chrome's wording.
+                const withIds = function(error, tabId, windowId) {
+                    const text = error && typeof error.message === 'string' ? error.message : String(error);
+                    if (text.indexOf('No active side panel for the tab') !== -1) {
+                        return new Error('No active side panel for tabId: ' + tabId);
+                    }
+                    if (text.indexOf('No active side panel for the window') !== -1) {
+                        return new Error('No active side panel for windowId: ' + windowId);
+                    }
+                    return error;
+                };
+
+                const sidePanel = {
+                    setOptions: function(options, callback) {
+                        const promise = inOrder(async function() {
+                            const details = objectArgument(options, 'setOptions');
+                            const tabId = optionalInteger(details.tabId, 'tabId', 'setOptions');
+                            const params = {};
+                            const path = optionalOfType(details.path, 'string', 'path', 'setOptions');
+                            if (path !== undefined) params.path = path;
+                            const enabled = optionalOfType(details.enabled, 'boolean', 'enabled', 'setOptions');
+                            if (enabled !== undefined) params.enabled = enabled;
+                            if (tabId !== undefined) params.tabHandle = await resolveTab(tabId);
+                            await request('sidePanel.setOptions', params);
+                        });
+                        return __detourSettle(promise, callback, false);
+                    },
+
+                    getOptions: function(options, callback) {
+                        const promise = inOrder(async function() {
+                            const details = objectArgument(options, 'getOptions');
+                            const tabId = optionalInteger(details.tabId, 'tabId', 'getOptions');
+                            const params = {};
+                            if (tabId !== undefined) params.tabHandle = await resolveTab(tabId);
+                            const reply = await request('sidePanel.getOptions', params);
+                            const result = { enabled: !!(reply && reply.enabled) };
+                            if (reply && typeof reply.path === 'string') result.path = reply.path;
+                            // Only a tab with options of its own is named.
+                            if (tabId !== undefined && reply && reply.tabSpecific === true) result.tabId = tabId;
+                            return result;
+                        });
+                        return __detourSettle(promise, callback);
+                    },
+
+                    open: function(options, callback) {
+                        const promise = inOrder(async function() {
+                            const named = await target(options, 'open');
+                            try {
+                                await request('sidePanel.open', named.params);
+                            } catch (e) {
+                                throw withIds(e, named.tabId, named.windowId);
+                            }
+                        });
+                        return __detourSettle(promise, callback, false);
+                    },
+
+                    close: function(options, callback) {
+                        const promise = inOrder(async function() {
+                            const named = await target(options, 'close');
+                            await request('sidePanel.close', named.params);
+                        });
+                        return __detourSettle(promise, callback, false);
+                    },
+
+                    setPanelBehavior: function(behavior, callback) {
+                        const promise = inOrder(async function() {
+                            const details = objectArgument(behavior, 'setPanelBehavior');
+                            const params = {};
+                            const opens = optionalOfType(details.openPanelOnActionClick, 'boolean',
+                                                         'openPanelOnActionClick', 'setPanelBehavior');
+                            if (opens !== undefined) params.openPanelOnActionClick = opens;
+                            await request('sidePanel.setPanelBehavior', params);
+                        });
+                        return __detourSettle(promise, callback, false);
+                    },
+
+                    getPanelBehavior: function(callback) {
+                        const promise = inOrder(async function() {
+                            const reply = await request('sidePanel.getPanelBehavior', {});
+                            return { openPanelOnActionClick: !!(reply && reply.openPanelOnActionClick) };
+                        });
+                        return __detourSettle(promise, callback);
+                    }
+                };
+                // Non-enumerable: how a re-run, the diag and the tests know
+                // Detour's own object.
+                Object.defineProperty(sidePanel, '_detourPolyfill', {
+                    value: true, writable: false, configurable: true, enumerable: false
+                });
+
+                __detourDefine(chrome, 'sidePanel', sidePanel);
+                if (chrome.sidePanel !== sidePanel) {
+                    install = 'define-failed';
+                } else {
+                    install = 'polyfill';
+                    try {
+                        if (g.browser && g.browser !== chrome
+                            && (g.browser.sidePanel === undefined || g.browser.sidePanel === null)) {
+                            __detourDefine(g.browser, 'sidePanel', sidePanel);
+                        }
+                    } catch (e) {}
+
+                    // window.close() in a panel's page closes the panel.
+                    let isTopLevelPage = false;
+                    try {
+                        isTopLevelPage = g.__detourContextKind === 'page' && !!g.window
+                            && g.window.top === g.window && typeof g.window.close === 'function';
+                    } catch (e) {}
+                    if (isTopLevelPage && g.window.close._detourSidePanelClose !== true) {
+                        const nativeClose = g.window.close;
+                        const close = function() {
+                            try { request('sidePanel.closeSelf', {}).then(noop, noop); } catch (e) {}
+                            return nativeClose.apply(g.window, arguments);
+                        };
+                        close._detourSidePanelClose = true;
+                        try { g.window.close = close; } catch (e) {}
+                    }
+
+                    // tabs.getCurrent() in a page that is not a tab. A panel is
+                    // one, and Chrome answers undefined there; WebKit answers
+                    // null (measured), which `tab === undefined` does not catch.
+                    const wrapGetCurrent = function(key, holder) {
+                        let tabs = null;
+                        try { tabs = holder ? holder.tabs : null; } catch (e) { return; }
+                        if (!tabs || typeof tabs !== 'object') return;
+                        const native = tabs.getCurrent;
+                        if (typeof native !== 'function' || native._detourGetCurrentWrapper === true) return;
+                        const wrapper = function(callback) {
+                            if (typeof callback === 'function') {
+                                // Run from inside WebKit's own callback, so
+                                // runtime.lastError is what WebKit set for it.
+                                return native.call(tabs, function(tab) {
+                                    if (tab === null) { callback(undefined); return; }
+                                    callback.apply(undefined, arguments);
+                                });
+                            }
+                            const returned = native.apply(tabs, arguments);
+                            if (!returned || typeof returned.then !== 'function') return returned;
+                            return returned.then(function(tab) { return tab === null ? undefined : tab; });
+                        };
+                        wrapper._detourGetCurrentWrapper = true;
+                        wrapper._detourNative = native;
+                        __detourDefine(tabs, 'getCurrent', wrapper);
+                        // The tabs namespace is vended from the weak wrapper
+                        // cache: without a root the patch goes at the next
+                        // collection (docs/chrome-runtime-patching.md).
+                        if (tabs.getCurrent === wrapper) __detourHoldWrapper(key, tabs);
+                    };
+                    if (isTopLevelPage) {
+                        wrapGetCurrent('tabs', g.chrome);
+                        try {
+                            if (g.browser && g.browser.tabs !== g.chrome.tabs) wrapGetCurrent('browserTabs', g.browser);
+                        } catch (e) {}
+                    }
+                }
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+        g.__detourSidePanelInstall = install;
     })();
     """
 

@@ -7,8 +7,9 @@ import Foundation
 /// its pages down and restarts its worker, so an extension in the middle of
 /// something (1Password mid-fill, a userscript manager saving) would lose it.
 /// WebKit exposes no "background content is running" signal, so Detour reads
-/// the activity it can see: pages it hosts, a popup it presents, native hosts
-/// it connected, and polyfill traffic from the background context.
+/// the activity it can see: pages it hosts, a popup it presents, side panels it
+/// hosts, native hosts it connected, and polyfill traffic from the background
+/// context.
 enum ExtensionUpdateDeferral {
 
     struct Activity: Equatable {
@@ -16,6 +17,9 @@ enum ExtensionUpdateDeferral {
         var openPages: Int = 0
         /// The action popup is on screen.
         var popupOpen: Bool = false
+        /// Side panels the extension has open, in any profile, on screen or
+        /// hidden with their tab (TASK-132.8).
+        var openSidePanels: Int = 0
         /// Real native messaging hosts connected on the extension's behalf.
         var liveNativeHosts: Int = 0
         /// The last polyfill request Detour answered for a background context.
@@ -30,7 +34,8 @@ enum ExtensionUpdateDeferral {
 
     /// True when installing now would interrupt the extension.
     static func shouldDefer(_ activity: Activity, now: Date = Date()) -> Bool {
-        if activity.openPages > 0 || activity.popupOpen || activity.liveNativeHosts > 0 { return true }
+        if activity.openPages > 0 || activity.popupOpen || activity.openSidePanels > 0
+            || activity.liveNativeHosts > 0 { return true }
         if let last = activity.lastBackgroundRequestAt, now.timeIntervalSince(last) < backgroundIdleAfter { return true }
         return false
     }

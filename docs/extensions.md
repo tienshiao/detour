@@ -17,6 +17,7 @@ Profile (one per browsing profile)
   ├── extensionController: WKWebExtensionController     WebKit's native controller
   ├── extensionContexts: [ID: WKWebExtensionContext]    loaded per-profile contexts
   ├── polyfillHandler: ExtensionPolyfillHandler          native handler for polyfill APIs
+  ├── sidePanels: ExtensionSidePanelController           chrome.sidePanel state and open panels
   └── originInteractionKeeper                            keeps extension origins out of WebKit's
                                                          tracking-prevention purge
 
@@ -63,6 +64,10 @@ Detour/Extensions/
 │   ├── ExternallyConnectable.swift       chrome.runtime on the web pages an extension lists (externally_connectable)
 │   ├── ExtensionPageURL.swift            webkit-extension:// pages open in tabs
 │   ├── ExtensionPageHostRegistry.swift   web views Detour hosts (tells pages from the background)
+│   ├── ExtensionSidePanelState.swift     chrome.sidePanel rules: options, open panels, which shows, layout (pure)
+│   ├── ExtensionSidePanel.swift          the panel's web view, its header view, the per-profile controller
+│   ├── ExtensionPolyfillHandler+SidePanel.swift  sidePanel.* bridge messages
+│   ├── ExtensionCommandDispatch.swift    command shortcuts (chrome.commands) from key equivalents
 │   ├── RuntimeInstalledEvent.swift       Detour's runtime.onInstalled rule
 │   ├── ExtensionOriginInteractionKeeper.swift  tracking-prevention guard for extension origins
 │   ├── ExtensionNotificationManager.swift  UNUserNotificationCenter bridge
@@ -109,7 +114,7 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 | `chrome.scripting` (executeScript, insertCSS, removeCSS) | WebKit native |
 | `chrome.i18n` (getMessage, getUILanguage, detectLanguage) | WebKit native |
 | `chrome.action` (icon, badge, popup, title) | WebKit native |
-| `chrome.commands` (keyboard shortcuts) | WebKit native |
+| `chrome.commands` (keyboard shortcuts) | WebKit native; **Detour** notices the key press and hands it to WebKit (`ExtensionCommandDispatch`, see "Command shortcuts") |
 | `chrome.windows` (getAll, get, create, update) | WebKit native |
 | `chrome.permissions` (contains, getAll, request, remove) | WebKit native; `contains`/`request`/`remove` are wrapped to drop a port from origin patterns, which WebKit's parser rejects |
 | `chrome.webNavigation` | WebKit native (`getAllFrames`/`getFrame` included); the polyfill fills in missing events and adds `onHistoryStateUpdated`/`onReferenceFragmentUpdated` from the content polyfill |
@@ -119,6 +124,7 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 | `chrome.runtime.OnInstalledReason` | **Polyfill** (constants; WebKit vends the event without the enum) |
 | `runtime.onMessageExternal` / `onConnectExternal` (`externally_connectable`) | WebKit native delivery; **Detour** adds the `chrome.runtime` a listed web page calls (WebKit gives pages only `browser.runtime`) — see "Externally connectable pages" |
 | `chrome.tabGroups`, `chrome.debugger` | **Interim stand-ins only** — constants / never-firing events, no methods (see "Interim stand-ins") |
+| `chrome.sidePanel` | **Polyfill** → `ExtensionSidePanelController`, only with the `sidePanel` permission; the panel is a web view Detour hosts beside the tab (see "Side panel") |
 | `chrome.idle` | **Polyfill** → `IdleMonitor` (CGEventSource) |
 | `chrome.notifications` | **Polyfill** → `ExtensionNotificationManager` (UNUserNotificationCenter) |
 | `chrome.history.search` | **Polyfill** → `HistoryDatabase` |
@@ -145,13 +151,14 @@ The polyfill JS (`ExtensionAPIPolyfill.polyfillJS`) only reaches extension-owned
 | Background page (`background.scripts` / `background.page`) | `WKUserScript` on extension controller's `userContentController` | Extension (page) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
 | Popup / Options | `WKUserScript` on extension controller's `userContentController` | Extension (page) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
 | Offscreen document | Inherited via `context.webViewConfiguration` (same `userContentController`) | Extension (page) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
+| Side panel | Inherited via `context.webViewConfiguration` (same `userContentController`) | Extension (page) | `webkit.messageHandlers.detourPolyfill.postMessage(msg)` |
 | Content scripts | `_detour_content_polyfill.js` written into the installed copy and inserted first in each manifest `content_scripts[].js` | Isolated | `chrome.runtime.sendMessage` to the background context, which forwards to the native handler |
 
 The service worker path exists because `WKUserScript` injection doesn't work in WebKit's opaque service worker process. `ExtensionManager.injectServiceWorkerPolyfill(into:)` writes `_detour_polyfill.js` next to the manifest's `background.service_worker` file and prepends `importScripts(...)` to it before `WKWebExtension` initialization. `writeContentPolyfill(into:)` does the same for content scripts by editing the installed copy's `manifest.json`. The content polyfill patches `chrome.i18n.detectLanguage` and reports `pushState`/`replaceState`/`hashchange` navigations; both round-trip through the background context.
 
 All polyfill messages are handled by `ExtensionPolyfillHandler`, which implements `WKScriptMessageHandlerWithReply`. It has two entry points:
 
-1. **Web view contexts** (popup, options, offscreen): `userContentController(_:didReceive:replyHandler:)` — called directly by WebKit.
+1. **Web view contexts** (popup, options, offscreen, side panel): `userContentController(_:didReceive:replyHandler:)` — called directly by WebKit.
 2. **Service worker**: `handleNativeMessage(_:verifiedExtensionID:replyHandler:)` — called via `ExtensionManager`'s `sendMessage` delegate when `appID == "detourPolyfill"`. The extension id comes from the sending context, never from the message body.
 
 ## Extension Lifecycle
@@ -197,7 +204,7 @@ Every installed extension records its **source** (`ExtensionSource`): `webStore`
 
 **Unpacked reload.** Unpacked extensions are never polled. Settings → Reload and Develop → Reload "<name>" reinstall from `sourcePath` keeping the id (`reloadUnpacked`); any version is accepted, and added permissions are held for approval the same way.
 
-**Deferral (TASK-123).** A verified update is not installed while the extension is busy, because replacing a running context tears its pages down and restarts its worker. `ExtensionUpdateDeferral.shouldDefer` holds it when any of these is true (`ExtensionManager.activity(for:)`): one of the extension's pages is open in a tab, pinned tile, favorite or peek in any profile; its action popup is showing after `action.openPopup()` (`isPopupOpen` reads `activePopovers`, which only that delegate path fills — a popup the user opened from a pinned button or the Extensions menu is not counted); a native messaging host is connected on its behalf; or its background context made a polyfill request in the last 60 s (`noteBackgroundActivity`, recorded for every background-context request). The check then reports `.deferred(version:)` ("Version X is downloaded and installs when the extension is idle") and the unpacked, verified copy is **staged** on disk at `<data>/Extensions/<id>.staged/` with its version, signing key and time (`StagedExtensionUpdate`), so it survives a relaunch. A newer update replaces an older staged one.
+**Deferral (TASK-123).** A verified update is not installed while the extension is busy, because replacing a running context tears its pages down and restarts its worker. `ExtensionUpdateDeferral.shouldDefer` holds it when any of these is true (`ExtensionManager.activity(for:)`): one of the extension's pages is open in a tab, pinned tile, favorite or peek in any profile; its action popup is showing after `action.openPopup()` (`isPopupOpen` reads `activePopovers`, which only that delegate path fills — a popup the user opened from a pinned button or the Extensions menu is not counted); it has a side panel open, on screen or hidden with its tab (`openSidePanels`); a native messaging host is connected on its behalf; or its background context made a polyfill request in the last 60 s (`noteBackgroundActivity`, recorded for every background-context request). The check then reports `.deferred(version:)` ("Version X is downloaded and installs when the extension is idle") and the unpacked, verified copy is **staged** on disk at `<data>/Extensions/<id>.staged/` with its version, signing key and time (`StagedExtensionUpdate`), so it survives a relaunch. A newer update replaces an older staged one.
 
 A staged update is applied by whichever comes first:
 - `chrome.runtime.reload()` in response to the event — WebKit's `reload` is a read-only static of the runtime wrapper and cannot be shadowed by the polyfill, and a reload keeps the context's base URL, so Detour recognises it by its only trace: the background context restarting within 15 s of an `onUpdateAvailable` delivery made to an *earlier incarnation* of it (`ExtensionManager.backgroundContextDidStart`, called from the polyfill's start-up `runtime.claimInstalledEvent`; the polyfill mints a `__detourContextInstance` token per evaluation and stamps it on both the wait and the claim, since a listener added at script evaluation is answered before the claim runs and that answer must not pass for the delivery a reload followed). That installs the staged copy at once, whatever the extension has open, which is Chrome's documented pattern. A reload made for any other reason is indistinguishable from an event waking the worker and leaves the copy for the idle poll;
@@ -342,6 +349,53 @@ Neither `chrome.tabGroups` nor `chrome.debugger` is implemented yet (TASK-132.12
 
 Nothing else exists: no `tabGroups.get/query/update/move` or events, no `tabs.group` / `tabs.ungroup`, no `debugger.attach/detach/sendCommand/getTargets`. A feature test for a method still fails and a call still throws a TypeError; only a feature test for the *namespace itself* now sees an object, which is why these are interim. A namespace that is already there (WebKit's, or the real implementation when it lands) is left alone. The diag reads `apis.tabGroups` / `apis.debugger`: `absent`, `interim` or `native`. The real implementations replace the module.
 
+## Side panel
+
+`chrome.sidePanel` is Detour's (TASK-132.8). Released WebKit compiles its side panel out: the namespace is undefined in workers and pages, the `sidePanel` permission is not recognised (it is absent from `WKWebExtension.requestedPermissions`) and `sidebarForTab:` answers nil (TASK-132.1). So the API is a polyfill module (`ExtensionAPIPolyfill.sidePanelJS`), defined only when the manifest declares the `sidePanel` permission, and the panel is a `WKWebView` Detour builds from the context's `webViewConfiguration` — like the offscreen document, it gets the extension's `chrome.*`, the polyfill and the profile's data store.
+
+**API.** `setOptions({tabId?, path?, enabled?})`, `getOptions({tabId?})`, `open({tabId?, windowId?})`, `close({tabId?, windowId?})`, `setPanelBehavior({openPanelOnActionClick})`, `getPanelBehavior()`, each with a promise and a callback form (`runtime.lastError`). A bad argument rejects where Chrome throws. The calls of one JS context reach Detour one at a time, in call order, so `setOptions(...)` followed at once by `open(...)` with neither awaited — what the Claude extension does — works.
+
+**State** is native, per profile and extension (`ExtensionSidePanelState`, owned by `Profile.sidePanels`): the default options, each tab's own options, the panel behaviour and which panels are open. The manifest's `side_panel.default_path` is the default panel until `setOptions` names another. A field a tab did not set comes from the default. In memory only: unloading the context (disable, uninstall, update, reload) closes its panels and forgets its options.
+
+**Two kinds of panel.**
+
+- A *tab panel* belongs to a tab that has options of its own (`setOptions` with a `tabId`). It shows only with that tab.
+- The *window panel* is the default panel, opened for a window (`open({windowId})`, or `open({tabId})` for a tab without options of its own). It shows beside every tab of that window that has no open tab panel. It is hidden, not closed, beside a tab the extension disabled the panel for (`setOptions({tabId, enabled: false})`), as in Chrome.
+
+Another extension's panel in the same place (the same tab, or the same window) replaces the one that was there: one panel in one place.
+
+**Tab ids** go through the tab id bridge. **Window ids** cannot: WebKit mints them and there is no window bridge yet. The polyfill therefore names a window by its active tab — `windows.get(windowId, {populate: true})` (which also validates the id and answers `WINDOW_ID_CURRENT`), then the handle of that window's active tab — and Detour takes the window showing that tab's live web view, else the window WebKit is told the tab is in. A window with no tab cannot be named that way; the call then means the window the calling page is in (a tab's, a popup's, a panel's), else the key window when it shows this profile, else the first window that does. `open({tabId, windowId})` is refused when the window does not list the tab.
+
+**Hosting.** A panel is not a `BrowserTab`: no sidebar row, never `selectedTabID`, nothing WebKit is told about — so it cannot appear in `tabs.query`, the Control+Tab switcher or the closed-tab records, `tabs.getCurrent()` in its page is `undefined`, and Cmd+W closes the tab. The content split item's view is a `SidePanelLayoutView` holding `contentContainerView` and, while a panel shows, the panel at the trailing edge with a divider between them. Frames only (Auto Layout breaks the docked Web Inspector): the tab content area is simply narrower, so everything in it — a split tab's two panes, Peek, the find bar, the link status bar, the empty state, the PiP hold, automation parking — lays out as before. The divider drags; the panel is at least 280 pt wide and leaves the page 240 pt; the width is remembered (`SidePanelWidthStore`, one width for all panels, scoped to the data directory).
+
+**Which panel a window shows** is decided for all windows at once (`ExtensionSidePanelController.reconcile`, `sidePanelToDisplay`), after anything that can change it: the open tab panel of a tab whose *live web view* the window shows (the presented Peek, the selected tab, then the other pane of a split), else the window's own panel. A window showing a snapshot of a tab — another window owns the web view — shows no tab panel, and an ownership hand-off moves the panel with the web view. A panel's web view lives from `open` to `close`; hiding it with its tab only takes its view out of the window, so coming back does not reload the page.
+
+**Closing.** `sidePanel.close`; the close button in the panel's header; `window.close()` in the panel's page (WebKit passes `close()` to the host only for a window with one history entry, so the polyfill also tells Detour directly, `sidePanel.closeSelf`); options that disable the panel or leave it no path; its tab closing; its window closing (window panels); the extension unloading; a first load that fails. A tab that only changes lists keeps its panel: `TabStore` takes a tab out of one list, notifies, and then puts it in the other (a move to another space, a tab made a favourite), and a window answering that notification reconciles the panels while the tab is in none — so a tab found in no list is looked at again on the next main-queue turn, and its panel closes only if it is still in none (or has landed in another profile). The extension sees the context go: its ports disconnect and `runtime.getContexts` no longer lists it. An open panel counts as activity for update deferral.
+
+**Keyboard focus.** A panel Detour opens on a click (`openPanelOnActionClick`) takes the keys. A panel the extension opens takes them only when the user clicked that extension's toolbar action or pressed one of its command shortcuts in the last 5 seconds (`noteUserGesture`; one gesture, one focus) — any other `open` leaves focus where it was. A panel that comes back with its tab never takes focus, and a panel that leaves while it has the keys hands them to the page. The panel's own page cannot take them either: WebKit makes a web view first responder when its page focuses an element (an `autofocus` field, a script's `focus()` — a `MakeFirstResponder` message from the web process, arriving once the page has loaded), which would give every panel with a prompt field the keyboard on every `open`. The panel's web view is created with `_setShouldSuppressFirstResponderChanges:` (WebKit SPI, `ExtensionSidePanel.suppressFirstResponderChanges`), so it has the keys only when Detour hands them over or the user clicks in it (a mouse press asks WebKit for the keys the same suppressed way, so `ExtensionSidePanelWebView` takes them itself on a press).
+
+**`openPanelOnActionClick`.** With it, a click on the toolbar action toggles the panel beside the active tab and `action.onClicked` does not fire, as in Chrome.
+
+**Private.** Nothing special: a panel can only be opened for a context loaded in that profile, and a context is loaded in the Private profile only when the extension is allowed there.
+
+**Limits.**
+
+- No `sidePanel.onOpened` / `onClosed`, no `getLayout` / `Side`.
+- `open()` does not require a user gesture (Detour cannot see one from the worker); the gesture only decides focus.
+- `getOptions` answers the options in force (the tab's own fields over the default's), with `tabId` only for a tab that has options of its own; Chrome answers the stored entry.
+- `close({tabId})` closes the tab's own panel, else the window panel showing beside it.
+- A tab panel on a Peek closes when the Peek is parked with its sleeping host.
+
+## Command shortcuts
+
+WebKit keeps an extension's `commands` and fires `commands.onCommand`, but the app has to notice the key press and call `WKWebExtensionContext.performCommand(for:)`. Until TASK-132.8 nothing did, so no shortcut ever fired. `BrowserWindow.performKeyEquivalent` now offers a key equivalent that nothing in the window's view tree took to `ExtensionCommandDispatch`:
+
+1. the page first — WebKit sends a Command-key press to the focused page, and only what the page declines comes back;
+2. then Detour's own menu, so an extension cannot take over Cmd+T or Cmd+W;
+3. then the extensions loaded in the window's profile, in id order, the first with a command for the key.
+
+A shortcut is a user gesture for the side panel's focus rule. The Claude extension's Cmd+E (`toggle-side-panel`) opens its panel. Pressed again, its worker finds the panel with `runtime.getContexts` and sends it `close_side_panel`; the panel page then calls `window.close()`. That last step is the extension's own listener, which only its signed-in screens mount: with the extension signed out the message arrives and the panel stays open (checked 2026-10-04 with a stand-in listener, see `wiki/playbooks/side-panel-runtime-check.md`).
+
 ## Offscreen Documents
 
 `OffscreenDocumentHost` creates a hidden `WKWebView` for extensions that need off-screen DOM or audio processing. Created on demand via `chrome.offscreen.createDocument()`.
@@ -413,7 +467,7 @@ Three test extensions live under `TestExtensions/` (a fourth directory, `1passwo
 
 - **hello-world** — Minimal extension with a content script, background service worker, popup, and storage permission. Verifies basic lifecycle and injection.
 - **hello-world-module** — The same with a `type: "module"` service worker that imports other modules. Verifies module worker support.
-- **api-explorer** — Comprehensive extension exercising all implemented APIs. Interactive popup sections for each API, background event logging to storage. Its "Declarative Net Request" section adds a session header rule (with or without a header name WebKit refuses) and fetches a URL of your choice from the worker, the popup's `fetch` and the popup's XHR, so a header-echoing endpoint shows what each context sent. Its manifest lists `http://127.0.0.1/*` and `http://localhost/*` in `externally_connectable`: serve `external-page/` on loopback (`python3 -m http.server 8765 --bind 127.0.0.1 -d external-page`), open it in a tab and send to the id shown in the popup's "Externally Connectable" section, which also lists what the worker received and from which origin and tab.
+- **api-explorer** — Comprehensive extension exercising all implemented APIs. Its "Side Panel" section opens, closes and reads the options of a tab panel (`sidepanel.html?tabId=N`) and the window panel from the popup or the worker, and "runtime.getContexts" lists the open contexts as both see them; the panel page itself reports `tabs.getCurrent()`, when it was loaded and its own context. Interactive popup sections for each API, background event logging to storage. Its "Declarative Net Request" section adds a session header rule (with or without a header name WebKit refuses) and fetches a URL of your choice from the worker, the popup's `fetch` and the popup's XHR, so a header-echoing endpoint shows what each context sent. Its manifest lists `http://127.0.0.1/*` and `http://localhost/*` in `externally_connectable`: serve `external-page/` on loopback (`python3 -m http.server 8765 --bind 127.0.0.1 -d external-page`), open it in a tab and send to the id shown in the popup's "Externally Connectable" section, which also lists what the worker received and from which origin and tab.
 
 ## Limitations
 
@@ -423,5 +477,6 @@ Three test extensions live under `TestExtensions/` (a fourth directory, `1passwo
 - **`chrome.declarativeNetRequest`** — WebKit's implementation, with gaps Detour fills only for session rules that modify request headers on the extension's own requests; see "declarativeNetRequest" for what applies where.
 - **`externally_connectable`** — Web pages only (`matches`); the extension needs host access to the page, and a listed extension without a listener answers nothing instead of failing. See "Externally connectable pages".
 - **`chrome.tabGroups`, `chrome.debugger`** — Not implemented; constants and never-firing events only, so a worker that reads them while loading does not die (see "Interim stand-ins").
+- **`chrome.sidePanel`** — No `onOpened` / `onClosed` / `getLayout`; `open()` needs no user gesture; a window is named by its active tab. See "Side panel".
 - **`chrome.tabs.detectLanguage`** — May not be implemented by WebKit in all versions.
 - **Offscreen document AudioContext** — Shimmed to route through native `AVAudioPlayer`. The shim covers `decodeAudioData`/`createBufferSource`/`start`/`stop`/`onended` but not the full Web Audio API graph.

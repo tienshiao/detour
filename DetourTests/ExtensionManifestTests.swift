@@ -429,6 +429,28 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(decoded.commands?["do-thing"]?.description, "Do the thing")
     }
 
+    // MARK: - side_panel (TASK-132.8)
+
+    func testSidePanelDefaultPathIsParsedAndSurvivesARoundTrip() throws {
+        let manifest = try parse("""
+        {"manifest_version": 3, "name": "T", "version": "1", "permissions": ["sidePanel"],
+         "side_panel": {"default_path": "sidepanel.html"}}
+        """)
+        XCTAssertEqual(manifest.sidePanel?.defaultPath, "sidepanel.html")
+        let decoded = try JSONDecoder().decode(ExtensionManifest.self, from: try manifest.toJSONData())
+        XCTAssertEqual(decoded.sidePanel?.defaultPath, "sidepanel.html")
+    }
+
+    func testSidePanelIsNilWhenAbsentOrEmpty() throws {
+        XCTAssertNil(try parse("""
+        {"manifest_version": 3, "name": "T", "version": "1"}
+        """).sidePanel)
+        let empty = try parse("""
+        {"manifest_version": 3, "name": "T", "version": "1", "side_panel": {}}
+        """)
+        XCTAssertNil(empty.sidePanel?.defaultPath)
+    }
+
     // MARK: - The install prompt (TASK-132.4)
 
     /// The permission lists of Anthropic's Claude extension (1.0.98): the install

@@ -4,7 +4,7 @@ title: Web view ownership
 description: A tab's web view is hosted by at most one window; the others draw a dimmed snapshot, and hosting moves to whichever window becomes key.
 tags: [architecture, webkit, window, multi-window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:32Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: window-controller
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -21,6 +21,12 @@ sources:
   - id: switcher
     resource: ../../Detour/Browser/Window/BrowserWindowController+RecentTabSwitcher.swift
     title: BrowserWindowController+RecentTabSwitcher.swift
+  - id: side-panel-window
+    resource: ../../Detour/Browser/Window/BrowserWindowController+SidePanel.swift
+    title: BrowserWindowController+SidePanel.swift (sidePanelDisplayedTabs)
+  - id: side-panel-tests
+    resource: ../../DetourTests/ExtensionSidePanelTests.swift
+    title: ExtensionSidePanelTests (testATabShownInTwoWindowsShowsItsPanelOnlyWhereItsWebViewIs)
   - id: task-104
     resource: backlog:TASK-104
     title: GPU process IOSurface leak and the show budget
@@ -82,6 +88,11 @@ In every other case `selectTab` calls `showSnapshot(for:)`.
    which was showing live content, hides its Peek UI, stores the snapshot as
    `localSnapshot` and shows it.
 
+Both sides then settle the extension side panels: `claimWebView` ends with
+`settleSidePanels()`, and so does the window that lost the web view. A tab's
+[side panel](../extensions/side-panel.md) follows the live web view to the
+claiming window without reloading.
+
 Step 6 matches on **group membership**, not on the focused tab id. Two
 windows on the same split can have different panes focused, and claiming
 either pane takes the whole hosted view.
@@ -109,6 +120,9 @@ picture is the Control+Tab preview, which uses `takeSnapshot`.
 - Content blocker rule changes are re-applied only by the owning window.
 - The show-budget count on window un-occlusion counts only owned panes.
 - The Peek overlay is hidden; it is restored when the window becomes key.
+- A tab's extension side panel is not shown. `sidePanelDisplayedTabs` is empty
+  in a window that does not own, so the panel shows only beside the live page.
+  The window's own (window-scoped) panel is unaffected.
 
 ## Hosted nowhere
 
@@ -161,7 +175,10 @@ that woke it hosts it because nobody else could. See
 
 There is no unit test of the cross-window handoff itself; it is view
 hierarchy behaviour and is checked at runtime with two windows on one space.
-See [runtime verification](../playbooks/runtime-verification.md).
+See [runtime verification](../playbooks/runtime-verification.md). One suite
+does drive a hand-off between two real, never-shown windows by calling
+`windowDidBecomeKey`: `ExtensionSidePanelTests`, to prove a tab's side panel
+moves with the web view.
 
 # Related
 
@@ -170,3 +187,4 @@ See [runtime verification](../playbooks/runtime-verification.md).
 - [Split tabs hosting](../tabs/split-tabs-hosting.md) — the two-pane claim.
 - [GPU IOSurface limit](../platform/gpu-iosurface-limit.md) — why shows are counted.
 - [AppKit gotchas](../platform/appkit-gotchas.md) — Auto Layout and the docked Web Inspector.
+- [Side panel](../extensions/side-panel.md) — a tab's panel shows only in the owning window.

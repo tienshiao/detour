@@ -4,7 +4,7 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: task-89
     resource: backlog:TASK-89
@@ -79,7 +79,7 @@ and visual checks have to wait; report them as not run, never as passed.
 | Activate a link or button in a page | `webView.evaluateJavaScript("document.querySelector(…).click()")` | goes through the real link-activation policy[^notes-inproc] |
 | A real mouse click at a point | `NSEvent.mouseEvent(with:…)` for down and up, `NSApp.postEvent(_:atStart: false)` | see the trap below about `sendEvent` |
 | Point for a page element | `webView.convert(NSPoint(x: cssX, y: cssY), to: nil)` | `WKWebView` is flipped, so CSS pixels convert directly[^notes-inproc] |
-| A real key or Cmd+key | `NSEvent.keyEvent(with:…)`, `NSApp.postEvent` | takes the true path: page `keydown` first, then the main menu |
+| A real key or Cmd+key | `NSEvent.keyEvent(with:…)`, `NSApp.postEvent` | takes the true path: page `keydown` first, then the main menu. A key some loaded extension declares as a command goes to that extension when the menu does not take it ([command shortcuts](../extensions/command-shortcuts.md)); the window must be key |
 | A key equivalent, menu only | `NSApp.mainMenu?.performKeyEquivalent(with: event)` | |
 | A key to whatever has focus | `window.firstResponder?.keyDown(with: event)` | Down arrow: `keyCode` 125, characters `"\u{F701}"`, flags `[.function, .numericPad]`[^notes-keyloop] |
 | A menu item or toolbar action | `NSApp.sendAction(_:to:from:)` | |

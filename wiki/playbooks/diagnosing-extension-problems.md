@@ -4,7 +4,7 @@ title: Diagnosing extension problems
 description: A symptom-to-cause table for Web Extension failures seen in Detour (dead popups, worker restarts, helper CPU, missing content scripts, log noise), with the first check for each and where the mechanism is explained.
 tags: [playbook, extensions, diagnostics, 1password, service-worker]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: plan-doc
     resource: ../../docs/1password-integration-plan.md
@@ -87,6 +87,9 @@ sources:
   - id: notes-itp
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on the extension data store and ITP
+  - id: runtime-check
+    resource: "Runtime check, 2026-10-04 (isolated profile, harness in .claude/task132.8-harness.patch; not in the repository)"
+    title: Runtime check of the side panel with the real Claude extension, signed out
 ---
 
 Extension failures in Detour tend to show up far from their cause: a popup
@@ -132,6 +135,7 @@ errors and you need to know which ones matter.
 | `chrome.permissions.contains` / `request` throws synchronously; an inline menu never appears on a site with a non-default port | WebKit rejects origin patterns that carry a port[^task-75] | the thrown error says `not a valid pattern` | [permissions](../extensions/permissions.md) |
 | `Unchecked runtime.lastError: Invalid call to windows.get(). Window not found.` at every worker start | `windows.getCurrent` from a background context has no window when the profile does not own the key window[^task-81] | whether the profile has the key window | [tab and window bridge](../extensions/tab-and-window-bridge.md) |
 | `runtime.reload()` seems to do nothing | In WebKit it is an unload and load of the same context: same base URL, no delegate callback. The only trace is the worker restarting[^notes-updates] | worker start lines | [updates](../extensions/updates.md) |
+| The Claude extension's side panel opens on Cmd+E but does not close on the next Cmd+E, signed out | The extension, not Detour. Its worker finds the panel with `runtime.getContexts` and sends the page `close_side_panel`; the listener that calls `window.close()` is in its signed-in components, which the "Log in" screen does not mount[^runtime-check] | record `runtime.onMessage` in the panel page: the message arrives | [side panel runtime check](./side-panel-runtime-check.md), [side panel](../extensions/side-panel.md) |
 | Opening the Extensions menu or pressing a key makes an extension prompt to unlock | Something read `WKWebExtension.Action.popupWebView`, which creates and loads the popup page[^task-55] | grep for `popupWebView` | [popup and options UI](../extensions/popup-and-options-ui.md) |
 
 ### Worker lifetime
@@ -266,3 +270,4 @@ errors and you need to know which ones matter.
 [^notes-seeding]: Session notes on seeding extensions for runtime checks
 [^notes-updates]: Session notes on extension updates and options entry points
 [^notes-itp]: Session notes on the extension data store and ITP
+[^runtime-check]: Runtime check of the side panel with the real Claude extension, signed out

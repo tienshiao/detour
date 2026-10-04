@@ -332,6 +332,32 @@
     <div class="result" id="res-interim"></div>
   </section>
 
+  <!-- Side panel (TASK-132.8) -->
+  <section>
+    <h2>Side Panel</h2>
+    <div class="row" style="font-size:11px;color:#555">
+      Calls go from the popup, or from the worker with "via worker" ticked. The tab is the window's active tab.
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="chk-sidepanel-worker"/> via worker</label>
+      <button id="btn-sidepanel-probe" class="secondary">Probe</button>
+    </div>
+    <div class="row">
+      <button id="btn-sidepanel-open-tab">Open tab panel</button>
+      <button id="btn-sidepanel-open-window">Open window panel</button>
+    </div>
+    <div class="row">
+      <button id="btn-sidepanel-close-tab" class="secondary">Close (tab)</button>
+      <button id="btn-sidepanel-close-window" class="secondary">Close (window)</button>
+      <button id="btn-sidepanel-disable-tab" class="secondary">Disable for tab</button>
+    </div>
+    <div class="row">
+      <button id="btn-sidepanel-get-options" class="secondary">getOptions</button>
+      <button id="btn-sidepanel-behavior" class="secondary">Toggle openPanelOnActionClick</button>
+    </div>
+    <div class="result" id="res-sidepanel"></div>
+  </section>
+
   <!-- Externally connectable -->
   <section>
     <h2>Externally Connectable (web page &rarr; extension)</h2>

@@ -122,6 +122,7 @@ extension ExtensionManager {
             activity.openPages += profile.extensionPageLocations(forOriginHost: host).count
         }
         activity.popupOpen = isPopupOpen(extensionID: extensionID)
+        activity.openSidePanels = ExtensionSidePanelController.allPanels.filter { $0.extensionID == extensionID }.count
         activity.liveNativeHosts = liveNativeHostCount(extensionID: extensionID)
         activity.lastBackgroundRequestAt = backgroundActivity[extensionID]
         return activity

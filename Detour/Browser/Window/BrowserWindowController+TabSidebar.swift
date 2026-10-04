@@ -215,7 +215,8 @@ extension BrowserWindowController: TabSidebarDelegate {
         vc.onExtensionClick = { [weak self] extensionID in
             guard let self else { return }
             let popover = ExtensionPopoverController(extensionID: extensionID)
-            popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
+            // The click was in this window, key or not (TASK-132.8).
+            popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY, in: self)
             objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
         }
 
@@ -244,7 +245,8 @@ extension BrowserWindowController: TabSidebarDelegate {
         popover.onClose = { [weak fauxBar] in
             fauxBar?.dismissPopoverKeep()
         }
-        popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
+        // The click was in this window, key or not (TASK-132.8).
+        popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY, in: self)
         objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
     }
 

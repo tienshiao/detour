@@ -12,6 +12,9 @@ class BrowserWindowController: NSWindowController {
     var sidebarSplitView: NSSplitView { splitViewController.splitView }
     let tabSidebar = TabSidebarViewController()
     let contentContainerView = NSView()
+    /// The content split item's view: `contentContainerView` and, while an
+    /// extension side panel shows, the panel beside it (TASK-132.8).
+    private(set) lazy var contentAreaView = SidePanelLayoutView(contentView: contentContainerView)
     /// Where this window keeps the containers of automation-attached tabs it
     /// is not showing: hidden, at the bottom of the content area's z-order
     /// (TASK-132.3, `AutomationParking`).
@@ -40,7 +43,7 @@ class BrowserWindowController: NSWindowController {
     /// A container parked in this window's `automationParkingView` is in the
     /// content area too, but not displayed: the window shows a snapshot of the
     /// tab and does not own it (TASK-132.3).
-    private var ownsWebView: Bool {
+    var ownsWebView: Bool {
         guard let container = selectedTab?.webViewContainer, !container.isInAutomationParking else { return false }
         return container.isDescendant(of: contentContainerView)
     }
@@ -173,6 +176,9 @@ class BrowserWindowController: NSWindowController {
     /// the tracker drops the repeats.
     func announceExtensionActiveTabIfChanged() {
         extensionActiveTabTracker.announce(extensionActiveTab, in: activeSpace?.profile)
+        // The same paths change which tab a side panel shows with: a peek
+        // going up or down, a split pane taking focus (TASK-132.8).
+        settleSidePanels()
     }
 
     /// Autosave names of the window frame and of the sidebar split view. Scoped
@@ -596,7 +602,10 @@ class BrowserWindowController: NSWindowController {
         splitViewController.addSplitViewItem(sidebarItem)
 
         let contentVC = NSViewController()
-        contentVC.view = contentContainerView
+        // The tab content area sits in a frame-based layout view that can put
+        // an extension side panel beside it (TASK-132.8); with no panel it
+        // fills that view.
+        contentVC.view = contentAreaView
         contentContainerView.wantsLayer = true
         // The split veneer's cards animate toward frames captured at install;
         // ANY content-area resize (window resize, sidebar toggle/auto-hide)
@@ -1057,6 +1066,10 @@ class BrowserWindowController: NSWindowController {
         // announcement — and it still runs after the members are woken and
         // claimed, so a freshly woken tab is reported open before it is
         // reported active (TASK-51).
+        //
+        // It also settles the side panels: the outgoing tab's panel leaves the
+        // window and the incoming tab's comes back — before the focus check
+        // below, so keys a departing panel held go to the page (TASK-132.8).
         announceExtensionActiveTabIfChanged()
 
         // Also when nothing holds keyboard focus — the selection at launch, or
@@ -1107,7 +1120,10 @@ class BrowserWindowController: NSWindowController {
     }
 
     /// Script message handlers this controller registers on every owned pane webview.
-    private static let ownedScriptHandlerNames = ["linkHover", "editableFieldFocus"]
+    /// The content controller holds its handlers strongly, so they are taken
+    /// off again wherever the window gives the web view up — and by the tab
+    /// when it releases a web view the window still had (`BrowserTab.releaseWebView`).
+    static let ownedScriptHandlerNames = ["linkHover", "editableFieldFocus"]
 
     /// Wake a sleeping split member alongside the focused pane, mirroring the
     /// wake path in `selectTab`. Guards on the missing webView rather than
@@ -1170,6 +1186,8 @@ class BrowserWindowController: NSWindowController {
         // A claim that collapsed a split, or took a pane from another window's
         // split, leaves a partner's container unparented (TASK-132.3).
         AutomationParking.reconcile(preferring: self)
+        // The web view's owner shows its tab's side panel (TASK-132.8).
+        settleSidePanels()
     }
 
     private func wireOwnedWebView(_ webView: WKWebView) {
@@ -2042,6 +2060,8 @@ class BrowserWindowController: NSWindowController {
             // Whatever the claiming window left behind of our hosted content
             // (the other pane of a split it did not take) is unparented now.
             AutomationParking.reconcile(preferring: self)
+            // The tab's side panel goes with its web view (TASK-132.8).
+            settleSidePanels()
         }
     }
 
@@ -2388,6 +2408,7 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.updateFavoriteSelection(selectedTabID: nil)
         window?.title = "Detour"
         AutomationParking.reconcile(preferring: self)
+        settleSidePanels()
     }
 
     @objc func closeCurrentTab(_ sender: Any?) {
@@ -3205,6 +3226,8 @@ extension BrowserWindowController: NSWindowDelegate {
         // parked, or the one it was displaying — moves to another window.
         hasClosed = true
         AutomationParking.windowWillClose(self)
+        // Its own side panels close; a tab's panel it was showing leaves it.
+        ExtensionSidePanelController.windowWillClose(self)
     }
 
     /// Remove the script message handlers this controller registered on the

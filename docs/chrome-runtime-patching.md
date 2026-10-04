@@ -306,6 +306,13 @@ an own property on `chrome` is read normally. It defines constants (`tabGroups`)
 events (`debugger`) only, each gated on its manifest permission, and never touches a namespace that
 already exists.
 
+`sidePanelJS` (TASK-132.8) is the same case with a whole API behind it: released WebKit compiles
+`chrome.sidePanel` out (the Level 1 table lists it because the IDL does, but no shipped build vends it),
+so an own property on `chrome` is read normally. It is defined only with the manifest's `sidePanel`
+permission and never over a namespace that is already there; its state (`apis.sidePanel`) reads `absent`,
+`polyfill`, `native` or `define-failed`. The module also wraps `window.close` in a top-level extension
+page — a plain function assignment on the page's own `window`, nothing of WebKit's extension bindings.
+
 ### Web pages are a different case
 
 Everything above is about *extension* contexts, where WebKit owns `chrome` / `browser` and reads them back

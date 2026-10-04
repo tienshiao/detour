@@ -282,6 +282,10 @@ class Profile {
     /// Extension contexts loaded in this profile's controller. ExtensionID → context.
     var extensionContexts: [String: WKWebExtensionContext] = [:]
 
+    /// `chrome.sidePanel` for this profile's extensions: their options and
+    /// their open panels (TASK-132.8).
+    private(set) lazy var sidePanels = ExtensionSidePanelController(profile: self)
+
     /// Which pages the loaded extensions list in `externally_connectable`, and
     /// the `chrome.runtime` shim on this profile's tab web views (TASK-132.6).
     let externallyConnectablePages = ExternallyConnectablePages()
@@ -553,6 +557,9 @@ class Profile {
         // view and make offscreen.createDocument report a document that no
         // longer serves the extension.
         polyfillHandler?.closeOffscreenDocument(for: id)
+        // Its side panels too, with the options it set: they are pages of the
+        // origin that is going away (TASK-132.8).
+        sidePanels.extensionDidUnload(id)
         // The console rate-limit window too: a reloaded context starts its own
         // burst, and an extension that never comes back leaves no entry behind.
         polyfillHandler?.forgetConsoleRateLimit(for: id)

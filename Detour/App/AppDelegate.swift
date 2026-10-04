@@ -467,7 +467,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let wc = keyBrowserWindowController else { return }
         let addressBar = wc.tabSidebar.fauxAddressBar
         let popover = ExtensionPopoverController(extensionID: extID)
-        popover.show(relativeTo: addressBar.bounds, of: addressBar, preferredEdge: .minY)
+        popover.show(relativeTo: addressBar.bounds, of: addressBar, preferredEdge: .minY, in: wc)
         // Retain until closed
         objc_setAssociatedObject(wc, "extensionMenuPopover", popover, .OBJC_ASSOCIATION_RETAIN)
     }

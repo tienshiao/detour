@@ -19,6 +19,8 @@ struct ExtensionManifest: Codable {
     let icons: [String: String]?
     let commands: [String: Command]?
     let key: String?
+    /// `side_panel`: the extension's default side panel page (TASK-132.8).
+    let sidePanel: SidePanel?
     /// `update_url`: where a CRX-installed extension's updates are polled from
     /// (TASK-113). Chrome Web Store manifests carry the store's update2 endpoint.
     let updateURL: String?
@@ -39,6 +41,14 @@ struct ExtensionManifest: Codable {
         enum CodingKeys: String, CodingKey {
             case suggestedKey = "suggested_key"
             case description
+        }
+    }
+
+    struct SidePanel: Codable {
+        let defaultPath: String?
+
+        enum CodingKeys: String, CodingKey {
+            case defaultPath = "default_path"
         }
     }
 
@@ -217,6 +227,7 @@ struct ExtensionManifest: Codable {
         case optionsUI = "options_ui"
         case icons
         case updateURL = "update_url"
+        case sidePanel = "side_panel"
     }
 
     /// Parse a manifest.json file at the given URL.

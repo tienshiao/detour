@@ -191,6 +191,7 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 - [In-process UI automation](./in-process-ui-automation.md) — clicks, keys and captures without external input.
 - [UI probes](./ui-probes.md) — hit-test maps and focus dumps.
 - [Seeding extensions](./seeding-extensions.md) — an extension in an isolated profile.
+- [Side panel runtime check](./side-panel-runtime-check.md) — the procedure for an extension side panel, including the Claude toggle while signed out.
 - [Session database](../architecture/session-database.md) — the tables you seed.
 
 [^notes-stale]: Session notes on launching a stale DerivedData build

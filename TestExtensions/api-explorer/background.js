@@ -772,6 +772,49 @@ async function handleMessage(message) {
       return { cleared: true };
     }
 
+    case 'sidePanelOp': {
+      // The popup's side panel buttons, run here in the worker (TASK-132.8).
+      // Kept in step with sidePanelOp in popup.js.
+      const { op, target } = message;
+      const tabPath = `sidepanel.html?tabId=${encodeURIComponent(target.tabId)}`;
+      switch (op) {
+        case 'probe':
+          return {
+            type: typeof chrome.sidePanel,
+            install: globalThis.__detourSidePanelInstall || '(no Detour polyfill)',
+            methods: chrome.sidePanel ? Object.keys(chrome.sidePanel).sort() : [],
+          };
+        case 'openTab':
+          chrome.sidePanel.setOptions({ tabId: target.tabId, path: tabPath, enabled: true });
+          await chrome.sidePanel.open({ tabId: target.tabId });
+          return { opened: tabPath };
+        case 'openWindow':
+          await chrome.sidePanel.open({ windowId: target.windowId });
+          return { opened: 'window panel' };
+        case 'closeTab':
+          await chrome.sidePanel.close({ tabId: target.tabId });
+          return { closed: 'tab' };
+        case 'closeWindow':
+          await chrome.sidePanel.close({ windowId: target.windowId });
+          return { closed: 'window' };
+        case 'disableTab':
+          await chrome.sidePanel.setOptions({ tabId: target.tabId, enabled: false });
+          return await chrome.sidePanel.getOptions({ tabId: target.tabId });
+        case 'getOptions':
+          return {
+            tab: await chrome.sidePanel.getOptions({ tabId: target.tabId }),
+            default: await chrome.sidePanel.getOptions({}),
+            behavior: await chrome.sidePanel.getPanelBehavior(),
+          };
+        case 'toggleBehavior': {
+          const { openPanelOnActionClick } = await chrome.sidePanel.getPanelBehavior();
+          await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: !openPanelOnActionClick });
+          return await chrome.sidePanel.getPanelBehavior();
+        }
+      }
+      throw new Error('unknown side panel op ' + op);
+    }
+
     case 'interimNamespacesProbe': {
       const tg = chrome.tabGroups;
       const dbg = chrome.debugger;

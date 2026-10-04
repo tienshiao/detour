@@ -11,9 +11,22 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "ext-popu
 /// user gesture (needed for `activeTab`), then presents the popup directly.
 /// The delegate `presentActionPopup` handles extension-initiated opens (`browser.action.openPopup()`).
 class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHandler, WKUIDelegate {
-    private let extensionID: String
+    let extensionID: String
     private var popover: NSPopover?
-    private weak var popupWebView: WKWebView?
+    private(set) weak var popupWebView: WKWebView?
+
+    /// The popups on screen, however they were opened — a toolbar click, the
+    /// Extensions menu or `action.openPopup()` — for `runtime.getContexts`
+    /// (TASK-132.9). Weak; main thread only.
+    private static let presented = NSHashTable<ExtensionPopoverController>.weakObjects()
+
+    /// The controllers whose popover is showing.
+    static var presentedPopups: [ExtensionPopoverController] {
+        presented.allObjects.filter { $0.popover != nil && $0.popupWebView != nil }
+    }
+
+    /// The browser window the popover is attached to.
+    var hostWindow: NSWindow? { positioningView?.window }
 
     static let maxWidth: CGFloat = 800
     static let maxHeight: CGFloat = 600
@@ -39,8 +52,17 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
     }
 
     /// Show the extension popup for a user-initiated toolbar button click.
-    func show(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge = .maxY) {
-        guard let context = ExtensionManager.shared.context(for: extensionID) else { return }
+    ///
+    /// `window` is the browser window the click was in — the key window,
+    /// unless a caller (a test) names another.
+    func show(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge = .maxY,
+              in window: BrowserWindowController? = nil) {
+        let windowController = window ?? (NSApp.keyWindow?.windowController as? BrowserWindowController)
+        guard let context = windowController?.activeSpace?.profile?.extensionContext(for: extensionID)
+                ?? ExtensionManager.shared.context(for: extensionID) else {
+            finishWithoutPopover()
+            return
+        }
 
         self.positioningView = positioningView
         self.positioningRect = positioningRect
@@ -49,11 +71,23 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         // The page the user is looking at, which is a presented Peek when one
         // is up — so an activeTab grant and the popup's own tab both name the
         // peek, not the host behind it (TASK-51).
-        let tab = (NSApp.keyWindow?.windowController as? BrowserWindowController)?.extensionActiveTab
+        let tab = windowController?.extensionActiveTab
 
         // Record the user gesture so activeTab permission grants work.
         if let tab {
             context.userGesturePerformed(in: tab)
+        }
+
+        // A side panel the extension opens in answer to this click may take
+        // keyboard focus, and with `openPanelOnActionClick` the click is the
+        // panel's toggle and nothing else (TASK-132.8).
+        if let windowController, let profile = windowController.activeSpace?.profile,
+           profile.extensionContext(for: extensionID) === context {
+            profile.sidePanels.noteUserGesture(extensionID: extensionID)
+            if profile.sidePanels.handleActionClick(extensionID: extensionID, tab: tab, window: windowController) {
+                finishWithoutPopover()
+                return
+            }
         }
 
         let action = context.action(for: tab)
@@ -66,7 +100,17 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         } else {
             // No popup — fire browser.action.onClicked
             context.performAction(for: tab)
+            finishWithoutPopover()
         }
+    }
+
+    /// The click put no popover on screen (a side panel toggle, an
+    /// `action.onClicked`, nothing at all), so `popoverDidClose` will never
+    /// run: whoever is waiting on `onClose` — the address bar keeping its
+    /// buttons up for the popover — is told now.
+    private func finishWithoutPopover() {
+        onClose?()
+        onClose = nil
     }
 
     /// Called by ExtensionManager's delegate for extension-initiated popup opens
@@ -354,6 +398,7 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         self.popover = pop
 
         pop.show(relativeTo: positioningRect, of: posView, preferredEdge: preferredEdge)
+        Self.presented.add(self)
     }
 
     // MARK: - NSPopoverDelegate
@@ -366,6 +411,7 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         if let popupWebView, popupWebView.uiDelegate === self { setPageScrolls(false, in: popupWebView) }
         popupWebView = nil
         popover = nil
+        Self.presented.remove(self)
         onClose?()
         onClose = nil
     }

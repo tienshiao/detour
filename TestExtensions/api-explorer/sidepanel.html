@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>API Explorer side panel</title>
+  <style>
+    body { font: 13px -apple-system, system-ui, sans-serif; margin: 12px; color: #222; }
+    h1 { font-size: 15px; margin: 0 0 8px; }
+    .row { margin: 6px 0; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    button { font: inherit; padding: 4px 8px; }
+    input { font: inherit; padding: 3px 6px; flex: 1; min-width: 80px; }
+    pre { background: #f4f4f4; padding: 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; font-size: 11px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1e1e1e; color: #ddd; }
+      pre { background: #2a2a2a; }
+    }
+  </style>
+</head>
+<body>
+  <h1>API Explorer side panel</h1>
+  <div class="row" id="panel-kind"></div>
+  <div class="row"><input id="panel-notes" type="text" placeholder="Type here: the text must survive a tab switch"></div>
+  <div class="row">
+    <button id="btn-panel-info">Info</button>
+    <button id="btn-panel-contexts">getContexts</button>
+    <button id="btn-panel-close">window.close()</button>
+  </div>
+  <pre id="panel-result"></pre>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

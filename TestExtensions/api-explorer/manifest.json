@@ -4,7 +4,7 @@
   "version": "3.0.0",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
-  "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen", "alarms", "fontSettings", "idle", "notifications", "history", "bookmarks", "sessions", "search", "privacy", "webRequest", "management", "declarativeNetRequestWithHostAccess", "tabGroups", "debugger"],
+  "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen", "alarms", "fontSettings", "idle", "notifications", "history", "bookmarks", "sessions", "search", "privacy", "webRequest", "management", "declarativeNetRequestWithHostAccess", "tabGroups", "debugger", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "optional_permissions": ["cookies"],
   "optional_host_permissions": ["https://example.org/*"],
@@ -16,6 +16,9 @@
       "suggested_key": {"default": "Alt+Shift+E", "mac": "Alt+Shift+E"},
       "description": "Test API Explorer command"
     }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "action": {
     "default_popup": "popup.html",

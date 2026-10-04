@@ -746,6 +746,8 @@ class BrowserTab: NSObject {
         // TabStore remove notification.
         // No-op (and idempotent) when the tab was never reported open.
         ExtensionTabLifecycle.didClose(self)
+        // Its extension side panels close with it (TASK-132.8).
+        ExtensionSidePanelController.tabDidClose(self)
         // A closed tab is nobody's to drive: drop the attachments before the
         // release below, which would otherwise ask for the tab to be woken and
         // parked again (TASK-132.3).
@@ -775,6 +777,15 @@ class BrowserTab: NSObject {
         restoringSession = false
         faviconCancellables.removeAll()
         restartLoadStallTimer(isLoading: false)
+        // The window hosting this web view registered itself on its content
+        // controller, which holds it strongly. A release the window did not
+        // start — the store closing its selected tab (`tabs.remove`, another
+        // window's close), a forced sleep — takes the view out from under the
+        // window's own clean-up, so the handlers go here: left in place they
+        // kept a closed window's controller alive (TASK-132.8).
+        for name in BrowserWindowController.ownedScriptHandlerNames {
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
+        }
         webView.removeFromSuperview()
         webViewContainer?.removeFromSuperview()
         webViewContainer = nil

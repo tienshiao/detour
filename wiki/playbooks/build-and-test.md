@@ -4,8 +4,11 @@ title: Build and test
 description: How to generate the project, build, and run the test suite without clobbering another build, another test run or the machine's memory.
 tags: [playbook, build, tests, xcodebuild]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T19:45:18Z }
 sources:
+  - id: task-132-8
+    resource: backlog:TASK-132.8
+    title: Host an extension's per-tab side panel beside the tab's content
   - id: claude-md
     resource: ../../CLAUDE.md
     title: CLAUDE.md (build commands, TDD policy, commit checklist)
@@ -194,6 +197,40 @@ done
 Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 `/Applications/`: an installed Detour has the same process name.
 
+## 8. A failure that only shows in the full suite
+
+A test that fails in a full run and passes alone was affected by an earlier
+suite. Two that have happened:
+
+- **Something an earlier test left alive.**
+  `ProductionDefaultsIsolationTests.testLaunchWindowUsesTheScopedAutosaveNames`
+  walks every `BrowserWindowController` in `NSApp.windows`, so a test window
+  that was closed but never released fails it many suites later
+  (2026-10-04, TASK-132.8).[^task-132-8] To find the test: keep a static
+  array of weak boxes of each test's windows with the test's name, and print
+  the ones still alive at the start of every `tearDown`. To find what holds
+  it: from inside the test host, run
+  `/usr/bin/leaks <own pid> --traceTree=<address of the object>` with
+  `Process` and write the output to a file. The first-level nodes are the
+  direct referencers; notification-centre and tracking-area entries are
+  unretained noise, a `ScriptMessageHandlerDelegate` or a Swift storage node
+  is a real owner. Narrow first with `-only-testing` for the suspect suite
+  plus the failing one.
+- **A failure that was already there.** Four
+  `ExtensionPolyfillProfileWiringTests` cases about a background *page*
+  getting `runtime.onInstalled`
+  (`testMV3BackgroundPageGetsRuntimeOnInstalledOnce`,
+  `…GetsTheUpdateAfterAVersionChange`,
+  `testMV3BackgroundScriptsPageGetsRuntimeOnInstalledOnce`,
+  `testBackgroundPageDeclaredWithARelativePathGetsRuntimeOnInstalledOnce`)
+  time out in a full run and pass when the suite runs first or alone. The
+  app's own log lines are the same in both (the install is delivered and
+  dispatched to one listener); what fails is the test's question to the
+  background page through an extension page. Which earlier suite causes it
+  is not known. Before blaming a change, run the full suite on the parent
+  commit in a separate worktree with its own `-derivedDataPath`: on
+  2026-10-04 the unmodified parent failed the same four.[^task-132-8]
+
 # Traps
 
 - **Sandboxed agent shells.** `xcodegen generate` and `xcodebuild` write to
@@ -234,6 +271,7 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 - [WebKit test host traps](../platform/webkit-test-host-traps.md) — WebKit behaviour that crashes or pollutes the host.
 - [App shell](../architecture/app-shell.md) — what the app skips when it is the test host.
 
+[^task-132-8]: Host an extension's per-tab side panel beside the tab's content
 [^notes-memory]: Session notes on a runaway test host and test memory limits
 [^notes-env]: Session notes on xcodebuild test environment variables
 [^notes-parallel]: Session notes on parallel builds and test data directories

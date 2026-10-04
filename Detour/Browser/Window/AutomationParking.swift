@@ -146,6 +146,15 @@ final class BrowserWindow: NSWindow {
         }
         return super.makeFirstResponder(responder)
     }
+
+    /// A key equivalent nothing in the window took is offered to the
+    /// extensions' command shortcuts (`chrome.commands`, TASK-132.8) — after
+    /// the page, which WebKit asks first, and after Detour's own menu.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if super.performKeyEquivalent(with: event) { return true }
+        guard let controller = windowController as? BrowserWindowController else { return false }
+        return ExtensionCommandDispatch.perform(event, in: controller)
+    }
 }
 
 // MARK: - Which window parks a tab

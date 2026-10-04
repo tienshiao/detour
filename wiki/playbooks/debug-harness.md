@@ -41,7 +41,7 @@ sources:
     title: Session notes on Private profile extensions
   - id: patches
     resource: "Untracked harness patches kept under .claude/ in a working checkout (not in the repository)"
-    title: Per-task harness patches (TASK-92, 94, 95, 124, 126-128, 129, 130, 131)
+    title: Per-task harness patches (TASK-92, 94, 95, 124, 126-128, 129, 130, 131, 132.8)
 ---
 
 There is no permanent automation hook in Detour. Runtime checks that need
@@ -234,7 +234,9 @@ Not in the repository: several per-task harness patches were saved,
 untracked, under `.claude/` in a working checkout (`task92-harness.patch`
 through `task131-harness.patch`). They cover posted mouse and key events
 into an internal page, sidebar layer snapshots, the hit-test and resize
-probes, the stub drag info above, and the key-view loop probe. They were
+probes, the stub drag info above, and the key-view loop probe. A later one
+(`task132.8-harness.patch`) drives an extension side panel; its procedure is
+the [side panel runtime check](./side-panel-runtime-check.md). They were
 written against the `AppDelegate` of their day and may not apply cleanly;
 the techniques are written up on
 [in-process UI automation](./in-process-ui-automation.md) and

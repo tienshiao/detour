@@ -5,7 +5,7 @@ description: How BrowserWindowController shows a split (a frame-based NSSplitVie
 resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [tabs, split, window, appkit, nssplitview, focus]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -40,6 +40,15 @@ sources:
   - id: notes
     resource: "Agent session notes, 2026 (not in the repository)"
     title: Runtime debug harness notes (NSSplitView setPosition finding)
+  - id: layout-view
+    resource: ../../Detour/Browser/Window/SidePanelLayoutView.swift
+    title: SidePanelLayoutView.swift (the content area beside an extension side panel)
+  - id: runtime-check
+    resource: "Runtime check, 2026-10-04 (isolated profile, harness in .claude/task132.8-harness.patch; not in the repository)"
+    title: Runtime check of the docked Web Inspector with a side panel open
+  - id: webkit-inspector
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Inspector/mac/WebInspectorUIProxyMac.mm
+    title: WebKit main, WebInspectorUIProxyMac.mm (platformCanAttach)
 ---
 
 # Role
@@ -89,6 +98,30 @@ Auto Layout complaints, and clicking a pane reliably fires
 Do not add constraints to a pane container or the hosted split view. The Peek
 web view and the snapshot image view do use constraints; they are not tab
 containers.
+
+The same rule holds one level up. `contentContainerView` itself sits inside
+a `SidePanelLayoutView`, which frames it next to an extension
+[side panel](../extensions/side-panel.md) when one shows. A panel only makes
+the content area narrower; the hosted split view follows through its
+autoresizing mask, and both panes stay up.
+
+**When the inspector docks.** Observed once, on one machine, on 2026-10-04,
+with a side panel open:[^runtime-check]
+
+| Inspected web view | Width | Result |
+|---|---|---|
+| A single tab's page beside the panel | 902 pt, 812 pt | Docked below the page |
+| A split pane, with the panel open | 532 pt | Docked |
+| A split pane, with the panel open | 437 pt | Came up detached; calling the inspector's `attach` did not dock it |
+| The side panel's own page | 560 pt | Came up detached; `attach` did not dock it |
+
+Treat this as an observation, not a rule. WebKit `main` refuses to attach
+beside an inspected view narrower than 500 pt (`platformCanAttach` in
+`WebInspectorUIProxyMac.mm`), which fits the two pane results; the shipped
+framework was not checked, and that limit does not explain the panel's page.
+In every case the web view had its full frame back once the inspector was
+closed. A detached inspector on a narrow pane is therefore not by itself a
+hosting regression; widen the pane before concluding anything.
 
 `WebViewContainerView` (in [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift))
 exists for the same reason: it clips each subview to the card's corner radius
@@ -308,7 +341,8 @@ are only checked in the running app. After changing them, exercise a real split
 with `/verify` ([runtime verification](../playbooks/runtime-verification.md)):
 form by drop and by Option-click, drag the divider, switch away and back,
 resize, dock the Web Inspector in one pane, open the same space in a second
-window.
+window, and repeat the inspector step with an extension side panel open
+([side panel runtime check](../playbooks/side-panel-runtime-check.md)).
 
 # Related
 
@@ -319,6 +353,8 @@ window.
 - [AppKit gotchas](../platform/appkit-gotchas.md): the `setPosition` and Auto Layout traps in general form.
 - [Sidebar drag and drop](../sidebar/drag-and-drop.md): row edge drops and member drags.
 - [Peek](./peek.md): the overlay that spans a split.
+- [Side panel](../extensions/side-panel.md): the frame-based pane beside the content area.
 
 [^design]: Split Tabs design document (sections 5, 7, 8, 11, 13)
 [^notes]: Runtime debug harness notes (NSSplitView setPosition finding)
+[^runtime-check]: Runtime check of the docked Web Inspector with a side panel open

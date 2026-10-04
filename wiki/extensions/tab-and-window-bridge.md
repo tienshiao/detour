@@ -4,7 +4,7 @@ title: Tab and window bridge
 description: How Detour's tabs and windows are presented to WebKit's extension runtime — the WKWebExtensionTab and Window conformances, the rule for when a tab is reported open, closed, moved or active, and what a window lists.
 tags: [extensions, tabs, windows, webkit, lifecycle]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: lifecycle
     resource: ../../Detour/Extensions/Runtime/ExtensionTabLifecycle.swift
@@ -181,6 +181,24 @@ Detour has no table of them on `main`: nothing maps a WebKit tab id back to a
 `BrowserTab`.[^task-132-2] `webView(for:)` returns the tab's web view only when
 its configuration's controller is the asking context's.
 
+## Window ids
+
+WebKit mints window ids too, and offers the host no lookup from one. Detour
+has no bridge for them. The polyfilled APIs that take or report a `windowId`
+therefore **name a window by a tab**:
+
+- inbound, [`sidePanel.open` / `close`](./side-panel.md) ask WebKit's own
+  `windows.get(windowId, {populate: true})` for the window's active tab and
+  send Detour that tab's handle; Detour takes the window showing the tab's
+  live web view, else `extensionWindow()`;
+- outbound, [`runtime.getContexts`](./runtime-get-contexts.md) sends the
+  handle of a tab that stands for the context's window, and the polyfill
+  reports the `windowId` that `tabs.get` gives for it.
+
+Both depend on the window listing a tab. A window with nothing selected lists
+none (below), so it cannot be named on the way in and reports `windowId` -1
+on the way out.
+
 # Invariants
 
 - Every enumerable tab whose web view carries a live profile's controller is
@@ -218,6 +236,9 @@ its configuration's controller is the asking context's.
   the key window's is the likely cause; it has not been confirmed.[^task-81]
 - `openNewWindowUsing` ignores `configuration.tabs` (moving existing tabs into
   the new window is a TODO in the code).
+- An extension [side panel](./side-panel.md) is deliberately never reported.
+  It is not a tab, so it is absent from `tabs.query` and every window's list,
+  and `tabs.getCurrent()` in its page has no tab to answer with.
 
 The planned changes to the window model are in the
 [Claude extension epic](./claude-extension-epic.md); this page describes `main`.
@@ -236,6 +257,7 @@ The planned changes to the window model are in the
 - [Sleeping and archiving](../tabs/sleeping-and-archiving.md) — when a web view is released and rebuilt.
 - [WebView ownership](../architecture/webview-ownership.md) — a tab's web view may be owned by another window, or none.
 - [Extension pages](./extension-pages.md) — the announce-once ordering on a context reload.
+- [Side panel](./side-panel.md) and [runtime.getContexts](./runtime-get-contexts.md) — the APIs that name a window by its active tab.
 
 [^task-50]: Favourites and Peeks register their backing tabs with the extension contexts
 [^task-51]: Make a presented Peek the extension-visible active tab

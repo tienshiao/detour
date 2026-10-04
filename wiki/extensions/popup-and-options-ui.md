@@ -4,7 +4,7 @@ title: Extension popup, menu and options page
 description: The browser-side entry points to an extension — the pinned sidebar buttons, the Extensions menu, the action popup popover and the options page — and the rule that nothing but an explicit present may read an action's popupWebView.
 tags: [extensions, ui, popup, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
 sources:
   - id: popover
     resource: ../../Detour/Extensions/UI/ExtensionPopoverController.swift
@@ -78,15 +78,30 @@ text. `extensionActionDidChangeNotification` and
 
 ## Showing a popup (`ExtensionPopoverController.show`)
 
-1. Take the context from `ExtensionManager.context(for:)` and the tab from the
-   key window's `extensionActiveTab` — the presented [Peek](../tabs/peek.md)
-   when one is up, so the popup and any `activeTab` grant name the page the
-   user is looking at.[^task-51]
+1. Take the window the click was in (`show(…, in:)`; the key window when the
+   caller names none), the context from that window's profile, falling back
+   to `ExtensionManager.context(for:)`, and the tab from the window's
+   `extensionActiveTab` — the presented [Peek](../tabs/peek.md) when one is
+   up, so the popup and any `activeTab` grant name the page the user is
+   looking at.[^task-51]
 2. `context.userGesturePerformed(in: tab)`. Without it `activeTab` grants
    nothing.
-3. If the action `presentsPopup`, read `popupWebView`, **reload it** (Chrome
+3. Note the click as a user gesture for the [side panel](./side-panel.md)
+   focus rule. If the extension set `openPanelOnActionClick`, the click
+   toggles its panel and stops here: no popup, no `action.onClicked`.
+4. If the action `presentsPopup`, read `popupWebView`, **reload it** (Chrome
    recreates a popup on every open) and present it. Otherwise
    `context.performAction(for:)`, which fires `action.onClicked`.
+
+A click that puts no popover on screen (a panel toggle, an `action.onClicked`,
+no context) calls `onClose` at once (`finishWithoutPopover`), because
+`popoverDidClose` will never run and the address bar is waiting on it to let
+its buttons go.
+
+`ExtensionPopoverController.presentedPopups` lists every controller whose
+popover is showing, however it was opened. It exists for
+[`runtime.getContexts`](./runtime-get-contexts.md) and is separate from
+`ExtensionManager.activePopovers`, below.
 
 Presenting (`presentPopupWebView`): the web view is registered in
 `ExtensionPageHostRegistry`, the controller becomes its UI delegate (so
@@ -158,8 +173,8 @@ window. For a Private profile it only ever uses its own window.
   Settings… button is hidden by design; its settings live in its own app
   page.[^notes-updates]
 - `ExtensionManager.context(for:)` answers for the last-active space's
-  profile. The popup path relies on that matching the window the user clicked
-  in.
+  profile. The popup path uses it only as a fallback, when the clicked
+  window's profile has no context for the extension.
 - A key the popup page declines falls off the end of the popover's responder
   chain and beeps. The popover window has no window controller, so the fix
   used for browser windows does not apply ([AppKit gotchas](../platform/appkit-gotchas.md)).[^task-77]
@@ -186,6 +201,7 @@ window. For a Private profile it only ever uses its own window.
 - [Extension pages](./extension-pages.md) — an options tab is an extension page tab.
 - [Settings](../features/settings.md) — the Extensions pane.
 - [Updates](./updates.md) — which popups count as "open" for update deferral.
+- [Side panel](./side-panel.md) — what the toolbar click toggles with `openPanelOnActionClick`.
 
 [^task-51]: Make a presented Peek the extension-visible active tab
 [^task-55]: Building the Extensions menu loads every extension's popup page

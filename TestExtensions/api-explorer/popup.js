@@ -647,6 +647,89 @@ document.getElementById('btn-interim-probe').addEventListener('click', async () 
   }
 });
 
+// --- Side panel (TASK-132.8) ---
+//
+// chrome.sidePanel is Detour's polyfill (released WebKit has none): the panel is
+// a page Detour hosts beside the tab. A tab panel (setOptions with a tabId)
+// shows only with its tab; the window panel (side_panel.default_path) shows for
+// every tab without one. Each button runs here in the popup, or in the worker.
+
+async function sidePanelTarget() {
+  // "currentWindow" is the focused window; a window that is not key has none,
+  // so fall back to the first active tab WebKit lists.
+  let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) [tab] = await chrome.tabs.query({ active: true });
+  if (!tab) throw new Error('no active tab');
+  return { tabId: tab.id, windowId: tab.windowId };
+}
+
+async function sidePanelRun(op) {
+  const target = await sidePanelTarget();
+  if (document.getElementById('chk-sidepanel-worker').checked) {
+    const reply = await sendBg({ type: 'sidePanelOp', op, target });
+    if (reply && reply.error) throw new Error(reply.error);
+    return { via: 'worker', target, result: reply };
+  }
+  return { via: 'popup', target, result: await sidePanelOp(op, target) };
+}
+
+// Kept in step with the worker's copy in background.js.
+async function sidePanelOp(op, target) {
+  const tabPath = `sidepanel.html?tabId=${encodeURIComponent(target.tabId)}`;
+  switch (op) {
+    case 'probe':
+      return {
+        type: typeof chrome.sidePanel,
+        install: globalThis.__detourSidePanelInstall || '(no Detour polyfill)',
+        methods: chrome.sidePanel ? Object.keys(chrome.sidePanel).sort() : [],
+      };
+    case 'openTab':
+      // As the Claude extension does it: neither call awaited.
+      chrome.sidePanel.setOptions({ tabId: target.tabId, path: tabPath, enabled: true });
+      await chrome.sidePanel.open({ tabId: target.tabId });
+      return { opened: tabPath };
+    case 'openWindow':
+      await chrome.sidePanel.open({ windowId: target.windowId });
+      return { opened: 'window panel' };
+    case 'closeTab':
+      await chrome.sidePanel.close({ tabId: target.tabId });
+      return { closed: 'tab' };
+    case 'closeWindow':
+      await chrome.sidePanel.close({ windowId: target.windowId });
+      return { closed: 'window' };
+    case 'disableTab':
+      await chrome.sidePanel.setOptions({ tabId: target.tabId, enabled: false });
+      return await chrome.sidePanel.getOptions({ tabId: target.tabId });
+    case 'getOptions':
+      return {
+        tab: await chrome.sidePanel.getOptions({ tabId: target.tabId }),
+        default: await chrome.sidePanel.getOptions({}),
+        behavior: await chrome.sidePanel.getPanelBehavior(),
+      };
+    case 'toggleBehavior': {
+      const { openPanelOnActionClick } = await chrome.sidePanel.getPanelBehavior();
+      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: !openPanelOnActionClick });
+      return await chrome.sidePanel.getPanelBehavior();
+    }
+  }
+  throw new Error('unknown side panel op ' + op);
+}
+
+for (const [id, op] of [
+  ['btn-sidepanel-probe', 'probe'], ['btn-sidepanel-open-tab', 'openTab'],
+  ['btn-sidepanel-open-window', 'openWindow'], ['btn-sidepanel-close-tab', 'closeTab'],
+  ['btn-sidepanel-close-window', 'closeWindow'], ['btn-sidepanel-disable-tab', 'disableTab'],
+  ['btn-sidepanel-get-options', 'getOptions'], ['btn-sidepanel-behavior', 'toggleBehavior'],
+]) {
+  document.getElementById(id).addEventListener('click', async () => {
+    try {
+      showResult('res-sidepanel', await sidePanelRun(op));
+    } catch (e) {
+      showResult('res-sidepanel', e.message, true);
+    }
+  });
+}
+
 // --- Externally connectable (TASK-132.6) ---
 //
 // The receiving side lives in the worker (runtime.onMessageExternal /
