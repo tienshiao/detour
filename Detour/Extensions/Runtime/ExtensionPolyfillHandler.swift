@@ -98,6 +98,22 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
+    /// `declarativeNetRequest` session rules that modify request headers, per
+    /// extension (TASK-132.4; see `ExtensionHeaderRule`). In memory only, and
+    /// dropped with the context, like WebKit's own session rules.
+    private var sessionHeaderRules: [String: ExtensionHeaderRuleSet] = [:]
+
+    /// Forget the extension's header rules, for context unload
+    /// (`Profile.unloadExtension`): a reloaded context starts a new session.
+    func forgetSessionHeaderRules(for extensionID: String) {
+        sessionHeaderRules[extensionID] = nil
+    }
+
+    /// The header rules held for an extension, for tests.
+    func sessionHeaderRulesForTesting(extensionID: String) -> ExtensionHeaderRuleSet {
+        sessionHeaderRules[extensionID] ?? ExtensionHeaderRuleSet()
+    }
+
     /// The fixed polyfill envelope keys (see `__detourPolyfillRequest` in
     /// ExtensionAPIPolyfill). Diagnostics log only these names: any other key
     /// in a body is extension-authored text and stays out of the log, as do
@@ -699,6 +715,95 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 ] as [String: Any], nil)
             }
 
+        // MARK: - declarativeNetRequest header rules (TASK-132.4)
+        case "declarativeNetRequest.updateHeaderRules":
+            // The polyfill's `updateSessionRules` wrapper reports every call's
+            // removals and its `modifyHeaders` request-header rules, saying
+            // whether WebKit took them. `dryRun` answers whether Detour could
+            // keep the rules WebKit refused, before the wrapper commits to
+            // anything.
+            guard holdsDeclarativeNetRequestPermission(extensionID: extensionID) else {
+                replyHandler(nil, Self.declarativeNetRequestPermissionRefusal)
+                return
+            }
+            let acceptedByWebKit = params["acceptedByWebKit"] as? Bool ?? false
+            let removed = (params["removeRuleIds"] as? [Any] ?? []).compactMap(ExtensionHeaderRule.integer)
+            var kept: [ExtensionHeaderRule] = []
+            var skipped: [[String: Any]] = []
+            for raw in params["addRules"] as? [[String: Any]] ?? [] {
+                switch ExtensionHeaderRule.parse(raw, acceptedByWebKit: acceptedByWebKit) {
+                case .success(let rule):
+                    kept.append(rule)
+                case .failure(.notAHeaderRule):
+                    continue
+                case .failure(let error):
+                    let id = ExtensionHeaderRule.integer(raw["id"])
+                    guard acceptedByWebKit else {
+                        // WebKit refused it and Detour cannot stand in: the
+                        // call fails as a whole and nothing changes.
+                        replyHandler(nil, "declarativeNetRequest.updateSessionRules: the rule with id \(id.map(String.init) ?? "?") cannot be applied by Detour: \(error.reason)")
+                        return
+                    }
+                    // WebKit holds it; the extension's own requests just do
+                    // not get it from Detour.
+                    skipped.append(["id": id.map { $0 as Any } ?? NSNull(), "reason": error.reason])
+                }
+            }
+            let updated: ExtensionHeaderRuleSet
+            do {
+                updated = try (sessionHeaderRules[extensionID] ?? ExtensionHeaderRuleSet())
+                    .updated(removing: removed, adding: kept)
+            } catch {
+                replyHandler(nil, "declarativeNetRequest.updateSessionRules: more than \(ExtensionHeaderRuleSet.maximumRuleCount) header rules")
+                return
+            }
+            if params["dryRun"] as? Bool != true {
+                sessionHeaderRules[extensionID] = updated.isEmpty ? nil : updated
+                if !kept.isEmpty || !skipped.isEmpty {
+                    log.info("declarativeNetRequest: \(extensionID, privacy: .public) session header rules — kept \(kept.count) (\(acceptedByWebKit ? "also held by WebKit" : "refused by WebKit, held by Detour alone", privacy: .public)), not applicable \(skipped.count)")
+                }
+            }
+            replyHandler(["kept": kept.map(\.id), "skipped": skipped] as [String: Any], nil)
+
+        case "declarativeNetRequest.getHeaderRules":
+            // The rules only Detour holds, for the `getSessionRules` wrapper to
+            // add to WebKit's own answer.
+            guard holdsDeclarativeNetRequestPermission(extensionID: extensionID) else {
+                replyHandler(nil, Self.declarativeNetRequestPermissionRefusal)
+                return
+            }
+            let ids = (params["ruleIds"] as? [Any]).map { Set($0.compactMap(ExtensionHeaderRule.integer)) }
+            let rules = (sessionHeaderRules[extensionID] ?? ExtensionHeaderRuleSet())
+                .originalsKeptByDetourAlone(ruleIDs: ids)
+            replyHandler(["rules": rules] as [String: Any], nil)
+
+        case "declarativeNetRequest.headerChanges":
+            // Asked by the polyfill's `fetch` / XHR wrappers before each
+            // http(s) request an extension context makes: which request
+            // headers do its session rules change? Nothing here is more than
+            // the extension's own code could do — a script in these contexts
+            // may set these headers on its own requests — and nothing is
+            // answered for a URL the extension has no host access to, as in
+            // Chrome.
+            guard holdsDeclarativeNetRequestPermission(extensionID: extensionID) else {
+                replyHandler(nil, Self.declarativeNetRequestPermissionRefusal)
+                return
+            }
+            guard let rules = sessionHeaderRules[extensionID],
+                  let url = (params["url"] as? String).flatMap(URL.init(string:)),
+                  let context = profile?.extensionContext(for: extensionID),
+                  context.hasAccess(to: url) else {
+                replyHandler(["changes": [[String: Any]]()] as [String: Any], nil)
+                return
+            }
+            // A page's requests already get the rules WebKit accepted from
+            // WebKit; the worker's get none of them (measured, see
+            // `ExtensionHeaderRule`). The worker is the one context that
+            // reaches this handler as a native message.
+            let changes = rules.changes(for: url, method: params["method"] as? String ?? "GET",
+                                        includingAcceptedByWebKit: sender == .nativeMessage)
+            replyHandler(["changes": changes.map(\.payload)] as [String: Any], nil)
+
         // MARK: - runtime.lastError relay
         case Self.lastErrorRelayType:
             // Always fails, with the caller's own message as the error. The
@@ -913,6 +1018,23 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// permission-check because they're implemented natively here.
     private func hasPermission(_ permission: String, extensionID: String) -> Bool {
         ExtensionManager.shared.extension(withID: extensionID)?.manifest.permissions?.contains(permission) ?? false
+    }
+
+    static let declarativeNetRequestPermissionRefusal = "declarativeNetRequest: the extension does not hold the declarativeNetRequest permission"
+
+    /// Whether the extension may use `declarativeNetRequest` right now: its
+    /// manifest declares one of the two permissions (up front or as optional)
+    /// *and* this profile's context holds it — a denial in Settings takes it
+    /// away at once, and an optional one counts only once it was granted.
+    /// WebKit vends no `chrome.declarativeNetRequest` otherwise, so the
+    /// polyfill never asks; this is the gate for a context that asks anyway.
+    private func holdsDeclarativeNetRequestPermission(extensionID: String) -> Bool {
+        guard let context = profile?.extensionContext(for: extensionID),
+              let manifest = ExtensionManager.shared.extension(withID: extensionID)?.manifest else { return false }
+        let declared = Set((manifest.permissions ?? []) + (manifest.optionalPermissions ?? []))
+        return [WKWebExtension.Permission.declarativeNetRequest, .declarativeNetRequestWithHostAccess].contains {
+            declared.contains($0.rawValue) && context.hasPermission($0)
+        }
     }
 
     private func buildExtensionInfo(extensionID: String) -> [String: Any] {

@@ -46,6 +46,7 @@ Detour/Extensions/
 │   ├── ExtensionPolyfillHandler.swift    native handler for polyfill messages
 │   ├── ExtensionTabObserver.swift        TabStoreObserver → WKWebExtensionContext notifications
 │   ├── ExtensionTabHandleRegistry.swift  WebKit tab id → BrowserTab bridge (handles, resolve arms)
+│   ├── ExtensionHeaderRules.swift        declarativeNetRequest session header rules Detour applies itself
 │   ├── ExtensionNotificationManager.swift  UNUserNotificationCenter bridge
 │   ├── IdleMonitor.swift                 system idle state via CGEventSource
 │   ├── NativeMessagingHost.swift         native messaging process launcher
@@ -81,6 +82,9 @@ WebKit's `WKWebExtension` system handles the core extension runtime natively:
 | `chrome.webNavigation` events | WebKit native |
 | `chrome.contextMenus` | WebKit native |
 | `chrome.alarms` | WebKit native |
+| `chrome.declarativeNetRequest` (static, dynamic and session rules) | WebKit native; **Polyfill** adds Chrome's enums and applies `modifyHeaders` session rules to the extension's own requests (see "declarativeNetRequest") |
+| `chrome.runtime.OnInstalledReason` | **Polyfill** (constants; WebKit vends the event without the enum) |
+| `chrome.tabGroups`, `chrome.debugger` | **Interim stand-ins only** — constants / never-firing events, no methods (see "Interim stand-ins") |
 | `chrome.idle` | **Polyfill** → `IdleMonitor` (CGEventSource) |
 | `chrome.notifications` | **Polyfill** → `ExtensionNotificationManager` (UNUserNotificationCenter) |
 | `chrome.history.search` | **Polyfill** → `HistoryDatabase` |
@@ -222,6 +226,48 @@ WebKit owns `chrome.tabs`: it mints the tab ids and offers no lookup from an id 
 
 `tabs.describeHandle` answers `{ tabUUID, placement, selected, zoom }` — nothing `chrome.tabs` would not tell the extension (no URL, no title). The helpers are non-enumerable globals.
 
+## declarativeNetRequest
+
+`chrome.declarativeNetRequest` is WebKit's: the namespace exists in a context that holds the `declarativeNetRequest` or `declarativeNetRequestWithHostAccess` permission (and is `undefined` without one), WebKit keeps the static, dynamic and session rule stores, and it compiles them into a content rule list on the profile's web views. Detour adds three things (TASK-132.4), all in `ExtensionAPIPolyfill.declarativeNetRequestJS` with the native half in `ExtensionHeaderRules.swift` and `ExtensionPolyfillHandler`.
+
+**What WebKit does by itself** (measured on macOS 26.7, pinned by `ExtensionDeclarativeNetRequestTests`):
+
+- `updateSessionRules` / `getSessionRules` work, and a `block` rule blocks a matching request from a web page in a tab.
+- A `modifyHeaders` rule is accepted only if every header it names is on WebKit's own fixed list (`User-Agent`, `Accept-Language`, `DNT`, …). A custom name is refused, and the refusal is thrown synchronously: `Rule with id 1 is invalid. The header `anthropic-client-platform` is not recognized.`
+- An accepted `modifyHeaders` rule changes requests from web pages in tabs and from the extension's own *pages*, but **not** `fetch` from its *service worker*.
+- No enums: `declarativeNetRequest.RuleActionType`, `HeaderOperation`, `ResourceType` and the rest are `undefined`, so code that builds a rule from them throws before any call is made.
+
+**What Detour adds:**
+
+1. **Enums.** `RuleActionType`, `HeaderOperation`, `ResourceType`, `RequestMethod`, `DomainType`, `UnsupportedRegexReason`, `DYNAMIC_RULESET_ID` and `SESSION_RULESET_ID`, each only when WebKit has none. (They are Chrome's values; a value WebKit's rules do not support is still refused when used.)
+2. **Session rules WebKit refuses.** `updateSessionRules` is wrapped. WebKit gets the call first, unchanged. If it refuses and the call carries `modifyHeaders` rules with `requestHeaders`, Detour checks it could keep them, gives WebKit the rest of the call and then each header rule on its own, and keeps the ones WebKit still refuses. The call then resolves. `getSessionRules` reports those rules, as they were passed, beside WebKit's. If Detour cannot keep a refused rule either, the call rejects with WebKit's original error and nothing changes. The wrapper always answers with a promise or the callback (with `runtime.lastError`), where WebKit throws.
+3. **Request headers on the extension's own requests.** In a context that has the namespace, `fetch` and `XMLHttpRequest` are wrapped: before each `http(s)` request they ask Detour (`declarativeNetRequest.headerChanges`) which header changes its session rules make, and apply them. The service worker is answered with every header rule (WebKit applies none there); a page only with the rules Detour holds alone (WebKit applies its own). Matching is native and pure (`ExtensionHeaderRuleSet`): `urlFilter` (Chrome's `*`, `^`, `|`, `||` syntax) or `regexFilter`, `isUrlFilterCaseSensitive`, `resourceTypes` / `excludedResourceTypes` (a script's request is `xmlhttprequest`), `requestMethods`, `requestDomains` and their `excluded…` forms; rules combine by priority as in Chrome (after a `remove` nothing, after a `set` or `append` only `append`).
+
+This is what the Claude extension's start-up needs: its rule sets `User-Agent`, `anthropic-client-platform` and `anthropic-client-version` on requests to its API host, WebKit refuses it, Detour keeps it, and the three headers are on the requests its own contexts send there (verified with a rule of that shape against a loopback server — a worker's `fetch`, an extension page's `fetch` and its XHR; with host access such a request needs no CORS preflight).
+
+**Gates.** Nothing is installed and the native side refuses every `declarativeNetRequest.*` bridge message unless the manifest declares one of the two permissions *and* the profile's context holds it, so denying it in Settings stops the header changes at once. No change is answered for a URL the extension has no host access to. The fallback gives an extension nothing its own code could not do: a script in these contexts may set these headers on its own requests.
+
+**Limits.**
+
+- Only requests the extension's own worker and pages make with `fetch` or `XMLHttpRequest`. A rule Detour holds alone does nothing for web pages in tabs, content scripts, `EventSource`, `sendBeacon`, WebSockets or navigations; WebKit holds — and applies to web pages — only rules it accepts whole.
+- Headers the Fetch API forbids a script to set (`Cookie`, `Host`, `Origin`, `Referer`, `DNT`, …) are not changed by Detour.
+- `XMLHttpRequest` can only add: a header the page's own code set is not replaced or removed, a `remove` is ignored, and a synchronous XHR is not changed. `send()` is deferred until Detour has answered, so `loadstart` fires a little later. While it waits, a second `send()` or a `setRequestHeader()` throws `InvalidStateError`, as for a request in flight.
+- `fetch` is deferred the same way (one bridge round trip per `http(s)` request, rules or not), so a request started while its page is being torn down — a `keepalive` fetch from `pagehide` — may never be sent.
+- A rule is matched against the URL the script asked for. Headers Detour added stay on the request when it is redirected, even to a URL the rule does not match; Chrome matches each hop again.
+- A refused rule Detour cannot match — a condition key outside the list above (`initiatorDomains`, `tabIds`, `domainType`, …), or `responseHeaders` — is not kept: the call fails with WebKit's error.
+- When a WebKit-held and a Detour-held rule change the same header on a page's request, Detour's change is made first and WebKit's on top of it, whatever their priorities.
+- The enums and wrappers are installed when a context starts. An extension that gains the permission later (`optional_permissions` + `permissions.request`) gets them in contexts started after that.
+- Session rules only, in memory, dropped when the context unloads (as WebKit drops its own). Dynamic and static rules are WebKit's alone and are not wrapped; `updateDynamicRules` runs the same WebKit validation, so a custom header name is expected to be refused there (read from WebKit's source, not measured).
+
+## Interim stand-ins: tabGroups and debugger
+
+Neither `chrome.tabGroups` nor `chrome.debugger` is implemented yet (TASK-132.12 and TASK-132.13), and WebKit vends neither. The Claude extension's service worker reads `chrome.tabGroups.Color` in a class's static field and calls `chrome.debugger.onEvent.addListener` in a constructor, both while its modules are being evaluated, so without the namespaces the worker fails to load and nothing else about the extension can run. `ExtensionAPIPolyfill.interimNamespacesJS` therefore defines, for an extension whose manifest declares the permission:
+
+- `chrome.tabGroups` (permission `tabGroups`): `Color` (Chrome's nine names) and `TAB_GROUP_ID_NONE` (-1). Constants only.
+- `chrome.debugger` (permission `debugger`): `onEvent` and `onDetach`, event emitters that never fire.
+
+Nothing else exists: no `tabGroups.get/query/update/move` or events, no `tabs.group` / `tabs.ungroup`, no `debugger.attach/detach/sendCommand/getTargets`. A feature test for a method still fails and a call still throws a TypeError; only a feature test for the *namespace itself* now sees an object, which is why these are interim. A namespace that is already there (WebKit's, or the real implementation when it lands) is left alone. The diag reads `apis.tabGroups` / `apis.debugger`: `absent`, `interim` or `native`. The real implementations replace the module.
+
 ## Offscreen Documents
 
 `OffscreenDocumentHost` creates a hidden `WKWebView` for extensions that need off-screen DOM or audio processing. Created on demand via `chrome.offscreen.createDocument()`.
@@ -286,13 +332,14 @@ Extension metadata and storage live in `AppDatabase` (the app's main SQLite data
 Two test extensions live under `TestExtensions/`:
 
 - **hello-world** — Minimal extension with a content script, background service worker, popup, and storage permission. Verifies basic lifecycle and injection.
-- **api-explorer** — Comprehensive extension exercising all implemented APIs. Interactive popup sections for each API, background event logging to storage.
+- **api-explorer** — Comprehensive extension exercising all implemented APIs. Interactive popup sections for each API, background event logging to storage. Its "Declarative Net Request" section adds a session header rule (with or without a header name WebKit refuses) and fetches a URL of your choice from the worker, the popup's `fetch` and the popup's XHR, so a header-echoing endpoint shows what each context sent.
 
 ## Limitations
 
 - **`chrome.webRequest`** — Stub-only event emitters. WebKit provides no pre-request interception API.
 - **`chrome.webNavigation`** — Events fire only for main-frame navigations (`frameId: 0`).
 - **`chrome.permissions.request()`** — All permissions are auto-granted at install time. No runtime permission prompt UI.
-- **`chrome.declarativeNetRequest`** — Not supported.
+- **`chrome.declarativeNetRequest`** — WebKit's implementation, with gaps Detour fills only for session rules that modify request headers on the extension's own requests; see "declarativeNetRequest" for what applies where.
+- **`chrome.tabGroups`, `chrome.debugger`** — Not implemented; constants and never-firing events only, so a worker that reads them while loading does not die (see "Interim stand-ins").
 - **`chrome.tabs.detectLanguage`** — May not be implemented by WebKit in all versions.
 - **Offscreen document AudioContext** — Shimmed to route through native `AVAudioPlayer`. The shim covers `decodeAudioData`/`createBufferSource`/`start`/`stop`/`onended` but not the full Web Audio API graph.

@@ -859,7 +859,8 @@ func promiseOutcomeJS(_ call: String) -> String {
 /// `about:srcdoc` nor `data:` — so a frame probe needs real http documents.
 ///
 /// Every request's path is recorded in `requestedPaths` (a 404 counts too), so
-/// a page can also use the server as a beacon target to say "I loaded".
+/// a page can also use the server as a beacon target to say "I loaded"; the
+/// headers each one arrived with are in `receivedRequests`.
 final class LoopbackHTTPServer: @unchecked Sendable {
 
     private let listener: NWListener
@@ -869,12 +870,43 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let stalled: [String: String]
     private let lock = NSLock()
     private var _requestedPaths: [String] = []
+    private var _requestHeads: [String] = []
     private var _held: [String: [NWConnection]] = [:]
 
     /// The request paths seen so far, in arrival order.
     var requestedPaths: [String] {
         lock.lock(); defer { lock.unlock() }
         return _requestedPaths
+    }
+
+    /// One request as the server received it: the request line's method and
+    /// path, and the header fields with lower-cased names (a repeated field
+    /// keeps its last value).
+    struct ReceivedRequest {
+        let method: String
+        let path: String
+        let headers: [String: String]
+    }
+
+    /// Every request seen so far, in arrival order, with its headers — what a
+    /// test reads to see which headers a request actually went out with.
+    var receivedRequests: [ReceivedRequest] {
+        lock.lock()
+        let heads = _requestHeads
+        lock.unlock()
+        return heads.map { head in
+            let lines = head.components(separatedBy: "\r\n")
+            let requestLine = (lines.first ?? "").split(separator: " ").map(String.init)
+            var headers: [String: String] = [:]
+            for line in lines.dropFirst() {
+                guard let colon = line.firstIndex(of: ":") else { continue }
+                let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                headers[name] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            }
+            return ReceivedRequest(method: requestLine.first ?? "",
+                                   path: requestLine.count > 1 ? requestLine[1] : "/",
+                                   headers: headers)
+        }
     }
 
     struct StartTimedOut: Error, CustomStringConvertible {
@@ -994,8 +1026,10 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private func respond(_ connection: NWConnection, head: Data) {
         let request = String(decoding: head, as: UTF8.self)
         let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+        let headEnd = request.range(of: "\r\n\r\n")?.lowerBound ?? request.endIndex
         lock.lock()
         _requestedPaths.append(path)
+        _requestHeads.append(String(request[..<headEnd]))
         lock.unlock()
 
         if pending[path] != nil || stalled[path] != nil {
@@ -1012,8 +1046,11 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             return
         }
 
-        let body = Data((routes[path] ?? "<html><body>not found</body></html>").utf8)
-        let status = routes[path] == nil ? "404 Not Found" : "200 OK"
+        // A route also answers its path with a query added, so a test can tag
+        // each request (`/api?marker`) and find it in `receivedRequests`.
+        let route = routes[path] ?? routes[String(path.prefix { $0 != "?" })]
+        let body = Data((route ?? "<html><body>not found</body></html>").utf8)
+        let status = route == nil ? "404 Not Found" : "200 OK"
         let header = "HTTP/1.1 \(status)\r\n"
             + "Content-Type: text/html; charset=utf-8\r\n"
             + "Content-Length: \(body.count)\r\n"

@@ -133,6 +133,15 @@ final class ExtensionIDDerivationTests: XCTestCase {
         XCTAssertEqual(manifest.key, "MIIBIjANBg==")
     }
 
+    /// A real one (TASK-132.4): the `key` of Anthropic's Claude extension must
+    /// derive its Chrome Web Store id, which is what its native messaging hosts'
+    /// `allowed_origins` and claude.ai's `externally_connectable` sign-in name.
+    func testClaudeExtensionManifestKeyDerivesItsWebStoreID() throws {
+        let key = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjU1XnLPoasGVmZU42K3h6S+sQhkogfcoLPbIcrWH5Oo8QoInBIugkew/7cWaEFySyQrkaEBe1fjeS/rlAqd3r778dKcTvDZcXmj0VVX0Fi1i8tnkarurceGKGdVxfkL7e30nwfgwoPxj3H8OQbsbxFcBWGVtcFekmdpiyaxwz6o4yXIWColfAxh9K2yToOZkoAS5GvgGvTexiCh1gYy++eFdk6C61mcFsyDdoGQtduhGEaX0zZ9uAW1jX4JTPmHV3kEFrZu/WVBl7Obw+Jk/osoHMdmghVNy6SCB8/6mcgmxkP9buPrNUZgYP6n0x5dqEJ2Ecww/lb1Zd4nQf4XGOwIDAQAB"
+        let keyData = try XCTUnwrap(Data(base64Encoded: key))
+        XCTAssertEqual(ExtensionInstaller.deriveExtensionID(from: keyData), "fcoeoabgfenejglbffodgkkbkcdhcgfn")
+    }
+
     func testManifestKeyFieldNilWhenAbsent() throws {
         let data = """
         {"manifest_version": 3, "name": "Test", "version": "1.0"}

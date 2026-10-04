@@ -428,4 +428,53 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(decoded.commands?.count, 1)
         XCTAssertEqual(decoded.commands?["do-thing"]?.description, "Do the thing")
     }
+
+    // MARK: - The install prompt (TASK-132.4)
+
+    /// The permission lists of Anthropic's Claude extension (1.0.98): the install
+    /// prompt must describe every one of them rather than fall back to the raw
+    /// manifest string, and name the site access it asks for.
+    func testInstallPromptDescribesEveryPermissionOfTheClaudeExtension() throws {
+        let manifest = try parse("""
+        {
+            "manifest_version": 3, "name": "Claude", "version": "1.0.98",
+            "background": { "service_worker": "service-worker-loader.js", "type": "module" },
+            "permissions": ["sidePanel", "storage", "activeTab", "scripting", "debugger", "tabGroups", "tabs",
+                            "alarms", "notifications", "webNavigation", "declarativeNetRequestWithHostAccess",
+                            "offscreen", "nativeMessaging", "unlimitedStorage", "downloads", "identity"],
+            "host_permissions": ["<all_urls>"],
+            "externally_connectable": { "matches": ["https://claude.ai/*", "https://*.claude.ai/*"] }
+        }
+        """)
+        let permissions = try XCTUnwrap(manifest.permissions)
+        XCTAssertEqual(permissions.count, 16)
+        for permission in permissions {
+            let description = ExtensionPermissionDescriptions.describe(permission)
+            XCTAssertNotEqual(description, permission, "`\(permission)` has no description in the install prompt")
+            XCTAssertFalse(description.isEmpty)
+        }
+
+        let prompt = ExtensionPermissionDescriptions.formatForAlert(
+            permissions: permissions, hostPermissions: manifest.hostPermissions ?? [],
+            optionalPermissions: manifest.optionalPermissions)
+        let lines = prompt.components(separatedBy: "\n")
+        XCTAssertEqual(lines.first, "Permissions:")
+        XCTAssertEqual(lines.filter { $0.hasPrefix("  \u{2022} ") }.count, 17, "16 permissions and one site-access line")
+        XCTAssertTrue(prompt.contains("Inspect and control pages through the debugger"))
+        XCTAssertTrue(prompt.contains("Block, redirect and modify network requests"))
+        XCTAssertTrue(prompt.contains("Communicate with native applications"))
+        XCTAssertTrue(prompt.contains("Site access:\n  \u{2022} All websites"))
+        XCTAssertFalse(prompt.contains("May also request:"), "the extension has no optional permissions")
+    }
+
+    /// NEGATIVE: a permission Detour has no wording for is still named — by its
+    /// manifest string — never dropped from the prompt.
+    func testInstallPromptNamesAnUnknownPermissionByItsManifestString() {
+        XCTAssertEqual(ExtensionPermissionDescriptions.describe("someFuturePermission"), "someFuturePermission")
+        let prompt = ExtensionPermissionDescriptions.formatForAlert(
+            permissions: ["someFuturePermission"], hostPermissions: [])
+        XCTAssertEqual(prompt, "Permissions:\n  \u{2022} someFuturePermission")
+        XCTAssertEqual(ExtensionPermissionDescriptions.formatForAlert(permissions: [], hostPermissions: []),
+                       "No special permissions requested.")
+    }
 }

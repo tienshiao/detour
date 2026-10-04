@@ -519,6 +519,134 @@ document.getElementById('btn-webrequest-probe').addEventListener('click', async 
   } catch (e) { showResult('res-webrequest', e.message, true); }
 });
 
+// --- Declarative Net Request (TASK-132.4) ---
+//
+// A session rule of the shape the Claude extension sets at start-up:
+// modifyHeaders on requests to one host, with a header name WebKit's own
+// declarativeNetRequest refuses (x-api-explorer). Point the URL at a server
+// that echoes request headers to see them arrive from the worker, from this
+// popup's fetch, and from this popup's XMLHttpRequest.
+
+function dnrTargetURL() {
+  return document.getElementById('input-dnr-url').value.trim() || 'https://httpbin.org/headers';
+}
+
+function dnrReport(run) {
+  return async () => {
+    try {
+      showResult('res-dnr', await run());
+    } catch (e) {
+      showResult('res-dnr', e.message, true);
+    }
+  };
+}
+
+document.getElementById('btn-dnr-probe').addEventListener('click', dnrReport(async () => {
+  const dnr = chrome.declarativeNetRequest;
+  return {
+    popup: {
+      namespace: typeof dnr,
+      install: globalThis.__detourDeclarativeNetRequest,
+      modifyHeaders: dnr && dnr.RuleActionType ? dnr.RuleActionType.MODIFY_HEADERS : '(no RuleActionType)',
+      set: dnr && dnr.HeaderOperation ? dnr.HeaderOperation.SET : '(no HeaderOperation)',
+      xmlhttprequest: dnr && dnr.ResourceType ? dnr.ResourceType.XMLHTTPREQUEST : '(no ResourceType)',
+      onInstalledReason: chrome.runtime.OnInstalledReason || '(no runtime.OnInstalledReason)',
+    },
+    worker: await sendBg({ type: 'dnrProbe' }),
+  };
+}));
+
+document.getElementById('btn-dnr-add').addEventListener('click', dnrReport(
+  () => sendBg({ type: 'dnrAddRule', url: dnrTargetURL(), custom: true })));
+
+document.getElementById('btn-dnr-add-native').addEventListener('click', dnrReport(
+  () => sendBg({ type: 'dnrAddRule', url: dnrTargetURL(), custom: false })));
+
+document.getElementById('btn-dnr-get').addEventListener('click', dnrReport(async () => ({
+  popup: await chrome.declarativeNetRequest.getSessionRules(),
+  worker: await sendBg({ type: 'dnrGetRules' }),
+})));
+
+document.getElementById('btn-dnr-remove').addEventListener('click', dnrReport(async () => {
+  // The callback form, from the popup this time.
+  await new Promise((resolve, reject) => {
+    chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1] }, () => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve();
+    });
+  });
+  return { removed: [1], rules: await chrome.declarativeNetRequest.getSessionRules() };
+}));
+
+document.getElementById('btn-dnr-fetch').addEventListener('click', dnrReport(async () => {
+  const url = dnrTargetURL();
+  const text = async (make) => {
+    try { return (await make()).slice(0, 4000); } catch (e) { return 'failed: ' + e.message; }
+  };
+  // A header-echoing endpoint answers JSON like {"headers": {...}}: show it as
+  // an object, not as a string full of escaped quotes.
+  const parsed = (body) => {
+    try { return JSON.parse(body); } catch (e) { return body; }
+  };
+  // The two headers the section's rules set, as each context's request carried
+  // them — first, so they are visible without scrolling the result box.
+  const sent = (response) => {
+    const headers = response && typeof response === 'object' ? response.headers : null;
+    if (!headers || typeof headers !== 'object') return '(the response is not {"headers": {...}})';
+    const value = (name) => {
+      const key = Object.keys(headers).find((k) => k.toLowerCase() === name);
+      return key === undefined ? '(not sent)' : headers[key];
+    };
+    return { 'user-agent': value('user-agent'), 'x-api-explorer': value('x-api-explorer') };
+  };
+  const responses = {
+    worker: parsed((await sendBg({ type: 'dnrFetch', url })).body),
+    popupFetch: parsed(await text(async () => (await fetch(url, { cache: 'no-store' })).text())),
+    popupXHR: parsed(await text(() => new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url);
+      xhr.onload = () => resolve(String(xhr.responseText));
+      xhr.onerror = () => reject(new Error('XHR error'));
+      xhr.send();
+    }))),
+  };
+  return {
+    url,
+    sent: { worker: sent(responses.worker), popupFetch: sent(responses.popupFetch), popupXHR: sent(responses.popupXHR) },
+    responses,
+  };
+}));
+
+// --- tabGroups / debugger interim stand-ins (TASK-132.4) ---
+//
+// Until TASK-132.12 / TASK-132.13 land the real APIs, Detour defines only
+// chrome.tabGroups constants and chrome.debugger's two (never-firing) events, so
+// a worker that reads them while loading does not die. Every method must still
+// be missing: the probe lists what is there in the popup and in the worker.
+
+function interimProbe() {
+  const tg = chrome.tabGroups;
+  const dbg = chrome.debugger;
+  const present = (object, names) => object ? names.filter((name) => object[name] !== undefined) : '(no namespace)';
+  return {
+    install: globalThis.__detourInterimNamespaces || '(no Detour polyfill)',
+    tabGroups: tg ? { Color: tg.Color, TAB_GROUP_ID_NONE: tg.TAB_GROUP_ID_NONE } : '(no namespace)',
+    tabGroupsMethodsPresent: present(tg, ['get', 'query', 'update', 'move', 'onCreated', 'onUpdated', 'onRemoved']),
+    tabsGroup: typeof chrome.tabs.group,
+    tabsUngroup: typeof chrome.tabs.ungroup,
+    debuggerEvents: dbg ? { onEvent: typeof dbg.onEvent.addListener, onDetach: typeof dbg.onDetach.addListener } : '(no namespace)',
+    debuggerMethodsPresent: present(dbg, ['attach', 'detach', 'sendCommand', 'getTargets']),
+  };
+}
+
+document.getElementById('btn-interim-probe').addEventListener('click', async () => {
+  try {
+    showResult('res-interim', { popup: interimProbe(), worker: await sendBg({ type: 'interimNamespacesProbe' }) });
+  } catch (e) {
+    showResult('res-interim', e.message, true);
+  }
+});
+
 // --- Commands ---
 
 document.getElementById('btn-commands-getall').addEventListener('click', async () => {

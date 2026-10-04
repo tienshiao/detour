@@ -64,6 +64,7 @@ struct ExtensionAPIPolyfill {
             webSocketRelayJS,
             nativePortKeepAliveJS,
             missingStubsJS,
+            runtimeConstantsJS,
             runtimeUpdateCheckJS,
             runtimeOnInstalledJS,
             contentPolyfillBridgeJS,
@@ -77,6 +78,8 @@ struct ExtensionAPIPolyfill {
             storageManagedJS,
             permissionsOriginPortJS,
             tabResolveJS,
+            declarativeNetRequestJS,
+            interimNamespacesJS,
             fontSettingsJS,
             sessionsJS,
             searchJS,
@@ -120,6 +123,17 @@ struct ExtensionAPIPolyfill {
         try { __detourPolyfillDiag.apis.permissionsBrowserDistinct = globalThis.__detourPermissionsPortBrowserDistinct; } catch(e) { __detourPolyfillDiag.apis.permissionsBrowserDistinct = 'error: ' + e.message; }
         // Whether tabs.getZoom is wrapped for the tab id bridge (TASK-132.2).
         try { __detourPolyfillDiag.apis.tabResolve = globalThis.__detourTabResolveInstall; } catch(e) { __detourPolyfillDiag.apis.tabResolve = 'error: ' + e.message; }
+        // What Detour added to WebKit's declarativeNetRequest (TASK-132.4): 'absent'
+        // without the permission, else the install mode, the enums it defined and
+        // whether fetch / XMLHttpRequest apply the header rules.
+        try { __detourPolyfillDiag.apis.declarativeNetRequest = globalThis.__detourDeclarativeNetRequest.install + ' [enums: ' + globalThis.__detourDeclarativeNetRequest.enums + '; fetch: ' + globalThis.__detourDeclarativeNetRequest.fetch + '; xhr: ' + globalThis.__detourDeclarativeNetRequest.xhr + ']'; } catch(e) { __detourPolyfillDiag.apis.declarativeNetRequest = 'error: ' + e.message; }
+        // INTERIM stand-ins (TASK-132.4, until TASK-132.12 / TASK-132.13): 'absent'
+        // without the permission, 'interim' for Detour's constants-only /
+        // events-only namespace, 'native' once something real is there.
+        try { __detourPolyfillDiag.apis.tabGroups = globalThis.__detourInterimNamespaces.tabGroups; } catch(e) { __detourPolyfillDiag.apis.tabGroups = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.debugger = globalThis.__detourInterimNamespaces.debugger; } catch(e) { __detourPolyfillDiag.apis.debugger = 'error: ' + e.message; }
+        // Whether runtime.OnInstalledReason is WebKit's or Detour's (TASK-132.4).
+        try { __detourPolyfillDiag.apis.runtimeOnInstalledReason = globalThis.__detourRuntimeConstantsInstall; } catch(e) { __detourPolyfillDiag.apis.runtimeOnInstalledReason = 'error: ' + e.message; }
         // Which chrome.offscreen is in force: Detour's polyfill, Detour's over a
         // native/foreign one it shadowed, or an error if the define did not take (TASK-71).
         try { __detourPolyfillDiag.apis.offscreenInstall = globalThis.__detourOffscreenInstall; } catch(e) { __detourPolyfillDiag.apis.offscreenInstall = 'error: ' + e.message; }
@@ -583,6 +597,66 @@ struct ExtensionAPIPolyfill {
                 value: runtime, writable: false, configurable: true, enumerable: true
             });
         }
+    })();
+    """
+
+    // MARK: - runtime constants
+
+    /// `chrome.runtime.OnInstalledReason` (TASK-132.4). WebKit vends the event
+    /// but not the enum Chrome documents beside it, and a listener that compares
+    /// `details.reason === chrome.runtime.OnInstalledReason.INSTALL` throws a
+    /// TypeError on the missing object — which is where the Claude extension's
+    /// `onInstalled` stopped. Filled in only when absent, on the pinned
+    /// `chrome.runtime` wrapper (`missingStubsJS`) and on a distinct
+    /// `browser.runtime` (rooted through `__detourHoldWrapper`, like
+    /// `runtimeUpdateCheckJS`'s members).
+    ///
+    /// `runtime.ContextType` is deliberately not here: it belongs to
+    /// `runtime.getContexts` (TASK-132.9), and an enum without its API would
+    /// make a feature test for the API lie.
+    private static let runtimeConstantsJS = """
+    (function() {
+        const g = globalThis;
+        const define = function(runtime) {
+            if (!runtime || typeof runtime !== 'object') return 'absent';
+            let existing;
+            try { existing = runtime.OnInstalledReason; } catch (e) { return 'error: ' + e.message; }
+            if (existing !== undefined && existing !== null) {
+                return existing._detourPolyfill === true ? 'polyfill' : 'native';
+            }
+            const reasons = {
+                INSTALL: 'install', UPDATE: 'update',
+                CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update'
+            };
+            // Marked without adding an enumerable key: Object.values() of the
+            // enum must stay the four reasons.
+            Object.defineProperty(reasons, '_detourPolyfill', { value: true, enumerable: false });
+            try {
+                Object.defineProperty(runtime, 'OnInstalledReason', {
+                    value: Object.freeze(reasons), writable: false, configurable: true, enumerable: true
+                });
+            } catch (e) {
+                return 'define-failed';
+            }
+            return 'polyfill';
+        };
+
+        let install = 'absent';
+        try {
+            const chromeRuntime = g.chrome && g.chrome.runtime;
+            install = define(chromeRuntime);
+            const browserRuntime = g.browser && g.browser.runtime;
+            if (browserRuntime && browserRuntime !== chromeRuntime && define(browserRuntime) === 'polyfill') {
+                __detourHoldWrapper('browserRuntime', browserRuntime);
+            }
+            if (install === 'polyfill') {
+                const again = g.chrome.runtime.OnInstalledReason;
+                if (!again || again.INSTALL !== 'install') install = 'polyfill-not-visible';
+            }
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+        g.__detourRuntimeConstantsInstall = install;
     })();
     """
 
@@ -3100,6 +3174,542 @@ struct ExtensionAPIPolyfill {
                 });
             } catch (e2) {}
         }
+    })();
+    """
+
+    // MARK: - INTERIM: chrome.tabGroups / chrome.debugger stand-ins
+
+    /// **Interim stand-ins, to be replaced by TASK-132.12 (`chrome.tabGroups`,
+    /// `tabs.group` / `tabs.ungroup`) and TASK-132.13 (`chrome.debugger`).**
+    /// Neither API is implemented. WebKit vends neither namespace, and the
+    /// Claude extension's service worker dereferences both while its modules
+    /// are still being evaluated —
+    /// `static SESSION_GROUP_COLORS = [chrome.tabGroups.Color.BLUE, …]` and
+    /// `chrome.debugger.onEvent.addListener(…)` in a constructor run at import —
+    /// so without them the worker fails to load at all and nothing else about
+    /// the extension can be tested (TASK-132.4).
+    ///
+    /// What is defined, and nothing more:
+    ///  - `chrome.tabGroups`: `Color` (Chrome's nine names) and
+    ///    `TAB_GROUP_ID_NONE` (-1). Constants only.
+    ///  - `chrome.debugger`: `onEvent` and `onDetach`, event emitters that
+    ///    **never fire**.
+    /// No method exists on either — no `tabGroups.get/query/update/move`, no
+    /// `debugger.attach/detach/sendCommand/getTargets`, and no `tabs.group` /
+    /// `tabs.ungroup` — so an extension that feature-tests a method still sees
+    /// it missing, and one that calls it gets the TypeError it got before. An
+    /// extension that feature-tests the *namespace* does now see an object:
+    /// that is the cost of letting the worker load, and why this is interim.
+    ///
+    /// Each namespace is defined only when the manifest declares its permission
+    /// (`tabGroups` / `debugger`), as Chrome leaves an undeclared namespace out,
+    /// and only when nothing is there already: a namespace WebKit (or the real
+    /// implementation) vends is never touched and reads `'native'`. WebKit
+    /// vends neither, so an own property on `chrome` is read normally
+    /// (docs/chrome-runtime-patching.md, as for the `webRequest` stub); a
+    /// distinct `browser` global gets the same object. The stand-in carries a
+    /// non-enumerable `_detourInterim` marker so a second run in the same realm
+    /// keeps reporting it as `'interim'`.
+    ///
+    /// `globalThis.__detourInterimNamespaces` = `{ tabGroups, debugger }`, each
+    /// `'absent'` (permission not declared) | `'interim'` | `'native'` |
+    /// `'define-failed'` | `'error: …'`.
+    private static let interimNamespacesJS = """
+    (function() {
+        const g = globalThis;
+        const chrome = g.chrome;
+
+        const install = function(name, build) {
+            try {
+                const existing = chrome[name];
+                if (existing !== undefined && existing !== null) {
+                    return existing._detourInterim === true ? 'interim' : 'native';
+                }
+                if (__detourManifestPermissions().indexOf(name) === -1) return 'absent';
+                const standIn = build();
+                Object.defineProperty(standIn, '_detourInterim', { value: true, enumerable: false });
+                __detourDefine(chrome, name, standIn);
+                if (chrome[name] !== standIn) return 'define-failed';
+                try {
+                    if (g.browser && g.browser !== chrome && (g.browser[name] === undefined || g.browser[name] === null)) {
+                        __detourDefine(g.browser, name, standIn);
+                    }
+                } catch (e) {}
+                return 'interim';
+            } catch (e) {
+                return 'error: ' + (e && e.message ? e.message : String(e));
+            }
+        };
+
+        const state = {
+            tabGroups: install('tabGroups', function() {
+                return {
+                    Color: Object.freeze({
+                        GREY: 'grey', BLUE: 'blue', RED: 'red', YELLOW: 'yellow', GREEN: 'green',
+                        PINK: 'pink', PURPLE: 'purple', CYAN: 'cyan', ORANGE: 'orange'
+                    }),
+                    TAB_GROUP_ID_NONE: -1
+                };
+            }),
+            debugger: install('debugger', function() {
+                // Listeners are kept and never called: nothing attaches, so
+                // there is no event to deliver and no detach to report.
+                return {
+                    onEvent: __detourMakeEventEmitter([]),
+                    onDetach: __detourMakeEventEmitter([])
+                };
+            })
+        };
+        g.__detourInterimNamespaces = Object.freeze(state);
+    })();
+    """
+
+    // MARK: - chrome.declarativeNetRequest
+
+    /// What Detour adds to WebKit's `chrome.declarativeNetRequest` (TASK-132.4).
+    /// The namespace, its rule stores and its content-rule-list matching stay
+    /// WebKit's; nothing is installed when WebKit vends no namespace, which is
+    /// what an extension without the `declarativeNetRequest` /
+    /// `declarativeNetRequestWithHostAccess` permission gets (`'absent'`).
+    ///
+    /// **Enums.** WebKit vends the methods and three `MAX_NUMBER_OF_*` numbers
+    /// but none of Chrome's enums, so `declarativeNetRequest.RuleActionType
+    /// .MODIFY_HEADERS` throws a TypeError before a rule is even built (the
+    /// Claude extension's start-up). `RuleActionType`, `HeaderOperation`,
+    /// `ResourceType`, `RequestMethod`, `DomainType`, `UnsupportedRegexReason`
+    /// and the two ruleset id strings are defined when absent.
+    ///
+    /// **Session rules that modify request headers.** Measured on macOS 26.7
+    /// (`ExtensionDeclarativeNetRequestTests` pins each as a canary):
+    ///  - WebKit's `updateSessionRules` throws for a `modifyHeaders` rule that
+    ///    names a header outside its fixed list (`anthropic-client-platform`:
+    ///    "The header … is not recognized");
+    ///  - a rule it accepts changes requests from the extension's *pages* but
+    ///    not `fetch` from its *service worker*;
+    ///  - a script in either context may set `User-Agent` and custom headers
+    ///    itself, and with host access such a request is sent without a CORS
+    ///    preflight.
+    /// So the header changes are applied here, in the contexts' own `fetch` and
+    /// `XMLHttpRequest`:
+    ///  - `updateSessionRules` is wrapped. WebKit is called first with the
+    ///    options untouched. If it takes them, Detour is told of the removals
+    ///    and of the `modifyHeaders`-with-`requestHeaders` rules (kept "also
+    ///    held by WebKit"). If it refuses and the call has such rules, Detour is
+    ///    asked whether it could keep them (`dryRun`, all of them: the call is
+    ///    all or nothing, and nothing has changed yet); if so WebKit gets the
+    ///    call again without them, then each of them on its own — it keeps the
+    ///    ones it accepts, since only WebKit can apply a rule to web pages in
+    ///    tabs — and Detour keeps the ones it refuses, alone. Any other outcome
+    ///    rejects with WebKit's original error. The wrapper always answers with
+    ///    a promise (or the callback): what WebKit throws synchronously becomes
+    ///    a rejection, as in Chrome.
+    ///  - `getSessionRules` adds the rules only Detour holds to WebKit's list.
+    ///  - `fetch` and `XMLHttpRequest` ask Detour, per http(s) request, which
+    ///    header changes apply (`declarativeNetRequest.headerChanges`; the
+    ///    matching is native and pure, `ExtensionHeaderRuleSet`). With none the
+    ///    original call goes through untouched. In a page only the rules Detour
+    ///    holds alone are answered — WebKit applies its own there.
+    ///
+    /// Limits, all documented in docs/extensions.md: only requests made with
+    /// `fetch` / `XMLHttpRequest` by the extension's own worker and pages;
+    /// headers the Fetch API will not let a script set (`Cookie`, `Host`, …)
+    /// are left alone; XHR cannot replace or remove a header the page's own
+    /// code set, and a synchronous XHR is not changed; dynamic and static
+    /// rules are WebKit's alone.
+    ///
+    /// The patched namespace wrapper is rooted (`__detourHoldWrapper`, key
+    /// `declarativeNetRequest`, plus `browserDeclarativeNetRequest` when
+    /// `browser.declarativeNetRequest` is a second object) and a fresh read then
+    /// checks the patch is visible; WebKit's functions stay on
+    /// `wrapper._detourNative`.
+    private static let declarativeNetRequestJS = """
+    (function() {
+        const g = globalThis;
+        const state = { install: 'absent', enums: [], fetch: 'none', xhr: 'none' };
+        try {
+            const enums = {
+                RuleActionType: {
+                    BLOCK: 'block', REDIRECT: 'redirect', ALLOW: 'allow', UPGRADE_SCHEME: 'upgradeScheme',
+                    MODIFY_HEADERS: 'modifyHeaders', ALLOW_ALL_REQUESTS: 'allowAllRequests'
+                },
+                HeaderOperation: { APPEND: 'append', SET: 'set', REMOVE: 'remove' },
+                ResourceType: {
+                    MAIN_FRAME: 'main_frame', SUB_FRAME: 'sub_frame', STYLESHEET: 'stylesheet', SCRIPT: 'script',
+                    IMAGE: 'image', FONT: 'font', OBJECT: 'object', XMLHTTPREQUEST: 'xmlhttprequest', PING: 'ping',
+                    CSP_REPORT: 'csp_report', MEDIA: 'media', WEBSOCKET: 'websocket', WEBTRANSPORT: 'webtransport',
+                    WEBBUNDLE: 'webbundle', OTHER: 'other'
+                },
+                RequestMethod: {
+                    CONNECT: 'connect', DELETE: 'delete', GET: 'get', HEAD: 'head', OPTIONS: 'options',
+                    PATCH: 'patch', POST: 'post', PUT: 'put', OTHER: 'other'
+                },
+                DomainType: { FIRST_PARTY: 'firstParty', THIRD_PARTY: 'thirdParty' },
+                UnsupportedRegexReason: { SYNTAX_ERROR: 'syntaxError', MEMORY_LIMIT_EXCEEDED: 'memoryLimitExceeded' },
+                DYNAMIC_RULESET_ID: '_dynamic',
+                SESSION_RULESET_ID: '_session'
+            };
+            const enumNames = Object.keys(enums);
+
+            const send = function(type, params) {
+                return g.__detourPolyfillRequest('declarativeNetRequest.' + type, params);
+            };
+
+            const isHeaderRule = function(rule) {
+                return !!rule && typeof rule === 'object' && !!rule.action && typeof rule.action === 'object'
+                    && rule.action.type === 'modifyHeaders' && Array.isArray(rule.action.requestHeaders);
+            };
+
+            const makeUpdate = function(target, nativeUpdate) {
+                const update = function(options, callback) {
+                    const promise = (async function() {
+                        const addRules = options && Array.isArray(options.addRules) ? options.addRules : [];
+                        const removeRuleIds = options && Array.isArray(options.removeRuleIds) ? options.removeRuleIds : [];
+                        const headerRules = addRules.filter(isHeaderRule);
+
+                        let refusal = null;
+                        try {
+                            await nativeUpdate.call(target, options);
+                        } catch (e) {
+                            if (headerRules.length === 0) throw e;
+                            refusal = e;
+                        }
+
+                        if (refusal === null) {
+                            // WebKit holds everything. Detour learns of the
+                            // removals and of the header rules, which it applies
+                            // where WebKit does not (the worker's fetch).
+                            if (removeRuleIds.length > 0 || headerRules.length > 0) {
+                                try {
+                                    await send('updateHeaderRules', {
+                                        removeRuleIds: removeRuleIds, addRules: headerRules, acceptedByWebKit: true
+                                    });
+                                } catch (e) {
+                                    try { console.warn('[Detour polyfill] declarativeNetRequest: header rules not recorded:', e && e.message); } catch (e2) {}
+                                }
+                            }
+                            return;
+                        }
+
+                        // WebKit refused the call and it carries header rules
+                        // (an unrecognised header name is the known reason).
+                        // Can Detour keep them? Nothing has changed yet.
+                        try {
+                            await send('updateHeaderRules', {
+                                removeRuleIds: removeRuleIds, addRules: headerRules, acceptedByWebKit: false, dryRun: true
+                            });
+                        } catch (e) {
+                            throw refusal;
+                        }
+                        // The rest of the call still goes to WebKit; if it is
+                        // refused too, the header rules were not the reason.
+                        const rest = Object.assign({}, options, {
+                            addRules: addRules.filter(function(rule) { return !isHeaderRule(rule); })
+                        });
+                        try {
+                            await nativeUpdate.call(target, rest);
+                        } catch (e) {
+                            throw refusal;
+                        }
+                        // Then each header rule on its own: WebKit keeps every
+                        // one it accepts (only WebKit can apply a rule to web
+                        // pages in tabs), Detour the ones it refuses.
+                        const accepted = [];
+                        const refused = [];
+                        for (let i = 0; i < headerRules.length; i++) {
+                            try {
+                                await nativeUpdate.call(target, { addRules: [headerRules[i]] });
+                                accepted.push(headerRules[i]);
+                            } catch (e) {
+                                refused.push(headerRules[i]);
+                            }
+                        }
+                        if (refused.length > 0) {
+                            // One id, one keeper: a rule WebKit held under an id
+                            // Detour now takes is replaced, not doubled.
+                            try {
+                                await nativeUpdate.call(target, {
+                                    removeRuleIds: refused.map(function(rule) { return rule.id; })
+                                });
+                            } catch (e) {}
+                        }
+                        // The removals and the rules Detour keeps alone go in one
+                        // message: a rule set again under its old id (a worker
+                        // start-up) is replaced in one step, so a request asking
+                        // meanwhile never finds it missing.
+                        await send('updateHeaderRules', {
+                            removeRuleIds: removeRuleIds, addRules: refused, acceptedByWebKit: false
+                        });
+                        if (accepted.length > 0) {
+                            await send('updateHeaderRules', {
+                                removeRuleIds: [], addRules: accepted, acceptedByWebKit: true
+                            });
+                        }
+                    })();
+                    return __detourSettle(promise, callback, false);
+                };
+                update._detourNative = nativeUpdate;
+                update._detourHeaderRulesWrapper = true;
+                return update;
+            };
+
+            const makeGet = function(target, nativeGet) {
+                const get = function(filter, callback) {
+                    if (typeof filter === 'function') { callback = filter; filter = undefined; }
+                    const promise = (async function() {
+                        const fromWebKit = await (filter === undefined || filter === null
+                            ? nativeGet.call(target) : nativeGet.call(target, filter));
+                        let kept = [];
+                        try {
+                            const params = {};
+                            if (filter && Array.isArray(filter.ruleIds)) params.ruleIds = filter.ruleIds;
+                            const reply = await send('getHeaderRules', params);
+                            if (reply && Array.isArray(reply.rules)) kept = reply.rules;
+                        } catch (e) {}
+                        if (kept.length === 0) return fromWebKit;
+                        const keptIds = kept.map(function(rule) { return rule.id; });
+                        const others = Array.isArray(fromWebKit)
+                            ? fromWebKit.filter(function(rule) { return keptIds.indexOf(rule.id) === -1; }) : [];
+                        return others.concat(kept);
+                    })();
+                    return __detourSettle(promise, callback);
+                };
+                get._detourNative = nativeGet;
+                get._detourHeaderRulesWrapper = true;
+                return get;
+            };
+
+            // Returns 'polyfill' | 'no-methods' | 'define-failed'.
+            const patch = function(dnr, isPrimary) {
+                for (let i = 0; i < enumNames.length; i++) {
+                    const name = enumNames[i];
+                    let present = false;
+                    try { present = dnr[name] !== undefined; } catch (e) {}
+                    if (present) continue;
+                    const value = typeof enums[name] === 'object' ? Object.freeze(Object.assign({}, enums[name])) : enums[name];
+                    try {
+                        Object.defineProperty(dnr, name, { value: value, writable: false, configurable: true, enumerable: true });
+                        if (isPrimary) state.enums.push(name);
+                    } catch (e) {}
+                }
+                const nativeUpdate = dnr.updateSessionRules;
+                const nativeGet = dnr.getSessionRules;
+                if (typeof nativeUpdate !== 'function' || typeof nativeGet !== 'function') return 'no-methods';
+                // A second run in this realm finds its own wrappers: keep them.
+                if (nativeUpdate._detourHeaderRulesWrapper && nativeGet._detourHeaderRulesWrapper) return 'polyfill';
+                try {
+                    Object.defineProperty(dnr, 'updateSessionRules', {
+                        value: makeUpdate(dnr, nativeUpdate), writable: true, configurable: true, enumerable: true
+                    });
+                    Object.defineProperty(dnr, 'getSessionRules', {
+                        value: makeGet(dnr, nativeGet), writable: true, configurable: true, enumerable: true
+                    });
+                } catch (e) {
+                    return 'define-failed';
+                }
+                return 'polyfill';
+            };
+
+            const chromeDNR = g.chrome && g.chrome.declarativeNetRequest;
+            if (chromeDNR && typeof chromeDNR === 'object') {
+                state.install = patch(chromeDNR, true);
+                // Weakly cached wrapper: root it, then check the patch is what
+                // a fresh read answers with (see __detourHoldWrapper).
+                __detourHoldWrapper('declarativeNetRequest', chromeDNR);
+                const again = g.chrome.declarativeNetRequest;
+                if (state.install === 'polyfill'
+                    && !(again && again.updateSessionRules && again.updateSessionRules._detourHeaderRulesWrapper === true)) {
+                    __detourReleaseWrapper('declarativeNetRequest');
+                    console.warn('[Detour polyfill] chrome.declarativeNetRequest patch is not visible through chrome.declarativeNetRequest');
+                    state.install = 'polyfill-not-visible';
+                }
+                let browserDNR = null;
+                try { browserDNR = g.browser && g.browser.declarativeNetRequest; } catch (e) {}
+                if (browserDNR && typeof browserDNR === 'object' && browserDNR !== chromeDNR) {
+                    patch(browserDNR, false);
+                    __detourHoldWrapper('browserDeclarativeNetRequest', browserDNR);
+                }
+            }
+
+            // MARK: Applying header rules to the context's own requests
+            if (state.install === 'polyfill') {
+                const isHTTP = function(url) {
+                    return typeof url === 'string' && (url.slice(0, 7).toLowerCase() === 'http://' || url.slice(0, 8).toLowerCase() === 'https://');
+                };
+                // Never rejects: a request must not fail because the question did.
+                const headerChanges = function(url, method) {
+                    let pending;
+                    try { pending = send('headerChanges', { url: url, method: method }); } catch (e) { return Promise.resolve([]); }
+                    return Promise.resolve(pending).then(function(reply) {
+                        return reply && Array.isArray(reply.changes) ? reply.changes : [];
+                    }, function() { return []; });
+                };
+
+                // What a relative URL resolves against: the document's base URL
+                // in a page (a <base> element changes it), the script's own URL
+                // in a worker.
+                const baseURL = function() {
+                    try { if (g.document && typeof g.document.baseURI === 'string') return g.document.baseURI; } catch (e) {}
+                    return g.location ? g.location.href : undefined;
+                };
+
+                const nativeFetch = g.fetch;
+                if (typeof nativeFetch === 'function' && nativeFetch._detourHeaderRulesWrapper !== true) {
+                    const fetchWithHeaderRules = function(input, init) {
+                        let url = '';
+                        let method = 'GET';
+                        try {
+                            const isRequest = typeof Request === 'function' && input instanceof Request;
+                            url = isRequest ? input.url : new URL(String(input), baseURL()).href;
+                            if (init && init.method !== undefined) method = String(init.method);
+                            else if (isRequest) method = input.method;
+                        } catch (e) {
+                            url = '';
+                        }
+                        const args = arguments;
+                        // The extension's own files, data: and blob: URLs, and
+                        // anything fetch itself will reject: not Detour's business.
+                        if (!isHTTP(url)) return nativeFetch.apply(g, args);
+                        return headerChanges(url, method).then(function(changes) {
+                            if (changes.length === 0) return nativeFetch.apply(g, args);
+                            // What fetch() does first with its arguments anyway;
+                            // a throw here is the rejection fetch would give.
+                            const request = new Request(input, init);
+                            for (let i = 0; i < changes.length; i++) {
+                                const change = changes[i];
+                                try {
+                                    if (change.operation === 'remove') request.headers.delete(change.header);
+                                    else if (change.operation === 'append') request.headers.append(change.header, change.value);
+                                    else request.headers.set(change.header, change.value);
+                                } catch (e) {}
+                            }
+                            return nativeFetch.call(g, request);
+                        });
+                    };
+                    fetchWithHeaderRules._detourNative = nativeFetch;
+                    fetchWithHeaderRules._detourHeaderRulesWrapper = true;
+                    try {
+                        g.fetch = fetchWithHeaderRules;
+                        state.fetch = g.fetch === fetchWithHeaderRules ? 'wrapped' : 'define-failed';
+                    } catch (e) {
+                        state.fetch = 'define-failed';
+                    }
+                } else if (typeof nativeFetch === 'function') {
+                    state.fetch = 'wrapped';
+                }
+
+                // Pages only: a service worker has no XMLHttpRequest.
+                const XHR = g.XMLHttpRequest;
+                if (typeof XHR === 'function' && XHR.prototype && XHR.prototype.send
+                    && XHR.prototype.send._detourHeaderRulesWrapper !== true) {
+                    const proto = XHR.prototype;
+                    const nativeOpen = proto.open;
+                    const nativeSend = proto.send;
+                    const nativeSetRequestHeader = proto.setRequestHeader;
+                    const nativeAbort = proto.abort;
+                    // xhr -> { url, method, async, own: names the page set, pending, sent }
+                    const opened = new WeakMap();
+
+                    const xhrOpen = function(method, url, async) {
+                        // WebKit first: an open() that throws changes nothing, so
+                        // what was recorded (and a send still waiting) stays.
+                        const result = nativeOpen.apply(this, arguments);
+                        let resolved = '';
+                        try { resolved = new URL(String(url), baseURL()).href; } catch (e) {}
+                        // Opening again cancels a send still waiting for its answer,
+                        // as open() cancels a request in flight.
+                        const previous = opened.get(this);
+                        if (previous) previous.pending = null;
+                        opened.set(this, {
+                            url: resolved, method: String(method),
+                            async: arguments.length < 3 || !!async,
+                            own: {}, pending: null, sent: false
+                        });
+                        return result;
+                    };
+                    // To the page a send() waiting for its answer is a request in
+                    // flight: WebKit has not seen it yet, so the InvalidStateError
+                    // it gives for a second send() or a late setRequestHeader()
+                    // is thrown here.
+                    const alreadySent = function(what) {
+                        return new DOMException('XMLHttpRequest.' + what + ': the request was already sent.', 'InvalidStateError');
+                    };
+                    const xhrSetRequestHeader = function(name) {
+                        const waiting = opened.get(this);
+                        if (waiting && waiting.pending !== null) throw alreadySent('setRequestHeader');
+                        const result = nativeSetRequestHeader.apply(this, arguments);
+                        const entry = opened.get(this);
+                        if (entry) entry.own[String(name).toLowerCase()] = true;
+                        return result;
+                    };
+                    const xhrSend = function() {
+                        const entry = opened.get(this);
+                        // A synchronous request cannot wait for the answer.
+                        // Nor is one WebKit will refuse deferred: not opened (or
+                        // already sent), its send() throws, and the page must
+                        // get that exception from this call.
+                        if (!entry || !entry.async || entry.sent || !isHTTP(entry.url) || this.readyState !== 1) return nativeSend.apply(this, arguments);
+                        if (entry.pending !== null) throw alreadySent('send');
+                        const xhr = this;
+                        const args = arguments;
+                        const token = {};
+                        entry.pending = token;
+                        headerChanges(entry.url, entry.method).then(function(changes) {
+                            // Aborted or opened again while the question was out.
+                            if (entry.pending !== token) return;
+                            entry.pending = null;
+                            for (let i = 0; i < changes.length; i++) {
+                                const change = changes[i];
+                                const name = String(change.header).toLowerCase();
+                                // XHR can only add: it cannot take a header away,
+                                // and a second value for a header the page set is
+                                // joined to the first, not put in its place.
+                                if (change.operation === 'remove') continue;
+                                if (change.operation === 'set' && entry.own[name]) continue;
+                                try { nativeSetRequestHeader.call(xhr, change.header, change.value); } catch (e) {}
+                            }
+                            try {
+                                nativeSend.apply(xhr, args);
+                                entry.sent = true;
+                            } catch (e) {
+                                try { console.error('[Detour polyfill] XMLHttpRequest.send failed after applying header rules:', e); } catch (e2) {}
+                            }
+                        });
+                    };
+                    const xhrAbort = function() {
+                        const entry = opened.get(this);
+                        const wasWaiting = !!entry && entry.pending !== null;
+                        if (entry) entry.pending = null;
+                        const result = nativeAbort.apply(this, arguments);
+                        // WebKit never saw the send, so it fires nothing; the page
+                        // called send() and is owed what an aborted request gets.
+                        if (wasWaiting) {
+                            try {
+                                this.dispatchEvent(new ProgressEvent('abort'));
+                                this.dispatchEvent(new ProgressEvent('loadend'));
+                            } catch (e) {}
+                        }
+                        return result;
+                    };
+                    xhrSend._detourHeaderRulesWrapper = true;
+                    try {
+                        proto.open = xhrOpen;
+                        proto.setRequestHeader = xhrSetRequestHeader;
+                        proto.send = xhrSend;
+                        proto.abort = xhrAbort;
+                        state.xhr = proto.send === xhrSend ? 'wrapped' : 'define-failed';
+                    } catch (e) {
+                        state.xhr = 'define-failed';
+                    }
+                } else if (typeof XHR === 'function') {
+                    state.xhr = 'wrapped';
+                }
+            }
+        } catch (e) {
+            state.install = 'error: ' + (e && e.message ? e.message : String(e));
+        }
+        g.__detourDeclarativeNetRequest = Object.freeze({
+            install: state.install, enums: state.enums.join(','), fetch: state.fetch, xhr: state.xhr
+        });
     })();
     """
 

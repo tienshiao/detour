@@ -635,6 +635,83 @@ async function handleMessage(message) {
       };
     }
 
+    // --- declarativeNetRequest session header rule (TASK-132.4) ---
+
+    case 'dnrProbe': {
+      const dnr = chrome.declarativeNetRequest;
+      return {
+        namespace: typeof dnr,
+        install: globalThis.__detourDeclarativeNetRequest,
+        updateSessionRules: dnr ? typeof dnr.updateSessionRules : 'n/a',
+        modifyHeaders: dnr && dnr.RuleActionType ? dnr.RuleActionType.MODIFY_HEADERS : '(no RuleActionType)',
+        set: dnr && dnr.HeaderOperation ? dnr.HeaderOperation.SET : '(no HeaderOperation)',
+        xmlhttprequest: dnr && dnr.ResourceType ? dnr.ResourceType.XMLHTTPREQUEST : '(no ResourceType)',
+        onInstalledReason: chrome.runtime.OnInstalledReason || '(no runtime.OnInstalledReason)',
+        xmlHttpRequestInWorker: typeof XMLHttpRequest,
+      };
+    }
+
+    case 'dnrAddRule': {
+      // Rule 1, for every URL on the target's origin. `custom` adds a header
+      // name WebKit's own declarativeNetRequest refuses, which Detour then
+      // keeps and applies itself; without it WebKit holds the rule and Detour
+      // applies it only where WebKit does not (this worker's fetch).
+      const dnr = chrome.declarativeNetRequest;
+      const origin = new URL(message.url).origin;
+      const requestHeaders = [
+        { header: 'User-Agent', operation: dnr.HeaderOperation.SET, value: `api-explorer/${chrome.runtime.getManifest().version} ${navigator.userAgent}` },
+      ];
+      if (message.custom) {
+        requestHeaders.push({ header: 'x-api-explorer', operation: dnr.HeaderOperation.SET, value: 'session-rule' });
+      }
+      const rule = {
+        id: 1,
+        priority: 1,
+        action: { type: dnr.RuleActionType.MODIFY_HEADERS, requestHeaders },
+        condition: {
+          urlFilter: `${origin}/*`,
+          resourceTypes: [dnr.ResourceType.XMLHTTPREQUEST, dnr.ResourceType.OTHER],
+        },
+      };
+      await dnr.updateSessionRules({ removeRuleIds: [1], addRules: [rule] });
+      let heldByWebKit = '(no _detourNative)';
+      const nativeGet = dnr.getSessionRules._detourNative;
+      if (typeof nativeGet === 'function') {
+        heldByWebKit = (await nativeGet.call(dnr)).some((r) => r.id === 1);
+      }
+      return { added: rule, heldByWebKit, rules: await dnr.getSessionRules() };
+    }
+
+    case 'dnrGetRules': {
+      return await chrome.declarativeNetRequest.getSessionRules();
+    }
+
+    case 'dnrFetch': {
+      try {
+        const response = await fetch(message.url, { cache: 'no-store' });
+        return { status: response.status, body: (await response.text()).slice(0, 4000) };
+      } catch (e) {
+        return { body: 'failed: ' + e.message };
+      }
+    }
+
+    // --- tabGroups / debugger interim stand-ins (TASK-132.4) ---
+
+    case 'interimNamespacesProbe': {
+      const tg = chrome.tabGroups;
+      const dbg = chrome.debugger;
+      const present = (object, names) => object ? names.filter((name) => object[name] !== undefined) : '(no namespace)';
+      return {
+        install: globalThis.__detourInterimNamespaces || '(no Detour polyfill)',
+        tabGroups: tg ? { Color: tg.Color, TAB_GROUP_ID_NONE: tg.TAB_GROUP_ID_NONE } : '(no namespace)',
+        tabGroupsMethodsPresent: present(tg, ['get', 'query', 'update', 'move', 'onCreated', 'onUpdated', 'onRemoved']),
+        tabsGroup: typeof chrome.tabs.group,
+        tabsUngroup: typeof chrome.tabs.ungroup,
+        debuggerEvents: dbg ? { onEvent: typeof dbg.onEvent.addListener, onDetach: typeof dbg.onDetach.addListener } : '(no namespace)',
+        debuggerMethodsPresent: present(dbg, ['attach', 'detach', 'sendCommand', 'getTargets']),
+      };
+    }
+
     case 'storageManagedProbe': {
       return await storageManagedProbe();
     }

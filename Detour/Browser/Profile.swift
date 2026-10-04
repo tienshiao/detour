@@ -546,6 +546,9 @@ class Profile {
         // The console rate-limit window too: a reloaded context starts its own
         // burst, and an extension that never comes back leaves no entry behind.
         polyfillHandler?.forgetConsoleRateLimit(for: id)
+        // And the session header rules: WebKit drops its session rules with the
+        // context, so Detour's part of them goes too (TASK-132.4).
+        polyfillHandler?.forgetSessionHeaderRules(for: id)
         // Likewise the worker's keep-alive port: WebKit is not relied on to
         // report its disconnect once the context is gone.
         ExtensionManager.shared.closeExtensionPorts(for: id, in: extensionController)

@@ -538,6 +538,352 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["diag"] as? String, "absent")
     }
 
+    // MARK: - runtime.OnInstalledReason (TASK-132.4)
+
+    /// WebKit vends `runtime.onInstalled` without Chrome's `OnInstalledReason`
+    /// enum, and `details.reason === chrome.runtime.OnInstalledReason.INSTALL`
+    /// then throws on the missing object. The polyfill fills it in.
+    func testRuntimeOnInstalledReasonIsFilledInWhenAbsent() async throws {
+        let result = try await evalDictionary("""
+        const reasons = chrome.runtime.OnInstalledReason;
+        try { reasons.INSTALL = 'changed'; } catch (e) {}
+        return JSON.stringify({
+            reasons: reasons,
+            values: Object.values(reasons),
+            frozen: Object.isFrozen(reasons),
+            stillInstall: reasons.INSTALL,
+            diag: __detourPolyfillDiag.apis.runtimeOnInstalledReason
+        });
+        """)
+        XCTAssertEqual(result["reasons"] as? [String: String],
+                       ["INSTALL": "install", "UPDATE": "update",
+                        "CHROME_UPDATE": "chrome_update", "SHARED_MODULE_UPDATE": "shared_module_update"])
+        XCTAssertEqual((result["values"] as? [String])?.count, 4,
+                       "the polyfill's own marker must not show up as a fifth reason")
+        XCTAssertEqual(result["frozen"] as? Bool, true)
+        XCTAssertEqual(result["stillInstall"] as? String, "install")
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+    }
+
+    /// NEGATIVE: an enum the runtime already has is WebKit's and stays as it is.
+    func testRuntimeOnInstalledReasonIsLeftAloneWhenTheRuntimeHasOne() async throws {
+        let native = try await makeWebView(
+            manifestPermissions: ["history"],
+            shimExtras: "globalThis.chrome.runtime.OnInstalledReason = { INSTALL: 'native-install' };")
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            install: chrome.runtime.OnInstalledReason.INSTALL,
+            keys: Object.keys(chrome.runtime.OnInstalledReason),
+            diag: __detourPolyfillDiag.apis.runtimeOnInstalledReason
+        });
+        """, on: native)
+        XCTAssertEqual(result["install"] as? String, "native-install")
+        XCTAssertEqual(result["keys"] as? [String], ["INSTALL"])
+        XCTAssertEqual(result["diag"] as? String, "native")
+    }
+
+    /// Re-running the polyfill in the same realm must keep reporting the enum
+    /// as its own rather than mistaking the first run's for WebKit's.
+    func testRuntimeOnInstalledReasonSurvivesRerun() async throws {
+        let result = try await evalDictionary("""
+        const before = chrome.runtime.OnInstalledReason;
+        \(ExtensionAPIPolyfill.polyfillJS)
+        return JSON.stringify({
+            same: chrome.runtime.OnInstalledReason === before,
+            marker: globalThis.__detourRuntimeConstantsInstall
+        });
+        """)
+        XCTAssertEqual(result["same"] as? Bool, true)
+        XCTAssertEqual(result["marker"] as? String, "polyfill")
+    }
+
+    // MARK: - chrome.declarativeNetRequest (TASK-132.4)
+
+    /// NEGATIVE: the namespace is WebKit's and exists only with the permission.
+    /// Where WebKit vends none (this bare web view; an extension that did not
+    /// ask), the polyfill must not invent one — an extension feature-testing
+    /// `chrome.declarativeNetRequest` must keep seeing `undefined` — and must
+    /// leave `fetch` and `XMLHttpRequest` alone.
+    func testDeclarativeNetRequestIsAbsentWithoutANamespace() async throws {
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            type: typeof chrome.declarativeNetRequest,
+            state: globalThis.__detourDeclarativeNetRequest,
+            diag: __detourPolyfillDiag.apis.declarativeNetRequest,
+            fetchWrapped: fetch._detourHeaderRulesWrapper === true,
+            fetchNative: __detourNativeness(fetch),
+            xhrWrapped: XMLHttpRequest.prototype.send._detourHeaderRulesWrapper === true,
+            held: 'declarativeNetRequest' in globalThis.__detourHeldWrappers
+        });
+        """)
+        XCTAssertEqual(result["type"] as? String, "undefined")
+        let state = try XCTUnwrap(result["state"] as? [String: Any])
+        XCTAssertEqual(state["install"] as? String, "absent")
+        XCTAssertEqual(state["fetch"] as? String, "none")
+        XCTAssertEqual(state["xhr"] as? String, "none")
+        XCTAssertEqual(result["diag"] as? String, "absent [enums: ; fetch: none; xhr: none]")
+        XCTAssertEqual(result["fetchWrapped"] as? Bool, false)
+        XCTAssertEqual(result["fetchNative"] as? String, "native", "fetch must stay WebKit's own")
+        XCTAssertEqual(result["xhrWrapped"] as? Bool, false)
+        XCTAssertEqual(result["held"] as? Bool, false)
+    }
+
+    /// A stand-in for WebKit's namespace: `updateSessionRules` throws
+    /// synchronously for a header name outside a list, as WebKit's does, and
+    /// records every call it was given.
+    private static let fakeDeclarativeNetRequestShim = """
+    globalThis.__dnrCalls = [];
+    globalThis.__dnrRules = [];
+    globalThis.chrome.declarativeNetRequest = {
+        MAX_NUMBER_OF_DYNAMIC_AND_SESSION_RULES: 30000,
+        ResourceType: { NATIVE_ONLY: 'native-only' },
+        updateSessionRules: function(options) {
+            globalThis.__dnrCalls.push(JSON.parse(JSON.stringify(options)));
+            for (const rule of (options.addRules || [])) {
+                for (const header of ((rule.action || {}).requestHeaders || [])) {
+                    if (header.header.toLowerCase() !== 'user-agent') {
+                        throw new Error('The header `' + header.header + '` is not recognized.');
+                    }
+                }
+            }
+            const removed = options.removeRuleIds || [];
+            globalThis.__dnrRules = globalThis.__dnrRules.filter((r) => removed.indexOf(r.id) === -1)
+                .concat(options.addRules || []);
+            return Promise.resolve();
+        },
+        getSessionRules: function() { return Promise.resolve(globalThis.__dnrRules.slice()); }
+    };
+    """
+
+    /// With a namespace present the enums WebKit lacks are added (an enum it
+    /// already has is left alone), the session-rule methods are wrapped on the
+    /// rooted namespace, and a call WebKit accepts passes through unchanged.
+    func testDeclarativeNetRequestEnumsAndPassThroughWithANamespace() async throws {
+        let withNamespace = try await makeWebView(manifestPermissions: ["declarativeNetRequestWithHostAccess"],
+                                                  shimExtras: Self.fakeDeclarativeNetRequestShim)
+        let result = try await evalDictionary("""
+        const dnr = chrome.declarativeNetRequest;
+        const rule = {
+            id: 1, priority: 1,
+            action: { type: dnr.RuleActionType.MODIFY_HEADERS,
+                      requestHeaders: [{ header: 'User-Agent', operation: dnr.HeaderOperation.SET, value: 'ua' }] },
+            condition: { urlFilter: 'https://api.example.com/*' }
+        };
+        const options = { removeRuleIds: [1], addRules: [rule] };
+        const outcome = await dnr.updateSessionRules(options);
+        return JSON.stringify({
+            state: globalThis.__detourDeclarativeNetRequest,
+            modifyHeaders: dnr.RuleActionType.MODIFY_HEADERS,
+            set: dnr.HeaderOperation.SET,
+            requestMethodPost: dnr.RequestMethod.POST,
+            domainType: dnr.DomainType.THIRD_PARTY,
+            dynamicRulesetID: dnr.DYNAMIC_RULESET_ID,
+            nativeEnumKept: dnr.ResourceType,
+            maxRules: dnr.MAX_NUMBER_OF_DYNAMIC_AND_SESSION_RULES,
+            held: globalThis.__detourHeldWrappers.declarativeNetRequest === dnr,
+            outcome: outcome === undefined ? null : outcome,
+            calls: globalThis.__dnrCalls,
+            rules: await dnr.getSessionRules(),
+            fetchWrapped: fetch._detourHeaderRulesWrapper === true,
+            xhrWrapped: XMLHttpRequest.prototype.send._detourHeaderRulesWrapper === true
+        });
+        """, on: withNamespace)
+
+        let state = try XCTUnwrap(result["state"] as? [String: Any])
+        XCTAssertEqual(state["install"] as? String, "polyfill")
+        XCTAssertEqual(state["fetch"] as? String, "wrapped")
+        XCTAssertEqual(state["xhr"] as? String, "wrapped")
+        let defined = Set((state["enums"] as? String ?? "").split(separator: ",").map(String.init))
+        XCTAssertEqual(defined, ["RuleActionType", "HeaderOperation", "RequestMethod", "DomainType",
+                                 "UnsupportedRegexReason", "DYNAMIC_RULESET_ID", "SESSION_RULESET_ID"],
+                       "ResourceType was already there and must not be counted as added")
+        XCTAssertEqual(result["modifyHeaders"] as? String, "modifyHeaders")
+        XCTAssertEqual(result["set"] as? String, "set")
+        XCTAssertEqual(result["requestMethodPost"] as? String, "post")
+        XCTAssertEqual(result["domainType"] as? String, "thirdParty")
+        XCTAssertEqual(result["dynamicRulesetID"] as? String, "_dynamic")
+        XCTAssertEqual(result["nativeEnumKept"] as? [String: String], ["NATIVE_ONLY": "native-only"],
+                       "an enum the namespace already has is WebKit's and stays as it is")
+        XCTAssertEqual(result["maxRules"] as? Int, 30000)
+        XCTAssertEqual(result["held"] as? Bool, true)
+        XCTAssertTrue(result["outcome"] is NSNull, "updateSessionRules resolves with nothing")
+
+        // WebKit accepted the call: it got it once, untouched.
+        let calls = try XCTUnwrap(result["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual((calls.first?["addRules"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual((result["rules"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(result["fetchWrapped"] as? Bool, true)
+        XCTAssertEqual(result["xhrWrapped"] as? Bool, true)
+    }
+
+    /// NEGATIVE: when WebKit refuses a header rule, the wrapper asks Detour
+    /// whether it can keep it. This page's extension has no loaded context
+    /// holding the permission, so Detour says no — and the call must then fail
+    /// with WebKit's own error, with WebKit never given a cut-down version.
+    func testDeclarativeNetRequestRefusedRuleFailsWithTheNativeErrorWhenDetourCannotKeepIt() async throws {
+        let withNamespace = try await makeWebView(manifestPermissions: ["declarativeNetRequestWithHostAccess"],
+                                                  shimExtras: Self.fakeDeclarativeNetRequestShim)
+        let result = try await evalDictionary("""
+        const dnr = chrome.declarativeNetRequest;
+        const rule = {
+            id: 1,
+            action: { type: 'modifyHeaders',
+                      requestHeaders: [{ header: 'anthropic-client-platform', operation: 'set', value: 'x' }] },
+            condition: { urlFilter: 'https://api.example.com/*' }
+        };
+        const out = { synchronousThrow: false };
+        let pending;
+        try { pending = dnr.updateSessionRules({ addRules: [rule] }); } catch (e) { out.synchronousThrow = true; }
+        try { await pending; out.settled = 'resolved'; } catch (e) { out.settled = 'rejected'; out.message = e.message; }
+        out.calls = globalThis.__dnrCalls.length;
+        out.rules = (await dnr.getSessionRules()).length;
+        return JSON.stringify(out);
+        """, on: withNamespace)
+        XCTAssertEqual(result["synchronousThrow"] as? Bool, false,
+                       "the wrapper answers with a promise; WebKit's synchronous throw becomes a rejection")
+        XCTAssertEqual(result["settled"] as? String, "rejected")
+        XCTAssertEqual(result["message"] as? String, "The header `anthropic-client-platform` is not recognized.")
+        XCTAssertEqual(result["calls"] as? Int, 1, "WebKit must not be called again once Detour declined the rule")
+        XCTAssertEqual(result["rules"] as? Int, 0)
+        XCTAssertTrue(handler.sessionHeaderRulesForTesting(extensionID: "test-polyfill-extension").isEmpty)
+    }
+
+    // MARK: - INTERIM chrome.tabGroups / chrome.debugger stand-ins (TASK-132.4)
+
+    private static let interimProbeJS = """
+    const tg = chrome.tabGroups;
+    const dbg = chrome.debugger;
+    const out = {
+        tabGroupsType: typeof tg,
+        debuggerType: typeof dbg,
+        state: globalThis.__detourInterimNamespaces,
+        diagTabGroups: __detourPolyfillDiag.apis.tabGroups,
+        diagDebugger: __detourPolyfillDiag.apis.debugger,
+        tabsGroup: typeof (chrome.tabs || {}).group,
+        tabsUngroup: typeof (chrome.tabs || {}).ungroup
+    };
+    if (tg) {
+        out.color = tg.Color;
+        out.colorFrozen = Object.isFrozen(tg.Color);
+        out.none = tg.TAB_GROUP_ID_NONE;
+        out.tabGroupsKeys = Object.keys(tg).sort();
+        out.tabGroupsMethods = ['get', 'query', 'update', 'move', 'onCreated', 'onUpdated', 'onRemoved', 'onMoved']
+            .filter((name) => tg[name] !== undefined);
+    }
+    if (dbg) {
+        out.debuggerKeys = Object.keys(dbg).sort();
+        out.debuggerMethods = ['attach', 'detach', 'sendCommand', 'getTargets']
+            .filter((name) => dbg[name] !== undefined);
+        let fired = 0;
+        const listener = () => { fired += 1; };
+        dbg.onEvent.addListener(listener);
+        dbg.onDetach.addListener(listener);
+        out.hasListener = dbg.onEvent.hasListener(listener) && dbg.onDetach.hasListener(listener);
+        dbg.onEvent.removeListener(listener);
+        dbg.onDetach.removeListener(listener);
+        out.removed = !dbg.onEvent.hasListener(listener) && !dbg.onDetach.hasListener(listener);
+        out.fired = fired;
+    }
+    return JSON.stringify(out);
+    """
+
+    /// With the permissions declared: `tabGroups` is constants only, `debugger`
+    /// is two event emitters only, and no method of either API exists, so a
+    /// feature test for a method still fails.
+    func testInterimTabGroupsAndDebuggerWithThePermissions() async throws {
+        let view = try await makeWebView(manifestPermissions: ["tabGroups", "debugger"])
+        let result = try await evalDictionary(Self.interimProbeJS, on: view)
+
+        XCTAssertEqual(result["tabGroupsType"] as? String, "object")
+        XCTAssertEqual(result["color"] as? [String: String],
+                       ["GREY": "grey", "BLUE": "blue", "RED": "red", "YELLOW": "yellow", "GREEN": "green",
+                        "PINK": "pink", "PURPLE": "purple", "CYAN": "cyan", "ORANGE": "orange"])
+        XCTAssertEqual(result["colorFrozen"] as? Bool, true)
+        XCTAssertEqual(result["none"] as? Int, -1)
+        XCTAssertEqual(result["tabGroupsKeys"] as? [String], ["Color", "TAB_GROUP_ID_NONE"],
+                       "the stand-in is constants only (its marker is not enumerable)")
+        XCTAssertEqual(result["tabGroupsMethods"] as? [String], [], "no tabGroups method or event may exist yet")
+        XCTAssertEqual(result["tabsGroup"] as? String, "undefined")
+        XCTAssertEqual(result["tabsUngroup"] as? String, "undefined")
+
+        XCTAssertEqual(result["debuggerType"] as? String, "object")
+        XCTAssertEqual(result["debuggerKeys"] as? [String], ["onDetach", "onEvent"])
+        XCTAssertEqual(result["debuggerMethods"] as? [String], [], "no debugger method may exist yet")
+        XCTAssertEqual(result["hasListener"] as? Bool, true)
+        XCTAssertEqual(result["removed"] as? Bool, true)
+        XCTAssertEqual(result["fired"] as? Int, 0, "the stand-in's events never fire")
+
+        XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "interim", "debugger": "interim"])
+        XCTAssertEqual(result["diagTabGroups"] as? String, "interim")
+        XCTAssertEqual(result["diagDebugger"] as? String, "interim")
+    }
+
+    /// NEGATIVE: without the permission the namespace stays `undefined`, each
+    /// on its own — declaring one does not bring the other.
+    func testInterimNamespacesAreAbsentWithoutTheirPermission() async throws {
+        let neither = try await evalDictionary(Self.interimProbeJS)
+        XCTAssertEqual(neither["tabGroupsType"] as? String, "undefined")
+        XCTAssertEqual(neither["debuggerType"] as? String, "undefined")
+        XCTAssertEqual(neither["state"] as? [String: String], ["tabGroups": "absent", "debugger": "absent"])
+        XCTAssertEqual(neither["diagTabGroups"] as? String, "absent")
+        XCTAssertEqual(neither["diagDebugger"] as? String, "absent")
+
+        let onlyTabGroups = try await makeWebView(manifestPermissions: ["tabGroups", "tabs"])
+        let first = try await evalDictionary(Self.interimProbeJS, on: onlyTabGroups)
+        XCTAssertEqual(first["tabGroupsType"] as? String, "object")
+        XCTAssertEqual(first["debuggerType"] as? String, "undefined")
+        XCTAssertEqual(first["state"] as? [String: String], ["tabGroups": "interim", "debugger": "absent"])
+
+        let onlyDebugger = try await makeWebView(manifestPermissions: ["debugger"])
+        let second = try await evalDictionary(Self.interimProbeJS, on: onlyDebugger)
+        XCTAssertEqual(second["tabGroupsType"] as? String, "undefined")
+        XCTAssertEqual(second["debuggerType"] as? String, "object")
+        XCTAssertEqual(second["state"] as? [String: String], ["tabGroups": "absent", "debugger": "interim"])
+    }
+
+    /// NEGATIVE: a namespace that is already there — WebKit's one day, or the
+    /// real implementation (TASK-132.12 / 132.13) — is never replaced or added
+    /// to, whatever the manifest declares.
+    func testInterimNamespacesLeaveAnExistingNamespaceAlone() async throws {
+        let withReal = try await makeWebView(
+            manifestPermissions: ["tabGroups", "debugger"],
+            shimExtras: """
+            globalThis.chrome.tabGroups = { query: function() { return Promise.resolve([]); } };
+            globalThis.chrome.debugger = { attach: function() {} };
+            """)
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            tabGroupsKeys: Object.keys(chrome.tabGroups),
+            debuggerKeys: Object.keys(chrome.debugger),
+            state: globalThis.__detourInterimNamespaces
+        });
+        """, on: withReal)
+        XCTAssertEqual(result["tabGroupsKeys"] as? [String], ["query"])
+        XCTAssertEqual(result["debuggerKeys"] as? [String], ["attach"])
+        XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "native", "debugger": "native"])
+    }
+
+    /// Re-running the polyfill in the same realm keeps the first run's objects
+    /// (and any listener on them) and keeps calling them interim.
+    func testInterimNamespacesSurviveRerun() async throws {
+        let view = try await makeWebView(manifestPermissions: ["tabGroups", "debugger"])
+        let result = try await evalDictionary("""
+        const tabGroups = chrome.tabGroups;
+        const listener = () => {};
+        chrome.debugger.onEvent.addListener(listener);
+        \(ExtensionAPIPolyfill.polyfillJS)
+        return JSON.stringify({
+            sameTabGroups: chrome.tabGroups === tabGroups,
+            listenerKept: chrome.debugger.onEvent.hasListener(listener),
+            state: globalThis.__detourInterimNamespaces
+        });
+        """, on: view)
+        XCTAssertEqual(result["sameTabGroups"] as? Bool, true)
+        XCTAssertEqual(result["listenerKept"] as? Bool, true)
+        XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "interim", "debugger": "interim"])
+    }
+
     // MARK: - chrome.webNavigation frame enumeration
 
     /// `getAllFrames`/`getFrame` are deliberately not polyfilled — the only

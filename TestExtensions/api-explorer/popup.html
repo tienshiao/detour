@@ -304,6 +304,34 @@
     <div class="result" id="res-webrequest"></div>
   </section>
 
+  <!-- Declarative Net Request -->
+  <section>
+    <h2>Declarative Net Request (session header rule)</h2>
+    <div class="row">
+      <input type="text" id="input-dnr-url" placeholder="https://httpbin.org/headers" style="width:220px"/>
+    </div>
+    <div class="row">
+      <button id="btn-dnr-probe">Probe</button>
+      <button id="btn-dnr-add">Add Header Rule</button>
+      <button id="btn-dnr-add-native" class="secondary">Add (WebKit-only names)</button>
+    </div>
+    <div class="row">
+      <button id="btn-dnr-fetch">Fetch (worker + popup + XHR)</button>
+      <button id="btn-dnr-get" class="secondary">Get Session Rules</button>
+      <button id="btn-dnr-remove" class="secondary">Remove Rule</button>
+    </div>
+    <div class="result" id="res-dnr"></div>
+  </section>
+
+  <!-- Interim stand-ins -->
+  <section>
+    <h2>tabGroups / debugger (interim stand-ins)</h2>
+    <div class="row">
+      <button id="btn-interim-probe">Probe</button>
+    </div>
+    <div class="result" id="res-interim"></div>
+  </section>
+
   <!-- Commands -->
   <section>
     <h2>Commands</h2>

@@ -243,7 +243,8 @@ Any strong reference works. The polyfill's shared form is `__detourHoldWrapper(n
 and extension code enumerating or clearing globals cannot drop a root). `actionUserSettingsJS`
 (key `action`), `storageManagedJS` (key `storage`), `permissionsOriginPortJS` (key `permissions`,
 plus `browserPermissions` when `browser.permissions` is a second object), `tabResolveJS` (key `tabs`,
-plus `browserTabs`) and the native-namespace
+plus `browserTabs`), `declarativeNetRequestJS` (key `declarativeNetRequest`, plus
+`browserDeclarativeNetRequest`) and the native-namespace
 path of `webRequestStubJS` root through it, then re-read the namespace and
 check the patch is what it answers with; if not, they release the root and record
 `polyfill-not-visible` / `native+onAuthRequired-not-visible` in `__detourPolyfillDiag.apis`.
@@ -251,8 +252,8 @@ check the patch is what it answers with; if not, they release the root and recor
 root identity and forces a collection (churning garbage until a control `WeakRef` clears) to read
 the API back afterwards.
 
-`permissionsOriginPortJS` (TASK-75) is one of two modules that wrap *native* members rather than
-filling a gap (the other, `tabResolveJS`, is described after it): `contains`, `request` and `remove` are replaced with wrappers that drop an explicit
+`permissionsOriginPortJS` (TASK-75) is one of three modules that wrap *native* members rather than
+filling a gap (the others, `declarativeNetRequestJS` and `tabResolveJS`, are described after it): `contains`, `request` and `remove` are replaced with wrappers that drop an explicit
 port from every `details.origins` string before forwarding (Chrome's match patterns take a port,
 WebKit's parser rejects one, so the call throws instead of answering). Each wrapper keeps WebKit's
 own function on `wrapper._detourNative` — so the nativeness reading survives, and a test can still
@@ -268,6 +269,18 @@ rewrite makes a ported pattern mean the whole host for `request` and `remove` to
 symmetric inside Detour (the prompt shows the host pattern that is actually granted), whereas Chrome
 treats `http://host:8080/*` as narrower than `http://host/*`.
 
+`declarativeNetRequestJS` (TASK-132.4) is the third: it wraps `updateSessionRules` and
+`getSessionRules` (regular static functions of the `[MainWorldOnly]` `declarativeNetRequest`
+interface, so the own properties take), keeps WebKit's functions on `wrapper._detourNative`, marks
+its wrappers `_detourHeaderRulesWrapper`, and adds the enum objects WebKit does not vend as own
+properties of the same wrapper — all rooted under `declarativeNetRequest` (and
+`browserDeclarativeNetRequest` when `browser.declarativeNetRequest` is a second object). Its state
+(`globalThis.__detourDeclarativeNetRequest`, `apis.declarativeNetRequest` in the diag) reads `absent`
+when WebKit vends no namespace (no permission), `polyfill`, `no-methods`, `define-failed` or
+`polyfill-not-visible`; only in `polyfill` are `fetch` and `XMLHttpRequest` wrapped (docs/extensions.md,
+"declarativeNetRequest"). `runtimeConstantsJS` adds `runtime.OnInstalledReason` to the pinned
+`chrome.runtime` wrapper the same way `runtimeUpdateCheckJS` adds its members.
+
 `tabResolveJS` (TASK-132.2) wraps `tabs.getZoom` the same way — WebKit's function on
 `wrapper._detourNative`, the wrapper marked `_detourZoomWrapper`, the namespace rooted under `tabs`
 (and `browserTabs` when `browser.tabs` is a second object) — because Detour answers that call with a
@@ -276,6 +289,12 @@ tab handle while a tab-id resolve is armed, and an extension's own `getZoom` mus
 `tabs` namespace, so the own property takes; its diag entry (`apis.tabResolve`) reads `polyfill`,
 `absent`, `no-getZoom`, `define-failed` or `polyfill-not-visible`. In the last two the resolver still
 works (it calls WebKit's function directly); only the protection of genuine calls is missing.
+
+`interimNamespacesJS` (TASK-132.4, interim until TASK-132.12 / TASK-132.13) is the `webRequest`-stub
+case again: WebKit vends no `chrome.tabGroups` or `chrome.debugger`, so there is nothing to shadow and
+an own property on `chrome` is read normally. It defines constants (`tabGroups`) and never-firing
+events (`debugger`) only, each gated on its manifest permission, and never touches a namespace that
+already exists.
 
 ### Bottom line
 
