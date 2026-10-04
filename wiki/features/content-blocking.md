@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, the per-site switch implemented through a WebKit preferences SPI, and the blocked-resource counter."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:23:47Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
@@ -39,6 +39,12 @@ sources:
   - id: blocker-tests
     resource: ../../DetourTests/ContentBlockerTests.swift
     title: ContentBlockerTests.swift
+  - id: task-145
+    resource: backlog:TASK-145
+    title: A filter list over 150,000 rules attaches only its first chunk
+  - id: chunk-tests
+    resource: ../../DetourTests/ContentRuleListChunkTests.swift
+    title: ContentRuleListChunkTests.swift
 ---
 
 # What it does
@@ -87,19 +93,81 @@ compiles from the cached text file, and fetches when there is no cache.
 - **Compile** (`ContentRuleStore`) hands the JSON to
   `WKContentRuleListStore`. On a compile error it bisects the rules
   (`findBadRules`, depth capped at 20, serial) to find and strip the
-  individually bad ones, then recompiles.
+  individually bad ones, then recompiles. A list over the rule cap is
+  compiled as several rule lists; see the next section.
 
 Every successful compile posts `.contentBlockerRulesDidChange`
 (`reapplyRuleLists`); status changes post `.contentBlockerStatusDidChange` for
 the Settings pane.
 
+## Lists over the rule cap
+
+WebKit is given at most 150,000 rules as one rule list
+(`ContentRuleStore.defaultMaxRulesPerList`). A longer filter list is compiled
+in chunks of that size, in list order: chunk 0 under the list's identifier,
+chunk N as `<id>-<N>`. The arithmetic is the pure functions of
+`ContentRuleListChunks`: the chunk count, the identifiers of a list, the
+rule ranges, and the stale identifiers a longer previous compile left. Each
+chunk is an independent rule list in WebKit's store, so `ContentRuleStore`
+keeps the set together:
+
+| Operation | Rule |
+|---|---|
+| `compile(identifier:rules:)` | Compiles every chunk. When at least one compiled it records the list's chunk count, removes stale chunks, and completes with all of the list's chunks. When none did, the list is left as it was. |
+| `cachedLists(forList:)` | Every compiled chunk, in order. This is what a web view gets. |
+| `compiledRuleCount(forList:)`, `isCompiled(list:)` | The sum over the chunks; compiled when any chunk is. Settings shows these. |
+| `lookUpList(identifier:)` | The launch path: looks up as many chunks as the last compile recorded. |
+| `invalidateAll()` | Removes every chunk and forgets rule counts and chunk counts. |
+
+The chunk count of a list lives in defaults as
+`ContentBlocker.<id>.chunkCount`, written only when it is above 1, so a list
+that has never been split has exactly the keys it had before.
+
+Disabling a list and the per-site switch need no chunk-specific code. The
+window removes **all** rule lists from the web view and re-applies what the
+profile still has on, and the per-site switch turns off every rule list for
+the navigation. Both are covered by web view tests with a rule in the last
+chunk.
+
+Until TASK-145 only the first chunk was attached, counted and looked up at
+launch, and a list that shrank kept its old later chunks in WebKit's store
+for good.[^task-145]
+
+No list is near the cap. Parser output for the lists as fetched on
+2026-10-04; the copies fetched on 2026-10-02 gave 74,973 / 56,146 / 25,002 /
+9,571, which are also the counts the installed app had recorded:[^task-145]
+
+| List | Parsed rules | Compiled | Share of the cap |
+|---|---|---|---|
+| `easylist` | 75,661 | 75,661 | 50.4% |
+| `easyprivacy` | 56,158 | 56,158 | 37.4% |
+| `easylist-cookie` | 25,010 | 25,008 (2 stripped as invalid) | 16.7% |
+| `urlhaus-filter` | 9,605 | 9,605 | 6.4% |
+
+What splitting does not solve:
+
+- **Exceptions do not cross chunks.** An `ignore-previous-rules` rule only
+  cancels blocks in its own rule list (see below), and rules are chunked in
+  list order. An `@@` exception that lands in a later chunk than the block
+  it was written for stops applying. Not exercised: no list is split today.
+- **A chunk that fails to compile** even after bisection leaves the list
+  active with the chunks that did compile. The "Active" count is then lower
+  than "In List". A chunk an earlier compile left under the same identifier
+  stays in use.
+- **A later chunk left by a build older than TASK-145** has no recorded
+  chunk count behind it. The list reads as one chunk, so that chunk is not
+  attached, and it is removed only if a later compile reuses its identifier
+  and then drops it. Stale chunks are found from the recorded count, not by
+  listing WebKit's store. The lists above have been at half the cap or less,
+  so no install is expected to have one.
+
 ## Attaching lists to web views
 
 `Space.makeWebViewConfiguration()` calls
-`ContentBlockerManager.applyRuleLists(to:profile:)`, which adds each enabled
-list's compiled `WKContentRuleList` when the master switch is on, and nothing
-else. It adds no user script, so it is safe to call again after
-`removeAllContentRuleLists()`.
+`ContentBlockerManager.applyRuleLists(to:profile:)`, which adds the rule lists
+of `ruleLists(for:in:)`: every compiled chunk of each enabled list when the
+master switch is on, and nothing else. It adds no user script, so it is safe
+to call again after `removeAllContentRuleLists()`.
 
 On `.contentBlockerRulesDidChange`,
 `BrowserWindowController.handleContentBlockerRulesChanged` removes and re-adds
@@ -179,11 +247,11 @@ EasyPrivacy cannot un-block something EasyList blocks.
   Objective-C exception on every blocked load.
   `testTheContentBlockerPreferencesSPIExists` fails if the setter disappears.
   Both were present on macOS 26.6.2.[^task-69]
-- **Lists over 150,000 rules are split** into chunks compiled as `<id>`,
-  `<id>-1`, `<id>-2`… (`compileSplit`). Read from the code, and not exercised
-  at runtime: `applyRuleLists` and the Settings rule count look up only the
-  base identifier, so only the first chunk would be attached and counted.
-  Check this before relying on a list that large.
+- **A split list is several rule lists.** Anything that handles "the list
+  `<id>`" has to go through the list-level functions of `ContentRuleStore`,
+  never a single identifier; see "Lists over the rule cap". The blocked
+  counter is unaffected: WebKit reports per rule list, and the tab counts a
+  URL once per page.
 - **Storage is shared by bundle identifier.** WebKit's default rule list store
   and the standard defaults domain belong to the bundle id, so a test host or
   an isolated `DETOUR_DATA_DIR` run would compile into, and refresh, the
@@ -191,8 +259,8 @@ EasyPrivacy cannot un-block something EasyList blocks.
   gives any non-default data directory its own store, cache directory and
   defaults suite.[^task-36]
 - **Bisection compiles probe lists into the real store.** Each probe uses the
-  identifier `<id>-probe-<offset>-<count>` and is removed again when it
-  compiles.
+  identifier `<id>-probe-<offset>-<count>` (with a chunk's identifier for
+  `<id>` when the list is split) and is removed again when it compiles.
 - **"No individual bad rules found"** means the full set fails while each
   half compiles (a combined state limit); the list is then not compiled at
   all.
@@ -206,8 +274,9 @@ EasyPrivacy cannot un-block something EasyList blocks.
 | Data | Location |
 |---|---|
 | Raw list text | `<data directory>/ContentBlocker/<identifier>.txt` under Application Support |
-| Compiled lists | WebKit's default `WKContentRuleListStore`, or `<data directory>/ContentRuleLists` for a non-default data directory |
-| Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount`, `.compiledRuleCount` |
+| Compiled lists | WebKit's default `WKContentRuleListStore`, or `<data directory>/ContentRuleLists` for a non-default data directory. One rule list per chunk: `<id>`, `<id>-1`, … |
+| Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount` |
+| Compile metadata | defaults keys `ContentBlocker.<chunk id>.compiledRuleCount` per compiled chunk, and `ContentBlocker.<id>.chunkCount` for a list of more than one chunk |
 | Whitelist | `contentBlockerWhitelist` in the [session database](../architecture/session-database.md); rows go with the profile |
 
 # Tests
@@ -219,6 +288,13 @@ EasyPrivacy cannot un-block something EasyList blocks.
   view's navigation delegate.
 - `ContentBlockerTests` - storage isolation per data directory, parser cases,
   and compiling each cached real list through WebKit.
+- `ContentRuleListChunkTests` - the chunk arithmetic, and a store with an
+  injected cap of 2 rules over a private temporary rule list store: every
+  chunk compiled, cached, counted, found by a new store, and applied for a
+  profile; stale chunks removed when a list shrinks; `invalidateAll`; and in
+  a real `WKWebView` a rule of the last chunk blocks, a disabled list's
+  chunks are all detached, and a whitelisted navigation is not blocked by
+  any chunk.
 - The switch itself was confirmed by hand on a signed build: off then reload
   shows 0 blocked; on restores blocking; state survives popover reopen, tab
   switch and relaunch.[^task-69]
@@ -233,3 +309,4 @@ EasyPrivacy cannot un-block something EasyList blocks.
 
 [^task-36]: Stop the test host writing WebKit data into the production app's WebKit directory
 [^task-69]: The "Block content on this site" switch does not take effect
+[^task-145]: A filter list over 150,000 rules attaches only its first chunk

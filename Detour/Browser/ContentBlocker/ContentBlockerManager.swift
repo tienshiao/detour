@@ -61,8 +61,8 @@ class ContentBlockerManager {
         // For each list, try to look up compiled rules first, then fetch if needed
         pendingLookups = Self.filterLists.count
         for list in Self.filterLists {
-            ruleStore.lookupOrCompile(identifier: list.identifier, rules: []) { [weak self] existingList in
-                if existingList != nil {
+            ruleStore.lookUpList(identifier: list.identifier) { [weak self] existingLists in
+                if !existingLists.isEmpty {
                     // Already compiled, check if refresh needed
                     self?.refreshIfNeeded(list: list)
                     self?.lookupCompleted()
@@ -96,7 +96,16 @@ class ContentBlockerManager {
     /// `removeAllContentRuleLists`), and the blocked-load counter now comes from
     /// WebKit's own per-list action callback instead (TASK-69).
     func applyRuleLists(to userContentController: WKUserContentController, profile: Profile) {
-        guard profile.isAdBlockingEnabled else { return }
+        for list in Self.ruleLists(for: profile, in: ruleStore) {
+            userContentController.add(list)
+        }
+    }
+
+    /// The compiled rule lists `profile` has switched on: **every chunk** of
+    /// every enabled filter list (a list over the rule cap is several rule
+    /// lists, TASK-145), and none when the master switch is off.
+    static func ruleLists(for profile: Profile, in ruleStore: ContentRuleStore) -> [WKContentRuleList] {
+        guard profile.isAdBlockingEnabled else { return [] }
 
         let enabledLists: [(String, Bool)] = [
             ("easylist", profile.isEasyListEnabled),
@@ -105,9 +114,8 @@ class ContentBlockerManager {
             ("urlhaus-filter", profile.isMalwareFilterEnabled),
         ]
 
-        for (identifier, isEnabled) in enabledLists {
-            guard isEnabled, let list = ruleStore.getCachedList(identifier: identifier) else { continue }
-            userContentController.add(list)
+        return enabledLists.flatMap { identifier, isEnabled in
+            isEnabled ? ruleStore.cachedLists(forList: identifier) : []
         }
     }
 
@@ -162,9 +170,10 @@ class ContentBlockerManager {
         return defaults.object(forKey: key) as? Int
     }
 
-    /// Number of rules actually compiled and active in WebKit.
+    /// Number of rules actually compiled and active in WebKit, over every
+    /// chunk of the list.
     func compiledRuleCount(for identifier: String) -> Int? {
-        ruleStore.compiledRuleCounts[identifier]
+        ruleStore.compiledRuleCount(forList: identifier)
     }
 
     func lastFetchDate(for identifier: String) -> Date? {
@@ -173,7 +182,7 @@ class ContentBlockerManager {
     }
 
     func isCompiled(identifier: String) -> Bool {
-        ruleStore.getCachedList(identifier: identifier) != nil
+        ruleStore.isCompiled(list: identifier)
     }
 
     // MARK: - Force Refresh
@@ -189,7 +198,7 @@ class ContentBlockerManager {
     }
 
     func clearCacheAndRedownload() {
-        // Invalidate all compiled rules in WebKit
+        // Invalidate all compiled rules in WebKit, every chunk of every list
         ruleStore.invalidateAll()
 
         // Delete cached text files
@@ -231,7 +240,7 @@ class ContentBlockerManager {
         defaults.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
 
         ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
-            if compiled != nil {
+            if !compiled.isEmpty {
                 self?.postStatusChange()
                 self?.reapplyRuleLists()
             } else {
@@ -310,7 +319,7 @@ class ContentBlockerManager {
                 self.ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
                     self?.refreshingIdentifiers.remove(list.identifier)
                     self?.postStatusChange()
-                    if compiled != nil {
+                    if !compiled.isEmpty {
                         log.info("Compiled \(list.identifier, privacy: .public) successfully")
                         self?.reapplyRuleLists()
                     }

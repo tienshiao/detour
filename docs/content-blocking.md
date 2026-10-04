@@ -54,7 +54,8 @@ Parse (EasyListParser)
        v
 Compile (ContentRuleStore)
   +-- WKContentRuleListStore.compileContentRuleList(forIdentifier:encodedContentRuleList:)
-  +-- Caches compiled WKContentRuleList in memory
+  +-- More than 150,000 rules: one rule list per chunk (see "Lists Over the Rule Cap")
+  +-- Caches every compiled WKContentRuleList in memory
        |
        v
 Apply (reapplyRuleLists)
@@ -62,6 +63,51 @@ Apply (reapplyRuleLists)
   +-- Each window re-applies rules to its selected tab's panes
       (only the window that owns that web view)
 ```
+
+## Lists Over the Rule Cap
+
+WebKit is handed at most 150,000 rules as one rule list
+(`ContentRuleStore.defaultMaxRulesPerList`). A filter list with more rules is
+compiled as several rule lists, one per chunk of 150,000 rules in list order:
+the first under the list's identifier, the rest as `<id>-1`, `<id>-2`, …
+(`ContentRuleListChunks`). WebKit's store knows nothing about the grouping, so
+`ContentRuleStore` handles a list's chunks as a set (TASK-145):
+
+| When | What happens to the chunks |
+|------|----------------------------|
+| Compile | Every chunk is compiled. If at least one compiled, the list's chunk count is recorded and `compile` completes with all of the list's chunks; if none did, the list is left as it was |
+| Attach | `cachedLists(forList:)` returns every compiled chunk; `ContentBlockerManager.ruleLists(for:in:)` collects them for the profile's enabled lists and `applyRuleLists` adds them all |
+| List disabled, master switch off | The window removes all rule lists from the web view and re-applies; a disabled list contributes no chunk |
+| Whitelisted site | `_setContentBlockersEnabled:NO` turns off every rule list for the navigation, so every chunk |
+| Launch | `lookUpList` looks up as many chunks as the last compile recorded (`ContentBlocker.{id}.chunkCount` in defaults, written only when above 1) |
+| List shrinks | The chunks the previous, longer compile left behind (`ContentRuleListChunks.staleIdentifiers`) are removed from WebKit's store, from memory and from defaults |
+| Settings | `compiledRuleCount(forList:)` is the sum over the chunks; `isCompiled(list:)` is true when any chunk is compiled |
+| Clear Cache & Redownload | `invalidateAll` removes every chunk and forgets the counts and chunk counts |
+
+Before TASK-145 only the first chunk was attached, counted and looked up, and
+later chunks were never removed.
+
+No list is near the cap. Rules produced by the parser from the lists as fetched
+on 2026-10-04 (the 2026-10-02 copies gave 74,973 / 56,146 / 25,002 / 9,571):
+
+| List | Parsed rules | Compiled | Share of the cap |
+|------|--------------|----------|------------------|
+| `easylist` | 75,661 | 75,661 | 50.4% |
+| `easyprivacy` | 56,158 | 56,158 | 37.4% |
+| `easylist-cookie` | 25,010 | 25,008 (2 stripped as invalid) | 16.7% |
+| `urlhaus-filter` | 9,605 | 9,605 | 6.4% |
+
+Two limits of splitting, neither exercised by a real list yet:
+
+- **Exceptions do not cross chunks.** WebKit evaluates each rule list on its
+  own, so an `ignore-previous-rules` rule (an `@@` exception) only cancels
+  blocks in its own chunk. Rules are chunked in list order, so an exception
+  that lands in a later chunk than the block it was written for no longer
+  applies.
+- **A chunk that cannot be compiled** (even after stripping bad rules) leaves
+  the list active with the chunks that did compile; the "Active" count in
+  Settings is then lower than "In List". A chunk an earlier compile left under
+  the same identifier stays in use.
 
 ## Applying Rules to WebViews
 
@@ -71,9 +117,10 @@ Rules are applied when creating a new `WKWebViewConfiguration` in `Space.makeWeb
 ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
 ```
 
-This method adds each enabled filter list's compiled `WKContentRuleList` when
-`profile.isAdBlockingEnabled`, and nothing else — no user script, so it is safe to
-call again after `removeAllContentRuleLists()` on every rules change.
+This method adds each enabled filter list's compiled `WKContentRuleList`s (every
+chunk of a list over the rule cap) when `profile.isAdBlockingEnabled`, and nothing
+else — no user script, so it is safe to call again after
+`removeAllContentRuleLists()` on every rules change.
 
 On `.contentBlockerRulesDidChange`,
 `BrowserWindowController.handleContentBlockerRulesChanged` does exactly that, but
@@ -137,7 +184,7 @@ A page with content blockers disabled produces no callbacks at all.
 
 `ContentBlockerSettingsViewController` provides:
 
-- Per-list display: parsed rule count ("In List"), compiled rule count ("Active"), status, last fetch date
+- Per-list display: parsed rule count ("In List"), compiled rule count ("Active", summed over the chunks of a split list), status, last fetch date
 - Update All Now: re-fetches every list (`forceRefreshAll`; the fetch is conditional, so an unchanged list is not recompiled). There is no per-list refresh
 - Clear Cache & Redownload: invalidates all compiled rules, deletes cached text and fetch metadata, re-fetches everything
 
@@ -148,8 +195,9 @@ A page with content blockers disabled produces no callbacks at all.
 | Data | Location |
 |------|----------|
 | Raw filter text | `~/Library/Application Support/Detour/ContentBlocker/{identifier}.txt` |
-| Compiled rules | WebKit's internal `WKContentRuleListStore` (managed by WebKit) |
-| Fetch metadata | `UserDefaults`: `ContentBlocker.{id}.lastFetch`, `ContentBlocker.{id}.etag`, `ContentBlocker.{id}.ruleCount`, `ContentBlocker.{id}.compiledRuleCount` |
+| Compiled rules | WebKit's internal `WKContentRuleListStore` (managed by WebKit): one rule list per chunk, `{id}`, `{id}-1`, … |
+| Fetch metadata | `UserDefaults`: `ContentBlocker.{id}.lastFetch`, `ContentBlocker.{id}.etag`, `ContentBlocker.{id}.ruleCount` |
+| Compile metadata | `UserDefaults`: `ContentBlocker.{chunk id}.compiledRuleCount` per compiled chunk, `ContentBlocker.{id}.chunkCount` for a list of more than one chunk |
 
 These are the locations for the default data directory. A non-default data
 directory (`DETOUR_DATA_DIR`, as set for test runs and isolated launches) gets its

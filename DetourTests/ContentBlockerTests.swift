@@ -162,7 +162,7 @@ final class ContentBlockerTests: XCTestCase {
         print("[\(name)] Parsed \(result.rules.count) rules (\(result.skippedCount) skipped)")
 
         // WebKit has a limit of ~150k rules per list; compile in chunks if needed
-        let maxRules = 150_000
+        let maxRules = ContentRuleStore.defaultMaxRulesPerList
         let chunks = stride(from: 0, to: result.rules.count, by: maxRules).map {
             Array(result.rules[$0..<min($0 + maxRules, result.rules.count)])
         }
@@ -176,8 +176,8 @@ final class ContentBlockerTests: XCTestCase {
                 let compileExp = expectation(description: "Fallback compile \(name) chunk \(index)")
                 var fallbackList: WKContentRuleList?
 
-                ruleStore.compile(identifier: "fallback-\(chunkID)", rules: chunk) { list in
-                    fallbackList = list
+                ruleStore.compile(identifier: "fallback-\(chunkID)", rules: chunk) { lists in
+                    fallbackList = lists.first
                     compileExp.fulfill()
                 }
 

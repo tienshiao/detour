@@ -43,51 +43,221 @@ struct ContentBlockerStorage {
     }
 }
 
+/// The arithmetic of a filter list that needs more than one
+/// `WKContentRuleList` (TASK-145).
+///
+/// WebKit compiles a rule list only up to a number of rules, so a longer
+/// filter list is compiled in chunks of at most that many: chunk 0 under the
+/// list's own identifier, chunk N under `<identifier>-<N>`. Each chunk is a
+/// rule list of its own in WebKit's store and nothing there ties them
+/// together, so `ContentRuleStore` attaches, counts, looks up and removes them
+/// as a set.
+enum ContentRuleListChunks {
+    /// How many rule lists `ruleCount` rules compile into; 0 for no rules.
+    static func chunkCount(ruleCount: Int, maxRulesPerList: Int) -> Int {
+        guard ruleCount > 0, maxRulesPerList > 0 else { return 0 }
+        return (ruleCount + maxRulesPerList - 1) / maxRulesPerList
+    }
+
+    /// The identifier chunk `index` of the list `base` is compiled under.
+    static func identifier(forList base: String, chunk index: Int) -> String {
+        index == 0 ? base : "\(base)-\(index)"
+    }
+
+    /// The identifiers of a list compiled as `chunkCount` chunks, in order.
+    static func identifiers(forList base: String, chunkCount: Int) -> [String] {
+        (0 ..< max(chunkCount, 0)).map { identifier(forList: base, chunk: $0) }
+    }
+
+    /// The slice of the rules each chunk holds, in order.
+    static func ruleRanges(ruleCount: Int, maxRulesPerList: Int) -> [Range<Int>] {
+        guard ruleCount > 0, maxRulesPerList > 0 else { return [] }
+        return stride(from: 0, to: ruleCount, by: maxRulesPerList).map { $0 ..< min($0 + maxRulesPerList, ruleCount) }
+    }
+
+    /// The chunk identifiers a compile of `previousChunkCount` chunks left
+    /// behind once the list compiles as `chunkCount`: the ones to remove from
+    /// WebKit's store when a list shrinks. The list's own identifier is every
+    /// compile's first chunk and is never among them.
+    static func staleIdentifiers(forList base: String, previousChunkCount: Int, chunkCount: Int) -> [String] {
+        let firstStale = max(chunkCount, 1)
+        guard previousChunkCount > firstStale else { return [] }
+        return (firstStale ..< previousChunkCount).map { identifier(forList: base, chunk: $0) }
+    }
+}
+
 class ContentRuleStore {
+    /// The most rules handed to WebKit as one rule list.
+    static let defaultMaxRulesPerList = 150_000
+
     private let ruleListStore: WKContentRuleListStore
     private let defaults: UserDefaults
+    /// Compiled rule lists by **chunk** identifier (`ContentRuleListChunks`).
     private var compiledLists: [String: WKContentRuleList] = [:]
-    private(set) var compiledRuleCounts: [String: Int] = [:]
-    private let maxRulesPerList = 150_000
+    /// The rules compiled into each chunk, by chunk identifier.
+    private var compiledRuleCounts: [String: Int] = [:]
+    /// How many chunks each list's last compile produced, by list identifier.
+    /// Filled from the defaults on first use; read it through
+    /// `chunkCount(forList:)`.
+    private var chunkCounts: [String: Int] = [:]
+    /// Injected so a test can split a handful of rules instead of compiling
+    /// 150,000 real ones.
+    private let maxRulesPerList: Int
 
-    init(storage: ContentBlockerStorage = .current) {
+    init(storage: ContentBlockerStorage = .current, maxRulesPerList: Int = ContentRuleStore.defaultMaxRulesPerList) {
         ruleListStore = storage.ruleListStore
         defaults = storage.defaults
+        self.maxRulesPerList = maxRulesPerList
     }
 
-    func lookupOrCompile(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
-        // Try cached in-memory first
-        if let cached = compiledLists[identifier] {
-            completion(cached)
+    // MARK: - A list and its chunks
+
+    private func compiledRuleCountKey(_ chunkIdentifier: String) -> String {
+        "ContentBlocker.\(chunkIdentifier).compiledRuleCount"
+    }
+
+    private func chunkCountKey(_ listIdentifier: String) -> String {
+        "ContentBlocker.\(listIdentifier).chunkCount"
+    }
+
+    /// How many rule lists the list is compiled as: what its last compile
+    /// recorded, and 1 for a list that has never been split (no key is
+    /// written for those).
+    private func chunkCount(forList identifier: String) -> Int {
+        if let count = chunkCounts[identifier] { return count }
+        let count = max(defaults.object(forKey: chunkCountKey(identifier)) as? Int ?? 1, 1)
+        chunkCounts[identifier] = count
+        return count
+    }
+
+    private func chunkIdentifiers(forList identifier: String) -> [String] {
+        ContentRuleListChunks.identifiers(forList: identifier, chunkCount: chunkCount(forList: identifier))
+    }
+
+    /// Every compiled chunk of the list, in order: what a web view of a
+    /// profile that has the list switched on must be given. Empty when the
+    /// list is not compiled.
+    func cachedLists(forList identifier: String) -> [WKContentRuleList] {
+        chunkIdentifiers(forList: identifier).compactMap { compiledLists[$0] }
+    }
+
+    /// The rules compiled into the list, summed over its chunks; nil when
+    /// none is known.
+    func compiledRuleCount(forList identifier: String) -> Int? {
+        let counts = chunkIdentifiers(forList: identifier).compactMap { compiledRuleCounts[$0] }
+        return counts.isEmpty ? nil : counts.reduce(0, +)
+    }
+
+    /// Whether any chunk of the list is compiled and can be attached. A list
+    /// one of whose chunks failed to compile still counts: the rest is
+    /// active, and `compiledRuleCount(forList:)` shows what is missing.
+    func isCompiled(list identifier: String) -> Bool {
+        !cachedLists(forList: identifier).isEmpty
+    }
+
+    /// Looks the list's chunks up in WebKit's store (the launch path: nothing
+    /// is in memory yet) and completes, on the main queue, with the ones
+    /// found. Empty means the list has to be compiled.
+    func lookUpList(identifier: String, completion: @escaping ([WKContentRuleList]) -> Void) {
+        let group = DispatchGroup()
+        for chunkIdentifier in chunkIdentifiers(forList: identifier) where compiledLists[chunkIdentifier] == nil {
+            group.enter()
+            ruleListStore.lookUpContentRuleList(forIdentifier: chunkIdentifier) { [weak self] list, _ in
+                if let self, let list {
+                    self.compiledLists[chunkIdentifier] = list
+                    // Restore the compiled count saved by the compile that produced it
+                    if let count = self.defaults.object(forKey: self.compiledRuleCountKey(chunkIdentifier)) as? Int {
+                        self.compiledRuleCounts[chunkIdentifier] = count
+                    }
+                }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            completion(self?.cachedLists(forList: identifier) ?? [])
+        }
+    }
+
+    /// Compiles `rules` as the list `identifier`, in as many chunks as the
+    /// cap requires, and completes on the main queue with every chunk of the
+    /// list — empty when nothing compiled, in which case the list is left as
+    /// it was.
+    ///
+    /// When at least one chunk compiled, the list is recorded as having this
+    /// many chunks and the chunks a longer previous compile left behind are
+    /// removed from WebKit's store. A chunk that failed keeps whatever an
+    /// earlier compile left under its identifier.
+    func compile(identifier: String, rules: [[String: Any]], completion: @escaping ([WKContentRuleList]) -> Void) {
+        let ranges = ContentRuleListChunks.ruleRanges(ruleCount: rules.count, maxRulesPerList: maxRulesPerList)
+        guard !ranges.isEmpty else {
+            completion([])
             return
         }
+        if ranges.count > 1 {
+            log.info("Splitting \(identifier, privacy: .public) into \(ranges.count) chunks (\(rules.count) rules)")
+        }
 
-        // Try looking up already-compiled rules in WebKit's store
-        ruleListStore.lookUpContentRuleList(forIdentifier: identifier) { [weak self] list, _ in
-            if let list {
-                self?.compiledLists[identifier] = list
-                // Restore compiled count from UserDefaults (saved during prior compilation)
-                let key = "ContentBlocker.\(identifier).compiledRuleCount"
-                if let count = self?.defaults.object(forKey: key) as? Int {
-                    self?.compiledRuleCounts[identifier] = count
-                }
-                completion(list)
+        let group = DispatchGroup()
+        var compiledAny = false
+        for (index, range) in ranges.enumerated() {
+            let chunkIdentifier = ContentRuleListChunks.identifier(forList: identifier, chunk: index)
+            group.enter()
+            compileChunk(identifier: chunkIdentifier, rules: ranges.count == 1 ? rules : Array(rules[range])) { list in
+                if list != nil { compiledAny = true }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self, compiledAny else {
+                completion([])
                 return
             }
-            // Need to compile
-            self?.compile(identifier: identifier, rules: rules, completion: completion)
+            self.recordChunkCount(ranges.count, forList: identifier)
+            completion(self.cachedLists(forList: identifier))
         }
     }
 
-    func compile(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
-        guard !rules.isEmpty else {
-            completion(nil)
-            return
+    /// Records that the list is now `chunkCount` chunks and removes the
+    /// chunks of a previous, longer compile.
+    private func recordChunkCount(_ chunkCount: Int, forList identifier: String) {
+        let stale = ContentRuleListChunks.staleIdentifiers(
+            forList: identifier, previousChunkCount: self.chunkCount(forList: identifier), chunkCount: chunkCount)
+        if !stale.isEmpty {
+            log.info("\(identifier, privacy: .public) shrank to \(chunkCount) chunk(s), removing \(stale.count) stale chunk(s)")
+        }
+        for chunkIdentifier in stale {
+            removeChunk(chunkIdentifier)
         }
 
-        // If rules exceed limit, split into chunks
-        if rules.count > maxRulesPerList {
-            compileSplit(identifier: identifier, rules: rules, completion: completion)
+        chunkCounts[identifier] = chunkCount
+        // Only a split list needs the key: a missing one reads as one chunk.
+        if chunkCount > 1 {
+            defaults.set(chunkCount, forKey: chunkCountKey(identifier))
+        } else {
+            defaults.removeObject(forKey: chunkCountKey(identifier))
+        }
+    }
+
+    private func removeChunk(_ chunkIdentifier: String) {
+        compiledLists.removeValue(forKey: chunkIdentifier)
+        compiledRuleCounts.removeValue(forKey: chunkIdentifier)
+        defaults.removeObject(forKey: compiledRuleCountKey(chunkIdentifier))
+        ruleListStore.removeContentRuleList(forIdentifier: chunkIdentifier) { error in
+            if let error {
+                log.error("Failed to remove stale chunk \(chunkIdentifier, privacy: .public): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - One rule list
+
+    /// Compiles one rule list of at most `maxRulesPerList` rules under
+    /// `identifier`, stripping individually bad rules when the whole set is
+    /// refused.
+    private func compileChunk(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
+        guard !rules.isEmpty else {
+            completion(nil)
             return
         }
 
@@ -105,37 +275,12 @@ class ContentRuleStore {
                 self?.compileWithFallback(identifier: identifier, rules: rules, completion: completion)
                 return
             }
-            if let list {
-                self?.compiledLists[identifier] = list
-                self?.compiledRuleCounts[identifier] = rules.count
-                self?.defaults.set(rules.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
+            if let self, let list {
+                self.compiledLists[identifier] = list
+                self.compiledRuleCounts[identifier] = rules.count
+                self.defaults.set(rules.count, forKey: self.compiledRuleCountKey(identifier))
             }
             completion(list)
-        }
-    }
-
-    private func compileSplit(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
-        let chunks = stride(from: 0, to: rules.count, by: maxRulesPerList).map {
-            Array(rules[$0..<min($0 + maxRulesPerList, rules.count)])
-        }
-
-        log.info("Splitting \(identifier, privacy: .public) into \(chunks.count) chunks (\(rules.count) rules)")
-
-        // Compile first chunk with base identifier, rest with suffixed identifiers
-        let group = DispatchGroup()
-        var firstList: WKContentRuleList?
-
-        for (index, chunk) in chunks.enumerated() {
-            let chunkID = index == 0 ? identifier : "\(identifier)-\(index)"
-            group.enter()
-            compile(identifier: chunkID, rules: chunk) { list in
-                if index == 0 { firstList = list }
-                group.leave()
-            }
-        }
-
-        group.notify(queue: .main) {
-            completion(firstList)
         }
     }
 
@@ -171,11 +316,11 @@ class ContentRuleStore {
                     completion(nil)
                     return
                 }
-                if let list {
+                if let self, let list {
                     log.info("Fallback compile succeeded for \(identifier, privacy: .public)")
-                    self?.compiledLists[identifier] = list
-                    self?.compiledRuleCounts[identifier] = cleaned.count
-                    self?.defaults.set(cleaned.count, forKey: "ContentBlocker.\(identifier).compiledRuleCount")
+                    self.compiledLists[identifier] = list
+                    self.compiledRuleCounts[identifier] = cleaned.count
+                    self.defaults.set(cleaned.count, forKey: self.compiledRuleCountKey(identifier))
                 }
                 completion(list)
             }
@@ -235,10 +380,6 @@ class ContentRuleStore {
         }
     }
 
-    func getCachedList(identifier: String) -> WKContentRuleList? {
-        compiledLists[identifier]
-    }
-
     func getAllCachedLists() -> [String: WKContentRuleList] {
         compiledLists
     }
@@ -262,10 +403,20 @@ class ContentRuleStore {
         }
     }
 
+    /// Removes every compiled chunk of every list from WebKit's store and
+    /// forgets the counts and chunk counts that described them.
     func invalidateAll() {
-        for id in compiledLists.keys {
-            ruleListStore.removeContentRuleList(forIdentifier: id) { _ in }
+        for chunkIdentifier in compiledLists.keys {
+            ruleListStore.removeContentRuleList(forIdentifier: chunkIdentifier) { _ in }
+        }
+        for chunkIdentifier in Set(compiledLists.keys).union(compiledRuleCounts.keys) {
+            defaults.removeObject(forKey: compiledRuleCountKey(chunkIdentifier))
         }
         compiledLists.removeAll()
+        compiledRuleCounts.removeAll()
+        for listIdentifier in chunkCounts.keys {
+            defaults.removeObject(forKey: chunkCountKey(listIdentifier))
+        }
+        chunkCounts.removeAll()
     }
 }
