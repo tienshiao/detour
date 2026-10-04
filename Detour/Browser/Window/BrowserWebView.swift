@@ -94,6 +94,10 @@ class BrowserWebView: WKWebView {
     }
 
     private func appendExtensionMenuItems(to menu: NSMenu, windowController: BrowserWindowController?) {
+        // A parked page's menu comes from a right click an extension
+        // synthesized: the window's selected tab is a different tab, and
+        // nobody performed a gesture on it (TASK-132.3).
+        guard !isInAutomationParking else { return }
         guard let tab = windowController?.selectedTab,
               let profileID = windowController?.activeSpace?.profileID,
               let profile = TabStore.shared.profiles.first(where: { $0.id == profileID }) else { return }

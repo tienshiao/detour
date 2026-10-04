@@ -316,6 +316,10 @@ final class AutomationParkingWindowTests: XCTestCase {
     private var windows: [BrowserWindowController] = []
     private var previousLastActiveSpaceID: UUID?
     private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    /// The fixture extension of the context-menu tests: its directory, and its
+    /// id in `ExtensionManager`.
+    private var tempDirs: [URL] = []
+    private var registeredExtensionIDs: [String] = []
 
     /// Profiles whose configuration hosted a web view stay alive for the rest
     /// of the test process (see `ExtensionTabResolveTests.retainedProfiles`).
@@ -357,10 +361,17 @@ final class AutomationParkingWindowTests: XCTestCase {
         // Closing a window saved the session with the fixture spaces in it.
         store.saveNow()
         if let profile {
+            profile.unloadAllExtensions()
             AppDatabase.shared.deleteProfile(id: profile.id.uuidString)
             store.forceRemoveProfile(id: profile.id)
             Self.retainedProfiles.append(profile)
         }
+        for id in registeredExtensionIDs {
+            ExtensionManager.shared.extensions.removeAll { $0.id == id }
+        }
+        registeredExtensionIDs.removeAll()
+        for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
+        tempDirs.removeAll()
         profile = nil
         space = nil
         otherSpace = nil
@@ -755,6 +766,117 @@ final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertEqual(AutomationInput.droppedKeyDownCount, droppedBefore + 1)
         // By identity: an identical event typed by the user is not the driven one.
         XCTAssertFalse(AutomationInput.isDrivenKeyDown(try keyDown()))
+    }
+
+    // MARK: Context menu
+
+    private static let extensionMenuItemTitle = "Parking test item"
+
+    /// An extension with `activeTab` and one context-menu item, loaded into
+    /// the fixture profile with its worker started. Call it after the window
+    /// exists: WebKit asks for the open windows when a context loads, and
+    /// afterwards only hears of a window when it becomes key — which these
+    /// never do.
+    private func loadMenuExtension() async throws -> WKWebExtensionContext {
+        let ext = try await makeTestExtension(
+            id: "parking-menu-\(UUID().uuidString.prefix(8).lowercased())",
+            manifestJSON: """
+            {
+                "manifest_version": 3,
+                "name": "Parking Menu Test",
+                "version": "1.0.0",
+                "permissions": ["activeTab", "contextMenus"],
+                "background": { "service_worker": "background.js" }
+            }
+            """,
+            files: ["background.js": """
+            chrome.contextMenus.create({ id: 'parking', title: '\(Self.extensionMenuItemTitle)', contexts: ['all', 'tab'] });
+            """])
+        tempDirs.append(ext.basePath)
+        ExtensionManager.shared.extensions.append(ext)
+        registeredExtensionIDs.append(ext.id)
+
+        let context = try loadTestContext(ext, in: profile)
+        // What an install records and a load restores (`recordDeclaredPermissions`).
+        context.setPermissionStatus(.grantedExplicitly, for: .activeTab)
+        context.setPermissionStatus(.grantedExplicitly, for: .contextMenus)
+        context.loadBackgroundContent { error in
+            if let error { print("loadBackgroundContent failed: \(error)") }
+        }
+        return context
+    }
+
+    /// The event WebKit hands `willOpenMenu` for a right click on the page.
+    private func rightMouseDown(in webView: WKWebView) throws -> NSEvent {
+        let window = try XCTUnwrap(webView.window)
+        return try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: windowPoint(in: webView, pageX: 300, pageY: 300), modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    /// The selected tab `a` and the parked, attached tab `b`, both loaded, in
+    /// a window whose profile has the menu extension running.
+    private func makeMenuFixture() async throws
+        -> (wc: BrowserWindowController, context: WKWebExtensionContext, a: BrowserTab, b: BrowserTab) {
+        let wc = makeWindow()
+        let context = try await loadMenuExtension()
+        let a = addTab("a"), b = addTab("b")
+        wc.selectTab(id: a.id)
+        b.attachAutomation(owner)
+        try await waitLoaded(a, "a")
+        try await waitLoaded(b, "b")
+        assertParked(b, in: wc)
+        assertDisplays(wc, a)
+        // The worker has run once its menu item exists.
+        try await waitUntil("the extension to create its menu item", timeout: 60) {
+            !context.menuItems(for: a).isEmpty
+        }
+        XCTAssertFalse(context.hasActiveUserGesture(in: a), "nothing has been clicked yet")
+        XCTAssertFalse(context.hasActiveUserGesture(in: b))
+        return (wc, context, a, b)
+    }
+
+    /// A right click an extension synthesizes on a parked page makes WebKit
+    /// build a context menu and offer it to the web view (`willOpenMenu`).
+    /// `BrowserWebView` fills in the extensions' items for the window's
+    /// *selected* tab, and reports a user gesture in it — which is what hands
+    /// an extension `activeTab` there. For a parked page that tab is the one
+    /// the user is looking at, and nobody clicked in it.
+    func testAContextMenuOnAParkedPageGrantsNoUserGestureInTheSelectedTab() async throws {
+        let (wc, context, a, b) = try await makeMenuFixture()
+        let parked = try XCTUnwrap(b.automationDrivableWebView() as? BrowserWebView)
+        XCTAssertTrue(parked.isInAutomationParking)
+        XCTAssertFalse(try XCTUnwrap(wc.window).isKeyWindow)
+
+        let menu = NSMenu()
+        parked.willOpenMenu(menu, with: try rightMouseDown(in: parked))
+
+        XCTAssertFalse(context.hasActiveUserGesture(in: a),
+                       "a menu on a parked page is not a user gesture in the selected tab")
+        XCTAssertFalse(context.hasActiveUserGesture(in: b))
+        XCTAssertTrue(menu.items.isEmpty,
+                      "no extension items — they would be the selected tab's: \(menu.items.map(\.title))")
+        assertParked(b, in: wc)
+        assertDisplays(wc, a)
+    }
+
+    /// The other side of the rule above: the page the user right-clicked is
+    /// the selected tab, and its menu still carries the extensions' items and
+    /// still counts as a gesture — with a tab parked in the same window.
+    func testAContextMenuOnTheDisplayedPageStillGrantsTheUserGestureAndAddsExtensionItems() async throws {
+        let (wc, context, a, b) = try await makeMenuFixture()
+        let displayed = try XCTUnwrap(a.webView as? BrowserWebView)
+        XCTAssertFalse(displayed.isInAutomationParking)
+
+        let menu = NSMenu()
+        displayed.willOpenMenu(menu, with: try rightMouseDown(in: displayed))
+
+        XCTAssertTrue(context.hasActiveUserGesture(in: a), "a right click on the selected page is a user gesture in it")
+        XCTAssertFalse(context.hasActiveUserGesture(in: b), "and in no other tab")
+        XCTAssertTrue(menu.items.contains { $0.title == Self.extensionMenuItemTitle },
+                      "the extension's item is in the menu: \(menu.items.map(\.title))")
+        assertParked(b, in: wc)
     }
 
     // MARK: Selection round trip

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-03 23:07'
-updated_date: '2026-10-04 00:39'
+updated_date: '2026-10-04 01:37'
 labels: []
 dependencies: []
 parent_task_id: TASK-132
@@ -80,6 +80,13 @@ Verification: 455 tests in the new and affected suites, 0 failures, 1 skipped (t
 
 Not verified: where a declined key lands inside the real app (the test proves WebKit re-sent it and sendKey dropped it; that a dropped key goes nowhere rests on the spike); undo-manager isolation beyond TabStore.undoManager.canUndo being unchanged; the key-equivalent block and responder-chain sink have no direct test; attaching a Peek tab is handled in code but untested; reveal mode's foreground state is from the by-hand run only.
 For TASK-132.14: WebKit queues mouse and key events separately (a key sent right after a click can arrive before the click moves focus, so wait for the click to land); a synthesized right-click pops a real context menu on screen (not handled); WebKit asks for first responder only when the page wants focus.
+
+Retroactive /code-review and running-app check, 2026-10-03 (the pre-commit rule was added to CLAUDE.md after this task was committed).
+- /code-review medium over 208bbd8..96756a5: one finding. A context menu opened on a parked page ran BrowserWebView.appendExtensionMenuItems against the window's SELECTED tab and called userGesturePerformed(in:) on it for every extension context, granting activeTab on the tab the user is looking at for a click nobody made. Fixed with a guard (a parked page gets no extension items and no gesture grant). Tests: testAContextMenuOnAParkedPageGrantsNoUserGestureInTheSelectedTab (fails without the guard: gesture granted, 'Parking test item' appended) and the mirror testAContextMenuOnTheDisplayedPageStillGrantsTheUserGestureAndAddsExtensionItems. TabAutomationAttachmentTests + AutomationParkingWindowTests: 34 tests, 0 failures, 1 skipped. The review did not read the test files line by line. The same review found nothing in the TASK-132.2 files.
+- Running app, env-gated harness (.claude/task132.3-harness.patch, removed from the tree), isolated profile, local fixture pages. Attach of an unselected tab: parked, selection / key window / first responder unchanged, parked view at the content-area frame (1372x1100), page hidden with 2 timer ticks and 0 rAF frames in 3 s (same as an unattached hidden tab; the selected page 30 and ~220). What the user sees: 0 differing pixels in the content area and sidebar before attach vs while parked, and byte-identical window captures. Snapshot after a DOM change while parked: 1372x1100, new content. Input: trusted click, key and insertText on the parked page (field 'ahéllo'), the selected page saw nothing and kept first responder; one first-responder request refused; a declined key was dropped. Select the parked tab: displayed, not blank, same web view; select back: parked again. Detach: container leaves the window. Second window on the same space: nine hand-off steps including a snapshot window, ensureOwnsWebView, claim on windowDidBecomeKey and window close all left exactly one host.
+- Control for the declined-key hazard, in the running app with the window key: the same kind of key sent with raw webView.keyDown to the parked page was typed into the selected page's focused field; through AutomationInput.sendKey it was dropped.
+- Observed, not failures: a parked page reports document.hasFocus() true while its window is key (now in docs/webview-ownership.md); after an ownership claim the claiming window's first responder is the window, not the web view (existing behaviour, not from this task).
+- Not exercised in the running app: a real synthesized right-click on a parked page, RunningBoard assertion levels, split panes, Peek, attaching a sleeping tab, forced sleep, revealsParkedWebViews, resize while parked, 2x rendering, a real extension calling attach.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
