@@ -1,0 +1,175 @@
+---
+type: Concept
+title: Incognito (Private windows)
+description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
+tags: [architecture, privacy, profiles, incognito]
+status: stable
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+sources:
+  - id: profile
+    resource: ../../Detour/Browser/Profile.swift
+    title: Profile.swift
+  - id: tabstore
+    resource: ../../Detour/Browser/TabStore.swift
+    title: TabStore.swift
+  - id: window-controller
+    resource: ../../Detour/Browser/Window/BrowserWindowController.swift
+    title: BrowserWindowController.swift
+  - id: database
+    resource: ../../Detour/Storage/Database.swift
+    title: Database.swift
+  - id: palette
+    resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
+    title: CommandPaletteView.swift (gatherTabInfos)
+  - id: downloads
+    resource: ../../Detour/Browser/Downloads/DownloadManager.swift
+    title: DownloadManager.swift
+  - id: task-73
+    resource: backlog:TASK-73
+    title: Private profile extension pages run in the profile's ephemeral store
+  - id: task-74
+    resource: backlog:TASK-74
+    title: Extensions are off in the Private profile unless allowed
+  - id: task-38
+    resource: backlog:TASK-38
+    title: Moving a tab to another space
+  - id: private-notes
+    resource: "Agent session notes, 2026-09-20 (not in the repository)"
+    title: Session notes on the Private profile and extensions
+---
+
+# Summary
+
+There is no separate "incognito mode" in the code. A Private window is an
+ordinary `BrowserWindowController` whose space belongs to a special profile.
+The profile's `isIncognito` flag is what every rule keys on:
+
+```
+Private window ──► its own Space ("Private", created with the window)
+                        └──► the built-in Private Profile (one, shared)
+                                   └──► WKWebsiteDataStore.nonPersistent()
+```
+
+`Space.isIncognito` is just `profile?.isIncognito ?? false`.
+
+# Rules
+
+## The profile
+
+- One built-in profile with the fixed id
+  `TabStore.incognitoProfileID` (`00000000-0000-0000-0000-000000000001`),
+  named "Private".
+- Its **row is saved** in the `profile` table, because it has settings
+  (search engine, user agent, content blocking) the user can edit. Its
+  website data is not.
+- `isIncognito` is not a column. `TabStore.ensureIncognitoProfile()` sets it
+  on the loaded profile with that id, or creates the profile. It runs in
+  `restoreSession` right after the profiles load.
+- It cannot be deleted (`deleteProfile` refuses the id) and its data is never
+  scheduled for removal.
+- `dataStore` is `.nonPersistent()`. `extensionController` uses a
+  non-persistent configuration, and extension pages in it run in the same
+  ephemeral store (TASK-73).
+
+**The store is per profile, not per window.** `dataStore` is a lazy property
+on the one Private profile object, so every Private window shares cookies
+and logins, and they survive closing the Private window. They are gone when
+the app quits. Loaded extension contexts for the Private profile also live
+until quit.[^private-notes]
+
+## The window and its space
+
+- `BrowserWindowController(incognito: true)` calls
+  `TabStore.addIncognitoSpace()`, which creates a new space on the Private
+  profile. Each Private window gets its own space and never switches away
+  from it.
+- The window is forced to dark appearance and titled "Private Browsing".
+- On `windowWillClose` the window calls `removeIncognitoSpace(id:)`, which
+  removes the space and **tears down** every tab. The teardown is explicit
+  because an undo closure may still retain the space; without it the web
+  views would keep playing audio and stay in memory.
+- `addIncognitoSpace` and `removeIncognitoSpace` register no undo and
+  schedule no save.
+
+## What is not kept
+
+| Thing | Where it is stopped |
+|---|---|
+| The space and its tabs in the session | `saveNow` filters `isIncognito` spaces. |
+| Closed-tab records | `closeTab` pushes a record only for non-incognito spaces. Undo Close Tab still works within the session. |
+| History visits and title corrections | `recordHistoryVisit` returns early; `HistoryTitleUpdatePolicy` refuses. |
+| The History page | `HistoryPageBridge.scope(for:)` returns nil and the page is told `incognito: true`. |
+| "Always allow" for external apps | `ExternalAppPermissionStore` keeps a Private decision in memory for the session only; the prompt offers no "remember" option. |
+| `runtime.onInstalled` for extensions | Never delivered or recorded for the Private profile. |
+| Auto-archive | `archiveStaleTabs` skips incognito spaces. |
+| Favorites of the Private profile | `saveNow` skips incognito profiles when saving favorites. |
+
+## What crosses the boundary: nothing may move
+
+`TabStore.canMove(from:to:)` refuses any tab or pinned entry move where the
+two spaces differ in `isIncognito`. An incognito tab carries its web view and
+its whole interaction state; landing in a persistent space would write that
+to the session database (TASK-38). The sidebar does not offer the menu in a
+Private window; the store-level refusal is the invariant behind it.
+
+## UI restrictions in a Private window
+
+Disabled or hidden: switching space (menu, shortcuts and swipe), the add
+space button, editing the space, pinning, the Archived Tabs page and its
+menu items, and Move to Space. The sidebar shows only the window's own
+space, and `tabStoreDidUpdateSpaces` never switches a Private window to
+another space.
+
+## Extensions
+
+Extensions are **off** in the Private profile unless the user allows each
+one. A missing `profileExtension` row means "on" for every profile except
+this one (`AppDatabase.extensionEnabledByDefault(inProfile:)`). A context
+loaded into the Private profile gets `hasAccessToPrivateData = true`;
+without it WebKit hides Private windows and tabs from the context and
+delivers no events to a worker running in an ephemeral store. Private
+windows answer `isPrivate(for:)` with true. Details:
+[private profile extensions](../extensions/private-profile-extensions.md) and
+[private extensions opt-in](../decisions/private-extensions-opt-in.md).
+
+# Not covered by Private browsing
+
+Read from the code; none of these was exercised at runtime for this page.
+
+- **Downloads.** `DownloadManager` has no incognito check. A download started
+  in a Private window is listed and saved to the `download` table like any
+  other.
+- **Open-tab suggestions in other windows.** `CommandPaletteView.gatherTabInfos`
+  narrows the tab list only when the palette's own window is Private. A
+  normal window's list is built from every space in `TabStore.spaces`, which
+  includes the spaces of open Private windows.
+- **Shared network caches.** Favicon downloads and search suggestions go
+  through `URLSession.shared`, whose cache and cookie storage are the app's,
+  not the profile's.
+
+# Not the same thing: per-tab isolation
+
+`Profile.isPerTabIsolation` gives every new web view of a normal profile its
+own `.nonPersistent()` store. It is a setting on a persistent profile: its
+spaces are saved, its history is recorded, and `isIncognito` is false.
+
+# Where it lives
+
+| What | Where |
+|---|---|
+| `incognitoProfileID`, `ensureIncognitoProfile`, `addIncognitoSpace`, `removeIncognitoSpace`, `canMove` | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
+| The non-persistent store and controller | `Profile.dataStore`, `Profile.extensionController` in [Profile.swift](../../Detour/Browser/Profile.swift) |
+| Window setup and teardown | `BrowserWindowController.init(incognito:)`, `windowWillClose` |
+| Menu validation | `BrowserWindowController.validateMenuItem` |
+| Entry points | File > New Private Window (Cmd+Shift+N) and the Dock menu, `AppDelegate.createNewIncognitoWindow` |
+| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests` |
+
+# Related
+
+- [Profiles and spaces](./profiles-and-spaces.md) — the model this is a special case of.
+- [Persistence](./persistence.md) — what the session save writes.
+- [Private profile extensions](../extensions/private-profile-extensions.md) — the extension side.
+- [Data store and ITP](../extensions/data-store-and-itp.md) — why extension pages need the profile's store set explicitly.
+- [History page](../features/history-page.md) — its incognito reply.
+
+[^private-notes]: Session notes on the Private profile and extensions

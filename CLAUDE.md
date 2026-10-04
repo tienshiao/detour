@@ -125,6 +125,14 @@ Run `/code-review --fix` first, then `/verify`, and the test suites the change c
 
 The `/verify` skill lives in `.claude/skills/verify/SKILL.md`: build, launch in an isolated profile (`DETOUR_DATA_DIR`), observe. When a change touches the UI in ways the tests cannot cover (layout, hosting, focus, animation, anything only visible on screen), `/verify` must exercise that UI in the running app rather than stop at "it builds and launches".
 
+## Wiki
+
+`wiki/` is the project's accumulated knowledge: how the subsystems work, their invariants, why decisions went the way they did, WebKit/AppKit quirks, investigations, and runtime-verification playbooks. It is an [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle (markdown concepts with YAML frontmatter) that agents maintain; its rules are in `wiki/meta/conventions.md`.
+
+* **Before working in an area**, read `wiki/index.md` and the pages for that area. A page without `verified` in its frontmatter is an agent's unreviewed summary: check the code before relying on a claim that matters.
+* **After learning something that outlives the task** (a root cause, a platform quirk, a design choice and what it rejected, a verification recipe, a page that turned out wrong), update the pages it touches or add one, following the conventions' ingest workflow, then run `python3 scripts/wiki-lint.py --fix` and add a line to `wiki/log.md`. Do this as part of finishing the task, in the same commit as the change it documents.
+* The wiki holds knowledge, not rules or status: instructions stay in this file, task state stays in Backlog, and feature design documents stay in `docs/`.
+
 ## Model delegation when running as Fable
 
 If the task's complexity does not require Fable to solve, do the planning/analysis with Fable, then delegate the execution/implementation to a subagent running Opus (pass `model: "opus"` on the Agent call). Reserve Fable itself for the genuinely hard parts (e.g. WKWebView ownership-transfer and snapshot semantics across windows, extension permission security reviews, tab-index offset math and other invariant-heavy state logic in TabStore).
