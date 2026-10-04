@@ -1,9 +1,10 @@
 ---
 id: TASK-133
 title: 'Tabs: the Control+Tab switcher does not swallow the keys it handles'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-04 01:24'
+updated_date: '2026-10-04 08:09'
 labels:
   - bug
 dependencies: []
@@ -25,9 +26,25 @@ Not yet observed in the app, and what it visibly breaks is unknown. Candidates t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test fails on the current code: a key the switcher handles (Control+Tab; and Escape, Return, an arrow and a letter while it is active) is returned as nil by the monitor's closure, and a key it does not handle is returned unchanged
+- [x] #1 A test fails on the current code: a key the switcher handles (Control+Tab; and Escape, Return, an arrow and a letter while it is active) is returned as nil by the monitor's closure, and a key it does not handle is returned unchanged
 - [ ] #2 With the fix those keys no longer reach the first responder: verified in the running app that Control+Tab does not move keyboard focus or reach the page, and that Return, Escape, arrows and letters typed while the overlay is up do not reach the page or the sidebar
-- [ ] #3 When the switcher has been deallocated the monitor passes events through unchanged
+- [x] #3 When the switcher has been deallocated the monitor passes events through unchanged
 - [ ] #4 Control+Tab switching itself (TASK-108) behaves as before, and RecentTabOrderTests and the switcher's tests pass
 - [ ] #5 The task records what the leak visibly caused before the fix, or that nothing was observable
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Extract the monitor closure's expression into RecentTabSwitcher.monitorResult(for:switcher:) so it can be tested without a live event stream.
+2. Tests first (RecentTabSwitcherMonitorTests): Control+Tab, Control+Shift+Tab, and Escape/Return/arrows/letter/space while active return nil; unhandled keys, another window's events and a released Control return the event; a nil switcher returns the event.
+3. Fix: guard-let the switcher, then return handle(event) unflattened.
+4. Runtime check of what the leak caused (AC #2, #5) in /verify.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Tests before the fix (monitorResult with the original expression 'switcher?.handle(event) ?? event'): RecentTabSwitcherMonitorTests 10 tests, 6 failing with 9 assertion failures — every swallow case returned the event (Control+Tab, Control+Shift+Tab, Control+Tab with nothing to switch to, Escape, Return, arrows/letter/space while active); the 4 pass-through cases passed. So the monitor never swallowed anything, as the task suspected.
+After the fix: RecentTabSwitcherMonitorTests 10/10, RecentTabOrderTests 10/10.
+<!-- SECTION:NOTES:END -->

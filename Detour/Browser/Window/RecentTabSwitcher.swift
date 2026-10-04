@@ -44,7 +44,7 @@ final class RecentTabSwitcher {
     init(window: NSWindow) {
         self.window = window
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event) ?? event }
+            MainActor.assumeIsolated { RecentTabSwitcher.monitorResult(for: event, switcher: self) }
         }
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: window, queue: .main
@@ -63,6 +63,16 @@ final class RecentTabSwitcher {
     }
 
     // MARK: - Events
+
+    /// What the local monitor returns for `event`: nil swallows it, the event
+    /// lets it continue to the key window. A switcher that is gone passes
+    /// everything through. Not `switcher?.handle(event) ?? event`: optional
+    /// chaining flattens `handle`'s nil ("swallow") into the same nil as a
+    /// missing switcher, and `??` then hands the swallowed key back (TASK-133).
+    static func monitorResult(for event: NSEvent, switcher: RecentTabSwitcher?) -> NSEvent? {
+        guard let switcher else { return event }
+        return switcher.handle(event)
+    }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window else { return event }
