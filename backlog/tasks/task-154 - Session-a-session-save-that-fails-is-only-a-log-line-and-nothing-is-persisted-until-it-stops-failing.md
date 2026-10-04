@@ -3,10 +3,10 @@ id: TASK-154
 title: >-
   Session: a session save that fails is only a log line, and nothing is
   persisted until it stops failing
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 08:53'
-updated_date: '2026-10-04 10:23'
+updated_date: '2026-10-04 18:41'
 labels:
   - bug
 dependencies: []
@@ -32,7 +32,7 @@ Decide what the app should do when a session save fails: for example retry with 
 <!-- AC:BEGIN -->
 - [x] #1 The intended behaviour on a failed session save is decided and recorded in the task
 - [x] #2 A save that fails is detected by TabStore (the result is not discarded) and handled by the decided rule; a test with an injected failure covers it
-- [ ] #3 A failure that repeats does not silently lose the whole session: either the unaffected parts are persisted or the user is told, by the decided rule
+- [x] #3 A failure that repeats does not silently lose the whole session: either the unaffected parts are persisted or the user is told, by the decided rule
 - [x] #4 Session rows that cannot be made valid (a pinned folder whose parent is missing, a parent cycle) are repaired or dropped with a log line instead of failing every save; a test covers each
 - [x] #5 wiki/architecture/persistence.md is updated
 <!-- AC:END -->
@@ -91,4 +91,12 @@ Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2),
 Left In Progress for AC #3. It is met for a refused row that repeats (the unit holding it keeps its last save, every other unit is saved). It is NOT met for a failure that is not about a row and repeats (a full disk, an I/O error): nothing is written and the user is not told — an error log line and TabStore.lastSaveOutcome only. To decide: accept that (the machine has bigger problems, and a message could not say what to do), or tell the user once (a toast from the window controller on .failed).
 Review: one finding, documented rather than repaired. A favourites unit that fails after the space hosting its live favourites was written does not keep its last saved state: rewriting the space deleted the backing tab rows and the cascade set favorite.tabID to NULL, so the kept favourite rows are dormant until a later save writes the unit. The doc comment and wiki/architecture/persistence.md said 'exactly what the last good save wrote' and now state the exception.
 Runtime check (harness build, isolated profile): saveNow() returned .saved after tabs, a second profile and space, two Private windows and an extension install; no save error in the app's output. The failure paths were not produced in the running app.
+
+2026-10-04, decided by the user: AC #3 is accepted as met by the unit-by-unit save for a refused row that repeats. The remaining case, a failure that is not about a row and repeats (full disk, I/O error: nothing written, nobody told), is not handled here and is filed as TASK-160 (a one-time toast). Other follow-ups filed from this task: TASK-164 (a favourites unit that fails after its host space was written is left dormant).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A session save the database refuses now costs only the unit holding the refused row. TabStore.saveNow() repairs rows that cannot be valid (a pinned folder with a missing parent, a parent cycle, an entry in a missing folder), tries the one-step save, and on a constraint failure falls back to one transaction with a savepoint per space, for the profiles and per profile's favourites: a failing unit keeps its last good rows and every other unit is written. Any other error writes nothing and keeps the last good save. saveNow() returns the outcome (.saved / .savedExcept / .failed) and keeps it in lastSaveOutcome. Tests written first failed for the intended reasons (SessionSaveFailureTests, SessionSnapshotRepairTests; SessionSaveAtomicityTests now injects a non-row error); full suite and runtime check at batch integration, where only successful saves were seen in the running app. Not covered, by decision: a non-row failure that repeats tells nobody (TASK-160), and a favourites unit that fails after its host space was written is left dormant until the next good save (TASK-164).
+<!-- SECTION:FINAL_SUMMARY:END -->

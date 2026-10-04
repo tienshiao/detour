@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 07:21'
+updated_date: '2026-10-04 18:41'
 labels: []
 dependencies: []
 references:
@@ -26,3 +27,9 @@ recentHistory (the palette's list before anything is typed) groups ALL of the sp
 - [ ] #2 Results are identical to today's (order, dedupe per URL, labels, limit) - existing recent-history and TASK-94 label tests pass unchanged
 - [ ] #3 A test covers a space whose newest visits are many repeats of one URL (the early-stop must still return the full distinct count)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-04: measured again during TASK-153 on a 300,000-visit history (HistoryURLSearchBenchmarkTests, Debug, loaded machine): recentHistory 142-151 ms alone on the main thread. TASK-163 covers the reads that wait behind long queries and searchHistory's cost; this task stays the one for recentHistory's aggregation.
+<!-- SECTION:NOTES:END -->
