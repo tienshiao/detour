@@ -96,7 +96,15 @@ space, and by Peek state changes.
 2. **Profiles**: after the session, so a profile no space references any
    more can be dropped without a foreign key violation.
 3. **Pinned folders and entries**, per space: folders before entries,
-   because entries reference folders.
+   because entries reference folders, and each folder after its parent
+   (`parentFirst`), because `pinnedFolder.parentFolderID` is an immediate
+   foreign key onto the same table. The store's folder array is not
+   parent-first: a folder dragged into one created after it stays ahead of
+   it, Undo Delete Folder appends the restored parent behind its children,
+   and a relaunch loads rows by per-level `sortOrder`. Written in array order
+   the child row is refused. Before the save was one transaction that lost
+   the space's pinned rows; in one transaction it would fail the whole save,
+   every time.[^task-149]
 4. **Favorites**, per profile: after the session, because `favorite.tabID`
    references a `tab` row.
 

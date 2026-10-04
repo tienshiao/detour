@@ -227,6 +227,63 @@ final class SessionSaveAtomicityTests: XCTestCase {
         try assertInterruptedSaveKeepsPreviousState(failingOn: "favorite")
     }
 
+    // MARK: - Nested folders in any order
+
+    /// `pinnedFolder.parentFolderID` is an immediate foreign key onto the same
+    /// table, and the store's folder array is not parent-first: a folder dragged
+    /// into one created after it stays ahead of it. Written in array order the
+    /// child row is refused, and since TASK-149 that refusal fails the whole
+    /// save, every time, for as long as the folders stay nested that way.
+    func testAFolderAheadOfItsParentInTheStoreIsSaved() throws {
+        let fixture = try makeFixture()
+        let store = fixture.store
+        let space = fixture.workSpace
+        let outer = try XCTUnwrap(space.pinnedFolders.first { $0.name == "Outer" })
+        let late = store.addPinnedFolder(name: "Late", in: space)
+        store.movePinnedFolder(folderID: outer.id, parentFolderID: late.id, in: space)
+        let outerIndex = try XCTUnwrap(space.pinnedFolders.firstIndex { $0.id == outer.id })
+        let lateIndex = try XCTUnwrap(space.pinnedFolders.firstIndex { $0.id == late.id })
+        XCTAssertLessThan(outerIndex, lateIndex, "premise: the child is ahead of its parent in the store")
+
+        XCTAssertTrue(fixture.db.saveSessionSnapshot(store.makeSessionSnapshot()),
+                      "a child folder ahead of its parent must not fail the save")
+
+        let relaunched = TabStore(appDB: fixture.db)
+        _ = relaunched.restoreSession()
+        let restored = try XCTUnwrap(relaunched.space(withID: space.id))
+        XCTAssertEqual(restored.pinnedFolders.count, 3)
+        XCTAssertEqual(restored.pinnedFolders.first { $0.id == outer.id }?.parentFolderID, late.id)
+        XCTAssertEqual(restored.pinnedEntries.count, space.pinnedEntries.count)
+
+        // The rows load by their per-level sort order, which is not parent-first
+        // either: the relaunched store's own save has to go through as well.
+        XCTAssertTrue(fixture.db.saveSessionSnapshot(relaunched.makeSessionSnapshot()),
+                      "the save after a relaunch must not fail on the folders' load order")
+        XCTAssertEqual(try XCTUnwrap(try dump(fixture.db)["pinnedFolder"]).count, 3)
+    }
+
+    /// Undo Delete Folder appends the restored folder after the children it
+    /// takes back, so the children are ahead of their parent.
+    func testAFolderRestoredByUndoBehindItsChildrenIsSaved() throws {
+        let fixture = try makeFixture()
+        let store = fixture.store
+        let space = fixture.workSpace
+        let outer = try XCTUnwrap(space.pinnedFolders.first { $0.name == "Outer" })
+        let inner = try XCTUnwrap(space.pinnedFolders.first { $0.name == "Inner" })
+
+        // The fixture's own undo registrations share the open group: without
+        // this the undo below would take them back too.
+        store.undoManager.removeAllActions()
+        store.deletePinnedFolder(id: outer.id, in: space)
+        store.undoManager.undo()
+        XCTAssertEqual(space.pinnedFolders.map(\.id), [inner.id, outer.id],
+                       "premise: the restored parent is behind its child in the store")
+        XCTAssertEqual(inner.parentFolderID, outer.id)
+
+        XCTAssertTrue(fixture.db.saveSessionSnapshot(store.makeSessionSnapshot()))
+        XCTAssertEqual(try XCTUnwrap(try dump(fixture.db)["pinnedFolder"]).count, 2)
+    }
+
     // MARK: - One transaction
 
     private final class CommitCounter: TransactionObserver {

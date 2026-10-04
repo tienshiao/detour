@@ -638,13 +638,50 @@ struct AppDatabase {
         try PinnedFolderRecord
             .filter(Column("spaceID") == spaceID)
             .deleteAll(db)
-        // Insert folders first (tabs reference them)
-        for record in folders {
+        // Insert folders first (tabs reference them), each parent before its
+        // children (folders reference folders)
+        for record in parentFirst(folders) {
             try record.insert(db)
         }
         for record in tabs {
             try record.insert(db)
         }
+    }
+
+    /// `folders` with every parent ahead of its children, otherwise in the
+    /// order given.
+    ///
+    /// `pinnedFolder.parentFolderID` references `pinnedFolder` and the check is
+    /// immediate, so a child row inserted before its parent's fails the
+    /// statement — and with it the whole save (`saveSessionSnapshot`). The
+    /// order handed in is the store's array order, which is not parent-first:
+    /// a folder dragged into one created after it stays ahead of it, Undo
+    /// Delete Folder appends the restored parent behind its children, and
+    /// after a relaunch the rows come back by their per-level `sortOrder`.
+    ///
+    /// A folder whose parent is not among `folders` is placed as a root, and
+    /// the folders of a parent cycle go last in the order given: neither can
+    /// be made valid here, so the insert reports them.
+    private static func parentFirst(_ folders: [PinnedFolderRecord]) -> [PinnedFolderRecord] {
+        let ids = Set(folders.map(\.id))
+        var placed = Set<String>()
+        var ordered: [PinnedFolderRecord] = []
+        var pending = folders
+        while !pending.isEmpty {
+            var waiting: [PinnedFolderRecord] = []
+            for folder in pending {
+                if let parent = folder.parentFolderID, ids.contains(parent), !placed.contains(parent) {
+                    waiting.append(folder)
+                } else {
+                    placed.insert(folder.id)
+                    ordered.append(folder)
+                }
+            }
+            // No folder could be placed: what is left is a cycle.
+            if waiting.count == pending.count { return ordered + waiting }
+            pending = waiting
+        }
+        return ordered
     }
 
     func loadPinnedFolders(spaceID: String) -> [PinnedFolderRecord] {

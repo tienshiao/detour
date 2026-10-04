@@ -87,6 +87,9 @@ Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
   pinned and favorite rows follow.
 - `pinnedTab.folderID → pinnedFolder`. Within a space the order is: delete
   entries, delete folders, insert folders, insert entries.
+- `pinnedFolder.parentFolderID → pinnedFolder`, checked immediately. Folder
+  rows are inserted parent-first (`AppDatabase.parentFirst`), whatever order
+  the store holds them in; see [persistence](./persistence.md).
 
 Profile deletion does **not** rely on cascades. `deleteProfileRows` is the
 one function that deletes a profile row, and it deletes `profileExtension`,

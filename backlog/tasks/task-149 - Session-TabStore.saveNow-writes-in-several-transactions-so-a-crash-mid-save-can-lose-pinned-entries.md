@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-04 02:29'
-updated_date: '2026-10-04 08:17'
+updated_date: '2026-10-04 08:45'
 labels: []
 dependencies: []
 references:
@@ -67,4 +67,10 @@ Suites run on the fix (263 tests, 1 skipped, 0 failures): SessionSaveAtomicityTe
 Docs: docs/data-model.md (Persistence Strategy), wiki/architecture/persistence.md (write order, atomicity, measured cost), wiki/architecture/session-database.md (foreign-key notes), wiki/playbooks/build-and-test.md (SESSION_SAVE_BENCH gate), wiki/log.md. wiki-lint: 0 errors, 0 warnings.
 
 Not verified: a real crash or kill mid-save (the tests fail a statement inside the transaction; a kill relies on SQLite's own atomic commit). No /code-review or /verify run by this agent; the supervisor does both.
+
+Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated profile, SCREEN LOCKED (so no real key or mouse events; calls go through the app's own entry points).
+Launch, tab and window changes, quit: browser.db held the session afterwards (1 space, 2 tabs, 2 profiles); no save error in the log. Full test suite on the integrated branch: 1970 tests, 11 skipped (gated legs), 0 failures.
+
+Code review of the batch (5bc537c..822e798) found that the save inserted pinned folders in the store's array order, which is not parent-first (a folder dragged into one created later, Undo Delete Folder, a relaunch). pinnedFolder.parentFolderID is an immediate foreign key, so the child row is refused. Before this task that lost the space's pinned rows on such a save; as one transaction it failed the whole session save every time. Fixed: writePinnedFoldersAndTabs inserts through parentFirst(_:). Two new tests in SessionSaveAtomicityTests failed with the foreign-key error before and pass after; SessionSaveAtomicityTests, AppDatabaseTests, PinnedTabMoveTests and TabStoreTests: 95 tests, 0 failures.
+Left open by the review, for a decision: TabStore.saveNow ignores the result of saveSessionSnapshot, so a save that keeps failing is only a log line while nothing is persisted.
 <!-- SECTION:NOTES:END -->
