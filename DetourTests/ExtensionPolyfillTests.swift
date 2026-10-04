@@ -1070,6 +1070,580 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["rooted"] as? Bool, false, "nothing was patched, so nothing is rooted")
     }
 
+    // MARK: - Tab id bridge (TASK-132.2)
+
+    /// A `chrome.tabs` whose `getZoom` answers from a script: each call takes
+    /// the next entry of `__zoomAnswers` (a number, or `{ error }` to fail the
+    /// way WebKit does), and 1 when the script has run out. It never looks at
+    /// Detour's arms, so a test decides exactly which call "consumed" one. The
+    /// polyfill requests themselves (`tabs.armResolve`, `tabs.disarmResolve`,
+    /// `tabs.describeHandle`) go to the real handler.
+    private static let fakeTabsShim = """
+    globalThis.__zoomCalls = [];
+    globalThis.__zoomAnswers = [];
+    globalThis.__removedListeners = [];
+    globalThis.__listedTabs = [];
+    globalThis.__nativeGetZoom = function(tabId, callback) {
+        if (typeof tabId === 'function') { callback = tabId; tabId = undefined; }
+        globalThis.__zoomCalls.push({
+            tabId: tabId === undefined ? null : tabId,
+            onNamespace: this === globalThis.chrome.tabs,
+            callback: typeof callback === 'function'
+        });
+        const next = globalThis.__zoomAnswers.length ? globalThis.__zoomAnswers.shift() : 1;
+        const settle = Promise.resolve().then(function() {
+            if (next && typeof next === 'object') throw new Error(next.error);
+            return next;
+        });
+        if (typeof callback === 'function') {
+            settle.then(function(zoom) { callback(zoom); }, function(error) {
+                globalThis.__fakeLastError = error.message;
+                try { callback(); } finally { globalThis.__fakeLastError = null; }
+            });
+            return undefined;
+        }
+        return settle;
+    };
+    globalThis.chrome.tabs = {
+        getZoom: globalThis.__nativeGetZoom,
+        query: function() { return Promise.resolve(globalThis.__listedTabs); },
+        onRemoved: { addListener: function(fn) { globalThis.__removedListeners.push(fn); } }
+    };
+    """
+
+    private func makeTabsWebView(extras: String = "") async throws -> WKWebView {
+        try await makeWebView(manifestPermissions: [], shimExtras: Self.fakeTabsShim + "\n" + extras)
+    }
+
+    /// The key the handler arms under for the shim's extension in this profile.
+    private var tabResolveKey: ExtensionTabHandleRegistry.ContextKey {
+        ExtensionTabHandleRegistry.ContextKey(profileID: profile.id, extensionID: "test-polyfill-extension")
+    }
+
+    /// Take back whatever arms a test left (the fake `getZoom` consumes none),
+    /// returning how many there were.
+    @discardableResult
+    private func drainTabResolveArms() -> Int {
+        var count = 0
+        while ExtensionTabHandleRegistry.shared.disarm(tabResolveKey) { count += 1 }
+        return count
+    }
+
+    /// The happy path: one arm, one getZoom on WebKit's own function, the
+    /// negated answer is the handle, and both directions are cached.
+    func testResolveTabArmsAsksGetZoomAndCachesTheHandle() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        __zoomAnswers.push(-42);
+        const handle = await __detourResolveTab(7);
+        const again = await __detourResolveTab(7);
+        const callsAfterCached = __zoomCalls.length;
+        __zoomAnswers.push(-42);
+        const fresh = await __detourResolveTab(7, { fresh: true });
+        return JSON.stringify({
+            handle: handle, again: again, fresh: fresh,
+            callsAfterCached: callsAfterCached, calls: __zoomCalls,
+            tabIdForHandle: __detourTabIdForHandle(42),
+            unknownHandle: __detourTabIdForHandle(43) === undefined,
+            listeners: __removedListeners.length,
+            diag: __detourPolyfillDiag.apis.tabResolve,
+            held: __detourHeldWrappers.tabs === chrome.tabs,
+            wrapped: chrome.tabs.getZoom._detourZoomWrapper === true,
+            nativeKept: chrome.tabs.getZoom._detourNative === __nativeGetZoom,
+            enumerable: Object.keys(globalThis).filter(function(name) {
+                return ['__detourResolveTab', '__detourTabIdForHandle',
+                        '__detourFindTabIdForHandle', '__detourTabResolveInstall'].indexOf(name) !== -1;
+            })
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["handle"] as? Int, 42)
+        XCTAssertEqual(result["again"] as? Int, 42)
+        XCTAssertEqual(result["callsAfterCached"] as? Int, 1, "a cached id costs no round trip")
+        XCTAssertEqual(result["fresh"] as? Int, 42)
+        let calls = try XCTUnwrap(result["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.count, 2, "`fresh` asks WebKit again")
+        XCTAssertEqual(calls[0]["tabId"] as? Int, 7)
+        XCTAssertEqual(calls[0]["onNamespace"] as? Bool, true, "the native function is called on its namespace")
+        XCTAssertEqual(calls[0]["callback"] as? Bool, false)
+        XCTAssertEqual(result["tabIdForHandle"] as? Int, 7)
+        XCTAssertEqual(result["unknownHandle"] as? Bool, true)
+        XCTAssertEqual(result["listeners"] as? Int, 1, "tabs.onRemoved is listened to once, from the first entry")
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+        XCTAssertEqual(result["held"] as? Bool, true)
+        XCTAssertEqual(result["wrapped"] as? Bool, true)
+        XCTAssertEqual(result["nativeKept"] as? Bool, true)
+        XCTAssertEqual(result["enumerable"] as? [String], [], "the helpers must not be enumerable globals")
+        XCTAssertEqual(drainTabResolveArms(), 2,
+                       "each of the two round trips armed once through the real handler")
+    }
+
+    /// No listener until there is something to forget: an extension that never
+    /// resolves a tab must not be woken for every tab close.
+    func testResolveTabAddsNoOnRemovedListenerUntilItCachesSomething() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        const before = __removedListeners.length;
+        __zoomAnswers.push(-5);
+        await __detourResolveTab(3);
+        const after = __removedListeners.length;
+        __removedListeners[0](3);
+        return JSON.stringify({
+            before: before, after: after,
+            forgotten: __detourTabIdForHandle(5) === undefined
+        });
+        """, on: wv)
+        XCTAssertEqual(result["before"] as? Int, 0)
+        XCTAssertEqual(result["after"] as? Int, 1)
+        XCTAssertEqual(result["forgotten"] as? Bool, true, "tabs.onRemoved drops the cached id")
+        drainTabResolveArms()
+    }
+
+    /// An arm consumed by another context's getZoom shows up as a real zoom:
+    /// the resolve arms again rather than mistaking the zoom for a handle.
+    func testResolveTabRetriesWhenItsArmWentElsewhere() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        __zoomAnswers.push(1.5, 0, -42);
+        const handle = await __detourResolveTab(7);
+        return JSON.stringify({ handle: handle, calls: __zoomCalls.length });
+        """, on: wv)
+        XCTAssertEqual(result["handle"] as? Int, 42)
+        XCTAssertEqual(result["calls"] as? Int, 3)
+        XCTAssertEqual(drainTabResolveArms(), 3, "every attempt arms once")
+    }
+
+    /// NEGATIVE: the retries are bounded, and a resolve that never gets a
+    /// handle fails rather than returning a zoom as one.
+    func testResolveTabGivesUpAfterBoundedRetries() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        let message = null;
+        try { await __detourResolveTab(7); } catch (e) { message = e.message; }
+        return JSON.stringify({
+            message: message, calls: __zoomCalls.length,
+            cached: __detourTabIdForHandle(1) !== undefined
+        });
+        """, on: wv)
+        XCTAssertEqual(result["message"] as? String,
+                       "Could not resolve tab 7: tabs.getZoom never answered with a handle")
+        XCTAssertEqual(result["calls"] as? Int, 5)
+        XCTAssertEqual(result["cached"] as? Bool, false, "a zoom must never be cached as a handle")
+        XCTAssertEqual(drainTabResolveArms(), 5)
+    }
+
+    /// NEGATIVE: WebKit refusing the id is a rejection in Chrome's words, the
+    /// arm is taken back, and any stale cache entry for the id goes.
+    func testResolveTabRejectsAnUnknownTabAndDisarms() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        __zoomAnswers.push(-42);
+        await __detourResolveTab(7);
+        __zoomAnswers.push({ error: 'Invalid call to tabs.getZoom(). Tab not found.' });
+        let message = null;
+        try { await __detourResolveTab(7, { fresh: true }); } catch (e) { message = e.message; }
+        __zoomAnswers.push({ error: 'some other failure' });
+        let other = null;
+        try { await __detourResolveTab(8); } catch (e) { other = e.message; }
+        return JSON.stringify({
+            message: message, other: other, calls: __zoomCalls.length,
+            forgotten: __detourTabIdForHandle(42) === undefined
+        });
+        """, on: wv)
+        XCTAssertEqual(result["message"] as? String, "No tab with id: 7.")
+        XCTAssertEqual(result["other"] as? String, "some other failure",
+                       "a failure that is not 'tab not found' is passed on as it is")
+        XCTAssertEqual(result["calls"] as? Int, 3, "a rejection is not retried")
+        XCTAssertEqual(result["forgotten"] as? Bool, true)
+        XCTAssertEqual(drainTabResolveArms(), 1,
+                       "only the first, successful resolve's arm is left: the two failures disarmed theirs")
+    }
+
+    /// NEGATIVE: `getZoom(undefined)` means "the active tab" to WebKit, so
+    /// anything but an integer is refused before a single call is made.
+    func testResolveTabRefusesNonIntegerIdsWithoutArming() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        const outcomes = [];
+        for (const bad of [undefined, null, '7', 7.5, NaN, {}, true]) {
+            try { await __detourResolveTab(bad); outcomes.push('resolved'); }
+            catch (e) { outcomes.push(e instanceof TypeError ? 'TypeError' : 'other: ' + e.message); }
+        }
+        return JSON.stringify({ outcomes: outcomes, calls: __zoomCalls.length });
+        """, on: wv)
+        XCTAssertEqual(result["outcomes"] as? [String], Array(repeating: "TypeError", count: 7))
+        XCTAssertEqual(result["calls"] as? Int, 0)
+        XCTAssertEqual(drainTabResolveArms(), 0, "nothing was armed")
+    }
+
+    /// Resolves in one context run one at a time, in the order asked, so each
+    /// answer is read against the question it belongs to.
+    func testResolveTabRunsOneResolveAtATime() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        __zoomAnswers.push(-11, -12, -13);
+        const handles = await Promise.all([__detourResolveTab(1), __detourResolveTab(2),
+                                           __detourResolveTab(3), __detourResolveTab(1)]);
+        return JSON.stringify({ handles: handles, asked: __zoomCalls.map(function(c) { return c.tabId; }) });
+        """, on: wv)
+        XCTAssertEqual(result["handles"] as? [Int], [11, 12, 13, 11])
+        XCTAssertEqual(result["asked"] as? [Int], [1, 2, 3],
+                       "the fourth resolve finds the first one's answer cached")
+        XCTAssertEqual(drainTabResolveArms(), 3)
+    }
+
+    /// The reverse lookup: the cache first, then a walk of tabs.query that
+    /// resolves only the ids not seen yet and stops at the match.
+    func testFindTabIdForHandleWalksTheListedTabs() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        __listedTabs = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
+        __zoomAnswers.push(-11);
+        await __detourResolveTab(1);
+        __zoomAnswers.push({ error: 'Invalid call to tabs.getZoom(). Tab not found.' }, -13);
+        const found = await __detourFindTabIdForHandle(13);
+        const asked = __zoomCalls.map(function(c) { return c.tabId; });
+        const cachedNow = __detourTabIdForHandle(13);
+        __zoomAnswers.push(-12, -14);
+        const missing = await __detourFindTabIdForHandle(99);
+        return JSON.stringify({
+            found: found, asked: asked, cachedNow: cachedNow,
+            missing: missing === undefined,
+            askedAfter: __zoomCalls.map(function(c) { return c.tabId; })
+        });
+        """, on: wv)
+        XCTAssertEqual(result["found"] as? Int, 3)
+        XCTAssertEqual(result["asked"] as? [Int], [1, 2, 3],
+                       "the cached id is skipped, a tab closed since the query is passed over, the walk stops at the match")
+        XCTAssertEqual(result["cachedNow"] as? Int, 3)
+        XCTAssertEqual(result["missing"] as? Bool, true, "a handle no listed tab has resolves to undefined")
+        XCTAssertEqual(result["askedAfter"] as? [Int], [1, 2, 3, 2, 4])
+        drainTabResolveArms()
+    }
+
+    /// A genuine getZoom that gets a handle for an answer reads the real zoom
+    /// of that very tab through `tabs.describeHandle`, in both call forms, and
+    /// asks WebKit only once.
+    func testGetZoomWrapperTurnsAHandleAnswerIntoTheTabsZoom() async throws {
+        let space = TabStore.shared.addSpace(name: "Zoom Wrapper", emoji: "Z", colorHex: "007AFF",
+                                             profileID: profile.id)
+        defer { TabStore.shared.forceRemoveSpace(id: space.id) }
+        let tab = sleepingTab(URL(string: "https://example.com/zoom")!, in: space)
+        space.tabs.append(tab)
+        let handle = ExtensionTabHandleRegistry.shared.handle(for: tab)
+
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        __zoomAnswers.push(-handle, 7);
+        const promised = await chrome.tabs.getZoom(3);
+        const callsAfterPromise = __zoomCalls.length;
+        __zoomAnswers.length = 0;
+        __zoomAnswers.push(-handle, 7);
+        const viaCallback = await new Promise(function(resolve) {
+            const returned = chrome.tabs.getZoom(3, function(zoom) {
+                resolve({ zoom: zoom, argc: arguments.length, returned: typeof returned });
+            });
+        });
+        return JSON.stringify({
+            promised: promised, callsAfterPromise: callsAfterPromise,
+            viaCallback: viaCallback, calls: __zoomCalls
+        });
+        """, arguments: ["handle": handle], on: wv)
+
+        XCTAssertEqual(result["promised"] as? Double, 1,
+                       "a sleeping tab's zoom is 1 — not the handle, and not the 7 a second ask would get")
+        XCTAssertEqual(result["callsAfterPromise"] as? Int, 1, "the zoom comes from the handle, not from asking again")
+        let viaCallback = try XCTUnwrap(result["viaCallback"] as? [String: Any])
+        XCTAssertEqual(viaCallback["zoom"] as? Double, 1)
+        XCTAssertEqual(viaCallback["argc"] as? Int, 1)
+        XCTAssertEqual(viaCallback["returned"] as? String, "undefined")
+        let calls = try XCTUnwrap(result["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls[1]["callback"] as? Bool, true, "a callback call stays a callback call")
+        XCTAssertEqual(calls[1]["onNamespace"] as? Bool, true)
+        XCTAssertEqual(drainTabResolveArms(), 0, "the wrapper arms nothing")
+    }
+
+    /// A handle answer whose tab is gone by the time it is described: WebKit is
+    /// asked once more and its answer stands; a second handle answer becomes 1.
+    /// Either way the extension never sees a negative zoom.
+    func testGetZoomWrapperNeverReturnsANegativeZoom() async throws {
+        let wv = try await makeTabsWebView()
+        let result = try await evalDictionary("""
+        const viaCallback = function(tabId) {
+            return new Promise(function(resolve) {
+                chrome.tabs.getZoom(tabId, function(zoom) {
+                    resolve({ zoom: zoom === undefined ? null : zoom, argc: arguments.length,
+                              lastError: globalThis.__fakeLastError || null });
+                });
+            });
+        };
+        // 987654321 is no tab's handle, so describeHandle refuses it.
+        __zoomAnswers.push(-987654321, 2.5);
+        const reasked = await chrome.tabs.getZoom(3);
+        __zoomAnswers.push(-987654321, -987654322);
+        const twice = await chrome.tabs.getZoom(3);
+        __zoomAnswers.push(-987654321, { error: 'Invalid call to tabs.getZoom(). Tab not found.' });
+        let rejected = null;
+        try { await chrome.tabs.getZoom(3); } catch (e) { rejected = e.message; }
+
+        __zoomAnswers.push(-987654321, 2.5);
+        const reaskedCallback = await viaCallback(3);
+        __zoomAnswers.push(-987654321, -987654322);
+        const twiceCallback = await viaCallback(3);
+        __zoomAnswers.push(-987654321, { error: 'Invalid call to tabs.getZoom(). Tab not found.' });
+        const failedCallback = await viaCallback(3);
+
+        // And the ordinary cases are untouched.
+        __zoomAnswers.push(1.75);
+        const ordinary = await chrome.tabs.getZoom(3);
+        __zoomAnswers.push({ error: 'Invalid call to tabs.getZoom(). Tab not found.' });
+        const ordinaryFailure = await viaCallback(4);
+        __zoomAnswers.push(1.1);
+        const noTabId = await new Promise(function(resolve) { chrome.tabs.getZoom(resolve); });
+        return JSON.stringify({
+            reasked: reasked, twice: twice, rejected: rejected,
+            reaskedCallback: reaskedCallback, twiceCallback: twiceCallback, failedCallback: failedCallback,
+            ordinary: ordinary, ordinaryFailure: ordinaryFailure, noTabId: noTabId,
+            lastCall: __zoomCalls[__zoomCalls.length - 1]
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["reasked"] as? Double, 2.5)
+        XCTAssertEqual(result["twice"] as? Double, 1)
+        XCTAssertEqual(result["rejected"] as? String, "Invalid call to tabs.getZoom(). Tab not found.",
+                       "WebKit's own failure on the second ask is the caller's failure")
+        XCTAssertEqual((result["reaskedCallback"] as? [String: Any])?["zoom"] as? Double, 2.5)
+        XCTAssertEqual((result["twiceCallback"] as? [String: Any])?["zoom"] as? Double, 1)
+        let failedCallback = try XCTUnwrap(result["failedCallback"] as? [String: Any])
+        XCTAssertEqual(failedCallback["argc"] as? Int, 0)
+        XCTAssertEqual(failedCallback["lastError"] as? String, "Invalid call to tabs.getZoom(). Tab not found.",
+                       "the callback runs inside WebKit's own, where lastError is set")
+        XCTAssertEqual(result["ordinary"] as? Double, 1.75)
+        let ordinaryFailure = try XCTUnwrap(result["ordinaryFailure"] as? [String: Any])
+        XCTAssertEqual(ordinaryFailure["argc"] as? Int, 0)
+        XCTAssertEqual(ordinaryFailure["lastError"] as? String, "Invalid call to tabs.getZoom(). Tab not found.")
+        XCTAssertEqual(result["noTabId"] as? Double, 1.1)
+        let lastCall = try XCTUnwrap(result["lastCall"] as? [String: Any])
+        XCTAssertTrue(lastCall["tabId"] is NSNull, "a lone callback is not mistaken for a tab id")
+        XCTAssertEqual(lastCall["callback"] as? Bool, true)
+        XCTAssertEqual(drainTabResolveArms(), 0)
+    }
+
+    /// A second run of the polyfill in the same realm must not wrap the first
+    /// run's wrapper, and the resolver it installs still reaches WebKit's function.
+    func testTabResolveSurvivesASecondRunOfThePolyfill() async throws {
+        let wv = try await makeTabsWebView()
+        _ = try await wv.callAsyncJavaScript(ExtensionAPIPolyfill.polyfillJS, arguments: [:], contentWorld: .page)
+        let result = try await evalDictionary("""
+        __zoomAnswers.push(-42);
+        const handle = await __detourResolveTab(7);
+        __zoomAnswers.push(1.3);
+        const zoom = await chrome.tabs.getZoom(7);
+        return JSON.stringify({
+            handle: handle, zoom: zoom, calls: __zoomCalls.length,
+            nativeIsTheFake: chrome.tabs.getZoom._detourNative === __nativeGetZoom,
+            held: __detourHeldWrappers.tabs === chrome.tabs,
+            install: globalThis.__detourTabResolveInstall
+        });
+        """, on: wv)
+        XCTAssertEqual(result["handle"] as? Int, 42)
+        XCTAssertEqual(result["zoom"] as? Double, 1.3)
+        XCTAssertEqual(result["calls"] as? Int, 2, "each call reaches the native function exactly once")
+        XCTAssertEqual(result["nativeIsTheFake"] as? Bool, true, "a second run must not wrap the first run's wrapper")
+        XCTAssertEqual(result["held"] as? Bool, true)
+        XCTAssertEqual(result["install"] as? String, "polyfill")
+        drainTabResolveArms()
+    }
+
+    /// A `browser.tabs` that is a different object than `chrome.tabs` gets its
+    /// own wrapper under its own root key.
+    func testGetZoomWrapperPatchesADistinctBrowserNamespace() async throws {
+        let wv = try await makeTabsWebView(extras: """
+        globalThis.__browserZoomCalls = 0;
+        globalThis.browser = globalThis.browser || {};
+        globalThis.browser.tabs = {
+            getZoom: function() { globalThis.__browserZoomCalls++; return Promise.resolve(1.2); }
+        };
+        """)
+        let result = try await evalDictionary("""
+        const zoom = await browser.tabs.getZoom(1);
+        return JSON.stringify({
+            distinct: chrome.tabs !== browser.tabs, zoom: zoom, browserCalls: __browserZoomCalls,
+            chromeWrapped: chrome.tabs.getZoom._detourZoomWrapper === true,
+            browserWrapped: browser.tabs.getZoom._detourZoomWrapper === true,
+            chromeHeld: __detourHeldWrappers.tabs === chrome.tabs,
+            browserHeld: __detourHeldWrappers.browserTabs === browser.tabs,
+            diag: __detourPolyfillDiag.apis.tabResolve
+        });
+        """, on: wv)
+        XCTAssertEqual(result["distinct"] as? Bool, true)
+        XCTAssertEqual(result["zoom"] as? Double, 1.2)
+        XCTAssertEqual(result["browserCalls"] as? Int, 1)
+        XCTAssertEqual(result["chromeWrapped"] as? Bool, true)
+        XCTAssertEqual(result["browserWrapped"] as? Bool, true)
+        XCTAssertEqual(result["chromeHeld"] as? Bool, true)
+        XCTAssertEqual(result["browserHeld"] as? Bool, true)
+        XCTAssertEqual(result["diag"] as? String, "polyfill")
+    }
+
+    /// NEGATIVE: a namespace that refuses the write is reported, not rooted —
+    /// and the resolver still works, since it calls WebKit's function itself.
+    func testGetZoomWrapperReportsARefusedDefine() async throws {
+        let wv = try await makeTabsWebView(extras: "Object.freeze(globalThis.chrome.tabs);")
+        let result = try await evalDictionary("""
+        __zoomAnswers.push(-42);
+        const handle = await __detourResolveTab(7);
+        return JSON.stringify({
+            wrapped: chrome.tabs.getZoom._detourZoomWrapper === true,
+            diag: __detourPolyfillDiag.apis.tabResolve,
+            rooted: Object.keys(__detourHeldWrappers).indexOf('tabs') !== -1,
+            handle: handle
+        });
+        """, on: wv)
+        XCTAssertEqual(result["wrapped"] as? Bool, false)
+        XCTAssertEqual(result["diag"] as? String, "define-failed")
+        XCTAssertEqual(result["rooted"] as? Bool, false, "an unpatched namespace is not rooted")
+        XCTAssertEqual(result["handle"] as? Int, 42)
+        drainTabResolveArms()
+    }
+
+    /// NEGATIVE: without a `chrome.tabs` namespace nothing is created, and a
+    /// resolve says so rather than hanging.
+    func testTabResolveIsAbsentWithoutATabsNamespace() async throws {
+        let result = try await evalDictionary("""
+        let message = null;
+        try { await __detourResolveTab(1); } catch (e) { message = e.message; }
+        return JSON.stringify({
+            tabs: typeof chrome.tabs,
+            diag: __detourPolyfillDiag.apis.tabResolve,
+            rooted: Object.keys(__detourHeldWrappers).indexOf('tabs') !== -1,
+            message: message
+        });
+        """)
+        XCTAssertEqual(result["tabs"] as? String, "undefined")
+        XCTAssertEqual(result["diag"] as? String, "absent")
+        XCTAssertEqual(result["rooted"] as? Bool, false)
+        XCTAssertEqual(result["message"] as? String,
+                       "__detourResolveTab: tabs.getZoom is unavailable in this context")
+        XCTAssertEqual(drainTabResolveArms(), 0)
+    }
+
+    /// One native-bridge round trip, as the worker's transport delivers it.
+    private func tabBridgeReply(_ type: String, params: [String: Any] = [:],
+                                extensionID: String = "test-polyfill-extension") async -> (result: Any?, error: String?) {
+        await withCheckedContinuation { continuation in
+            handler.handleNativeMessage(["type": type, "extensionID": "", "params": params],
+                                        verifiedExtensionID: extensionID) { result, error in
+                continuation.resume(returning: (result, (error as NSError?)?.localizedDescription))
+            }
+        }
+    }
+
+    /// The handler arms under the profile it serves and the *verified* sender,
+    /// caps the arms a context may hold, and takes one back on disarm.
+    func testArmAndDisarmResolveMessages() async throws {
+        let registry = ExtensionTabHandleRegistry.shared
+        let otherKey = ExtensionTabHandleRegistry.ContextKey(profileID: profile.id, extensionID: "another-extension")
+        defer {
+            drainTabResolveArms()
+            while registry.disarm(otherKey) {}
+        }
+
+        let nothing = await tabBridgeReply("tabs.disarmResolve")
+        XCTAssertEqual(nothing.result as? Bool, false, "nothing armed, nothing to take back")
+
+        let armed = await tabBridgeReply("tabs.armResolve")
+        XCTAssertNil(armed.error)
+        XCTAssertEqual(armed.result as? Bool, true)
+        XCTAssertEqual(registry.armCount(tabResolveKey), 1)
+        XCTAssertEqual(registry.armCount(otherKey), 0, "an arm belongs to the extension that set it")
+
+        _ = await tabBridgeReply("tabs.armResolve", extensionID: "another-extension")
+        XCTAssertEqual(registry.armCount(otherKey), 1)
+        XCTAssertEqual(registry.armCount(tabResolveKey), 1)
+
+        let disarmed = await tabBridgeReply("tabs.disarmResolve")
+        XCTAssertEqual(disarmed.result as? Bool, true)
+        XCTAssertEqual(registry.armCount(tabResolveKey), 0)
+        XCTAssertEqual(registry.armCount(otherKey), 1, "disarming one extension leaves the other's arm")
+
+        for _ in 0..<ExtensionTabHandleRegistry.defaultArmLimit {
+            let reply = await tabBridgeReply("tabs.armResolve")
+            XCTAssertNil(reply.error)
+        }
+        let overCap = await tabBridgeReply("tabs.armResolve")
+        XCTAssertNil(overCap.result)
+        XCTAssertEqual(overCap.error, "tabs.armResolve: too many pending tab resolves")
+        XCTAssertEqual(registry.armCount(tabResolveKey), ExtensionTabHandleRegistry.defaultArmLimit)
+    }
+
+    /// `tabs.describeHandle` answers for a tab of the handler's profile and
+    /// refuses everything else with one text.
+    func testDescribeHandleMessage() async throws {
+        let registry = ExtensionTabHandleRegistry.shared
+        let space = TabStore.shared.addSpace(name: "Describe", emoji: "D", colorHex: "007AFF",
+                                             profileID: profile.id)
+        let foreignSpace = TabStore.shared.addSpace(name: "Describe Foreign", emoji: "F", colorHex: "34C759",
+                                                    profileID: UUID())
+        defer {
+            TabStore.shared.forceRemoveSpace(id: space.id)
+            TabStore.shared.forceRemoveSpace(id: foreignSpace.id)
+        }
+        let tab = sleepingTab(URL(string: "https://example.com/described")!, in: space)
+        space.tabs.append(tab)
+        let foreign = sleepingTab(URL(string: "https://example.com/foreign")!, in: foreignSpace)
+        foreignSpace.tabs.append(foreign)
+        let loose = sleepingTab(URL(string: "https://example.com/loose")!, in: space)
+
+        let described = await tabBridgeReply("tabs.describeHandle", params: ["handle": registry.handle(for: tab)])
+        XCTAssertNil(described.error)
+        let info = try XCTUnwrap(described.result as? [String: Any])
+        XCTAssertEqual(info["tabUUID"] as? String, tab.id.uuidString)
+        XCTAssertEqual(info["placement"] as? String, "normal")
+        XCTAssertEqual(info["selected"] as? Bool, false)
+        XCTAssertEqual(info["zoom"] as? Double, 1)
+        XCTAssertEqual(Set(info.keys), ["tabUUID", "placement", "selected", "zoom"],
+                       "nothing chrome.tabs would not say: no URL, no title")
+
+        let refusal = "tabs.describeHandle: no tab for this handle"
+        let bad: [(String, Any?)] = [
+            ("another profile's tab", registry.handle(for: foreign)),
+            ("a tab in no container", registry.handle(for: loose)),
+            ("a handle never minted", 987_654_321),
+            ("zero", 0), ("a negative number", -registry.handle(for: tab)),
+            ("a fraction", 1.5), ("a string", "\(registry.handle(for: tab))"),
+            ("a boolean", true), ("nothing", nil),
+        ]
+        for (what, value) in bad {
+            let reply = await tabBridgeReply("tabs.describeHandle", params: value.map { ["handle": $0] } ?? [:])
+            XCTAssertNil(reply.result, what)
+            XCTAssertEqual(reply.error, refusal, "\(what) must be refused, and in the same words")
+        }
+    }
+
+    /// NEGATIVE: a handler whose profile is gone arms nothing and resolves nothing.
+    func testTabBridgeMessagesWithAReleasedProfile() async throws {
+        let space = TabStore.shared.addSpace(name: "Released", emoji: "R", colorHex: "007AFF",
+                                             profileID: profile.id)
+        defer { TabStore.shared.forceRemoveSpace(id: space.id) }
+        let tab = sleepingTab(URL(string: "https://example.com/released")!, in: space)
+        space.tabs.append(tab)
+        let handle = ExtensionTabHandleRegistry.shared.handle(for: tab)
+        let key = tabResolveKey
+
+        profile = nil
+        XCTAssertNil(handler.profile, "precondition: the handler holds its profile weakly")
+
+        let armed = await tabBridgeReply("tabs.armResolve")
+        XCTAssertEqual(armed.error, "tabs.armResolve: profile unavailable")
+        XCTAssertEqual(ExtensionTabHandleRegistry.shared.armCount(key), 0)
+        let disarmed = await tabBridgeReply("tabs.disarmResolve")
+        XCTAssertEqual(disarmed.result as? Bool, false)
+        let described = await tabBridgeReply("tabs.describeHandle", params: ["handle": handle])
+        XCTAssertEqual(described.error, "tabs.describeHandle: no tab for this handle")
+    }
+
     // MARK: - chrome.sessions
 
     func testSessionsMaxSessionResults() async throws {
@@ -2254,9 +2828,10 @@ final class ExtensionPolyfillTests: XCTestCase {
     // MARK: - Native port keep-alive
 
     /// Run JS that returns a JSON string and parse it into a dictionary.
-    private func evalDictionary(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
+    private func evalDictionary(_ js: String, arguments: [String: Any] = [:],
+                                on target: WKWebView? = nil) async throws -> [String: Any] {
         // Hoisted out of XCTUnwrap: its argument is an autoclosure and cannot await.
-        let value = try await evalJSON(js, on: target)
+        let value = try await evalJSON(js, arguments: arguments, on: target)
         return try XCTUnwrap(value as? [String: Any],
                              "expected a JSON object from the page, got: \(value ?? "nil")")
     }

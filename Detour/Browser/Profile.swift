@@ -584,6 +584,12 @@ class Profile {
         extensionContexts[extensionID]
     }
 
+    /// The id `context` is loaded under in this profile, or nil when it is not
+    /// one of this profile's loaded contexts (unloaded, or replaced by a reload).
+    func extensionID(for context: WKWebExtensionContext) -> String? {
+        extensionContexts.first { $0.value === context }?.key
+    }
+
     /// The id of the loaded extension whose context serves pages from the
     /// given origin, i.e. whose `baseURL` has that scheme and host. WebKit
     /// assigns each loaded context a fresh `webkit-extension://<UUID>/` base

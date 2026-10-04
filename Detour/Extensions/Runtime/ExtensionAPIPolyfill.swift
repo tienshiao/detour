@@ -76,6 +76,7 @@ struct ExtensionAPIPolyfill {
             actionUserSettingsJS,
             storageManagedJS,
             permissionsOriginPortJS,
+            tabResolveJS,
             fontSettingsJS,
             sessionsJS,
             searchJS,
@@ -117,6 +118,8 @@ struct ExtensionAPIPolyfill {
         // `browser.permissions` was a second object needing its own wrapping.
         try { __detourPolyfillDiag.apis.permissionsOriginPort = globalThis.__detourPermissionsPortInstall; } catch(e) { __detourPolyfillDiag.apis.permissionsOriginPort = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.permissionsBrowserDistinct = globalThis.__detourPermissionsPortBrowserDistinct; } catch(e) { __detourPolyfillDiag.apis.permissionsBrowserDistinct = 'error: ' + e.message; }
+        // Whether tabs.getZoom is wrapped for the tab id bridge (TASK-132.2).
+        try { __detourPolyfillDiag.apis.tabResolve = globalThis.__detourTabResolveInstall; } catch(e) { __detourPolyfillDiag.apis.tabResolve = 'error: ' + e.message; }
         // Which chrome.offscreen is in force: Detour's polyfill, Detour's over a
         // native/foreign one it shadowed, or an error if the define did not take (TASK-71).
         try { __detourPolyfillDiag.apis.offscreenInstall = globalThis.__detourOffscreenInstall; } catch(e) { __detourPolyfillDiag.apis.offscreenInstall = 'error: ' + e.message; }
@@ -2762,6 +2765,341 @@ struct ExtensionAPIPolyfill {
 
         g.__detourPermissionsPortInstall = install;
         g.__detourPermissionsPortBrowserDistinct = browserDistinct;
+    })();
+    """
+
+    // MARK: - Tab id -> BrowserTab bridge (TASK-132.2)
+
+    /// Resolves a WebKit tab id to the handle of the `BrowserTab` behind it,
+    /// for the polyfilled APIs that take a `tabId` and are implemented natively
+    /// (`ExtensionTabHandleRegistry`, docs/extensions.md "Tab id bridge").
+    ///
+    /// WebKit owns `chrome.tabs`, mints the ids and has no lookup from one, so
+    /// the tab is asked instead, through the one native call that reaches it
+    /// with no permission at all: `tabs.getZoom(tabId)`. `tabs.armResolve` tells
+    /// Detour the next `getZoom` from this extension is a question; the tab
+    /// WebKit resolved the id to then answers `-handle` where its zoom would
+    /// be. An unknown id never gets that far — WebKit rejects it.
+    ///
+    /// What is installed (all non-enumerable, so extension code that walks
+    /// `globalThis` does not meet them):
+    ///  - `__detourResolveTab(tabId, { fresh })` -> `Promise<handle>`. One
+    ///    resolve at a time per JS context. Cached per tab id unless `fresh`.
+    ///    Rejects with Chrome's "No tab with id: N." when WebKit knows no such
+    ///    tab.
+    ///  - `__detourTabIdForHandle(handle)` -> the cached tab id, or `undefined`.
+    ///  - `__detourFindTabIdForHandle(handle)` -> `Promise<tabId | undefined>`:
+    ///    the cache, then a walk of `tabs.query({})` resolving the ids not seen
+    ///    yet. A tab no window lists (a space nobody is showing) is not in that
+    ///    query, so it is only found once something else resolved it.
+    ///  - `__detourTabResolveInstall`: what happened, for the diag.
+    ///
+    /// **Arms are shared by every JS context of the extension**, so a resolve
+    /// can lose its arm to another context: a non-negative answer means that
+    /// happened and the resolve arms again, a bounded number of times.
+    ///
+    /// **`tabs.getZoom` is wrapped in place** for the same reason seen from the
+    /// other side: a genuine call can be the one that consumes an arm, and it
+    /// must never show the extension a negative zoom. A negative answer *is*
+    /// the handle of the tab that was asked about, so the wrapper reads that
+    /// tab's real zoom with `tabs.describeHandle` — one extra round trip, and
+    /// no second race. It does not put the arm back: by the time it could, the
+    /// resolve that lost it has already seen its own non-negative answer and
+    /// armed again, so a returned arm would only be left over for the next
+    /// genuine call to consume. WebKit's function stays on
+    /// `wrapper._detourNative`, the wrapper is marked `_detourZoomWrapper` so a
+    /// second run of the polyfill does not wrap it again, and the `tabs`
+    /// namespace — `[MainWorldOnly]`, vended from the weak wrapper cache — is
+    /// rooted through `__detourHoldWrapper` (docs/chrome-runtime-patching.md).
+    /// `browser.tabs` is patched under its own key when it is a different
+    /// object; neither global is replaced (TASK-15).
+    private static let tabResolveJS = """
+    (function() {
+        const g = globalThis;
+        let install = 'absent';
+        try {
+            const hidden = function(name, value) {
+                Object.defineProperty(g, name, {
+                    value: value, writable: true, configurable: true, enumerable: false
+                });
+            };
+
+            // The bridge is looked up per call: a later run of the polyfill in
+            // this realm replaces it.
+            const request = function(type, params) {
+                try {
+                    return Promise.resolve(g.__detourPolyfillRequest(type, params || {}));
+                } catch (e) {
+                    return Promise.reject(e);
+                }
+            };
+
+            // A zoom factor is never negative, so a negative answer is a handle.
+            const isHandleAnswer = function(value) {
+                return typeof value === 'number' && value < 0;
+            };
+
+            // MARK: tabs.getZoom wrapper
+
+            // The zoom of the tab a stolen arm answered for.
+            const zoomBehind = function(answer) {
+                return request('tabs.describeHandle', { handle: -answer }).then(function(described) {
+                    const zoom = described ? described.zoom : undefined;
+                    if (typeof zoom !== 'number' || !(zoom >= 0)) throw new Error('no zoom for the handle');
+                    return zoom;
+                });
+            };
+
+            const wrapGetZoom = function(tabs, native) {
+                const wrapper = function() {
+                    const args = Array.prototype.slice.call(arguments);
+                    const receiver = (this === undefined || this === null || this === g) ? tabs : this;
+                    const last = args.length > 0 ? args[args.length - 1] : undefined;
+
+                    if (typeof last === 'function') {
+                        // Callback form. The extension's callback is run from
+                        // inside WebKit's own whenever WebKit's answer stands,
+                        // so `runtime.lastError` is what WebKit set for it.
+                        const callback = last;
+                        const head = args.slice(0, -1);
+                        const deliver = function(zoom) {
+                            try { callback(zoom); } catch (e) { setTimeout(function() { throw e; }, 0); }
+                        };
+                        // The tab went away between the two questions: ask
+                        // WebKit again and let its answer (or its error) stand.
+                        // 1 is what a tab that cannot be read reports.
+                        const askAgain = function() {
+                            try {
+                                native.apply(receiver, head.concat([function(zoom) {
+                                    if (isHandleAnswer(zoom)) { callback(1); return; }
+                                    callback.apply(undefined, arguments);
+                                }]));
+                            } catch (e) {
+                                deliver(1);
+                            }
+                        };
+                        return native.apply(receiver, head.concat([function(zoom) {
+                            if (!isHandleAnswer(zoom)) { callback.apply(undefined, arguments); return; }
+                            zoomBehind(zoom).then(deliver, askAgain);
+                        }]));
+                    }
+
+                    const returned = native.apply(receiver, args);
+                    if (!returned || typeof returned.then !== 'function') return returned;
+                    return returned.then(function(zoom) {
+                        if (!isHandleAnswer(zoom)) return zoom;
+                        return zoomBehind(zoom).then(null, function() {
+                            return native.apply(receiver, args).then(function(again) {
+                                return isHandleAnswer(again) ? 1 : again;
+                            });
+                        });
+                    });
+                };
+                wrapper._detourZoomWrapper = true;
+                // Kept so the resolver — and a test — can still call what
+                // WebKit vends.
+                wrapper._detourNative = native;
+                return wrapper;
+            };
+
+            // Wrap `getZoom` on one tabs namespace, root the namespace, and say
+            // whether the wrapper is what a fresh read answers with. Returns
+            // `{ status, native }`; `native` is WebKit's own function whenever
+            // there is one, wrapped or not.
+            const patch = function(tabs, key, read) {
+                const existing = tabs.getZoom;
+                if (typeof existing !== 'function') return { status: 'no-getZoom', native: null };
+                let native = existing;
+                if (existing._detourZoomWrapper) {
+                    // A second run in this realm: keep the wrapper, re-root.
+                    native = existing._detourNative;
+                } else {
+                    const wrapper = wrapGetZoom(tabs, native);
+                    __detourDefine(tabs, 'getZoom', wrapper);
+                    // `__detourDefine` only warns when the namespace refuses.
+                    if (tabs.getZoom !== wrapper) return { status: 'define-failed', native: native };
+                }
+                __detourHoldWrapper(key, tabs);
+                const again = read();
+                if (again && again.getZoom === tabs.getZoom) return { status: 'polyfill', native: native };
+                __detourReleaseWrapper(key);
+                console.warn('[Detour polyfill] the tabs.getZoom wrapper is not visible through ' + key);
+                return { status: 'polyfill-not-visible', native: native };
+            };
+
+            // `chrome.tabs` and `browser.tabs` are one object in some realms and
+            // two in others, so they are collected by identity.
+            const targets = [];
+            const addTarget = function(key, holder) {
+                if (!holder) return;
+                let tabs = null;
+                try { tabs = holder.tabs; } catch (e) { return; }
+                if (!tabs || typeof tabs !== 'object') return;
+                for (let i = 0; i < targets.length; i++) {
+                    if (targets[i].tabs === tabs) return;
+                }
+                targets.push({ key: key, tabs: tabs, read: function() { return holder.tabs; } });
+            };
+            addTarget('tabs', g.chrome);
+            addTarget('browserTabs', g.browser);
+
+            // What the resolver calls: the first namespace's own getZoom.
+            let nativeTabs = null;
+            let nativeGetZoom = null;
+            if (targets.length > 0) {
+                install = 'polyfill';
+                for (let i = 0; i < targets.length; i++) {
+                    const target = targets[i];
+                    const patched = patch(target.tabs, target.key, target.read);
+                    if (patched.status !== 'polyfill') install = patched.status;
+                    if (!nativeGetZoom && typeof patched.native === 'function') {
+                        nativeTabs = target.tabs;
+                        nativeGetZoom = patched.native;
+                    }
+                }
+            }
+
+            // MARK: Resolver
+
+            const handleByTabId = new Map();
+            const tabIdByHandle = new Map();
+            // Entries leave on tabs.onRemoved; the cap is for a context where
+            // that listener could not be added.
+            const cacheLimit = 4096;
+
+            const forget = function(tabId) {
+                const handle = handleByTabId.get(tabId);
+                if (handle === undefined) return;
+                handleByTabId.delete(tabId);
+                if (tabIdByHandle.get(handle) === tabId) tabIdByHandle.delete(handle);
+            };
+
+            // Added with the first cache entry rather than at load: a listener
+            // in the background context is a reason for WebKit to wake it, and
+            // an extension that never resolves a tab must not be woken for
+            // every tab the user closes.
+            let listening = false;
+            const listen = function() {
+                if (listening) return;
+                listening = true;
+                try {
+                    nativeTabs.onRemoved.addListener(function(tabId) { forget(tabId); });
+                } catch (e) {}
+            };
+
+            const remember = function(tabId, handle) {
+                if (handleByTabId.size >= cacheLimit) {
+                    handleByTabId.clear();
+                    tabIdByHandle.clear();
+                }
+                // A tab WebKit forgot and was told about again has a new id:
+                // the handle follows the tab, so the old id goes.
+                const previousId = tabIdByHandle.get(handle);
+                if (previousId !== undefined && previousId !== tabId) handleByTabId.delete(previousId);
+                forget(tabId);
+                handleByTabId.set(tabId, handle);
+                tabIdByHandle.set(handle, tabId);
+                listen();
+            };
+
+            const askZoom = function(tabId) {
+                return new Promise(function(resolve, reject) {
+                    let returned;
+                    try { returned = nativeGetZoom.call(nativeTabs, tabId); } catch (e) { reject(e); return; }
+                    if (returned && typeof returned.then === 'function') returned.then(resolve, reject);
+                    else reject(new Error('tabs.getZoom returned no promise'));
+                });
+            };
+
+            const pause = function(ms) {
+                return new Promise(function(resolve) { setTimeout(resolve, ms); });
+            };
+
+            // An arm lost to another context's getZoom is a narrow race, so a
+            // few attempts with a growing pause between them are plenty.
+            const retryPauses = [0, 2, 8, 20, 50];
+
+            const resolveNow = async function(tabId) {
+                for (let attempt = 0; attempt < retryPauses.length; attempt++) {
+                    if (retryPauses[attempt] > 0) await pause(retryPauses[attempt]);
+                    await request('tabs.armResolve', {});
+                    let answer;
+                    try {
+                        answer = await askZoom(tabId);
+                    } catch (error) {
+                        // WebKit refused the call, so nothing consumed the arm.
+                        try { await request('tabs.disarmResolve', {}); } catch (e) {}
+                        forget(tabId);
+                        // "Invalid call to tabs.getZoom(). Tab not found." gets
+                        // Chrome's wording, which the APIs built on this pass on.
+                        const text = error && typeof error.message === 'string' ? error.message : String(error);
+                        if (text.toLowerCase().indexOf('tab not found') !== -1) {
+                            throw new Error('No tab with id: ' + tabId + '.');
+                        }
+                        throw error;
+                    }
+                    if (isHandleAnswer(answer) && Number.isInteger(-answer)) {
+                        remember(tabId, -answer);
+                        return -answer;
+                    }
+                    // A real zoom: the arm went to another getZoom. Arm again.
+                }
+                throw new Error('Could not resolve tab ' + tabId + ': tabs.getZoom never answered with a handle');
+            };
+
+            // One resolve at a time in this context: two in flight would each
+            // hold an arm, and the answers are only told apart by arriving in
+            // the order the questions were asked.
+            let queue = Promise.resolve();
+            const resolveTab = function(tabId, options) {
+                if (!Number.isInteger(tabId)) {
+                    return Promise.reject(new TypeError('__detourResolveTab: tabId must be an integer'));
+                }
+                if (!nativeGetZoom) {
+                    return Promise.reject(new Error('__detourResolveTab: tabs.getZoom is unavailable in this context'));
+                }
+                const fresh = !!(options && options.fresh);
+                if (!fresh && handleByTabId.has(tabId)) return Promise.resolve(handleByTabId.get(tabId));
+                const run = queue.then(function() {
+                    // The resolve queued ahead of this one may have been for the same tab.
+                    if (!fresh && handleByTabId.has(tabId)) return handleByTabId.get(tabId);
+                    return resolveNow(tabId);
+                });
+                queue = run.then(function() {}, function() {});
+                return run;
+            };
+
+            const tabIdForHandle = function(handle) {
+                return tabIdByHandle.get(handle);
+            };
+
+            const findTabIdForHandle = async function(handle) {
+                if (tabIdByHandle.has(handle)) return tabIdByHandle.get(handle);
+                if (!nativeTabs || typeof nativeTabs.query !== 'function') return undefined;
+                const listed = await nativeTabs.query({});
+                if (!Array.isArray(listed)) return undefined;
+                for (let i = 0; i < listed.length; i++) {
+                    const tabId = listed[i] ? listed[i].id : undefined;
+                    if (!Number.isInteger(tabId) || handleByTabId.has(tabId)) continue;
+                    // A tab closed since the query is simply not the one.
+                    try { await resolveTab(tabId); } catch (e) { continue; }
+                    if (tabIdByHandle.has(handle)) return tabIdByHandle.get(handle);
+                }
+                return undefined;
+            };
+
+            hidden('__detourResolveTab', resolveTab);
+            hidden('__detourTabIdForHandle', tabIdForHandle);
+            hidden('__detourFindTabIdForHandle', findTabIdForHandle);
+            hidden('__detourTabResolveInstall', install);
+        } catch (e) {
+            try {
+                Object.defineProperty(g, '__detourTabResolveInstall', {
+                    value: 'error: ' + (e && e.message ? e.message : String(e)),
+                    writable: true, configurable: true, enumerable: false
+                });
+            } catch (e2) {}
+        }
     })();
     """
 

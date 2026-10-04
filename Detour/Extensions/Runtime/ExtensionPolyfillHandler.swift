@@ -642,6 +642,63 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler([:] as [String: Any], nil)
             }
 
+        // MARK: - Tab id bridge (TASK-132.2)
+        case "tabs.armResolve":
+            // Step one of the polyfill's `__detourResolveTab`: the next
+            // `tabs.getZoom` this extension makes in this profile is answered
+            // with the asked tab's handle instead of its zoom
+            // (`BrowserTab.zoomFactor(for:)`). Any context of the extension may
+            // arm: all it gets is an opaque integer for a tab it already holds
+            // the id of.
+            guard let key = tabResolveContextKey(extensionID: extensionID) else {
+                replyHandler(nil, "tabs.armResolve: profile unavailable")
+                return
+            }
+            guard ExtensionTabHandleRegistry.shared.arm(key) else {
+                replyHandler(nil, "tabs.armResolve: too many pending tab resolves")
+                return
+            }
+            replyHandler(true, nil)
+
+        case "tabs.disarmResolve":
+            // The resolve's `getZoom` was refused by WebKit (no such tab), so
+            // nothing consumed the arm: take it back rather than leave it for
+            // the extension's next genuine `getZoom` to trip over. Answers
+            // whether one was still there.
+            guard let key = tabResolveContextKey(extensionID: extensionID) else {
+                replyHandler(false, nil)
+                return
+            }
+            replyHandler(ExtensionTabHandleRegistry.shared.disarm(key), nil)
+
+        case "tabs.describeHandle":
+            // What a handle stands for, as far as an extension may know: enough
+            // to tell tabs apart and nothing `chrome.tabs` would not say (no
+            // URL, no title). The polyfill's `tabs.getZoom` wrapper reads the
+            // real zoom from here when its call was answered with a handle.
+            switch resolveTabHandle(params["handle"]) {
+            case .failure(let error):
+                replyHandler(nil, Self.tabHandleRefusal(error, type: type))
+            case .success(let resolved):
+                let tab = resolved.tab
+                let selected = extensionBrowserWindows().contains {
+                    $0.selectedTabID == tab.id || $0.extensionActiveTab === tab
+                }
+                // The zoom `tabs.getZoom` reports to this profile's contexts.
+                // Asked of the web view's own controller rather than through
+                // `profile.extensionController`, which is lazy: describing a
+                // tab must not be what builds a profile's controller.
+                let controller = tab.webView?.configuration.webExtensionController
+                let zoom = controller.flatMap(Profile.profile(owning:)) === profile
+                    ? tab.extensionZoomFactor(for: controller) : 1
+                replyHandler([
+                    "tabUUID": tab.id.uuidString,
+                    "placement": resolved.placement.kind.rawValue,
+                    "selected": selected,
+                    "zoom": zoom,
+                ] as [String: Any], nil)
+            }
+
         // MARK: - runtime.lastError relay
         case Self.lastErrorRelayType:
             // Always fails, with the caller's own message as the error. The
@@ -795,6 +852,40 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             log.warning("Unknown polyfill message type: \(type, privacy: .public)")
             replyHandler(nil, "Unknown polyfill message type: \(type)")
         }
+    }
+
+    // MARK: - Tab id bridge (TASK-132.2)
+
+    /// The key this handler arms tab resolves under for `extensionID` — the
+    /// same pair `ExtensionTabHandleRegistry.contextKey(for:)` derives from the
+    /// `WKWebExtensionContext` WebKit passes the tab. Nil once the profile is gone.
+    private func tabResolveContextKey(extensionID: String) -> ExtensionTabHandleRegistry.ContextKey? {
+        guard let profile else { return nil }
+        return ExtensionTabHandleRegistry.ContextKey(profileID: profile.id, extensionID: extensionID)
+    }
+
+    /// The tab a polyfilled API names by handle (what the polyfill's
+    /// `__detourResolveTab(tabId)` resolved a WebKit tab id to), for a handler
+    /// that takes a `tabId`. `value` is the raw message parameter: anything
+    /// but a positive whole number is refused, as is a handle whose tab is
+    /// closed, no longer listed anywhere, or in another profile.
+    func resolveTabHandle(_ value: Any?) -> Result<ExtensionTabHandleRegistry.ResolvedTab, ExtensionTabHandleError> {
+        guard let profile else { return .failure(.unknownHandle) }
+        // A JS boolean bridges to an NSNumber that converts to 0 or 1.
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let handle = Int(exactly: number.doubleValue) else {
+            return .failure(.invalidHandle)
+        }
+        return ExtensionTabHandleRegistry.shared.tab(forHandle: handle, in: profile)
+    }
+
+    /// The error an extension is given for a refused handle. One text for every
+    /// reason: "that handle is another profile's tab" must not be tellable from
+    /// "there is no such handle". The reason goes to the log; the value itself
+    /// is whatever the extension sent, so it does not.
+    static func tabHandleRefusal(_ error: ExtensionTabHandleError, type: String) -> String {
+        log.info("\(type, privacy: .public): refusing a tab handle (\(String(describing: error), privacy: .public))")
+        return "\(type): no tab for this handle"
     }
 
     // MARK: - Helpers

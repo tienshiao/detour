@@ -45,6 +45,7 @@ Detour/Extensions/
 │   ├── ExtensionAPIPolyfill.swift        JS polyfill bundle for non-native chrome.* APIs
 │   ├── ExtensionPolyfillHandler.swift    native handler for polyfill messages
 │   ├── ExtensionTabObserver.swift        TabStoreObserver → WKWebExtensionContext notifications
+│   ├── ExtensionTabHandleRegistry.swift  WebKit tab id → BrowserTab bridge (handles, resolve arms)
 │   ├── ExtensionNotificationManager.swift  UNUserNotificationCenter bridge
 │   ├── IdleMonitor.swift                 system idle state via CGEventSource
 │   ├── NativeMessagingHost.swift         native messaging process launcher
@@ -198,6 +199,28 @@ Tab lifecycle events reach the contexts through `ExtensionTabLifecycle` (`WKWebE
 - `didOpenTab()` / `didCloseTab()`
 - `didChangeTabProperties()` (URL, title, loading state)
 - `didActivateTab()`
+
+### Tab id bridge
+
+WebKit owns `chrome.tabs`: it mints the tab ids and offers no lookup from an id back to the `WKWebExtensionTab` behind it. A polyfilled API that takes a `tabId` and is implemented by Detour (`tabs.group`, `chrome.tabGroups`, `chrome.debugger`) cannot ask WebKit which `BrowserTab` is meant, so it asks the tab (TASK-132.2).
+
+**Why `tabs.getZoom`.** It is the one native call with all four properties the bridge needs: it takes a tab id and is answered by the tab delegate WebKit resolved that id to (`BrowserTab.zoomFactor(for:)`, called synchronously on the main thread); it needs neither the `tabs` permission nor host access; an unknown id fails inside WebKit ("Tab not found") without reaching Detour; and the delegate's number is passed back unclamped, so a negative one survives. `WebExtensionContext::tabsGetZoom` is also the only caller of that delegate method, so nothing else can see the answer.
+
+**The round trip** — `__detourResolveTab(tabId)` in the polyfill (`ExtensionAPIPolyfill.tabResolveJS`, present in the worker and in extension pages):
+
+1. `tabs.armResolve` → `ExtensionPolyfillHandler` adds one *arm* for the calling context, keyed by profile and verified extension id (`ExtensionTabHandleRegistry.ContextKey`).
+2. WebKit's own `tabs.getZoom(tabId)` → `BrowserTab.zoomFactor(for:)` finds an arm for the asking context, consumes it and answers `-handle`, where the handle is a process-unique positive integer the registry mints per tab on first use and holds weakly. With no arm the method answers what WebKit's default did: the web view's `pageZoom`, and 1 for a tab without a web view (it never wakes one).
+3. The polyfill caches `tabId ↔ handle` (dropped on `tabs.onRemoved`, a listener it adds only once the cache has an entry, so an extension that never resolves a tab is not woken for tab closes) and passes the handle to the native handler, which maps it back with `ExtensionPolyfillHandler.resolveTabHandle` / `ExtensionTabHandleRegistry.tab(forHandle:in:)`.
+
+**What the native lookup refuses.** A handle is only an integer and an extension can send any integer, so the lookup checks every time that the tab still exists, is still somewhere a window could list it (`extensionTabPlacement`: a space's tabs, a pinned entry's backing tab, a favourite's backing tab, or the live Peek of one of those), and is listed by the asking profile. The extension is told the same thing for every refusal. The handle follows the `BrowserTab`, not its position, so reordering, pinning, moving to another space of the profile or switching the window's space changes nothing.
+
+**Arms.** A counter per context, not a flag, because the worker and a page of one extension share a key and may resolve at once; arms are interchangeable, since whichever `getZoom` consumes one is still answered by the tab *it* asked about. Each arm expires after 5 s and a key holds at most 32. A resolve whose `getZoom` WebKit rejects takes its arm back (`tabs.disarmResolve`). Within one JS context resolves are queued, one at a time.
+
+**Genuine `tabs.getZoom` calls.** An extension's own `getZoom` can be the call that consumes an arm, so the polyfill wraps `tabs.getZoom` in place (promise and callback forms; WebKit's function stays on `_detourNative`, the `tabs` wrapper is rooted with `__detourHoldWrapper`). A negative answer is the handle of the tab that was asked about, so the wrapper reads that tab's real zoom with `tabs.describeHandle` and returns it: the extension never sees a negative zoom. The resolve that lost its arm sees a non-negative answer and arms again (bounded retries). The wrapper deliberately does not put the arm back — by the time it could, the resolver has already re-armed, and a spare arm would only be consumed by the next genuine call.
+
+**Reverse.** `__detourTabIdForHandle(handle)` reads the cache; `__detourFindTabIdForHandle(handle)` falls back to walking `tabs.query({})` and resolving the ids it has not seen. A tab in a space no window is showing is not in that query, so it is found only if it was resolved before.
+
+`tabs.describeHandle` answers `{ tabUUID, placement, selected, zoom }` — nothing `chrome.tabs` would not tell the extension (no URL, no title). The helpers are non-enumerable globals.
 
 ## Offscreen Documents
 

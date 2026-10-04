@@ -79,6 +79,31 @@ extension BrowserTab: WKWebExtensionTab {
         TabStore.shared.isPinned(self)
     }
 
+    /// What `tabs.getZoom` reports — and, while the asking context has a tab
+    /// resolve armed, the answer to "which tab is this id?" instead (TASK-132.2,
+    /// `ExtensionTabHandleRegistry`): WebKit calls this on the very tab it
+    /// resolved the id to and hands the number back unclamped, so `-handle`
+    /// reaches the polyfill, which never lets an extension see it (it wraps
+    /// `tabs.getZoom`).
+    ///
+    /// Implementing this replaces WebKit's own default (`webView.pageZoom`), so
+    /// the ordinary answer is spelled out here.
+    func zoomFactor(for context: WKWebExtensionContext) -> Double {
+        if let handle = ExtensionTabHandleRegistry.shared.consumeArm(for: context, answeringFor: self) {
+            return -Double(handle)
+        }
+        return extensionZoomFactor(for: context.webExtensionController)
+    }
+
+    /// The page zoom extensions of `controller` are told this tab has: its web
+    /// view's, and 1 for a tab with no web view of that controller's (sleeping,
+    /// a dormant tile, or mid profile swap). Only reads — a sleeping tab is
+    /// never woken to answer.
+    func extensionZoomFactor(for controller: WKWebExtensionController?) -> Double {
+        guard let webView, webView.configuration.webExtensionController === controller else { return 1 }
+        return Double(webView.pageZoom)
+    }
+
     func activate(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
         guard let spaceID else {
             completionHandler(nil)

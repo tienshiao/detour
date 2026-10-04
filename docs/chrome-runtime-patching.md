@@ -242,7 +242,8 @@ Any strong reference works. The polyfill's shared form is `__detourHoldWrapper(n
 `globalThis.__detourHeldWrappers` (so `__detourHeldWrappers.action === chrome.action` can be asserted,
 and extension code enumerating or clearing globals cannot drop a root). `actionUserSettingsJS`
 (key `action`), `storageManagedJS` (key `storage`), `permissionsOriginPortJS` (key `permissions`,
-plus `browserPermissions` when `browser.permissions` is a second object) and the native-namespace
+plus `browserPermissions` when `browser.permissions` is a second object), `tabResolveJS` (key `tabs`,
+plus `browserTabs`) and the native-namespace
 path of `webRequestStubJS` root through it, then re-read the namespace and
 check the patch is what it answers with; if not, they release the root and record
 `polyfill-not-visible` / `native+onAuthRequired-not-visible` in `__detourPolyfillDiag.apis`.
@@ -250,8 +251,8 @@ check the patch is what it answers with; if not, they release the root and recor
 root identity and forces a collection (churning garbage until a control `WeakRef` clears) to read
 the API back afterwards.
 
-`permissionsOriginPortJS` (TASK-75) is the one module that wraps *native* members rather than
-filling a gap: `contains`, `request` and `remove` are replaced with wrappers that drop an explicit
+`permissionsOriginPortJS` (TASK-75) is one of two modules that wrap *native* members rather than
+filling a gap (the other, `tabResolveJS`, is described after it): `contains`, `request` and `remove` are replaced with wrappers that drop an explicit
 port from every `details.origins` string before forwarding (Chrome's match patterns take a port,
 WebKit's parser rejects one, so the call throws instead of answering). Each wrapper keeps WebKit's
 own function on `wrapper._detourNative` — so the nativeness reading survives, and a test can still
@@ -266,6 +267,15 @@ place and nothing is rooted) or `polyfill-not-visible`. Divergence from Chrome w
 rewrite makes a ported pattern mean the whole host for `request` and `remove` too, so the pair stays
 symmetric inside Detour (the prompt shows the host pattern that is actually granted), whereas Chrome
 treats `http://host:8080/*` as narrower than `http://host/*`.
+
+`tabResolveJS` (TASK-132.2) wraps `tabs.getZoom` the same way — WebKit's function on
+`wrapper._detourNative`, the wrapper marked `_detourZoomWrapper`, the namespace rooted under `tabs`
+(and `browserTabs` when `browser.tabs` is a second object) — because Detour answers that call with a
+tab handle while a tab-id resolve is armed, and an extension's own `getZoom` must never be shown one
+(docs/extensions.md, "Tab id bridge"). `getZoom` is a regular static function of the `[MainWorldOnly]`
+`tabs` namespace, so the own property takes; its diag entry (`apis.tabResolve`) reads `polyfill`,
+`absent`, `no-getZoom`, `define-failed` or `polyfill-not-visible`. In the last two the resolver still
+works (it calls WebKit's function directly); only the protection of genuine calls is missing.
 
 ### Bottom line
 
