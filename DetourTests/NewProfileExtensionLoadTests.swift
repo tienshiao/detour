@@ -281,6 +281,109 @@ final class NewProfileExtensionLoadTests: XCTestCase {
                        "a restarted worker must not get install again: \(second)")
     }
 
+    // MARK: - TASK-134: a worker that fails to load does not use the event up
+
+    /// The script of a worker that throws before it registers anything. The
+    /// polyfill's claim timer is already queued by then and still fires.
+    private static let failingBackgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+    throw new Error('TASK-134: this background script fails to evaluate');
+    """
+
+    private static let reportingBackgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+    const installEvents = [];
+    chrome.runtime.onInstalled.addListener((details) => { installEvents.push(details); });
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (!message || message.type !== 'installEvents') return false;
+        const status = globalThis.__detourRuntimeOnInstalled;
+        sendResponse({ events: installEvents, mode: status.mode, detail: status.detail,
+                       claimCount: status.claimCount });
+        return true;
+    });
+    """
+
+    /// An extension whose worker throws at evaluation on its first load (and on
+    /// each recovery reload), then loads: the working worker gets `install`.
+    func testInstallSurvivesAWorkerThatFailsToLoad() async throws {
+        try await runFailedLoadLeg(deliveredBefore: nil, expected: [["reason": "install"]])
+    }
+
+    /// The same for `update`: the profile had 0.9.0 delivered, the 1.0.0 worker
+    /// fails to load, and the working 1.0.0 worker gets `update` from 0.9.0.
+    func testUpdateSurvivesAWorkerThatFailsToLoad() async throws {
+        try await runFailedLoadLeg(deliveredBefore: "0.9.0",
+                                   expected: [["reason": "update", "previousVersion": "0.9.0"]])
+    }
+
+    private func runFailedLoadLeg(deliveredBefore: String?, expected: [[String: String]]) async throws {
+        let ext = try await installFixtureExtension(named: "failing-worker", manifest: """
+        {
+            "manifest_version": 3,
+            "name": "Failing Worker Test",
+            "version": "1.0.0",
+            "background": { "service_worker": "background.js" }
+        }
+        """, files: [
+            "background.js": Self.failingBackgroundJS,
+            "page.html": "<html><body>page</body></html>"
+        ])
+
+        let profile = addProfile("Failing Worker \(deliveredBefore ?? "install")")
+        let profileID = profile.id.uuidString
+        XCTAssertTrue(isLoaded(ext, in: profile))
+        // Before the woken worker's claim can be handled (it needs the main
+        // queue): what this profile had delivered before this version.
+        if let deliveredBefore {
+            try await AppDatabase.shared.dbQueue.write { db in
+                try ExtensionInstalledEventRecord(extensionID: ext.id, profileID: profileID,
+                                                  deliveredVersion: deliveredBefore, deliveredAt: 1).save(db)
+            }
+        }
+        let ledgerBefore = try Self.ledgerVersions(extensionID: ext.id, profileID: profileID)
+
+        // The load fails, the recovery reloads the context (three times), each
+        // new worker fails the same way. Wait until the failing context is no
+        // longer being replaced.
+        var lastContext: ObjectIdentifier?
+        var stableSince = Date()
+        try await waitUntil("the failing worker's context to be reported failed and left alone", timeout: 60) {
+            guard let context = profile.extensionContext(for: ext.id) else { return false }
+            let id = ObjectIdentifier(context)
+            if id != lastContext {
+                lastContext = id
+                stableSince = Date()
+            }
+            return context.hasBackgroundContentLoadFailure && Date().timeIntervalSince(stableSince) > 1.5
+        }
+        XCTAssertEqual(try Self.ledgerVersions(extensionID: ext.id, profileID: profileID), ledgerBefore,
+                       "a worker that failed to load must not have used the event up")
+
+        // The same version now loads (a fixed script; in the field, a fixed
+        // environment), in a fresh context.
+        try Self.reportingBackgroundJS.write(to: ext.basePath.appendingPathComponent("background.js"),
+                                             atomically: true, encoding: .utf8)
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
+        XCTAssertTrue(isLoaded(ext, in: profile))
+
+        let first = try await installEvents(of: ext, in: profile) { reply in
+            !((reply["events"] as? [Any]) ?? []).isEmpty
+        }
+        XCTAssertEqual(first["mode"] as? String, "detour", "\(first)")
+        XCTAssertEqual(first["events"] as? [[String: String]], expected,
+                       "the worker that loads gets the event the failed ones did not: \(first)")
+        XCTAssertEqual(try Self.ledgerVersions(extensionID: ext.id, profileID: profileID), ["1.0.0"])
+
+        // And only once: another start of the working worker gets nothing.
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
+        let second = try await installEvents(of: ext, in: profile, settle: 0.5)
+        XCTAssertEqual(second["events"] as? [[String: String]], [],
+                       "a restarted worker must not get the event again: \(second)")
+        XCTAssertEqual(try Self.ledgerVersions(extensionID: ext.id, profileID: profileID), ["1.0.0"])
+    }
+
     /// Ask the extension's worker in `profile` what `runtime.onInstalled` it saw,
     /// from one of the extension's own pages. The worker answers nothing until it
     /// is up, so wait for a reply.

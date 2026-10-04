@@ -1096,23 +1096,63 @@ struct AppDatabase {
     /// risking it twice (Chrome drops its pending dispatch at the same point).
     /// Delivering clears a pending reinstall. Returns nil when nothing is owed —
     /// always for the Private profile, which is never written — or the write fails.
+    ///
+    /// Whether a claim should be made at all is the caller's decision
+    /// (`RuntimeInstalledEvent.claimDisposition`, TASK-134): an event is recorded
+    /// as delivered when the claiming context had a listener for it, or had none
+    /// and its background content did not fail to load. A claim from a context
+    /// whose script threw before registering a listener is not made, or is taken
+    /// back with `undoRuntimeInstalledEventClaim`.
     func claimRuntimeInstalledEvent(extensionID: String, profileID: String, isPrivateProfile: Bool,
                                     currentVersion: String) -> RuntimeInstalledEvent.Details? {
+        claimRuntimeInstalledEventKeepingPrevious(extensionID: extensionID, profileID: profileID,
+                                                  isPrivateProfile: isPrivateProfile,
+                                                  currentVersion: currentVersion)?.details
+    }
+
+    /// `claimRuntimeInstalledEvent`, also returning the row the claim replaced
+    /// and the one it wrote, so the claim can be undone.
+    func claimRuntimeInstalledEventKeepingPrevious(extensionID: String, profileID: String, isPrivateProfile: Bool,
+                                                   currentVersion: String) -> RuntimeInstalledEventClaim? {
         guard !isPrivateProfile else { return nil }
         return performWrite("claim runtime.onInstalled event", default: nil) { db in
-            let entry = try ExtensionInstalledEventRecord
+            let previous = try ExtensionInstalledEventRecord
                 .filter(Column("extensionID") == extensionID && Column("profileID") == profileID)
-                .fetchOne(db)?.ledgerEntry
-            guard let details = RuntimeInstalledEvent.pending(ledger: entry, currentVersion: currentVersion,
+                .fetchOne(db)
+            guard let details = RuntimeInstalledEvent.pending(ledger: previous?.ledgerEntry, currentVersion: currentVersion,
                                                               isPrivateProfile: false) else {
                 return nil
             }
-            try ExtensionInstalledEventRecord(
+            let written = ExtensionInstalledEventRecord(
                 extensionID: extensionID, profileID: profileID,
                 deliveredVersion: currentVersion, deliveredAt: Date().timeIntervalSince1970,
                 reinstallPending: false
-            ).save(db)
-            return details
+            )
+            try written.save(db)
+            return RuntimeInstalledEventClaim(details: details, previous: previous, written: written)
+        }
+    }
+
+    /// Take a claim back: put the ledger row as it was before `claim`, so the
+    /// event it answered is owed again. Only while the row is still exactly what
+    /// the claim wrote — a later claim, a reinstall mark or a removed extension
+    /// has moved the ledger on, and is left alone. Returns whether it was undone.
+    @discardableResult
+    func undoRuntimeInstalledEventClaim(_ claim: RuntimeInstalledEventClaim) -> Bool {
+        performWrite("undo runtime.onInstalled claim", default: false) { db in
+            let written = claim.written
+            let current = try ExtensionInstalledEventRecord
+                .filter(Column("extensionID") == written.extensionID && Column("profileID") == written.profileID)
+                .fetchOne(db)
+            guard current == written else { return false }
+            if let previous = claim.previous {
+                try previous.save(db)
+            } else {
+                _ = try ExtensionInstalledEventRecord
+                    .filter(Column("extensionID") == written.extensionID && Column("profileID") == written.profileID)
+                    .deleteAll(db)
+            }
+            return true
         }
     }
 

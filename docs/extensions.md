@@ -300,7 +300,7 @@ Extension metadata and storage live in `AppDatabase` (the app's main SQLite data
 
 **`profileExtension`** — per-profile state (profileID + extensionID → isEnabled, isPinned). A missing row means the profile's default: enabled, except in the built-in Private profile, where it means disabled.
 
-**`extensionInstalledEvent`** — the `runtime.onInstalled` ledger: the version the event was last delivered for, per extension and profile.
+**`extensionInstalledEvent`** — the `runtime.onInstalled` ledger: the version the event was last delivered for, per extension and profile. A background context claims the owed event once per start, and the claim says how many `onInstalled` listeners it has. The event is recorded as delivered when a listener was there to receive it. A claim with no listener is recorded too (an extension that does not listen has still had its install, so a later version is an `update` and nothing keeps waking it), unless that context's background content failed to load: the claim is then refused, or undone when WebKit reports the failure after it, and the next context that loads owes the event again (`RuntimeInstalledEvent.claimDisposition`, `ProvisionalInstalledEventClaims`, TASK-134). A claim that found a listener is never undone, so an event is never delivered twice.
 
 `chrome.storage.local`, `chrome.storage.sync` and `chrome.storage.session` are handled natively by WebKit, in the profile's extension controller storage, not in this database. `chrome.storage.session` is in-memory only.
 

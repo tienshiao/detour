@@ -25,6 +25,12 @@ sources:
   - id: plan-doc
     resource: ../../docs/1password-integration-plan.md
     title: docs/1password-integration-plan.md, "runtime.onInstalled"
+  - id: task-134
+    resource: backlog:TASK-134
+    title: runtime.onInstalled 'install' is lost when the worker fails to load the first time
+  - id: failure-tests
+    resource: ../../DetourTests/RuntimeInstalledEventLoadFailureTests.swift
+    title: RuntimeInstalledEventLoadFailureTests
   - id: task-22
     resource: backlog:TASK-22
     title: Verify runtime.onInstalled is delivered in the app, or emit it ourselves
@@ -137,6 +143,46 @@ the event rather than risking it twice.
 
 Listeners registered after the claim settled get nothing, as in Chrome.
 
+## When a claim counts as a delivery
+
+The claim's timer is queued by the polyfill, which runs before the
+extension's own script. A worker whose script then throws still claims: the
+timer fires between the exception and WebKit declaring the load failed.
+Measured in the test host, the claim reaches the handler about half a
+millisecond *before* `errorsDidUpdateNotification` reports
+`backgroundContentFailedToLoad`. Nothing will ever dispatch in that context,
+so its claim must not use the event up.[^task-134]
+
+The claim therefore carries `listeners`, the number of `onInstalled`
+listeners registered at that moment, and
+`RuntimeInstalledEvent.claimDisposition(listenerCount:backgroundLoadFailed:)`
+decides:
+
+| Claim | Disposition |
+|---|---|
+| At least one listener | **Deliver**: answer the event, advance the ledger |
+| No listener, the context already lists a background-load failure | **Withhold**: answer `{}`, leave the ledger; the event stays owed |
+| No listener, no failure so far | **Deliver provisionally**: answer and advance, and remember the claim (`ProvisionalInstalledEventClaims`) |
+| `listeners` not sent (a claim made by hand) | Deliver, as before the count existed |
+
+A provisional claim is taken back when the claiming context reports
+`backgroundContentFailedToLoad` (`Profile`'s error observer calls
+`contextFailedToLoad`): `AppDatabase.undoRuntimeInstalledEventClaim` restores
+the row the claim replaced, or deletes the row for an `install`, but only
+while the row is still exactly what the claim wrote. The next context that
+loads then owes the event again, including the recovery reloads that follow
+the failure and a later version or relaunch.
+
+Why not simply refuse every claim without a listener: an extension that does
+not listen for `onInstalled` would never settle. Its ledger would stay empty,
+so `wakeForPendingInstalledEvent` would start its worker at every launch, and
+a later version that adds a listener would be told `install` instead of
+`update`.
+
+The record of provisional claims is in memory. If the app quits between such
+a claim and its failure report, the ledger stays advanced: the same accepted
+loss as a worker dying between the claim and its dispatch.
+
 ## The ledger
 
 `extensionInstalledEvent` holds, per (extension, profile), the version the
@@ -207,7 +253,12 @@ ledger call, so the event stays pending.
 # Invariants
 
 - No native `onInstalled` listener is ever registered by the polyfill.
-- The claim is the only writer that marks an event delivered.
+- The claim is the only writer that marks an event delivered, and the only
+  thing that un-marks one is the undo of a listener-less claim whose context
+  failed to load.
+- An event is never delivered to a listener twice. A claim that found a
+  listener is never undone, even when its context's load is later reported
+  failed.
 - `claimInstalledEvent` doubles as Detour's "a background context just
   started" signal; [Updates](./updates.md) depends on it.
 
@@ -229,6 +280,8 @@ ledger call, so the event stays pending.
 # Tests
 
 - [RuntimeInstalledEventTests](../../DetourTests/RuntimeInstalledEventTests.swift) — the pure rule, the ledger and its migrations.
+- [RuntimeInstalledEventLoadFailureTests](../../DetourTests/RuntimeInstalledEventLoadFailureTests.swift) — the claim disposition, undoing a claim (and when the undo is refused), and which context's failure undoes which claim.
+- `NewProfileExtensionLoadTests.testInstallSurvivesAWorkerThatFailsToLoad` / `testUpdateSurvivesAWorkerThatFailsToLoad` — a real worker that throws at evaluation through the three recovery reloads, then a working script in a fresh context gets the event once.
 - `ExtensionPolyfillTests` — the shadowing, modes, and `senderIsBackgroundContext` over manifest shapes.
 - `ExtensionPolyfillProfileWiringTests` — real contexts: one `install` per background shape; `testRealExtensionPageDoesNotSeeWebKitsRuntimeOnInstalled` (a control listener on the native method receives WebKit's `install`, the shadowed one does not); `testAnOrdinaryExtensionPageCannotClaimTheInstalledEventThroughTheBridge`; a tab navigated to `/_generated_background_page.html` is refused.
 - A wiring test cannot assert "the ledger is still pending right after a refusal": opening any extension web view also starts the real background page, whose legitimate claim races. The tests pin the end state.
@@ -245,3 +298,4 @@ ledger call, so the event stays pending.
 [^task-64]: The claim handler accepts a claim from any page of the extension
 [^task-66]: A top-level extension page navigated to the background document path can claim
 [^task-20]: Un-skip the WKExtensionIntegrationTests runtime messaging tests
+[^task-134]: runtime.onInstalled 'install' is lost when the worker fails to load the first time

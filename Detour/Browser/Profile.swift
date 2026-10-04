@@ -495,6 +495,13 @@ class Profile {
                 }
                 loggedErrorKeys = currentKeys
                 if backgroundLoadFailed, let self {
+                    // A `runtime.onInstalled` claim this context made with no
+                    // listener was made by a script that never ran to the end:
+                    // the event is owed again (TASK-134).
+                    if let owed = ProvisionalInstalledEventClaims.shared.contextFailedToLoad(
+                        context, extensionID: extID, profileID: self.id.uuidString) {
+                        log.notice("runtime.onInstalled: \(owed.reason.rawValue, privacy: .public) for \(extID, privacy: .public) was claimed by a background context that failed to load without a listener; it is owed again in profile \(self.name, privacy: .public)")
+                    }
                     // Recover outside the notification callback: WebKit is still
                     // recording the error when it posts, so don't unload from here.
                     Task { @MainActor in

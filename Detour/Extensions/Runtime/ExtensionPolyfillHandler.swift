@@ -715,16 +715,35 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 ExtensionManager.shared.backgroundContextDidStart(extensionID: extensionID, profileID: startedProfileID,
                                                                   instance: startedInstance)
             }
+            // The claim's timer was queued before the extension's own script
+            // ran, so a worker whose script threw claims too. An event is
+            // recorded as delivered only when a listener was there to get it,
+            // or there was none and the load did not fail (TASK-134).
+            let claimingContext = profile.extensionContext(for: extensionID)
+            let listenerCount = (params["listeners"] as? NSNumber)?.intValue
+            let disposition = RuntimeInstalledEvent.claimDisposition(
+                listenerCount: listenerCount,
+                backgroundLoadFailed: claimingContext?.hasBackgroundContentLoadFailure ?? false)
+            guard disposition != .withhold else {
+                log.notice("runtime.onInstalled: not delivering to \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public): its background content failed to load before it registered a listener; the event stays owed")
+                replyHandler([:] as [String: Any], nil)
+                return
+            }
             // The Private profile never gets the event (TASK-29): the claim
             // answers nothing there and writes no ledger row.
-            guard let details = AppDatabase.shared.claimRuntimeInstalledEvent(
+            guard let claim = AppDatabase.shared.claimRuntimeInstalledEventKeepingPrevious(
                 extensionID: extensionID, profileID: profile.id.uuidString,
                 isPrivateProfile: profile.isIncognito, currentVersion: version
             ) else {
                 replyHandler([:] as [String: Any], nil)
                 return
             }
-            log.notice("runtime.onInstalled: delivering \(details.reason.rawValue, privacy: .public) (previous \(details.previousVersion ?? "none", privacy: .public), now \(version, privacy: .public)) to \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public)")
+            if disposition == .deliverProvisionally, let claimingContext {
+                ProvisionalInstalledEventClaims.shared.record(claim, context: claimingContext, extensionID: extensionID,
+                                                              profileID: profile.id.uuidString)
+            }
+            let details = claim.details
+            log.notice("runtime.onInstalled: delivering \(details.reason.rawValue, privacy: .public) (previous \(details.previousVersion ?? "none", privacy: .public), now \(version, privacy: .public)) to \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public), \(listenerCount.map { "\($0) listener(s)" } ?? "listeners not reported", privacy: .public)")
             replyHandler(details.dictionary, nil)
 
         // MARK: - Logging Bridge

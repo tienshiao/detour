@@ -822,7 +822,12 @@ struct ExtensionAPIPolyfill {
             claimCount += 1;
             let request;
             try {
-                request = g.__detourPolyfillRequest('runtime.claimInstalledEvent', { instance: g.__detourContextInstance });
+                // How many listeners there are to dispatch to: a context whose
+                // script threw before registering one still gets here, and must
+                // not use the event up (TASK-134).
+                request = g.__detourPolyfillRequest('runtime.claimInstalledEvent', {
+                    instance: g.__detourContextInstance, listeners: listeners.length
+                });
             } catch (e) {
                 return Promise.resolve(null);
             }
