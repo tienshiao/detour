@@ -3,11 +3,11 @@ id: TASK-132.4
 title: >-
   Extensions: the Claude extension installs and its worker start-up completes
   (declarativeNetRequest session header rule)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-03 23:07'
-updated_date: '2026-10-04 03:08'
+updated_date: '2026-10-04 03:31'
 labels: []
 dependencies: []
 parent_task_id: TASK-132
@@ -23,7 +23,7 @@ First gate: install the Web Store CRX and get through runtime.onInstalled / onSt
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The extension installs from the Chrome Web Store with a permission prompt that names its permissions, and its service worker reaches the end of onInstalled with no uncaught error in the Extensions log
+- [x] #1 The extension installs from the Chrome Web Store with a permission prompt that names its permissions, and its service worker reaches the end of onInstalled with no uncaught error in the Extensions log
 - [x] #2 declarativeNetRequest.updateSessionRules with the extension's modifyHeaders rule resolves
 - [x] #3 A request from an extension context to the API host carries the three headers, or a documented fallback sets them, verified against a local fixture server
 - [x] #4 docs/extensions.md states what declarativeNetRequest support Detour has
@@ -58,4 +58,15 @@ Tests: 495 across the affected suites, 0 failures, 4 skipped (env-gated measurem
 Incidents and side findings: in one early run the extension connected to the user's real Claude Code native host for about 30 s (four small messages); every later run denied nativeMessaging. On install the extension opens https://claude.ai/login?... (redirect_uri chrome-extension://<id>/oauth_callback.html) by itself. Filed separately: TASK-134 (install event lost when the first load fails), TASK-150 (popup taller than the popover cannot scroll; found while exercising the API Explorer popup, fixed in its own commit).
 
 Not verified: the Web Store CRX download and permission prompt in the UI (criterion 1's first half; the install was seeded the way ExtensionManager.install records it, and tests cover the id derivation and the prompt text for all 16 permissions); any Claude handler beyond start-up; the Private profile; updateDynamicRules; a signed build.
+
+Criterion 1, Web Store install through the UI path (2026-10-03, HEAD 97fda05, isolated profile, env-gated harness .claude/task132.4-install-harness.patch, removed from the tree): the store page loaded in a tab; a real in-process click on 'Add to Chrome' reached the page as a trusted click; the CRX navigation was intercepted and downloaded; Detour's prompt 'Install "Claude"?' listed all 16 permissions (including the new wording: 'Show a side panel next to the page', 'Inspect and control pages through the debugger', 'View and manage your tab groups', 'Manage your downloads', 'Sign you in through a web authentication flow') and 'Site access: All websites' (PNG read back); after Install the app reported 'Extension Installed'. Rows: extension fcoeoabgfenejglbffodgkkbkcdhcgfn / Claude / 1.0.98 / enabled / webStore with the update2 update URL; 17 extensionPermission rows, all granted (16 API permissions and <all_urls>). After the install: context loaded with no EXT-LOAD error or reload, 'delivering install (previous none, now 1.0.98)' and 'dispatching install to 1 listener(s)', one 'session header rules — kept 1' line, offscreen document loaded, 0 uncaught exceptions and 0 unhandled rejections in 70 s; loaded in Default, not in Private.
+Native messaging: DETOUR_NATIVE_MESSAGING_HOSTS_DIR is searched first, not instead of the real directories, so an empty override would not have blocked the user's real Claude Code host. The run used shadow manifests for both host names pointing at a nonexistent binary; proven beforehand with a probe extension, and in the install run the four connectNative attempts failed with 'Native host binary not found at /nonexistent/...', with no host connected or spawned.
+Caveats: the prompt's Install and OK buttons were pressed with performClick, not a mouse click (posted events did not end the modal session with the app inactive and the screen locked); Cancel was not exercised; nothing was seen on a live display. The install path does not verify the CRX signature (CRX3Verifier is called only by the updater); a second download of the same URL verified and derived the same id. onStartup was not re-run on this installed copy.
+Post-merge suites: 508 tests, 7 skipped (env-gated measurement legs), 0 failures (.claude/scratch/task132.4/110-postmerge-suites.log).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The Claude extension now installs from the Chrome Web Store and its service worker gets through onInstalled and onStartup with no uncaught error. Its modifyHeaders session rule resolves and takes effect for the extension's own fetch and XHR requests: WebKit is asked first and Detour holds and applies the header rules WebKit refuses (custom header names) or does not apply (service worker fetch), behind the permission and host-access gates. Added the declarativeNetRequest enums, runtime.OnInstalledReason, permission descriptions for sidePanel / debugger / tabGroups / downloads / identity, and interim chrome.tabGroups (constants) and chrome.debugger (never-firing onEvent/onDetach) stand-ins that TASK-132.12 and TASK-132.13 replace. Verified with real-context tests against loopback fixtures, the API Explorer popup by real clicks in the running app, the unmodified extension on a seeded install and on a real Web Store install (508 tests in the affected suites pass). docs/extensions.md now states what declarativeNetRequest support Detour has and its limits. Handlers beyond start-up (action click, tools) still throw on the APIs later tasks add.
+<!-- SECTION:FINAL_SUMMARY:END -->
