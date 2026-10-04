@@ -35,7 +35,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private let scrollView = NSScrollView()
     private let tableView = NSTableView()
 
-    private let suggestionProvider = SuggestionProvider()
+    /// Replaced in tests with a provider over an in-memory history database.
+    var suggestionProvider = SuggestionProvider()
     private var suggestions: [SuggestionItem] = []
     /// The query the current suggestion list was built for; nil when showing
     /// defaults. Used to reject stale async search-suggestion responses.
@@ -58,6 +59,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var inlineCompletionSuffix: String?
     private var suppressNextAutocomplete = false
     private var wasPrepopulated = false
+    /// The text `show` pre-filled the field with (Cmd+L, address bar click),
+    /// until the user edits the field. While set, Return with no row selected
+    /// submits it, and arrowing out of the list puts it back.
+    private var uneditedPrefill: String?
 
     /// Set text field value without triggering `controlTextDidChange`.
     private func setTextFieldQuietly(_ text: String) {
@@ -104,8 +109,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         textField.usesSingleLineMode = true
         textField.cell?.wraps = false
         textField.cell?.isScrollable = true
-        textField.target = self
-        textField.action = #selector(textFieldSubmitted)
+        // No target/action: Return is handled in `control(_:textView:doCommandBy:)`.
         textField.delegate = self
         textField.onEscape = { [weak self] in self?.handleEscape() }
         textField.translatesAutoresizingMaskIntoConstraints = false
@@ -200,8 +204,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         userTypedText = ""
         inlineCompletionSuffix = nil
         wasPrepopulated = initialText?.isEmpty == false
+        uneditedPrefill = nil
         if let initialText, !initialText.isEmpty {
             textField.stringValue = initialText
+            uneditedPrefill = initialText
         }
         translatesAutoresizingMaskIntoConstraints = false
         parentView.addSubview(self)
@@ -246,6 +252,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
         userTypedText = ""
         inlineCompletionSuffix = nil
+        uneditedPrefill = nil
         textField.stringValue = ""
         window?.makeFirstResponder(textField)
         loadDefaultSuggestions()
@@ -324,7 +331,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             }
         }
 
-        setKeyboardSelection(to: items.isEmpty ? nil : 0)
+        // `suggestionsQuery` is nil exactly while the default list is showing.
+        setKeyboardSelection(to: PaletteSelection.initialRow(
+            listIsDefault: suggestionsQuery == nil, rowCount: items.count))
         updatePanelHeight()
     }
 
@@ -392,6 +401,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let raw = textField.stringValue
         userTypedText = raw
         inlineCompletionSuffix = nil
+        uneditedPrefill = nil
 
         // Autocomplete is suppressed on backspace and when there's trailing
         // whitespace (that means a multi-word search is being typed).
@@ -428,11 +438,17 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return true
         }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            if let index = selectedSuggestionIndex, index < suggestions.count {
+            switch PaletteSelection.returnAction(selectedRow: selectedSuggestionIndex,
+                                                 rowCount: suggestions.count,
+                                                 fieldText: textField.stringValue) {
+            case .activateRow(let index):
                 activateSuggestion(at: index)
-                return true
+            case .submitText(let text):
+                delegate?.commandPalette(self, didSubmitInput: text)
+            case .nothing:
+                break
             }
-            return false // let default action handler fire
+            return true
         }
         if commandSelector == #selector(NSResponder.deleteBackward(_:)) {
             if inlineCompletionSuffix != nil {
@@ -463,19 +479,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         guard !suggestions.isEmpty else { return }
         inlineCompletionSuffix = nil
 
-        // Compute next index, allowing nil (no selection = restore user text)
-        let newIndex: Int?
-        if let current = selectedSuggestionIndex {
-            let next = current + delta
-            if next < 0 || next >= suggestions.count {
-                newIndex = nil // moved past boundary → restore user text
-            } else {
-                newIndex = next
-            }
-        } else {
-            // Currently no selection
-            newIndex = delta > 0 ? 0 : suggestions.count - 1
-        }
+        // nil = moved past either end: no selection, the field's own text returns.
+        let newIndex = PaletteSelection.row(afterMoving: delta, from: selectedSuggestionIndex,
+                                            rowCount: suggestions.count)
 
         setKeyboardSelection(to: newIndex)
 
@@ -486,8 +492,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             setTextFieldQuietly(displayText)
             textField.currentEditor()?.selectAll(nil)
         } else {
-            setTextFieldQuietly(userTypedText)
-            textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+            let text = PaletteSelection.restoredFieldText(userTypedText: userTypedText,
+                                                          uneditedPrefill: uneditedPrefill)
+            setTextFieldQuietly(text)
+            if uneditedPrefill != nil {
+                // Back to how Cmd+L left it: the whole URL selected.
+                textField.currentEditor()?.selectAll(nil)
+            } else {
+                textField.currentEditor()?.selectedRange = NSRange(location: text.count, length: 0)
+            }
         }
     }
 
@@ -596,12 +609,6 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         case .openTab(let tabID, let spaceID, _, _, _):
             delegate?.commandPalette(self, didRequestSwitchToTab: tabID, in: spaceID)
         }
-    }
-
-    @objc private func textFieldSubmitted() {
-        let input = textField.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !input.isEmpty else { return }
-        delegate?.commandPalette(self, didSubmitInput: input)
     }
 
     /// Extends the text field with the completion's suffix, selected so that

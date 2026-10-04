@@ -57,7 +57,9 @@ Fetched asynchronously from the profile's configured search engine API and appen
 
 ### Default Suggestions
 
-When the palette opens with an empty query, `defaultSuggestions()` shows recent history for the active space (up to 12 entries), with open tabs promoted to show as "Switch to Tab" items.
+While the user has typed nothing — Cmd+T's empty field, Cmd+L's pre-filled field, or a field the user cleared — `defaultSuggestions()` shows recent history for the active space (up to 12 entries), with open tabs promoted to show as "Switch to Tab" items.
+
+The default list starts with **no row selected**, unlike the list for a typed query. Enter therefore acts on the field, not on the list: after Cmd+L it submits the pre-filled URL (navigating the current tab to the address shown, as other browsers do), and on Cmd+T's empty field it does nothing. A default row is activated by arrowing to it and pressing Enter, or by clicking it.
 
 ### Threading and Debouncing
 
@@ -94,12 +96,14 @@ When a suggestion is selected (Enter or click):
 
 The delegate (`BrowserWindowController`) then either navigates the current tab or creates a new one, depending on the mode.
 
+The selection and submit rules — which row is selected after a rebuild, where the arrow keys move it, and what Enter does — are the pure functions in `PaletteSelection`, tested in `PaletteSelectionTests`.
+
 For `didSubmitInput` — a `searchInput` or `historyResult` row, or the field's raw text when no suggestion is selected — the delegate determines whether the text is a URL (loads directly) or a search query (wraps in the search engine URL), using `AddressInputClassifier`.
 
 ## Keyboard Navigation
 
-- **Up/Down arrows**: Move through suggestions with visual highlight; the selected row's text is placed in the field. Moving past either end clears the selection and restores the typed text
-- **Enter**: Activate selected suggestion, or submit text if none selected. The first row is selected after every list rebuild, so Enter on a fresh list activates it
+- **Up/Down arrows**: Move through suggestions with visual highlight; the selected row's text is placed in the field. With no row selected, Down selects the first row and Up the last. Moving past either end clears the selection and restores the typed text, or the pre-filled URL when the field has not been edited
+- **Enter**: Activate the selected suggestion, or submit the field's text if none is selected (a blank field does nothing). For a typed query the first row is selected after every list rebuild, so Enter activates it: the top hit when there is one, otherwise the typed input. The default list starts with no selection (see Default Suggestions)
 - **Tab**: Accept the inline completion
 - **Backspace**: With an inline completion showing, remove only the completion; autocomplete is off for the next change
 - **Escape**: Dismiss palette. When the palette was opened pre-filled (Cmd+L, address bar click) it dismisses at once; otherwise it is staged — drop the inline completion, then clear the text, then dismiss

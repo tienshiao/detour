@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:06:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:13:46Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -15,6 +15,9 @@ sources:
   - id: sidebar-delegate
     resource: ../../Detour/Browser/Window/BrowserWindowController+TabSidebar.swift
     title: BrowserWindowController+TabSidebar.swift (faux address bar entry)
+  - id: selection
+    resource: ../../Detour/Browser/CommandPalette/PaletteSelection.swift
+    title: PaletteSelection.swift
   - id: classifier
     resource: ../../Detour/Browser/CommandPalette/AddressInputClassifier.swift
     title: AddressInputClassifier.swift
@@ -27,6 +30,12 @@ sources:
   - id: task-83
     resource: backlog:TASK-83
     title: Treat host:port and localhost input as a URL
+  - id: task-144
+    resource: backlog:TASK-144
+    title: Cmd+L then Return activates the first recent-history row instead of the pre-filled URL
+  - id: selection-tests
+    resource: ../../DetourTests/PaletteSelectionTests.swift
+    title: PaletteSelectionTests.swift
   - id: focus-tests
     resource: ../../DetourTests/CommandPaletteFocusTests.swift
     title: CommandPaletteFocusTests.swift
@@ -84,7 +93,7 @@ the box does not move as the list grows and shrinks.
 
 | What was activated | Delegate call | Result |
 |---|---|---|
-| The field's text (Return with no row selected) | `didSubmitInput` | `AddressInputClassifier.directURL` decides URL vs search |
+| The field's text (Return with no row selected) | `didSubmitInput` with the trimmed text; nothing when it is blank | `AddressInputClassifier.directURL` decides URL vs search |
 | `.searchInput` row (the verbatim typed text) | `didSubmitInput` with the **row's** text | same; the field may hold an inline completion the row does not mean |
 | `.historyResult` row | `didSubmitInput` with the URL | navigates |
 | `.searchSuggestion` row | `didSubmitSearch` | always a search, never classified |
@@ -101,19 +110,37 @@ Typed `detour://history` is routed to `loadInternalPage`, because plain
 
 ## Keyboard
 
-Handled in `control(_:textView:doCommandBy:)`:
+Handled in `control(_:textView:doCommandBy:)`. The decisions themselves are
+the pure functions of `PaletteSelection` (`initialRow`, `row(afterMoving:)`,
+`returnAction`, `restoredFieldText`); the view only applies them.
 
 | Key | Behaviour |
 |---|---|
-| Up / Down | moves the keyboard selection and puts the row's text in the field, fully selected. Moving past either end clears the selection and restores what the user typed |
-| Return | activates the selected row; with none, submits the field |
+| Up / Down | moves the keyboard selection and puts the row's text in the field, fully selected. With no row selected, Down selects the first row and Up the last. Moving past either end clears the selection and restores what the user typed, or the pre-filled URL (selected again) while the field is unedited |
+| Return | activates the selected row; with none, submits the field's text; with none and a blank field, does nothing. The field has no target/action: Return never leaves this method |
 | Tab | accepts the inline completion (the suffix becomes typed text) |
 | Backspace | with a completion showing, removes only the completion and suppresses autocomplete for the next change |
 | Escape | prefilled palette (Cmd+L, address bar click): dismiss at once. Otherwise staged: drop the completion, then clear the text, then dismiss |
 
-After every list rebuild the first row is keyboard-selected, so Return on a
-fresh list activates row 0: the top hit when there is one, otherwise the
-verbatim input.
+Which row is selected after a list rebuild depends on what the list is:
+
+| List | Selected after a rebuild | Return |
+|---|---|---|
+| Typed query | row 0 | activates it: the top hit when there is one, otherwise the verbatim input |
+| Default list (nothing typed: Cmd+L's pre-filled field, Cmd+T's or a cleared field) | none | Cmd+L: submits the pre-filled URL. Empty field: nothing |
+
+The default list is told apart by `suggestionsQuery == nil`. Until TASK-144 it
+also started with row 0 selected, so Cmd+L followed by Return activated the
+space's most recent history entry instead of the address shown. That is
+usually the current page, which hid the bug, but not when another tab of the
+space navigated more recently or the current page records no history (an
+internal page, a Private window, a failed load); and Cmd+T followed by Return
+opened that entry from an empty field. Reproduced in-process by
+`PaletteReturnKeyTests`, not in the launched app.[^task-144]
+
+Mouse behaviour is separate and was not changed: hover highlights a row
+without selecting it, and a click activates the clicked row whatever the
+keyboard selection is.
 
 ## Inline completion
 
@@ -170,6 +197,15 @@ whatever was under it.
 - `CommandPaletteFocusTests` - commit in place, commit into a new tab, Escape,
   and Escape in a split leave the right web view first responder. All four
   fail with `restoreWebContentFocus()` disabled.[^task-78]
+- `PaletteSelectionTests` - the selection and submit rules: Return on an
+  unedited pre-filled field, on an empty field, after arrowing to a row and on
+  a typed query; arrow movement from no selection and past either end.
+- `PaletteReturnKeyTests` - the same through a real `CommandPaletteView` in a
+  window, over an in-memory history database (`suggestionProvider` is
+  replaceable for this). Keys are sent as the field editor's
+  `doCommand(by:)`, the call a key press ends in, and typing as
+  `insertText(_:replacementRange:)`; the assertions are on what the delegate
+  receives.[^task-144]
 - `AddressInputClassifierTests`, `SuggestionProviderTests` - see
   [suggestion pipeline](./suggestion-pipeline.md).
 - Verified at runtime in a signed build with synthetic keys: Cmd+L and Cmd+T
@@ -187,3 +223,4 @@ whatever was under it.
 - [Web view ownership](../architecture/webview-ownership.md) - why focus is restored only when this window hosts the web view.
 
 [^task-78]: After Cmd+L and Return the page does not regain keyboard focus
+[^task-144]: Cmd+L then Return activates the first recent-history row instead of the pre-filled URL

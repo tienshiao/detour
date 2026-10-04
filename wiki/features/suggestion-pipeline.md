@@ -88,7 +88,9 @@ The top hit also supplies `inlineCompletion`, the scheme-stripped display URL
 slash).
 
 For an empty query `defaultSuggestions` returns `recentHistory(limit: 12)`,
-with a row turned into `.openTab` when a tab already shows that URL.
+with a row turned into `.openTab` when a tab already shows that URL. This
+default list is shown with no row selected, unlike a typed query's list; see
+the keyboard section of [command palette](./command-palette.md).
 
 ## Which open tabs are candidates
 
