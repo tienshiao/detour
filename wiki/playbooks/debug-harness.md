@@ -40,8 +40,8 @@ sources:
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on Private profile extensions
   - id: patches
-    resource: "Untracked harness patches kept under .claude/ in a working checkout (not in the repository)"
-    title: Per-task harness patches (TASK-92, 94, 95, 124, 126-128, 129, 130, 131, 132.8)
+    resource: ../../docs/harness/README.md
+    title: Per-task harness patches and WebKit spikes kept in docs/harness
 ---
 
 There is no permanent automation hook in Detour. Runtime checks that need
@@ -156,7 +156,7 @@ scheme of the selected web view, `browser-error://…` against `https://…`.[^t
 ## 5. Remove it
 
 ```bash
-git diff -- Detour > "$OUT/taskNNN-harness.patch"   # keep it if it may be reused
+git diff -- Detour > docs/harness/taskNNN-harness.patch   # keep it if it may be reused; add a row to its README
 git checkout -- Detour/App/AppDelegate.swift         # and any file with a debug accessor
 git status --short Detour                            # must be clean of harness code
 ```
@@ -229,19 +229,21 @@ In the repository:
   — a long-lived harness that polls a command file every 0.2 s, so a shell
   script can drive the app step by step
   ([release and website](./release-and-website.md)).
+- [docs/harness](../../docs/harness/README.md) — twelve per-task patches
+  (TASK-124 to TASK-132.8) and three standalone WebKit spikes, with a table
+  of what each drives and its environment variables. They cover sidebar
+  layer snapshots, the hit-test and resize probes, the stub drag info above,
+  the key-view loop probe, the extension harnesses of the Claude extension
+  epic, and the side panel harness whose procedure is the
+  [side panel runtime check](./side-panel-runtime-check.md).
 
-Not in the repository: several per-task harness patches were saved,
-untracked, under `.claude/` in a working checkout (`task92-harness.patch`
-through `task131-harness.patch`). They cover posted mouse and key events
-into an internal page, sidebar layer snapshots, the hit-test and resize
-probes, the stub drag info above, and the key-view loop probe. A later one
-(`task132.8-harness.patch`) drives an extension side panel; its procedure is
-the [side panel runtime check](./side-panel-runtime-check.md). They were
-written against the `AppDelegate` of their day and may not apply cleanly;
-the techniques are written up on
+The patches were written against the `AppDelegate` of their day and may
+need a hunk fixed up. The techniques are written up on
 [in-process UI automation](./in-process-ui-automation.md) and
 [UI probes](./ui-probes.md), so those pages, not the patches, are the
-reference.
+reference. Until 2026-10-04 the patches were untracked files under
+`.claude/` in one checkout; the ones for TASK-92, 94, 95 and 133/135 no
+longer applied and were not kept.
 
 # Traps
 

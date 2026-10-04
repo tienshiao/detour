@@ -1,0 +1,246 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 10a3d14..1a5335b 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runBatchVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/BatchVerifyHarness.swift b/Detour/App/BatchVerifyHarness.swift
+new file mode 100644
+index 0000000..b690a12
+--- /dev/null
++++ b/Detour/App/BatchVerifyHarness.swift
+@@ -0,0 +1,228 @@
++import AppKit
++import WebKit
++
++// MARK: - TEMP verify harness (follow-up batch: TASK-152/153/154/156/157/159) — DO NOT COMMIT
++extension AppDelegate {
++    func runBatchVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        func texts(in view: NSView) -> [String] {
++            var out: [String] = []
++            if let field = view as? NSTextField, !field.stringValue.isEmpty { out.append(field.stringValue) }
++            for sub in view.subviews { out += texts(in: sub) }
++            return out
++        }
++        func buttons(in view: NSView) -> [NSButton] {
++            var out: [NSButton] = []
++            if let button = view as? NSButton { out.append(button) }
++            for sub in view.subviews { out += buttons(in: sub) }
++            return out
++        }
++        // Answers each modal alert as it appears: logs its text, presses the
++        // next planned button (default: the first one).
++        var plannedButtons: [String] = []
++        var handledAlerts = Set<ObjectIdentifier>()
++        let alertTimer = Timer(timeInterval: 0.3, repeats: true) { _ in
++            guard let modal = NSApp.modalWindow, let content = modal.contentView,
++                  !handledAlerts.contains(ObjectIdentifier(modal)) else { return }
++            handledAlerts.insert(ObjectIdentifier(modal))
++            let all = buttons(in: content).filter { !$0.title.isEmpty }
++            log("ALERT text=\(texts(in: content)) buttons=\(all.map(\.title))")
++            let wanted = plannedButtons.isEmpty ? nil : plannedButtons.removeFirst()
++            let button = all.first { $0.title == wanted } ?? all.first
++            log("ALERT pressing \(button?.title ?? "nothing") (planned \(wanted ?? "default"))")
++            button?.performClick(nil)
++        }
++        RunLoop.main.add(alertTimer, forMode: .common)
++
++        var steps: [(TimeInterval, () -> Void)] = []
++        func step(after delay: TimeInterval, _ block: @escaping () -> Void) { steps.append((delay, block)) }
++        func runSteps() {
++            guard !steps.isEmpty else { return }
++            let (delay, block) = steps.removeFirst()
++            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { block(); runSteps() }
++        }
++        func evaluate(_ label: String, _ js: String, in tab: BrowserTab?, arguments: [String: Any] = [:]) {
++            guard let webView = tab?.webView else { log("\(label): no web view"); return }
++            webView.callAsyncJavaScript(js, arguments: arguments, in: nil, in: .page) { result in
++                switch result {
++                case .success(let value): log("\(label): \(value)")
++                case .failure(let error): log("\(label): JS error \(error.localizedDescription)")
++                }
++            }
++        }
++
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier) appActive=\(NSApp.isActive)")
++        let visitedURL = env["DETOUR_VERIFY_VISIT_URL"] ?? "https://www.wikipedia.org/"
++        let downloads = URL(fileURLWithPath: outDir).appendingPathComponent("downloads")
++        try? FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
++        DownloadManager.shared.downloadsDirectory = downloads
++
++        var visited: BrowserTab!, dataTab: BrowserTab!, backgroundDataTab: BrowserTab!
++        var extensionID = ""
++        var spaceB: Space!
++        var pageA: BrowserTab!, pageB: BrowserTab!
++        var privateWC: BrowserWindowController!, privateWC2: BrowserWindowController!
++
++        // ---- TASK-159: a data: tab selected in the turn it is created, and one left in the background.
++        step(after: 2) {
++            guard let space = wc.activeSpace else { log("no space"); return }
++            func page(_ title: String) -> URL {
++                let html = "<title>\(title)</title><body><p id=\"p\">\(title)</p></body>"
++                return URL(string: "data:text/html;base64," + Data(html.utf8).base64EncodedString())!
++            }
++            backgroundDataTab = TabStore.shared.addTab(in: space, url: page("DATA-BACKGROUND"))
++            dataTab = TabStore.shared.addTab(in: space, url: page("DATA-SELECTED"))
++            wc.selectTab(id: dataTab.id)
++        }
++        step(after: 3) {
++            log("159 selected-at-creation tab: title=\(dataTab.title) loading=\(dataTab.webView?.isLoading ?? false) inWindow=\(dataTab.webView?.window === wc.window)")
++            log("159 background tab: title=\(backgroundDataTab.title)")
++            evaluate("159 selected tab document", "return document.title + ' / ' + (document.getElementById('p') ? document.getElementById('p').textContent : 'NO BODY')", in: dataTab)
++        }
++
++        // ---- A real visit in the first profile, for TASK-152 and TASK-153.
++        step(after: 1) {
++            visited = TabStore.shared.addTab(in: wc.activeSpace!, url: URL(string: visitedURL)!)
++            wc.selectTab(id: visited.id)
++        }
++        step(after: 12) {
++            log("visit: title=\(visited.title) url=\(visited.webView?.url?.absoluteString ?? "nil") faviconURL recorded=\(HistoryDatabase.shared.faviconURLInAnyProfile(for: visitedURL) ?? "nil")")
++            // The API Explorer, unpacked, and a second profile with one space.
++            if let extDir = env["DETOUR_VERIFY_EXT_DIR"] {
++                do {
++                    var options = ExtensionInstaller.Options()
++                    options.source = .unpacked
++                    options.sourcePath = URL(fileURLWithPath: extDir)
++                    let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: extDir), options: options)
++                    extensionID = ext.id
++                    log("installed API Explorer as \(ext.id), permissions has favicon=\(ext.manifest.permissions?.contains("favicon") == true)")
++                } catch { log("install failed: \(error.localizedDescription)") }
++            }
++            let profileB = TabStore.shared.addProfile(name: "Verify B")
++            spaceB = TabStore.shared.addSpace(name: "Verify B", emoji: "B", colorHex: "#336699", profileID: profileB.id)
++        }
++        step(after: 5) {
++            let profileA = wc.activeSpace?.profile
++            let profileB = spaceB.profile
++            let baseA = profileA?.extensionContext(for: extensionID)?.baseURL
++            let baseB = profileB?.extensionContext(for: extensionID)?.baseURL
++            log("contexts: A=\(baseA?.host ?? "none") B=\(baseB?.host ?? "none") scopeA=\(HistoryPageBridge.scope(forProfile: profileA)?.count ?? -1) spaces scopeB=\(HistoryPageBridge.scope(forProfile: profileB)?.count ?? -1) spaces")
++            // As the app opens an extension page in a tab (ExtensionManager's openNewTab delegate).
++            if let baseA, let config = profileA?.extensionContext(for: extensionID)?.webViewConfiguration {
++                pageA = TabStore.shared.addExtensionTab(in: wc.activeSpace!, url: baseA.appendingPathComponent("popup.html"), configuration: config)
++            }
++            if let baseB, let config = profileB?.extensionContext(for: extensionID)?.webViewConfiguration {
++                pageB = TabStore.shared.addExtensionTab(in: spaceB, url: baseB.appendingPathComponent("popup.html"), configuration: config)
++            }
++            if let pageA { wc.selectTab(id: pageA.id) }
++        }
++        step(after: 6) {
++            log("pages: A url=\(pageA?.webView?.url?.absoluteString ?? "nil") title=\(pageA?.title ?? "nil") | B url=\(pageB?.webView?.url?.absoluteString ?? "nil") title=\(pageB?.title ?? "nil")")
++            let js = """
++              try {
++                const probe = (pageUrl) => new Promise((resolve) => {
++                    const img = new Image();
++                    const timer = setTimeout(() => resolve('timeout'), 8000);
++                    img.onload = () => { clearTimeout(timer); resolve(img.naturalWidth + 'x' + img.naturalHeight); };
++                    img.onerror = () => { clearTimeout(timer); resolve('error'); };
++                    img.src = chrome.runtime.getURL('/_favicon/?pageUrl=' + encodeURIComponent(pageUrl) + '&size=32');
++                });
++                const out = { location: location.protocol + '//…' + location.pathname };
++                out.visitedPage = await probe(visitedURL);
++                out.neverVisited = await probe('https://never-visited.invalid/');
++                try {
++                    out.rawLookup = 'ANSWERED ' + JSON.stringify(await webkit.messageHandlers.detourPolyfill.postMessage({
++                        type: 'favicon.lookup', extensionID: chrome.runtime.id, params: { pageUrl: visitedURL } }));
++                } catch (e) { out.rawLookup = 'refused: ' + (e && e.message ? e.message : e); }
++                try {
++                    const day = await chrome.history.search({ text: '' });
++                    const all = await chrome.history.search({ text: '', startTime: 0 });
++                    out.historyDefault = day.map((r) => r.url);
++                    out.historyAllCount = all.length;
++                } catch (e) { out.history = 'failed: ' + (e && e.message ? e.message : e); }
++                return JSON.stringify(out);
++              } catch (e) { return 'SCRIPT FAILED: ' + (e && e.stack ? e.stack : e) + ' | chrome=' + (typeof chrome) + ' runtime=' + (typeof chrome !== 'undefined' ? typeof chrome.runtime : 'n/a'); }
++            """
++            evaluate("152/153 extension page in profile A", js, in: pageA, arguments: ["visitedURL": visitedURL])
++            evaluate("152/153 extension page in profile B", js, in: pageB, arguments: ["visitedURL": visitedURL])
++        }
++
++        // ---- TASK-157: the install prompt for a real store download and for the same file from disk.
++        if let storeURL = env["DETOUR_VERIFY_STORE_URL"].flatMap(URL.init(string:)) {
++            step(after: 20) {
++                log("157 store download, cancelled at the prompt")
++                plannedButtons = ["Cancel"]
++                wc.handleCRXDownload(from: storeURL)
++            }
++        }
++        if let file = env["DETOUR_VERIFY_CRX_FILE"] {
++            step(after: 25) {
++                log("157 the store's file from disk, cancelled at the prompt")
++                plannedButtons = ["Cancel"]
++                wc.handleCRXDownload(from: URL(fileURLWithPath: file))
++            }
++            step(after: 6) {
++                log("157 installed extensions=\(ExtensionManager.shared.extensions.map { "\($0.id) \($0.source.rawValue)" })")
++            }
++        }
++
++        // ---- TASK-156: a Private window with a real download running.
++        if let slow = env["DETOUR_VERIFY_SLOW_URL"].flatMap(URL.init(string:)) {
++            func describeDownloads(_ label: String, _ controller: BrowserWindowController?) {
++                let manager = DownloadManager.shared
++                let files = (try? FileManager.default.contentsOfDirectory(atPath: downloads.path))?.sorted() ?? []
++                let mine = controller.map { manager.items(in: $0.downloadScope).map { "\($0.filename):\($0.state)" } } ?? []
++                log("\(label): window lists=\(mine) all items=\(manager.items.map { "\($0.filename):\($0.state)" }) files=\(files) incognitoSpaces=\(TabStore.shared.spaces.filter(\.isIncognito).count)")
++            }
++            step(after: 2) {
++                privateWC = BrowserWindowController(incognito: true)
++                privateWC.showWindow(nil)
++                self.registerWindowController(privateWC)
++                let tab = TabStore.shared.addTab(in: privateWC.activeSpace!, url: slow)
++                privateWC.selectTab(id: tab.id)
++            }
++            step(after: 5) {
++                describeDownloads("156 download running in the Private window", privateWC)
++                plannedButtons = ["Continue Downloading"]
++                let close = privateWC.windowShouldClose(privateWC.window!)
++                log("156 windowShouldClose (Continue Downloading) = \(close), window visible=\(privateWC.window?.isVisible ?? false)")
++            }
++            step(after: 2) {
++                describeDownloads("156 after keeping the window", privateWC)
++                plannedButtons = ["Close Window"]
++                let close = privateWC.windowShouldClose(privateWC.window!)
++                log("156 windowShouldClose (Close Window) = \(close)")
++                if close { privateWC.window?.close() }
++            }
++            step(after: 3) {
++                describeDownloads("156 after closing the Private window", nil)
++                // A second Private window, its download left running for the quit path.
++                privateWC2 = BrowserWindowController(incognito: true)
++                privateWC2.showWindow(nil)
++                self.registerWindowController(privateWC2)
++                let tab = TabStore.shared.addTab(in: privateWC2.activeSpace!, url: slow)
++                privateWC2.selectTab(id: tab.id)
++            }
++            step(after: 5) {
++                describeDownloads("156 second Private window, before quit", privateWC2)
++            }
++        }
++
++        // ---- TASK-154: the save's outcome; then quit (TASK-156: the quit alert names the Private downloads).
++        step(after: 2) {
++            log("154 saveNow outcome=\(TabStore.shared.saveNow()) lastSaveOutcome=\(String(describing: TabStore.shared.lastSaveOutcome))")
++            plannedButtons = ["Quit"]
++            log("done, quitting")
++            NSApp.terminate(nil)
++        }
++        runSteps()
++    }
++}

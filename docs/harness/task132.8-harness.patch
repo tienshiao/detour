@@ -1,0 +1,723 @@
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,9 @@
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runSidePanelHarnessIfRequested(wc)
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -878,5 +881,710 @@
+     /// window such as Settings is in front).
+     var frontmostBrowserWindowController: BrowserWindowController? {
+         browserWindowControllersFrontToBack.first
++    }
++}
++
++// MARK: - TEMP side panel harness (TASK-132.8 / 132.9 runtime check) — DO NOT COMMIT
++#if DEBUG
++import WebKit
++
++extension AppDelegate {
++    /// Env-gated: `DETOUR_SP_HARNESS_DIR` (output directory), `DETOUR_SP_HARNESS_MODE`
++    /// (explorer | width | claude), `DETOUR_SP_HARNESS_EXT` (extension id),
++    /// `DETOUR_SP_HARNESS_URL` (base URL of the loopback pages, with one.html / two.html / three.html).
++    func runSidePanelHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_SP_HARNESS_DIR"], let extID = env["DETOUR_SP_HARNESS_EXT"],
++              let base = env["DETOUR_SP_HARNESS_URL"].flatMap(URL.init(string:)) else { return }
++        let mode = env["DETOUR_SP_HARNESS_MODE"] ?? "explorer"
++        Task { @MainActor in
++            let harness = SidePanelHarness(wc: wc, outDir: URL(fileURLWithPath: outDir), extID: extID, base: base)
++            harness.log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier) mode=\(mode)")
++            switch mode {
++            case "claude": await harness.runClaude()
++            case "width": await harness.runWidth()
++            case "inspector": await harness.runInspector()
++            default: await harness.runExplorer()
++            }
++            harness.log("DONE")
++        }
++    }
++}
++
++@MainActor
++private final class SidePanelHarness {
++    let wc: BrowserWindowController
++    let outDir: URL
++    let extID: String
++    let base: URL
++    var eventNumber = 9000
++    var shot = 0
++    var popover: ExtensionPopoverController?
++
++    init(wc: BrowserWindowController, outDir: URL, extID: String, base: URL) {
++        self.wc = wc; self.outDir = outDir; self.extID = extID; self.base = base
++    }
++
++    func log(_ line: String) {
++        let url = outDir.appendingPathComponent("harness.log")
++        let data = Data((line + "\n").utf8)
++        if let handle = try? FileHandle(forWritingTo: url) {
++            handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++        } else {
++            try? data.write(to: url)
++        }
++    }
++
++    func sleep(_ seconds: Double) async {
++        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
++    }
++
++    func js(_ webView: WKWebView, _ body: String, _ arguments: [String: Any] = [:]) async -> String {
++        do {
++            let value = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: .page)
++            return value.map { "\($0)" } ?? "<nil>"
++        } catch {
++            return "<js error: \(error.localizedDescription)>"
++        }
++    }
++
++    func focusState() -> String {
++        let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil"
++        let responder = wc.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
++        return "app active=\(NSApp.isActive) frontmost=\(front) windowKey=\(wc.window?.isKeyWindow ?? false) firstResponder=\(responder)"
++    }
++
++    var panel: ExtensionSidePanel? { wc.displayedSidePanel }
++
++    func r(_ rect: NSRect) -> String {
++        "(\(Int(rect.minX)),\(Int(rect.minY)) \(Int(rect.width))x\(Int(rect.height)))"
++    }
++
++    /// The frames that matter, in the content area's coordinates.
++    func frames(_ label: String) {
++        wc.window?.layoutIfNeeded()
++        let area = wc.contentAreaView
++        var line = "FRAMES \(label): window=\(r(wc.window?.frame ?? .zero)) area=\(r(area.bounds)) content=\(r(wc.contentContainerView.frame))"
++        if let panelView = area.panelView {
++            line += " panel=\(r(panelView.frame)) divider=\(r(area.divider.frame)) dividerHidden=\(area.divider.isHidden)"
++            if let panel, let webView = panel.webView {
++                line += " panelWebView=\(r(webView.convert(webView.bounds, to: area))) holderSubviews=\(panel.view.webViewHolder.subviews.count)"
++            }
++        } else {
++            line += " panel=none dividerHidden=\(area.divider.isHidden)"
++        }
++        if let tab = wc.selectedTab {
++            for member in wc.splitMembers(of: tab) {
++                if let container = member.webViewContainer, let webView = member.webView {
++                    line += " | pane \(member.title.prefix(12)): container=\(r(container.convert(container.bounds, to: area))) webView=\(r(webView.convert(webView.bounds, to: area))) containerSubviews=\(container.subviews.count)"
++                }
++            }
++        }
++        line += " | owns=\(wc.ownsWebView) panels(open)=\(ExtensionSidePanelController.allPanels.count)"
++        log(line)
++    }
++
++    /// A picture of the browser window: the real on-screen pixels through
++    /// screencapture, and the content area drawn in-process as a second opinion.
++    func capture(_ name: String) async {
++        shot += 1
++        let stem = String(format: "%02d-%@", shot, name)
++        guard let window = wc.window else { return }
++        window.displayIfNeeded()
++        await sleep(0.4)
++        let screenFile = outDir.appendingPathComponent(stem + ".png")
++        let process = Process()
++        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
++        process.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", screenFile.path]
++        do {
++            try process.run()
++            process.waitUntilExit()
++            let size = (try? FileManager.default.attributesOfItem(atPath: screenFile.path)[.size] as? Int) ?? 0
++            log("    capture \(stem).png (screencapture, status \(process.terminationStatus), \(size) bytes)")
++        } catch {
++            log("    capture \(stem).png: screencapture failed to start: \(error.localizedDescription)")
++        }
++        let view = wc.contentAreaView
++        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
++            view.cacheDisplay(in: view.bounds, to: rep)
++            if let png = rep.representation(using: .png, properties: [:]) {
++                try? png.write(to: outDir.appendingPathComponent(stem + "-inprocess.png"))
++            }
++        }
++    }
++
++    func mouseEvent(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent? {
++        eventNumber += 1
++        return NSEvent.mouseEvent(
++            with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
++            windowNumber: window.windowNumber, context: nil, eventNumber: eventNumber, clickCount: 1,
++            pressure: type == .leftMouseDown ? 1 : 0)
++    }
++
++    func installClickRecorder(_ webView: WKWebView) async {
++        _ = await js(webView, """
++            if (!window.__harnessClicks) {
++                window.__harnessClicks = [];
++                document.addEventListener('click', (e) => {
++                    window.__harnessClicks.push({ id: e.target && e.target.id, trusted: e.isTrusted });
++                }, true);
++            }
++            return '';
++            """)
++    }
++
++    func trustedClicks(_ webView: WKWebView, _ id: String) async -> Int {
++        Int(await js(webView, "return String((window.__harnessClicks || []).filter((c) => c.id === id && c.trusted).length);", ["id": id])) ?? -1
++    }
++
++    /// A real click: mouse-down and mouse-up NSEvents at the element's centre,
++    /// handed to the web view's own mouse handlers (an inactive app's event
++    /// queue does not deliver posted mouse events).
++    func realClick(_ webView: WKWebView, id: String) async -> Bool {
++        await installClickRecorder(webView)
++        let before = await trustedClicks(webView, id)
++        for attempt in 1...3 {
++            let rect = await js(webView, """
++                const el = document.getElementById(id);
++                if (!el) return '';
++                el.scrollIntoView({ block: 'center' });
++                await new Promise((r) => setTimeout(r, 150));
++                const r = el.getBoundingClientRect();
++                return (r.left + r.width / 2) + ',' + (r.top + r.height / 2);
++                """, ["id": id])
++            let parts = rect.split(separator: ",").compactMap { Double($0) }
++            guard parts.count == 2, let window = webView.window else { log("    click #\(id): no element or no window (\(rect))"); return false }
++            let point = webView.convert(NSPoint(x: parts[0], y: parts[1]), to: nil)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                guard let event = mouseEvent(type, at: point, in: window) else { return false }
++                if type == .leftMouseDown { webView.mouseDown(with: event) } else { webView.mouseUp(with: event) }
++                await sleep(0.06)
++            }
++            for _ in 0..<20 {
++                await sleep(0.1)
++                if await trustedClicks(webView, id) > before {
++                    log("    click #\(id): trusted click reached the page (attempt \(attempt), css \(Int(parts[0])),\(Int(parts[1])))")
++                    return true
++                }
++            }
++        }
++        log("    click #\(id): FAILED, no trusted click reached the page. \(focusState())")
++        return false
++    }
++
++    /// Click `button`, wait until `result`'s text stops changing, log it.
++    func step(_ webView: WKWebView, _ label: String, button: String, result: String) async {
++        log("STEP \(label): #\(button)")
++        _ = await js(webView, "const el = document.getElementById(id); if (el) el.textContent = ''; return '';", ["id": result])
++        guard await realClick(webView, id: button) else { return }
++        var last = "", stable = 0
++        let start = Date()
++        while stable < 3 && Date().timeIntervalSince(start) < 12 {
++            await sleep(0.25)
++            let text = await js(webView, "const el = document.getElementById(id); return el ? (el.classList.contains('error') ? '[ERROR STYLE] ' : '') + el.textContent : '<no element>';", ["id": result])
++            if text == last && !text.isEmpty { stable += 1 } else { stable = 0; last = text }
++        }
++        for line in last.split(separator: "\n", omittingEmptySubsequences: false) { log("      | \(line)") }
++    }
++
++    /// A click on a native button with real mouse events: the mouse-up waits
++    /// in the queue for the button's tracking loop. Falls back to performClick.
++    func nativeClick(_ button: NSButton, _ label: String, fired: () -> Bool) async {
++        guard let window = button.window else { log("    native click \(label): the button is in no window"); return }
++        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
++        let hit = window.contentView?.superview?.hitTest(point)
++        log("    native click \(label): at \(Int(point.x)),\(Int(point.y)) hitTest=\(hit.map { String(describing: type(of: $0)) } ?? "nil") isTheButton=\(hit === button)")
++        if let down = mouseEvent(.leftMouseDown, at: point, in: window), let up = mouseEvent(.leftMouseUp, at: point, in: window) {
++            NSApp.postEvent(up, atStart: false)
++            button.mouseDown(with: down)
++        }
++        await sleep(0.4)
++        if fired() { log("    native click \(label): the mouse events fired the button"); return }
++        log("    native click \(label): mouse events did not fire it; using performClick")
++        button.performClick(nil)
++        await sleep(0.4)
++    }
++
++    /// Opens the Web Inspector on `webView`, docks it if it came up detached,
++    /// and says whether it is docked: WebKit puts a docked inspector beside the
++    /// web view, in the same superview, and shrinks the web view.
++    func inspect(_ webView: WKWebView?, container: NSView?, _ label: String, shot: String) async {
++        guard let webView, let container, let inspector = webView.value(forKey: "_inspector") as? NSObject else {
++            log("INSPECTOR \(label): no web view"); return
++        }
++        let before = webView.frame
++        log("    inspector: calling show for \(label)")
++        inspector.perform(Selector(("show")))
++        log("    inspector: show returned")
++        await sleep(2.5)
++        log("    inspector: 2.5 s after show, siblings=\(container.subviews.count)")
++        var attachedByHarness = false
++        if container.subviews.count < 2, inspector.responds(to: Selector(("attach"))) {
++            attachedByHarness = true
++            inspector.perform(Selector(("attach")))
++            await sleep(2.0)
++        }
++        log("    inspector selectors: isAttached=\(inspector.responds(to: Selector(("isAttached")))) attach=\(inspector.responds(to: Selector(("attach")))) isVisible=\(inspector.responds(to: Selector(("isVisible"))))")
++        log("INSPECTOR \(label): docked=\(container.subviews.count >= 2) attachCalled=\(attachedByHarness) webView \(r(before)) -> \(r(webView.frame)) siblings=\(container.subviews.map { String(describing: type(of: $0)) })")
++        frames("inspector: \(label)")
++        await capture(shot)
++        inspector.perform(Selector(("close")))
++        await sleep(1.2)
++        log("    inspector closed: webView \(r(webView.frame)) siblings=\(container.subviews.count)")
++    }
++
++    func waitForLoad(_ webView: WKWebView) async {
++        var waited = 0.0
++        await sleep(0.3)
++        while (webView.isLoading || webView.url == nil) && waited < 30 { await sleep(0.25); waited += 0.25 }
++        await sleep(1.0)
++        log("    loaded \(webView.url?.absoluteString ?? "nil") title=\(webView.title ?? "nil")")
++    }
++
++    func openTab(_ name: String, in space: Space) async -> BrowserTab {
++        let tab = TabStore.shared.addTab(in: space, url: base.appendingPathComponent(name))
++        wc.selectTab(id: tab.id)
++        if let webView = tab.webView { await waitForLoad(webView) }
++        return tab
++    }
++
++    func openPopup() async -> WKWebView? {
++        guard let context = wc.activeSpace?.profile?.extensionContext(for: extID) else { log("FAILED: no loaded context for \(extID)"); return nil }
++        let bar = wc.tabSidebar.fauxAddressBar
++        let controller = ExtensionPopoverController(extensionID: extID)
++        popover = controller
++        controller.show(relativeTo: bar.bounds, of: bar, preferredEdge: .minY, in: wc)
++        _ = context
++        var popup: WKWebView?
++        for _ in 0..<50 where popup?.window == nil {
++            await sleep(0.2)
++            popup = controller.popupWebView
++        }
++        guard let webView = popup, webView.window != nil else { log("FAILED: the popup did not appear"); return nil }
++        await sleep(1.5)
++        log("    popup presented: url=\(webView.url?.lastPathComponent ?? "nil") size=\(Int(webView.bounds.width))x\(Int(webView.bounds.height)) \(focusState())")
++        return webView
++    }
++
++    func closePopup() async {
++        popover?.close(); popover = nil
++        await sleep(0.8)
++    }
++
++    func panelState(_ label: String) async {
++        guard let panel, let webView = panel.webView else {
++            log("PANEL \(label): none displayed; open panels=\(ExtensionSidePanelController.allPanels.map { $0.documentURL.lastPathComponent + "?" + ($0.documentURL.query ?? "") })")
++            return
++        }
++        let marker = await js(webView, "return String(globalThis.__harnessMarker || '') + ' | input=' + ((document.getElementById('panel-notes') || {}).value || '') + ' | readyState=' + document.readyState;")
++        log("PANEL \(label): url=\(panel.documentURL.absoluteString) webView=\(ObjectIdentifier(webView).hashValue) inWindow=\(webView.window === wc.window) marker=\(marker) scope=\(panel.tab != nil ? "tab" : "window")")
++    }
++
++    func waitForContext() async -> Bool {
++        guard let profile = wc.activeSpace?.profile else { log("no active space/profile"); return false }
++        for _ in 0..<60 where profile.extensionContext(for: extID) == nil { await sleep(0.5) }
++        guard profile.extensionContext(for: extID) != nil else { log("the context never loaded"); return false }
++        await sleep(2)
++        return true
++    }
++
++    // MARK: API Explorer
++
++    func runExplorer() async {
++        log("START explorer ext=\(extID) \(focusState())")
++        guard await waitForContext(), let space = wc.activeSpace else { return }
++        let tab1 = await openTab("one.html", in: space)
++        let tab2 = await openTab("two.html", in: space)
++        wc.selectTab(id: tab1.id)
++        await sleep(0.5)
++        frames("before any panel")
++        await capture("no-panel")
++
++        log("== 1. API Explorer popup: Side Panel section, from the popup")
++        guard let popup = await openPopup() else { return }
++        await step(popup, "probe (popup)", button: "btn-sidepanel-probe", result: "res-sidepanel")
++        await step(popup, "getOptions before (popup)", button: "btn-sidepanel-get-options", result: "res-sidepanel")
++        await step(popup, "open tab panel (popup)", button: "btn-sidepanel-open-tab", result: "res-sidepanel")
++        await sleep(1.5)
++        await panelState("after open tab panel")
++        frames("tab panel open")
++        log("    focus after an open with no user gesture on the action: \(focusState())")
++        await step(popup, "getOptions after (popup)", button: "btn-sidepanel-get-options", result: "res-sidepanel")
++        await step(popup, "getContexts: side panels", button: "btn-contexts-panels", result: "res-contexts")
++        await step(popup, "getContexts: all", button: "btn-contexts-all", result: "res-contexts")
++        await step(popup, "getContexts: this window", button: "btn-contexts-window", result: "res-contexts")
++        await capture("popup-and-tab-panel")
++        await closePopup()
++        await capture("tab-panel")
++
++        log("== 2. the panel page itself")
++        if let panelWebView = panel?.webView {
++            await step(panelWebView, "panel Info", button: "btn-panel-info", result: "panel-result")
++            _ = await js(panelWebView, "globalThis.__harnessMarker = 'marker-' + Date.now(); document.getElementById('panel-notes').value = 'typed before the tab switch'; return '';")
++            await step(panelWebView, "panel getContexts", button: "btn-panel-contexts", result: "panel-result")
++        }
++        await panelState("marked")
++
++        log("== 3. tab switch: away and back")
++        wc.selectTab(id: tab2.id)
++        await sleep(0.8)
++        await panelState("on tab two")
++        frames("tab two, no panel")
++        await capture("other-tab-no-panel")
++        wc.selectTab(id: tab1.id)
++        await sleep(0.8)
++        await panelState("back on tab one")
++        frames("back on tab one")
++        await capture("back-on-tab-one")
++
++        log("== 3b. keys: a click in the panel gives it the keys; its page's focus() does not; a shortcut without Command")
++        NSApp.activate(ignoringOtherApps: true)
++        wc.window?.makeKeyAndOrderFront(nil)
++        await sleep(1.5)
++        if let pageWebView = tab1.webView { wc.window?.makeFirstResponder(pageWebView) }
++        log("    before the click: \(focusState())")
++        if let panelWebView = panel?.webView {
++            _ = await js(panelWebView, "document.getElementById('panel-notes').value = ''; return '';")
++            _ = await realClick(panelWebView, id: "panel-notes")
++            await sleep(0.4)
++            log("    after a click in the panel's field: panelIsFirstResponder=\(wc.window?.firstResponder === panelWebView) activeElement=" + (await js(panelWebView, "return (document.activeElement && document.activeElement.id) || '';")) + " \(focusState())")
++            for (character, keyCode) in [("a", UInt16(0)), ("b", UInt16(11)), ("c", UInt16(8))] {
++                await pressKey(characters: character, unmodified: character, keyCode: keyCode, flags: [])
++            }
++            await sleep(0.4)
++            log("    typed abc: field value='" + (await js(panelWebView, "return document.getElementById('panel-notes').value;")) + "'")
++            if let pageWebView = tab1.webView { wc.window?.makeFirstResponder(pageWebView) }
++            _ = await js(panelWebView, "const f = document.getElementById('panel-notes'); f.blur(); f.focus(); return '';")
++            await sleep(0.6)
++            log("    after the panel page called focus() while the tab had the keys: panelIsFirstResponder=\(wc.window?.firstResponder === panelWebView) \(focusState())")
++            _ = await js(panelWebView, "document.getElementById('panel-notes').value = 'typed before the tab switch'; return '';")
++        }
++        if let pageWebView = tab1.webView { wc.window?.makeFirstResponder(pageWebView) }
++        await pressKey(characters: "\u{00B4}", unmodified: "E", keyCode: 14, flags: [.option, .shift])
++        await sleep(1.5)
++        log("    posted Option+Shift+E with the page focused (the app log says whether a command was performed) \(focusState())")
++        NSApp.deactivate()
++        await sleep(0.5)
++
++        log("== 4. the same calls from the worker, and the window panel")
++        if let popup = await openPopup() {
++            _ = await realClick(popup, id: "chk-sidepanel-worker")
++            log("    via worker checked: " + (await js(popup, "return String(document.getElementById('chk-sidepanel-worker').checked);")))
++            await step(popup, "probe (worker)", button: "btn-sidepanel-probe", result: "res-sidepanel")
++            await step(popup, "open window panel (worker)", button: "btn-sidepanel-open-window", result: "res-sidepanel")
++            await step(popup, "getOptions (worker)", button: "btn-sidepanel-get-options", result: "res-sidepanel")
++            await step(popup, "getContexts: side panels", button: "btn-contexts-panels", result: "res-contexts")
++            await closePopup()
++        }
++        await panelState("tab one still shows its own panel")
++        wc.selectTab(id: tab2.id)
++        await sleep(1.0)
++        await panelState("tab two shows the window panel")
++        frames("window panel on tab two")
++        await capture("window-panel-on-tab-two")
++
++        log("== 5. the divider: hit test, drag, minimum, remembered width")
++        let area = wc.contentAreaView
++        if let window = wc.window {
++            let dividerPoint = area.convert(NSPoint(x: area.divider.frame.midX, y: area.divider.frame.midY), to: nil)
++            let hit = window.contentView?.superview?.hitTest(dividerPoint)
++            log("    hit test at the divider: \(hit.map { String(describing: type(of: $0)) } ?? "nil")")
++            let startX = dividerPoint.x
++            if let down = mouseEvent(.leftMouseDown, at: dividerPoint, in: window) { area.divider.mouseDown(with: down) }
++            for dx in stride(from: 20.0, through: 140.0, by: 20.0) {
++                if let drag = mouseEvent(.leftMouseDragged, at: NSPoint(x: startX - dx, y: dividerPoint.y), in: window) { area.divider.mouseDragged(with: drag) }
++                await sleep(0.03)
++            }
++            frames("dragged 140 left")
++            if let drag = mouseEvent(.leftMouseDragged, at: NSPoint(x: startX + 600, y: dividerPoint.y), in: window) { area.divider.mouseDragged(with: drag) }
++            frames("dragged far right (minimum width)")
++            if let drag = mouseEvent(.leftMouseDragged, at: NSPoint(x: startX - 1500, y: dividerPoint.y), in: window) { area.divider.mouseDragged(with: drag) }
++            frames("dragged far left (page minimum)")
++            if let drag = mouseEvent(.leftMouseDragged, at: NSPoint(x: startX - 90, y: dividerPoint.y), in: window) { area.divider.mouseDragged(with: drag) }
++            if let up = mouseEvent(.leftMouseUp, at: NSPoint(x: startX - 90, y: dividerPoint.y), in: window) { area.divider.mouseUp(with: up) }
++            frames("released 90 left")
++            log("    remembered width=\(SidePanelWidthStore.width) key=\(SidePanelWidthStore.defaultsKey)")
++            await capture("after-divider-drag")
++        }
++
++        log("== 6. close from Detour's UI (the header's close button)")
++        if let shown = panel {
++            await nativeClick(shown.view.closeButton, "close button") { self.wc.displayedSidePanel !== shown }
++            await panelState("after the close button")
++            frames("after the close button")
++        }
++        wc.selectTab(id: tab1.id)
++        await sleep(0.8)
++        await panelState("tab one keeps its own panel")
++        frames("tab one, remembered width")
++
++        log("== 7. the docked Web Inspector with a panel open; split tab + panel")
++        // WebKit docks only beside a page at least 500 pt wide (WebInspectorUIProxy::canAttach).
++        await inspect(tab1.webView, container: tab1.webViewContainer, "single tab + panel", shot: "tab-panel-inspector")
++        TabStore.shared.createSplit(draggedTabID: tab2.id, targetTabID: tab1.id, edge: .right, in: space)
++        wc.selectTab(id: tab1.id)
++        await sleep(1.5)
++        await panelState("split")
++        frames("split + panel")
++        await capture("split-and-panel")
++        await inspect(tab1.webView, container: tab1.webViewContainer, "split pane narrower than 500 pt + panel", shot: "split-narrow-pane-inspector")
++        wc.contentAreaView.setWantedPanelWidth(SidePanelLayout.minimumPanelWidth)
++        await sleep(0.5)
++        frames("split + panel at its minimum width")
++        await inspect(tab1.webView, container: tab1.webViewContainer, "split pane of 500 pt or more + panel", shot: "split-panel-inspector")
++        wc.contentAreaView.setWantedPanelWidth(560)
++        await sleep(0.5)
++        await inspect(panel?.webView, container: panel?.view.webViewHolder, "the panel's own page (panel 560 pt wide)", shot: "panel-inspector")
++        wc.contentAreaView.setWantedPanelWidth(470)
++        await sleep(0.5)
++
++        log("== 8. window resize")
++        if let window = wc.window {
++            let original = window.frame
++            window.setFrame(NSRect(x: original.minX, y: original.minY, width: 760, height: original.height), display: true)
++            await sleep(0.8)
++            frames("window 760 wide")
++            await capture("narrow-window")
++            window.setFrame(NSRect(x: original.minX, y: original.minY, width: 1400, height: original.height), display: true)
++            await sleep(0.8)
++            frames("window 1400 wide")
++            await capture("wide-window")
++            window.setFrame(original, display: true)
++            await sleep(0.5)
++        }
++
++        log("== 9. window.close() in the panel page, then reopen: remembered width")
++        if let panelWebView = panel?.webView {
++            _ = await realClick(panelWebView, id: "btn-panel-close")
++            await sleep(1.0)
++            await panelState("after window.close()")
++            frames("after window.close()")
++        }
++        if let popup = await openPopup() {
++            log("    via worker still checked: " + (await js(popup, "return String(document.getElementById('chk-sidepanel-worker').checked);")))
++            await step(popup, "open tab panel again", button: "btn-sidepanel-open-tab", result: "res-sidepanel")
++            await step(popup, "toggle openPanelOnActionClick", button: "btn-sidepanel-behavior", result: "res-sidepanel")
++            await step(popup, "toggle it back", button: "btn-sidepanel-behavior", result: "res-sidepanel")
++            await step(popup, "disable for tab", button: "btn-sidepanel-disable-tab", result: "res-sidepanel")
++            await sleep(0.5)
++            await panelState("after disable for tab")
++            await step(popup, "open tab panel (re-enables)", button: "btn-sidepanel-open-tab", result: "res-sidepanel")
++            await step(popup, "close (tab)", button: "btn-sidepanel-close-tab", result: "res-sidepanel")
++            await panelState("after close (tab)")
++            await step(popup, "open tab panel once more", button: "btn-sidepanel-open-tab", result: "res-sidepanel")
++            await closePopup()
++        }
++        await sleep(1.0)
++        await panelState("reopened")
++        frames("reopened: remembered width")
++        await capture("reopened")
++
++        log("== 10. closing the tab tears its panel down; disabling the extension closes the rest")
++        let before = ExtensionSidePanelController.allPanels.count
++        TabStore.shared.closeTab(id: tab1.id, in: space, undoable: false, registersUndo: false)
++        await sleep(0.8)
++        log("    panels open: \(before) -> \(ExtensionSidePanelController.allPanels.count) after closing tab one")
++        frames("tab one closed")
++        if let popup = await openPopup() {
++            _ = await realClick(popup, id: "chk-sidepanel-worker")
++            await step(popup, "open window panel (popup)", button: "btn-sidepanel-open-window", result: "res-sidepanel")
++            await closePopup()
++        }
++        await panelState("window panel before disabling")
++        ExtensionManager.shared.setEnabled(id: extID, enabled: false)
++        await sleep(1.0)
++        log("    after ExtensionManager.setEnabled(false): panels open=\(ExtensionSidePanelController.allPanels.count) displayed=\(panel != nil)")
++        frames("extension disabled")
++        await capture("extension-disabled")
++        log("    end: \(focusState())")
+     }
++
++    // MARK: Web Inspector docking, without and with a panel
++
++    func runInspector() async {
++        log("START inspector ext=\(extID) \(focusState())")
++        guard await waitForContext(), let space = wc.activeSpace else { return }
++        let tab = await openTab("one.html", in: space)
++        frames("no panel")
++        await inspect(tab.webView, container: tab.webViewContainer, "baseline: no panel was ever opened", shot: "baseline-inspector")
++        let result = wc.activeSpace?.profile?.sidePanels.open(extensionID: extID, tab: nil, window: wc, focus: false)
++        if case .failure(let error)? = result { log("open failed: \(error.message)") }
++        await sleep(2.0)
++        frames("window panel open")
++        await inspect(tab.webView, container: tab.webViewContainer, "with a panel open", shot: "panel-open-inspector")
++        if let shown = panel {
++            wc.activeSpace?.profile?.sidePanels.close(shown, reason: .user)
++            await sleep(1.0)
++            frames("panel closed")
++            await inspect(tab.webView, container: tab.webViewContainer, "after the panel closed", shot: "panel-closed-inspector")
++        }
++    }
++
++    // MARK: Remembered width across a relaunch
++
++    func runWidth() async {
++        log("START width ext=\(extID)")
++        guard await waitForContext(), let space = wc.activeSpace else { return }
++        let tab = await openTab("one.html", in: space)
++        log("    remembered width at launch=\(SidePanelWidthStore.width) key=\(SidePanelWidthStore.defaultsKey)")
++        let result = wc.activeSpace?.profile?.sidePanels.open(extensionID: extID, tab: nil, window: wc, focus: false)
++        log("    open window panel natively: \(String(describing: result.map { if case .failure(let e) = $0 { return e.message } else { return "ok" } }))")
++        await sleep(1.5)
++        frames("after a relaunch")
++        await capture("after-relaunch")
++        _ = tab
++    }
++
++    // MARK: The real Claude extension
++
++    func runClaude() async {
++        log("START claude ext=\(extID) \(focusState())")
++        guard await waitForContext(), let space = wc.activeSpace, let profile = space.profile else { return }
++        if !ExtensionManager.shared.pinnedExtensions(for: profile.id).contains(where: { $0.id == extID }) {
++            ExtensionManager.shared.toggleExtensionPinned(extID, profileID: profile.id)
++        }
++        // The extension opens its own onboarding tab at install; let it settle.
++        await sleep(6)
++        log("    tabs at start: \(space.tabs.map { $0.url?.host ?? "nil" })")
++        let tab1 = await openTab("one.html", in: space)
++        let tab2 = await openTab("two.html", in: space)
++        wc.selectTab(id: tab1.id)
++        await sleep(1.0)
++        frames("before the click")
++
++        log("== 1. a real click on the pinned toolbar action")
++        let stack = wc.tabSidebar.fauxAddressBar.pinnedExtensionStack
++        guard let button = stack.arrangedSubviews.first(where: { $0.identifier?.rawValue == extID }) as? NSButton else {
++            log("FAILED: no pinned button for the extension (\(stack.arrangedSubviews.map { $0.identifier?.rawValue ?? "?" }))")
++            return
++        }
++        await nativeClick(button, "pinned action button") { !profile.sidePanels.panels(for: self.extID).isEmpty }
++        for _ in 0..<60 where profile.sidePanels.panels(for: extID).isEmpty { await sleep(0.25) }
++        guard let opened = profile.sidePanels.panels(for: extID).first, let panelWebView = opened.webView else {
++            log("FAILED: no panel opened after the click")
++            return
++        }
++        log("    panel opened: \(opened.documentURL.absoluteString) displayed=\(wc.displayedSidePanel === opened) \(focusState())")
++        await waitForLoad(panelWebView)
++        await sleep(6)
++        await describeClaudePanel(panelWebView, "after the click")
++        frames("claude panel open")
++        await capture("claude-panel")
++        _ = await js(panelWebView, "globalThis.__harnessMarker = 'marker-' + Date.now(); return '';")
++        await panelState("marked")
++
++        log("== 2. tab switch hides and restores it")
++        wc.selectTab(id: tab2.id)
++        await sleep(1.0)
++        await panelState("on tab two")
++        frames("tab two")
++        await capture("claude-other-tab")
++        wc.selectTab(id: tab1.id)
++        await sleep(1.0)
++        await panelState("back on tab one")
++        frames("back on tab one")
++        await capture("claude-back")
++
++        log("== 3. the command shortcut (Cmd+E) — needs the window key, so the app is activated for this step")
++        NSApp.activate(ignoringOtherApps: true)
++        wc.window?.makeKeyAndOrderFront(nil)
++        await sleep(1.5)
++        if let pageWebView = tab1.webView { wc.window?.makeFirstResponder(pageWebView) }
++        log("    \(focusState())")
++        // What the worker's shortcut handler will see, and whether its close message reaches the panel page.
++        log("    probe before Cmd+E #1: " + (await js(panelWebView, """
++            globalThis.__harnessMessages = [];
++            chrome.runtime.onMessage.addListener((m) => { globalThis.__harnessMessages.push(m); });
++            const contexts = await chrome.runtime.getContexts({ contextTypes: [chrome.runtime.ContextType.SIDE_PANEL] });
++            const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
++            return JSON.stringify({ contexts, active: active && { id: active.id, windowId: active.windowId } });
++            """)))
++        await pressCommandE()
++        for _ in 0..<40 where !profile.sidePanels.panels(for: extID).isEmpty { await sleep(0.25) }
++        if let stillOpen = profile.sidePanels.panels(for: extID).first?.webView {
++            log("    messages the panel page received: " + (await js(stillOpen, "return JSON.stringify(globalThis.__harnessMessages || null) + ' marker=' + String(globalThis.__harnessMarker || '');")))
++            await describeClaudePanel(stillOpen, "after Cmd+E #1")
++        }
++        log("    after Cmd+E #1: panels open=\(profile.sidePanels.panels(for: extID).count) displayed=\(panel != nil)")
++        frames("after Cmd+E #1")
++        await capture("claude-after-shortcut-1")
++        await sleep(1.0)
++        // The signed-out screen does not mount the extension's own close listener (it lives in the
++        // signed-in components). Stand in for it with the same body, so the rest of the toggle is exercised.
++        if let stillOpen = profile.sidePanels.panels(for: extID).first?.webView {
++            log("    stand-in close listener installed: " + (await js(stillOpen, """
++                const own = Number(new URLSearchParams(location.search).get('tabId'));
++                chrome.runtime.onMessage.addListener((m) => { if (m.type === 'close_side_panel' && m.tabId === own) window.close(); });
++                return String(own);
++                """)))
++        }
++        NSApp.activate(ignoringOtherApps: true)
++        wc.window?.makeKeyAndOrderFront(nil)
++        await sleep(1.0)
++        await pressCommandE()
++        for _ in 0..<40 where !profile.sidePanels.panels(for: extID).isEmpty { await sleep(0.25) }
++        log("    after Cmd+E #2 (stand-in listener): panels open=\(profile.sidePanels.panels(for: extID).count) displayed=\(panel != nil) \(focusState())")
++        frames("after Cmd+E #2")
++        await capture("claude-after-shortcut-2")
++        await sleep(1.0)
++        NSApp.activate(ignoringOtherApps: true)
++        wc.window?.makeKeyAndOrderFront(nil)
++        await sleep(1.0)
++        await pressCommandE()
++        for _ in 0..<60 where profile.sidePanels.panels(for: extID).isEmpty { await sleep(0.25) }
++        log("    after Cmd+E #3: panels open=\(profile.sidePanels.panels(for: extID).count) displayed=\(panel != nil) \(focusState())")
++        if let reopened = profile.sidePanels.panels(for: extID).first?.webView {
++            await waitForLoad(reopened)
++            await sleep(5)
++            await describeClaudePanel(reopened, "after Cmd+E #3")
++            log("    reopened page marker (empty = a fresh page): " + (await js(reopened, "return String(globalThis.__harnessMarker || '');")))
++        }
++        frames("after Cmd+E #3")
++        await capture("claude-after-shortcut-3")
++        NSApp.deactivate()
++        await sleep(1.0)
++        log("    end: \(focusState())")
++    }
++
++    func describeClaudePanel(_ webView: WKWebView, _ label: String) async {
++        let text = await js(webView, """
++            const root = document.getElementById('root');
++            return JSON.stringify({
++                href: location.href, title: document.title, readyState: document.readyState,
++                rootChildren: root ? root.childElementCount : null,
++                text: (document.body ? document.body.innerText : '').replace(/\\s+/g, ' ').slice(0, 700),
++                buttons: Array.from(document.querySelectorAll('button, a')).slice(0, 12).map((b) => (b.innerText || b.getAttribute('aria-label') || '').trim().slice(0, 40)),
++                sidePanel: typeof chrome.sidePanel, getCurrent: await chrome.tabs.getCurrent().then((t) => t === undefined ? 'undefined' : JSON.stringify(t), (e) => 'error: ' + e.message)
++            });
++            """)
++        log("CLAUDE PANEL \(label): \(text)")
++    }
++
++    func pressKey(characters: String, unmodified: String, keyCode: UInt16, flags: NSEvent.ModifierFlags) async {
++        guard let window = wc.window else { return }
++        for type in [NSEvent.EventType.keyDown, .keyUp] {
++            if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                            context: nil, characters: characters, charactersIgnoringModifiers: unmodified,
++                                            isARepeat: false, keyCode: keyCode) {
++                NSApp.postEvent(event, atStart: false)
++            }
++            await sleep(0.08)
++        }
++    }
++
++    func pressCommandE() async {
++        guard let window = wc.window else { return }
++        for type in [NSEvent.EventType.keyDown, .keyUp] {
++            if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [.command],
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                            context: nil, characters: "e", charactersIgnoringModifiers: "e",
++                                            isARepeat: false, keyCode: 14) {
++                NSApp.postEvent(event, atStart: false)
++            }
++            await sleep(0.08)
++        }
++        log("    posted Cmd+E (\(focusState()))")
++    }
+ }
++#endif

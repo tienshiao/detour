@@ -1,0 +1,254 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 5f1a7b0..6a38d48 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runKeyLoopProbeIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -880,3 +881,241 @@ extension NSApplication {
+         browserWindowControllersFrontToBack.first
+     }
+ }
++
++// MARK: - TEMP key-view loop probe — DO NOT COMMIT
++extension AppDelegate {
++    func runKeyLoopProbeIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_KEYLOOP_DIR"] else { return }
++        if ProcessInfo.processInfo.environment["DETOUR_KEYLOOP_FKA"] == "1" {
++            let before = NSButton(title: "x", target: nil, action: nil).canBecomeKeyView
++            let sel = #selector(getter: NSApplication.isFullKeyboardAccessEnabled)
++            if let m = class_getInstanceMethod(NSApplication.self, sel) {
++                let block: @convention(block) (AnyObject) -> Bool = { _ in true }
++                method_setImplementation(m, imp_implementationWithBlock(block))
++            }
++            let after = NSButton(title: "x", target: nil, action: nil).canBecomeKeyView
++            NSLog("KEYLOOP FKA swizzle: button canBecomeKeyView before=\(before) after=\(after) FKA=\(NSApp.isFullKeyboardAccessEnabled)")
++        }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("keyloop.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let handle = try? FileHandle(forWritingTo: logURL) {
++                handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++            } else {
++                try? data.write(to: logURL)
++            }
++        }
++        func after(_ t: TimeInterval, _ block: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block) }
++        func describe(_ responder: NSResponder?) -> String {
++            guard let responder else { return "nil" }
++            guard let window = wc.window else { return "no window" }
++            if responder === window { return "NSWindow (the window)" }
++            guard let v = responder as? NSView else { return String(describing: type(of: responder)) }
++            var s = String(describing: type(of: v))
++            if let tv = v as? NSTextView, let tf = tv.delegate as? NSTextField { s += "(field editor of \(tf.placeholderString ?? tf.placeholderAttributedString?.string ?? "?"))" }
++            if let tf = v as? NSTextField { s += "(\(tf.placeholderString ?? tf.placeholderAttributedString?.string ?? tf.stringValue))" }
++            if let b = v as? NSButton { s += "(\(b.toolTip ?? b.title))" }
++            if v === wc.selectedTab?.webView { s += " = selected web view" }
++            var cur: NSView? = v
++            var page = "-"
++            while let c = cur {
++                if c is SpacePageView || c is ArchivePageView {
++                    page = "\(type(of: c))@x=\(Int(c.frame.minX))"
++                    break
++                }
++                cur = c.superview
++            }
++            let inSidebar = v.isDescendant(of: wc.tabSidebar.view)
++            let f = v.convert(v.bounds, to: nil)
++            s += " page=\(page) sidebar=\(inSidebar) onScreen=\(!v.visibleRect.isEmpty) hidden=\(v.isHiddenOrHasHiddenAncestor) win=(\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width)),\(Int(f.height)))"
++            return s
++        }
++        func dump(_ label: String) {
++            guard let window = wc.window else { return }
++            log("=== \(label): FKA=\(NSApp.isFullKeyboardAccessEnabled) autorecalc=\(window.autorecalculatesKeyViewLoop) collapsed=\(wc.sidebarItem.isCollapsed) archive=\(wc.tabSidebar.isShowingArchivePage) spaces=\(TabStore.shared.spaces.count)")
++            log("  first responder: " + describe(window.firstResponder))
++            // Every view that can be a key view, and where its link goes.
++            func walk(_ view: NSView, _ visit: (NSView) -> Void) { visit(view); for sub in view.subviews { walk(sub, visit) } }
++            if let root = window.contentView?.superview {
++                var candidates = 0
++                walk(root) { v in
++                    guard v.acceptsFirstResponder || v.nextKeyView != nil else { return }
++                    candidates += 1
++                    log("  cand canBecomeKey=\(v.canBecomeKeyView) accepts=\(v.acceptsFirstResponder) " + describe(v) + "  -> next: " + (v.nextKeyView.map { String(describing: type(of: $0)) } ?? "nil"))
++                }
++                log("  candidates=\(candidates) initialFirstResponder=" + describe(window.initialFirstResponder))
++            }
++            // The chain AppKit built, from the window's initial first responder.
++            if let first = window.initialFirstResponder {
++                var cur: NSView? = first
++                var steps = 0
++                var seen = Set<ObjectIdentifier>()
++                while let c = cur, steps < 400, !seen.contains(ObjectIdentifier(c)) {
++                    seen.insert(ObjectIdentifier(c))
++                    if c.acceptsFirstResponder { log(String(format: "  chain %3d canBecomeKey=\(c.canBecomeKeyView) ", steps) + describe(c)) }
++                    cur = c.nextKeyView
++                    steps += 1
++                }
++                log("  chain length=\(steps) ends=" + (cur == nil ? "nil" : "loops back to " + describe(cur)))
++            }
++            // Tab with nothing focused (first responder is the window).
++            window.makeFirstResponder(nil)
++            for i in 1...5 {
++                window.selectNextKeyView(nil)
++                log("  from-nothing tab #\(i) lands on: " + describe(window.firstResponder))
++            }
++            window.makeFirstResponder(nil)
++            window.selectPreviousKeyView(nil)
++            log("  from-nothing shift-tab lands on: " + describe(window.firstResponder))
++            window.makeFirstResponder(nil)
++            // Tab from the sidebar's tab list (what a click on a row focuses).
++            let table = wc.tabSidebar.tableView
++            log("  table: " + describe(table))
++            var tv = table.nextValidKeyView
++            var tn = 0
++            while let cur = tv, cur !== table, tn < 40 {
++                log(String(format: "  from-table loop %2d: ", tn) + describe(cur))
++                tv = cur.nextValidKeyView
++                tn += 1
++            }
++            log("  from-table loop closed=\(tv === table) count=\(tn)")
++            if !wc.sidebarItem.isCollapsed, window.makeFirstResponder(table) {
++                for i in 1...6 {
++                    window.selectNextKeyView(nil)
++                    log("  from-table tab #\(i) lands on: " + describe(window.firstResponder))
++                }
++                window.makeFirstResponder(table)
++                window.selectPreviousKeyView(nil)
++                log("  from-table shift-tab lands on: " + describe(window.firstResponder))
++            }
++            guard let start: NSView = wc.selectedTab?.webView ?? window.contentView else { return }
++            log("  start: " + describe(start))
++            var v = start.nextValidKeyView
++            var n = 0
++            while let cur = v, cur !== start, n < 80 {
++                log(String(format: "  loop %2d: ", n) + describe(cur))
++                v = cur.nextValidKeyView
++                n += 1
++            }
++            log("  loop closed=\(v === start) count=\(n)")
++            log("  previousValidKeyView of start: " + describe(start.previousValidKeyView))
++            // What Tab from the end of the page does (WebKit: selectKeyViewFollowingView).
++            window.makeFirstResponder(start)
++            window.selectKeyView(following: start)
++            log("  tab-out #1 lands on: " + describe(window.firstResponder))
++            for i in 2...5 {
++                window.selectNextKeyView(nil)
++                log("  tab #\(i) lands on: " + describe(window.firstResponder))
++            }
++            window.makeFirstResponder(start)
++            window.selectKeyView(preceding: start)
++            log("  shift-tab-out lands on: " + describe(window.firstResponder))
++            window.makeFirstResponder(start)
++        }
++        after(2) {
++            let store = TabStore.shared
++            guard let first = wc.activeSpace else { log("no space"); return }
++            if first.tabs.isEmpty {
++                let tab = store.addTab(in: first, url: URL(string: "data:text/html,<title>A</title>A")!)
++                wc.selectTab(id: tab.id)
++            }
++            let second: Space
++            if let other = store.spaces.first(where: { $0.id != first.id && !$0.isIncognito }) {
++                second = other
++            } else {
++                second = store.addSpace(name: "Second", emoji: "2", colorHex: "#3366CC", profileID: first.profileID)
++            }
++            if second.tabs.isEmpty { _ = store.addTab(in: second, url: URL(string: "data:text/html,<title>B</title>B")!) }
++            if ProcessInfo.processInfo.environment["DETOUR_KEYLOOP_MODE"] == "rebuild" {
++                while first.tabs.count < 3 { _ = store.addTab(in: first, url: URL(string: "data:text/html,<title>A\(first.tabs.count)</title>A\(first.tabs.count)")!) }
++                wc.selectTab(id: first.tabs[0].id)
++                func sel() -> String { "selectedTab=\(wc.selectedTab?.url?.absoluteString.suffix(12) ?? "none") activeSpace=\(wc.activeSpace?.name ?? "-") spaces=\(store.spaces.count) selectedRow=\(wc.tabSidebar.tableView.selectedRow) palette=\(wc.window?.firstResponder is NSTextView)" }
++                func arrowDown() {
++                    guard let window = wc.window, let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.function, .numericPad], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}", isARepeat: false, keyCode: 125) else { return }
++                    window.firstResponder?.keyDown(with: ev)
++                }
++                after(2) {
++                    guard let window = wc.window else { return }
++                    let listBefore = wc.tabSidebar.tableView
++                    log("RB focus list: ok=\(window.makeFirstResponder(listBefore)) responder: " + describe(window.firstResponder) + " | " + sel())
++                    let third = store.addSpace(name: "Third", emoji: "3", colorHex: "#CC3366", profileID: first.profileID)
++                    log("RB space added: sameList=\(wc.tabSidebar.tableView === listBefore) responder: " + describe(window.firstResponder) + " | " + sel())
++                    after(0.7) {
++                        log("RB space added +0.7: responder: " + describe(window.firstResponder) + " | " + sel())
++                        arrowDown()
++                        after(0.3) {
++                            log("RB after Down arrow: responder: " + describe(window.firstResponder) + " | " + sel())
++                            let list2 = wc.tabSidebar.tableView
++                            log("RB focus list again: ok=\(window.makeFirstResponder(list2)) responder: " + describe(window.firstResponder))
++                            store.deleteSpace(id: third.id)
++                            after(0.7) {
++                                log("RB space deleted +0.7: sameList=\(wc.tabSidebar.tableView === list2) responder: " + describe(window.firstResponder) + " | " + sel())
++                                // The page with focus on it: does a rebuild keep the web view focused?
++                                wc.restoreWebContentFocus()
++                                let fourth = store.addSpace(name: "Fourth", emoji: "4", colorHex: "#33CC66", profileID: first.profileID)
++                                after(0.7) {
++                                    log("RB space added with the page focused +0.7: responder: " + describe(window.firstResponder) + " | " + sel())
++                                    store.deleteSpace(id: fourth.id)
++                                    after(0.5) { log("done") }
++                                }
++                            }
++                        }
++                    }
++                }
++                return
++            }
++            if ProcessInfo.processInfo.environment["DETOUR_KEYLOOP_MODE"] == "leftbehind" {
++                while first.tabs.count < 3 { _ = store.addTab(in: first, url: URL(string: "data:text/html,<title>A\(first.tabs.count)</title>A\(first.tabs.count)")!) }
++                wc.selectTab(id: first.tabs[0].id)
++                func sel() -> String { "selectedTab=\(wc.selectedTab?.url?.absoluteString.suffix(12) ?? "none") activeSpace=\(wc.activeSpace?.name ?? "-")" }
++                func arrowDown() {
++                    guard let window = wc.window, let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.function, .numericPad], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}", isARepeat: false, keyCode: 125) else { return }
++                    window.firstResponder?.keyDown(with: ev)
++                }
++                after(2) {
++                    guard let window = wc.window else { return }
++                    let tableA = wc.tabSidebar.tableView
++                    log("LB start: " + sel() + " responder: " + describe(window.firstResponder))
++                    log("LB focus list (as a row click does): ok=\(window.makeFirstResponder(tableA)) responder: " + describe(window.firstResponder))
++                    wc.tabSidebar.showArchivePage(animated: false)
++                    log("LB archive shown: responder: " + describe(window.firstResponder) + " | " + sel())
++                    arrowDown()
++                    after(0.5) {
++                        log("LB archive shown, after Down arrow: responder: " + describe(window.firstResponder) + " | " + sel())
++                        wc.tabSidebar.dismissArchivePage(animated: false)
++                        wc.selectTab(id: first.tabs[0].id)
++                        log("LB back on space: ok=\(window.makeFirstResponder(wc.tabSidebar.tableView)) responder: " + describe(window.firstResponder) + " | " + sel())
++                        wc.setActiveSpace(id: second.id)
++                        log("LB switched space: responder: " + describe(window.firstResponder) + " | " + sel() + " oldTable.selectedRow=\(tableA.selectedRow)")
++                        arrowDown()
++                        after(0.5) {
++                            log("LB switched space, after Down arrow: responder: " + describe(window.firstResponder) + " | " + sel() + " oldTable.selectedRow=\(tableA.selectedRow)")
++                            // Focus put on an off-screen list from outside.
++                            log("LB makeFirstResponder(off-screen list) ok=\(window.makeFirstResponder(tableA)) responder: " + describe(window.firstResponder))
++                            log("done")
++                        }
++                    }
++                }
++                return
++            }
++            after(2) {
++                dump("first space active")
++                wc.setActiveSpace(id: second.id)
++                after(2) {
++                    dump("second space active")
++                    wc.tabSidebar.showArchivePage(animated: false)
++                    after(1) {
++                        dump("archive page showing")
++                        wc.tabSidebar.dismissArchivePage(animated: false)
++                        wc.toggleSidebarAutoHide()
++                        after(1.5) {
++                            dump("sidebar collapsed")
++                            wc.toggleSidebarAutoHide()
++                            after(1) { log("done") }
++                        }
++                    }
++                }
++            }
++        }
++    }
++}

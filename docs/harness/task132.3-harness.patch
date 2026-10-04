@@ -1,0 +1,600 @@
+TASK-132.3 runtime harness (automation parking) — TEMPORARY, never commit the applied result.
+
+Apply:   git apply .claude/task132.3-harness.patch      (touches Detour/App/AppDelegate.swift only, #if DEBUG)
+Build:   xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+Serve:   a.html / b.html / c.html from .claude/scratch/review132/harness-fixture
+         (python3 -m http.server 18732 --bind 127.0.0.1 --directory <fixture dir>)
+Launch:  DETOUR_DATA_DIR=DetourVerify1323 DETOUR_PARKING_HARNESS_DIR=<out dir>
+         DETOUR_PARKING_HARNESS_URL=http://127.0.0.1:18732 [DETOUR_PARKING_HARNESS_KEY=1]
+         .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour
+         (drive.sh in the fixture folder does all of this, plus screencapture -l at each PHASE line)
+Output:  <out dir>/harness.log and PNGs. DETOUR_PARKING_HARNESS_KEY=1 adds leg 8, which ACTIVATES the app
+         for about 12 s (key-window paths) and then re-activates the previously frontmost app.
+Remove:  git checkout -- Detour/App/AppDelegate.swift
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 5f1a7b0..d301433 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runParkingHarnessIfRequested(wc)
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -880,3 +883,571 @@ extension NSApplication {
+         browserWindowControllersFrontToBack.first
+     }
+ }
++
++// MARK: - TEMP automation-parking harness (TASK-132.3 runtime check) — DO NOT COMMIT
++#if DEBUG
++import WebKit
++
++extension AppDelegate {
++    /// Env-gated: `DETOUR_PARKING_HARNESS_DIR` (output directory) and
++    /// `DETOUR_PARKING_HARNESS_URL` (fixture server base, serving /a /b /c).
++    /// `DETOUR_PARKING_HARNESS_KEY=1` adds the leg that needs a key window.
++    func runParkingHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_PARKING_HARNESS_DIR"],
++              let base = env["DETOUR_PARKING_HARNESS_URL"] else { return }
++        let keyLeg = env["DETOUR_PARKING_HARNESS_KEY"] == "1"
++        Task { @MainActor in
++            let harness = ParkingHarness(app: self, wc: wc, outDir: URL(fileURLWithPath: outDir), base: base,
++                                         keyLeg: keyLeg)
++            do { try await harness.run() } catch { harness.log("FAILED: \(error)") }
++            harness.log("DONE")
++        }
++    }
++}
++
++@MainActor
++private final class ParkingHarness {
++    let app: AppDelegate
++    let wc: BrowserWindowController
++    let outDir: URL
++    let base: String
++    let keyLeg: Bool
++    let owner = TabAutomationOwner(extensionID: "harness-ext", reason: "debugger")
++    var tabNames: [UUID: String] = [:]
++    var windowNames: [ObjectIdentifier: String] = [:]
++    var tabs: [BrowserTab] = []
++
++    init(app: AppDelegate, wc: BrowserWindowController, outDir: URL, base: String, keyLeg: Bool) {
++        self.app = app; self.wc = wc; self.outDir = outDir; self.base = base; self.keyLeg = keyLeg
++    }
++
++    // MARK: plumbing
++
++    func log(_ line: String) {
++        let url = outDir.appendingPathComponent("harness.log")
++        let data = Data((line + "\n").utf8)
++        if let handle = try? FileHandle(forWritingTo: url) {
++            handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++        } else {
++            try? data.write(to: url)
++        }
++    }
++
++    func sleep(_ seconds: Double) async {
++        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
++    }
++
++    func js(_ tab: BrowserTab, _ body: String) async -> String {
++        guard let webView = tab.webView else { return "<no web view>" }
++        do {
++            let value = try await webView.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: .page)
++            return value.map { "\($0)" } ?? "<nil>"
++        } catch {
++            return "<js error: \(error.localizedDescription)>"
++        }
++    }
++
++    @discardableResult
++    func waitUntil(_ what: String, timeout: Double = 10, _ condition: () async -> Bool) async -> Bool {
++        let start = Date()
++        while Date().timeIntervalSince(start) < timeout {
++            if await condition() {
++                log("    waited \(String(format: "%.2f", Date().timeIntervalSince(start))) s for: \(what)")
++                return true
++            }
++            await sleep(0.1)
++        }
++        log("    TIMED OUT after \(timeout) s waiting for: \(what)")
++        return false
++    }
++
++    func name(_ tab: BrowserTab?) -> String { tab.flatMap { tabNames[$0.id] } ?? (tab == nil ? "none" : "other") }
++
++    func name(_ window: NSWindow?) -> String {
++        guard let window else { return "nil" }
++        return windowNames[ObjectIdentifier(window)] ?? "other(\(type(of: window)))"
++    }
++
++    func describe(_ responder: NSResponder?) -> String {
++        guard let responder else { return "nil" }
++        for tab in tabs where tab.webView === responder { return "\(name(tab)).webView" }
++        if let window = responder as? NSWindow { return "window \(name(window))" }
++        return String(describing: type(of: responder))
++    }
++
++    func rect(_ r: NSRect) -> String {
++        "(\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height)))"
++    }
++
++    func inWindow(_ view: NSView?) -> String {
++        guard let view else { return "nil" }
++        guard view.window != nil else { return "no-window frame=\(rect(view.frame))" }
++        return rect(view.convert(view.bounds, to: nil))
++    }
++
++    func allWindows() -> [BrowserWindowController] { extensionBrowserWindows().filter { !$0.hasClosed } }
++
++    /// Where a tab's web view is, in one line.
++    func hosting(_ tab: BrowserTab) -> String {
++        let container = tab.webViewContainer
++        let superview = container?.superview
++        var where_ = "superview=nil"
++        if let superview {
++            let owner = allWindows().first { superview.isDescendant(of: $0.contentContainerView) }
++            let kind = superview is AutomationParkingView ? "parkingHost"
++                : (owner.map { superview === $0.contentContainerView } == true ? "contentArea" : String(describing: type(of: superview)))
++            where_ = "superview=\(kind) of \(name(owner?.window))"
++        }
++        return "\(name(tab)): hosting=\(tab.automationHosting) attached=\(tab.isAutomationAttached) sleeping=\(tab.isSleeping) "
++            + "\(where_) webView.window=\(name(tab.webView?.window)) container.isHidden=\(container.map { "\($0.isHidden)" } ?? "nil") "
++            + "hiddenOrHiddenAncestor=\(tab.webView.map { "\($0.isHiddenOrHasHiddenAncestor)" } ?? "nil") "
++            + "webViewInWindow=\(inWindow(tab.webView)) webView=\(tab.webView.map { "\(Unmanaged.passUnretained($0).toOpaque())" } ?? "nil")"
++    }
++
++    func state(_ label: String) {
++        log("  [\(label)] app.isActive=\(NSApp.isActive) keyWindow=\(name(NSApp.keyWindow)) mainWindow=\(name(NSApp.mainWindow))")
++        for controller in allWindows() {
++            guard let window = controller.window else { continue }
++            log("    \(name(window)): selected=\(name(controller.selectedTab)) isKey=\(window.isKeyWindow) "
++                + "firstResponder=\(describe(window.firstResponder)) onScreen=\(window.isVisible) "
++                + "occlusionVisible=\(window.occlusionState.contains(.visible)) "
++                + "parked=\(controller.automationParkedContainers.count) contentArea=\(inWindow(controller.contentContainerView))")
++        }
++    }
++
++    /// visibilityState plus how far a 100 ms interval and rAF got in `seconds`.
++    func measure(_ tab: BrowserTab, seconds: Double = 3) async -> String {
++        let read = "return [ticks, frames, document.visibilityState, vis.join('>'), innerWidth + 'x' + innerHeight].join('|')"
++        let first = await js(tab, read).split(separator: "|").map(String.init)
++        await sleep(seconds)
++        let second = await js(tab, read).split(separator: "|").map(String.init)
++        guard first.count == 5, second.count == 5, let t0 = Int(first[0]), let t1 = Int(second[0]),
++              let f0 = Int(first[1]), let f1 = Int(second[1]) else { return "\(name(tab)): unreadable \(first) \(second)" }
++        return "\(name(tab)): visibilityState=\(second[2]) history=\(second[3]) inner=\(second[4]) "
++            + "100ms-timer ticks in \(seconds) s=\(t1 - t0) rAF frames in \(seconds) s=\(f1 - f0)"
++    }
++
++    func writePNG(_ rep: NSBitmapImageRep, _ file: String) {
++        guard let data = rep.representation(using: .png, properties: [:]) else { log("    PNG encode failed: \(file)"); return }
++        do { try data.write(to: outDir.appendingPathComponent(file)) } catch { log("    PNG write failed: \(error)") }
++    }
++
++    func pixel(_ rep: NSBitmapImageRep, fx: Double, fy: Double) -> String {
++        guard let c = rep.colorAt(x: Int(Double(rep.pixelsWide) * fx), y: Int(Double(rep.pixelsHigh) * fy))?
++            .usingColorSpace(.sRGB) else { return "?" }
++        return String(format: "rgb(%.2f,%.2f,%.2f)", c.redComponent, c.greenComponent, c.blueComponent)
++    }
++
++    /// The view as AppKit draws it (`cacheDisplay`, what the app's own
++    /// snapshots use): includes the live web view.
++    func capture(_ view: NSView, _ file: String) -> NSBitmapImageRep? {
++        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { log("    no rep for \(file)"); return nil }
++        view.cacheDisplay(in: view.bounds, to: rep)
++        writePNG(rep, file)
++        log("    wrote \(file): \(rep.pixelsWide)x\(rep.pixelsHigh) px for view \(Int(view.bounds.width))x\(Int(view.bounds.height)) pt; "
++            + "pixel@(0.5,0.75)=\(pixel(rep, fx: 0.5, fy: 0.75))")
++        return rep
++    }
++
++    /// The sidebar via its layer (cacheDisplay leaves it blank).
++    func renderLayer(_ view: NSView, _ file: String) -> NSBitmapImageRep? {
++        guard let layer = view.layer,
++              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width), pixelsHigh: Int(view.bounds.height),
++                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
++                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
++              let context = NSGraphicsContext(bitmapImageRep: rep) else { log("    no layer rep for \(file)"); return nil }
++        layer.render(in: context.cgContext)
++        writePNG(rep, file)
++        log("    wrote \(file): \(rep.pixelsWide)x\(rep.pixelsHigh) px (layer.render)")
++        return rep
++    }
++
++    func diff(_ x: NSBitmapImageRep?, _ y: NSBitmapImageRep?) -> String {
++        guard let x, let y else { return "n/a" }
++        guard x.pixelsWide == y.pixelsWide, x.pixelsHigh == y.pixelsHigh, x.bytesPerRow == y.bytesPerRow,
++              x.bitsPerPixel == y.bitsPerPixel, let px = x.bitmapData, let py = y.bitmapData else {
++            return "different geometry \(x.pixelsWide)x\(x.pixelsHigh) vs \(y.pixelsWide)x\(y.pixelsHigh)"
++        }
++        let bpp = x.bitsPerPixel / 8
++        var count = 0, minX = Int.max, minY = Int.max, maxX = -1, maxY = -1
++        for row in 0..<x.pixelsHigh {
++            for col in 0..<x.pixelsWide {
++                let offset = row * x.bytesPerRow + col * bpp
++                var same = true
++                for k in 0..<bpp where px[offset + k] != py[offset + k] { same = false; break }
++                if !same {
++                    count += 1
++                    minX = min(minX, col); maxX = max(maxX, col); minY = min(minY, row); maxY = max(maxY, row)
++                }
++            }
++        }
++        let total = x.pixelsWide * x.pixelsHigh
++        return count == 0 ? "differingPixels=0 of \(total) (identical)"
++            : "differingPixels=\(count) of \(total), bbox px x \(minX)...\(maxX) y \(minY)...\(maxY)"
++    }
++
++    /// Holds still so the driver script can `screencapture -l` the window.
++    func phase(_ phaseName: String, _ window: NSWindow?) async {
++        log("PHASE \(phaseName) window=\(window?.windowNumber ?? -1)")
++        await sleep(6)
++    }
++
++    // MARK: input, as an extension's emulation will send it
++
++    func windowPoint(in webView: WKWebView, pageX: CGFloat, pageY: CGFloat) -> NSPoint {
++        let inView = NSPoint(x: pageX, y: webView.isFlipped ? pageY : webView.bounds.height - pageY)
++        return webView.convert(inView, to: nil)
++    }
++
++    func click(_ webView: WKWebView, pageX: CGFloat, pageY: CGFloat) {
++        guard let window = webView.window else { log("    click: web view has no window"); return }
++        let location = windowPoint(in: webView, pageX: pageX, pageY: pageY)
++        func event(_ type: NSEvent.EventType) -> NSEvent? {
++            NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
++                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                               context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)
++        }
++        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else { return }
++        webView.mouseDown(with: down)
++        webView.mouseUp(with: up)
++    }
++
++    func typeKey(_ characters: String, keyCode: UInt16, in webView: WKWebView) {
++        guard let window = webView.window else { log("    key: web view has no window"); return }
++        func event(_ type: NSEvent.EventType) -> NSEvent? {
++            NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
++                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                             context: nil, characters: characters, charactersIgnoringModifiers: characters,
++                             isARepeat: false, keyCode: keyCode)
++        }
++        guard let down = event(.keyDown), let up = event(.keyUp) else { return }
++        AutomationInput.sendKey(down, to: webView)
++        AutomationInput.sendKey(up, to: webView)
++    }
++
++    func pageReport(_ tab: BrowserTab) async -> String {
++        await js(tab, """
++            return 'log=[' + log.join(' ') + '] field=' + JSON.stringify(document.getElementById('i').value)
++                + ' activeElement=' + (document.activeElement.id || document.activeElement.nodeName)
++                + ' visibilityState=' + document.visibilityState + ' hasFocus=' + document.hasFocus()
++            """)
++    }
++
++    // MARK: the run
++
++    func run() async throws {
++        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
++        await sleep(2)
++        guard let space = wc.activeSpace, let window = wc.window as? BrowserWindow else {
++            log("no active space or window"); return
++        }
++        windowNames[ObjectIdentifier(window)] = "W1"
++        let store = TabStore.shared
++        log("launch: dataDir=\(detourDataDirectoryName()) spaces=\(store.spaces.count) tabsInSpace=\(space.tabs.count) "
++            + "W1.windowNumber=\(window.windowNumber) frame=\(rect(window.frame)) backingScale=\(window.backingScaleFactor)")
++
++        func url(_ page: String) -> URL { URL(string: "\(base)/\(page).html")! }
++        let a = store.addTab(in: space, url: url("a"))
++        let b = store.addTab(in: space, url: url("b"))
++        let c = store.addTab(in: space, url: url("c"))
++        tabs = [a, b, c]
++        tabNames = [a.id: "A", b.id: "B", c.id: "C"]
++        wc.selectTab(id: a.id)
++        await waitUntil("pages A, B, C to load", timeout: 90) {
++            self.tabs.allSatisfy { $0.webView?.isLoading == false && $0.webView?.url?.absoluteString.hasPrefix(self.base) == true }
++        }
++        await sleep(4) // hidden pages settle to their background state
++
++        // ---- 0. baseline
++        log("=== 0. baseline: A selected, B and C hidden tabs, nothing attached")
++        state("baseline")
++        for tab in tabs { log("  " + hosting(tab)) }
++        log("  " + (await measure(a)))
++        log("  " + (await measure(b)))
++        let contentBefore = capture(wc.contentContainerView, "content-1-before-attach.png")
++        let sidebarBefore = renderLayer(wc.tabSidebar.view, "sidebar-1-before-attach.png")
++        await phase("before-attach", window)
++
++        // ---- 1. attach the non-selected tab
++        log("=== 1. attach B (not selected)")
++        let keyBefore = NSApp.keyWindow, responderBefore = window.firstResponder
++        let selectedBefore = wc.selectedTabID, activeBefore = NSApp.isActive
++        let webViewB = b.webView
++        let attached = b.attachAutomation(owner)
++        log("  attachAutomation returned \(attached); B.automationHosting=\(b.automationHosting)")
++        log("  unchanged? selectedTab=\(wc.selectedTabID == selectedBefore) (\(name(wc.selectedTab))) "
++            + "space.selectedTabID=\(space.selectedTabID == a.id) keyWindow=\(NSApp.keyWindow === keyBefore) (\(name(NSApp.keyWindow))) "
++            + "firstResponder=\(window.firstResponder === responderBefore) (\(describe(window.firstResponder))) "
++            + "app.isActive=\(NSApp.isActive == activeBefore) (\(NSApp.isActive))")
++        for tab in tabs { log("  " + hosting(tab)) }
++        log("  parked web view in window=\(inWindow(b.webView)) container in window=\(inWindow(b.webViewContainer)) "
++            + "content area in window=\(inWindow(wc.contentContainerView)) "
++            + "sizeMatches=\(b.webView?.frame.size == wc.contentContainerView.bounds.size) "
++            + "parkingHostIsBottomSubview=\(wc.contentContainerView.subviews.first === wc.automationParkingView) "
++            + "parkingHost.alpha=\(wc.automationParkingView.alphaValue) parkedContainers=\(wc.automationParkedContainers.count)")
++        let drivable = b.automationDrivableWebView()
++        log("  automationDrivableWebView === B.webView: \(drivable != nil && drivable === b.webView); same object as before attach: \(b.webView === webViewB)")
++        state("after attach")
++        log("  " + (await measure(b)))
++        log("  " + (await measure(a)))
++        log("  " + (await measure(c)))
++
++        // ---- 5. what the user sees while B is parked
++        log("=== 5. the content area and sidebar while B is parked vs before the attach")
++        let contentParked = capture(wc.contentContainerView, "content-2-while-parked.png")
++        log("  content area before vs while parked: \(diff(contentBefore, contentParked))")
++        let sidebarParked = renderLayer(wc.tabSidebar.view, "sidebar-2-while-parked.png")
++        log("  sidebar before vs while parked: \(diff(sidebarBefore, sidebarParked))")
++        await phase("parked", window)
++
++        // ---- 2. DOM change + snapshot of the parked web view
++        log("=== 2. change B's DOM while parked, snapshot the parked web view")
++        guard let parked = drivable else { log("  NO drivable web view"); return }
++        log("  DOM change: " + (await js(b, """
++            document.getElementById('h').textContent = 'CHANGED WHILE PARKED';
++            document.body.style.background = '#00aa00';
++            return document.getElementById('h').textContent
++            """)))
++        do {
++            let image = try await parked.takeSnapshot(configuration: nil)
++            if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
++                writePNG(rep, "parked-snapshot.png")
++                log("  takeSnapshot: image.size=\(Int(image.size.width))x\(Int(image.size.height)) pt, \(rep.pixelsWide)x\(rep.pixelsHigh) px; "
++                    + "content area=\(Int(wc.contentContainerView.bounds.width))x\(Int(wc.contentContainerView.bounds.height)) pt; "
++                    + "sizeMatches=\(image.size == wc.contentContainerView.bounds.size); pixel@(0.5,0.75)=\(pixel(rep, fx: 0.5, fy: 0.75)) (page green is rgb(0,0.67,0))")
++            }
++        } catch {
++            log("  takeSnapshot FAILED: \(error)")
++        }
++        log("  after snapshot: " + hosting(b))
++        log("  B visibilityState after snapshot: " + (await js(b, "return document.visibilityState")))
++
++        // ---- 3. synthesized input to the parked page
++        log("=== 3. synthesized input to parked B while the user is in A's text field")
++        log("  focus A's field: " + (await js(a, "document.getElementById('i').focus(); return document.activeElement.id")))
++        state("before input")
++        let refusedBefore = window.refusedParkedFirstResponderCount
++        let droppedBefore = AutomationInput.droppedKeyDownCount
++        let undoBefore = store.undoManager.canUndo
++
++        // A key the parked page declines (nothing focused in it).
++        typeKey("j", keyCode: 38, in: parked)
++        await waitUntil("WebKit to hand the declined 'j' back (droppedKeyDownCount + 1)", timeout: 5) {
++            AutomationInput.droppedKeyDownCount == droppedBefore + 1
++        }
++        await sleep(0.3)
++        log("  declined key: dropped=\(AutomationInput.droppedKeyDownCount - droppedBefore); A: " + (await pageReport(a)))
++
++        click(parked, pageX: 80, pageY: 40) // the button
++        await waitUntil("click on B's button", timeout: 10) { await self.js(b, "return log.join(' ')").contains("click/T/b") }
++        log("  after button click, B: " + (await pageReport(b)))
++        click(parked, pageX: 120, pageY: 115) // the text field
++        await waitUntil("B's field to take focus", timeout: 10) { await self.js(b, "return document.activeElement.id") == "i" }
++        typeKey("a", keyCode: 0, in: parked)
++        await waitUntil("typed 'a' in B's field", timeout: 10) { await self.js(b, "return document.getElementById('i').value") == "a" }
++        if let textInput = parked as? NSTextInputClient {
++            textInput.insertText("héllo", replacementRange: NSRange(location: NSNotFound, length: 0))
++        } else {
++            log("  web view is not an NSTextInputClient")
++        }
++        await waitUntil("inserted text in B's field", timeout: 10) { await self.js(b, "return document.getElementById('i').value") == "ahéllo" }
++        let parkedReport = await pageReport(b)
++        log("  parked B: " + parkedReport)
++        log("  parked B untrusted events: \(parkedReport.contains("/u/"))")
++        log("  selected A: " + (await pageReport(a)))
++        log("  W1 firstResponder=\(describe(window.firstResponder)) (unchanged: \(window.firstResponder === responderBefore)) "
++            + "selected=\(name(wc.selectedTab)) keyWindow unchanged=\(NSApp.keyWindow === keyBefore) "
++            + "parked first-responder requests refused=\(window.refusedParkedFirstResponderCount - refusedBefore) "
++            + "declined key downs dropped=\(AutomationInput.droppedKeyDownCount - droppedBefore) "
++            + "browser undo canUndo \(undoBefore) -> \(store.undoManager.canUndo)")
++        log("  " + hosting(b))
++        state("after input")
++
++        // ---- 4. select the attached tab, select back
++        log("=== 4. select B in the window, then select A again")
++        wc.selectTab(id: b.id)
++        await sleep(2)
++        log("  B selected: " + hosting(b))
++        log("  container.superview === contentArea: \(b.webViewContainer?.superview === wc.contentContainerView) "
++            + "container.frame == content bounds: \(b.webViewContainer?.frame == wc.contentContainerView.bounds) "
++            + "same web view object: \(b.webView === webViewB) parked=\(wc.automationParkedContainers.count)")
++        log("  " + hosting(a))
++        state("B selected")
++        log("  B page: " + (await pageReport(b)))
++        _ = capture(wc.contentContainerView, "content-3-b-selected.png")
++        await phase("b-selected", window)
++
++        wc.selectTab(id: a.id)
++        await sleep(2)
++        log("  A selected again: " + hosting(b))
++        log("  same web view object: \(b.webView === webViewB) parked=\(wc.automationParkedContainers.count)")
++        log("  " + hosting(a))
++        state("A selected again")
++        log("  B page: " + (await pageReport(b)))
++        log("  A page: " + (await pageReport(a)))
++        let contentReparked = capture(wc.contentContainerView, "content-4-reparked.png")
++        log("  content area before attach vs re-parked (A's field is focused now): \(diff(contentBefore, contentReparked))")
++
++        // ---- 6. detach
++        log("=== 6. detach")
++        b.detachAutomation(owner)
++        log("  " + hosting(b))
++        log("  container.superview=\(b.webViewContainer?.superview == nil ? "nil" : "NOT nil") webView.window=\(name(b.webView?.window)) "
++            + "W1 parked=\(wc.automationParkedContainers.count) web view kept (awake)=\(b.webView === webViewB) "
++            + "drivable=\(b.automationDrivableWebView() == nil ? "nil" : "non-nil")")
++        state("after detach")
++        log("  B page after detach: " + (await pageReport(b)))
++
++        // ---- 7. a second window on the same space
++        log("=== 7. second window on the same space")
++        b.attachAutomation(owner)
++        log("  re-attached: " + hosting(b))
++        let wc2 = app.createNewWindow(showing: space)
++        if let w2 = wc2.window { windowNames[ObjectIdentifier(w2)] = "W2" }
++        wc2.selectTab(id: c.id)
++        await sleep(2)
++        log("  7a. W2 open showing C")
++        state("7a")
++        for tab in tabs { log("  " + hosting(tab)) }
++
++        wc2.selectTab(id: b.id)
++        await sleep(2)
++        log("  7b. W2 selects B (parked in W1)")
++        state("7b")
++        log("  " + hosting(b) + " sameWebView=\(b.webView === webViewB)")
++        _ = capture(wc2.contentContainerView, "content-5-w2-b-selected.png")
++        _ = capture(wc.contentContainerView, "content-6-w1-while-w2-shows-b.png")
++
++        wc2.selectTab(id: c.id)
++        await sleep(1.5)
++        log("  7c. W2 selects C: B should park in W2 (the window that just stopped displaying it)")
++        state("7c")
++        log("  " + hosting(b))
++
++        wc.selectTab(id: b.id)
++        await sleep(1.5)
++        log("  7d. W1 selects B: claims it out of W2's parking host")
++        state("7d")
++        log("  " + hosting(b) + " sameWebView=\(b.webView === webViewB)")
++
++        wc2.selectTab(id: b.id)
++        await sleep(1.5)
++        log("  7e. W2 also selects B while W1 displays it")
++        state("7e")
++        log("  " + hosting(b))
++        log("  W2 content subviews: \(wc2.contentContainerView.subviews.map { String(describing: type(of: $0)) })")
++
++        wc.selectTab(id: a.id)
++        await sleep(1.5)
++        log("  7f. W1 selects A; W2 still has B selected")
++        state("7f")
++        log("  " + hosting(b))
++
++        wc2.ensureOwnsWebView()
++        await sleep(1.5)
++        log("  7g. W2.ensureOwnsWebView() (what windowDidBecomeKey does)")
++        state("7g")
++        log("  " + hosting(b) + " sameWebView=\(b.webView === webViewB)")
++
++        wc2.selectTab(id: c.id)
++        await sleep(1.5)
++        log("  7h. W2 selects C: B parks in W2")
++        log("  " + hosting(b))
++        wc2.window?.close()
++        await sleep(1.5)
++        log("  7i. W2 closed while B was parked in it")
++        state("7i")
++        log("  " + hosting(b) + " sameWebView=\(b.webView === webViewB)")
++        log("  B page still alive: " + (await pageReport(b)))
++
++        if keyLeg { await runKeyLeg(space: space, window: window, a: a, b: b, c: c) }
++
++        b.detachAutomation(owner)
++        log("=== end: detached. " + hosting(b))
++        state("end")
++    }
++
++    /// The paths that only exist with a key window: WebKit handing a declined
++    /// key back through NSApp.sendEvent, and the windowDidBecomeKey hand-off.
++    /// Activates the app for a few seconds, then gives the front app back.
++    func runKeyLeg(space: Space, window: BrowserWindow, a: BrowserTab, b: BrowserTab, c: BrowserTab) async {
++        log("=== 8. key-window leg (activates the app briefly)")
++        let previousApp = NSWorkspace.shared.frontmostApplication
++        log("  frontmost app before: \(previousApp?.localizedName ?? "nil")")
++        NSApp.activate(ignoringOtherApps: true)
++        window.makeKeyAndOrderFront(nil)
++        await waitUntil("W1 to become key", timeout: 5) { window.isKeyWindow }
++        state("8 activated")
++        log("  " + hosting(b))
++        guard window.isKeyWindow, let parked = b.automationDrivableWebView() else {
++            log("  W1 did not become key (or no drivable web view); skipping")
++            previousApp?.activate()
++            return
++        }
++        log("  focus A's field: " + (await js(a, "document.getElementById('i').focus(); return document.activeElement.id")))
++        _ = await js(b, "document.activeElement.blur(); log.length = 0; return 1")
++        _ = await js(a, "log.length = 0; return 1")
++        let droppedBefore = AutomationInput.droppedKeyDownCount
++        typeKey("j", keyCode: 38, in: parked)
++        await waitUntil("WebKit to hand the declined 'j' back", timeout: 5) { AutomationInput.droppedKeyDownCount == droppedBefore + 1 }
++        await sleep(0.4)
++        log("  declined key with W1 key: dropped=\(AutomationInput.droppedKeyDownCount - droppedBefore)")
++        log("  parked B: " + (await pageReport(b)))
++        log("  selected A: " + (await pageReport(a)))
++        // Control: the same kind of key sent raw, not through AutomationInput —
++        // the hazard its event monitor exists for.
++        if let rawWindow = parked.window,
++           let raw = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
++                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: rawWindow.windowNumber,
++                                      context: nil, characters: "q", charactersIgnoringModifiers: "q",
++                                      isARepeat: false, keyCode: 12) {
++            parked.keyDown(with: raw)
++            await sleep(0.6)
++            log("  CONTROL raw webView.keyDown('q') to parked B, bypassing AutomationInput: dropped=\(AutomationInput.droppedKeyDownCount - droppedBefore); A: " + (await pageReport(a)))
++            _ = await js(a, "document.getElementById('i').value = ''; log.length = 0; return 1")
++        }
++        click(parked, pageX: 80, pageY: 40)
++        await waitUntil("click on B's button", timeout: 10) { await self.js(b, "return log.join(' ')").contains("click/T/b") }
++        log("  after click on parked B: W1 firstResponder=\(describe(window.firstResponder)) keyWindow=\(name(NSApp.keyWindow)); A: " + (await pageReport(a)))
++
++        // Real hand-off: a second window that shows a snapshot of B becomes key.
++        wc.selectTab(id: b.id)
++        await sleep(1)
++        let wc2 = app.createNewWindow(showing: space)
++        if let w2 = wc2.window { windowNames[ObjectIdentifier(w2)] = "W2b" }
++        await sleep(1.5)
++        log("  8a. W1 displays B; new window W2b shown (showWindow makes it key)")
++        state("8a")
++        wc2.selectTab(id: b.id)
++        await sleep(1.5)
++        log("  8b. W2b (key) selects B")
++        state("8b")
++        log("  " + hosting(b))
++        window.makeKeyAndOrderFront(nil)
++        await sleep(1.5)
++        log("  8c. W1 made key again (both windows have B selected)")
++        state("8c")
++        log("  " + hosting(b))
++        wc.selectTab(id: a.id)
++        await sleep(1.5)
++        log("  8d. W1 (key) selects A: B should park in W1; W2b shows a snapshot of B")
++        state("8d")
++        log("  " + hosting(b))
++        log("  W2b content subviews: \(wc2.contentContainerView.subviews.map { String(describing: type(of: $0)) })")
++        wc2.window?.makeKeyAndOrderFront(nil)
++        await sleep(1.5)
++        log("  8e. W2b becomes key: claims B out of W1's parking host via windowDidBecomeKey")
++        state("8e")
++        log("  " + hosting(b))
++        wc2.window?.close()
++        await sleep(1.5)
++        log("  8f. W2b closed while displaying B")
++        state("8f")
++        log("  " + hosting(b))
++        previousApp?.activate()
++        await sleep(1)
++        log("  gave the front back to \(previousApp?.localizedName ?? "nil"); app.isActive=\(NSApp.isActive)")
++    }
++}
++#endif

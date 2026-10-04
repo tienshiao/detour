@@ -1,0 +1,187 @@
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,7 @@
+         }
+ 
+         observeWindowClose(wc)
++        runVerify129IfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -878,5 +879,82 @@
+     /// window such as Settings is in front).
+     var frontmostBrowserWindowController: BrowserWindowController? {
+         browserWindowControllersFrontToBack.first
++    }
++}
++
++// MARK: - TEMP TASK-129 verify harness — DO NOT COMMIT
++extension AppDelegate {
++    func runVerify129IfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = Date()
++        func log(_ line: String) {
++            let data = Data((String(format: "%7.3f ", Date().timeIntervalSince(start)) + line + "\n").utf8)
++            if let handle = try? FileHandle(forWritingTo: logURL) {
++                handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++            } else {
++                try? data.write(to: logURL)
++            }
++        }
++        func snap(_ name: String) {
++            let view = wc.tabSidebar.view
++            guard let layer = view.layer,
++                  let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width), pixelsHigh: Int(view.bounds.height),
++                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
++                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
++                  let ctx = NSGraphicsContext(bitmapImageRep: rep) else { log("snap failed \(name)"); return }
++            layer.render(in: ctx.cgContext)
++            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: outDir).appendingPathComponent(name + ".png"))
++        }
++        func after(_ t: TimeInterval, _ block: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block) }
++        let sb = wc.tabSidebar
++        func trace(_ label: String, _ id: UUID) {
++            for i in 0..<22 { after(Double(i) * 0.025) { log("\(label) +\(i * 25)ms " + sb.debug129State(id)) } }
++        }
++        log("harness armed")
++        after(3) {
++            guard let space = wc.activeSpace else { log("no active space"); return }
++            var tabs: [BrowserTab] = []
++            for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"] {
++                tabs.append(TabStore.shared.addTab(in: space, url: URL(string: "data:text/html,<title>\(name)</title>\(name)")!))
++            }
++            after(3) {
++                let ids = sb.tabItems.compactMap { $0.tabs.first?.id }
++                let base = sb.tabItems.count - 6
++                log("base " + sb.debug129State(ids[base])); snap("0-base")
++                // 1. hint, then synchronous reorder: first seeded tab to the gap above the fifth
++                guard let p1 = sb.debug129BeginDrag(itemIndex: base) else { log("beginDrag failed"); return }
++                after(0.4) {
++                    log("hint " + sb.debug129State(p1.itemID)); snap("1-hint")
++                    let row = sb.rowForNormalTab(at: base + 4)
++                    let ok = sb.debug129Drop(p1, row: row, at: sb.debug129GapPoint(aboveRow: row))
++                    log("reorder accepted=\(ok)")
++                    trace("reorder", p1.itemID)
++                    sb.debug129EndDrag()
++                }
++                after(1.5) { snap("2-reordered") }
++                // 2. deferred transaction: pin a tab (drop above the separator row)
++                after(2.5) {
++                    let id = sb.tabItems[base + 1].tabs.first!.id
++                    guard let p2 = sb.debug129BeginDrag(itemIndex: base + 1) else { log("beginDrag2 failed"); return }
++                    let ok = sb.debug129Drop(p2, row: 1, at: sb.debug129GapPoint(aboveRow: 1))
++                    log("pin accepted=\(ok)")
++                    trace("pin", id)
++                    sb.debug129EndDrag()
++                }
++                after(4.0) { snap("3-pinned") }
++                // 3. favorite via the hint
++                after(5.0) {
++                    let id = sb.tabItems[base + 2].tabs.first!.id
++                    guard let p3 = sb.debug129BeginDrag(itemIndex: base + 2) else { log("beginDrag3 failed"); return }
++                    let point = NSPoint(x: sb.view.convert(NSPoint(x: sb.view.bounds.midX, y: 0), to: nil).x, y: sb.debug129GapPoint(aboveRow: 0).y + 20)
++                    let ok = sb.debug129FavoriteDrop(p3, at: point)
++                    log("favorite accepted=\(ok) at \(point)")
++                    trace("favorite", id)
++                    sb.debug129EndDrag()
++                }
++                after(6.5) { snap("4-favorite"); log("done") }
++            }
++        }
+     }
+ }
+--- a/Detour/Browser/Sidebar/TabSidebarViewController.swift
++++ b/Detour/Browser/Sidebar/TabSidebarViewController.swift
+@@ -3467,5 +3467,91 @@
+ private extension Comparable {
+     func clamped(to range: ClosedRange<Self>) -> Self {
+         min(max(self, range.lowerBound), range.upperBound)
++    }
++}
++
++// MARK: - TEMP TASK-129 verify harness — DO NOT COMMIT
++final class Debug129DragInfo: NSObject, NSDraggingInfo {
++    let pasteboard: NSPasteboard
++    var location: NSPoint
++    weak var window: NSWindow?
++    init(payload: SidebarDragPayload, location: NSPoint, window: NSWindow?) {
++        pasteboard = NSPasteboard(name: NSPasteboard.Name("debug129-\(UUID().uuidString)"))
++        pasteboard.clearContents()
++        let item = NSPasteboardItem()
++        item.setString(payload.pasteboardString!, forType: tabReorderPasteboardType)
++        pasteboard.writeObjects([item])
++        self.location = location
++        self.window = window
++    }
++    var draggingDestinationWindow: NSWindow? { window }
++    var draggingSourceOperationMask: NSDragOperation { .move }
++    var draggingLocation: NSPoint { location }
++    var draggedImageLocation: NSPoint { location }
++    var draggedImage: NSImage? { nil }
++    var draggingPasteboard: NSPasteboard { pasteboard }
++    var draggingSource: Any? { nil }
++    var draggingSequenceNumber: Int { 1 }
++    func slideDraggedImage(to screenPoint: NSPoint) {}
++    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
++    var draggingFormation: NSDraggingFormation = .none
++    var animatesToDestination = false
++    var numberOfValidItemsForDrop = 1
++    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:], using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
++    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
++    func resetSpringLoading() {}
++}
++
++extension TabSidebarViewController {
++    func debug129BeginDrag(itemIndex: Int) -> SidebarDragPayload? {
++        let row = rowForNormalTab(at: itemIndex)
++        guard let cellView = tableView.view(atColumn: 0, row: row, makeIfNecessary: false),
++              let tab = tabItems[itemIndex].tabs.first, let spaceID = activeSpaceID else { return nil }
++        let visualRect = cellView.bounds.insetBy(dx: -6, dy: 1)
++        let image = NSImage(size: visualRect.size)
++        image.lockFocus()
++        UIConstants.hoverBackgroundColor.setFill()
++        NSBezierPath(roundedRect: NSRect(origin: .zero, size: visualRect.size), xRadius: 6, yRadius: 6).fill()
++        if let rep = cellView.bitmapImageRepForCachingDisplay(in: cellView.bounds) {
++            cellView.cacheDisplay(in: cellView.bounds, to: rep)
++            rep.draw(in: NSRect(origin: NSPoint(x: -visualRect.origin.x, y: -visualRect.origin.y), size: cellView.bounds.size))
++        }
++        image.unlockFocus()
++        let rowOrigin = tableView.rect(ofRow: row).origin
++        rowDragImage = (image, tableView.convert(visualRect, from: cellView).offsetBy(dx: -rowOrigin.x, dy: -rowOrigin.y))
++        spacePages[activePageIndex].setDragSessionActive(true, canAddFavorite: true)
++        return SidebarDragPayload(kind: .normalTab, itemID: tab.id, spaceID: spaceID, sidebarID: sidebarID)
+     }
++
++    func debug129EndDrag() {
++        rowDragImage = nil
++        spacePages[activePageIndex].setDragSessionActive(false)
++    }
++
++    /// Window-coordinate point on the top edge of `row`, x at 60% of the width.
++    func debug129GapPoint(aboveRow row: Int) -> NSPoint {
++        let r = tableView.rect(ofRow: row)
++        return tableView.convert(NSPoint(x: r.minX + r.width * 0.5, y: r.minY), to: nil)
++    }
++
++    func debug129Drop(_ payload: SidebarDragPayload, row: Int, at point: NSPoint) -> Bool {
++        let info = Debug129DragInfo(payload: payload, location: point, window: view.window)
++        return tableView(tableView, acceptDrop: info, row: row, dropOperation: .above)
++    }
++
++    func debug129FavoriteDrop(_ payload: SidebarDragPayload, at point: NSPoint) -> Bool {
++        let info = Debug129DragInfo(payload: payload, location: point, window: view.window)
++        return spacePages[activePageIndex].favoritesBar.performTabDrop(info, at: 0)
++    }
++
++    func debug129State(_ id: UUID) -> String {
++        func f(_ r: NSRect?) -> String { r.map { String(format: "(%.0f,%.0f %.0fx%.0f)", $0.minX, $0.minY, $0.width, $0.height) } ?? "nil" }
++        let proxy = view.subviews.last { $0 is NSImageView && $0.frame.height < 40 && $0.frame.width > 100 }
++        let row = row(containingAnyOf: [id])
++        let rowView = row.flatMap { tableView.rowView(atRow: $0, makeIfNecessary: false) }
++        let rowFrame = rowView.flatMap { rv in rv.layer?.presentation().map { _ in view.convert(rv.layer!.presentation()!.frame, from: tableView) } }
++        let page = spacePages[activePageIndex]
++        let tile = page.favoritesBar.tileViews.first
++        return "proxy=\(f(proxy?.layer?.presentation()?.frame)) alpha=\(proxy.map { String(format: "%.2f", $0.layer?.presentation()?.opacity ?? -1) } ?? "-") row=\(row.map(String.init) ?? "nil") rowAlpha=\(rowView.map { String(format: "%.2f", $0.alphaValue) } ?? "nil") rowFrame=\(f(rowFrame)) scroll=\(f(view.convert(page.scrollView.bounds, from: page.scrollView))) favBar=\(f(view.convert(page.favoritesBar.bounds, from: page.favoritesBar))) tile=\(f(tile.flatMap { t in t.layer?.presentation().map { view.convert($0.frame, from: page.favoritesBar) } })) pinned=\(flattenedPinnedItems.count) order=\(tabItems.compactMap { $0.tabs.first?.title.prefix(6) }.joined(separator: ","))"
++    }
+ }

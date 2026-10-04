@@ -101,14 +101,14 @@ A tab is attached while its owner set (`BrowserTab.automationOwners`) is non-emp
 
 One thing does differ from a hidden tab in no window (measured in the running app): while the window holding it is key, a parked page reports `document.hasFocus() == true`, although its `visibilityState` stays `hidden` and its web view is never first responder. With the window not key it reports false.
 
-Why a window at all: measured on the shipped WebKit (`.claude/scratch/task132.3-covered-webview-spike.m`), `takeSnapshot` returns a freshly painted image for a web view anywhere, but a web view in *no* window gets `mousedown` without `mouseup`/`click`. A web view that is in a window but hidden takes mouse, key and `insertText` input sent straight to the view, and the page sees trusted events.
+Why a window at all: measured on the shipped WebKit (`docs/harness/task132.3-covered-webview-spike.m`), `takeSnapshot` returns a freshly painted image for a web view anywhere, but a web view in *no* window gets `mousedown` without `mouseup`/`click`. A web view that is in a window but hidden takes mouse, key and `insertText` input sent straight to the view, and the page sees trusted events.
 
 ### Sending input
 
 Build events with `webView.window`'s window number and send them to the view, never through `NSApp.sendEvent` or the window (which route by hit testing and first responder):
 
 - **Mouse and text:** `webView.mouseDown(with:)` / `mouseUp(with:)` / …, and `NSTextInputClient.insertText(_:replacementRange:)`.
-- **Keys:** `AutomationInput.sendKey(_:to:)`, not `webView.keyDown(with:)`. A key down the page declines is handed back by WebKit through `NSApp.sendEvent` (`WebViewImpl::doneWithKeyEvent`), and AppKit routes it to the app's key window and its first responder: a letter sent to a parked page with nothing focused is typed into the field the user is in, and a declined Cmd-key fires the main-menu item (measured: `.claude/scratch/task132.3/declined-key-spike.m`). `AutomationInput` remembers the key downs it sends and a local event monitor drops them when WebKit re-sends them. This applies to a displayed attached tab too.
+- **Keys:** `AutomationInput.sendKey(_:to:)`, not `webView.keyDown(with:)`. A key down the page declines is handed back by WebKit through `NSApp.sendEvent` (`WebViewImpl::doneWithKeyEvent`), and AppKit routes it to the app's key window and its first responder: a letter sent to a parked page with nothing focused is typed into the field the user is in, and a declined Cmd-key fires the main-menu item (measured: `docs/harness/task132.3-declined-key-spike.m`). `AutomationInput` remembers the key downs it sends and a local event monitor drops them when WebKit re-sends them. This applies to a displayed attached tab too.
 - WebKit queues mouse events and key events separately: a key sent right after a click can reach the page before the click has moved focus. Wait for the click to land.
 - Not covered: a synthesized right-click makes WebKit pop up a real context menu.
 

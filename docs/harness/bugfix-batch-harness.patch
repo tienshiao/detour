@@ -1,0 +1,217 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 9abc089..9f3bee5 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -883,3 +884,204 @@ extension NSApplication {
+         browserWindowControllersFrontToBack.first
+     }
+ }
++
++// MARK: - TEMP verify harness (bugfix batch) — DO NOT COMMIT
++extension AppDelegate {
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        func describe(_ responder: NSResponder?, in controller: BrowserWindowController) -> String {
++            guard let responder else { return "nil" }
++            if responder === controller.window { return "the window" }
++            if responder === controller.selectedTab?.webView { return "selected web view" }
++            return String(describing: type(of: responder))
++        }
++        func texts(in view: NSView) -> [String] {
++            var out: [String] = []
++            if let field = view as? NSTextField, !field.stringValue.isEmpty { out.append(field.stringValue) }
++            for sub in view.subviews { out += texts(in: sub) }
++            return out
++        }
++        func buttons(in view: NSView) -> [NSButton] {
++            var out: [NSButton] = []
++            if let button = view as? NSButton { out.append(button) }
++            for sub in view.subviews { out += buttons(in: sub) }
++            return out
++        }
++        // Answers each modal alert as it appears: logs its text, presses the
++        // next planned button (default: the first one).
++        var plannedButtons: [String] = []
++        var handledAlerts = Set<ObjectIdentifier>()
++        let alertTimer = Timer(timeInterval: 0.3, repeats: true) { _ in
++            guard let modal = NSApp.modalWindow, let content = modal.contentView,
++                  !handledAlerts.contains(ObjectIdentifier(modal)) else { return }
++            handledAlerts.insert(ObjectIdentifier(modal))
++            let all = buttons(in: content).filter { !$0.title.isEmpty }
++            log("ALERT text=\(texts(in: content)) buttons=\(all.map(\.title))")
++            let wanted = plannedButtons.isEmpty ? nil : plannedButtons.removeFirst()
++            let button = all.first { $0.title == wanted } ?? all.first
++            log("ALERT pressing \(button?.title ?? "nothing") (planned \(wanted ?? "default"))")
++            button?.performClick(nil)
++        }
++        RunLoop.main.add(alertTimer, forMode: .common)
++
++        var steps: [(TimeInterval, () -> Void)] = []
++        func step(after delay: TimeInterval, _ block: @escaping () -> Void) { steps.append((delay, block)) }
++        func runSteps() {
++            guard !steps.isEmpty else { return }
++            let (delay, block) = steps.removeFirst()
++            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { block(); runSteps() }
++        }
++        func page(_ title: String) -> URL { URL(string: "data:text/html,<title>\(title)</title>\(title)")! }
++
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier) locked-screen run: no real key events")
++        var tabA: BrowserTab!, tabB: BrowserTab!
++        var second: BrowserWindowController!
++        var privateWC: BrowserWindowController!
++        var privateTab: BrowserTab!
++
++        step(after: 2) {
++            guard let space = wc.activeSpace else { log("no space"); return }
++            tabA = TabStore.shared.addTab(in: space, url: URL(string: "https://example.com/?a=1")!)
++            tabB = TabStore.shared.addTab(in: space, url: URL(string: "https://example.org/?b=2")!)
++            wc.selectTab(id: tabA.id)
++        }
++        step(after: 5) {
++            // B commits a navigation more recently than A, so the default
++            // list's first row is not the current page (TASK-144).
++            wc.selectTab(id: tabB.id)
++            tabB.load(URL(string: "https://example.org/?b=3")!)
++        }
++        step(after: 5) {
++            wc.selectTab(id: tabA.id)
++            log("144 before: A url=\(tabA.webView?.url?.absoluteString ?? "nil") B url=\(tabB.webView?.url?.absoluteString ?? "nil")")
++            wc.focusAddressBar(nil)
++        }
++        step(after: 1.5) {
++            // Return, as the field editor sends it.
++            let editor = wc.window?.firstResponder as? NSTextView
++            log("144 palette shown=\(wc.commandPaletteView != nil) field=\((editor?.delegate as? NSTextField)?.stringValue ?? "nil")")
++            editor?.doCommand(by: #selector(NSResponder.insertNewline(_:)))
++        }
++        step(after: 4) {
++            log("144 after Cmd+L, Return: selected=\(wc.selectedTabID == tabA.id ? "A" : "other") A url=\(tabA.webView?.url?.absoluteString ?? "nil") palette shown=\(wc.commandPaletteView != nil)")
++            log("144 focus after: \(describe(wc.window?.firstResponder, in: wc))")
++        }
++
++        // TASK-135: a second window on the same space and tab.
++        step(after: 1) {
++            second = self.createNewWindowForHarness(spaceID: wc.activeSpaceID!)
++            second.selectTab(id: tabA.id)
++            log("135 second window shown: key=\(second.window?.isKeyWindow ?? false) appActive=\(NSApp.isActive) webViewIn=\(tabA.webView?.window === second.window ? "second" : tabA.webView?.window === wc.window ? "first" : "neither") secondFR=\(describe(second.window?.firstResponder, in: second))")
++        }
++        step(after: 1.5) {
++            wc.window?.makeKeyAndOrderFront(nil)
++        }
++        step(after: 1.5) {
++            log("135 first made key: key=\(wc.window?.isKeyWindow ?? false) webViewIn=\(tabA.webView?.window === wc.window ? "first" : "second") firstFR=\(describe(wc.window?.firstResponder, in: wc)) secondFR=\(describe(second.window?.firstResponder, in: second))")
++            second.window?.makeKeyAndOrderFront(nil)
++        }
++        step(after: 1.5) {
++            log("135 second made key: key=\(second.window?.isKeyWindow ?? false) webViewIn=\(tabA.webView?.window === second.window ? "second" : "first") secondFR=\(describe(second.window?.firstResponder, in: second)) firstFR=\(describe(wc.window?.firstResponder, in: wc))")
++            second.window?.close()
++        }
++
++        // TASK-137 / TASK-148: a Private window next to the normal one.
++        step(after: 1.5) {
++            privateWC = BrowserWindowController(incognito: true)
++            privateWC.showWindow(nil)
++            self.registerWindowController(privateWC)
++            privateTab = TabStore.shared.addTab(in: privateWC.activeSpace!, url: page("PRIVATE-PAGE"))
++            privateWC.selectTab(id: privateTab.id)
++        }
++        step(after: 3) {
++            wc.focusAddressBar(nil)
++            privateWC.focusAddressBar(nil)
++        }
++        step(after: 1) {
++            let normal = wc.commandPaletteView?.gatherTabInfos() ?? []
++            let priv = privateWC.commandPaletteView?.gatherTabInfos() ?? []
++            log("137 normal palette tabs=\(normal.map(\.title)) leaksPrivate=\(normal.contains { $0.tabID == privateTab.id })")
++            log("137 private palette tabs=\(priv.map(\.title)) onlyOwn=\(priv.allSatisfy { $0.spaceID == privateWC.activeSpaceID })")
++            wc.dismissCommandPalette()
++            privateWC.dismissCommandPalette()
++
++            let manager = DownloadManager.shared
++            let p = manager.addManualItem(filename: "private.bin", sourceURL: URL(string: "https://example.com/private.bin"), scope: privateWC.downloadScope)
++            p.destinationURL = URL(fileURLWithPath: "/tmp/private.bin")
++            manager.downloadDidEnd(p)
++            let running = manager.addManualItem(filename: "private-running.bin", sourceURL: nil, scope: privateWC.downloadScope)
++            _ = running
++            let n = manager.addManualItem(filename: "normal.bin", sourceURL: URL(string: "https://example.com/normal.bin"), scope: wc.downloadScope)
++            n.destinationURL = URL(fileURLWithPath: "/tmp/normal.bin")
++            manager.downloadDidEnd(n)
++            log("148 normal window lists=\(manager.items(in: wc.downloadScope).map(\.filename)) private window lists=\(manager.items(in: privateWC.downloadScope).map(\.filename))")
++            log("148 badge normal=\(manager.hasActiveDownloads(in: wc.downloadScope)) private=\(manager.hasActiveDownloads(in: privateWC.downloadScope))")
++        }
++        step(after: 2.5) {
++            log("148 rows after debounce=\(AppDatabase.shared.loadDownloads().map { "\($0.filename):\($0.state):completedAt=\($0.completedAt != nil)" })")
++            let scope = privateWC.downloadScope
++            privateWC.window?.close()
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
++                let manager = DownloadManager.shared
++                log("148 after closing the Private window: its list=\(manager.items(in: scope).map(\.filename)) all=\(manager.items.map(\.filename)) unlisted=\(manager.unlistedItems.map(\.filename)) incognitoSpaces=\(TabStore.shared.spaces.filter(\.isIncognito).count)")
++            }
++        }
++
++        // TASK-151: the install prompt and refusals.
++        if let crxDir = env["DETOUR_VERIFY_CRX_DIR"] {
++            let dir = URL(fileURLWithPath: crxDir)
++            step(after: 3) {
++                log("151 tampered file")
++                plannedButtons = ["OK"]
++                wc.handleCRXDownload(from: dir.appendingPathComponent("tampered.crx"))
++            }
++            step(after: 4) {
++                log("151 genuine file from disk, cancelled at the prompt")
++                plannedButtons = ["Cancel"]
++                wc.handleCRXDownload(from: dir.appendingPathComponent("genuine.crx"))
++            }
++            if let storeURL = env["DETOUR_VERIFY_STORE_URL"].flatMap(URL.init(string:)) {
++                step(after: 5) {
++                    log("151 store download, installed")
++                    plannedButtons = ["Install", "OK"]
++                    wc.handleCRXDownload(from: storeURL)
++                }
++                step(after: 25) {
++                    log("151 installed extensions=\(ExtensionManager.shared.extensions.map { "\($0.id) \($0.manifest.version) \($0.source.rawValue)" })")
++                    log("151 the same file again")
++                    plannedButtons = ["OK"]
++                    wc.handleCRXDownload(from: dir.appendingPathComponent("genuine.crx"))
++                }
++            }
++        }
++
++        // TASK-143: a download that ends just before the app quits.
++        step(after: 8) {
++            let manager = DownloadManager.shared
++            let last = manager.addManualItem(filename: "last-second.bin", sourceURL: nil, scope: wc.downloadScope)
++            last.destinationURL = URL(fileURLWithPath: "/tmp/last-second.bin")
++            manager.downloadDidEnd(last)
++            log("143 ended last-second.bin, quitting now")
++            plannedButtons = ["Quit"]
++            log("done")
++            NSApp.terminate(nil)
++        }
++        runSteps()
++    }
++
++    func createNewWindowForHarness(spaceID: UUID) -> BrowserWindowController {
++        let wc = BrowserWindowController(incognito: false)
++        wc.setActiveSpace(id: spaceID, selectTab: false)
++        wc.showWindow(nil)
++        registerWindowController(wc)
++        return wc
++    }
++}

@@ -1,0 +1,700 @@
+TASK-132.4 / TASK-150 runtime harness (extension action popups: the API Explorer's Declarative Net Request and
+interim tabGroups/debugger sections, and popup sizing/scrolling) — TEMPORARY, never commit the applied result.
+
+Apply:   git apply .claude/task132.4-harness.patch      (touches Detour/App/AppDelegate.swift only, #if DEBUG)
+Build:   xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+Run:     .claude/scratch/task132.4/drive-popup.sh <data dir name> <out dir> [front|activate]
+         starts fixture_server.py on 127.0.0.1:18324, creates the isolated profile, seeds TestExtensions/api-explorer
+         and the three popup fixtures in .claude/scratch/task132.4/popup-fixtures (fits, nowidth, grow) with seed.py,
+         launches with DETOUR_DNR_HARNESS_DIR / DETOUR_DNR_HARNESS_URL and waits for DONE in harness.log.
+         DETOUR_DNR_HARNESS_SIZING=0 skips the fixtures, DETOUR_DNR_HARNESS_EXPLORER=0 skips the API Explorer part.
+Modes:   (none)    the app stays in the background; clicks are real NSEvents handed to the popup web view's
+                   mouseDown/mouseUp (an inactive app's event queue does not deliver posted mouse events).
+         front     also orders the window front regardless (bottom-right corner; no activation, not key) —
+                   needed for WebKit to run rendering updates (resize observers, wheel scrolling).
+         activate  activates the app for the run and re-activates the previous app afterwards (not needed so far).
+What:    opens each popup with ExtensionPopoverController.show (the sidebar / Extensions-menu path), scrolls with
+         wheel events, clicks buttons, logs what the popup shows and the popup's size / scrollability, and writes a
+         WKWebView.takeSnapshot PNG per step. The URL text field of the API Explorer section is filled by script.
+Review:  also runs the TASK-150 review scenarios (DETOUR_DNR_HARNESS_REVIEW=0 skips them): a popup whose document
+         is taller than its body (popup-fixtures/tallish), and re-clicking the toolbar button while a popup is open
+         (through BrowserWindowController.tabSidebarDidRequestShowExtensionPopup, the path a click takes).
+         Popovers are closed without animation: with the screen locked an animated close never completes.
+Output:  <out dir>/harness.log, NN-<step>.png, fixture-requests.jsonl, app-log.txt
+Remove:  git checkout -- Detour/App/AppDelegate.swift
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 5f1a7b0..bec893d 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runDNRPopupHarnessIfRequested(wc)
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -880,3 +883,660 @@ extension NSApplication {
+         browserWindowControllersFrontToBack.first
+     }
+ }
++
++// MARK: - TEMP API Explorer popup harness (TASK-132.4 runtime check) — DO NOT COMMIT
++#if DEBUG
++import WebKit
++
++extension AppDelegate {
++    /// Env-gated: `DETOUR_DNR_HARNESS_DIR` (output directory) and
++    /// `DETOUR_DNR_HARNESS_URL` (header-echoing fixture URL).
++    /// `DETOUR_DNR_HARNESS_ACTIVATE=1` activates the app for the clicks and
++    /// re-activates the previously frontmost app afterwards.
++    func runDNRPopupHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_DNR_HARNESS_DIR"], let fixture = env["DETOUR_DNR_HARNESS_URL"] else { return }
++        let extID = env["DETOUR_DNR_HARNESS_EXT"] ?? "abcdefghijklmnopabcdefghijklmnop"
++        let activate = env["DETOUR_DNR_HARNESS_ACTIVATE"] == "1"
++        Task { @MainActor in
++            let harness = DNRPopupHarness(wc: wc, outDir: URL(fileURLWithPath: outDir), fixture: fixture,
++                                          extID: extID, activate: activate)
++            await harness.run()
++            harness.log("DONE")
++        }
++    }
++}
++
++@MainActor
++private final class DNRPopupHarness {
++    let wc: BrowserWindowController
++    let outDir: URL
++    let fixture: String
++    let extID: String
++    let activate: Bool
++    var popover: ExtensionPopoverController?
++    var eventNumber = 9000
++    let directDelivery = ProcessInfo.processInfo.environment["DETOUR_DNR_HARNESS_DELIVERY"] != "post"
++    var shot = 0
++
++    init(wc: BrowserWindowController, outDir: URL, fixture: String, extID: String, activate: Bool) {
++        self.wc = wc; self.outDir = outDir; self.fixture = fixture; self.extID = extID; self.activate = activate
++    }
++
++    func log(_ line: String) {
++        let url = outDir.appendingPathComponent("harness.log")
++        let data = Data((line + "\n").utf8)
++        if let handle = try? FileHandle(forWritingTo: url) {
++            handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++        } else {
++            try? data.write(to: url)
++        }
++    }
++
++    func sleep(_ seconds: Double) async {
++        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
++    }
++
++    func js(_ webView: WKWebView, _ body: String, _ arguments: [String: Any] = [:]) async -> String {
++        do {
++            let value = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: .page)
++            return value.map { "\($0)" } ?? "<nil>"
++        } catch {
++            return "<js error: \(error.localizedDescription)>"
++        }
++    }
++
++    func focusState(_ webView: WKWebView?) -> String {
++        let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil"
++        return "app active=\(NSApp.isActive) frontmost=\(front) mainWindowKey=\(wc.window?.isKeyWindow ?? false) "
++            + "popupWindowKey=\(webView?.window?.isKeyWindow ?? false) popupWindowVisible=\(webView?.window?.isVisible ?? false)"
++    }
++
++    func snapshot(_ webView: WKWebView, _ name: String) async {
++        shot += 1
++        let file = String(format: "%02d-%@.png", shot, name)
++        do {
++            let configuration = WKSnapshotConfiguration()
++            configuration.rect = webView.visibleRect
++            let image = try await webView.takeSnapshot(configuration: configuration)
++            guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
++                  let png = rep.representation(using: .png, properties: [:]) else {
++                log("    snapshot \(file): could not encode"); return
++            }
++            try png.write(to: outDir.appendingPathComponent(file))
++            log("    snapshot \(file) \(Int(image.size.width))x\(Int(image.size.height))")
++        } catch {
++            log("    snapshot \(file) failed: \(error.localizedDescription)")
++        }
++    }
++
++    /// A real mouse click on an element of the popup: mouse-down and mouse-up
++    /// NSEvents posted to the application queue at the element's centre.
++    func postClick(_ webView: WKWebView, id: String) async -> Bool {
++        await scrollIntoView(webView, id: id)
++        guard let parts = await elementRect(webView, id: id), let window = webView.window else {
++            log("    click \(id): no element rect or no window"); return false
++        }
++        guard webView.bounds.contains(NSPoint(x: parts[0], y: parts[1])) else {
++            log("    click \(id): the button is NOT in the visible part of the popup (centre \(Int(parts[0])),\(Int(parts[1])), visible \(webView.visibleRect))")
++            return false
++        }
++        let point = webView.convert(NSPoint(x: parts[0], y: parts[1]), to: nil)
++        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++            eventNumber += 1
++            guard let event = NSEvent.mouseEvent(
++                with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
++                windowNumber: window.windowNumber, context: nil, eventNumber: eventNumber, clickCount: 1,
++                pressure: type == .leftMouseDown ? 1 : 0) else { return false }
++            if directDelivery {
++                // Straight to the web view's own mouse handlers: an inactive
++                // app's event queue does not hand mouse events to its windows.
++                if type == .leftMouseDown { webView.mouseDown(with: event) } else { webView.mouseUp(with: event) }
++            } else {
++                NSApp.postEvent(event, atStart: false)
++            }
++            await sleep(0.06)
++        }
++        log("    click \(id): \(directDelivery ? "delivered to the web view" : "posted") at css (\(Int(parts[0])),\(Int(parts[1]))) size \(Int(parts[2]))x\(Int(parts[3])) -> window \(Int(point.x)),\(Int(point.y))")
++        return true
++    }
++
++    /// Centre x, centre y, width, height of an element, in web view points
++    /// (the visible viewport: y grows downwards from the top of the popup).
++    func elementRect(_ webView: WKWebView, id: String) async -> [Double]? {
++        let rect = await js(webView, """
++            const el = document.getElementById(id);
++            if (!el) return '';
++            const r = el.getBoundingClientRect();
++            return (r.left + r.width / 2) + ',' + (r.top + r.height / 2) + ',' + r.width + ',' + r.height;
++            """, ["id": id])
++        let parts = rect.split(separator: ",").compactMap { Double($0) }
++        return parts.count == 4 ? parts : nil
++    }
++
++    func scrollY(_ webView: WKWebView) async -> Double {
++        Double(await js(webView, "return String(window.scrollY);")) ?? -1
++    }
++
++    /// Bring an element into the visible part of the popup the way a user
++    /// does: scroll-wheel events delivered to the popup's web view.
++    func scrollIntoView(_ webView: WKWebView, id: String) async {
++        let height = Double(webView.bounds.height)
++        var wheels = 0
++        var stuck = 0
++        let start = await scrollY(webView)
++        while wheels < 60 {
++            guard let parts = await elementRect(webView, id: id) else { log("    scroll to \(id): no element"); return }
++            let offset = parts[1] - height / 2          // > 0: the element is below the middle
++            if abs(offset) < 120 { break }
++            let delta = Int32(max(-240, min(240, -offset)))
++            let before = await scrollY(webView)
++            wheelOverPopup(webView, deltaY: delta)
++            wheels += 1
++            // The first wheel of a run is answered a little later than the rest.
++            var moved = false
++            for _ in 0..<8 where !moved {
++                await sleep(0.06)
++                moved = await scrollY(webView) != before
++            }
++            if !moved {
++                // The end of the page, or wheel events do not scroll it; a
++                // first wheel may also just be swallowed, so try a few.
++                stuck += 1
++                if stuck >= 4 { break }
++            } else {
++                stuck = 0
++            }
++        }
++        let end = await scrollY(webView)
++        if let parts = await elementRect(webView, id: id), parts[1] < 0 || parts[1] > height {
++            let scripted = await js(webView, "document.getElementById(id).scrollIntoView({ block: 'center' }); await new Promise((r) => setTimeout(r, 150)); return String(window.scrollY);", ["id": id])
++            log("    scroll to \(id): \(wheels) wheel event(s) moved the page from y=\(Int(start)) to \(Int(end)) but the element is still out of view; FELL BACK to scrollIntoView() -> y=\(scripted)")
++        } else if wheels > 0 {
++            log("    scroll to \(id): \(wheels) wheel event(s) scrolled the page from y=\(Int(start)) to y=\(Int(end))")
++        }
++        await sleep(0.2)
++    }
++
++    func clickCount(_ webView: WKWebView, id: String) async -> Int {
++        Int(await js(webView, "return String((window.__harnessClicks || []).filter((c) => c.id === id && c.trusted).length);",
++                     ["id": id])) ?? -1
++    }
++
++    /// Click a button with real events (again once if the first click only
++    /// woke the window), wait for its result box to settle, log what it shows.
++    func step(_ webView: WKWebView, _ label: String, button: String, result: String, settle: Double = 0.4) async {
++        log("STEP \(label): button #\(button)")
++        let before = await clickCount(webView, id: button)
++        var delivered = false
++        for attempt in 1...3 where !delivered {
++            if attempt == 2, webView.window?.isKeyWindow == false {
++                // Not activation: the app stays in the background, only its
++                // own notion of the key window changes.
++                webView.window?.makeKey()
++                await sleep(0.2)
++                log("    made the popup window key WITHOUT activating the app: \(focusState(webView))")
++            }
++            guard await postClick(webView, id: button) else { break }
++            for _ in 0..<20 where !delivered {
++                await sleep(0.1)
++                delivered = await clickCount(webView, id: button) > before
++            }
++            log("    attempt \(attempt): trusted click event reached the page: \(delivered); last click seen: " + (await js(webView, "return JSON.stringify((window.__harnessClicks || []).slice(-1));")))
++        }
++        guard delivered else { log("    FAILED: the click never reached the page. \(focusState(webView))"); return }
++        // The result box settles when its text stops changing.
++        var last = ""
++        var stable = 0
++        let start = Date()
++        while stable < 3 && Date().timeIntervalSince(start) < 15 {
++            await sleep(0.25)
++            let text = await js(webView, "const el = document.getElementById(id); return el.classList.contains('visible') ? (el.classList.contains('error') ? '[ERROR STYLE] ' : '') + el.textContent : '';", ["id": result])
++            if text == last && !text.isEmpty { stable += 1 } else { stable = 0; last = text }
++        }
++        await sleep(settle)
++        log("    popup shows in #\(result) (\(last.count) chars):")
++        for line in last.split(separator: "\n", omittingEmptySubsequences: false) { log("      | \(line)") }
++        await scrollIntoView(webView, id: result)
++        await snapshot(webView, label)
++    }
++
++    func setURL(_ webView: WKWebView, marker: String) async {
++        let url = fixture + "?step=" + marker
++        _ = await js(webView, """
++            const input = document.getElementById('input-dnr-url');
++            input.value = url;
++            input.dispatchEvent(new Event('input', { bubbles: true }));
++            return '';
++            """, ["url": url])
++        log("    URL field set (by script) to \(url)")
++    }
++
++    // MARK: popups
++
++    func openPopup(_ id: String) async -> WKWebView? {
++        var ready = false
++        for _ in 0..<150 where !ready {
++            ready = ExtensionManager.shared.context(for: id) != nil
++            if !ready { await sleep(0.2) }
++        }
++        guard let context = ExtensionManager.shared.context(for: id) else {
++            log("FAILED: no loaded context for \(id)"); return nil
++        }
++        // The popup, opened the way the sidebar's extension button and the
++        // Extensions menu open it: ExtensionPopoverController.show.
++        let bar = wc.tabSidebar.fauxAddressBar
++        let controller = ExtensionPopoverController(extensionID: id)
++        popover = controller
++        controller.show(relativeTo: bar.bounds, of: bar, preferredEdge: .minY)
++        var popup: WKWebView?
++        for _ in 0..<50 where popup?.window == nil {
++            await sleep(0.2)
++            popup = context.action(for: nil)?.popupWebView
++        }
++        guard let webView = popup, webView.window != nil else {
++            log("FAILED: the popup of \(id) did not appear"); return nil
++        }
++        await sleep(1.0)
++        _ = await js(webView, """
++            window.__harnessClicks = [];
++            document.addEventListener('click', (e) => {
++                window.__harnessClicks.push({ id: e.target && e.target.id, trusted: e.isTrusted,
++                    tag: e.target && e.target.tagName, text: String(e.target && e.target.textContent || '').slice(0, 24),
++                    clientX: e.clientX, clientY: e.clientY, pageY: e.pageY });
++            }, true);
++            return '';
++            """)
++        return webView
++    }
++
++    func closePopup() async {
++        popover?.close()
++        popover = nil
++        await sleep(0.6)
++    }
++
++    /// Size, mode and scrollability of a presented popup, in one line.
++    func metrics(_ webView: WKWebView) async -> String {
++        let maximum = (webView.value(forKey: "sizeToContentAutoSizeMaximumSize") as? NSValue)?.sizeValue
++        let page = await js(webView, """
++            const d = document.documentElement, b = document.body.getBoundingClientRect();
++            window.scrollTo(0, 300);
++            await new Promise((r) => setTimeout(r, 120));
++            const reached = Math.round(window.scrollY);
++            window.scrollTo(0, 0);
++            return 'inner=' + innerWidth + 'x' + innerHeight + ' docScroll=' + d.scrollWidth + 'x' + d.scrollHeight
++                + ' body=' + Math.round(b.width) + 'x' + Math.round(b.height)
++                + ' classicScrollbarWidth=' + (innerWidth - d.clientWidth)
++                + ' scrollTo(0,300)->' + reached
++                + ' measure=' + (window.__detourMeasureBody ? JSON.stringify(window.__detourMeasureBody()) : 'no-function')
++                + ' resizeObserver=' + (window.__detourResizeObserver ? 'installed' : 'none');
++            """)
++        let popoverSize = webView.window.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "nil"
++        return "webView=\(Int(webView.frame.width))x\(Int(webView.frame.height)) popoverWindow=\(popoverSize) "
++            + "sizeToContentMax=\(maximum.map { "\(Int($0.width))x\(Int($0.height))" } ?? "nil") \(page)"
++    }
++
++    /// A wheel event as the pointer over the popup makes it: the event has no
++    /// window, so its location is read as window coordinates of the point given.
++    func wheelOverPopup(_ webView: WKWebView, deltaY: Int32) {
++        guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: deltaY, wheel2: 0, wheel3: 0) else { return }
++        let inWindow = webView.convert(NSPoint(x: webView.bounds.midX, y: webView.bounds.midY), to: nil)
++        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
++        cg.location = CGPoint(x: inWindow.x, y: primaryHeight - inWindow.y)
++        guard let event = NSEvent(cgEvent: cg) else { return }
++        webView.scrollWheel(with: event)
++    }
++
++    /// Wheel events from the top of the page: does the page move?
++    func wheelFromTop(_ webView: WKWebView, _ label: String) async {
++        _ = await js(webView, "window.scrollTo(0, 0); return '';")
++        await sleep(0.3)
++        var trace: [Int] = []
++        for _ in 0..<5 {
++            wheelOverPopup(webView, deltaY: -120)
++            await sleep(0.35)
++            trace.append(Int(await scrollY(webView)))
++        }
++        log("    \(label): five wheel events of -120 from the top -> scrollY \(trace)")
++        _ = await js(webView, "window.scrollTo(0, 0); return '';")
++        await sleep(0.2)
++    }
++
++    func clickAndReport(_ webView: WKWebView, _ id: String) async -> Bool {
++        let before = await clickCount(webView, id: id)
++        guard await postClick(webView, id: id) else { return false }
++        var delivered = false
++        for _ in 0..<20 where !delivered {
++            await sleep(0.1)
++            delivered = await clickCount(webView, id: id) > before
++        }
++        log("    click #\(id): trusted click reached the page: \(delivered)")
++        return delivered
++    }
++
++    /// The controller's measure function and resize observer, installed in the
++    /// document the popup ended up with. The controller installs its own 50 ms
++    /// after `reload()`, and for a small static popup that lands in a document
++    /// the reload then replaces (measured: `__detourMeasureBody` is gone and the
++    /// popover stays 100 x 100) — a separate, older problem. This is the same
++    /// script, so the controller's resize handler is what gets exercised.
++    func installMeasureAndObserver(_ webView: WKWebView) async {
++        let installed = await js(webView, """
++            window.__detourMeasureBody = function() {
++                const body = document.body;
++                if (!body) return {width: 0, height: 0};
++                const doc = document.documentElement;
++                const style = window.getComputedStyle(body);
++                const marginV = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
++                return {
++                    width: Math.ceil(Math.max(body.scrollWidth, doc.scrollWidth)),
++                    height: Math.ceil(Math.max(body.offsetHeight, body.scrollHeight, doc.scrollHeight) + marginV),
++                    contentHeight: Math.ceil(Math.max(body.offsetHeight, body.scrollHeight) + marginV)
++                };
++            };
++            const before = !!window.__detourResizeObserver;
++            if (!before) {
++                const handler = window.webkit.messageHandlers.extensionPopupResize;
++                window.__detourResizeObserver = new ResizeObserver(() => handler.postMessage(window.__detourMeasureBody()));
++                window.__detourResizeObserver.observe(document.body);
++            }
++            return before ? 'the observer the controller installed was already there' : 'installed by the harness (the one the controller installed was lost to the reload)';
++            """)
++        log("    resize observer: \(installed)")
++        await sleep(1.0)
++    }
++
++    // MARK: TASK-150 — popups that fit, grow and shrink
++
++    func runPopupSizingChecks() async {
++        log("== TASK-150 popup sizing ==")
++        if let webView = await openPopup("ffffffffffffffffffffffffffffffff") {
++            log("FITS (explicit width 320), as presented: \(await metrics(webView))")
++            await installMeasureAndObserver(webView)
++            log("FITS (explicit width 320), with the resize observer: \(await metrics(webView))")
++            await snapshot(webView, "fits")
++            await closePopup()
++        }
++        if let webView = await openPopup("nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn") {
++            log("NO-WIDTH (shrink-to-fit), as presented: \(await metrics(webView))")
++            await installMeasureAndObserver(webView)
++            log("NO-WIDTH (shrink-to-fit), with the resize observer: \(await metrics(webView))")
++            await snapshot(webView, "nowidth")
++            await closePopup()
++        }
++        if let webView = await openPopup("gggggggggggggggggggggggggggggggg") {
++            log("GROW, as presented: \(await metrics(webView))")
++            await installMeasureAndObserver(webView)
++            log("GROW, with the resize observer: \(await metrics(webView))")
++            await snapshot(webView, "grow-small")
++            if await clickAndReport(webView, "grow") {
++                await sleep(1.2)
++                log("GROW, after Grow: \(await metrics(webView)) status=\(await js(webView, "return document.getElementById('status').textContent;"))")
++                await wheelFromTop(webView, "grown popup")
++                await scrollIntoView(webView, id: "below")
++                if await clickAndReport(webView, "below") {
++                    log("    after clicking the button below the fold: \(await js(webView, "return document.getElementById('status').textContent + ' (scrollY ' + Math.round(scrollY) + ')';"))")
++                }
++                await snapshot(webView, "grow-grown-bottom")
++                await scrollIntoView(webView, id: "shrink")
++                if await clickAndReport(webView, "shrink") {
++                    await sleep(1.5)
++                    log("GROW, after Shrink: \(await metrics(webView)) status=\(await js(webView, "return document.getElementById('status').textContent;"))")
++                    await snapshot(webView, "grow-shrunk")
++                    // And once more: a second growth must scroll again.
++                    if await clickAndReport(webView, "grow") {
++                        await sleep(1.2)
++                        log("GROW, after a second Grow: \(await metrics(webView))")
++                    }
++                }
++            }
++            log("GROW, before closing: view scrolling mode: \(ExtensionPopoverController.isPageScrolling(webView))")
++            popover(of: webView)?.animates = false
++            await closePopup()
++            log("GROW, after ExtensionPopoverController.close(): popup still in a window: \(webView.window != nil); view scrolling mode: \(ExtensionPopoverController.isPageScrolling(webView))")
++        }
++    }
++
++    // MARK: TASK-150 review fixes — re-click, and a document taller than its body
++
++    /// The popup opened by the path a click on the sidebar's extension button
++    /// takes: `tabSidebarDidRequestShowExtensionPopup`, which builds a new
++    /// ExtensionPopoverController each time and never closes the old popover.
++    func clickToolbarButton(_ id: String) async -> WKWebView? {
++        let bar = wc.tabSidebar.fauxAddressBar
++        wc.tabSidebarDidRequestShowExtensionPopup(wc.tabSidebar, extensionID: id, sourceButton: bar)
++        guard let context = ExtensionManager.shared.context(for: id) else { return nil }
++        var popup: WKWebView?
++        for _ in 0..<50 where popup?.window == nil {
++            await sleep(0.2)
++            popup = context.action(for: nil)?.popupWebView
++        }
++        await sleep(1.2)
++        guard let webView = popup, webView.window != nil else {
++            log("FAILED: the popup of \(id) did not appear after the toolbar click"); return nil
++        }
++        _ = await js(webView, """
++            window.__harnessClicks = [];
++            document.addEventListener('click', (e) => {
++                window.__harnessClicks.push({ id: e.target && e.target.id, trusted: e.isTrusted });
++            }, true);
++            return '';
++            """)
++        return webView
++    }
++
++    /// Close a popover the way the responder chain does (`performClose:`).
++    func closePopover(of webView: WKWebView) async {
++        // The NSPopover itself: in the responder chain after its content, or
++        // (failing that) behind the popover window's private accessor.
++        var found: NSPopover?
++        var responder: NSResponder? = webView
++        var hops = 0
++        while let current = responder, found == nil, hops < 40 {
++            found = current as? NSPopover
++            responder = current.nextResponder
++            hops += 1
++        }
++        var how = "responder chain"
++        if found == nil, let window = webView.window, window.responds(to: NSSelectorFromString("_popover")) {
++            found = window.value(forKey: "_popover") as? NSPopover
++            how = "popover window's _popover"
++        }
++        guard let popover = found else {
++            log("    close: could not find the NSPopover of the popup"); return
++        }
++        // Without the close animation: with the screen locked it never ends,
++        // and popoverDidClose is only sent when it has.
++        popover.animates = false
++        popover.performClose(nil)
++        await sleep(1.2)
++        log("    closed the popover (performClose: on the NSPopover, found through the \(how), not animated): popup still in a window: \(webView.window != nil); view scrolling mode: \(ExtensionPopoverController.isPageScrolling(webView))")
++    }
++
++    func popover(of webView: WKWebView) -> NSPopover? {
++        var responder: NSResponder? = webView
++        var hops = 0
++        while let current = responder, hops < 40 {
++            if let popover = current as? NSPopover { return popover }
++            responder = current.nextResponder
++            hops += 1
++        }
++        return nil
++    }
++
++    func mode(_ webView: WKWebView) -> String {
++        "scrollingMode=\(ExtensionPopoverController.isPageScrolling(webView)) uiDelegate=\(webView.uiDelegate.map { String(describing: Unmanaged.passUnretained($0 as AnyObject).toOpaque()) } ?? "nil")"
++    }
++
++    func runReclickChecks() async {
++        log("== TASK-150 re-click while a tall popup is open ==")
++        if let first = await clickToolbarButton(extID) {
++            log("TALL, first click: \(mode(first)) \(await metrics(first))")
++            await wheelFromTop(first, "first presentation")
++            // The second click, with the popup still open.
++            guard let second = await clickToolbarButton(extID) else { return }
++            log("TALL, second click while open: same web view=\(second === first) \(mode(second)) \(await metrics(second))")
++            await wheelFromTop(second, "re-opened popup")
++            // Sample the mode for a while: a late close of the first popover must not flip it.
++            var samples: [String] = []
++            for _ in 0..<8 {
++                await sleep(0.4)
++                samples.append("\(ExtensionPopoverController.isPageScrolling(second) ? "S" : "-")\(await js(second, "window.scrollTo(0, 200); const y = Math.round(scrollY); window.scrollTo(0, 0); return String(y);"))")
++            }
++            log("    mode / scrollTo(0,200) over 3.2 s after the re-click: \(samples)")
++            await scrollIntoView(second, id: "btn-interim-probe")
++            if await clickAndReport(second, "btn-interim-probe") {
++                await sleep(1.0)
++                log("    below-the-fold Probe after the re-click shows \((await js(second, "return document.getElementById('res-interim').textContent;")).count) chars (scrollY \(Int(await scrollY(second))))")
++            }
++            await snapshot(second, "reclick-tall")
++            await closePopover(of: second)
++        }
++
++        log("== TASK-150 re-click on a popup that grew, then fits again ==")
++        let growID = "gggggggggggggggggggggggggggggggg"
++        if let first = await clickToolbarButton(growID) {
++            log("GROW, first click: \(mode(first)) \(await metrics(first))")
++            if await clickAndReport(first, "grow") {
++                await sleep(1.2)
++                log("GROW, grown: \(mode(first)) \(await metrics(first))")
++            }
++            // Second click while the grown popup is open: the page reloads small.
++            guard let second = await clickToolbarButton(growID) else { return }
++            log("GROW, second click while open and grown (page reloaded, fits): same web view=\(second === first) \(mode(second)) \(await metrics(second))")
++            await snapshot(second, "reclick-grow-fits")
++            // Grown again and closed while scrolling: the next opening must fit.
++            if await clickAndReport(second, "grow") {
++                await sleep(1.2)
++                log("GROW, grown again: \(mode(second)) \(await metrics(second))")
++            }
++            await closePopover(of: second)
++            if let third = await clickToolbarButton(growID) {
++                log("GROW, opened again after closing while scrolling: same web view=\(third === second) \(mode(third)) \(await metrics(third))")
++                await snapshot(third, "reopen-grow-fits")
++                await closePopover(of: third)
++            }
++        }
++    }
++
++    func runTallishCheck() async {
++        log("== TASK-150 a document taller than its body, just over 600 pt ==")
++        guard let webView = await openPopup("tttttttttttttttttttttttttttttttt") else { return }
++        log("TALLISH, as presented: \(mode(webView)) \(await metrics(webView))")
++        log("    page: " + (await js(webView, "const b = document.body; return 'body=' + Math.max(b.offsetHeight, b.scrollHeight) + ' document=' + document.documentElement.scrollHeight + ' inner=' + innerHeight;")))
++        var samples: [String] = []
++        for _ in 0..<16 {
++            await sleep(0.25)
++            let height = webView.window.map { Int($0.frame.height) } ?? -1
++            let reach = await js(webView, "window.scrollTo(0, 100); const y = Math.round(scrollY); window.scrollTo(0, 0); return String(y);")
++            samples.append("\(ExtensionPopoverController.isPageScrolling(webView) ? "S" : "-")/\(height)/\(reach)")
++        }
++        log("    mode / popover window height / scrollTo(0,100) every 0.25 s for 4 s: \(samples)")
++        await wheelFromTop(webView, "tallish popup")
++        await scrollIntoView(webView, id: "footer")
++        _ = await js(webView, "window.scrollTo(0, 1000); return '';")
++        await sleep(0.3)
++        log("    scrolled to the bottom: scrollY=\(Int(await scrollY(webView))) footer rect=\(await elementRect(webView, id: "footer") ?? [])")
++        if await clickAndReport(webView, "footer") {
++            log("    after clicking the footer: \(await js(webView, "return document.getElementById('status').textContent;"))")
++        }
++        await snapshot(webView, "tallish-bottom")
++        await closePopup()
++    }
++
++    func run() async {
++        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
++        log("START fixture=\(fixture) ext=\(extID) activate=\(activate) delivery=\(directDelivery ? "direct to the web view" : "posted")")
++        log("    \(focusState(nil))")
++        await sleep(3) // the workers start
++
++        let previousApp = NSWorkspace.shared.frontmostApplication
++        if ProcessInfo.processInfo.environment["DETOUR_DNR_HARNESS_FRONT"] == "1" {
++            // In front of other apps' windows WITHOUT activating: the user's
++            // app stays frontmost and keeps the keyboard.
++            if let screen = NSScreen.main ?? NSScreen.screens.first {
++                let visible = screen.visibleFrame
++                let size = NSSize(width: min(760, visible.width), height: min(740, visible.height))
++                wc.window?.setFrame(NSRect(x: visible.maxX - size.width, y: visible.minY, width: size.width, height: size.height),
++                                    display: true)
++            }
++            wc.window?.orderFrontRegardless()
++            await sleep(0.8)
++            log("ordered the window front regardless, bottom-right corner (no activation, not key): \(wc.window?.frame ?? .zero)")
++        }
++        if activate {
++            NSApp.activate(ignoringOtherApps: true)
++            wc.window?.makeKeyAndOrderFront(nil)
++            await sleep(0.5)
++            log("ACTIVATED the app for the clicks (previous frontmost: \(previousApp?.localizedName ?? "nil"))")
++        }
++        defer {
++            if activate, let previousApp { previousApp.activate(options: []) }
++        }
++
++        if ProcessInfo.processInfo.environment["DETOUR_DNR_HARNESS_SIZING"] != "0" {
++            await runPopupSizingChecks()
++        }
++        if ProcessInfo.processInfo.environment["DETOUR_DNR_HARNESS_REVIEW"] != "0" {
++            await runTallishCheck()
++            await runReclickChecks()
++        }
++        guard ProcessInfo.processInfo.environment["DETOUR_DNR_HARNESS_EXPLORER"] != "0" else { return }
++
++        log("== API Explorer popup ==")
++        guard let webView = await openPopup(extID) else { return }
++        log("popup presented: url=\(webView.url?.absoluteString ?? "nil") windowClass=\(type(of: webView.window!))")
++        log("    \(focusState(webView))")
++        log("TALL (API Explorer), as presented: \(await metrics(webView))")
++        await installMeasureAndObserver(webView)
++        log("TALL (API Explorer), with the resize observer: \(await metrics(webView))")
++        log("sections present: " + (await js(webView, "return Array.from(document.querySelectorAll('h2')).map((h) => h.textContent).filter((t) => /declarative|interim/i.test(t)).join(' | ');")))
++        await snapshot(webView, "popup-top")
++        await wheelFromTop(webView, "API Explorer popup")
++
++        // Before any button: does a click land where it is aimed? Aimed at the
++        // section's heading, which does nothing when clicked.
++        _ = await js(webView, """
++            const heading = Array.from(document.querySelectorAll('h2')).find((h) => /declarative/i.test(h.textContent));
++            heading.id = 'harness-dnr-heading';
++            return '';
++            """)
++        _ = await postClick(webView, id: "harness-dnr-heading")
++        await sleep(0.6)
++        let landed = await js(webView, "return JSON.stringify((window.__harnessClicks || []).slice(-1));")
++        log("mapping check: aimed at the section heading; the page saw \(landed)")
++        guard await clickCount(webView, id: "harness-dnr-heading") > 0 else {
++            log("ABORT: a click does not land on the element it is aimed at; no button was clicked")
++            await closePopup()
++            return
++        }
++
++        await step(webView, "dnr-probe", button: "btn-dnr-probe", result: "res-dnr")
++        log("    \(focusState(webView))")
++
++        await setURL(webView, marker: "before")
++        await step(webView, "dnr-fetch-before", button: "btn-dnr-fetch", result: "res-dnr")
++
++        await setURL(webView, marker: "custom")
++        await step(webView, "dnr-add-custom", button: "btn-dnr-add", result: "res-dnr")
++        await step(webView, "dnr-get-custom", button: "btn-dnr-get", result: "res-dnr")
++        await step(webView, "dnr-fetch-custom", button: "btn-dnr-fetch", result: "res-dnr")
++
++        await setURL(webView, marker: "webkit")
++        await step(webView, "dnr-add-webkit-names", button: "btn-dnr-add-native", result: "res-dnr", settle: 2)
++        await step(webView, "dnr-get-webkit", button: "btn-dnr-get", result: "res-dnr")
++        await step(webView, "dnr-fetch-webkit", button: "btn-dnr-fetch", result: "res-dnr")
++
++        await setURL(webView, marker: "removed")
++        await step(webView, "dnr-remove", button: "btn-dnr-remove", result: "res-dnr", settle: 1.5)
++        await step(webView, "dnr-fetch-removed", button: "btn-dnr-fetch", result: "res-dnr")
++
++        await step(webView, "interim-probe", button: "btn-interim-probe", result: "res-interim")
++
++        log("all clicks seen by the page: " + (await js(webView, "return JSON.stringify(window.__harnessClicks.map((c) => c.id + (c.trusted ? '' : ' (untrusted)')));")))
++        log("    \(focusState(webView))")
++        await closePopup()
++    }
++}
++#endif

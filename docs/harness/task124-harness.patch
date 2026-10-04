@@ -1,0 +1,57 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 5f1a7b0..47bd5e6 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runVerify124IfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -880,3 +881,44 @@ extension NSApplication {
+         browserWindowControllersFrontToBack.first
+     }
+ }
++
++// MARK: - TEMP TASK-124 verify harness — DO NOT COMMIT
++extension AppDelegate {
++    func runVerify124IfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], let url = env["DETOUR_VERIFY_URL"].flatMap(URL.init(string:)) else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let handle = try? FileHandle(forWritingTo: logURL) {
++                handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++            } else {
++                try? data.write(to: logURL)
++            }
++        }
++        func snap(_ name: String) {
++            let view = wc.tabSidebar.view
++            guard let layer = view.layer,
++                  let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width), pixelsHigh: Int(view.bounds.height),
++                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
++                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
++                  let ctx = NSGraphicsContext(bitmapImageRep: rep) else { log("snap failed \(name)"); return }
++            layer.render(in: ctx.cgContext)
++            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: outDir).appendingPathComponent(name + ".png"))
++        }
++        log("harness armed")
++        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
++            guard let space = wc.activeSpace else { log("no active space"); return }
++            let selectedBefore = wc.selectedTab?.id
++            let tab = TabStore.shared.addTab(in: space, url: url)
++            func state() -> String {
++                "loading=\(tab.isLoading) prog=\(String(format: "%.2f", tab.estimatedProgress)) stalled=\(tab.isLoadProgressStalled) sidebarProgress=\(String(format: "%.2f", tab.sidebarProgress)) inWindow=\(tab.webView?.window != nil) isSelected=\(wc.selectedTab?.id == tab.id) selectionUnchanged=\(wc.selectedTab?.id == selectedBefore)"
++            }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { log("t+1.0 " + state()); snap("1-loading") }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { log("t+4.5 " + state()); snap("2-stalled") }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { wc.selectTab(id: tab.id) }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) { log("t+6.5 " + state()); snap("3-selected") }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { log("t+10 " + state()); snap("4-selected-later"); log("done") }
++        }
++    }
++}

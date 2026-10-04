@@ -44,7 +44,7 @@ sources:
     resource: ../../Detour/Browser/Window/SidePanelLayoutView.swift
     title: SidePanelLayoutView.swift (the content area beside an extension side panel)
   - id: runtime-check
-    resource: "Runtime check, 2026-10-04 (isolated profile, harness in .claude/task132.8-harness.patch; not in the repository)"
+    resource: "Runtime check, 2026-10-04 (isolated profile, harness in docs/harness/task132.8-harness.patch)"
     title: Runtime check of the docked Web Inspector with a side panel open
   - id: webkit-inspector
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Inspector/mac/WebInspectorUIProxyMac.mm

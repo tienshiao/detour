@@ -88,7 +88,7 @@ sources:
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on the extension data store and ITP
   - id: runtime-check
-    resource: "Runtime check, 2026-10-04 (isolated profile, harness in .claude/task132.8-harness.patch; not in the repository)"
+    resource: "Runtime check, 2026-10-04 (isolated profile, harness in docs/harness/task132.8-harness.patch)"
     title: Runtime check of the side panel with the real Claude extension, signed out
 ---
 

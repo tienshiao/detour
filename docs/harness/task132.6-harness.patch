@@ -1,0 +1,428 @@
+TASK-132.6 runtime harness (chrome.runtime on externally_connectable pages) — TEMPORARY, never commit the applied result.
+
+Apply:   git apply .claude/task132.6-harness.patch      (touches Detour/App/AppDelegate.swift only, #if DEBUG)
+Build:   xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+Run:     .claude/scratch/task132.6/drive.sh init <data dir name>          first launch, then seeds the real Claude
+                                                                          extension (.claude/scratch/task132.4/claude-ext)
+                                                                          with nativeMessaging DENIED (seed.py)
+         .claude/scratch/task132.6/drive.sh launch <data dir name> <out dir> [url]
+         .claude/scratch/task132.6/drive.sh finish <out dir>              log snapshot, kills only the pid it started
+         Launch sets DETOUR_NATIVE_MESSAGING_HOSTS_DIR to .claude/scratch/task132.4/blocked-native-hosts, and
+         DETOUR_EC_HARNESS_DIR / DETOUR_EC_HARNESS_EXT / DETOUR_EC_HARNESS_URL (HARNESS_EXT=<id> and OWN_TAB_WAIT=<s>
+         override the extension id and how long to wait for the extension to open its own tab).
+What:    waits for the extension's context, uses the tab the extension opened on the URL's host (the Claude
+         extension opens https://claude.ai/oauth/authorize… → /login by itself) or opens the URL, selects it, then
+         runs <out dir>/step-N.js in the page world of that tab as the files appear (argument `extensionId`), writing
+         step-N.out. popup-after-step-N.js, when present, runs in the extension's popup.html (a bare web view on the
+         context's configuration). Nothing is typed or clicked in the page by the harness itself.
+         API Explorer run: seed TestExtensions/api-explorer with seed.py, serve its external-page/ on 127.0.0.1
+         (python3 -m http.server 18326 --bind 127.0.0.1 -d TestExtensions/api-explorer/external-page) and launch with
+         HARNESS_EXT=<seeded id> OWN_TAB_WAIT=0 and url http://127.0.0.1:18326/index.html?id=<seeded id>.
+Output:  <out dir>/harness.log, step-N.out, app-log.txt
+Remove:  git checkout -- Detour/App/AppDelegate.swift
+Explorer mode (real in-process clicks, popup, live enable/disable; added for the post-review check):
+         seed TestExtensions/api-explorer AND .claude/scratch/task132.6/cs-fixture (another extension whose manifest
+         and registered content scripts run on the loopback page), serve external-page/ on 127.0.0.1:18326, then
+           MODE=explorer CS_EXT=<cs-fixture id> HARNESS_EXT=<api-explorer id> OWN_TAB_WAIT=0 \
+             .claude/scratch/task132.6/drive.sh launch <data dir> <out dir> "http://127.0.0.1:18326/index.html?id=<api-explorer id>"
+         and wait for DONE in harness.log. Clicks are mouse-down/up NSEvents handed to the web view's own handlers
+         (the app stays inactive); elements are brought into view by script. It clicks the page's buttons, opens the
+         API Explorer popup through ExtensionPopoverController.show and clicks Show Received / Clear, then calls
+         ExtensionManager.setEnabled(id:enabled:) (what the Settings switch calls) off and on, checking the open
+         page, a page loaded while disabled, and the cs-fixture content scripts each time. PNG per step.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 5f1a7b0..a894952 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runExternallyConnectableHarnessIfRequested(wc)
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -880,3 +883,380 @@ extension NSApplication {
+         browserWindowControllersFrontToBack.first
+     }
+ }
++
++// MARK: - TEMP externally_connectable harness (TASK-132.6 runtime check) — DO NOT COMMIT
++#if DEBUG
++import WebKit
++
++extension AppDelegate {
++    /// Env-gated: `DETOUR_EC_HARNESS_DIR` (output directory, holds `step-N.js`
++    /// files to run), `DETOUR_EC_HARNESS_EXT` (extension id),
++    /// `DETOUR_EC_HARNESS_URL` (page to open when no tab shows that host yet).
++    func runExternallyConnectableHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_EC_HARNESS_DIR"], let extID = env["DETOUR_EC_HARNESS_EXT"],
++              let pageURL = env["DETOUR_EC_HARNESS_URL"].flatMap(URL.init(string:)) else { return }
++        Task { @MainActor in
++            let harness = ExternallyConnectableHarness(wc: wc, outDir: URL(fileURLWithPath: outDir), extID: extID, pageURL: pageURL)
++            await harness.run()
++            harness.log("DONE")
++        }
++    }
++}
++
++@MainActor
++private final class ExternallyConnectableHarness {
++    let wc: BrowserWindowController
++    let outDir: URL
++    let extID: String
++    let pageURL: URL
++
++    init(wc: BrowserWindowController, outDir: URL, extID: String, pageURL: URL) {
++        self.wc = wc; self.outDir = outDir; self.extID = extID; self.pageURL = pageURL
++    }
++
++    func log(_ line: String) {
++        let url = outDir.appendingPathComponent("harness.log")
++        let data = Data((line + "\n").utf8)
++        if let handle = try? FileHandle(forWritingTo: url) {
++            handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++        } else {
++            try? data.write(to: url)
++        }
++    }
++
++    func sleep(_ seconds: Double) async {
++        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
++    }
++
++    func hostTabs() -> [BrowserTab] {
++        TabStore.shared.spaces.flatMap(\.tabs).filter { $0.webView?.url?.host == pageURL.host || $0.url?.host == pageURL.host }
++    }
++
++    // MARK: explorer mode (real clicks, popup, live enable/disable)
++
++    var eventNumber = 9000
++    var shot = 0
++    var popover: ExtensionPopoverController?
++
++    func js(_ webView: WKWebView, _ body: String, _ arguments: [String: Any] = [:]) async -> String {
++        do {
++            let value = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: .page)
++            return value.map { "\($0)" } ?? "<nil>"
++        } catch {
++            return "<js error: \(error.localizedDescription)>"
++        }
++    }
++
++    func focusState() -> String {
++        let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil"
++        return "app active=\(NSApp.isActive) frontmost=\(front) mainWindowKey=\(wc.window?.isKeyWindow ?? false)"
++    }
++
++    func snapshot(_ webView: WKWebView, _ name: String) async {
++        shot += 1
++        let file = String(format: "%02d-%@.png", shot, name)
++        do {
++            let configuration = WKSnapshotConfiguration()
++            configuration.rect = webView.visibleRect
++            let image = try await webView.takeSnapshot(configuration: configuration)
++            guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
++                  let png = rep.representation(using: .png, properties: [:]) else { log("    snapshot \(file): could not encode"); return }
++            try png.write(to: outDir.appendingPathComponent(file))
++            log("    snapshot \(file) \(Int(image.size.width))x\(Int(image.size.height))")
++        } catch {
++            log("    snapshot \(file) failed: \(error.localizedDescription)")
++        }
++    }
++
++    func installClickRecorder(_ webView: WKWebView) async {
++        _ = await js(webView, """
++            if (!window.__harnessClicks) {
++                window.__harnessClicks = [];
++                document.addEventListener('click', (e) => {
++                    window.__harnessClicks.push({ id: e.target && e.target.id, trusted: e.isTrusted });
++                }, true);
++            }
++            return '';
++            """)
++    }
++
++    func trustedClicks(_ webView: WKWebView, _ id: String) async -> Int {
++        Int(await js(webView, "return String((window.__harnessClicks || []).filter((c) => c.id === id && c.trusted).length);", ["id": id])) ?? -1
++    }
++
++    /// A real click: mouse-down and mouse-up NSEvents at the element's centre,
++    /// handed to the web view's own mouse handlers (an inactive app's event
++    /// queue does not deliver posted mouse events). The element is brought
++    /// into view by script first. True when a trusted click reached the page.
++    func realClick(_ webView: WKWebView, id: String) async -> Bool {
++        await installClickRecorder(webView)
++        let before = await trustedClicks(webView, id)
++        for attempt in 1...3 {
++            let rect = await js(webView, """
++                const el = document.getElementById(id);
++                if (!el) return '';
++                el.scrollIntoView({ block: 'center' });
++                await new Promise((r) => setTimeout(r, 150));
++                const r = el.getBoundingClientRect();
++                return (r.left + r.width / 2) + ',' + (r.top + r.height / 2);
++                """, ["id": id])
++            let parts = rect.split(separator: ",").compactMap { Double($0) }
++            guard parts.count == 2, let window = webView.window else { log("    click #\(id): no element or no window (\(rect))"); return false }
++            let point = webView.convert(NSPoint(x: parts[0], y: parts[1]), to: nil)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                guard let event = NSEvent.mouseEvent(
++                    with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
++                    windowNumber: window.windowNumber, context: nil, eventNumber: eventNumber, clickCount: 1,
++                    pressure: type == .leftMouseDown ? 1 : 0) else { return false }
++                if type == .leftMouseDown { webView.mouseDown(with: event) } else { webView.mouseUp(with: event) }
++                await sleep(0.06)
++            }
++            for _ in 0..<20 {
++                await sleep(0.1)
++                if await trustedClicks(webView, id) > before {
++                    log("    click #\(id): trusted click reached the page (attempt \(attempt), css \(Int(parts[0])),\(Int(parts[1])))")
++                    return true
++                }
++            }
++        }
++        log("    click #\(id): FAILED, no trusted click reached the page. \(focusState())")
++        return false
++    }
++
++    /// Click `button`, wait until `result`'s text stops changing, log it, snapshot.
++    func step(_ webView: WKWebView, _ label: String, button: String, result: String, wait: Double = 0.6) async {
++        log("STEP \(label): #\(button)")
++        _ = await js(webView, "const el = document.getElementById(id); if (el) el.textContent = ''; return '';", ["id": result])
++        guard await realClick(webView, id: button) else { return }
++        var last = "", stable = 0
++        let start = Date()
++        while stable < 3 && Date().timeIntervalSince(start) < 12 {
++            await sleep(0.25)
++            let text = await js(webView, "const el = document.getElementById(id); return el ? (el.classList.contains('error') ? '[ERROR STYLE] ' : '') + el.textContent : '<no element>';", ["id": result])
++            if text == last && !text.isEmpty { stable += 1 } else { stable = 0; last = text }
++        }
++        await sleep(wait)
++        for line in last.split(separator: "\n", omittingEmptySubsequences: false) { log("      | \(line)") }
++        _ = await js(webView, "const el = document.getElementById(id); if (el) el.scrollIntoView({ block: 'center' }); await new Promise((r) => setTimeout(r, 200)); return '';", ["id": result])
++        await snapshot(webView, label)
++    }
++
++    /// The other extension's content script in this document: how often it
++    /// ran, and what its worker answers through it right now.
++    func contentScriptState(_ webView: WKWebView, _ label: String) async {
++        let state = await js(webView, """
++            const root = document.documentElement;
++            const reply = await new Promise((resolve) => {
++                const id = String(Math.random());
++                const onAnswer = (e) => { if (e.data && e.data.__csFixture === 'answer' && e.data.id === id) { clearTimeout(timer); window.removeEventListener('message', onAnswer); resolve(e.data.reply); } };
++                const timer = setTimeout(() => { window.removeEventListener('message', onAnswer); resolve('NO ANSWER from the content script'); }, 5000);
++                window.addEventListener('message', onAnswer);
++                window.postMessage({ __csFixture: 'ask', id: id }, '*');
++            });
++            return JSON.stringify({ url: location.href, runs: root.getAttribute('data-cs-fixture-runs'), registeredRuns: root.getAttribute('data-cs-fixture-registered-runs'),
++                loadReply: root.getAttribute('data-cs-fixture-reply'), askReply: reply, chrome: typeof window.chrome });
++            """)
++        let scripts = webView.configuration.userContentController.userScripts
++        var counts: [String: Int] = [:]
++        for script in scripts { counts[script.source, default: 0] += 1 }
++        let duplicates = counts.filter { $0.value > 1 }.map { "\($0.key.prefix(40)) x\($0.value)" }
++        log("CS \(label): \(state) | controller scripts=\(scripts.count) shim=\(scripts.filter { $0.source.hasPrefix(ExternallyConnectable.scriptMarker) }.count) duplicates=\(duplicates)")
++    }
++
++    func openTab(_ url: URL, in space: Space) async -> (BrowserTab, WKWebView)? {
++        let tab = TabStore.shared.addTab(in: space, url: url)
++        wc.selectTab(id: tab.id)
++        guard let webView = tab.webView else { log("tab has no web view"); return nil }
++        await waitForLoad(webView)
++        return (tab, webView)
++    }
++
++    func waitForLoad(_ webView: WKWebView) async {
++        var waited = 0.0
++        await sleep(0.3)
++        while (webView.isLoading || webView.url == nil) && waited < 30 { await sleep(0.25); waited += 0.25 }
++        await sleep(1.0)
++        log("    loaded \(webView.url?.absoluteString ?? "nil") title=\(webView.title ?? "nil")")
++    }
++
++    func openPopup(_ id: String) async -> WKWebView? {
++        guard let context = ExtensionManager.shared.context(for: id) else { log("FAILED: no loaded context for \(id)"); return nil }
++        let bar = wc.tabSidebar.fauxAddressBar
++        let controller = ExtensionPopoverController(extensionID: id)
++        popover = controller
++        controller.show(relativeTo: bar.bounds, of: bar, preferredEdge: .minY)
++        var popup: WKWebView?
++        for _ in 0..<50 where popup?.window == nil {
++            await sleep(0.2)
++            popup = context.action(for: nil)?.popupWebView
++        }
++        guard let webView = popup, webView.window != nil else { log("FAILED: the popup of \(id) did not appear"); return nil }
++        await sleep(1.5)
++        log("    popup presented: url=\(webView.url?.lastPathComponent ?? "nil") size=\(Int(webView.bounds.width))x\(Int(webView.bounds.height)) \(focusState())")
++        return webView
++    }
++
++    func runExplorer(csID: String) async {
++        log("START explorer ext=\(extID) cs=\(csID) page=\(pageURL.absoluteString) \(focusState())")
++        guard let space = wc.activeSpace, let profile = space.profile else { log("no active space/profile"); return }
++        for _ in 0..<60 where profile.extensionContext(for: extID) == nil || profile.extensionContext(for: csID) == nil { await sleep(0.5) }
++        guard profile.extensionContext(for: extID) != nil, profile.extensionContext(for: csID) != nil else { log("contexts never loaded"); return }
++        log("table=\(profile.externallyConnectablePages.table.mapValues { $0.map(\.string) })")
++        await sleep(2)
++
++        // a. The listed page, by real clicks.
++        log("== A. listed page in a tab")
++        guard let (tab1, page1) = await openTab(pageURL, in: space) else { return }
++        await contentScriptState(page1, "tab1 at load")
++        await step(page1, "page-probe", button: "probe", result: "result")
++        await step(page1, "page-send-callback", button: "send-callback", result: "result")
++        await step(page1, "page-send-promise", button: "send-promise", result: "result")
++        await step(page1, "page-send-silent", button: "send-silent", result: "result")
++        await step(page1, "page-connect", button: "connect", result: "result")
++        await step(page1, "page-send-unknown", button: "send-unknown", result: "result")
++        await step(page1, "page-connect-unknown", button: "connect-unknown", result: "result")
++        await step(page1, "page-send-no-id", button: "send-no-id", result: "result")
++
++        // The popup's section, by real clicks.
++        log("== A. popup: Externally Connectable section")
++        if let popup = await openPopup(extID) {
++            log("    id field shows: " + (await js(popup, "return document.getElementById('input-external-id').value;")))
++            await step(popup, "popup-show-received", button: "btn-external-received", result: "res-external")
++            await step(popup, "popup-clear", button: "btn-external-clear", result: "res-external")
++            await step(popup, "popup-show-received-after-clear", button: "btn-external-received", result: "res-external")
++            popover?.close(); popover = nil
++            await sleep(0.8)
++        }
++
++        // b. Live update: the Settings → Extensions switch calls setEnabled(id:enabled:).
++        log("== B. disable (ExtensionManager.setEnabled(id:enabled: false))")
++        ExtensionManager.shared.setEnabled(id: extID, enabled: false)
++        log("context loaded=\(profile.extensionContext(for: extID) != nil) table=\(profile.externallyConnectablePages.table.mapValues { $0.map(\.string) })")
++        await sleep(1)
++        wc.selectTab(id: tab1.id)
++        await step(page1, "disabled-open-page-probe", button: "probe", result: "result")
++        await step(page1, "disabled-open-page-send-callback", button: "send-callback", result: "result")
++        await step(page1, "disabled-open-page-send-promise", button: "send-promise", result: "result")
++        await contentScriptState(page1, "tab1 open document, after disable")
++
++        log("== B. a page loaded while disabled")
++        var second = URLComponents(url: pageURL, resolvingAgainstBaseURL: false)!
++        second.queryItems = (second.queryItems ?? []) + [URLQueryItem(name: "tab", value: "2")]
++        guard let (tab2, page2) = await openTab(second.url!, in: space) else { return }
++        await step(page2, "disabled-new-page-probe", button: "probe", result: "result")
++        await step(page2, "disabled-new-page-send-callback", button: "send-callback", result: "result")
++        await contentScriptState(page2, "tab2 loaded while disabled")
++
++        log("== B. enable again")
++        ExtensionManager.shared.setEnabled(id: extID, enabled: true)
++        log("context loaded=\(profile.extensionContext(for: extID) != nil) table=\(profile.externallyConnectablePages.table.mapValues { $0.map(\.string) })")
++        await sleep(3)
++        wc.selectTab(id: tab1.id)
++        await sleep(0.5)
++        await step(page1, "enabled-open-page-send-callback", button: "send-callback", result: "result")
++        await step(page1, "enabled-open-page-send-unknown", button: "send-unknown", result: "result")
++        await contentScriptState(page1, "tab1 open document, after re-enable")
++        wc.selectTab(id: tab2.id)
++        await sleep(0.5)
++        await step(page2, "enabled-stale-new-page-probe", button: "probe", result: "result")
++        log("    reloading tab2")
++        page2.reload()
++        await waitForLoad(page2)
++        await step(page2, "enabled-reloaded-page-probe", button: "probe", result: "result")
++        await step(page2, "enabled-reloaded-page-send-callback", button: "send-callback", result: "result")
++        await contentScriptState(page2, "tab2 after reload")
++        wc.selectTab(id: tab1.id)
++        log("    reloading tab1")
++        page1.reload()
++        await waitForLoad(page1)
++        await contentScriptState(page1, "tab1 after reload")
++        await step(page1, "enabled-reloaded-tab1-send-promise", button: "send-promise", result: "result")
++        log("END \(focusState())")
++    }
++
++    func run() async {
++        if ProcessInfo.processInfo.environment["DETOUR_EC_HARNESS_MODE"] == "explorer" {
++            await runExplorer(csID: ProcessInfo.processInfo.environment["DETOUR_EC_HARNESS_CS"] ?? "")
++            return
++        }
++        log("START ext=\(extID) page=\(pageURL.absoluteString) active=\(NSApp.isActive)")
++        guard let space = wc.activeSpace, let profile = space.profile else { log("no active space/profile"); return }
++
++        // 1. The extension's context in this profile.
++        for _ in 0..<60 where profile.extensionContext(for: extID) == nil { await sleep(0.5) }
++        guard let context = profile.extensionContext(for: extID) else { log("context for \(extID) never loaded"); return }
++        log("context loaded baseURL=\(context.baseURL.absoluteString)")
++        log("table=\(profile.externallyConnectablePages.table.mapValues { $0.map(\.string) })")
++
++        // 2. Give the extension time to open its own tab; otherwise open the page.
++        let waitForOwnTab = Double(ProcessInfo.processInfo.environment["DETOUR_EC_HARNESS_OWN_TAB_WAIT"] ?? "12") ?? 12
++        var waited = 0.0
++        while hostTabs().isEmpty && waited < waitForOwnTab { await sleep(0.5); waited += 0.5 }
++        for tab in TabStore.shared.spaces.flatMap(\.tabs) {
++            log("tab \(tab.id.uuidString.prefix(8)) url=\(tab.webView?.url?.absoluteString ?? tab.url?.absoluteString ?? "nil") sleeping=\(tab.isSleeping)")
++        }
++        let tab: BrowserTab
++        if let existing = hostTabs().first {
++            log("using the tab the extension opened")
++            tab = existing
++        } else {
++            log("no tab on \(pageURL.host ?? "?") after \(waited) s; opening \(pageURL.absoluteString)")
++            tab = TabStore.shared.addTab(in: space, url: pageURL)
++        }
++        wc.selectTab(id: tab.id)
++        guard let webView = tab.webView else { log("tab has no web view"); return }
++        let scripts = webView.configuration.userContentController.userScripts
++        log("tab user scripts: \(scripts.count), shim installed: \(scripts.contains { $0.source.hasPrefix(ExternallyConnectable.scriptMarker) })")
++
++        // 3. Wait for the page.
++        var loadWait = 0.0
++        while (webView.isLoading || webView.url == nil) && loadWait < 60 { await sleep(0.5); loadWait += 0.5 }
++        await sleep(3)
++        log("page url=\(webView.url?.absoluteString ?? "nil") title=\(webView.title ?? "nil") loading=\(webView.isLoading) after \(loadWait) s")
++
++        // 4. Run step-N.js files, in order, as they appear (so steps can be
++        //    added while the app runs). `stop` ends the run.
++        var step = 1
++        var idle = 0.0
++        while idle < 600 {
++            if FileManager.default.fileExists(atPath: outDir.appendingPathComponent("stop").path) { break }
++            let file = outDir.appendingPathComponent("step-\(step).js")
++            guard let body = try? String(contentsOf: file, encoding: .utf8) else { await sleep(0.5); idle += 0.5; continue }
++            idle = 0
++            log("--- step \(step) url=\(webView.url?.absoluteString ?? "nil")")
++            let result: String
++            do {
++                let value = try await webView.callAsyncJavaScript(body, arguments: ["extensionId": extID], in: nil, contentWorld: .page)
++                result = value.map { "\($0)" } ?? "<nil>"
++            } catch {
++                result = "<js error: \(error)>"
++            }
++            try? result.write(to: outDir.appendingPathComponent("step-\(step).out"), atomically: true, encoding: .utf8)
++            log("step \(step) -> \(result.prefix(4000))")
++            step += 1
++            // `popup.js`, when present, runs once in the extension's popup page
++            // (a bare web view on the context's configuration) after the step.
++            let popupFile = outDir.appendingPathComponent("popup-after-step-\(step - 1).js")
++            if let popupBody = try? String(contentsOf: popupFile, encoding: .utf8),
++               let configuration = context.webViewConfiguration {
++                let popup = WKWebView(frame: NSRect(x: 0, y: 0, width: 440, height: 600), configuration: configuration)
++                popup.load(URLRequest(url: context.baseURL.appendingPathComponent("popup.html")))
++                var popupWait = 0.0
++                while (popup.isLoading || popup.url == nil) && popupWait < 20 { await sleep(0.25); popupWait += 0.25 }
++                await sleep(1)
++                let popupResult: String
++                do {
++                    let value = try await popup.callAsyncJavaScript(popupBody, arguments: [:], in: nil, contentWorld: .page)
++                    popupResult = value.map { "\($0)" } ?? "<nil>"
++                } catch {
++                    popupResult = "<js error: \(error)>"
++                }
++                try? popupResult.write(to: outDir.appendingPathComponent("popup-after-step-\(step - 1).out"), atomically: true, encoding: .utf8)
++                log("popup after step \(step - 1) -> \(popupResult.prefix(4000))")
++            }
++        }
++    }
++}
++#endif

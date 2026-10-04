@@ -46,7 +46,7 @@ sources:
     resource: ../../DetourTests/ExtensionSidePanelTests.swift
     title: ExtensionSidePanelTests
   - id: runtime-check
-    resource: "Runtime check, 2026-10-04 (isolated profile, harness in .claude/task132.8-harness.patch; not in the repository)"
+    resource: "Runtime check, 2026-10-04 (isolated profile, harness in docs/harness/task132.8-harness.patch)"
     title: Runtime check of the side panel with API Explorer and the real Claude extension, signed out
 ---
 

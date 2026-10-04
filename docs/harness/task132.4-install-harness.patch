@@ -1,0 +1,316 @@
+TASK-132.4 runtime harness: install the Claude extension from the Chrome Web Store through Detour's UI path
+— TEMPORARY, never commit the applied result.
+
+Apply:   git apply .claude/task132.4-install-harness.patch   (touches Detour/App/AppDelegate.swift only, #if DEBUG)
+Build:   xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+Run:     .claude/scratch/task132.4/drive-install.sh <fresh data dir name> <out dir>
+         launches with DETOUR_INSTALL_HARNESS_DIR and DETOUR_NATIVE_MESSAGING_HOSTS_DIR pointing at
+         .claude/scratch/task132.4/blocked-native-hosts, which must hold SHADOW manifests for
+         com.anthropic.claude_browser_extension and com.anthropic.claude_code_browser_extension whose path does not
+         exist. The override directory is searched FIRST, not instead of the real ones: an empty directory does not
+         hide the real hosts. The harness refuses to run unless both shadows are in the first search directory.
+What:    opens the store page in a tab, clicks the "Add to Chrome" button Detour's page script took over (real
+         mouse-down/up on the tab's web view), reads Detour's modal install prompt (text + alert-N.png), presses
+         Install and OK (posted mouse events; performClick if the modal session does not take them), then downloads
+         the CRX again to run CRX3Verifier on it and waits 70 s for the worker's first minute.
+Output:  <out dir>/harness.log, alert-1.png, alert-2.png, app-log.txt, db-extension.txt, db-permissions.txt
+Remove:  git checkout -- Detour/App/AppDelegate.swift
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 5f1a7b0..e9efe90 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runInstallHarnessIfRequested(wc)
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -880,3 +883,283 @@ extension NSApplication {
+         browserWindowControllersFrontToBack.first
+     }
+ }
++
++// MARK: - TEMP Web Store install harness (TASK-132.4 runtime check) — DO NOT COMMIT
++#if DEBUG
++import WebKit
++import CryptoKit
++
++extension AppDelegate {
++    /// Env-gated: `DETOUR_INSTALL_HARNESS_DIR` (output directory). Opens the
++    /// Claude extension's Chrome Web Store page in a tab, clicks its install
++    /// button, answers Detour's install prompt and records what was shown.
++    func runInstallHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_INSTALL_HARNESS_DIR"] else { return }
++        MainActor.assumeIsolated {
++            let harness = InstallHarness(wc: wc, outDir: URL(fileURLWithPath: outDir))
++            InstallHarness.current = harness
++            harness.start()
++        }
++    }
++}
++
++@MainActor
++private final class InstallHarness {
++    static var current: InstallHarness?
++    static let extensionID = "fcoeoabgfenejglbffodgkkbkcdhcgfn"
++    static let storeURL = URL(string: "https://chromewebstore.google.com/detail/claude/\(extensionID)")!
++    static let crxURL = URL(string: "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0&acceptformat=crx3&x=id%3D\(extensionID)%26installsource%3Dondemand%26uc")!
++
++    let wc: BrowserWindowController
++    let outDir: URL
++    var eventNumber = 7000
++    var alertTimer: Timer?
++    var handledAlerts: [ObjectIdentifier: (seen: Date, clicked: Date?, fellBack: Bool)] = [:]
++    var alertCount = 0
++
++    init(wc: BrowserWindowController, outDir: URL) { self.wc = wc; self.outDir = outDir }
++
++    nonisolated func logLine(_ line: String) {
++        let url = outDir.appendingPathComponent("harness.log")
++        let stamp = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withTime, .withColonSeparatorInTime])
++        let data = Data(("\(stamp) \(line)\n").utf8)
++        if let handle = try? FileHandle(forWritingTo: url) {
++            handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++        } else {
++            try? data.write(to: url)
++        }
++    }
++    func log(_ line: String) { logLine(line) }
++
++    func sleep(_ seconds: Double) async {
++        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
++    }
++
++    func focusState() -> String {
++        "app active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil") mainWindowKey=\(wc.window?.isKeyWindow ?? false)"
++    }
++
++    func js(_ webView: WKWebView, _ body: String, _ arguments: [String: Any] = [:]) async -> String {
++        do {
++            let value = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: .page)
++            return value.map { "\($0)" } ?? "<nil>"
++        } catch {
++            return "<js error: \(error.localizedDescription)>"
++        }
++    }
++
++    func start() {
++        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
++        log("START \(focusState())")
++        log("native messaging search directories: \(NativeMessagingHost.searchDirectories)")
++        // Safety gate: the two host names the Claude extension connects to must
++        // be shadowed by manifests in the FIRST search directory, or the real
++        // hosts on this Mac could be reached. No install without that.
++        let first = NativeMessagingHost.searchDirectories.first ?? ""
++        let shadows = ["com.anthropic.claude_browser_extension", "com.anthropic.claude_code_browser_extension"].map {
++            (first as NSString).appendingPathComponent("\($0).json")
++        }
++        guard ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"] == first,
++              shadows.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) else {
++            log("ABORT: the native messaging hosts are not shadowed (first directory \(first)); nothing was opened or installed")
++            log("DONE")
++            return
++        }
++        log("shadow manifests present in the first search directory: \(shadows.map { ($0 as NSString).lastPathComponent })")
++        // The install prompt is a modal NSAlert: a timer in the common run loop
++        // modes keeps running inside its modal session.
++        let timer = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
++            MainActor.assumeIsolated { self?.checkForAlert() }
++        }
++        RunLoop.main.add(timer, forMode: .common)
++        alertTimer = timer
++        Task { @MainActor in
++            await self.run()
++            self.log("DONE")
++        }
++    }
++
++    // MARK: alerts
++
++    func texts(in view: NSView) -> [String] {
++        var found: [String] = []
++        if let field = view as? NSTextField, !field.stringValue.isEmpty { found.append(field.stringValue) }
++        for sub in view.subviews { found.append(contentsOf: texts(in: sub)) }
++        return found
++    }
++
++    func buttons(in view: NSView) -> [NSButton] {
++        var found: [NSButton] = []
++        if let button = view as? NSButton, !button.title.isEmpty { found.append(button) }
++        for sub in view.subviews { found.append(contentsOf: buttons(in: sub)) }
++        return found
++    }
++
++    func snapshot(_ window: NSWindow, _ name: String) {
++        guard let view = window.contentView?.superview ?? window.contentView,
++              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
++        view.cacheDisplay(in: view.bounds, to: rep)
++        if let png = rep.representation(using: .png, properties: [:]) {
++            try? png.write(to: outDir.appendingPathComponent(name))
++            log("    alert snapshot \(name) \(Int(view.bounds.width))x\(Int(view.bounds.height))")
++        }
++    }
++
++    func checkForAlert() {
++        guard let window = NSApp.modalWindow, let content = window.contentView else { return }
++        let key = ObjectIdentifier(window)
++        let now = Date()
++        guard var entry = handledAlerts[key] else {
++            // First sight: let it draw, handle it on the next tick.
++            handledAlerts[key] = (seen: now, clicked: nil, fellBack: false)
++            return
++        }
++        let all = buttons(in: content)
++        let wanted = all.first { $0.title == "Install" } ?? all.first { $0.title == "OK" } ?? all.first
++        if entry.clicked == nil {
++            alertCount += 1
++            log("ALERT \(alertCount) (modal \(type(of: window)), \(focusState()))")
++            for (index, text) in texts(in: content).enumerated() {
++                log("    text[\(index)]:")
++                for line in text.components(separatedBy: "\n") { log("      | \(line)") }
++            }
++            log("    buttons: \(all.map(\.title))")
++            snapshot(window, String(format: "alert-%d.png", alertCount))
++            guard let button = wanted else { log("    no button to click"); return }
++            // A real click: mouse-down and mouse-up posted to the application's
++            // event queue at the button's centre, taken by the modal session.
++            let centre = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                if let event = NSEvent.mouseEvent(with: type, location: centre, modifierFlags: [],
++                                                  timestamp: ProcessInfo.processInfo.systemUptime,
++                                                  windowNumber: window.windowNumber, context: nil,
++                                                  eventNumber: eventNumber, clickCount: 1,
++                                                  pressure: type == .leftMouseDown ? 1 : 0) {
++                    NSApp.postEvent(event, atStart: false)
++                }
++            }
++            log("    clicked \"\(button.title)\": mouse-down/up posted at window \(Int(centre.x)),\(Int(centre.y))")
++            entry.clicked = now
++            handledAlerts[key] = entry
++        } else if let clicked = entry.clicked, !entry.fellBack, now.timeIntervalSince(clicked) > 3, let button = wanted {
++            // The posted click did not end the modal session.
++            log("    the posted click did not dismiss the alert after 3 s; FALLING BACK to performClick on \"\(button.title)\"")
++            entry.fellBack = true
++            handledAlerts[key] = entry
++            button.performClick(nil)
++        }
++    }
++
++    // MARK: flow
++
++    func run() async {
++        await sleep(3)
++        guard let space = wc.activeSpace else { log("FAILED: no active space"); return }
++        let tab = TabStore.shared.addTab(in: space, url: Self.storeURL)
++        wc.selectTab(id: tab.id)
++        log("opened a tab at \(Self.storeURL.absoluteString)")
++        var webView: WKWebView?
++        for _ in 0..<200 {
++            await sleep(0.3)
++            webView = tab.webView
++            if let webView, !webView.isLoading, webView.url?.host == "chromewebstore.google.com" { break }
++        }
++        guard let webView else { log("FAILED: the tab has no web view"); return }
++        log("store page: loading=\(webView.isLoading) url=\(webView.url?.absoluteString ?? "nil") title=\(webView.title ?? "nil")")
++        log("    userAgent=\(await js(webView, "return navigator.userAgent;"))")
++        log("    web view in window: \(webView.window != nil) frame=\(webView.frame)")
++
++        // The store's install button, as Detour's page script found it.
++        var target = ""
++        for _ in 0..<60 where target.isEmpty || target == "none" {
++            await sleep(0.5)
++            target = await js(webView, """
++                const all = Array.from(document.querySelectorAll('button'));
++                const hijacked = all.filter((b) => b.dataset.detourHijacked === '1' && b.getBoundingClientRect().width > 0);
++                if (hijacked.length === 0) return 'none';
++                hijacked[0].id = hijacked[0].id || 'detour-harness-install';
++                return hijacked.map((b) => JSON.stringify(b.textContent.trim())).join(', ') + ' -> #' + hijacked[0].id;
++                """)
++        }
++        log("install buttons Detour's script took over: \(target)")
++        log("    all button texts: \(await js(webView, "return Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim()).filter((t) => t.length > 0 && t.length < 40).slice(0, 25).join(' | ');"))")
++        guard target != "none", !target.isEmpty, let idRange = target.range(of: "-> #") else {
++            log("FAILED: no install button was found on the store page"); return
++        }
++        let buttonID = String(target[idRange.upperBound...])
++        let rect = await js(webView, """
++            const el = document.getElementById(id);
++            el.scrollIntoView({ block: 'center' });
++            await new Promise((r) => setTimeout(r, 300));
++            const r = el.getBoundingClientRect();
++            return (r.left + r.width / 2) + ',' + (r.top + r.height / 2) + ',' + r.width + ',' + r.height;
++            """, ["id": buttonID])
++        let parts = rect.split(separator: ",").compactMap { Double($0) }
++        guard parts.count == 4, let window = webView.window, webView.bounds.contains(NSPoint(x: parts[0], y: parts[1])) else {
++            log("FAILED: the install button is not in view (\(rect), web view \(webView.bounds))"); return
++        }
++        _ = await js(webView, "window.__harnessClicks = []; document.addEventListener('click', (e) => window.__harnessClicks.push({ text: String(e.target.textContent || '').trim().slice(0, 30), trusted: e.isTrusted }), true); return '';")
++        let point = webView.convert(NSPoint(x: parts[0], y: parts[1]), to: nil)
++        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++            eventNumber += 1
++            guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
++                                                 timestamp: ProcessInfo.processInfo.systemUptime,
++                                                 windowNumber: window.windowNumber, context: nil,
++                                                 eventNumber: eventNumber, clickCount: 1,
++                                                 pressure: type == .leftMouseDown ? 1 : 0) else { continue }
++            // Handed to the web view's own mouse handlers: an inactive app's
++            // event queue does not deliver posted mouse events to its windows.
++            if type == .leftMouseDown { webView.mouseDown(with: event) } else { webView.mouseUp(with: event) }
++            await sleep(0.08)
++        }
++        log("clicked the store's install button (real mouse-down/up on the tab's web view) at css \(Int(parts[0])),\(Int(parts[1])) size \(Int(parts[2]))x\(Int(parts[3]))")
++        await sleep(0.5)
++        log("    clicks the page saw: \(await js(webView, "return JSON.stringify(window.__harnessClicks || 'page navigated');"))")
++
++        // The CRX download, Detour's prompt and the install happen now; the
++        // alert timer answers the prompts. Wait for the extension to appear.
++        var installed: WebExtension?
++        for _ in 0..<240 where installed == nil {
++            await sleep(0.5)
++            installed = ExtensionManager.shared.extension(withID: Self.extensionID)
++        }
++        guard let ext = installed else {
++            log("FAILED: no extension with id \(Self.extensionID) after 120 s; installed ids: \(ExtensionManager.shared.extensions.map(\.id))")
++            return
++        }
++        log("INSTALLED: id=\(ext.id) name=\(ext.manifest.name) version=\(ext.manifest.version) source=\(ext.source.rawValue) updateURL=\(ext.updateURL?.absoluteString ?? "nil") enabled=\(ext.isEnabled)")
++        log("    \(focusState())")
++
++        // Independently: what the store serves, and whether it verifies.
++        var request = URLRequest(url: Self.crxURL)
++        request.setValue(UserAgentMode.chromeUserAgent, forHTTPHeaderField: "User-Agent")
++        do {
++            let (data, response) = try await URLSession.shared.data(for: request)
++            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++            log("store CRX: \(data.count) bytes from \(response.url?.host ?? "nil"), sha256 \(digest)")
++            switch CRX3Verifier.verify(crxData: data) {
++            case .verified(let publicKey):
++                log("    CRX3Verifier: VERIFIED; signing key derives id \(ExtensionInstaller.deriveExtensionID(from: publicKey))")
++            case .failed(let failure):
++                log("    CRX3Verifier: FAILED: \(failure)")
++            }
++            let unpacked = try CRXUnpacker.unpack(data: data)
++            defer { try? FileManager.default.removeItem(at: unpacked.directory) }
++            let manifest = try ExtensionManifest.parse(at: unpacked.directory.appendingPathComponent("manifest.json"))
++            log("    manifest: name=\(manifest.name) version=\(manifest.version) permissions=\(manifest.permissions ?? []) host_permissions=\(manifest.hostPermissions ?? []) optional=\(manifest.optionalPermissions ?? [])")
++            log("    header key derives id \(unpacked.publicKey.map(ExtensionInstaller.deriveExtensionID(from:)) ?? "nil")")
++        } catch {
++            log("    independent CRX check failed: \(error)")
++        }
++
++        // The first minute after the install.
++        await sleep(70)
++        for profile in TabStore.shared.profiles {
++            log("profile \(profile.name): context loaded=\(profile.extensionContext(for: Self.extensionID) != nil)")
++        }
++        log("tabs open: \(TabStore.shared.spaces.flatMap(\.tabs).map { ($0.url?.host ?? "nil") + ($0.url?.path.prefix(24).description ?? "") })")
++        log("alerts handled: \(alertCount)")
++    }
++}
++#endif

@@ -1,0 +1,185 @@
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,7 @@
+         }
+ 
+         observeWindowClose(wc)
++        runVerifyHarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -878,5 +879,140 @@
+     /// window such as Settings is in front).
+     var frontmostBrowserWindowController: BrowserWindowController? {
+         browserWindowControllersFrontToBack.first
++    }
++}
++
++// MARK: - TEMP TASK-126/127/128 verify harness — DO NOT COMMIT
++import ObjectiveC
++extension AppDelegate {
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let mode = env["DETOUR_VERIFY_MODE"] ?? ""
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = Date()
++        func log(_ line: String) {
++            let data = Data((String(format: "%7.3f ", Date().timeIntervalSince(start)) + line + "\n").utf8)
++            if let handle = try? FileHandle(forWritingTo: logURL) {
++                handle.seekToEndOfFile(); handle.write(data); try? handle.close()
++            } else {
++                try? data.write(to: logURL)
++            }
++        }
++        func after(_ t: TimeInterval, _ block: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block) }
++        func describeResponder() -> String {
++            guard let window = wc.window else { return "no window" }
++            let r = window.firstResponder
++            var s = r.map { String(describing: type(of: $0)) } ?? "nil"
++            if r === window { s += " (the window)" }
++            if let v = r as? NSView {
++                if v === wc.selectedTab?.webView { s += " = selected tab's web view" }
++                if v.isDescendant(of: wc.tabSidebar.view) { s += " (inside the sidebar)" }
++                var chain: [String] = []
++                var cur: NSView? = v
++                while let c = cur, chain.count < 6 { chain.append(String(describing: type(of: c))); cur = c.superview }
++                s += " chain=" + chain.joined(separator: "<")
++                if let tf = (v as? NSTextView)?.delegate as? NSTextField { s += " placeholder=\(tf.placeholderAttributedString?.string ?? tf.placeholderString ?? "-")" }
++            }
++            return s + " key=\(window.isKeyWindow) selectedTab=\(wc.selectedTab?.url?.absoluteString ?? "none")"
++        }
++        log("harness armed mode=\(mode) responder: " + describeResponder())
++        after(1.5) { log("t+1.5 responder: " + describeResponder()) }
++
++        if mode == "seed" {
++            after(2) {
++                guard let space = wc.activeSpace else { log("no space"); return }
++                let tab = TabStore.shared.addTab(in: space, url: URL(string: "data:text/html,<title>Seeded</title><body style='height:4000px'>Seeded")!)
++                wc.selectTab(id: tab.id)
++                log("seeded; responder: " + describeResponder())
++            }
++            after(8) { log("done") }
++            return
++        }
++
++        after(2.2) {
++            wc.window?.makeKey()
++            log("after makeKey responder: " + describeResponder())
++        }
++        after(3) {
++            guard let window = wc.window, let frameView = window.contentView?.superview else { log("no frame view"); return }
++            typealias DirFn = @convention(c) (AnyObject, Selector, NSPoint) -> Int
++            typealias BoolFn = @convention(c) (AnyObject, Selector, NSPoint) -> Bool
++            let dirSel = NSSelectorFromString("_resizeDirectionForMouseLocation:")
++            let regSel = NSSelectorFromString("_isInResizeRegion:")
++            let dirFn: DirFn? = window.responds(to: dirSel) ? unsafeBitCast(window.method(for: dirSel), to: DirFn.self) : nil
++            let regFn: BoolFn? = frameView.responds(to: regSel) ? unsafeBitCast(frameView.method(for: regSel), to: BoolFn.self) : nil
++            func probe(_ name: String, _ button: NSView) {
++                let b = button.convert(button.bounds, to: nil)
++                log("\(name) button in window coords=\(b) sidebar=\(wc.tabSidebar.view.convert(wc.tabSidebar.view.bounds, to: nil)) window=\(window.frame.size)")
++                var legend: [String: Character] = [:]
++                var next = Array("abcdefghijklmnopqrstuvwxyz").makeIterator()
++                func symbol(for view: NSView?) -> Character {
++                    guard let view else { return " " }
++                    if view === button || view.isDescendant(of: button) { return "#" }
++                    var chain: [String] = []
++                    var cur: NSView? = view
++                    while let c = cur, chain.count < 3 { chain.append(String(describing: type(of: c)) + (c.mouseDownCanMoveWindow ? "(moves)" : "")); cur = c.superview }
++                    let key = chain.joined(separator: "<")
++                    if let ch = legend[key] { return ch }
++                    let ch = next.next() ?? "?"
++                    legend[key] = ch
++                    return ch
++                }
++                let x0 = Int(b.minX) - 9, x1 = Int(b.maxX) + 9, y0 = max(0, Int(b.minY) - 9), y1 = Int(b.maxY) + 3
++                for y in stride(from: y1, through: y0, by: -1) {
++                    var hit = ""
++                    for x in x0...x1 { hit.append(symbol(for: frameView.hitTest(NSPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)))) }
++                    log(String(format: "\(name) y=%3d hit ", y) + hit)
++                }
++                for (k, v) in legend.sorted(by: { $0.value < $1.value }) { log("\(name) legend \(v) = \(k)") }
++                if ProcessInfo.processInfo.environment["DETOUR_VERIFY_PRIVATE"] == "dir", let dirFn {
++                    log("\(name) probing _resizeDirectionForMouseLocation:")
++                    for y in stride(from: y1, through: y0, by: -1) {
++                        var dir = ""
++                        for x in x0...x1 { let d = dirFn(window, dirSel, NSPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)); dir.append(d == 0 ? "." : Character(String(abs(d) % 36, radix: 36))) }
++                        log(String(format: "\(name) y=%3d dir ", y) + dir)
++                    }
++                }
++                if ProcessInfo.processInfo.environment["DETOUR_VERIFY_PRIVATE"] == "region", let regFn {
++                    log("\(name) probing _isInResizeRegion:")
++                    for y in stride(from: y1, through: y0, by: -1) {
++                        var reg = ""
++                        for x in x0...x1 { reg.append(regFn(frameView, regSel, NSPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)) ? "R" : ".") }
++                        log(String(format: "\(name) y=%3d region ", y) + reg)
++                    }
++                }
++                log("\(name) x range \(x0)...\(x1)")
++            }
++            probe("downloads", wc.tabSidebar.downloadButton)
++            if let add = wc.tabSidebar.view.window?.contentView.flatMap({ _ in wc.tabSidebar.debugAddSpaceButton }) { probe("addspace", add) }
++
++            // TASK-127: hover-revealed sidebar + downloads popover
++            after(0.5) {
++                wc.toggleSidebarAutoHide()
++                log("127 auto-hide on: collapsed=\(wc.sidebarItem.isCollapsed) autoHides=\(wc.sidebarVisibility.autoHides)")
++                after(1.0) {
++                    wc.debugSidebarEvent(.hoverReveal(isCollapsed: wc.sidebarItem.isCollapsed))
++                    log("127 hover reveal: collapsed=\(wc.sidebarItem.isCollapsed) openedByHover=\(wc.sidebarVisibility.openedByHover)")
++                }
++                after(2.0) {
++                    wc.tabSidebar.downloadButton.performClick(nil)
++                    log("127 clicked downloads")
++                }
++                after(3.0) {
++                    let popovers = (wc.window?.childWindows ?? []).map { String(describing: type(of: $0)) }
++                    log("127 popover up: childWindows=\(popovers) held=\(wc.sidebarVisibility.heldOpen)")
++                    // The pointer leaves the sidebar for the popover and the hide delay elapses.
++                    wc.debugSidebarEvent(.hoverHide(isCollapsed: wc.sidebarItem.isCollapsed))
++                    log("127 after hover-hide while popover open: collapsed=\(wc.sidebarItem.isCollapsed) openedByHover=\(wc.sidebarVisibility.openedByHover) childWindows=\((wc.window?.childWindows ?? []).count)")
++                }
++                after(4.0) {
++                    wc.debugCloseAllPopovers()
++                    log("127 closing popover")
++                }
++                after(4.4) { log("127 +0.4s after close: collapsed=\(wc.sidebarItem.isCollapsed) held=\(wc.sidebarVisibility.heldOpen) pointerInSidebar=\(wc.debugPointerInSidebar)") }
++                after(5.6) { log("127 +1.6s after close: collapsed=\(wc.sidebarItem.isCollapsed) openedByHover=\(wc.sidebarVisibility.openedByHover)"); log("done") }
++            }
++        }
+     }
+ }
+--- a/Detour/Browser/Sidebar/TabSidebarViewController.swift
++++ b/Detour/Browser/Sidebar/TabSidebarViewController.swift
+@@ -3483,3 +3483,8 @@
+         min(max(self, range.lowerBound), range.upperBound)
+     }
+ }
++
++// MARK: - TEMP TASK-126 verify harness — DO NOT COMMIT
++extension TabSidebarViewController {
++    var debugAddSpaceButton: NSView { addSpaceButton }
++}
+--- a/Detour/Browser/Window/BrowserWindowController.swift
++++ b/Detour/Browser/Window/BrowserWindowController.swift
+@@ -747,6 +747,7 @@
+     @objc private func popoverDidShow(_ notification: Notification) {
+         guard let popover = notification.object as? NSPopover, let window,
+               popover.contentViewController?.view.window?.parent === window else { return }
++        debugNotePopover(popover) // TEMP TASK-127 harness
+         let wasHolding = !sidebarHoldingPopovers.isEmpty
+         sidebarHoldingPopovers.insert(ObjectIdentifier(popover))
+         if !wasHolding { handleSidebarEvent(.holdBegan) }
+@@ -3306,3 +3307,12 @@
+     }
+ }
+ 
++
++// MARK: - TEMP TASK-127 verify harness — DO NOT COMMIT
++extension BrowserWindowController {
++    func debugSidebarEvent(_ event: SidebarVisibilityState.Event) { handleSidebarEvent(event) }
++    var debugPointerInSidebar: Bool { isPointerInSidebar }
++    static var debugPopovers: [NSPopover] = []
++    func debugCloseAllPopovers() { for p in Self.debugPopovers { p.close() }; Self.debugPopovers.removeAll() }
++    func debugNotePopover(_ p: NSPopover) { Self.debugPopovers.append(p) }
++}
