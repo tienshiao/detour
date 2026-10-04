@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, the per-site switch implemented through a WebKit preferences SPI, and the blocked-resource counter."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:23:47Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:52:27Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
@@ -45,6 +45,9 @@ sources:
   - id: chunk-tests
     resource: ../../DetourTests/ContentRuleListChunkTests.swift
     title: ContentRuleListChunkTests.swift
+  - id: task-155
+    resource: backlog:TASK-155
+    title: In a split filter list an exception in a later chunk than its block rule does not apply
 ---
 
 # What it does
@@ -104,18 +107,18 @@ the Settings pane.
 
 WebKit is given at most 150,000 rules as one rule list
 (`ContentRuleStore.defaultMaxRulesPerList`). A longer filter list is compiled
-in chunks of that size, in list order: chunk 0 under the list's identifier,
-chunk N as `<id>-<N>`. The arithmetic is the pure functions of
-`ContentRuleListChunks`: the chunk count, the identifiers of a list, the
-rule ranges, and the stale identifiers a longer previous compile left. Each
-chunk is an independent rule list in WebKit's store, so `ContentRuleStore`
-keeps the set together:
+in chunks of at most that size: chunk 0 under the list's identifier, chunk N
+as `<id>-<N>`. The arithmetic is the pure functions of
+`ContentRuleListChunks`: what each chunk holds (next section), the
+identifiers of a list, and the stale identifiers a longer previous compile
+left. Each chunk is an independent rule list in WebKit's store, so
+`ContentRuleStore` keeps the set together:
 
 | Operation | Rule |
 |---|---|
 | `compile(identifier:rules:)` | Compiles every chunk. When at least one compiled it records the list's chunk count, removes stale chunks, and completes with all of the list's chunks. When none did, the list is left as it was. |
 | `cachedLists(forList:)` | Every compiled chunk, in order. This is what a web view gets. |
-| `compiledRuleCount(forList:)`, `isCompiled(list:)` | The sum over the chunks; compiled when any chunk is. Settings shows these. |
+| `compiledRuleCount(forList:)`, `isCompiled(list:)` | The sum over the chunks, an exception the chunks repeat counted once; compiled when any chunk is. Settings shows these. |
 | `lookUpList(identifier:)` | The launch path: looks up as many chunks as the last compile recorded. |
 | `invalidateAll()` | Removes every chunk and forgets rule counts and chunk counts. |
 
@@ -144,12 +147,45 @@ No list is near the cap. Parser output for the lists as fetched on
 | `easylist-cookie` | 25,010 | 25,008 (2 stripped as invalid) | 16.7% |
 | `urlhaus-filter` | 9,605 | 9,605 | 6.4% |
 
+### What a chunk holds
+
+An `ignore-previous-rules` rule (an `@@` exception) only undoes rules earlier
+in its **own** rule list (see "Why the per-site switch is not a rule list").
+Chunks that were plain slices of the list would lose every exception that
+landed in another chunk than the block rule it was written for, so
+`ContentRuleListChunks.chunks(of:maxRulesPerList:isException:)` lays a split
+list out differently (TASK-155):
+
+- the rules that are not exceptions are sliced in list order;
+- every slice is followed by **all the list's exceptions**, in list order,
+  so in each chunk the exceptions come after, and undo, that chunk's block
+  rules;
+- a slice holds the cap less the exceptions it carries, so no chunk exceeds
+  the cap.
+
+With a cap of 4, `b0 b1 x0 b2 b3 b4 b5 b6` (`x0` an exception) becomes
+`[b0 b1 b2 x0] [b3 b4 b5 x0] [b6 x0]`.
+
+| Case | Rule |
+|---|---|
+| A list within the cap | One chunk in list order, exactly as before TASK-155. Nothing is moved. |
+| Rule count | `Chunk.countedRuleCount` is how many of a chunk's rules its list's count includes: the repeated exceptions count in the first chunk only. The list's count is therefore the number of distinct rules compiled, and "Active" equals "In List" for a split list that compiled whole. A bad rule the bisection strips lowers the count only where it was counted. |
+| Exceptions near the cap | The chunks carry at most half the cap (`maxCarriedExceptions`, 75,000), the first in list order. Each chunk then keeps room for at least as many block rules and the number of chunks at most doubles. Exceptions beyond that are left out of a split list and logged as an error (`droppedExceptionCount`); "Active" is then lower than "In List". |
+| A split list of only exceptions | One chunk of the carried exceptions. It undoes nothing, but the compile does not read as a failure. |
+
+Before TASK-155 the chunks were slices of the list in order, and a web view
+test with a cap of 2 showed the exempted URL blocked: the exception was the
+third of three rules and its block rule the first.[^task-155] Half the cap
+was chosen for the bound it gives; no real list has anything near 75,000
+exceptions (EasyList as a whole is about 75,700 rules).
+
 What splitting does not solve:
 
-- **Exceptions do not cross chunks.** An `ignore-previous-rules` rule only
-  cancels blocks in its own rule list (see below), and rules are chunked in
-  list order. An `@@` exception that lands in a later chunk than the block
-  it was written for stops applying. Not exercised: no list is split today.
+- **A split list is kinder to exceptions than an unsplit one.** In a split
+  list every exception follows every block rule of its chunk, so it applies
+  wherever it stood in the list. A list within the cap keeps list order, and
+  there an exception only undoes the block rules before it. That is WebKit's
+  documented rule; it was not checked in a web view.
 - **A chunk that fails to compile** even after bisection leaves the list
   active with the chunks that did compile. The "Active" count is then lower
   than "In List". A chunk an earlier compile left under the same identifier
@@ -288,13 +324,16 @@ EasyPrivacy cannot un-block something EasyList blocks.
   view's navigation delegate.
 - `ContentBlockerTests` - storage isolation per data directory, parser cases,
   and compiling each cached real list through WebKit.
-- `ContentRuleListChunkTests` - the chunk arithmetic, and a store with an
-  injected cap of 2 rules over a private temporary rule list store: every
-  chunk compiled, cached, counted, found by a new store, and applied for a
-  profile; stale chunks removed when a list shrinks; `invalidateAll`; and in
-  a real `WKWebView` a rule of the last chunk blocks, a disabled list's
-  chunks are all detached, and a whitelisted navigation is not blocked by
-  any chunk.
+- `ContentRuleListChunkTests` - the chunk arithmetic, the layout of a split
+  list (every chunk ends with the exceptions, no chunk over the cap, a
+  repeated exception counted once, exceptions beyond half the cap left out),
+  and a store with an injected cap of 2 rules over a private temporary rule
+  list store: every chunk compiled, cached, counted, found by a new store,
+  and applied for a profile; stale chunks removed when a list shrinks;
+  `invalidateAll`; and in a real `WKWebView` a rule of the last chunk blocks,
+  an exception exempts a block rule of an earlier and of a later chunk, a
+  disabled list's chunks are all detached, and a whitelisted navigation is
+  not blocked by any chunk.
 - The switch itself was confirmed by hand on a signed build: off then reload
   shows 0 blocked; on restores blocking; state survives popover reopen, tab
   switch and relaunch.[^task-69]
@@ -310,3 +349,4 @@ EasyPrivacy cannot un-block something EasyList blocks.
 [^task-36]: Stop the test host writing WebKit data into the production app's WebKit directory
 [^task-69]: The "Block content on this site" switch does not take effect
 [^task-145]: A filter list over 150,000 rules attaches only its first chunk
+[^task-155]: In a split filter list an exception in a later chunk than its block rule does not apply

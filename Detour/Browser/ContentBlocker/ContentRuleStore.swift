@@ -52,7 +52,79 @@ struct ContentBlockerStorage {
 /// rule list of its own in WebKit's store and nothing there ties them
 /// together, so `ContentRuleStore` attaches, counts, looks up and removes them
 /// as a set.
+///
+/// WebKit also evaluates each rule list on its own: an `ignore-previous-rules`
+/// rule (an `@@` exception) only undoes rules earlier in its own list. So a
+/// split list's chunks are not plain slices: every chunk ends with the list's
+/// exceptions (`chunks(of:maxRulesPerList:isException:)`, TASK-155).
 enum ContentRuleListChunks {
+    /// One rule list of a filter list.
+    struct Chunk<Rule> {
+        /// What is compiled, at most the cap.
+        let rules: [Rule]
+        /// How many of `rules`, counted from the start, the list's rule count
+        /// includes. The exceptions every chunk repeats are counted in the
+        /// first chunk only, so there they are part of this number and in the
+        /// later chunks they are the tail it leaves out.
+        let countedRuleCount: Int
+    }
+
+    /// The most exceptions a split list's chunks carry: half the cap, so
+    /// every chunk still has room for at least as many block rules and the
+    /// number of chunks at most doubles.
+    static func maxCarriedExceptions(maxRulesPerList: Int) -> Int {
+        max(maxRulesPerList, 0) / 2
+    }
+
+    /// The rule lists `rules` compile into.
+    ///
+    /// A list within the cap is one chunk, in list order, as it always was.
+    /// A longer one is split so that exceptions keep working: the rules that
+    /// are not exceptions are sliced in list order, and every slice is
+    /// followed by the list's exceptions, which therefore come after, and
+    /// undo, the block rules of every chunk. A slice holds the cap less the
+    /// exceptions it carries.
+    ///
+    /// Exceptions beyond `maxCarriedExceptions` are left out of a split list:
+    /// each would have to be in every chunk, and past that point the chunks
+    /// would hold little else. `droppedExceptionCount` says how many.
+    static func chunks<Rule>(of rules: [Rule], maxRulesPerList: Int,
+                             isException: (Rule) -> Bool) -> [Chunk<Rule>] {
+        guard !rules.isEmpty, maxRulesPerList > 0 else { return [] }
+        guard rules.count > maxRulesPerList else {
+            return [Chunk(rules: rules, countedRuleCount: rules.count)]
+        }
+
+        var blocking: [Rule] = []
+        var exceptions: [Rule] = []
+        for rule in rules {
+            if isException(rule) { exceptions.append(rule) } else { blocking.append(rule) }
+        }
+        let carried = Array(exceptions.prefix(maxCarriedExceptions(maxRulesPerList: maxRulesPerList)))
+        // Nothing to exempt: the exceptions alone, which undo nothing.
+        guard !blocking.isEmpty else {
+            return carried.isEmpty ? [] : [Chunk(rules: carried, countedRuleCount: carried.count)]
+        }
+        let slices = ruleRanges(ruleCount: blocking.count, maxRulesPerList: maxRulesPerList - carried.count)
+        return slices.enumerated().map { index, range in
+            Chunk(rules: Array(blocking[range]) + carried,
+                  countedRuleCount: range.count + (index == 0 ? carried.count : 0))
+        }
+    }
+
+    /// How many of a list's exceptions `chunks(of:…)` leaves out: none for a
+    /// list within the cap, otherwise the ones beyond `maxCarriedExceptions`.
+    static func droppedExceptionCount(ruleCount: Int, exceptionCount: Int, maxRulesPerList: Int) -> Int {
+        guard ruleCount > maxRulesPerList else { return 0 }
+        return max(exceptionCount - maxCarriedExceptions(maxRulesPerList: maxRulesPerList), 0)
+    }
+
+    /// Whether a compiled rule is an exception: its action undoes the rules
+    /// before it in the same rule list.
+    static func isException(_ rule: [String: Any]) -> Bool {
+        (rule["action"] as? [String: Any])?["type"] as? String == "ignore-previous-rules"
+    }
+
     /// How many rule lists `ruleCount` rules compile into; 0 for no rules.
     static func chunkCount(ruleCount: Int, maxRulesPerList: Int) -> Int {
         guard ruleCount > 0, maxRulesPerList > 0 else { return 0 }
@@ -94,7 +166,9 @@ class ContentRuleStore {
     private let defaults: UserDefaults
     /// Compiled rule lists by **chunk** identifier (`ContentRuleListChunks`).
     private var compiledLists: [String: WKContentRuleList] = [:]
-    /// The rules compiled into each chunk, by chunk identifier.
+    /// The rules each chunk adds to its list's count, by chunk identifier: the
+    /// rules compiled into it, less the exceptions it repeats from the first
+    /// chunk (`ContentRuleListChunks.Chunk.countedRuleCount`).
     private var compiledRuleCounts: [String: Int] = [:]
     /// How many chunks each list's last compile produced, by list identifier.
     /// Filled from the defaults on first use; read it through
@@ -141,8 +215,8 @@ class ContentRuleStore {
         chunkIdentifiers(forList: identifier).compactMap { compiledLists[$0] }
     }
 
-    /// The rules compiled into the list, summed over its chunks; nil when
-    /// none is known.
+    /// The rules compiled into the list, summed over its chunks, with an
+    /// exception every chunk repeats counted once; nil when none is known.
     func compiledRuleCount(forList identifier: String) -> Int? {
         let counts = chunkIdentifiers(forList: identifier).compactMap { compiledRuleCounts[$0] }
         return counts.isEmpty ? nil : counts.reduce(0, +)
@@ -188,21 +262,31 @@ class ContentRuleStore {
     /// removed from WebKit's store. A chunk that failed keeps whatever an
     /// earlier compile left under its identifier.
     func compile(identifier: String, rules: [[String: Any]], completion: @escaping ([WKContentRuleList]) -> Void) {
-        let ranges = ContentRuleListChunks.ruleRanges(ruleCount: rules.count, maxRulesPerList: maxRulesPerList)
-        guard !ranges.isEmpty else {
+        let chunks = ContentRuleListChunks.chunks(of: rules, maxRulesPerList: maxRulesPerList,
+                                                  isException: ContentRuleListChunks.isException)
+        guard !chunks.isEmpty else {
             completion([])
             return
         }
-        if ranges.count > 1 {
-            log.info("Splitting \(identifier, privacy: .public) into \(ranges.count) chunks (\(rules.count) rules)")
+        if chunks.count > 1 {
+            log.info("Splitting \(identifier, privacy: .public) into \(chunks.count) chunks (\(rules.count) rules)")
+        }
+        if rules.count > maxRulesPerList {
+            let dropped = ContentRuleListChunks.droppedExceptionCount(
+                ruleCount: rules.count, exceptionCount: rules.lazy.filter(ContentRuleListChunks.isException).count,
+                maxRulesPerList: maxRulesPerList)
+            if dropped > 0 {
+                log.error("\(identifier, privacy: .public) has more exceptions than a split list can carry: \(dropped) left out")
+            }
         }
 
         let group = DispatchGroup()
         var compiledAny = false
-        for (index, range) in ranges.enumerated() {
+        for (index, chunk) in chunks.enumerated() {
             let chunkIdentifier = ContentRuleListChunks.identifier(forList: identifier, chunk: index)
             group.enter()
-            compileChunk(identifier: chunkIdentifier, rules: ranges.count == 1 ? rules : Array(rules[range])) { list in
+            compileChunk(identifier: chunkIdentifier, rules: chunk.rules,
+                         countedRuleCount: chunk.countedRuleCount) { list in
                 if list != nil { compiledAny = true }
                 group.leave()
             }
@@ -213,7 +297,7 @@ class ContentRuleStore {
                 completion([])
                 return
             }
-            self.recordChunkCount(ranges.count, forList: identifier)
+            self.recordChunkCount(chunks.count, forList: identifier)
             completion(self.cachedLists(forList: identifier))
         }
     }
@@ -254,8 +338,10 @@ class ContentRuleStore {
 
     /// Compiles one rule list of at most `maxRulesPerList` rules under
     /// `identifier`, stripping individually bad rules when the whole set is
-    /// refused.
-    private func compileChunk(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
+    /// refused. The first `countedRuleCount` rules are the ones the chunk adds
+    /// to its list's rule count.
+    private func compileChunk(identifier: String, rules: [[String: Any]], countedRuleCount: Int,
+                              completion: @escaping (WKContentRuleList?) -> Void) {
         guard !rules.isEmpty else {
             completion(nil)
             return
@@ -272,22 +358,28 @@ class ContentRuleStore {
             if let error {
                 log.error("Compile error for \(identifier, privacy: .public): \(error.localizedDescription)")
                 // Try to recover by stripping bad rules via binary search
-                self?.compileWithFallback(identifier: identifier, rules: rules, completion: completion)
+                self?.compileWithFallback(identifier: identifier, rules: rules,
+                                          countedRuleCount: countedRuleCount, completion: completion)
                 return
             }
             if let self, let list {
-                self.compiledLists[identifier] = list
-                self.compiledRuleCounts[identifier] = rules.count
-                self.defaults.set(rules.count, forKey: self.compiledRuleCountKey(identifier))
+                self.recordCompiled(list, identifier: identifier, countedRuleCount: countedRuleCount)
             }
             completion(list)
         }
     }
 
+    private func recordCompiled(_ list: WKContentRuleList, identifier: String, countedRuleCount: Int) {
+        compiledLists[identifier] = list
+        compiledRuleCounts[identifier] = countedRuleCount
+        defaults.set(countedRuleCount, forKey: compiledRuleCountKey(identifier))
+    }
+
     // MARK: - Fallback Compilation
 
     /// When full compilation fails, use binary search to find and strip only the bad rules.
-    private func compileWithFallback(identifier: String, rules: [[String: Any]], completion: @escaping (WKContentRuleList?) -> Void) {
+    private func compileWithFallback(identifier: String, rules: [[String: Any]], countedRuleCount: Int,
+                                     completion: @escaping (WKContentRuleList?) -> Void) {
         log.info("Fallback: binary search for bad rules in \(rules.count) rules for \(identifier, privacy: .public)")
 
         findBadRules(rules: rules, offset: 0, depth: 0, identifier: identifier) { [weak self] badIndices in
@@ -302,6 +394,8 @@ class ContentRuleStore {
             }
 
             let cleaned = rules.enumerated().compactMap { badSet.contains($0.offset) ? nil : $0.element }
+            // A stripped rule only lowers the count when it was a counted one.
+            let countedAfterStripping = countedRuleCount - badSet.lazy.filter { $0 < countedRuleCount }.count
             log.info("Stripped \(badSet.count) bad rule(s), recompiling \(cleaned.count) for \(identifier, privacy: .public)")
 
             guard let jsonData = try? JSONSerialization.data(withJSONObject: cleaned),
@@ -318,9 +412,7 @@ class ContentRuleStore {
                 }
                 if let self, let list {
                     log.info("Fallback compile succeeded for \(identifier, privacy: .public)")
-                    self.compiledLists[identifier] = list
-                    self.compiledRuleCounts[identifier] = cleaned.count
-                    self.defaults.set(cleaned.count, forKey: self.compiledRuleCountKey(identifier))
+                    self.recordCompiled(list, identifier: identifier, countedRuleCount: countedAfterStripping)
                 }
                 completion(list)
             }

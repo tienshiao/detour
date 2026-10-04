@@ -6,6 +6,9 @@ import WebKit
 /// compiled as several — `<id>`, `<id>-1`, `<id>-2`, … — and every one of them
 /// has to be attached, counted, found again at launch and removed (TASK-145).
 ///
+/// A split list's chunks each end with the list's exception rules, so an `@@`
+/// exception applies to the block rules of every chunk (TASK-155).
+///
 /// The cap is injected (2 rules per list) and the rule sets are a handful of
 /// rules: nothing here compiles a real filter list. Each test gets its own
 /// rule list store and defaults suite in a temporary directory, so the lists
@@ -65,6 +68,106 @@ final class ContentRuleListChunkTests: XCTestCase {
     func testTheFirstChunkIsNeverStale() {
         XCTAssertEqual(ContentRuleListChunks.staleIdentifiers(forList: "easylist", previousChunkCount: 3, chunkCount: 0),
                        ["easylist-1", "easylist-2"])
+    }
+
+    // MARK: - Exceptions in a split list (TASK-155)
+
+    /// Rules as strings: `b…` blocks, `x…` is an exception.
+    private func layout(_ rules: [String], cap: Int) -> [[String]] {
+        ContentRuleListChunks.chunks(of: rules, maxRulesPerList: cap) { $0.hasPrefix("x") }.map(\.rules)
+    }
+
+    private func counted(_ rules: [String], cap: Int) -> [Int] {
+        ContentRuleListChunks.chunks(of: rules, maxRulesPerList: cap) { $0.hasPrefix("x") }.map(\.countedRuleCount)
+    }
+
+    func testAListWithinTheCapIsOneChunkInListOrder() {
+        XCTAssertEqual(layout([], cap: 4), [])
+        XCTAssertEqual(layout(["b0", "x0", "b1"], cap: 4), [["b0", "x0", "b1"]])
+        XCTAssertEqual(layout(["x0", "b0", "x1", "b1"], cap: 4), [["x0", "b0", "x1", "b1"]], "exactly at the cap")
+        XCTAssertEqual(counted(["x0", "b0", "x1", "b1"], cap: 4), [4])
+    }
+
+    func testEveryChunkOfASplitListEndsWithTheListsExceptions() {
+        let rules = ["b0", "b1", "x0", "b2", "b3", "b4", "b5", "b6"]
+
+        // Cap 4, one exception: three block rules a chunk, then the exception.
+        XCTAssertEqual(layout(rules, cap: 4), [["b0", "b1", "b2", "x0"], ["b3", "b4", "b5", "x0"], ["b6", "x0"]])
+    }
+
+    /// The task's case: the exception is past the cap, the block rule it
+    /// exempts is in the first chunk.
+    func testAnExceptionPastTheCapStillFollowsTheBlockRulesOfTheFirstChunk() {
+        XCTAssertEqual(layout(["b0", "b1", "x0"], cap: 2), [["b0", "x0"], ["b1", "x0"]])
+    }
+
+    func testExceptionsKeepTheirOrderAndFollowEveryBlockRule() {
+        let rules = ["x0", "b0", "b1", "x1", "b2", "b3", "b4"]
+
+        XCTAssertEqual(layout(rules, cap: 5), [["b0", "b1", "b2", "x0", "x1"], ["b3", "b4", "x0", "x1"]])
+    }
+
+    func testNoChunkOfASplitListExceedsTheCap() {
+        for cap in 1 ... 9 {
+            for exceptionCount in 0 ... 12 {
+                let rules = (0 ..< 20).map { "b\($0)" } + (0 ..< exceptionCount).map { "x\($0)" }
+                let chunks = layout(rules, cap: cap)
+                XCTAssertTrue(chunks.allSatisfy { !$0.isEmpty && $0.count <= cap },
+                              "cap \(cap), \(exceptionCount) exceptions: \(chunks.map(\.count))")
+                XCTAssertEqual(chunks.flatMap { $0.filter { $0.hasPrefix("b") } }, (0 ..< 20).map { "b\($0)" },
+                               "every block rule is compiled once, in order")
+            }
+        }
+    }
+
+    /// A repeated exception is counted in the first chunk only.
+    func testARepeatedExceptionIsCountedOnce() {
+        let rules = ["b0", "b1", "x0", "b2", "b3", "b4", "b5", "b6"]
+
+        XCTAssertEqual(counted(rules, cap: 4), [4, 3, 1])
+        XCTAssertEqual(counted(rules, cap: 4).reduce(0, +), rules.count)
+        XCTAssertEqual(counted(["b0", "b1", "b2", "b3", "b4"], cap: 2), [2, 2, 1], "no exceptions: plain slices")
+    }
+
+    /// Every chunk has to hold all the carried exceptions, so they may take
+    /// half the cap at most; the ones beyond that are left out.
+    func testExceptionsBeyondHalfTheCapAreLeftOut() {
+        XCTAssertEqual(ContentRuleListChunks.maxCarriedExceptions(maxRulesPerList: 150_000), 75_000)
+        XCTAssertEqual(ContentRuleListChunks.maxCarriedExceptions(maxRulesPerList: 5), 2)
+        let rules = ["b0", "b1", "b2", "x0", "x1", "x2"]
+
+        XCTAssertEqual(layout(rules, cap: 4), [["b0", "b1", "x0", "x1"], ["b2", "x0", "x1"]])
+        XCTAssertEqual(counted(rules, cap: 4), [4, 1], "five of the six rules are compiled")
+        XCTAssertEqual(ContentRuleListChunks.droppedExceptionCount(ruleCount: 6, exceptionCount: 3, maxRulesPerList: 4), 1)
+    }
+
+    func testExceptionsAtHalfTheCapAreAllCarried() {
+        let rules = ["b0", "b1", "b2", "x0", "x1"]
+
+        XCTAssertEqual(layout(rules, cap: 4), [["b0", "b1", "x0", "x1"], ["b2", "x0", "x1"]])
+        XCTAssertEqual(ContentRuleListChunks.droppedExceptionCount(ruleCount: 5, exceptionCount: 2, maxRulesPerList: 4), 0)
+    }
+
+    func testAListWithinTheCapDropsNoException() {
+        XCTAssertEqual(ContentRuleListChunks.droppedExceptionCount(ruleCount: 4, exceptionCount: 4, maxRulesPerList: 4), 0)
+        XCTAssertEqual(layout(["x0", "x1", "x2", "x3"], cap: 4), [["x0", "x1", "x2", "x3"]])
+    }
+
+    /// Exceptions with nothing to exempt undo nothing; they still compile as
+    /// one list, so the compile does not read as a failure.
+    func testASplitListOfOnlyExceptionsIsOneChunk() {
+        XCTAssertEqual(layout(["x0", "x1", "x2", "x3", "x4"], cap: 4), [["x0", "x1"]])
+        XCTAssertEqual(counted(["x0", "x1", "x2", "x3", "x4"], cap: 4), [2])
+        XCTAssertEqual(layout(["x0", "x1"], cap: 1), [], "a cap of one carries no exception: nothing to compile")
+    }
+
+    func testWhichCompiledRulesAreExceptions() {
+        XCTAssertTrue(ContentRuleListChunks.isException(
+            ["trigger": ["url-filter": "a"], "action": ["type": "ignore-previous-rules"]]))
+        XCTAssertFalse(ContentRuleListChunks.isException(["trigger": ["url-filter": "a"], "action": ["type": "block"]]))
+        XCTAssertFalse(ContentRuleListChunks.isException(
+            ["trigger": ["url-filter": ".*"], "action": ["type": "css-display-none", "selector": ".ad"]]))
+        XCTAssertFalse(ContentRuleListChunks.isException(["trigger": ["url-filter": "a"]]))
     }
 
     // MARK: - Fixture
@@ -365,6 +468,120 @@ final class ContentRuleListChunkTests: XCTestCase {
         try await waitUntil("the page finished loading") { delegate.finished }
         try await Task.sleep(nanoseconds: 1_500_000_000)
         XCTAssertTrue(delegate.blocked.isEmpty, "no chunk may act on a whitelisted page: \(delegate.blocked)")
+    }
+
+    // MARK: - Exceptions in a split list (TASK-155)
+
+    private func blockRule(_ host: String) -> [String: Any] {
+        ["trigger": ["url-filter": "\(host)\\.example"], "action": ["type": "block"]]
+    }
+
+    /// An `@@` rule: undoes the block rules before it in the same rule list.
+    private func exceptionRule(_ urlFilter: String) -> [String: Any] {
+        ["trigger": ["url-filter": urlFilter], "action": ["type": "ignore-previous-rules"]]
+    }
+
+    private func compile(_ store: ContentRuleStore, _ identifier: String, rules: [[String: Any]]) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            store.compile(identifier: identifier, rules: rules) { _ in continuation.resume() }
+        }
+    }
+
+    /// Loads a page with one image per URL, in order, and returns the loads
+    /// WebKit reported as blocked once `expectedBlocked` of them are in.
+    /// Images load in document order, so by then an earlier one that was going
+    /// to be blocked has been reported too.
+    private func blockedLoads(of imageURLs: [URL], with lists: [WKContentRuleList],
+                              expectedBlocked: Int) async throws -> [URL] {
+        let delegate = ChunkRecordingNavigationDelegate()
+        let webView = makeWebView()
+        defer { webView.navigationDelegate = nil }
+        webView.navigationDelegate = delegate
+        apply(lists, to: webView)
+        let images = imageURLs.map { "<img src='\($0.absoluteString)'>" }.joined()
+
+        webView.loadHTMLString("<html><body>\(images)</body></html>", baseURL: pageURL)
+        try await waitUntil("the page finished loading") { delegate.finished }
+        try await waitUntil("\(expectedBlocked) blocked loads are reported", timeout: 5) {
+            Set(delegate.blocked.map(\.url)).count >= expectedBlocked
+        }
+        return delegate.blocked.map(\.url)
+    }
+
+    /// The exception is the third of three rules under a cap of two: in list
+    /// order it lands in a later chunk than the block rule it exempts, and
+    /// WebKit only lets `ignore-previous-rules` undo rules of its own list.
+    func testAnExceptionAppliesToABlockRuleOfAnEarlierChunk() async throws {
+        let store = makeStore()
+        await compile(store, "easylist", rules: [
+            blockRule("blocked-0"),
+            blockRule("blocked-1"),
+            exceptionRule("blocked-0\\.example/allowed"),
+        ])
+        let allowed = URL(string: "http://blocked-0.example/allowed.png")!
+        let blockedSameHost = URL(string: "http://blocked-0.example/x.png")!
+        let blockedOtherHost = URL(string: "http://blocked-1.example/x.png")!
+
+        let blocked = try await blockedLoads(
+            of: [allowed, blockedSameHost, blockedOtherHost],
+            with: ContentBlockerManager.ruleLists(for: Profile(name: "Test"), in: store), expectedBlocked: 2)
+
+        XCTAssertFalse(blocked.contains(allowed), "the exception must exempt it: \(blocked)")
+        XCTAssertTrue(blocked.contains(blockedSameHost), "blocked: \(blocked)")
+        XCTAssertTrue(blocked.contains(blockedOtherHost), "blocked: \(blocked)")
+    }
+
+    /// An exception ahead of the cap exempts a block rule of the last chunk.
+    func testAnExceptionAppliesToABlockRuleOfALaterChunk() async throws {
+        let store = makeStore()
+        await compile(store, "easylist", rules: [
+            exceptionRule("blocked-2\\.example/allowed"),
+            blockRule("blocked-0"),
+            blockRule("blocked-1"),
+            blockRule("blocked-2"),
+        ])
+        XCTAssertEqual(store.cachedLists(forList: "easylist").map(\.identifier),
+                       ["easylist", "easylist-1", "easylist-2"])
+        let allowed = URL(string: "http://blocked-2.example/allowed.png")!
+        let blockedSameHost = URL(string: "http://blocked-2.example/x.png")!
+        let blockedOtherHost = URL(string: "http://blocked-0.example/x.png")!
+
+        let blocked = try await blockedLoads(
+            of: [allowed, blockedSameHost, blockedOtherHost],
+            with: ContentBlockerManager.ruleLists(for: Profile(name: "Test"), in: store), expectedBlocked: 2)
+
+        XCTAssertFalse(blocked.contains(allowed), "the exception must exempt it: \(blocked)")
+        XCTAssertTrue(blocked.contains(blockedSameHost), "blocked: \(blocked)")
+        XCTAssertTrue(blocked.contains(blockedOtherHost), "blocked: \(blocked)")
+    }
+
+    /// Settings shows this count: the exception both chunks carry is one rule.
+    func testTheRuleCountOfASplitListCountsARepeatedExceptionOnce() async throws {
+        let store = makeStore()
+        let rules = [blockRule("blocked-0"), blockRule("blocked-1"), exceptionRule("blocked-0\\.example/allowed")]
+        await compile(store, "easylist", rules: rules)
+
+        XCTAssertEqual(store.cachedLists(forList: "easylist").map(\.identifier), ["easylist", "easylist-1"])
+        XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), 3)
+
+        // And after a relaunch, from the defaults.
+        let relaunched = makeStore()
+        _ = await lookUp(relaunched, "easylist")
+        XCTAssertEqual(relaunched.compiledRuleCount(forList: "easylist"), 3)
+    }
+
+    /// Under a cap of two every chunk carries one exception at most; the
+    /// second is left out and the count shows it.
+    func testTheRuleCountLeavesOutExceptionsThatWereNotCompiled() async throws {
+        let store = makeStore()
+        await compile(store, "easylist", rules: [
+            blockRule("blocked-0"),
+            exceptionRule("blocked-0\\.example/allowed"),
+            exceptionRule("blocked-0\\.example/also-allowed"),
+        ])
+
+        XCTAssertEqual(store.cachedLists(forList: "easylist").map(\.identifier), ["easylist"])
+        XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), 2)
     }
 }
 
