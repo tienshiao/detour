@@ -5,7 +5,7 @@ description: "history.db — one shared row per URL, one row per visit scoped to
 resource: ../../Detour/Storage/HistoryDatabase.swift
 tags: [architecture, storage, history, fts5, search]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
 sources:
   - id: history-database
     resource: ../../Detour/Storage/HistoryDatabase.swift
@@ -34,6 +34,9 @@ sources:
   - id: task-138
     resource: backlog:TASK-138
     title: chrome.history.search returns history from every profile
+  - id: task-152
+    resource: backlog:TASK-152
+    title: favicon.lookup answers from every profile's history, without a permission check
   - id: url-search-tests
     resource: ../../DetourTests/HistoryURLSearchTests.swift
     title: HistoryURLSearchTests.swift
@@ -96,11 +99,28 @@ profile-scoped view must therefore take its values from in-scope
   only order results. `faviconURL` is displayed and is shared; that is a
   known, accepted leak of one icon per URL.
 
-No reader is unscoped. Until TASK-138 `chrome.history.search` read
-`historyURL` across all spaces (`searchHistoryGlobal`, since removed), which
-handed an extension in one profile the URLs, titles and visit counts of every
-other profile; it now reads through `searchURLs`, scoped like the History
-page.
+No reader that answers a question from outside is unscoped. Until TASK-138
+`chrome.history.search` read `historyURL` across all spaces
+(`searchHistoryGlobal`, since removed), which handed an extension in one
+profile the URLs, titles and visit counts of every other profile; it now
+reads through `searchURLs`, scoped like the History page.
+
+The favicon lookup was the same hole in a smaller shape (TASK-152). The row
+for a URL exists, and has an icon, as soon as *any* profile visits the page,
+so "is there an icon for this page?" was "has anyone visited it?" — and the
+same-host fallback widened that to "has anyone visited this site?". An
+extension asks through `faviconURL(for:visitedInSpaces:)`, which requires a
+visit in the given spaces before it answers. Scope decides whether the lookup
+answers, not which icon it answers with: the icon stays the URL's one shared
+value. The one unscoped lookup left, `faviconURLInAnyProfile(for:)`, says so
+in its name and serves only the History page, which asks for rows it already
+listed from its own scope.[^task-152]
+
+"Same host" is the URL's host and not a string prefix: the lookup matches
+`https://host`, `https://host/…` and `https://host:port…` (and `http`) as
+ranges over the URL text, which the unique index on `url` serves. The
+`LIKE 'https://host%'` it replaced also took `host.evil.test` for the same
+site and could not use the index.
 
 ## Custom SQL functions
 
@@ -159,7 +179,8 @@ entry.
 | `visits(spaceIDs:from:until:before:limit:)` | History page | A profile's spaces | Keyset paging on (`visitTime`, `id`), not OFFSET. Page size capped at 500. |
 | `searchVisits(query:spaceIDs:…)` | History page search | A profile's spaces | One row per URL, represented by its newest in-range visit that matched. Candidate gate, then LIKE/GLOB prefilter, then the matcher. |
 | `searchURLs(query:spaceIDs:from:until:limit:)` | `chrome.history.search` | A profile's spaces | One row per URL (`HistoryURLEntry`), newest in-scope visit first. Empty text lists everything in the window. Not for the main thread. |
-| `faviconURL(for:)` | Extension favicon lookups | All spaces | Exact URL, then same host. |
+| `faviconURL(for:visitedInSpaces:)` | Extension favicons (`detour-favicon://`) | A profile's spaces | Exact URL when the scope visited it, else the same-host page the scope visited most recently. Nil for a page or host only other profiles visited. |
+| `faviconURLInAnyProfile(for:)` | The History page's `favicon` route | All spaces | Exact URL, then same host. Only for rows the caller already listed from its own scope. |
 
 The palette labels each row with the space's own latest non-empty title
 (`scopedTitleExpression`), and only falls back to the shared title when no
@@ -330,4 +351,5 @@ delete path, the differential gate test), `HistoryDeletionIntegrationTests`,
 
 [^task-96]: Index every title a URL has had
 [^task-138]: chrome.history.search returns history from every profile
+[^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^history-notes]: Session notes on the History feature

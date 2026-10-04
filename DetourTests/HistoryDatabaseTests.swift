@@ -1153,7 +1153,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com/page", title: "Page", faviconURL: "https://example.com/favicon.ico", spaceID: "space1")
 
-        let result = db.faviconURL(for: "https://example.com/page")
+        let result = db.faviconURLInAnyProfile(for: "https://example.com/page")
         XCTAssertEqual(result, "https://example.com/favicon.ico")
     }
 
@@ -1162,7 +1162,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://example.com/other", title: "Other", faviconURL: "https://example.com/fav.png", spaceID: "space1")
 
         // Different path, same host — should match via host fallback
-        let result = db.faviconURL(for: "https://example.com/page")
+        let result = db.faviconURLInAnyProfile(for: "https://example.com/page")
         XCTAssertEqual(result, "https://example.com/fav.png")
     }
 
@@ -1170,7 +1170,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
 
-        let result = db.faviconURL(for: "https://example.com")
+        let result = db.faviconURLInAnyProfile(for: "https://example.com")
         XCTAssertNil(result)
     }
 
@@ -1178,7 +1178,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: "https://example.com/fav.ico", spaceID: "space1")
 
-        let result = db.faviconURL(for: "https://unknown.com/page")
+        let result = db.faviconURLInAnyProfile(for: "https://unknown.com/page")
         XCTAssertNil(result)
     }
 
@@ -1188,7 +1188,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://example.com/new", title: "New", faviconURL: "https://example.com/new.ico", spaceID: "space1")
 
         // Host fallback should return the most recent entry's favicon
-        let result = db.faviconURL(for: "https://example.com/unknown")
+        let result = db.faviconURLInAnyProfile(for: "https://example.com/unknown")
         XCTAssertEqual(result, "https://example.com/new.ico")
     }
 
@@ -1985,7 +1985,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(try sharedIndexURLs(db, matching: "vanishing").sorted(),
                        ["https://gone.com", "https://stays.com"])
         XCTAssertNotNil(db.bestURLCompletion(prefix: "gone", spaceID: "A"))
-        XCTAssertNotNil(db.faviconURL(for: "https://gone.com"))
+        XCTAssertNotNil(db.faviconURLInAnyProfile(for: "https://gone.com"))
 
         let result = awaitDeletion { db.deleteVisits(ids: [visit], spaceIDs: ["A"], completion: $0) }
 
@@ -1999,7 +1999,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertTrue(db.searchVisits(query: "vanishing", spaceIDs: ["A"], limit: 10)
             .contains { $0.url == "https://gone.com" } == false)
         XCTAssertNil(db.bestURLCompletion(prefix: "gone", spaceID: "A"))
-        XCTAssertNil(db.faviconURL(for: "https://gone.com"))
+        XCTAssertNil(db.faviconURLInAnyProfile(for: "https://gone.com"))
         try db.dbQueue.read { conn in
             XCTAssertEqual(try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historySearch"), 1,
                            "the FTS row went with it")

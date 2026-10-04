@@ -177,7 +177,9 @@ class Space {
 
         // Register favicon scheme handler so extension iframes (e.g., Vomnibar) can
         // load favicon images via detour-favicon:// URLs rewritten by the polyfill.
-        config.setURLSchemeHandler(FaviconSchemeHandler(), forURLScheme: FaviconSchemeHandler.scheme)
+        // The handler answers for `profile` only: its extensions, its history
+        // (TASK-152). With no usable profile it answers nothing.
+        config.setURLSchemeHandler(FaviconSchemeHandler(profile: profile), forURLScheme: FaviconSchemeHandler.scheme)
 
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         config.userContentController.addUserScript(script)

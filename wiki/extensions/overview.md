@@ -110,7 +110,7 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 | `webNavigation` | WebKit, patched | Missing events filled in; `getAllFrames` / `getFrame` are native and deliberately not polyfilled |
 | `runtime.onInstalled` | Detour | WebKit's is suppressed ([runtime.onInstalled](./runtime-installed-event.md)) |
 | `runtime.requestUpdateCheck`, `runtime.onUpdateAvailable` | Polyfill | [Updates](./updates.md) |
-| `runtime.getURL('/_favicon/…')` | Polyfill | Rewritten to `detour-favicon://`, served by `FaviconSchemeHandler` to extensions with the `favicon` permission |
+| `runtime.getURL('/_favicon/…')` | Polyfill | Rewritten to `detour-favicon://`, served by `FaviconSchemeHandler` to extensions with the `favicon` permission, from the calling profile's history only ([favicons](../features/favicons.md)) |
 | `offscreen` | Polyfill | Shipped WebKit has none ([Offscreen documents](./offscreen-documents.md)) |
 | `idle` | Polyfill | `IdleMonitor` |
 | `notifications` | Polyfill | `ExtensionNotificationManager` (`UNUserNotificationCenter`) |

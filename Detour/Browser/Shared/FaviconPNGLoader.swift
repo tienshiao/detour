@@ -61,13 +61,27 @@ final class FaviconPNGLoader {
     }()
     private var inFlight: [NSString: [(Data?) -> Void]] = [:]
 
+    /// Whose visits may answer a lookup. Every caller names one: there is no
+    /// default, because the wrong one tells a caller what another profile
+    /// visited (TASK-152).
+    enum Scope {
+        /// Any profile's visits. Only for a caller that asks about pages it
+        /// already lists from its own profile's history: the History page.
+        case everyProfile
+        /// Only pages (or, for the same-host fallback, hosts) visited in these
+        /// spaces — a profile's, from `HistoryPageBridge.scope(forProfile:)`.
+        /// An empty list answers nothing.
+        case spaces([String])
+    }
+
     /// The icon Detour recorded for `pageURL`, as image bytes, or nil when there
-    /// is none (or it cannot be fetched).
+    /// is none within `scope` (or it cannot be fetched).
     ///
     /// The *page* URL is what a caller names; which icon URL that resolves to is
     /// decided here, from the history database. So a caller can never point this
     /// at a host of its own choosing — only at the icon of a page the user has
-    /// already visited.
+    /// already visited, and with `.spaces` only one visited in those spaces. A
+    /// lookup that finds nothing in scope makes no network request.
     ///
     /// - Parameter size: a point size to re-encode the icon to, or nil to pass
     ///   the downloaded bytes through untouched (what `detour-favicon://`
@@ -80,13 +94,18 @@ final class FaviconPNGLoader {
     ///   where the extension's `<img>` may still manage them — or fail, which
     ///   the History page needs because it labels the response a PNG.
     /// - Note: `completion` may run on any queue.
-    func pngData(forPageURL pageURL: String, resizedTo size: Int?,
+    func pngData(forPageURL pageURL: String, scope: Scope, resizedTo size: Int?,
                  undecodablePassesThrough: Bool = false,
                  database: HistoryDatabase = .shared,
                  completion: @escaping (Data?) -> Void) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            let recorded: String?
+            switch scope {
+            case .everyProfile: recorded = database.faviconURLInAnyProfile(for: pageURL)
+            case .spaces(let spaceIDs): recorded = database.faviconURL(for: pageURL, visitedInSpaces: spaceIDs)
+            }
             guard let self,
-                  let faviconURLString = database.faviconURL(for: pageURL),
+                  let faviconURLString = recorded,
                   let faviconURL = URL(string: faviconURLString),
                   let scheme = faviconURL.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
                 completion(nil)

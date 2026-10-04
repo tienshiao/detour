@@ -235,7 +235,7 @@ class Profile {
 
         // Register favicon scheme handler so extensions can use chrome.runtime.getURL("/_favicon/...")
         config.webViewConfiguration.setURLSchemeHandler(
-            FaviconSchemeHandler(), forURLScheme: FaviconSchemeHandler.scheme
+            FaviconSchemeHandler(profile: self), forURLScheme: FaviconSchemeHandler.scheme
         )
 
         // Inject polyfills for Chrome APIs not natively provided by WKWebExtension
@@ -509,11 +509,6 @@ class Profile {
                     }
                 }
             }
-            // Cache favicon permission for the scheme handler (checked per-request on any thread)
-            if let host = context.baseURL.host,
-               ext.manifest.permissions?.contains("favicon") == true {
-                FaviconSchemeHandler.grantFaviconPermission(forWebKitHost: host)
-            }
             log.info("Context loaded for \(ext.id, privacy: .public), baseURL: \(context.baseURL.absoluteString, privacy: .public)")
             // WebKit mints a fresh `webkit-extension://<uuid>/` origin for every
             // load, and tracking prevention purges the script-written storage of
@@ -541,9 +536,6 @@ class Profile {
         guard let context = extensionContexts.removeValue(forKey: id) else { return nil }
         if let token = extensionErrorObservers.removeValue(forKey: id) {
             NotificationCenter.default.removeObserver(token)
-        }
-        if let host = context.baseURL.host {
-            FaviconSchemeHandler.revokeFaviconPermission(forWebKitHost: host)
         }
         // The offscreen document belongs to this context's origin; a reloaded
         // context gets a new origin, so a lingering host would both leak a web

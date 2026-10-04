@@ -1346,29 +1346,99 @@ struct HistoryDatabase {
         }
     }
 
-    /// Look up a stored favicon URL for a page URL. Tries exact URL match first, then host match.
-    func faviconURL(for pageURL: String) -> String? {
+    // MARK: - Favicon lookup
+
+    /// The favicon URL recorded for a page, whoever visited it: the exact URL
+    /// first, then the most recently visited page on the same host.
+    ///
+    /// Every profile's visits count, so the answer says "someone visited this
+    /// page (or this host)". That is only safe for a caller that asks about
+    /// rows it already lists from its own scope — the History page's favicon
+    /// route. Anything that answers a question put from outside (an extension)
+    /// uses `faviconURL(for:visitedInSpaces:)`. The name says so on purpose:
+    /// the plain `faviconURL(for:)` this replaces was called from an extension
+    /// request, and a call site should not be able to cross profiles without
+    /// reading that it does.
+    func faviconURLInAnyProfile(for pageURL: String) -> String? {
+        faviconURL(for: pageURL, scope: nil)
+    }
+
+    /// The favicon URL recorded for a page, for a caller that may only learn
+    /// about the visits of `spaceIDs` (a profile's spaces; TASK-152): the exact
+    /// URL when one of those spaces visited it, else the page of the same host
+    /// those spaces visited most recently. A page — or a host — visited only
+    /// from other spaces gets nil, exactly like one nobody visited.
+    ///
+    /// Scope decides *whether* the lookup answers, not *which* icon it answers
+    /// with: `historyURL.faviconURL` is one value per URL, set by the latest
+    /// visit from anywhere (the shared-row rule in
+    /// wiki/architecture/history-database.md).
+    func faviconURL(for pageURL: String, visitedInSpaces spaceIDs: [String]) -> String? {
+        guard !spaceIDs.isEmpty else { return nil }
+        return faviconURL(for: pageURL, scope: spaceIDs)
+    }
+
+    /// `scope` nil is every space; a list is those spaces only (never empty —
+    /// the scoped entry point answers nil for an empty list itself).
+    private func faviconURL(for pageURL: String, scope: [String]?) -> String? {
+        let inScope = scope.map { "v.spaceID IN (\(databaseQuestionMarks(count: $0.count)))" }
+        let scopeArguments: [String] = scope ?? []
         do {
             return try dbQueue.read { db in
-                // Exact URL match
-                if let url = try String.fetchOne(db, sql:
-                    "SELECT faviconURL FROM historyURL WHERE url = ? AND faviconURL IS NOT NULL",
-                    arguments: [pageURL]) {
+                // Exact URL.
+                let visited = inScope.map {
+                    "AND EXISTS (SELECT 1 FROM historyVisit v WHERE v.urlID = h.id AND \($0))"
+                } ?? ""
+                if let url = try String.fetchOne(db, sql: """
+                    SELECT h.faviconURL FROM historyURL h
+                    WHERE h.url = ? AND h.faviconURL IS NOT NULL \(visited)
+                    """, arguments: StatementArguments([pageURL] + scopeArguments)) {
                     return url
                 }
-                // Host match — most recently visited entry with same host
-                guard let host = URL(string: pageURL)?.host else { return nil }
+                // Same host: the page of it visited most recently (in scope).
+                guard let host = URL(string: pageURL)?.host?.lowercased(), !host.isEmpty else { return nil }
+                let sameHost = Self.sameHostPredicate(column: "h.url", host: host)
+                if let inScope {
+                    return try String.fetchOne(db, sql: """
+                        SELECT h.faviconURL FROM historyURL h
+                        JOIN historyVisit v ON v.urlID = h.id
+                        WHERE h.faviconURL IS NOT NULL AND \(inScope) AND (\(sameHost.sql))
+                        ORDER BY v.visitTime DESC LIMIT 1
+                        """, arguments: StatementArguments(scopeArguments + sameHost.arguments))
+                }
                 return try String.fetchOne(db, sql: """
-                    SELECT faviconURL FROM historyURL
-                    WHERE faviconURL IS NOT NULL AND (
-                        url LIKE ? OR url LIKE ?
-                    )
-                    ORDER BY lastVisitTime DESC LIMIT 1
-                    """, arguments: ["https://\(host)%", "http://\(host)%"])
+                    SELECT h.faviconURL FROM historyURL h
+                    WHERE h.faviconURL IS NOT NULL AND (\(sameHost.sql))
+                    ORDER BY h.lastVisitTime DESC LIMIT 1
+                    """, arguments: StatementArguments(sameHost.arguments))
             }
         } catch {
             return nil
         }
+    }
+
+    /// SQL for "`column` is an http(s) URL on `host`" (lowercased), as ranges
+    /// over the URL text so the unique index on `historyURL.url` serves it.
+    ///
+    /// The host must end where the URL's host ends: at the end of the string,
+    /// at `/`, or at `:` (a port). A plain prefix match (`LIKE 'https://host%'`,
+    /// which this replaces) also took `host.evil.test` and `hostxyz.test` for
+    /// the same site. Each range runs from the delimiter to the character after
+    /// it in ASCII ('/' → '0', ':' → ';'). Values are bound, never interpolated.
+    private static func sameHostPredicate(column: String, host: String) -> (sql: String, arguments: [String]) {
+        var terms: [String] = []
+        var arguments: [String] = []
+        for scheme in ["https", "http"] {
+            let origin = "\(scheme)://\(host)"
+            terms.append("\(column) = ?")
+            arguments.append(origin)
+            for (delimiter, next) in [("/", "0"), (":", ";")] {
+                terms.append("(\(column) >= ? AND \(column) < ?)")
+                arguments.append(origin + delimiter)
+                arguments.append(origin + next)
+            }
+        }
+        return (terms.joined(separator: " OR "), arguments)
     }
 
     // MARK: - Deletion (profile-scoped, TASK-87)

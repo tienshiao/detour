@@ -31,7 +31,9 @@ enum HistoryPageContent {
             return
         }
         let size = items.first(where: { $0.name == "size" }).flatMap { $0.value.flatMap(Int.init) } ?? 32
-        FaviconPNGLoader.shared.pngData(forPageURL: pageURL, resizedTo: size) { data in
+        // Unscoped on purpose: the page only asks for the rows it listed, and
+        // those came from its own profile's history (`HistoryPageBridge`).
+        FaviconPNGLoader.shared.pngData(forPageURL: pageURL, scope: .everyProfile, resizedTo: size) { data in
             completion(data.map { InternalPageResource(mimeType: "image/png", data: $0) })
         }
     }

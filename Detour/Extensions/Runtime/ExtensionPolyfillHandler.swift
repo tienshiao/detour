@@ -734,15 +734,6 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             let isReliable = (hypotheses.first?.value ?? 0) > 0.7
             replyHandler(["isReliable": isReliable, "languages": languages], nil)
 
-        // MARK: - Favicon
-        case "favicon.lookup":
-            let pageUrl = params["pageUrl"] as? String ?? ""
-            if let faviconURL = HistoryDatabase.shared.faviconURL(for: pageUrl) {
-                replyHandler(["faviconURL": faviconURL], nil)
-            } else {
-                replyHandler([:] as [String: Any], nil)
-            }
-
         // MARK: - runtime.lastError relay
         case Self.lastErrorRelayType:
             // Always fails, with the caller's own message as the error. The

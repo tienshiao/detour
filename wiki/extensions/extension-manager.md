@@ -5,7 +5,7 @@ description: The singleton that installs, loads, enables and uninstalls extensio
 resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
 tags: [extensions, lifecycle, profiles, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
 sources:
   - id: extension-manager
     resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
@@ -68,7 +68,7 @@ Private profile and for a deleted one. While building it, the profile:
 - sets `webViewConfiguration.websiteDataStore` to its own data store (shipped
   WebKit does not copy `defaultWebsiteDataStore` into extension web views; see
   [data store and ITP](./data-store-and-itp.md));
-- registers `FaviconSchemeHandler`;
+- registers a `FaviconSchemeHandler` that holds the profile (see [favicons](../features/favicons.md));
 - installs the [polyfill](./polyfill-layer.md) user script and its message
   handler, creating the profile's `ExtensionPolyfillHandler`;
 - records itself in a weak controller → profile map. `Profile.profile(owning:)`
@@ -108,8 +108,8 @@ In order: create the context, set `uniqueIdentifier` to the extension id, set
 unconditionally, grant content-script match patterns when the manifest has
 `activeTab`, restore saved [permission](./permissions.md) decisions, then
 `controller.load(context)`. After a successful load it observes
-`errorsDidUpdateNotification`, caches the favicon permission for the new
-origin, and claims a user interaction for the origin with tracking prevention.
+`errorsDidUpdateNotification` and claims a user interaction for the origin with
+tracking prevention.
 
 The Bool it returns means "has background content", not "loaded"; check
 `extensionContexts[id]` for the latter.

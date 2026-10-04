@@ -987,6 +987,41 @@ document.getElementById('btn-ws-probe').addEventListener('click', async () => {
   }
 });
 
+// --- Favicon (_favicon) ---
+// chrome.runtime.getURL('/_favicon/?pageUrl=…') answers from this profile's
+// history only (TASK-152): a page visited in this profile shows its icon, and a
+// page visited only in another profile gets the same 1×1 transparent pixel as a
+// page nobody visited. The same URL from another profile's popup must show
+// that profile's answer.
+document.getElementById('btn-favicon-show').addEventListener('click', () => {
+  const pageUrl = document.getElementById('input-favicon-url').value.trim();
+  if (!pageUrl) { showResult('res-favicon', 'Enter a page URL', true); return; }
+  const url = chrome.runtime.getURL('/_favicon/?pageUrl=' + encodeURIComponent(pageUrl) + '&size=32');
+  const img = document.getElementById('img-favicon');
+  img.onload = () => {
+    const none = img.naturalWidth <= 1;
+    showResult('res-favicon', none
+      ? `no icon (1×1 transparent pixel): not visited in this profile, or no icon recorded\n${url}`
+      : `icon ${img.naturalWidth}×${img.naturalHeight}\n${url}`, false);
+  };
+  img.onerror = () => showResult('res-favicon', `the image did not load\n${url}`, true);
+  img.src = url;
+});
+
+// The favicon.lookup polyfill message used to hand any extension the icon URL
+// of a page any profile had visited. It is gone, so the bridge must refuse it.
+document.getElementById('btn-favicon-lookup-raw').addEventListener('click', async () => {
+  const pageUrl = document.getElementById('input-favicon-url').value.trim() || 'https://example.com/';
+  try {
+    const reply = await webkit.messageHandlers.detourPolyfill.postMessage({
+      type: 'favicon.lookup', extensionID: chrome.runtime.id, params: { pageUrl },
+    });
+    showResult('res-favicon', 'UNEXPECTED: favicon.lookup answered\n' + JSON.stringify(reply), true);
+  } catch (e) {
+    showResult('res-favicon', 'refused, as expected: ' + (e && e.message ? e.message : e), false);
+  }
+});
+
 // Auto-load the event log on popup open
 document.getElementById('btn-refresh-log').click();
 

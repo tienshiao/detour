@@ -5,7 +5,7 @@ description: The JavaScript bundle Detour evaluates in every extension context a
 resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
 tags: [extensions, polyfill, security, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
 sources:
   - id: polyfill
     resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
@@ -52,6 +52,12 @@ sources:
   - id: history-scope-tests
     resource: ../../DetourTests/ExtensionHistoryScopeTests.swift
     title: ExtensionHistoryScopeTests
+  - id: task-152
+    resource: backlog:TASK-152
+    title: favicon.lookup answers from every profile's history, without a permission check
+  - id: favicon-scope-tests
+    resource: ../../DetourTests/ExtensionFaviconScopeTests.swift
+    title: ExtensionFaviconScopeTests
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -163,6 +169,10 @@ does:
   manifest permission (`hasPermission`).
 - `history.search` answers from the handler's own profile only; see
   [chrome.history](#chromehistory-is-profile-scoped) below.
+- `runtime.getURL('/_favicon/…')` is not a handler request at all: the
+  polyfill rewrites it to `detour-favicon://`, and the scheme handler gates it
+  on `favicon` and on the profile; see
+  [favicons](#favicons-are-profile-scoped) below.
 - `offscreen.*` uses only the handler's own profile's context.
 - `sessions.restore` and `search.query` act in `targetSpace()`: the last-active
   space when it belongs to this profile, else the profile's first space, never
@@ -206,6 +216,31 @@ and `deleteAll` resolve without touching the database, and `onVisited` /
 `onVisitRemoved` never fire. They make no native request at all, so they are
 not permission-gated either. Whoever makes one of them real has to scope it
 the same way.
+
+## Favicons are profile-scoped
+
+`chrome.runtime.getURL('/_favicon/?pageUrl=…&size=…')` is Chrome's favicon API
+(permission `favicon`). The bundle patches `runtime.getURL` so that path
+becomes `detour-favicon://<the context's WebKit host>/_favicon/…`, which
+`FaviconSchemeHandler` serves from the history database. The rules — the host
+must be an extension of the handler's own profile holding `favicon`, and the
+lookup sees only that profile's visits — are on
+[favicons](../features/favicons.md#the-extension-route-belongs-to-a-profile).[^task-152]
+
+| Context | What it gets |
+|---|---|
+| Extension page (popup, options, a page in a tab) | An `<img>` on the rewritten URL shows the icon of a page its profile visited, and a 1×1 transparent pixel otherwise. `fetch` of it is a cross-origin request to a scheme that sends no CORS headers, so only an image (or a `no-cors` request) can use it |
+| Extension frame inside a web page | The same, through the handler `Space.makeWebViewConfiguration` registers for the tab |
+| Service worker | Nothing it can read. `fetch` of the rewritten URL rejects ("Load failed") whatever the page. The request does reach the scheme handler — its lookup runs, under the same gate and scope — so the failure is on the way back, most likely the missing CORS headers (not investigated). Measured in `ExtensionFaviconScopeTests`; unchanged by TASK-152 |
+| The Private profile | The transparent pixel, always: it has no history scope |
+
+There was a second route until TASK-152: a `favicon.lookup` message that
+answered any extension with the icon's *URL*, with no permission check and no
+scope. Nothing in the bundle sent it — it was left over from the first
+favicon attempt — but any context could post it by hand, so it was removed
+rather than gated; both transports now get `Unknown polyfill message type`.
+A message type nothing sends is still reachable: every `case` in the
+handler's dispatch is API surface.
 
 ## Callback form and `runtime.lastError`
 
@@ -289,6 +324,7 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
 | [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate and bad arguments from an extension page and a worker, promise and callback form |
+| [ExtensionFaviconScopeTests](../../DetourTests/ExtensionFaviconScopeTests.swift) | `_favicon` through the same wiring: one extension in two profiles, another profile's WebKit host, a tab's handler, the `favicon` permission, the Private profile, what a worker's `fetch` gets, and the removed `favicon.lookup` message from a page and a worker |
 
 A new or changed API needs all three kinds, from both transports; the policy is
 in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md).
@@ -305,3 +341,4 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-23]: Callback-form polyfill APIs must route rejections to runtime.lastError
 [^task-3]: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
 [^task-138]: chrome.history.search returns history from every profile
+[^task-152]: favicon.lookup answers from every profile's history, without a permission check

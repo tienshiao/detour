@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-10-04
+* **Ingest**: TASK-152 — an extension's favicons (`_favicon`, served on `detour-favicon://`) come from the calling profile's history only: `FaviconSchemeHandler` now belongs to a profile, accepts only that profile's extension hosts, and looks up through `HistoryDatabase.faviconURL(for:visitedInSpaces:)`; the `favicon.lookup` polyfill message is removed. Added "The extension route belongs to a profile" to [Favicons](features/favicons.md), "Favicons are profile-scoped" (with what a worker's `fetch` gets) to [Polyfill layer](extensions/polyfill-layer.md), the scoped and the any-profile lookup and the host rule to [History database](architecture/history-database.md), and dropped the favicon permission cache from [Extension manager](extensions/extension-manager.md) and [Storage](extensions/storage.md).
 * **Update**: TASK-149 review — pinned folder rows are inserted parent-first; [Persistence](architecture/persistence.md) and [Session database](architecture/session-database.md) say why the store's folder order cannot be written as is.
 * **Update**: TASK-133 — the Control+Tab monitor's optional-chaining bug is fixed; [Tab switching](tabs/tab-switching.md) replaces its open-defect section with the cause and the trap to avoid.
 * **Update**: TASK-135 — a window that takes a tab's web view over from another window gives the page keyboard focus when nothing in it holds the keyboard; added the row to rule 2 of [Keyboard focus](sidebar/keyboard-focus.md) and a note to [Web view ownership](architecture/webview-ownership.md).

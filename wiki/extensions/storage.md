@@ -151,8 +151,8 @@ assumes a new origin per load, and several questions are open:[^task-99]
 - Uninstall would have to clear the stable origin's data, and origins orphaned
   by earlier launches need a one-time cleanup.
 - Callers that assume the origin changes: `retargetExtensionPages`,
-  `recoverFromBackgroundLoadFailure`, the offscreen teardown on unload, the
-  favicon permission cache keyed by host, and sender verification by base URL.
+  `recoverFromBackgroundLoadFailure`, the offscreen teardown on unload, and
+  sender verification by base URL.
 
 ## The `extensionStorage` table is dead
 
