@@ -295,9 +295,11 @@ When the toolbar button is clicked, `ExtensionPopoverController`:
 
 1. Gets the popup `WKWebView` from `WKWebExtensionContext.action.popupWebView`.
 2. Reloads the webview (popups are recreated each open, matching Chrome).
-3. Waits 50ms for JS rendering, then measures content via `scrollWidth`/`scrollHeight`.
+3. Waits for the reloaded page to finish loading (checked every 50 ms, for at most 1.5 s), then measures content via `scrollWidth`/`scrollHeight`. A page still loading after that is presented anyway and measured again once it has loaded.
 4. Presents an `NSPopover` at the measured size (clamped 100–800 wide, 100–600 tall).
 5. Installs a `ResizeObserver` for dynamic size changes.
+
+A popup whose content is taller than 600 pt scrolls inside the popover (TASK-150). WebKit lays an action popup out in a size-to-content mode in which the page does not scroll, so while the content overflows `ExtensionPopoverController` switches that mode off through WebKit's private `_setSizeToContentAutoSizeMaximumSize:` (guarded by `responds(to:)`; without it the popup stays cut off and the log says so) and gives it back when the content fits again. `PopupSizing` / `sizing(width:height:contentHeight:pageScrollsNow:)` is the decision, unit-tested in `ExtensionPopoverSizingTests`. The measurement has to come from the document the reload ends with: taken a fixed 50 ms after `reload()`, it either landed in a document that was then replaced — losing the resize observer and leaving a small popup at 100 × 100 — or held the view to 600 pt before the page loaded into it, after which WebKit never scrolled it.
 
 ### Options Page Entry Points
 
