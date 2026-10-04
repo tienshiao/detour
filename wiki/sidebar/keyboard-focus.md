@@ -27,6 +27,12 @@ sources:
   - id: palette-tests
     resource: ../../DetourTests/CommandPaletteFocusTests.swift
     title: CommandPaletteFocusTests.swift
+  - id: handoff-tests
+    resource: ../../DetourTests/WebViewHandoffFocusTests.swift
+    title: WebViewHandoffFocusTests.swift
+  - id: task-135
+    resource: backlog:TASK-135
+    title: After a window takes over a tab's web view from another window, keyboard focus is on the window, not the page
   - id: task-78
     resource: backlog:TASK-78
     title: After Cmd+L and Return the page does not regain keyboard focus
@@ -74,6 +80,7 @@ Call it; do not write another `makeFirstResponder(webView)`.
 | A tab is selected | end of `selectTab` | Only if the palette was showing or nothing holds focus (`isKeyboardFocusUnheld`): the launch path selects the session's tab *after* the window is shown, and a keyboard tab switch removes the focused web view from the window |
 | The command palette is dismissed | `dismissCommandPalette(restoringFocus:)`, and again after the commit paths host the new web view | The palette's field held focus; without this the page got no keys until clicked.[^task-78] See [command palette](../features/command-palette.md) |
 | A sidebar page gives up focus | `tabSidebarDidReleaseKeyboardFocus` | Rule 4 |
+| The window becomes key, or takes the web view over without becoming key | `windowDidBecomeKey` (after the Peek is restored) and `ensureOwnsWebView`, through `focusWebContentIfUnheld` | Only if nothing holds focus. A window showing a tab that another window hosts has no page to focus: its first responder went back to the window when the web view left. `claimWebView` only re-hosts, so without this the page took no keys after Cmd-backtick until it was clicked.[^task-135] |
 | The find bar closes | `dismissFindBar` | Focuses the selected tab's web view directly |
 
 `isKeyboardFocusUnheld` is true when the first responder is the window
@@ -200,7 +207,9 @@ anyway.
 | `ArchivePageView.acceptsKeyboardFocus` | [ArchivePageView.swift](../../Detour/Browser/Sidebar/ArchivePageView.swift) |
 
 Suites: `InitialWindowFocusTests`, `SidebarPageFocusTests`,
-`CommandPaletteFocusTests`, `UnhandledKeyFallthroughTests`.
+`CommandPaletteFocusTests`, `UnhandledKeyFallthroughTests`,
+`WebViewHandoffFocusTests` (two windows on one space; "becoming key" is the
+delegate call, since the test host is not reliably the active app).
 
 Two rules for focus tests:
 
@@ -227,6 +236,7 @@ The probe itself is described in [UI probes](../playbooks/ui-probes.md).
 - [Tab switching](../tabs/tab-switching.md) — keyboard tab changes that leave focus on the page.
 
 [^task-78]: After Cmd+L and Return the page does not regain keyboard focus
+[^task-135]: After a window takes over a tab's web view from another window, keyboard focus is on the window, not the page
 [^task-128]: On launch the sidebar's hidden Search Archive field holds keyboard focus instead of the page
 [^task-130]: Keyboard focus stays behind on a tab list whose page has slid off screen
 [^task-131]: A focused tab list loses keyboard focus when the space list changes

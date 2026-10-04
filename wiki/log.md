@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-10-04
+* **Update**: TASK-135 — a window that takes a tab's web view over from another window gives the page keyboard focus when nothing in it holds the keyboard; added the row to rule 2 of [Keyboard focus](sidebar/keyboard-focus.md) and a note to [Web view ownership](architecture/webview-ownership.md).
 * **Update**: TASK-134 — a `runtime.onInstalled` claim from a background context with no listener is undone when that context fails to load; added "When a claim counts as a delivery" to [runtime.onInstalled](extensions/runtime-installed-event.md), with the measured order of the claim and the failure report.
 * **Update**: TASK-151 — a first install from a CRX now passes `CRXInstallGate` (verified signatures, id from the verified key, never over an installed extension, manifest key must agree); updated [Installer and CRX](extensions/installer-and-crx.md) and the consequences of [CRX verification gate](decisions/crx-verification-gate.md).
 * **Update**: TASK-139 — `CRXUnpacker.extractPublicKey` now bounds-checks header field lengths as `UInt64` before converting them; [Installer and CRX](extensions/installer-and-crx.md) no longer lists it as an open gap and states the rule for new parsing code.

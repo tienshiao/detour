@@ -3,9 +3,10 @@ id: TASK-135
 title: >-
   Window: after a window takes over a tab's web view from another window,
   keyboard focus is on the window, not the page
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-04 01:54'
+updated_date: '2026-10-04 08:22'
 labels:
   - bug
 dependencies: []
@@ -28,3 +29,18 @@ When a window claims a tab's web view that another window was hosting — Browse
 - [ ] #3 The window losing the web view shows its snapshot and keeps no stale first responder
 - [ ] #4 Tests cover the hand-off focus rule; InitialWindowFocus, CommandPaletteFocus and SidebarPageFocus tests still pass
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Tests first (WebViewHandoffFocusTests): two regular windows on one space with the same tab; 'becoming key' is the delegate call.
+2. windowDidBecomeKey (after the Peek restore) and ensureOwnsWebView give the page focus when nothing in the window holds it (isKeyboardFocusUnheld, the TASK-128 rule).
+3. The losing window clears a first responder that now lives in the other window.
+4. Runtime check with real key events (AC #1) in /verify.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Tests before the fix (the new focus call switched off): WebViewHandoffFocusTests 7 tests, 4 failing — the window taking over, switching back, ensureOwnsWebView and becoming key with nothing focused all left the window as first responder ('got Optional(<NSWindow …>)'). The three others passed without the fix: focus held by a control and an open palette are left alone, and the losing window's first responder already fell back to the window (AppKit does that when the view leaves).
+<!-- SECTION:NOTES:END -->

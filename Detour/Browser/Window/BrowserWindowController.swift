@@ -2008,6 +2008,12 @@ class BrowserWindowController: NSWindowController {
             }
             showSnapshot(for: tab)
         }
+        // The web view that left may have been the first responder. AppKit
+        // resets that when a view leaves its window; never leave a responder
+        // that now lives in the other window (TASK-135).
+        if let window, let responder = window.firstResponder as? NSView, responder.window !== window {
+            window.makeFirstResponder(nil)
+        }
     }
 
     @objc private func handleExtensionTabShouldSelect(_ notification: Notification) {
@@ -2024,7 +2030,19 @@ class BrowserWindowController: NSWindowController {
     func ensureOwnsWebView() {
         if !ownsWebView, let tab = selectedTab {
             claimWebView(for: tab)
+            focusWebContentIfUnheld()
         }
+    }
+
+    /// After this window took a web view over from another one — or became key
+    /// with its own — the page gets the keyboard when nothing in the window
+    /// holds it (TASK-135). The window lost its first responder when the web
+    /// view left for the other window, and `claimWebView` only re-hosts; without
+    /// this the page takes no keys until it is clicked. Focus held by a control
+    /// (the sidebar, the palette, the find bar) stays where it is: the same rule
+    /// as after a tab switch (TASK-128).
+    private func focusWebContentIfUnheld() {
+        if isKeyboardFocusUnheld { restoreWebContentFocus() }
     }
 
 
@@ -3119,6 +3137,8 @@ extension BrowserWindowController: NSWindowDelegate {
             // peek (possibly navigated away from `peekURL`) is reused rather
             // than destroyed and recreated at its opening URL.
             restorePeekOverlayIfNeeded()
+            // After the peek is back, so a presented peek is what gets focus.
+            focusWebContentIfUnheld()
         }
     }
 
