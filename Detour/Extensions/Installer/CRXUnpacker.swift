@@ -47,11 +47,11 @@ struct CRXUnpacker {
         guard magic == Data([0x43, 0x72, 0x32, 0x34]) else { throw CRXError.invalidMagic }
 
         // Verify version 3
-        let version = data.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self) }
+        let version = data.subdata(in: 4..<8).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
         guard version == 3 else { throw CRXError.unsupportedVersion(version) }
 
         // Read header length
-        let headerLen = data.subdata(in: 8..<12).withUnsafeBytes { $0.load(as: UInt32.self) }
+        let headerLen = data.subdata(in: 8..<12).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
         let zipStart = 12 + Int(headerLen)
         guard zipStart < data.count else { throw CRXError.headerOverflow }
 
@@ -137,8 +137,11 @@ struct CRXUnpacker {
             guard let (length, lenSize) = readVarint(from: headerData, at: offset) else { break }
             offset += lenSize
 
+            // Bounds-checked in UInt64 before any conversion: `Int(length)`
+            // traps on a varint above Int.max and `offset + Int(length)` can
+            // overflow below it, and the bytes come from a download (TASK-139).
+            guard length <= UInt64(headerData.count - offset) else { break }
             let end = offset + Int(length)
-            guard end <= headerData.count else { break }
 
             if fieldNumber == 2 || fieldNumber == 3 {
                 // AsymmetricKeyProof — extract field 1 (public_key)

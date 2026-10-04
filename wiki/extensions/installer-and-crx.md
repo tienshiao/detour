@@ -28,6 +28,9 @@ sources:
   - id: task-113
     resource: backlog:TASK-113
     title: Check for and install extension updates
+  - id: task-139
+    resource: backlog:TASK-139
+    title: A crafted CRX header can crash the app at install
   - id: notes-updates
     resource: "Agent session notes, 2026-09-26 (not in the repository)"
     title: Extension updates — design decisions and what the real 1Password CRX taught
@@ -165,9 +168,13 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   traps above `Int.max`, so they are bounds-checked as `UInt64` first. A
   review of the update work found this as a remote crash;
   `testAFieldLengthAboveIntMaxIsMalformedNotACrash` guards the verifier.[^task-113]
-  The outer loop of `CRXUnpacker.extractPublicKey` (first-install path) still
-  converts with `Int(length)` before its bounds check; its helper
-  `extractFieldBytes` has the `UInt64` check.
+  The outer loop of `CRXUnpacker.extractPublicKey` was missed then: it computed
+  `offset + Int(length)` before its bounds check, which traps above `Int.max`
+  and overflows just below it, on bytes from the network. It now has the same
+  `UInt64` check, guarded by
+  `testTheUnpackerRejectsOversizedHeaderFieldLengthsWithoutCrashing`.[^task-139]
+  The rule for any new parsing here: compare a length against the bytes that
+  remain, as `UInt64`, before converting or adding it.
 - Without a `crx_id` match `extractPublicKey` falls back to the last key in
   the header.
 - Requests to the store go out with a Chrome user agent, which its endpoints
@@ -189,4 +196,5 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
 - [Permissions](./permissions.md) — the rows written at install.
 
 [^task-113]: Check for and install extension updates
+[^task-139]: A crafted CRX header can crash the app at install
 [^notes-updates]: Extension updates — design decisions and what the real 1Password CRX taught

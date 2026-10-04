@@ -142,6 +142,33 @@ final class CRX3VerifierTests: XCTestCase {
         XCTAssertNil(CRXUnpacker.extractFieldBytes(from: header, fieldNumber: 2))
     }
 
+    /// The unpacker walks the same header on the first-install path, before any
+    /// signature check, and must reject the same lengths (TASK-139): above
+    /// Int.max `Int(length)` traps, and at Int.max `offset + length` overflows.
+    func testTheUnpackerRejectsOversizedHeaderFieldLengthsWithoutCrashing() {
+        let lengths: [UInt64] = [.max, UInt64(Int.max) + 1, UInt64(Int.max), UInt64(Int.max) - 1, 1 << 32, 3]
+        for length in lengths {
+            for field in [2, 3, 7, 10000] as [UInt64] {
+                let header = CRX3TestBuilder.Protobuf.varint(field << 3 | 2)
+                    + CRX3TestBuilder.Protobuf.varint(length) + Data([0x0A, 0x01])
+                XCTAssertNil(CRXUnpacker.extractPublicKey(from: header), "field \(field) length \(length)")
+            }
+        }
+    }
+
+    /// The same bytes through the entry point the install path calls.
+    func testUnpackingAFileWithAnOversizedHeaderFieldLengthThrows() {
+        let header = CRX3TestBuilder.Protobuf.varint(2 << 3 | 2) + CRX3TestBuilder.Protobuf.varint(UInt64.max)
+        var crx = Data("Cr24".utf8)
+        var version = UInt32(3).littleEndian
+        crx.append(Data(bytes: &version, count: 4))
+        var headerLen = UInt32(header.count).littleEndian
+        crx.append(Data(bytes: &headerLen, count: 4))
+        crx.append(header)
+        crx.append(Data([0]))
+        XCTAssertThrowsError(try CRXUnpacker.unpack(data: crx))
+    }
+
     // MARK: - DER
 
     func testSPKIUnwrappingYieldsThePKCS1KeySecurityAccepts() throws {
