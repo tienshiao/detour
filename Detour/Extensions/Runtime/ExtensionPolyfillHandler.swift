@@ -36,6 +36,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         super.init()
     }
 
+    /// The history database `history.search` reads, as a test seam: the request
+    /// arrives from a real extension context, so an integration test has no
+    /// call site to hand a database to. Production never assigns it. Which
+    /// rows of it a request may see is decided per request, from `profile`.
+    var historyDatabase: HistoryDatabase = .shared
+
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
 
@@ -259,6 +265,98 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
+    // MARK: - chrome.history arguments
+
+    /// A `chrome.history.search` query that passed validation (TASK-138).
+    struct HistorySearchQuery: Equatable {
+        var text: String
+        var maxResults: Int
+        /// Seconds since 1970, as the history database stores visit times
+        /// (the extension sends milliseconds). The range is half-open,
+        /// `[startTime, endTime)`.
+        var startTime: Double?
+        var endTime: Double?
+    }
+
+    /// Why a polyfill request's arguments were refused; `message` is what the
+    /// extension sees as the rejection and as `runtime.lastError`.
+    struct PolyfillArgumentError: Error, Equatable {
+        let message: String
+    }
+
+    /// Chrome's `maxResults` default.
+    static let historySearchDefaultMaxResults = 100
+
+    /// Validate the `query` of a `history.search` request.
+    ///
+    /// Chrome throws on a malformed query; here the request is refused, which
+    /// the polyfill turns into a rejected promise or `runtime.lastError`. A
+    /// lenient parse is not an option: reading a missing `text` as "" answered
+    /// a malformed call with the whole history.
+    ///
+    /// `text` is required and must be a string. `maxResults`, `startTime` and
+    /// `endTime` are optional — absent and `null` are the same — and must be
+    /// numbers (a boolean is not one, though it arrives as an `NSNumber`):
+    /// `maxResults` a non-negative integer, the times finite. Whether a number
+    /// arrives as an integer or a double depends on the transport, so both
+    /// are accepted.
+    static func historySearchQuery(from params: [String: Any]) -> Result<HistorySearchQuery, PolyfillArgumentError> {
+        func refuse(_ what: String) -> Result<HistorySearchQuery, PolyfillArgumentError> {
+            .failure(PolyfillArgumentError(message: "history.search: \(what)"))
+        }
+        /// An optional member: nil when absent or null.
+        func member(_ name: String, of query: [String: Any]) -> Any? {
+            guard let value = query[name], !(value is NSNull) else { return nil }
+            return value
+        }
+        func number(_ value: Any) -> Double? {
+            guard let boxed = value as? NSNumber, CFGetTypeID(boxed) != CFBooleanGetTypeID(),
+                  boxed.doubleValue.isFinite else { return nil }
+            return boxed.doubleValue
+        }
+
+        guard let query = params["query"] as? [String: Any] else {
+            return refuse("query must be an object")
+        }
+        guard let text = query["text"] as? String else {
+            return refuse("query.text must be a string")
+        }
+
+        var parsed = HistorySearchQuery(text: text, maxResults: historySearchDefaultMaxResults)
+        if let raw = member("maxResults", of: query) {
+            guard let value = number(raw), value >= 0, value == value.rounded() else {
+                return refuse("query.maxResults must be a non-negative integer")
+            }
+            parsed.maxResults = Int(min(value, Double(Int32.max)))
+        }
+        if let raw = member("startTime", of: query) {
+            guard let value = number(raw) else { return refuse("query.startTime must be a number") }
+            parsed.startTime = value / 1000.0
+        }
+        if let raw = member("endTime", of: query) {
+            guard let value = number(raw) else { return refuse("query.endTime must be a number") }
+            parsed.endTime = value / 1000.0
+        }
+        return .success(parsed)
+    }
+
+    /// Chrome's `HistoryItem` for one URL of the calling profile's history.
+    private static func historyItem(_ entry: HistoryURLEntry) -> [String: Any] {
+        [
+            "id": String(entry.urlID),
+            "url": entry.url,
+            // The profile may have no title it can show for the URL: the visit
+            // was recorded without one, or only title-less visits remain and
+            // the shared title may be another profile's (TASK-91, TASK-138).
+            // Chrome's history items always carry something displayable, so
+            // fall back to the URL rather than handing back an empty string.
+            "title": entry.title.isEmpty ? entry.url : entry.title,
+            "lastVisitTime": entry.lastVisitTime * 1000.0,
+            "visitCount": entry.visitCount,
+            "typedCount": entry.typedCount,
+        ]
+    }
+
     // MARK: - Entry Points
 
     /// Entry point for web view contexts (popup, options) via WKScriptMessageHandlerWithReply.
@@ -447,31 +545,34 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(nil, "history permission not declared")
                 return
             }
-            let query = params["query"] as? [String: Any] ?? [:]
-            let text = query["text"] as? String ?? ""
-            let maxResults = query["maxResults"] as? Int ?? 100
-            let startTime = (query["startTime"] as? Double).map { $0 / 1000.0 }
-            let endTime = (query["endTime"] as? Double).map { $0 / 1000.0 }
-
-            let results = HistoryDatabase.shared.searchHistoryGlobal(
-                query: text, maxResults: maxResults, startTime: startTime, endTime: endTime
-            )
-
-            let items: [[String: Any]] = results.map { item in
-                [
-                    "id": String(item.id ?? 0),
-                    "url": item.url,
-                    // A URL can be left with no title at all (TASK-91: the visit
-                    // its latest known title came from was deleted). Chrome's
-                    // history items always carry something displayable, so fall
-                    // back to the URL rather than handing back an empty string.
-                    "title": item.title.isEmpty ? item.url : item.title,
-                    "lastVisitTime": item.lastVisitTime * 1000.0,
-                    "visitCount": item.visitCount,
-                    "typedCount": 0
-                ]
+            let query: HistorySearchQuery
+            switch Self.historySearchQuery(from: params) {
+            case .success(let parsed):
+                query = parsed
+            case .failure(let error):
+                replyHandler(nil, error.message)
+                return
             }
-            replyHandler(["results": items], nil)
+            // History belongs to a profile (TASK-138): the answer is built
+            // from the visits of the spaces that use *this handler's* profile
+            // and from nothing else — the same scope, by the same rule, as that
+            // profile's History page. No scope means no history, never
+            // everyone's: the Private profile records none, and a profile that
+            // is deleted, released or used by no space has none to show.
+            guard let spaceIDs = HistoryPageBridge.scope(forProfile: profile), !spaceIDs.isEmpty else {
+                replyHandler(["results": [[String: Any]]()], nil)
+                return
+            }
+            // Off the main thread, like the History page's query: listing a
+            // profile's history walks every visit in the range.
+            let database = historyDatabase
+            DispatchQueue.global(qos: .userInitiated).async {
+                let items = database.searchURLs(
+                    query: query.text, spaceIDs: spaceIDs,
+                    from: query.startTime, until: query.endTime, limit: query.maxResults
+                ).map(Self.historyItem)
+                DispatchQueue.main.async { replyHandler(["results": items], nil) }
+            }
 
         // MARK: - Font Settings
         case "fontSettings.getFontList":

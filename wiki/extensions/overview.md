@@ -4,7 +4,7 @@ title: Web Extension support
 description: How Detour runs Chrome MV3 extensions — WebKit's native WKWebExtension runtime, Detour's polyfill layer for the APIs WebKit lacks, and the host integration around them — with a file map and the known gaps.
 tags: [extensions, webkit, polyfill, overview]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:40Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
 sources:
   - id: docs-extensions
     resource: ../../docs/extensions.md
@@ -114,7 +114,7 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 | `offscreen` | Polyfill | Shipped WebKit has none ([Offscreen documents](./offscreen-documents.md)) |
 | `idle` | Polyfill | `IdleMonitor` |
 | `notifications` | Polyfill | `ExtensionNotificationManager` (`UNUserNotificationCenter`) |
-| `history` | Polyfill | Only `search` is real; `getVisits` answers `[]`, the writes are no-ops |
+| `history` | Polyfill | Only `search` is real, and it reads the calling profile's history only ([polyfill layer](./polyfill-layer.md)); `getVisits` answers `[]`, the writes are no-ops |
 | `management` | Polyfill | `getSelf`, `getAll`; `setEnabled` is a permission-gated no-op |
 | `fontSettings.getFontList` | Polyfill | System font families only |
 | `sessions` | Polyfill | `restore` reopens a closed tab; `getRecentlyClosed` and `getDevices` answer `[]` |
@@ -149,8 +149,6 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
   `sidePanel`, `tabGroups` or `chrome.debugger`: an extension gets whatever
   WebKit itself vends for those, if anything. Several are the subject of the
   [Claude extension epic](./claude-extension-epic.md).
-- `history.search` reads the shared `historyURL` table with no profile filter,
-  so it is not profile-scoped the way the History page is.
 - The polyfilled `idle`, `notifications`, `history` and `management` event
   objects accept listeners but never fire ([Polyfill layer](./polyfill-layer.md)).
 - An extension's origin changes at every launch, so its IndexedDB,

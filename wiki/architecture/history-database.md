@@ -5,7 +5,7 @@ description: "history.db — one shared row per URL, one row per visit scoped to
 resource: ../../Detour/Storage/HistoryDatabase.swift
 tags: [architecture, storage, history, fts5, search]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
 sources:
   - id: history-database
     resource: ../../Detour/Storage/HistoryDatabase.swift
@@ -31,6 +31,12 @@ sources:
   - id: task-96
     resource: backlog:TASK-96
     title: Index every title a URL has had
+  - id: task-138
+    resource: backlog:TASK-138
+    title: chrome.history.search returns history from every profile
+  - id: url-search-tests
+    resource: ../../DetourTests/HistoryURLSearchTests.swift
+    title: HistoryURLSearchTests.swift
   - id: history-notes
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on the History feature
@@ -86,12 +92,15 @@ profile-scoped view must therefore take its values from in-scope
 - **A title from another profile may neither label a result nor produce
   one** (TASK-93, TASK-94). The reasoning and the rejected designs are on
   [history own-title matching](../decisions/history-own-title-matching.md).
-- `visitCount` and the FTS `rank` still cross profiles. They only order
-  results. `faviconURL` is displayed and is shared; that is a known,
-  accepted leak of one icon per URL.
+- In the palette, `visitCount` and the FTS `rank` still cross profiles. They
+  only order results. `faviconURL` is displayed and is shared; that is a
+  known, accepted leak of one icon per URL.
 
-`searchHistoryGlobal`, used by `chrome.history.search`, is deliberately
-unscoped: it reads `historyURL` across all spaces.
+No reader is unscoped. Until TASK-138 `chrome.history.search` read
+`historyURL` across all spaces (`searchHistoryGlobal`, since removed), which
+handed an extension in one profile the URLs, titles and visit counts of every
+other profile; it now reads through `searchURLs`, scoped like the History
+page.
 
 ## Custom SQL functions
 
@@ -149,13 +158,39 @@ entry.
 | `bestURLCompletion(prefix:spaceID:)` | Palette inline completion | One space | Frecency: each visit adds a recency weight (100 within 4 days, 70 within 14, 50 within 31, 30 within 90), doubled for typed visits; visits older than 90 days are ignored. |
 | `visits(spaceIDs:from:until:before:limit:)` | History page | A profile's spaces | Keyset paging on (`visitTime`, `id`), not OFFSET. Page size capped at 500. |
 | `searchVisits(query:spaceIDs:…)` | History page search | A profile's spaces | One row per URL, represented by its newest in-range visit that matched. Candidate gate, then LIKE/GLOB prefilter, then the matcher. |
-| `searchHistoryGlobal` | `chrome.history.search` | All spaces | |
+| `searchURLs(query:spaceIDs:from:until:limit:)` | `chrome.history.search` | A profile's spaces | One row per URL (`HistoryURLEntry`), newest in-scope visit first. Empty text lists everything in the window. Not for the main thread. |
 | `faviconURL(for:)` | Extension favicon lookups | All spaces | Exact URL, then same host. |
 
 The palette labels each row with the space's own latest non-empty title
 (`scopedTitleExpression`), and only falls back to the shared title when no
 other space has visited the URL. The label subqueries run in an outer select
 over the rows that survived `LIMIT`, never over every candidate.
+
+## One select for both profile-scoped searches
+
+`searchVisits` and `searchURLs` are built on the same inner select,
+`scopedVisitsSelect`: the scope filter, the `[from, until)` window, the
+candidate gate and the own-title matcher, with `ROW_NUMBER()` numbering each
+URL's qualifying visits newest first. Both keep `rn = 1`, so a row in either
+stands for the newest in-scope, in-range visit that itself qualified, and its
+title is that visit's. What "this profile's visit matches this query" means
+is therefore stated once.[^task-138]
+
+They differ in two things:
+
+| | `searchVisits` (History page) | `searchURLs` (`chrome.history.search`) |
+|---|---|---|
+| A row carries | the visit: id, time, title | the URL: id, title, and `visitCount`, `typedCount`, `lastVisitTime` aggregated over **all** of the scope's visits of it, not only those in the window |
+| Title of a title-less (pre-`h4`) visit | `COALESCE(v.title, h.title)`, unguarded | the shared title only while no space **outside the scope** has visited the URL; otherwise none, and the caller shows the URL |
+
+The aggregates come from a join on `historyVisit` in an outer select over
+the rows that survived `LIMIT`. The scope is also given to the statement as a
+CTE (`scope`), because the guarded title expression is repeated once per
+query token and so cannot bind the space list itself.
+
+The extension's title rule is stricter than the History page's on purpose:
+what it returns leaves the browser, to extension code. See
+[history own-title matching](../decisions/history-own-title-matching.md).
 
 All FTS query tokens are double-quoted (`"tok"*`). FTS5 reserves `AND`, `OR`
 and `NOT`; unquoted, typing "not found" was a syntax error and every lookup
@@ -277,7 +312,9 @@ The benchmark is `HistoryBenchmarkTests`, gated behind
 
 # Tests
 
-`HistoryDatabaseTests`, `HistoryTitleIndexTests` (migrate-versus-fresh, every
+`HistoryDatabaseTests`, `HistoryURLSearchTests` (`searchURLs`: isolation
+between two profiles, own counts, times and titles, the legacy-title guard),
+`HistoryTitleIndexTests` (migrate-versus-fresh, every
 delete path, the differential gate test), `HistoryDeletionIntegrationTests`,
 `HistoryTitleUpdateTests`, `SameDocumentVisitTests`, `HistoryTimeRangeTests`,
 `HistoryBenchmarkTests`.
@@ -292,4 +329,5 @@ delete path, the differential gate test), `HistoryDeletionIntegrationTests`,
 - [Persistence](./persistence.md) — the session side.
 
 [^task-96]: Index every title a URL has had
+[^task-138]: chrome.history.search returns history from every profile
 [^history-notes]: Session notes on the History feature

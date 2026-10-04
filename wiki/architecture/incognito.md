@@ -108,6 +108,7 @@ until quit.[^private-notes]
 | Closed-tab records | `closeTab` pushes a record only for non-incognito spaces. Undo Close Tab still works within the session. |
 | History visits and title corrections | `recordHistoryVisit` returns early; `HistoryTitleUpdatePolicy` refuses. |
 | The History page | `HistoryPageBridge.scope(for:)` returns nil and the page is told `incognito: true`. |
+| `chrome.history.search` from an extension running in Private | `HistoryPageBridge.scope(forProfile:)` returns nil and the extension gets an empty list, never another profile's history ([polyfill layer](../extensions/polyfill-layer.md)). |
 | "Always allow" for external apps | `ExternalAppPermissionStore` keeps a Private decision in memory for the session only; the prompt offers no "remember" option. |
 | `runtime.onInstalled` for extensions | Never delivered or recorded for the Private profile. |
 | Auto-archive | `archiveStaleTabs` skips incognito spaces. |

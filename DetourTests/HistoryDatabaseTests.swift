@@ -73,6 +73,22 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
+    /// The URLs the shared `historySearch` index holds for one word, best FTS
+    /// rank first — every profile's URLs and the shared, latest-known titles,
+    /// with no scope at all. No reader in the app asks this any more (the
+    /// unscoped `chrome.history.search` query that did went with TASK-138), so
+    /// the tests that need the index itself as a premise read it here.
+    private func sharedIndexURLs(_ db: HistoryDatabase, matching word: String) throws -> [String] {
+        try db.dbQueue.read { conn in
+            try String.fetchAll(conn, sql: """
+                SELECT h.url FROM historySearch s
+                JOIN historyURL h ON h.id = s.rowid
+                WHERE historySearch MATCH ?
+                ORDER BY rank, -h.visitCount
+                """, arguments: ["\"\(word)\"*"])
+        }
+    }
+
     /// Runs one of the TASK-87 delete APIs and returns how it settled. The
     /// deletes complete on GRDB's writer queue, so the test has to wait for the
     /// callback rather than read straight after the call.
@@ -995,8 +1011,8 @@ final class HistoryDatabaseTests: XCTestCase {
                            ["https://found.example/page"], "searchHistory(\(query))")
             XCTAssertEqual(db.searchVisits(query: query, spaceIDs: ["A"], limit: 10).map(\.url),
                            ["https://found.example/page"], "searchVisits(\(query))")
-            XCTAssertEqual(db.searchHistoryGlobal(query: query).map(\.url),
-                           ["https://found.example/page"], "searchHistoryGlobal(\(query))")
+            XCTAssertEqual(db.searchURLs(query: query, spaceIDs: ["A"], limit: 10).map(\.url),
+                           ["https://found.example/page"], "searchURLs(\(query))")
         }
     }
 
@@ -1121,7 +1137,7 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://two.example/", title: "Zebra", visitTitle: "Zebra",
                       spaceID: "B", visitTime: now - 100)
 
-        XCTAssertEqual(db.searchHistoryGlobal(query: "zebra").map(\.url),
+        XCTAssertEqual(try sharedIndexURLs(db, matching: "zebra"),
                        ["https://two.example/", "https://one.example/"],
                        "premise: the shorter, B-titled row is the better-ranked candidate")
         XCTAssertEqual(db.searchHistory(query: "zebra", spaceID: "A", limit: 1).map(\.url),
@@ -1966,7 +1982,8 @@ final class HistoryDatabaseTests: XCTestCase {
                       spaceID: "A", visitTime: now)
 
         // Preconditions: everything below finds it before the delete.
-        XCTAssertFalse(db.searchHistoryGlobal(query: "vanishing").isEmpty)
+        XCTAssertEqual(try sharedIndexURLs(db, matching: "vanishing").sorted(),
+                       ["https://gone.com", "https://stays.com"])
         XCTAssertNotNil(db.bestURLCompletion(prefix: "gone", spaceID: "A"))
         XCTAssertNotNil(db.faviconURL(for: "https://gone.com"))
 
@@ -1977,7 +1994,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(result.removedURLs, ["https://gone.com"])
 
         XCTAssertNil(try urlRow(db, "https://gone.com"))
-        XCTAssertEqual(db.searchHistoryGlobal(query: "vanishing").map(\.url), ["https://stays.com"],
+        XCTAssertEqual(try sharedIndexURLs(db, matching: "vanishing"), ["https://stays.com"],
                        "FTS follows the synchronized historyURL delete")
         XCTAssertTrue(db.searchVisits(query: "vanishing", spaceIDs: ["A"], limit: 10)
             .contains { $0.url == "https://gone.com" } == false)

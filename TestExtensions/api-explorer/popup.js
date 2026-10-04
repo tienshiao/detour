@@ -898,7 +898,11 @@ document.getElementById('btn-history-search').addEventListener('click', async ()
   try {
     const text = document.getElementById('input-history-query').value;
     const { results } = await sendBg({ type: 'historySearch', text });
-    showResult('res-history', results.map(r => `${r.title}\n  ${r.url}`).join('\n') || '(no results)');
+    // Counts and times are this profile's own (TASK-138): the same search from
+    // another profile's popup must show that profile's URLs and numbers only.
+    showResult('res-history', results.map(r =>
+      `${r.title}\n  ${r.url}\n  visits: ${r.visitCount} (typed: ${r.typedCount}), last: ${new Date(r.lastVisitTime).toLocaleString()}`
+    ).join('\n') || '(no results)');
   } catch (e) { showResult('res-history', e.message, true); }
 });
 

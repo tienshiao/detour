@@ -5,7 +5,7 @@ description: The JavaScript bundle Detour evaluates in every extension context a
 resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
 tags: [extensions, polyfill, security, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
 sources:
   - id: polyfill
     resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
@@ -46,6 +46,12 @@ sources:
   - id: wiring-tests
     resource: ../../DetourTests/ExtensionPolyfillProfileWiringTests.swift
     title: ExtensionPolyfillProfileWiringTests
+  - id: task-138
+    resource: backlog:TASK-138
+    title: chrome.history.search returns history from every profile
+  - id: history-scope-tests
+    resource: ../../DetourTests/ExtensionHistoryScopeTests.swift
+    title: ExtensionHistoryScopeTests
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -155,6 +161,8 @@ does:
 
 - `history.search`, `management.getAll`, `management.setEnabled` require the
   manifest permission (`hasPermission`).
+- `history.search` answers from the handler's own profile only; see
+  [chrome.history](#chromehistory-is-profile-scoped) below.
 - `offscreen.*` uses only the handler's own profile's context.
 - `sessions.restore` and `search.query` act in `targetSpace()`: the last-active
   space when it belongs to this profile, else the profile's first space, never
@@ -162,6 +170,42 @@ does:
 - Gap-filling namespaces that Chrome leaves undefined without a permission
   (`privacy`, `webRequest`) are installed only when the manifest declares it,
   so feature detection stays truthful.[^task-3]
+
+## chrome.history is profile-scoped
+
+History belongs to a profile, and so does a handler. `history.search`
+therefore reads only the visits of the spaces that use the handler's profile
+— the scope `HistoryPageBridge.scope(forProfile:)` gives that profile's
+[History page](../features/history-page.md), by the same function — through
+`HistoryDatabase.searchURLs`. Before TASK-138 it read the shared `historyURL`
+table unfiltered, and an extension in one profile got every other profile's
+URLs, titles and visit counts; a test in a real context showed profile A's
+worker receiving profile B's URL and the five-visit total of a page A had
+visited twice.[^task-138]
+
+| Rule | Detail |
+|---|---|
+| Scope | The spaces currently using the handler's profile. The last-active space plays no part |
+| No scope | An empty list, never everyone's history: the Private profile (it records no visits), a deleted or released profile, a profile no space uses |
+| `visitCount`, `typedCount`, `lastVisitTime` | Aggregated from the profile's own visits of the URL. `typedCount` was a constant 0 before |
+| `title` | The title the profile's own visit recorded; the URL when it has none it may show ([history database](../architecture/history-database.md)) |
+| `text` | Matched like the History page's search: alphanumeric tokens, prefix, OR'd, against the URL text and the profile's own titles. Empty lists everything in the range |
+| `startTime` / `endTime` | Milliseconds, half-open `[startTime, endTime)`, select a URL by the profile's own visits |
+| Order | Newest of the profile's qualifying visits first (with text it was FTS rank, then the shared visit count) |
+| Arguments | `query` must be an object and `text` a string; `maxResults` a non-negative integer, the times numbers. Anything else is refused (`history.search: query.text must be a string`), where a lenient parse used to answer `search({})` with the whole history |
+
+The query runs off the main thread and the reply is posted back to it.
+
+Not carried over from Chrome, unchanged by TASK-138: an omitted `startTime`
+means no lower bound (Chrome defaults to 24 hours ago), and `maxResults: 0`
+returns nothing (Chrome reads it as no limit).
+
+The other `chrome.history` members need no scoping because they read and
+write nothing: `getVisits` answers `[]`, `addUrl`, `deleteUrl`, `deleteRange`
+and `deleteAll` resolve without touching the database, and `onVisited` /
+`onVisitRemoved` never fire. They make no native request at all, so they are
+not permission-gated either. Whoever makes one of them real has to scope it
+the same way.
 
 ## Callback form and `runtime.lastError`
 
@@ -181,9 +225,26 @@ WebKit's `runtime.lastError` reports as a configurable data property, yet
 `defineProperty`, assignment and `delete` all complete without effect and reads
 stay `null`. A "configurable" check is therefore not enough; the write has to
 be read back.[^task-23] In `native-relay` mode the extension sees
-`Invalid call to runtime.sendNativeMessage(). <message>.` — WebKit's prefix is
-the one visible difference from Chrome. The relay needs no permission: it
-echoes the sender's own text (capped at 2048 characters) to the sender.
+`Invalid call to runtime.sendNativeMessage(). <Message>.` — WebKit's prefix is
+the visible difference from Chrome, and WebKit also capitalises the first
+letter of the text and ends it with a full stop. The relay needs no
+permission: it echoes the sender's own text (capped at 2048 characters) to the
+sender.
+
+The same rewriting applies to every failure that crosses
+`runtime.sendNativeMessage`, which is every polyfill request a **worker**
+makes. Measured with `history.search` refused for want of the permission
+(native text `history permission not declared`):[^task-138]
+
+| Caller | Form | Text the extension sees |
+|---|---|---|
+| Extension page | promise | `history permission not declared` |
+| Extension page | callback | `Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
+| Worker | promise | `Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
+| Worker | callback | `Invalid call to runtime.sendNativeMessage(). Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
+
+So a test, or an extension, that looks for a native error text has to search
+for it as a substring and ignore case.
 
 An exception thrown by the callback is rethrown on a fresh task, so it is an
 uncaught error rather than an unhandled rejection.
@@ -213,8 +274,6 @@ uncaught error rather than an unhandled rejection.
   polyfill event objects — `idle.onStateChanged`, `notifications.onClicked`
   and friends, `history.onVisited`, `management.on*` — accept listeners and
   never fire: nothing calls their `__extensionDispatch…` hooks.
-- `history.search` uses `HistoryDatabase.searchHistoryGlobal`, which has no
-  profile filter.
 - `sessions.restore` answers with `tab.id.hashValue`, not the id WebKit uses
   for that tab.
 - Worker `console` output is invisible in Web Inspector for these contexts; it
@@ -229,6 +288,7 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillTests](../../DetourTests/ExtensionPolyfillTests.swift) | The JavaScript against a bare web view with shimmed `chrome`; handler cases; sender verification with stub origins |
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
+| [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate and bad arguments from an extension page and a worker, promise and callback form |
 
 A new or changed API needs all three kinds, from both transports; the policy is
 in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md).
@@ -244,3 +304,4 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-13]: Give ExtensionPolyfillHandler a profile back-reference
 [^task-23]: Callback-form polyfill APIs must route rejections to runtime.lastError
 [^task-3]: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
+[^task-138]: chrome.history.search returns history from every profile
