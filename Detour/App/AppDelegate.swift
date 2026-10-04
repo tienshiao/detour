@@ -121,16 +121,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let windowCount = windowControllers.count
         guard windowCount > 0 else { return .terminateNow }
 
+        // A Private window's downloads are listed nowhere once it is gone, and
+        // nothing of them is kept for the next launch: quitting cancels the
+        // ones still running, and the confirmation says so (TASK-156).
+        let downloads = DownloadManager.shared
+        let privateDownloads = downloads.privateDownloadsInFlight(closing: .allWindows).count
+
         let alert = NSAlert()
         alert.messageText = "Quit Detour?"
-        alert.informativeText = windowCount == 1
+        let windows = windowCount == 1
             ? "You have 1 window open."
             : "You have \(windowCount) windows open."
+        alert.informativeText = [windows, PrivateDownloadClosePolicy.quitWarning(inFlightCount: privateDownloads)]
+            .compactMap { $0 }
+            .joined(separator: " ")
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
 
-        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+        guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        downloads.cancelPrivateDownloads(closing: .allWindows)
+        return .terminateNow
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -11,7 +11,8 @@ enum DownloadScope: Equatable {
     case normal
     /// Started in the Private window whose incognito space has this id: listed
     /// and badged in that window only, never saved, and dropped from the list
-    /// when the space is removed (the window closed).
+    /// when the space is removed (the window closed). One still in flight
+    /// then is cancelled (`PrivateDownloadClosePolicy`).
     case incognito(spaceID: UUID)
 
     /// Only a normal window's downloads are written to the `download` table.
@@ -195,11 +196,6 @@ class DownloadManager: NSObject {
     /// Every listed download, newest first, whatever window it belongs to. A
     /// window reads its own list through `items(in:)`.
     private(set) var items: [DownloadItem] = []
-    /// Private downloads still running after their window closed (TASK-148).
-    /// No window lists them and they are never saved; they are held only so
-    /// the `WKDownload` stays retained and its delegate callbacks resolve, and
-    /// each is dropped when it ends.
-    private(set) var unlistedItems: [DownloadItem] = []
     private var observers: [WeakDownloadObserver] = []
     private weak var observedStore: TabStore?
     private let database: AppDatabase
@@ -207,6 +203,9 @@ class DownloadManager: NSObject {
     private let scheduleAfter: SaveScheduler
     /// Cancels the debounced save. Non-nil exactly while a save is pending.
     private var cancelPendingSave: (() -> Void)?
+    /// Where a `WKDownload` is saved: the user's Downloads folder. A variable
+    /// so a test with a real download writes to a temporary directory instead.
+    var downloadsDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
 
     /// The downloads a window with `scope` lists, newest first.
     func items(in scope: DownloadScope) -> [DownloadItem] {
@@ -273,12 +272,29 @@ class DownloadManager: NSObject {
     }
 
     func cancelDownload(_ item: DownloadItem) {
-        item.download?.cancel { _ in }
+        stop(item, removingPartialFile: false)
+        itemDidEnd(item)
+    }
+
+    /// Stops the transfer behind `item` and marks it cancelled, telling nobody.
+    ///
+    /// WebKit leaves what a cancelled `WKDownload` wrote where it wrote it.
+    /// With `removingPartialFile` that file is removed: at once, because at
+    /// quit WebKit's reply to the cancel never arrives, and again on the reply,
+    /// for a file the network process created in between. Only a `WKDownload`
+    /// that is still in flight has such a file; a manual item's bytes are held
+    /// by whoever fetches them.
+    private func stop(_ item: DownloadItem, removingPartialFile: Bool) {
+        let partialFile = removingPartialFile && item.state == .downloading && item.download != nil
+            ? item.destinationURL : nil
+        item.download?.cancel { _ in
+            if let partialFile { try? FileManager.default.removeItem(at: partialFile) }
+        }
+        if let partialFile { try? FileManager.default.removeItem(at: partialFile) }
         item.urlSessionTask?.cancel()
         item.state = .cancelled
         item.download = nil
         item.urlSessionTask = nil
-        itemDidEnd(item)
     }
 
     /// The download behind `item` ended on its own: it finished or failed. The
@@ -297,21 +313,11 @@ class DownloadManager: NSObject {
 
     /// `item` just reached a terminal state.
     private func itemDidEnd(_ item: DownloadItem) {
-        // Its Private window is gone: nothing lists it, so there is nobody to
-        // tell and nothing to save. The file stays on disk.
-        if let index = unlistedItems.firstIndex(where: { $0 === item }) {
-            unlistedItems.remove(at: index)
-            return
-        }
         notifyObservers { $0.downloadManagerDidUpdateItem(item) }
         if item.isPersisted { scheduleSave() }
     }
 
     func removeDownload(_ item: DownloadItem) {
-        if let index = unlistedItems.firstIndex(where: { $0 === item }) {
-            unlistedItems.remove(at: index)
-            return
-        }
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         items.remove(at: index)
         if item.scope.isPersisted { database.deleteDownload(id: item.id.uuidString) }
@@ -341,22 +347,43 @@ class DownloadManager: NSObject {
     }
 
     /// Drops every Private download whose incognito space is not in
-    /// `liveSpaceIDs`. One that has ended is discarded. One still in flight
-    /// keeps running, unlisted, until it ends (`unlistedItems`).
+    /// `liveSpaceIDs`. One still in flight is cancelled and its partial file
+    /// removed (TASK-156): its window went away without the question, or the
+    /// user answered it, and nothing may keep running where no window lists
+    /// it. This is the backstop for every path that removes an incognito
+    /// space, so no caller has to remember it.
     func discardIncognitoDownloads(keeping liveSpaceIDs: Set<UUID>) {
         let orphaned = items.filter { $0.scope.isOrphaned(liveIncognitoSpaceIDs: liveSpaceIDs) }
         guard !orphaned.isEmpty else { return }
         items.removeAll { item in orphaned.contains { $0 === item } }
         for item in orphaned {
-            if item.state == .downloading { unlistedItems.append(item) }
+            if item.state == .downloading { stop(item, removingPartialFile: true) }
             notifyObservers { $0.downloadManagerDidRemoveItem(item) }
         }
     }
 
-    /// The item behind a `WKDownload` callback: listed, or still running after
-    /// its Private window closed.
+    /// The in-flight downloads `closing` would cancel: what a window asks
+    /// about before it closes, and the quit confirmation names.
+    func privateDownloadsInFlight(closing: PrivateDownloadClosePolicy.Closing) -> [DownloadItem] {
+        items.filter {
+            PrivateDownloadClosePolicy.cancels(downloadIn: $0.scope, isInFlight: $0.state == .downloading,
+                                               closing: closing)
+        }
+    }
+
+    /// Cancels the downloads `closing` cancels and removes their partial
+    /// files. They stay listed, as cancelled, until their window's space goes.
+    func cancelPrivateDownloads(closing: PrivateDownloadClosePolicy.Closing) {
+        for item in privateDownloadsInFlight(closing: closing) {
+            stop(item, removingPartialFile: true)
+            itemDidEnd(item)
+        }
+    }
+
+    /// The listed item behind a `WKDownload` callback. Nil once the item was
+    /// cancelled or dropped: `stop` lets go of the download.
     private func trackedItem(for download: WKDownload) -> DownloadItem? {
-        items.first { $0.download === download } ?? unlistedItems.first { $0.download === download }
+        items.first { $0.download === download }
     }
 
     // MARK: - Persistence
@@ -413,7 +440,12 @@ class DownloadManager: NSObject {
 
 extension DownloadManager: WKDownloadDelegate {
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String) async -> URL? {
-        let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        // Cancelled, or dropped with its Private window, before WebKit asked
+        // where to write: refusing a destination cancels it, so a download
+        // nothing tracks never writes a file.
+        guard let item = await MainActor.run(body: { trackedItem(for: download) }) else { return nil }
+
+        let downloadsDir = downloadsDirectory
         var destURL = downloadsDir.appendingPathComponent(suggestedFilename)
 
         // Resolve name conflicts
@@ -429,19 +461,18 @@ extension DownloadManager: WKDownloadDelegate {
             } while fm.fileExists(atPath: destURL.path)
         }
 
-        // Update the corresponding DownloadItem
-        if let item = trackedItem(for: download) {
-            await MainActor.run {
-                item.filename = destURL.lastPathComponent
-                item.destinationURL = destURL
-                if let contentLength = (response as? HTTPURLResponse)?.expectedContentLength, contentLength > 0 {
-                    item.totalBytes = contentLength
-                }
-                notifyObservers { $0.downloadManagerDidUpdateItem(item) }
+        let chosen = destURL
+        return await MainActor.run { () -> URL? in
+            // Cancelled while the name was being chosen.
+            guard item.download === download else { return nil }
+            item.filename = chosen.lastPathComponent
+            item.destinationURL = chosen
+            if let contentLength = (response as? HTTPURLResponse)?.expectedContentLength, contentLength > 0 {
+                item.totalBytes = contentLength
             }
+            notifyObservers { $0.downloadManagerDidUpdateItem(item) }
+            return chosen
         }
-
-        return destURL
     }
 
     func downloadDidFinish(_ download: WKDownload) {

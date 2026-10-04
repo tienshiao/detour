@@ -5,7 +5,7 @@ description: "AppDelegate and main.swift — launch and termination, window crea
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:48:46Z }
 sources:
   - id: app-delegate
     resource: ../../Detour/App/AppDelegate.swift
@@ -58,6 +58,9 @@ The parts that belong to the shell:
 - The first window is created and shown **before** `restoreSession()`; it is
   given its space and tab afterwards.
 - `applicationShouldTerminate` asks "Quit Detour?" when any window is open.
+  When Private windows have downloads still running the alert says how many
+  will be cancelled, and Quit cancels them before terminating (see
+  [downloads](../features/downloads.md)).
 - `applicationWillTerminate` clears the undo stack, calls
   `TabStore.saveNow()` and then `DownloadManager.flushPendingSave()`, which
   writes a download state change still inside its save debounce.

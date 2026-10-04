@@ -113,6 +113,11 @@ class BrowserWindowController: NSWindowController {
     var downloadScope: DownloadScope {
         incognitoSpaceID.map { .incognito(spaceID: $0) } ?? .normal
     }
+    /// Asks whether to close this Private window although downloads of its
+    /// own are still running; true goes ahead and cancels them (TASK-156). A
+    /// variable so a test answers instead of a modal alert.
+    var confirmClosingWithPrivateDownloads: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+        BrowserWindowController.runPrivateDownloadCloseAlert
 
     enum ContextMenuLinkAction {
         case none, openInNewTab, openInNewWindow
@@ -3163,6 +3168,39 @@ extension BrowserWindowController: NSWindowDelegate {
         guard let split = hostedSplitView else { return }
         split.frame = hostedSplitFrame
         updateSplitPaneFocus()
+    }
+
+    /// A Private window's list of downloads goes with the window, so its
+    /// downloads still in flight are cancelled when it closes; the user is
+    /// asked first (`PrivateDownloadClosePolicy`, TASK-156). Only
+    /// `performClose` comes through here. A window closed with `close()` (an
+    /// extension's `windows.remove`) is not asked about, and
+    /// `DownloadManager.discardIncognitoDownloads` cancels its downloads when
+    /// the space goes.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let manager = DownloadManager.shared
+        let closing = PrivateDownloadClosePolicy.Closing.window(downloadScope)
+        let inFlight = manager.privateDownloadsInFlight(closing: closing).count
+        switch PrivateDownloadClosePolicy.decision(inFlightCount: inFlight) {
+        case .close:
+            return true
+        case .confirm(let prompt):
+            guard confirmClosingWithPrivateDownloads(prompt) else { return false }
+            manager.cancelPrivateDownloads(closing: closing)
+            return true
+        }
+    }
+
+    /// The default `confirmClosingWithPrivateDownloads`. Return closes the
+    /// window, Escape keeps it.
+    static func runPrivateDownloadCloseAlert(_ prompt: PrivateDownloadClosePolicy.Prompt) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = prompt.messageText
+        alert.informativeText = prompt.informativeText
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: prompt.closeButtonTitle)
+        alert.addButton(withTitle: prompt.keepButtonTitle).keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func windowWillClose(_ notification: Notification) {

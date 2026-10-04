@@ -444,7 +444,6 @@ final class DownloadManagerTests: XCTestCase {
 
         XCTAssertTrue(f.manager.items(in: window).isEmpty)
         XCTAssertEqual(f.manager.items.map(\.id), [normal.id])
-        XCTAssertTrue(f.manager.unlistedItems.isEmpty, "an ended download is discarded outright")
         XCTAssertEqual(spy.removed, [secret.id])
     }
 
@@ -476,7 +475,8 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.manager.items.map(\.id), [secret.id])
     }
 
-    func testADownloadStillRunningWhenItsWindowClosesKeepsRunningUnlisted() throws {
+    /// TASK-156: nothing keeps running where no window can see or stop it.
+    func testAPrivateDownloadStillInFlightIsCancelledWhenItsWindowCloses() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -485,45 +485,41 @@ final class DownloadManagerTests: XCTestCase {
         let spy = ObserverSpy()
         f.manager.addObserver(spy)
 
+        // What `windowWillClose` does for a Private window.
         store.removeIncognitoSpace(id: space.id)
 
-        // Listed nowhere, badged nowhere, but still held and still running.
+        XCTAssertEqual(secret.state, .cancelled)
         XCTAssertTrue(f.manager.items.isEmpty)
         XCTAssertFalse(f.manager.hasActiveDownloads(in: window))
-        XCTAssertFalse(f.manager.hasActiveDownloads(in: .normal))
         XCTAssertEqual(spy.removed, [secret.id])
-        XCTAssertEqual(secret.state, .downloading)
-        XCTAssertEqual(f.manager.unlistedItems.map(\.id), [secret.id])
-
-        // It finishes: the item is discarded, nobody is told, nothing is saved.
-        f.manager.downloadDidEnd(secret)
+        XCTAssertEqual(spy.updated, [], "it is removed from the list, not updated in it")
         f.scheduler.fire()
         f.manager.flushPendingSave()
-
-        XCTAssertEqual(secret.state, .completed)
-        XCTAssertTrue(f.manager.unlistedItems.isEmpty)
-        XCTAssertTrue(f.manager.items.isEmpty)
-        XCTAssertEqual(spy.updated, [])
         XCTAssertTrue(f.records.isEmpty)
     }
 
-    func testAnUnlistedDownloadThatFailsIsDiscarded() throws {
+    /// A manual item's fetch is cancelled with it: the CRX fetch of a Private
+    /// window that closed must not go on to an install prompt.
+    func testAPrivateWindowsCRXFetchIsCancelledWhenItsWindowCloses() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
-        let secret = addItem(f, "private.iso", scope: .incognito(spaceID: space.id))
+        let crx = addItem(f, "extension.crx", scope: .incognito(spaceID: space.id))
+        // Never resumed: nothing goes on the network.
+        let task = URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:9/extension.crx")!)
+        crx.observeURLSessionTask(task)
+
         store.removeIncognitoSpace(id: space.id)
-        XCTAssertEqual(f.manager.unlistedItems.map(\.id), [secret.id])
 
-        f.manager.downloadDidEnd(secret, failure: "The network connection was lost.")
-        f.manager.flushPendingSave()
-
-        XCTAssertTrue(f.manager.unlistedItems.isEmpty)
-        XCTAssertTrue(f.records.isEmpty)
+        XCTAssertEqual(crx.state, .cancelled)
+        XCTAssertNil(crx.urlSessionTask)
+        XCTAssertNotEqual(task.state, .suspended, "the fetch is cancelled")
+        XCTAssertNotEqual(task.state, .running)
     }
 
-    /// The CRX fetch removes its manual item itself when the fetch ends.
-    func testRemovingAnUnlistedDownloadDiscardsItQuietly() throws {
+    /// The CRX fetch removes its manual item itself when the fetch ends, by
+    /// then long gone from the list.
+    func testRemovingADownloadDroppedWithItsWindowTellsNobody() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -534,8 +530,70 @@ final class DownloadManagerTests: XCTestCase {
 
         f.manager.removeDownload(crx)
 
-        XCTAssertTrue(f.manager.unlistedItems.isEmpty)
         XCTAssertEqual(spy.removed, [])
+        XCTAssertEqual(spy.updated, [])
+        XCTAssertTrue(f.manager.items.isEmpty)
+    }
+
+    // MARK: - Cancelling a closing window's downloads (TASK-156)
+
+    func testTheDownloadsAClosingPrivateWindowWouldCancel() throws {
+        let f = try makeFixture()
+        let windowA = DownloadScope.incognito(spaceID: UUID())
+        let windowB = DownloadScope.incognito(spaceID: UUID())
+        let runningA = addItem(f, "a.iso", scope: windowA)
+        let endedA = addItem(f, "a.zip", scope: windowA)
+        let runningB = addItem(f, "b.iso", scope: windowB)
+        let runningNormal = addItem(f, "normal.iso")
+        f.manager.downloadDidEnd(endedA)
+
+        XCTAssertEqual(f.manager.privateDownloadsInFlight(closing: .window(windowA)).map(\.id), [runningA.id])
+        XCTAssertEqual(f.manager.privateDownloadsInFlight(closing: .window(windowB)).map(\.id), [runningB.id])
+        XCTAssertEqual(f.manager.privateDownloadsInFlight(closing: .window(.normal)).map(\.id), [])
+        XCTAssertEqual(Set(f.manager.privateDownloadsInFlight(closing: .allWindows).map(\.id)),
+                       [runningA.id, runningB.id])
+        _ = runningNormal
+    }
+
+    func testCancellingAClosingWindowsDownloadsLeavesEveryOtherAlone() throws {
+        let f = try makeFixture()
+        let windowA = DownloadScope.incognito(spaceID: UUID())
+        let windowB = DownloadScope.incognito(spaceID: UUID())
+        let runningA = addItem(f, "a.iso", scope: windowA)
+        let endedA = addItem(f, "a.zip", scope: windowA)
+        let runningB = addItem(f, "b.iso", scope: windowB)
+        let runningNormal = addItem(f, "normal.iso")
+        f.manager.downloadDidEnd(endedA)
+        let spy = ObserverSpy()
+        f.manager.addObserver(spy)
+
+        f.manager.cancelPrivateDownloads(closing: .window(windowA))
+
+        XCTAssertEqual(runningA.state, .cancelled)
+        XCTAssertEqual(endedA.state, .completed)
+        XCTAssertEqual(runningB.state, .downloading)
+        XCTAssertEqual(runningNormal.state, .downloading)
+        XCTAssertEqual(spy.updated, [runningA.id], "its window's badge and popover are told")
+        XCTAssertEqual(spy.removed, [], "it stays listed until the window is gone")
+        XCTAssertFalse(f.manager.hasActiveDownloads(in: windowA))
+        XCTAssertTrue(f.manager.hasActiveDownloads(in: windowB))
+        f.scheduler.fire()
+        f.manager.flushPendingSave()
+        XCTAssertTrue(f.records.isEmpty, "a cancelled Private download is not saved either")
+    }
+
+    func testQuittingCancelsEveryPrivateWindowsDownloadsAndNoNormalOne() throws {
+        let f = try makeFixture()
+        let runningA = addItem(f, "a.iso", scope: .incognito(spaceID: UUID()))
+        let runningB = addItem(f, "b.iso", scope: .incognito(spaceID: UUID()))
+        let runningNormal = addItem(f, "normal.iso")
+
+        f.manager.cancelPrivateDownloads(closing: .allWindows)
+
+        XCTAssertEqual(runningA.state, .cancelled)
+        XCTAssertEqual(runningB.state, .cancelled)
+        XCTAssertEqual(runningNormal.state, .downloading)
+        XCTAssertTrue(f.manager.privateDownloadsInFlight(closing: .allWindows).isEmpty)
     }
 
     func testClosingAPrivateWindowLeavesNormalDownloadsAndTheirRows() throws {
@@ -601,6 +659,5 @@ final class DownloadWindowScopeTests: XCTestCase {
 
         XCTAssertNil(TabStore.shared.space(withID: space.id), "closing the window removes its incognito space")
         XCTAssertFalse(manager.items.contains { $0 === item })
-        XCTAssertFalse(manager.unlistedItems.contains { $0 === item })
     }
 }
