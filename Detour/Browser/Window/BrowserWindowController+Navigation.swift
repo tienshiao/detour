@@ -208,11 +208,18 @@ extension BrowserWindowController: WKNavigationDelegate {
             return
         }
 
+        // What the alerts may say about where the file is from. Until the
+        // signatures pass that is the URL alone, and a store host is then only
+        // "not verified as signed by the store" (TASK-157).
+        var origin = CRXInstallGate.Origin(unverified: downloadURL)
         do {
             // Nothing is unpacked, shown or installed from a file that does not
-            // pass the gate: verified signatures, an id that is not installed,
-            // and a manifest key that agrees with the signing key (TASK-151).
-            let candidate = try CRXInstallGate.admit(crxData: data) { Self.installedExtension(withID: $0) }
+            // pass the gate: verified signatures (the store's own among them
+            // for a file a store host served), an id that is not installed, and
+            // a manifest key that agrees with the signing key (TASK-151).
+            let verified = try CRXInstallGate.verify(crxData: data, downloadURL: downloadURL)
+            origin = verified.origin
+            let candidate = try CRXInstallGate.admit(verified, crxData: data) { Self.installedExtension(withID: $0) }
             let unpackedDir = candidate.directory
             defer { try? FileManager.default.removeItem(at: unpackedDir) }
 
@@ -227,8 +234,7 @@ extension BrowserWindowController: WKNavigationDelegate {
 
             let confirmAlert = NSAlert()
             confirmAlert.messageText = "Install \"\(displayName)\"?"
-            confirmAlert.informativeText = CRXInstallGate.originDescription(downloadURL: downloadURL)
-                + "\n\n" + permissionSummary
+            confirmAlert.informativeText = origin.description + "\n\n" + permissionSummary
             confirmAlert.alertStyle = .warning
             confirmAlert.addButton(withTitle: "Install")
             confirmAlert.addButton(withTitle: "Cancel")
@@ -242,11 +248,12 @@ extension BrowserWindowController: WKNavigationDelegate {
             }
 
             // Where it came from decides whether it updates (TASK-113): a store
-            // download polls the store; another CRX polls only a URL its
-            // manifest names.
+            // install polls the store; another CRX polls only a URL its
+            // manifest names. "From the store" is the gate's verdict — served
+            // by the store and signed by it — not the URL's (TASK-157).
             var options = ExtensionInstaller.Options()
             (options.source, options.updateURL) = ExtensionSource.classifyCRX(
-                downloadURL: downloadURL, manifestUpdateURL: manifest.updateURL)
+                fromWebStore: candidate.origin == .webStore, manifestUpdateURL: manifest.updateURL)
             try ExtensionManager.shared.install(from: unpackedDir, publicKey: candidate.publicKey, options: options)
 
             let successAlert = NSAlert()
@@ -257,8 +264,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         } catch {
             let alert = NSAlert()
             alert.messageText = error is CRXInstallGate.Refusal ? "Extension Not Installed" : "Failed to Install Extension"
-            alert.informativeText = error.localizedDescription
-                + "\n\n" + CRXInstallGate.originDescription(downloadURL: downloadURL)
+            alert.informativeText = error.localizedDescription + "\n\n" + origin.description
             alert.alertStyle = .critical
             alert.runModal()
         }

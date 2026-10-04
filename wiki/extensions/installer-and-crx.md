@@ -5,7 +5,7 @@ description: How an extension gets from a Chrome Web Store download or an unpack
 resource: ../../Detour/Extensions/Installer
 tags: [extensions, install, crx, security]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:50:00Z }
 sources:
   - id: installer
     resource: ../../Detour/Extensions/Installer/ExtensionInstaller.swift
@@ -40,6 +40,9 @@ sources:
   - id: task-151
     resource: backlog:TASK-151
     title: A first install from a CRX does not verify its signature
+  - id: task-157
+    resource: backlog:TASK-157
+    title: A CRX is called 'From the Chrome Web Store' by its download host; the store's publisher proof is not checked
   - id: notes-updates
     resource: "Agent session notes, 2026-09-26 (not in the repository)"
     title: Extension updates — design decisions and what the real 1Password CRX taught
@@ -78,11 +81,14 @@ manifest's permissions in a confirmation alert, and only then calls
 ## The install gate
 
 The interception has no host check: any site can serve a `.crx`. What the
-file may claim is therefore decided by `CRXInstallGate.admit(crxData:installed:)`
-before anything is unzipped or shown:[^task-151]
+file may claim is therefore decided by `CRXInstallGate` before anything is
+unzipped or shown — `verify(crxData:downloadURL:)` for step 1, then
+`admit(_:crxData:installed:)` for the rest:[^task-151]
 
 1. `CRX3Verifier.verify` must return `.verified`. The id is derived from the
-   verified key, never from a key the header merely declares.
+   verified key, never from a key the header merely declares. A file served
+   by a store host must pass the store's format as well
+   ([below](#what-from-the-chrome-web-store-means)).
 2. No installed extension has that id. The file is refused whatever its
    version: an install over an installed copy would inherit its per-profile
    enablement, saved permission decisions and storage. Moving to a newer
@@ -95,11 +101,51 @@ with the reason and the origin. The lookup in step 2 is repeated after the
 confirmation alert, because the alert runs a modal loop in which the same
 file could have been installed.
 
-The prompt's first line is `CRXInstallGate.originDescription(downloadURL:)`:
-"From the Chrome Web Store." for a store host, otherwise the host by name
-with "not from the Chrome Web Store". The URL is the final one of the
-`URLSession` fetch (after its redirects), and the same URL feeds
-`ExtensionSource.classifyCRX`.
+## What "from the Chrome Web Store" means
+
+Two facts together: a store host served the bytes (`ExtensionSource.webStoreHosts`,
+matched on the final URL of the `URLSession` fetch, after its redirects)
+**and** one of the file's verified proofs was made with the store's publisher
+key. The store signs every CRX it serves with that key, beside the
+developer's; Chrome requires the proof for store installs and updates
+(`VerifierFormat::CRX3_WITH_PUBLISHER_PROOF`), and so does Detour since
+TASK-157.[^task-157] Before that the host alone decided, so the prompt and the
+recorded source claimed the store for anything a store host served.
+
+`CRX3Verifier.verify(crxData:format:)` takes the requirement as Chrome does:
+`.developerProof` (every proof verifies, one is the `crx_id` key) or
+`.publisherProof(keyHash:)` (also, one verified proof's key hashes to
+`keyHash`). `Format.webStore` carries the real hash,
+`CRX3Verifier.webStorePublisherKeyHash` — SHA-256 of the key's
+SubjectPublicKeyInfo, `kPublisherKeyHash` in Chromium's
+`components/crx_file/crx_verifier.cc`:
+`61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf`. Tests
+stand in a key of their own through the same parameter.
+
+| File | Verdict (`CRXInstallGate.Origin`) | Prompt line | Source |
+|---|---|---|---|
+| Store host, store's proof | `webStore` | "From the Chrome Web Store." | `webStore` |
+| Store host, no store proof | refused (`notVerified(.noPublisherProof)`), nothing unpacked | "From <host>, but not verified as signed by the Chrome Web Store." under the refusal | — |
+| Any other host | `site(host)` | "From <host>, not from the Chrome Web Store." | `crx` |
+| A file on disk | `file(name)` | "From a file on this Mac (<name>), not from the Chrome Web Store." | `crx` |
+
+The store's proof does not make a file a store file on its own: a store CRX
+re-hosted on a site, or saved to disk and opened, is a CRX from there (it is
+admitted on its developer's proof, and polls only an `update_url` its
+manifest names). A file a store host serves without the proof is refused
+rather than installed as some other site's CRX: the store signs everything
+it serves, so such a file is not what the address says it is.
+
+The verdict travels with the result (`Verified.origin`, `Candidate.origin`)
+and is what the prompt prints and what `ExtensionSource.classifyCRX(fromWebStore:…)`
+records; nothing downstream looks at the URL again. Until the signatures pass
+— and for a file that fails them — all that is known is the URL
+(`Origin(unverified:)`), and a store host is then named as a host.
+
+What the real files carry (measured 2026-10-04 on the current 1Password and
+Claude store CRXs): three proofs each — an RSA key common to both files, the
+developer's RSA key (the `crx_id` key), and the ECDSA P-256 publisher key
+above.[^task-157]
 
 ## CRX3 layout
 
@@ -155,7 +201,7 @@ extension can move to a newer version:
 
 | Source | Set when | Updates |
 |---|---|---|
-| `webStore` | The CRX was downloaded from a store host (`ExtensionSource.webStoreHosts`) | Polled at the manifest's `update_url`, or the store's update2 endpoint when it declares none |
+| `webStore` | The CRX was served by a store host (`ExtensionSource.webStoreHosts`) and carries the store's publisher proof | Polled at the manifest's `update_url`, or the store's update2 endpoint when it declares none. An update must carry the store's proof too |
 | `crx` | Any other CRX | Polled only at an `update_url` its manifest names; without one it never updates |
 | `unpacked` | A folder | Never polled; reloaded from `sourcePath` on request |
 
@@ -196,6 +242,10 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   the id of the verified key, and never over an installed extension. Native
   messaging hosts authorise by id, so an id must not be claimable by a file
   that merely carries another extension's public key.[^task-151]
+- A `webStore` install is a file the store signed, and stays one: the first
+  install and every update must carry a verified proof by the store's
+  publisher key. An update correctly signed by the developer's key alone is
+  refused.[^task-157]
 - `CRXUnpacker.extractPublicKey` returns the key the header *declares*,
   without checking a signature. No install path uses it for the id any more;
   do not derive an id from `UnpackResult.publicKey`.
@@ -218,10 +268,10 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   remain, as `UInt64`, before converting or adding it.
 - Without a `crx_id` match `extractPublicKey` falls back to the last key in
   the header. That is one more reason its result is not an identity.
-- "From the Chrome Web Store" in the prompt means the bytes came from a store
-  host, not that the store's own key signed them. Chrome additionally
-  requires the store's publisher proof for store installs; Detour does not
-  check for it.
+- An install recorded as `webStore` before TASK-157 was classified by its
+  host alone and is not re-checked; its next update has to carry the store's
+  proof like any other. A copy that was already staged for it under the old
+  rule is applied without the check.
 - Requests to the store go out with a Chrome user agent, which its endpoints
   expect, and a `prodversion`, which the store gates newer manifests on.
 - A real-store check can be scripted: the download URL is
@@ -244,4 +294,5 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
 [^task-113]: Check for and install extension updates
 [^task-139]: A crafted CRX header can crash the app at install
 [^task-151]: A first install from a CRX does not verify its signature
+[^task-157]: A CRX is called 'From the Chrome Web Store' by its download host; the store's publisher proof is not checked
 [^notes-updates]: Extension updates — design decisions and what the real 1Password CRX taught

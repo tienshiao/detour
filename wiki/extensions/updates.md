@@ -4,7 +4,7 @@ title: Extension updates
 description: How installed extensions move to newer versions — the update2 poll, the verification gate, the added-permissions hold, deferring an update while the extension is busy, runtime.onUpdateAvailable, and why runtime.reload has to be recognised natively.
 tags: [extensions, updates, crx, polyfill]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:55:00Z }
 sources:
   - id: updater
     resource: ../../Detour/Extensions/Updates/ExtensionUpdater.swift
@@ -211,6 +211,11 @@ re-adding its listener, and answering again would loop.
   or the Extensions menu is retained elsewhere and is not counted.
 - Uninstall discards the staged copy and the parked waits.
 - A non-store CRX without an `https` `update_url` never updates.
+- An update of a `webStore` install must carry the store's publisher proof
+  (`CRX3Verifier.Format.webStore`); one signed by the developer's key alone
+  is refused as "not signed by the Chrome Web Store". Any other CRX install
+  updates on its developer's proof. See
+  [installer and CRX](./installer-and-crx.md#what-from-the-chrome-web-store-means).
 - Not exercised in the running app: the Install Now row, and a real store
   update arriving while an extension is busy.[^task-123] The real 1Password
   store CRX was verified and a live `noupdate` check run against the

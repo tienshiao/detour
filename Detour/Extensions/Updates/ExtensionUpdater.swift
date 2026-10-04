@@ -75,6 +75,9 @@ final class ExtensionUpdater {
     private(set) var isChecking = false
 
     private let fetcher: any ExtensionUpdateFetching
+    /// What an update of a Web Store install must pass (TASK-157): the store's
+    /// publisher proof. Its key is the real one outside tests.
+    private let storeFormat: CRX3Verifier.Format
     private let now: () -> Date
     private let database: AppDatabase
     private unowned let manager: ExtensionManager
@@ -84,8 +87,10 @@ final class ExtensionUpdater {
     private var stagedTimer: Timer?
 
     init(fetcher: any ExtensionUpdateFetching, now: @escaping () -> Date = Date.init,
-         database: AppDatabase = .shared, manager: ExtensionManager = .shared) {
+         database: AppDatabase = .shared, manager: ExtensionManager = .shared,
+         storeFormat: CRX3Verifier.Format = .webStore) {
         self.fetcher = fetcher
+        self.storeFormat = storeFormat
         self.now = now
         self.database = database
         self.manager = manager
@@ -281,8 +286,11 @@ final class ExtensionUpdater {
             log.notice("Update available for \(ext.id, privacy: .public): \(installedVersion, privacy: .public) -> \(version, privacy: .public)")
             let crx = try await fetcher.fetch(codebase)
             try ExtensionUpdatePolicy.validateSHA256(expected: entry.sha256, of: crx)
+            // A Web Store install only ever moves to a file the store signed:
+            // the developer's key alone (leaked, or served by whoever answers
+            // the update check) is not enough to replace it (TASK-157).
             let publicKey: Data
-            switch CRX3Verifier.verify(crxData: crx) {
+            switch CRX3Verifier.verify(crxData: crx, format: ext.source == .webStore ? storeFormat : .developerProof) {
             case .verified(let key): publicKey = key
             case .failed(let failure): return .failed(failure.description)
             }

@@ -51,6 +51,96 @@ final class CRX3VerifierTests: XCTestCase {
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: pair.publicKeyPKCS1))
     }
 
+    // MARK: - The publisher's proof (TASK-157)
+
+    /// The constant is Chromium's `kPublisherKeyHash`
+    /// (components/crx_file/crx_verifier.cc), byte for byte.
+    func testTheWebStorePublisherKeyHashIsChromiums() {
+        XCTAssertEqual(CRX3Verifier.webStorePublisherKeyHash.map { String(format: "%02x", $0) }.joined(),
+                       "61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf")
+        XCTAssertEqual(CRX3Verifier.Format.webStore,
+                       .publisherProof(keyHash: CRX3Verifier.webStorePublisherKeyHash))
+    }
+
+    /// A store file: the developer's proof (the `crx_id` key) and the
+    /// publisher's. The result is still the developer's key.
+    func testAFileWithThePublishersProofPassesThePublisherFormat() throws {
+        let developer = try CRX3TestBuilder.RSAKeyPair.generate()
+        let publisher = P256.Signing.PrivateKey()
+        let format = CRX3Verifier.Format.publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))
+        for signers in [[CRX3TestBuilder.Signer.rsa(developer), .ecdsa(publisher)],
+                        [.ecdsa(publisher), .rsa(developer)]] {
+            let crx = try CRX3TestBuilder.build(zip: zip, signers: signers, declaredKey: developer.publicKeySPKI)
+            XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: format),
+                           .verified(publicKey: developer.publicKeySPKI))
+            // The developer format does not mind the extra proof.
+            XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: developer.publicKeySPKI))
+        }
+    }
+
+    /// NEGATIVE: correctly signed by its developer and by nobody else. Good
+    /// enough for the developer format, not for the publisher's.
+    func testADeveloperOnlyFileFailsThePublisherFormat() throws {
+        let developer = try CRX3TestBuilder.RSAKeyPair.generate()
+        let publisher = P256.Signing.PrivateKey()
+        let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(developer)])
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx), .verified(publicKey: developer.publicKeySPKI))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))),
+                       .failed(.noPublisherProof))
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .webStore), .failed(.noPublisherProof))
+    }
+
+    /// A second proof is not the publisher's just for being there: it has to
+    /// be made with the publisher's key.
+    func testASecondProofByAnotherKeyIsNotThePublishers() throws {
+        let developer = try CRX3TestBuilder.RSAKeyPair.generate()
+        let publisher = P256.Signing.PrivateKey()
+        let someoneElse = P256.Signing.PrivateKey()
+        let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(developer), .ecdsa(someoneElse)],
+                                            declaredKey: developer.publicKeySPKI)
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))),
+                       .failed(.noPublisherProof))
+    }
+
+    /// The publisher's key is public, so anyone can *name* it in a header. A
+    /// proof that names it over someone else's signature fails as a signature,
+    /// before it can count as the publisher's.
+    func testNamingThePublishersKeyWithoutItsSignatureFails() throws {
+        let developer = try CRX3TestBuilder.RSAKeyPair.generate()
+        let publisher = P256.Signing.PrivateKey()
+        let forger = P256.Signing.PrivateKey()
+        let crx = try CRX3TestBuilder.build(
+            zip: zip,
+            signers: [.rsa(developer),
+                      .ecdsaDeclaring(publicKey: publisher.publicKey.derRepresentation, signingWith: forger)],
+            declaredKey: developer.publicKeySPKI)
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))),
+                       .failed(.badSignature))
+    }
+
+    /// The publisher's proof covers the archive: a store-signed file with one
+    /// byte changed is no longer the store's.
+    func testATamperedFileWithThePublishersProofFails() throws {
+        let developer = try CRX3TestBuilder.RSAKeyPair.generate()
+        let publisher = P256.Signing.PrivateKey()
+        var crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(developer), .ecdsa(publisher)],
+                                            declaredKey: developer.publicKeySPKI)
+        crx[crx.count - 5] ^= 0xFF
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))),
+                       .failed(.badSignature))
+    }
+
+    /// The publisher vouches for a file; it does not name the extension. A file
+    /// with only the publisher's proof has no key for its `crx_id`.
+    func testThePublishersProofAloneDoesNotReplaceTheDevelopers() throws {
+        let developer = try CRX3TestBuilder.RSAKeyPair.generate()
+        let publisher = P256.Signing.PrivateKey()
+        let crx = try CRX3TestBuilder.build(zip: zip, signers: [.ecdsa(publisher)],
+                                            declaredKey: developer.publicKeySPKI)
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))),
+                       .failed(.noProofMatchesCRXID))
+    }
+
     // MARK: - Rejections
 
     func testATamperedPayloadFailsTheSignature() throws {

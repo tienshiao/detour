@@ -14,7 +14,11 @@ import Security
 /// - one of the verified keys must hash to `crx_id`. That key is the result: the
 ///   caller derives the extension id from it and compares it to the installed one,
 ///   which is what stops an update URL (or a network position in front of one)
-///   from replacing an extension with a different publisher's files.
+///   from replacing an extension with a different publisher's files;
+/// - when the caller asks for it (`Format.publisherProof`, Chrome's
+///   `CRX3_WITH_PUBLISHER_PROOF`), one of the verified keys must also be the
+///   Chrome Web Store's publisher key. That is what "from the store" means: the
+///   store signed the file, whatever host served it (TASK-157).
 ///
 /// Both ways a CRX gets installed go through here: an update
 /// (`ExtensionUpdater`) and a first install (`CRXInstallGate`, TASK-151).
@@ -29,6 +33,9 @@ enum CRX3Verifier {
         case noProofMatchesCRXID
         case badSignature
         case unsupportedKey(String)
+        /// The caller required the publisher's proof and no proof was made
+        /// with that key (Chrome: `ERROR_REQUIRED_PROOF_MISSING`).
+        case noPublisherProof
 
         var description: String {
             switch self {
@@ -38,6 +45,7 @@ enum CRX3Verifier {
             case .noProofMatchesCRXID: return "no signing key matches the CRX3 header's crx_id"
             case .badSignature: return "a CRX3 signature does not verify"
             case .unsupportedKey(let what): return "unsupported CRX3 signing key: \(what)"
+            case .noPublisherProof: return "the file is not signed by the Chrome Web Store"
             }
         }
     }
@@ -47,6 +55,31 @@ enum CRX3Verifier {
         /// one whose hash the header declares as `crx_id`.
         case verified(publicKey: Data)
         case failed(Failure)
+    }
+
+    /// The SHA-256 of the DER SubjectPublicKeyInfo of the Chrome Web Store's
+    /// publisher key ("ecdsa_2017_public"): `kPublisherKeyHash` in Chromium's
+    /// `components/crx_file/crx_verifier.cc`. Every CRX the store serves carries
+    /// an ECDSA proof made with that key beside the developer's — confirmed in
+    /// the 1Password and Claude store files, 2026-10-04 (TASK-157).
+    static let webStorePublisherKeyHash = Data([
+        0x61, 0xf7, 0xf2, 0xa6, 0xbf, 0xcf, 0x74, 0xcd, 0x0b, 0xc1, 0xfe,
+        0x24, 0x97, 0xcc, 0x9b, 0x04, 0x25, 0x4c, 0x65, 0x8f, 0x79, 0xf2,
+        0x14, 0x53, 0x92, 0x86, 0x7e, 0xa8, 0x36, 0x63, 0x67, 0xcf,
+    ])
+
+    /// Which proofs a file must carry — Chrome's `VerifierFormat`.
+    enum Format: Equatable {
+        /// `CRX3`: every proof verifies and one of them is the `crx_id` key.
+        case developerProof
+        /// `CRX3_WITH_PUBLISHER_PROOF`: in addition, one of the verified proofs
+        /// was made with the key whose SubjectPublicKeyInfo hashes (SHA-256)
+        /// to `keyHash`. Production passes the store's (`.webStore`); the hash
+        /// is a parameter so tests can stand in a key they hold.
+        case publisherProof(keyHash: Data)
+
+        /// A file the Chrome Web Store signed.
+        static let webStore = Format.publisherProof(keyHash: CRX3Verifier.webStorePublisherKeyHash)
     }
 
     /// The signature preamble; 15 ASCII characters and a NUL byte.
@@ -59,7 +92,7 @@ enum CRX3Verifier {
         let signature: Data
     }
 
-    static func verify(crxData data: Data) -> Outcome {
+    static func verify(crxData data: Data, format: Format = .developerProof) -> Outcome {
         guard data.count >= 12 else { return .failed(.malformed("too small")) }
         guard data[0..<4] == Data([0x43, 0x72, 0x32, 0x34]) else { return .failed(.malformed("bad magic")) }
         let version = data.subdata(in: 4..<8).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
@@ -129,16 +162,25 @@ enum CRX3Verifier {
         message.append(zip)
 
         var declaredKey: Data?
+        var hasPublisherProof = false
         for proof in proofs {
             switch verifySignature(of: message, proof: proof) {
             case .success: break
             case .failure(let failure): return .failed(failure)
             }
-            if Data(SHA256.hash(data: proof.publicKey).prefix(16)) == crxID {
+            let keyHash = Data(SHA256.hash(data: proof.publicKey))
+            if keyHash.prefix(16) == crxID {
                 declaredKey = proof.publicKey
+            }
+            // Only a proof that verified counts: the loop returns on the first
+            // one that does not, so a header that merely names the publisher's
+            // key without its signature never gets here.
+            if case .publisherProof(let publisherKeyHash) = format, keyHash == publisherKeyHash {
+                hasPublisherProof = true
             }
         }
         guard let declaredKey else { return .failed(.noProofMatchesCRXID) }
+        if case .publisherProof = format, !hasPublisherProof { return .failed(.noPublisherProof) }
         return .verified(publicKey: declaredKey)
     }
 

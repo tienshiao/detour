@@ -4,7 +4,7 @@ title: Extension updates must pass CRX3 verification
 description: Why an extension update is installed only if its CRX3 signatures verify and its signing key derives the installed id, why a manifest with a key is classified as unpacked, and how the first-install path came to verify too.
 tags: [extensions, updates, security, crx, decision]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:50:00Z }
 sources:
   - id: verifier
     resource: ../../Detour/Extensions/Installer/CRX3Verifier.swift
@@ -39,6 +39,9 @@ sources:
   - id: task-151
     resource: backlog:TASK-151
     title: A first install from a CRX does not verify its signature
+  - id: task-157
+    resource: backlog:TASK-157
+    title: A CRX is called 'From the Chrome Web Store' by its download host; the store's publisher proof is not checked
 ---
 
 # Context
@@ -127,6 +130,21 @@ CRX download is classified by `ExtensionSource.classifyCRX`, a folder is
 - The file is attacker-controlled input. The header parser bounds-checks a
   field length in 64 bits before converting it, after review found that a
   length above `Int.max` would trap.[^task-113]
+- **A Web Store install must be signed by the store, since TASK-157.** The
+  gate above proves who the *developer* is. It says nothing about the store,
+  and "store" used to be decided by the host that served the bytes alone.
+  Chrome asks more of a store file: a verified proof by the store's publisher
+  key (`CRX3_WITH_PUBLISHER_PROOF`). Detour now asks the same in both places:
+  a file served by a store host is admitted, called "From the Chrome Web
+  Store" and recorded as `webStore` only with that proof, and an update of a
+  `webStore` install is taken only with it — step 2 runs with
+  `Format.publisherProof` for such an install. So the developer's key alone,
+  leaked or held by whoever answers the update check, cannot replace a store
+  install. A store-host file without the proof is refused rather than
+  demoted to an ordinary CRX: the store signs everything it serves.
+  The key's hash comes from Chromium's source and was confirmed in two real
+  store files; see
+  [installer and CRX](../extensions/installer-and-crx.md#what-from-the-chrome-web-store-means).[^task-157]
 - Store hosts are matched exactly (`ExtensionSource.webStoreHosts`) or, in
   the migration, on a domain boundary: `clients2.google.com` is the store,
   `notgoogle.com` is not.
@@ -147,6 +165,16 @@ CRX download is classified by `ExtensionSource.classifyCRX`, a folder is
   download that does not match the announced hash is rejected, an announced
   version that is not newer is not downloaded.
 - `ExtensionUpdateMigrationTests.testV17ClassifiesExistingInstalls`.
+- The publisher proof: `CRX3VerifierTests` (a developer-only file fails the
+  publisher format, a second proof by another key is not the publisher's,
+  the publisher's key named over someone else's signature fails as a
+  signature), `CRXInstallGateTests` (a store-host file without the proof is
+  refused before anything is unpacked or looked up; a store-signed file from
+  elsewhere is not a store file) and
+  `ExtensionUpdaterTests.testAStoreInstallRefusesAnUpdateTheStoreDidNotSign`,
+  all with a stand-in publisher key. The gated real-file test passes the
+  1Password and Claude store CRXs through the production gate with the real
+  key.[^task-157]
 - At runtime on 2026-09-25 the real 1Password store CRX (18 MB, RSA) passed
   the verifier and derived the expected id, and a live update check against
   the store answered "no update".[^task-113]
@@ -161,3 +189,4 @@ CRX download is classified by `ExtensionSource.classifyCRX`, a folder is
 [^task-113]: Check for and install extension updates
 [^task-123]: Defer an update while the extension is busy
 [^task-151]: A first install from a CRX does not verify its signature
+[^task-157]: A CRX is called 'From the Chrome Web Store' by its download host; the store's publisher proof is not checked
