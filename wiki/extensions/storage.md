@@ -4,7 +4,7 @@ title: Extension storage
 description: Where an extension's data lives in Detour — WebKit's chrome.storage areas keyed by profile and extension id, the polyfilled storage.managed, and the origin-keyed storage (IndexedDB, localStorage, service worker registration) that is lost at every launch because each context load gets a new base URL.
 tags: [extensions, storage, webkit, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:40Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -159,8 +159,7 @@ assumes a new origin per load, and several questions are open:[^task-99]
 The session database still has an `extensionStorage` table with
 `storageGet` / `storageSet` accessors on `AppDatabase`, apparently left from
 the extension system that predates `WKWebExtension`. Nothing in the app calls
-them; only database tests do. [docs/extensions.md](../../docs/extensions.md)
-still describes it as where `chrome.storage.local` lives.
+them; only database tests do.
 
 # Tests
 

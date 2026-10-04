@@ -4,7 +4,7 @@ title: Architecture overview
 description: The whole app on one page — profiles, spaces, tabs and windows, the singletons that hold them, how the parts talk to each other, and the launch sequence.
 tags: [architecture, state, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
 sources:
   - id: architecture-doc
     resource: ../../docs/architecture.md
@@ -36,7 +36,8 @@ sources:
 
 Detour is a native macOS browser written in Swift on top of WebKit, with GRDB
 (SQLite) for storage and Sparkle for app updates. There is no SwiftUI and no
-storyboard: the UI is AppKit built in code.
+storyboard: the UI is AppKit built in code. The deployment target is macOS
+15.4 (`project.yml`).
 
 Four objects carry the model. A **profile** owns the website data (cookies,
 storage), the extension controller and the per-profile settings. A **space**
@@ -169,16 +170,6 @@ See [app shell](./app-shell.md).
 | Web Extensions | [extensions overview](../extensions/overview.md) |
 | WebKit and AppKit behaviour | [AppKit gotchas](../platform/appkit-gotchas.md) |
 | Building, verifying, debugging | [build and test](../playbooks/build-and-test.md) |
-
-# Disagreements between the docs and the code
-
-- `docs/architecture.md` lists the launch steps in a different order (history
-  expiry first, no extension manager, window before the content blocker).
-  The order above is what `AppDelegate` does.
-- `CLAUDE.md` and `docs/architecture.md` say "macOS 14+". `project.yml` sets
-  the deployment target to macOS 15.4.
-- `docs/architecture.md` names six singletons; the table above adds the ones
-  added since (`ExtensionManager`, `GPUProcessRecycler`).
 
 # Related
 

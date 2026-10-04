@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -163,17 +163,6 @@ whatever was under it.
 - **No selected tab**: only the split-view scrim is added.
 - **Search engine**: `activeSpace?.profile?.searchEngine`, default Google;
   suggestions can be turned off per profile (`searchSuggestionsEnabled`).
-
-# Differences from docs/command-palette.md
-
-The design document predates several changes. The code has:
-
-- a fourth suggestion type, `.searchInput`, and a top-hit row with inline
-  completion (the document lists three types);
-- a `didSubmitSearch` delegate method;
-- per-keystroke history queries on a background queue with a generation guard,
-  while only the *network* suggestion fetch is debounced (150 ms). The
-  document says all text input is debounced.
 
 # Tests
 

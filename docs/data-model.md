@@ -150,7 +150,7 @@ Stack of closed tabs for Reopen Closed Tab (Cmd+Shift+T). Records are per space;
 
 #### `download`
 
-File download records with progress tracking.
+File download records. `DownloadManager` writes a row once a download has finished, failed or been cancelled; a download still in progress is not written.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -159,8 +159,8 @@ File download records with progress tracking.
 | `sourceURL` | TEXT | | Original download URL |
 | `destinationURL` | TEXT | NOT NULL | Local file path |
 | `totalBytes` | INTEGER | NOT NULL, default -1 | Total size (-1 = unknown) |
-| `bytesWritten` | INTEGER | NOT NULL, default 0 | Bytes downloaded so far |
-| `state` | TEXT | NOT NULL | "downloading", "completed", "failed", or "cancelled" |
+| `bytesWritten` | INTEGER | NOT NULL, default 0 | Bytes downloaded |
+| `state` | TEXT | NOT NULL | "completed", "failed", or "cancelled". A "downloading" row, if one is read at launch, loads as failed ("Interrupted") |
 | `createdAt` | DATETIME | NOT NULL | When download started |
 | `completedAt` | DATETIME | | When download finished |
 
@@ -200,10 +200,14 @@ Installed Web Extensions (moved here from a separate `extensions.db`).
 | `basePath` | TEXT | NOT NULL | Unpacked extension directory |
 | `isEnabled` | BOOLEAN | NOT NULL, default true | Global enable switch |
 | `installedAt` | DOUBLE | NOT NULL | Install timestamp |
+| `source` | TEXT | NOT NULL, default "unpacked" | `ExtensionSource` raw value: "webStore", "crx" or "unpacked" (TASK-113) |
+| `updateURL` | TEXT | | Update endpoint polled for a CRX install; NULL for an unpacked install or a CRX that declares none |
+| `sourcePath` | TEXT | | Folder an unpacked extension was loaded from, so it can be reloaded |
+| `pendingPermissionApprovalJSON` | BLOB | | New permissions of an update the user has not accepted yet (`ExtensionUpdatePolicy.PendingApproval` as JSON; the extension is disabled meanwhile); NULL otherwise |
 
 #### `extensionStorage`
 
-Key-value storage for polyfilled extension storage.
+Key-value table from an earlier polyfilled extension storage. The app no longer reads or writes it (`chrome.storage` is WebKit's own); only tests call its accessors.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -282,7 +286,10 @@ Key-value store for app-level state.
 | `key` | TEXT | PRIMARY KEY | State key |
 | `value` | TEXT | | State value |
 
-Currently stores: `lastActiveSpaceID` -- the UUID of the most recently active space, used for session restoration.
+Currently stores:
+
+- `lastActiveSpaceID` -- the UUID of the most recently active space, used for session restoration
+- `extensionUpdateLastCheckAt` -- when the last extension update check finished (Unix time), so the check schedule carries across launches (TASK-113)
 
 ### Migration History
 
@@ -306,6 +313,7 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 | v14 | `externalAppPermission` (TASK-84) |
 | v15 | index `closedTab(spaceID, id)` (TASK-117) |
 | v16 | closedAt on closedTab, backfilled from archivedAt (TASK-116) |
+| v17 | `source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON` on `extension`; existing installs classified from their on-disk manifest (TASK-113) |
 
 ### Persistence Strategy
 
@@ -318,7 +326,7 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 
 Saves are **debounced**: mutations call `scheduleSave()`, which waits 1 second before writing, so rapid changes coalesce. `saveNow()` also runs on app termination.
 
-Closed tabs, downloads, extension state and permissions are written immediately by their own calls rather than by `saveNow()`.
+Closed tabs, extension state and permissions are written immediately by their own calls rather than by `saveNow()`. Downloads are saved by `DownloadManager`, which debounces its own save by 1 second; removing a download deletes its row immediately.
 
 ### Record Types
 
@@ -427,7 +435,7 @@ External-content FTS index over `historyTitle.folded` (content rowid = `historyT
 **Deduplication**: TabStore keeps an in-memory cache (`recentHistoryWrites`, `"url|spaceID" -> timestamp`). A non-typed visit to the same URL in the same space within 30 seconds is skipped.
 
 **Search**:
-- *Command palette* (`searchHistory`, space-scoped): FTS5 prefix `MATCH` on `historySearch`, ordered by FTS rank then visit count, and showing the space's own title where it has one (TASK-94).
+- *Command palette* (`searchHistory`, space-scoped): the union of three indexed candidate sources, all FTS5 prefix matches -- `historySearch`'s `url` column for URLs the space has visited, `historyTitleSearch` over the space's own titles (TASK-96), and `historySearch`'s `title` column only for URLs the space visited without a title of its own and no other space has visited. One row per URL, ordered by its best FTS rank then visit count, and showing the space's own title where it has one (TASK-94).
 - *History page* (`searchVisits`, profile-scoped via a set of space IDs): candidates come from `historySearch` (URL) and `historyTitleSearch` (the space's own titles), gated by `history_title_matches` against each visit's own title (TASK-93/96). So a title a page *used* to have is searchable, and no other profile's title can produce or hide a result.
 
 **Deletion**: The History page deletes by visit ids (optionally all visits of a URL within a time range) or everything since a cutoff for a profile's spaces. `deleteVisits(notInSpaceIDs:)` sweeps visits of deleted spaces. URLs left with no visits are removed. Closed-tab records in the session database are **not** touched (TASK-118).

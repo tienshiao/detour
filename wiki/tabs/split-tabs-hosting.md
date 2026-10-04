@@ -5,7 +5,7 @@ description: How BrowserWindowController shows a split (a frame-based NSSplitVie
 resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [tabs, split, window, appkit, nssplitview, focus]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
 sources:
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -287,8 +287,6 @@ The sidebar row morphs in step; that half is in
 
 # Gotchas
 
-- The design document still describes a `.thin` divider and a hairline accent
-  border; the code has the invisible 8 pt gap and a 2 pt black/white border.
 - `claimWebView`'s refresh branch (already hosting these panes) runs on every
   `windowDidBecomeKey`. It must stay cheap and must not count as a "show" for
   the sleep budget.

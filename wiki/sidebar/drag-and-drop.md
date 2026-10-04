@@ -4,7 +4,7 @@ title: Sidebar drag and drop
 description: "The sidebar's drag pipeline: ID-based payloads, the pure validate / destination / resolve functions, the drop transaction, drop landing and the favorite drop hint."
 tags: [sidebar, drag-and-drop, split-tabs, invariants]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:25Z }
 sources:
   - id: dragdrop
     resource: ../../Detour/Browser/Sidebar/SidebarDragDrop.swift
@@ -286,20 +286,19 @@ frame came from the pointer-centred fallback.[^task-129]
   and after the hint appears.[^task-129] It is set `isHidden` once faded —
   a transparent view still takes drags.
 
-# Disagreements with the design document
+# Relation to the design document
 
-Section 6 of [split-tabs-design.md](../../docs/split-tabs-design.md) predates
-the implementation in places. The code differs as follows:
+Section 6 of [split-tabs-design.md](../../docs/split-tabs-design.md) keeps the
+original design and marks each place where the implementation differs with an
+"As shipped" note; this page describes the code. Two points from those notes
+that are easy to miss here:
 
-- `Kind.splitGroup`'s `itemID` is the first member's tab ID, not the group ID.
-- There is no `reorderSplitGroup` command or `didMoveSplitGroup` delegate
-  method; a whole split row reorders through `reorderNormalTab` and
-  `didMoveTab`, and the store moves the block.
-- The helpers are `splitRowDragKind(forX:rowWidth:indent:)` and
-  `rowDropZone(forX:y:rowSize:)`, not `splitDragKind` / `splitEdge`.
+- A whole split row reorders through `reorderNormalTab` and the
+  `didMoveTab` delegate method (there is no separate split-group command);
+  the store moves the block.
 - A split row's context menu has Copy URL, Separate Tabs and Close Both
-  Splits only (no Move to Space). Pinned split kinds (section 12) were added
-  later.
+  Splits only (no Move to Space); a pinned split row has Copy URL and
+  Separate Tabs.
 
 # Tests
 

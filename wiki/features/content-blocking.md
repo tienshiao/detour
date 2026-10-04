@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, the per-site switch implemented through a WebKit preferences SPI, and the blocked-resource counter."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
@@ -209,13 +209,6 @@ EasyPrivacy cannot un-block something EasyList blocks.
 | Compiled lists | WebKit's default `WKContentRuleListStore`, or `<data directory>/ContentRuleLists` for a non-default data directory |
 | Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount`, `.compiledRuleCount` |
 | Whitelist | `contentBlockerWhitelist` in the [session database](../architecture/session-database.md); rows go with the profile |
-
-# Differences from docs/content-blocking.md
-
-- The document says every window re-applies rules to its web views on a rules
-  change. The code re-applies to the selected, owned tab's panes only.
-- The document describes a per-list refresh button. The pane has "Update All
-  Now" (`forceRefreshAll`) and "Clear Cache & Redownload".
 
 # Tests
 

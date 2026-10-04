@@ -4,7 +4,7 @@ title: Persistence
 description: What Detour saves, where and when — the two databases, the debounced session save and its write order, session restore, interaction state, and the DETOUR_DATA_DIR switch.
 tags: [architecture, storage, session, restore]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -65,7 +65,7 @@ Website data (cookies, local storage) is WebKit's, keyed by profile; see
 | One profile | `AppDatabase.saveProfile` | Immediately, in `addProfile` / `updateProfile`. |
 | Closed-tab records | `pushClosedTab`, `deleteClosedTab…` | Immediately, inside `closeTab`, reopen, undo. Never loaded into memory (TASK-117). |
 | Downloads | `DownloadManager` | Its own 1 s debounce. |
-| Extension records, permissions, per-profile enablement, `chrome.storage` rows | `AppDatabase` calls from the extension layer | Immediately. |
+| Extension records, permissions, per-profile enablement | `AppDatabase` calls from the extension layer | Immediately. |
 | History visits and title corrections | `HistoryDatabase.recordVisit`, `updateTitle` | Asynchronous writes, serialised in call order on GRDB's writer queue. |
 
 `scheduleSave()` cancels the pending `DispatchWorkItem` and schedules a new
@@ -226,9 +226,6 @@ it. See [history database](./history-database.md).
 | `saveSession`, `saveProfiles`, `savePinnedFoldersAndTabs`, `saveFavorites`, `loadSession` | [Database.swift](../../Detour/Storage/Database.swift) |
 | The tab row factory | [TabRecord+BrowserTab.swift](../../Detour/Browser/TabRecord+BrowserTab.swift) |
 | Tests | `AppDatabaseTests`, `TabStoreTests`, `TabRecordFactoryTests`, `ExtensionPagePersistenceTests`, `FavoritePeekPersistenceTests`, `ProfileDataRemovalTests` |
-
-One difference from `docs/data-model.md`: it says downloads are written
-immediately. `DownloadManager` debounces its own save by one second.
 
 # Related
 

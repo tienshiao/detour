@@ -7,6 +7,11 @@ after launch because WebKit terminates the idle service worker and every restart
 That restart failure is the single blocker for day-to-day use; everything else in this document is
 secondary to it.
 
+> **Current state:** the status above and the Summary below are as written on 2026-09-11. The
+> blocker they describe was fixed in Phase 1, and the later dated sections record what followed.
+> For where the integration stands now, see
+> [wiki/extensions/1password-integration.md](../wiki/extensions/1password-integration.md).
+
 See also: [extensions.md](extensions.md), [chrome-runtime-patching.md](chrome-runtime-patching.md).
 
 ## Summary
@@ -516,6 +521,10 @@ reaches the notifier code. Upstream WebKit `main` still has the synchronous wait
    an offscreen document in play (AC #3 of TASK-68) — now with the restart as the safety net rather
    than a two-minute hole.
 
+   > **Superseded:** written while the offscreen document's close was still the suspect. The
+   > trigger was the tracking-prevention pass (above, and TASK-70 below), and the 15-minute hold
+   > was confirmed in the signed build in run 2 (2026-09-13, above) and again on 2026-09-21.
+
    **History — 2026-09-11 22:40 (TASK-15): the worker-side detection this replaces was inert, and
    its first version broke the popup.** The original design wrapped `runtime.connectNative` in the
    worker to count real ports itself. WebKit re-materializes that property on every read
@@ -571,8 +580,11 @@ version of the fix (interaction logged into `profile.dataStore`) changed nothing
    no-op. `Profile` now sets `config.webViewConfiguration.websiteDataStore = dataStore` itself —
    for persistent profiles at first, and since TASK-73 for the incognito profile too.
 2. *Every launch is a brand-new origin.* WebKit mints a fresh `webkit-extension://<uuid>/` base URL at
-   every context load (Detour does not persist one), and migrates IndexedDB/localStorage onto it from
-   the last-seen origin. The service worker registers afresh on the new origin, whose statistics
+   every context load (Detour does not persist one). Whether it carries IndexedDB/localStorage onto
+   the new origin from the last-seen one is **unresolved**: this paragraph first said it does, but
+   the store directories examined on 2026-09-20 (TASK-99) held the previous launch's origin, still
+   with its data, next to the new launch's, and 1Password rebuilds its item cache at every start.
+   The service worker registers afresh on the new origin, whose statistics
    record does not exist yet. The extension's own pages then create it — a fingerprinting-API access
    (`navigator.*`, canvas) or a third-party script load is logged for the page's own top-frame
    domain — and `resourceLoadStatisticsUpdated` runs a processing pass *synchronously* after that
@@ -601,9 +613,9 @@ its registrable domain). It fires:
   its own claim; the TASK-68 background recovery
   reloads through the same method and is covered by the same call;
 - every 24 hours after that, per profile (`Timer`, 1 h tolerance, main run loop), re-logging every
-  loaded context so a long-running process never ages out of the window. The timer is stopped in
-  `unloadAllExtensions` — which `TabStore.deleteProfile` runs — and self-invalidates if the profile
-  is gone.
+  loaded context so a long-running process never ages out of the window. The timer is stopped when
+  the profile's last context is unloaded (`Profile.unloadExtension`, and so `unloadAllExtensions`,
+  which `TabStore.deleteProfile` runs) and self-invalidates if the profile is gone.
 
 The decision is the *store's*, never `isIncognito` (TASK-90): any store whose `isPersistent` is false
 is skipped — no statistics database, nothing to preserve — and every other one is kept, whatever
@@ -626,10 +638,13 @@ The ITP decision itself can be read directly by turning on `_setResourceLoadStat
 which logs `About to remove data records for <domain>(all but cookies), ...` on the
 `com.apple.WebKit:ITPDebug` channel (info level — `log show` needs `--info`).
 
-**Tests — `DetourTests/ExtensionOriginTrackingPreventionTests`.** Three unit tests cover the wiring
-(one interaction per loaded context, for that context's own base URL; the daily refresh re-logs
-every loaded context and no unloaded one; a non-persistent store and an incognito profile log
-nothing), and `testTrackingPreventionPassSparesOriginsWithALoggedInteraction` drives a real pass:
+**Tests — `DetourTests/ExtensionOriginTrackingPreventionTests`.** Five tests cover the wiring:
+`testLoadingAContextLogsExactlyOneInteractionForItsOrigin` (one interaction per loaded context, for
+that context's own base URL, and `refreshNow` — the daily timer's work — re-logs every loaded
+context and no unloaded one), `testKeeperSkipsANonPersistentDataStore`,
+`testIncognitoProfilesPagesRunInItsEphemeralStoreSoNothingIsLogged`,
+`testDeletedProfileLogsNoInteraction` and `testExtensionWebViewsUseTheProfileStore`. And
+`testTrackingPreventionPassSparesOriginsWithALoggedInteraction` drives a real pass:
 two identical http origins write localStorage, one of them is handed to the keeper's own
 `logInteraction`, both are marked prevalent, the ITP clock is advanced a day (the hour-old guard,
 and WebKit's testing clock only steps in whole days), and the pass empties the uninteracted one
@@ -808,7 +823,10 @@ native messaging, and this port is now the only way it can. It spawns no process
 **An open relayed socket keeps the worker alive**, through the same
 `NativeHostKeepAliveState` a native host feeds (`connectedHosts` counts both): `openWebSocketRelay`
 applies `.hostConnected` and the port's disconnect chain applies `.hostDisconnected`, so
-`keepalive-start` stands while any socket *or* host is live. Without it a quiet long-lived socket —
+`keepalive-start` stands while any socket *or* host is live — in an extension that also declares
+`nativeMessaging`. The background opens the keep-alive port only then (Phase 1, above), so in an
+extension without the permission a relayed socket is counted but there is no port to arm, and
+nothing holds the worker up. Without the keep-alive a quiet long-lived socket —
 which is exactly what 1Password's notifier is — dies with the worker WebKit unloads after ~2.5
 minutes idle, and the extension sees an `error` and a 1006 every few minutes. This is deliberately
 broader than Chrome, which keeps a worker alive for a native *port* but only resets a worker's idle
@@ -865,8 +883,10 @@ clean true`. Whether a vault change made elsewhere is pushed live, and the API E
 against `wss://echo.websocket.org`, were not exercised in that run (still open in TASK-21). The
 sockets also looked at the time like what held the Personal and Work workers up, since the workers
 without one were unloaded at ~170 s despite the armed keep-alive; run 2 traced that to the
-background's own ping timer and to a `chrome.offscreen` document's close terminating the worker
-(TASK-68, above), and Detour now drives the pings and restarts a background that stops answering.
+background's own ping timer and to WebKit's tracking prevention purging the extension origin's
+service-worker registration (TASK-68 → TASK-70, above — a `chrome.offscreen` document's close 14 ms
+before the clear was the first suspect and turned out to be a coincidence), and Detour now drives
+the pings and restarts a background that stops answering.
 
 **Production, 2026-09-21 (TASK-21 re-run): complete.** Personal and Work relayed and opened their
 notifier sockets at 00:57:18, Private at 01:00:36; none closed until Personal's integration was

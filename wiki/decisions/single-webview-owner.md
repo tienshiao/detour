@@ -4,7 +4,7 @@ title: Single web view owner
 description: When two windows show the same tab, one window hosts the live web view and the others show a snapshot, with hosting following window focus.
 tags: [decision, architecture, webkit, multi-window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:32Z }
 sources:
   - id: ownership-doc
     resource: ../../docs/webview-ownership.md
@@ -106,7 +106,7 @@ on `main` and is described only on
 
 # Related
 
-- [Web view ownership](../architecture/webview-ownership.md) — how it works, and where the design note is out of date.
+- [Web view ownership](../architecture/webview-ownership.md) — how it works.
 - [BrowserWindowController](../architecture/browser-window-controller.md) — `selectTab` and the claim path.
 - [Split tabs hosting](../tabs/split-tabs-hosting.md) — two panes in one host.
 - [GPU IOSurface limit](../platform/gpu-iosurface-limit.md) — the cost of each show.

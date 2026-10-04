@@ -4,7 +4,7 @@ title: 1Password integration
 description: What the 1Password extension needs from a browser, which Detour mechanism meets each need, how the desktop app's trust check works, and the gaps that remain.
 tags: [extensions, 1password, native-messaging, service-worker, overview]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:09:03Z }
 sources:
   - id: plan
     resource: ../../docs/1password-integration-plan.md
@@ -80,9 +80,10 @@ Each profile where the extension is enabled runs its own worker with its own
 native host process, so three profiles mean three of each.
 
 [docs/1password-integration-plan.md](../../docs/1password-integration-plan.md)
-is the long-form record with timelines and log excerpts. Its opening status
-paragraph and summary date from 2026-09-11 and describe a blocker that has
-since been fixed; read it for evidence, not for current state.
+is the long-form record with timelines and log excerpts. Its sections are
+dated and kept as written (the opening status and summary are from
+2026-09-11, before the blocker they describe was fixed); read it for
+evidence, not for current state.
 
 # What it needs, and what provides it
 

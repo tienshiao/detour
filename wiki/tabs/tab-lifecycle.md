@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -29,7 +29,7 @@ sources:
     title: AppDelegate.swift
   - id: lifecycle-doc
     resource: ../../docs/tab-lifecycle.md
-    title: docs/tab-lifecycle.md (partly stale, see Disagreements)
+    title: docs/tab-lifecycle.md
   - id: task-79
     resource: backlog:TASK-79
     title: Closing a tab with a playing video starts picture-in-picture that vanishes mid-transition
@@ -208,20 +208,6 @@ skipped.
 - [BrowserWindowController+WKUIDelegate.swift](../../Detour/Browser/Window/BrowserWindowController+WKUIDelegate.swift):
   `createWebViewWith`.
 
-# Disagreements between the design document and the code
-
-[docs/tab-lifecycle.md](../../docs/tab-lifecycle.md) is the older narrative of
-this subject. Where it differs, the code is right:
-
-- It says a tab without a parent is appended to the end. `tabInsertionIndex`
-  returns 0: such a tab goes to the top.
-- It says closing a pinned tab removes it at its home URL and otherwise calls
-  `resetToPinnedHome()`. No such function exists; `closePinnedTab` always makes
-  the entry dormant.
-- [docs/architecture.md](../../docs/architecture.md) still lists "Load closed
-  tab stack" in the launch flow. Nothing is loaded at launch (see
-  [the decision](../decisions/closed-tabs-database-only.md)).
-
 # Tests
 
 `TabStoreTests`, `TabInsertionTests`, `TabCloseSelectionTests`,
@@ -234,6 +220,7 @@ this subject. Where it differs, the code is right:
 - [Tab insertion and close selection](./tab-insertion-and-close-selection.md): the two pure rules used above.
 - [Sleeping and archiving](./sleeping-and-archiving.md): what happens to a tab nobody looks at.
 - [Closed tabs and the archive](./closed-tabs-and-archive.md): where a closed tab goes.
+- [Closed tabs are read from the database only](../decisions/closed-tabs-database-only.md): no closed-tab stack is loaded at launch.
 - [BrowserTab](../architecture/browser-tab.md): the object itself.
 - [Web view ownership](../architecture/webview-ownership.md): which window hosts the web view.
 - [WKWebView delegate order](../platform/wkwebview-delegate-order.md): why `_blank` and `window.open` take different paths.

@@ -4,7 +4,7 @@ title: Patching WebKit's chrome.* wrappers
 description: WebKit vends chrome.* objects from a weak wrapper cache and serves many members through class callbacks, so a JavaScript patch can vanish at the next garbage collection or never take at all; which members can be patched, how to keep a patch alive, and what must be done natively instead.
 tags: [extensions, webkit, polyfill, javascriptcore, quirk]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:53Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: docs-patching
@@ -80,11 +80,10 @@ Two separate questions hide in that table and must not be conflated:
   something holds a strong reference to it, so the weak cache keeps handing
   back the same object.
 
-The reference document's opening section says an own property "takes
-precedence over" the static getter. Its later sections, written after the
-probes, correct that: pinning `chrome.runtime` works because the own property
-is a strong reference to the *same* wrapper WebKit vends, not because it wins
-the read.
+Pinning `chrome.runtime` works because the own property is a strong reference
+to the *same* wrapper WebKit vends, not because it wins the read. The
+reference document's Option 1 first described it as taking precedence over
+the static getter; the probes showed otherwise, and it now says so.
 
 ## Members that cannot be patched at all
 

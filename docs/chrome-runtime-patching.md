@@ -42,23 +42,31 @@ runtime.getURL = function(path) {
     return originalGetURL(path);
 };
 
-// Replace the static value getter with an own property.
-// Own properties take precedence over JSStaticValue getters.
+// Pin the wrapper as an own property on chrome. This does not replace the
+// static value getter: reads of `chrome.runtime` still go through it. The own
+// property is a strong reference that keeps this wrapper alive.
 Object.defineProperty(chrome, 'runtime', {
     value: runtime,
     writable: false,
     configurable: true,
     enumerable: true
 });
-// Now `chrome.runtime` returns the pinned, patched wrapper
-// instead of calling the native getter each time.
+// Now `chrome.runtime` keeps returning the patched wrapper: the native getter
+// finds it still alive in its weak cache instead of minting a fresh one.
 ```
 
 This works because:
-- `Object.defineProperty` creates an own property on the `chrome` object, which shadows the
-  class's JSStaticValue getter
-- The runtime wrapper is now strongly referenced by the own property, so GC won't collect it
-- Your `getURL` own property on the wrapper persists
+- The runtime wrapper is now strongly referenced by the own property on `chrome`, so GC won't
+  collect it, and the weak cache keeps handing the same object back
+- Your `getURL` own property on the wrapper persists with it (an own property does shadow a
+  JSStaticFunction)
+- The object pinned is the *same* wrapper WebKit vends. The own property does not win the read:
+  the JSStaticValue getter still answers it, so pinning a different object under `chrome.runtime`
+  is accepted by `defineProperty` and ignored on reads (measured, see Level 3)
+
+> **Corrected:** this section first said the own property shadows the static value getter and
+> takes precedence over it. The probes recorded under Level 3 and "patchable, but only while held"
+> showed that it does not; the pin works as a strong reference, not as an override.
 
 ### Option 2: Replace chrome itself with a Proxy — DO NOT USE (breaks messaging)
 
@@ -95,9 +103,9 @@ Option 1.
 ---
 
 Option 1 is the cleanest for regular (non-Dynamic, non-MainWorldOnly) members. The key insight is
-that you need to prevent `chrome.runtime` from going through the native static value getter on
-every access, because that getter returns a weakly-cached wrapper that can be GC'd, losing your
-patches. Pinning the wrapper as an own property on chrome solves both problems at once.
+that the native static value getter returns a weakly-cached wrapper that can be GC'd, losing your
+patches, so the patched wrapper needs a strong reference. Pinning it as an own property on chrome
+provides one, in the place the patch is read from.
 
 ---
 
@@ -158,18 +166,20 @@ via own properties:
 | webRequest            | MainWorldOnly, Dynamic |
 | windows               | MainWorldOnly          |
 
-**Patchable** via own properties (regular static values): `dom`, `extension`, `i18n`, `runtime`.
+Regular static values: `dom`, `extension`, `i18n`, `runtime`. An own property on `chrome` cannot
+substitute a different object for these either (Level 3), but their members can be patched in place
+on the wrapper WebKit vends and the wrapper pinned (Option 1).
 
-### Level 2: [Dynamic] members within sub-APIs
+### Level 2: [MainWorldOnly] and [Dynamic] members within sub-APIs
 
 Sub-APIs that are `[MainWorldOnly]` at the interface level have their members in static
-function/value tables (patchable). But some have additional `[Dynamic]` members that use
-`getProperty` callbacks:
+function/value tables (patchable). But some have additional members marked `[MainWorldOnly]` or
+`[Dynamic]` themselves, which use `getProperty` callbacks:
 
 - **chrome.runtime** — `getPlatformInfo`, `getBackgroundPage`, `setUninstallURL`,
   `openOptionsPage`, `reload`, `lastError`, `sendNativeMessage`, `connectNative`,
   `onConnectExternal`, `onMessageExternal`, `onStartup`, `onInstalled`
-- **chrome.extension** �� `getURL` (Dynamic), `getBackgroundPage`, `getViews`,
+- **chrome.extension** — `getURL` (Dynamic), `getBackgroundPage`, `getViews`,
   `isAllowedIncognitoAccess`, `isAllowedFileSchemeAccess` (MainWorldOnly)
 - **chrome.storage** — `session` (Dynamic)
 - **chrome.storageArea** (local/sync/session) — `setAccessLevel` (Dynamic+MainWorldOnly),

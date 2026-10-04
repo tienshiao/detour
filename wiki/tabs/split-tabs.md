@@ -4,7 +4,7 @@ title: Split tabs
 description: The data model of a split (two adjacent tabs sharing a splitGroupID), the contiguity invariants TabStore keeps in every mutation, and where a pinned split's group lives.
 tags: [tabs, split, invariants, tabstore, pinned]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
 sources:
   - id: design
     resource: ../../docs/split-tabs-design.md
@@ -93,9 +93,8 @@ For a pinned split:
 Splits are never *created* in the pinned section; they arrive there by pinning
 an existing split. Favourites and Peeks are never members.
 
-There is no runtime assertion of these. The design document mentions an
-`assertSplitInvariants()` in DEBUG; it does not exist in the code. The
-invariants are held by construction and checked by `SplitTabTests`.
+There is no runtime assertion of these. The invariants are held by
+construction and checked by `SplitTabTests`.
 
 # How each mutation keeps them
 

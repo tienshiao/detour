@@ -4,7 +4,7 @@ title: Web view ownership
 description: A tab's web view is hosted by at most one window; the others draw a dimmed snapshot, and hosting moves to whichever window becomes key.
 tags: [architecture, webkit, window, multi-window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:32Z }
 sources:
   - id: window-controller
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -100,7 +100,8 @@ tab that another window hosts. For a sleeping tab there is no image and the
 pane is empty.
 
 `selectTab` clears `localSnapshot`, so a snapshot is never reused for a
-different tab.
+different tab. It takes no bitmap of the tab it leaves; the per-switch
+picture is the Control+Tab preview, which uses `takeSnapshot`.
 
 ## What "not owning" disables
 
@@ -161,22 +162,6 @@ that woke it hosts it because nobody else could. See
 There is no unit test of the cross-window handoff itself; it is view
 hierarchy behaviour and is checked at runtime with two windows on one space.
 See [runtime verification](../playbooks/runtime-verification.md).
-
-# Where `docs/webview-ownership.md` differs from the code
-
-The design note predates several changes. As of this writing:
-
-- It shows `ownsWebView` as a stored `Bool`. It is a computed property.
-- It says the departing owner captures the snapshot before releasing. The
-  new owner captures it and passes it in the notification.
-- It says the key window posts the notification and all windows re-evaluate.
-  The key window claims first, and posts only if the container actually
-  moved.
-- It says `tab.webView` is nil "for tabs in non-owning windows". It is not;
-  see rule of thumb 1.
-- It lists a snapshot taken on every tab switch within a window. `selectTab`
-  takes none; the per-switch picture is the Control+Tab preview, which uses
-  `takeSnapshot`.
 
 # Related
 

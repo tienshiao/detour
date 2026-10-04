@@ -59,6 +59,13 @@ var splitGroupID: UUID?      // nil = not in a split
 by product decision; a group of 1 is dissolved immediately.** TabStore enforces this in every mutation; `assertSplitInvariants()`
 in DEBUG.
 
+> **As shipped:** there is no `assertSplitInvariants()`. The invariant holds by
+> construction — every exit path runs through `leaveSplitGroup`, every
+> insertion index through `snappedToSplitGroupBoundary` — and two sanitizers
+> (`sanitizeSplitGroups` for tabs, `sanitizePinnedSplitGroups` for pinned
+> entries, both built on `splitRuns`) clear any group that is not exactly two
+> adjacent members when a space is loaded or restored.
+
 Why not the alternatives:
 
 - *Peek-style (`tab.splitPartner`)*: hides the second pane from everything keyed
@@ -79,7 +86,8 @@ enum TabListItem: Equatable {
     case split(groupID: UUID, members: [BrowserTab])
 }
 func tabListItems(from tabs: [BrowserTab]) -> [TabListItem]
-// + pure helpers: itemIndex(forTabIndex:), tabIndex(forItemIndex:), itemID(_:)
+// + pure helpers: itemIndex(forTabIndex:in:), firstTabIndex(forItemIndex:in:),
+//   tabGapIndex(forItemGap:in:), and the `itemID` property on TabListItem
 ```
 
 `SidebarLayout` functions switch from `tabCount` to `itemCount`;
@@ -87,6 +95,14 @@ func tabListItems(from tabs: [BrowserTab]) -> [TabListItem]
 rows on item IDs (`tab.id` for singles, `groupID` for splits — stable across
 member navigation). Merging two rows into a split diffs as remove A + remove B +
 insert G (fade); acceptable, and batched under `performDropTransaction`.
+
+> **As shipped:** a split forming or dissolving within one update is a row
+> *continuation*, not remove + remove + insert. `diffSidebarState` aliases the
+> group's ID to the member row it morphs from or into
+> (`splitContinuationAliases` in `SidebarLayout.swift`), so that row stays put
+> (or moves) and only the other member's row is removed or inserted. This is
+> what the row animations in §13 build on. Pinning or unpinning a whole group
+> keeps its groupID in both sections and still diffs as a move.
 
 `TabInsertion.tabInsertionIndex` gains a final "snap out of group interiors"
 step so a new child tab never lands between two group members (pure, tested).
@@ -145,6 +161,14 @@ Adjusted existing behavior:
   tab" guard extends to "never touch any member of the selected tab's group" —
   otherwise a visible pane goes blank or vanishes.
 
+> **As shipped:** the same protection, expressed per member rather than through
+> the selection: a split member sleeps only when every partner is already
+> asleep or also due to sleep, and is archived only when every partner is stale
+> too. A pinned split resolves its partners through the entries (§12). The API
+> also gained `closeSplitGroup(groupID:in:)` — the context menu's **Close Both
+> Splits**, one undo for the pair — and `createSplit` takes an optional
+> `fraction:` (default 0.5) that the undo paths use to restore the divider.
+
 New observer callback: `tabStoreDidUpdateSplitLayout(in space: Space)` (fraction
 changes only — sidebar ignores it, non-owning windows may use it to refresh
 snapshots lazily). Structural changes reuse the existing insert/remove/reorder
@@ -160,9 +184,17 @@ docked Web Inspector working (`claimWebView`'s existing comment). Divider drags 
 `setSplitFraction` (debounced). The split view itself is added exactly where the
 single container goes today (`positioned: .below, relativeTo: dragHandle`).
 
+> **As shipped:** the split view is `HostedSplitView`, an `NSSplitView`
+> subclass whose divider is an invisible strip `UIConstants.splitPaneGap` (8 pt)
+> thick — `dividerThickness` is overridden and `drawDivider` draws nothing —
+> rather than a `.thin` divider. The panes are rounded, shadowed cards inset
+> from the content area by `UIConstants.splitPaneInset` (full bleed and square
+> in fullscreen). The frame-based hosting and the debounced `setSplitFraction`
+> commit are as designed.
+
 **Ownership.** `claimWebView(for:)` generalizes to claim *all* panes of the
-selected item: wire `navigationDelegate`/`uiDelegate`/the 3 script message
-handlers per pane webview (loop over members), parent both containers into the
+selected item: wire `navigationDelegate`/`uiDelegate`/the owned script message
+handlers (`ownedScriptHandlerNames`) per pane webview (loop over members), parent both containers into the
 split view. `ownsWebView` becomes
 `selectedTab?.webViewContainer?.isDescendant(of: contentContainerView) == true`.
 Handoff snapshots capture the whole split view (`snapshotImage(of: splitView)`),
@@ -183,6 +215,11 @@ to notify its window controller, which updates `selectedTabID` +
 `bindDisplayTab()` without re-running the content-view swap (both panes are
 already up). Visual affordance: the unfocused pane gets a subtle dimmed overlay
 or the focused pane a hairline accent border (pick during implementation).
+
+> **As shipped:** the focused pane gets a border, set in
+> `updateSplitPaneFocus`: 2 pt wide, in `UIConstants.splitPaneFocusBorderColor`
+> (black in light mode, white in dark — not the accent colour). The unfocused
+> pane is not dimmed.
 
 **Chrome bindings.** `bindDisplayTab()` targets the focused pane (no change —
 it already binds `displayTab`). `linkStatusBar` anchors to the focused pane's
@@ -214,20 +251,33 @@ SidebarDropCommand: + case createSplit(draggedTabID: UUID, targetTabID: UUID, ed
 enum SplitEdge { case left, right }
 ```
 
+> **As shipped:**
+> - `Kind.splitGroup`'s `itemID` is the group's **first member's tab ID**, not
+>   the group ID (the group is found again from that tab at drop time).
+> - `SidebarDragSource.splitGroup` is `(index:groupID:memberTabIDs:)` — the item
+>   index plus the member tab IDs in visual order.
+> - There is no `reorderSplitGroup` command. A whole split row dropped on a
+>   normal-tab gap resolves to `.reorderNormalTab` with the first member's tab
+>   ID, and `TabStore.moveTab(id:toGapIndex:)` moves the block.
+> - Pinned splits (§12) later added the kinds `pinnedSplitGroup` /
+>   `pinnedSplitMember` and the commands `pinSplitGroup`, `unpinSplitGroup`,
+>   `movePinnedSplitGroup`, `unpinSplitMember` and `removeFromPinnedSplit`.
+
 Which member a drag grabs: `DraggableTableView` already overrides `mouseDown`;
 it stashes the down-point, and `pasteboardWriterForRow` uses the x-offset within
 the row to emit `.splitMember` (over a favicon segment) vs `.splitGroup`
 (elsewhere on the row). A pure helper decides:
-`splitDragKind(forX:rowWidth:) -> …` (tested).
+`splitRowDragKind(forX:rowWidth:indent:) -> SplitRowDragKind` (tested).
 
 **Edge-drop creation.** `NSTableView.DropOperation` can't express left/right, so
 `validateDrop` passes the drag x-position into the pure layer:
 
 - Accept `.on` for normal-tab rows when the payload is a `normalTab` (today `.on`
   is folder-only). New pure function
-  `splitEdge(forX x: CGFloat, rowWidth: CGFloat) -> SplitEdge?` — left ~40% →
-  `.left`, right ~40% → `.right`, middle band → retarget to the nearest `.above`
-  gap (plain reorder), so precise row-insertion drops stay easy to hit.
+  `rowDropZone(forX:y:rowSize:) -> RowDropZone` — left ~40% →
+  `.splitEdge(.left)`, right ~40% → `.splitEdge(.right)`, middle band →
+  `.reorderGap(offset:)`, a retarget to the nearest gap above or below the row
+  (plain reorder), so precise row-insertion drops stay easy to hit.
 - `validateSidebarDrop` gains the edge-aware `.on` case; `resolveSidebarDrop`
   maps `(.normalTab source, .intoSplit dest)` → `.createSplit`. Split rows,
   pinned entries, folders, favorites, and already-grouped sources are rejected as
@@ -245,6 +295,14 @@ tabSidebar(_:didRemoveTabFromSplit tabID:UUID, toGapIndex:Int)
 tabSidebar(_:didMoveSplitGroup groupID:UUID, toGapIndex:Int)
 ```
 
+> **As shipped:** the first three exist as written; `didMoveSplitGroup` does
+> not. A split-row reorder goes through the existing
+> `tabSidebar(_:didMoveTab:toGapIndex:)`. Added beyond this list:
+> `didRequestCloseSplitGroup` (Close Both Splits), `didRequestSplitWithNextTab`,
+> `dragSessionDidChangeActive` (§7), and the pinned-split methods
+> `didRequestPinSplitGroup`, `didRequestUnpinSplitGroup`,
+> `didRequestSeparatePinnedSplit` and `didRemovePinnedEntryFromSplit` (§12).
+
 Create/break drops wrap in `performDropTransaction` (they're reorder + group
 mutations); the transaction's single `applyPendingState` animates the row merge.
 
@@ -258,6 +316,14 @@ explicitly v2; resolver returns nil.)
 the focused member's; Move to Space moves both; Pin/Archive hidden in v1).
 Normal tab rows gain **Split with Next Tab** only if we want a keyboard-free
 creation path — optional, DnD and menu separation are the required surfaces.
+
+> **As shipped:** a split row's context menu has exactly three items — **Copy
+> URL** (the selected member's, else the left pane's), **Separate Tabs** and
+> **Close Both Splits**. There is no Move to Space, Duplicate, Pin or Archive
+> on a split row. A pinned split row has **Copy URL** and **Separate Tabs**
+> only. **Split with Next Tab** did ship and is still in the normal-tab menu,
+> shown for an ungrouped tab whose next tab is also ungrouped; phase 1 (§11)
+> introduced it as a temporary creation path and it was never removed.
 
 ## 7. Web-content-area edge drops
 
@@ -284,8 +350,7 @@ etc.).
 ## 8. Option-click: open link in split
 
 Handled in `decidePolicyFor` (`BrowserWindowController+Navigation.swift`)
-alongside the existing Cmd+click (new tab, line 8) and Shift+click (peek,
-line 15) branches.
+alongside the existing Cmd+click (new tab) and Shift+click (peek) branches.
 
 **Ordering constraint:** WebKit sets `navigationAction.shouldPerformDownload`
 for Alt-clicked links (Safari's "Option-click downloads" convention), and the
@@ -392,6 +457,12 @@ Behavior:
    and peek tabs still can't be split members. Splits are never *created*
    inside the pinned section in v1 — they only arrive there by pinning an
    existing split.
+
+   > **As shipped:** a single member cannot be pinned by drag — a
+   > favicon-segment (`.splitMember`) drag into the pinned section or onto a
+   > folder is rejected in validation (§11, phase 3). The member is separated
+   > first only on the non-drag path: File > Pin/Unpin Tab on the focused pane
+   > calls `pinTab`, which leaves the group before pinning.
 5. Splits are **per-space, same-space only** (cross-space edge drops rejected,
    consistent with existing DnD rules).
 6. Reopened closed tabs come back **unsplit**; interactive-close *undo* rejoins.
@@ -498,6 +569,14 @@ reliably fire `becomeFirstResponder` on the WKWebView subclass.
      session; selection is re-applied via `selectedTabIDForCurrentRow()`.
 5. **Pinned splits (§12):** entry-level groups, pin/unpin preserving the split,
    pinned split row rendering, group-aware pinned reorder + DnD matrix.
+
+> **As shipped:** phase 5 is implemented as §12 describes, and the reveal
+> animations of §13 followed. Two of the implementation notes above were later
+> superseded: phase 2's "hairline accent border" is a 2 pt black/white border
+> (note in §5), and where phase 3 says create/break drops "diff as
+> remove+insert", the row now continues in place and only the other member's
+> row is removed or inserted (note in §2) — still a structural table update,
+> so the transaction wrapping stands.
 
 ## 12. Pinned splits
 
@@ -625,8 +704,8 @@ overlay carries an opaque window-background layer: unlike formation's
 full-bleed frame-0 card, two pane-sized cards would let the live full-bleed
 page peek through the gutters and divider gap.
 
-**Sidebar row.** The diff's continuation aliasing (§6) makes both directions
-a row morph. Formation reveals the right segment (`revealSplitSegment`: fade
+**Sidebar row.** The diff's continuation aliasing (`splitContinuationAliases`,
+see the note in §2) makes both directions a row morph. Formation reveals the right segment (`revealSplitSegment`: fade
 in + 24pt slide from the divider, title retracts, 0.2s); separation collapses
 it (`collapseSplitSegment`: fade out + slide toward the divider, title
 expands back). The collapse is requested by passing `animatedReveal: true`

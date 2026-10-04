@@ -4,11 +4,11 @@ title: Web Extension support
 description: How Detour runs Chrome MV3 extensions — WebKit's native WKWebExtension runtime, Detour's polyfill layer for the APIs WebKit lacks, and the host integration around them — with a file map and the known gaps.
 tags: [extensions, webkit, polyfill, overview]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:40Z }
 sources:
   - id: docs-extensions
     resource: ../../docs/extensions.md
-    title: docs/extensions.md (long-form description; partly stale, see "Where the docs are stale")
+    title: docs/extensions.md (long-form description)
   - id: extensions-dir
     resource: ../../Detour/Extensions
     title: Detour/Extensions
@@ -165,23 +165,6 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
   ([Frames and content scripts](./frames-and-content-scripts.md)).
 - A CRX installed by hand is not signature-checked; only updates are
   ([Installer and CRX](./installer-and-crx.md)).
-
-# Where the docs are stale
-
-[docs/extensions.md](../../docs/extensions.md) predates several changes. The
-code differs in these places:
-
-| The doc says | The code does |
-|---|---|
-| `ExtensionToolbarManager`, `Model/ContextMenuItem.swift`, `contextMenuItems`, `uninstallURLs` | None exist. Pinned extension buttons live in the sidebar's `FauxAddressBar`. |
-| Content scripts get the polyfill through `scripting.registerContentScripts` | `_detour_content_polyfill.js` is written into the installed copy and inserted first in each manifest `content_scripts` entry |
-| Permission prompts auto-grant | The three prompt delegates show an `NSAlert` and save the answer; only an `activeTab` request is auto-granted |
-| Background content is started at launch with a 10-second timeout | It is started on demand, and by Detour only to deliver a pending `runtime.onInstalled` or to recover |
-| Tab closes come from `ExtensionTabObserver.tabStoreDidRemoveTab` | Closes come only from `BrowserTab.teardown()`; the observer handles new profiles |
-| `extensionStorage` holds `chrome.storage.local` | The table and its accessors are unused by the app |
-| `chrome.extension` is polyfilled | No such module exists |
-
-`CLAUDE.md` says "macOS 14+"; the project's deployment target is 15.4.
 
 # Related
 

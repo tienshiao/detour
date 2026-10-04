@@ -4,7 +4,7 @@ title: Pinned tabs and folders
 description: The pinned section's model (PinnedEntry with an optional backing tab, PinnedFolder, per-level sort order), what live, asleep and dormant mean, how closing and home work, and why a dormant tile can refuse to open.
 tags: [tabs, pinned, folders, sidebar, model]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
 sources:
   - id: entry
     resource: ../../Detour/Browser/PinnedEntry.swift
@@ -29,7 +29,7 @@ sources:
     title: TabCellView.swift (updatePinnedMode)
   - id: lifecycle-doc
     resource: ../../docs/tab-lifecycle.md
-    title: docs/tab-lifecycle.md (pinned section is stale)
+    title: docs/tab-lifecycle.md
   - id: task-34
     resource: backlog:TASK-34
     title: Moving an extension page favourite into the tab list or pinned section must give a loadable tab
@@ -147,10 +147,8 @@ follows a split partner) in that callback. No closed-tab record is written;
 the undo ("Close Tab") rebuilds the tab on the entry.
 
 **There is no "reset to home" operation.** Home is reached by closing the tab
-and clicking the tile again, which loads `pinnedURL` in a new tab.
-[docs/tab-lifecycle.md](../../docs/tab-lifecycle.md) describes a
-`resetToPinnedHome()` and a "remove when already at home" behaviour; neither
-exists in the code.
+and clicking the tile again, which loads `pinnedURL` in a new tab. Closing a
+tab that is already at its home URL does not remove the entry either.
 
 ## Title shown on the row
 

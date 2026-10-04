@@ -4,7 +4,7 @@ title: Tab insertion and close selection
 description: The two pure rules that decide where a new tab lands in a space's list and which tab is selected after one closes, plus what the window layers on top of them.
 tags: [tabs, rules, pure-functions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
 sources:
   - id: insertion
     resource: ../../Detour/Browser/TabInsertion.swift
@@ -52,9 +52,8 @@ ids, so they are testable without a web view. A third function,
 
 Consequences:
 
-- A fresh tab from the command palette goes to the top, not the bottom.
-  ([docs/tab-lifecycle.md](../../docs/tab-lifecycle.md) says "appended to the
-  end"; `testNoParentReturnsIndex0` pins the real behaviour.)
+- A fresh tab from the command palette goes to the top, not the bottom
+  (`testNoParentReturnsIndex0` pins this).
 - Links opened from one page stack in the order they were opened, directly
   under it.
 - The scan for children stops at the first tab that is not a child. A child the

@@ -5,7 +5,7 @@ description: The tables of browser.db, what each is for, the foreign keys that s
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -54,7 +54,7 @@ GRDB `DatabaseQueue`, opened at
 | `contentBlockerWhitelist` | (`profileID`, `host`) | Per-site content blocker exceptions. | Cascades from `profile`. |
 | `externalAppPermission` | (`profileID`, `origin`, `scheme`) | "Always allow" for external URL schemes. | Never written for the Private profile. |
 | `extension` | `id` | Installed extensions: manifest, path, enabled, source, update URL. | |
-| `extensionStorage` | (`extensionID`, `key`) | Key-value rows for polyfilled storage. | Cascades from `extension`. |
+| `extensionStorage` | (`extensionID`, `key`) | Dead: left from the pre-WKWebExtension runtime. Only tests call its accessors; `chrome.storage` is WebKit's. | Cascades from `extension`. |
 | `profileExtension` | (`profileID`, `extensionID`) | Per-profile enabled and pinned flags. | A **missing row** means the profile's default: on, except in the Private profile. |
 | `extensionPermission` | (`extensionID`, `permissionKey`, `permissionType`) | Saved permission decisions. | Status 0 is granted; any other value reads as denied. |
 | `extensionInstalledEvent` | (`extensionID`, `profileID`) | Ledger for `runtime.onInstalled`. | No FK; deleted explicitly. |
@@ -118,9 +118,6 @@ migration.
 | v16 | `closedTab.closedAt`, back-filled from `archivedAt` (TASK-116). |
 | v17 | `extension.source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON`; existing installs classified by reading their on-disk manifest (TASK-113). |
 
-`docs/data-model.md` stops at v16 and does not list the v17 columns or the
-second `appState` key.
-
 Patterns worth copying from the existing migrations:
 
 - **Spell out literals.** v10 writes the Private profile id as a string and
@@ -180,5 +177,5 @@ Records are plain `Codable` structs. The live model (`Profile`, `Space`,
 - [Persistence](./persistence.md) — save timing and restore.
 - [History database](./history-database.md) — the other file.
 - [Two databases](../decisions/two-databases.md) — why history is separate.
-- [Extensions storage](../extensions/storage.md) — what uses `extensionStorage`.
+- [Extensions storage](../extensions/storage.md) — where `chrome.storage` really lives, and why `extensionStorage` is unused.
 - [Updates](../extensions/updates.md) — the v17 columns in use.

@@ -20,7 +20,7 @@ xcodebuild -scheme DetourTests -configuration Debug test -only-testing:DetourTes
 
 ## Architecture
 
-macOS native browser (Swift 5.10, macOS 14+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
+macOS native browser (Swift 5.10, macOS 15.4+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
 
 ### Key Architectural Decisions
 
