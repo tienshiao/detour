@@ -4,7 +4,7 @@ title: 'Sidebar: colour stripe on tab rows that belong to a tab group'
 status: To Do
 assignee: []
 created_date: '2026-10-03 23:09'
-updated_date: '2026-10-04 19:21'
+updated_date: '2026-10-04 21:52'
 labels: []
 dependencies:
   - TASK-132.10
@@ -31,5 +31,9 @@ First visible form of tab groups (product decision: stripe first, header rows la
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-User note (2026-10-04, verbatim): "I think the colored accent bars for a group should also? at least? be on the sidebar tab so the user can identify the groups without having to click into them." Reading (Claude's, not confirmed): the group's colour must be visible on the member rows in the sidebar itself, without selecting a tab — which is AC #1 of this task. If the colour is also shown somewhere else (in the content area, or on a later header row, TASK-132.19), the sidebar row stripe is the part that must not be dropped. Open question for the user: whether 'also' means a second place is wanted in addition to the row stripe.
+User note (2026-10-04, verbatim): "I think the colored accent bars for a group should also? at least? be on the sidebar tab so the user can identify the groups without having to click into them."
+
+Asked whether 'also' meant a second place besides the sidebar row stripe. User's answer (2026-10-04, verbatim): "there should be a single stripe on the sidebar row."
+
+Reading (Claude's): the group's colour is shown in one place, as one stripe on each member's sidebar row, visible without selecting the tab. That is AC #1 as written (a split-group row shows the stripe once for the pair). This task does not add the colour anywhere else, such as the content area. The header rows of TASK-132.19 are a separate, later decision.
 <!-- SECTION:NOTES:END -->
