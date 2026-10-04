@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Detour is a macOS-native browser built with Swift and WebKit. It targets macOS 14+ and is organized around **Spaces** (workspaces with isolated cookie stores) containing **Tabs**.
+Detour is a macOS-native browser built with Swift and WebKit. It targets macOS 15.4+ and is organized around **Spaces** (workspaces, each linked to a **Profile** that owns its cookie store) containing **Tabs**.
 
 ## Core Concepts
 
@@ -26,7 +26,7 @@ A special built-in incognito profile (fixed UUID `00000000-0000-0000-0000-000000
 
 ### Pinned Tabs
 
-Tabs can be pinned within a space. Pinned tabs have a `pinnedURL` (their "home") and a `pinnedTitle`. When a user closes a pinned tab that has navigated away from home, it resets to the pinned URL instead of being removed. Pinned tabs can be organized into hierarchical **PinnedFolders**.
+Tabs can be pinned within a space. A pin is a `PinnedEntry` with a `pinnedURL` (its "home") and a `pinnedTitle`; while it is live it also holds a backing `BrowserTab`. Closing a pinned tab discards the backing tab and leaves the entry in the sidebar, dormant, ready to reopen at its home URL; closing a dormant entry deletes it. Pinned entries can be organized into hierarchical **PinnedFolders**.
 
 ## Singletons
 
@@ -35,8 +35,10 @@ Tabs can be pinned within a space. Pinned tabs have a `pinnedURL` (their "home")
 | `TabStore.shared` | `Browser/TabStore.swift` | Owns all spaces, tabs, profiles. Central state manager. |
 | `AppDatabase.shared` | `Storage/Database.swift` | Session SQLite database (spaces, tabs, settings). |
 | `HistoryDatabase.shared` | `Storage/HistoryDatabase.swift` | Browsing history SQLite database with FTS5. |
+| `ExtensionManager.shared` | `Extensions/Runtime/ExtensionManager.swift` | Web Extension install/enable lifecycle across profiles; delegate of every profile's extension controller. |
 | `ContentBlockerManager.shared` | `Browser/ContentBlocker/ContentBlockerManager.swift` | Ad/tracker filter list management. |
 | `DownloadManager.shared` | `Browser/Downloads/DownloadManager.swift` | File download tracking. |
+| `GPUProcessRecycler.shared` | `Browser/GPUProcessRecycler.swift` | Recycles WebKit's GPU process before it runs out of IOSurfaces. |
 | `SettingsWindowController.shared` | `Browser/Settings/SettingsWindowController.swift` | Settings window. |
 
 ## Communication Patterns
@@ -66,8 +68,8 @@ Used sparingly for cross-cutting concerns:
 
 | Notification | Purpose |
 |--------------|---------|
-| `webViewOwnershipChanged` | Triggers WebView transfer when window focus changes |
-| `contentBlockerRulesDidChange` | Signals all windows to reapply content blocking rules |
+| `webViewOwnershipChanged` | Posted by a window after it takes a tab's WebView; other windows showing that tab switch to a snapshot |
+| `contentBlockerRulesDidChange` | Signals windows to reapply content blocking rules to the WebViews they own |
 | `contentBlockerStatusDidChange` | Updates settings UI with current rule compilation status |
 | `UserAgentDidChange` | Reapplies user agent string to all tabs in affected profile |
 
@@ -76,19 +78,22 @@ Used sparingly for cross-cutting concerns:
 ```
 applicationDidFinishLaunching
   |
+  +-- Set up the main menu
   +-- Initialize AppDatabase.shared, HistoryDatabase.shared
-  +-- Expire old history visits (> 90 days)
-  +-- Create BrowserWindowController
+  +-- Retry data removal for profiles deleted in an earlier run
+  +-- Schedule history expiry (visits > 90 days) for 5 s after launch
   +-- ContentBlockerManager.shared.initialize()  (fetch/compile filter lists)
+  +-- ExtensionManager.shared.initialize()       (load installed extensions; start update checks)
+  +-- Create BrowserWindowController and show its window
   +-- TabStore.shared.restoreSession()
   |     +-- Load profiles from DB
   |     +-- Reconstruct spaces with tabs (selected tab gets live WebView, others sleep)
-  |     +-- Load pinned folders and pinned tabs
-  |     +-- Load closed tab stack
+  |     +-- Load pinned folders and pinned entries
+  |     +-- Load each profile's favorites
   +-- TabStore.shared.ensureDefaultSpace()  (create "Home" space if empty)
   +-- TabStore.shared.startArchiveTimer()   (5-min periodic tick)
+  +-- GPUProcessRecycler.shared.start()
   +-- Set active space and select tab in window
-  +-- Show window
 ```
 
 ## Directory Layout
@@ -106,6 +111,7 @@ Detour/
 |   +-- TabInsertion.swift        Child tab grouping logic
 |   +-- TabCloseSelection.swift   Which tab to select after a close
 |   +-- DormantTileRefusal.swift  Why a dormant tile cannot open
+|   +-- GPUProcessRecycler.swift  GPU process recycle policy and timer
 |   +-- Window/                   BrowserWindowController (+ extensions), BrowserWebView,
 |   |                             FindBarView, ErrorSchemeHandler, PeekAnchor, SplitDropZoneView,
 |   |                             SidebarVisibilityState, RecentTabSwitcher (Control+Tab
@@ -133,6 +139,7 @@ Detour/
 |   +-- Runtime/                  ExtensionManager, API polyfills, native messaging, tab lifecycle
 |   +-- Storage/                  Extension record types
 |   +-- UI/                       Popovers and menu decisions
+|   +-- Updates/                  ExtensionUpdater, update policy, staged updates
 +-- Storage/
 |   +-- Database.swift            Session DB (GRDB)
 |   +-- HistoryDatabase.swift     History DB (GRDB, FTS5)
@@ -154,7 +161,7 @@ BrowserWindowController (one per window)
   +-- PeekOverlayView                  Link preview overlay
 
 TabStore.shared
-  +-- Space[]                          Each with tabs[], pinnedTabs[], pinnedFolders[]
+  +-- Space[]                          Each with tabs[], pinnedEntries[], pinnedFolders[]
   +-- Profile[]                        Settings + WKWebsiteDataStore
   +-- TabStoreObserver[] (weak)        Window controllers
   +-- AppDatabase.shared               Session persistence

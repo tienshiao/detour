@@ -59,7 +59,8 @@ Compile (ContentRuleStore)
        v
 Apply (reapplyRuleLists)
   +-- Posts .contentBlockerRulesDidChange notification
-  +-- All windows re-apply rules to their WebViews
+  +-- Each window re-applies rules to its selected tab's panes
+      (only the window that owns that web view)
 ```
 
 ## Applying Rules to WebViews
@@ -73,6 +74,15 @@ ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, pr
 This method adds each enabled filter list's compiled `WKContentRuleList` when
 `profile.isAdBlockingEnabled`, and nothing else — no user script, so it is safe to
 call again after `removeAllContentRuleLists()` on every rules change.
+
+On `.contentBlockerRulesDidChange`,
+`BrowserWindowController.handleContentBlockerRulesChanged` does exactly that, but
+only for the window's selected tab — both panes when it is a split — and only when
+this window owns the web view. Every tab has its own configuration, so the other
+tabs keep the lists their configuration was created with until their web view is
+rebuilt (a sleeping tab waking) or they are the selected tab when a later change is
+posted. The notification is posted after each successful compile, once the launch
+lookups have all finished, and when a profile's blocking toggles change in Settings.
 
 ## Per-Profile Whitelist
 
@@ -127,9 +137,9 @@ A page with content blockers disabled produces no callbacks at all.
 
 `ContentBlockerSettingsViewController` provides:
 
-- Per-list display: parsed rule count, compiled rule count, last fetch date
-- Refresh button: re-fetches and recompiles a single list
-- Clear cache & redownload: invalidates all compiled rules, deletes cached text, re-fetches everything
+- Per-list display: parsed rule count ("In List"), compiled rule count ("Active"), status, last fetch date
+- Update All Now: re-fetches every list (`forceRefreshAll`; the fetch is conditional, so an unchanged list is not recompiled). There is no per-list refresh
+- Clear Cache & Redownload: invalidates all compiled rules, deletes cached text and fetch metadata, re-fetches everything
 
 `ProfilesSettingsViewController` provides per-profile toggles for each filter list and the master ad-blocking switch.
 
@@ -139,4 +149,11 @@ A page with content blockers disabled produces no callbacks at all.
 |------|----------|
 | Raw filter text | `~/Library/Application Support/Detour/ContentBlocker/{identifier}.txt` |
 | Compiled rules | WebKit's internal `WKContentRuleListStore` (managed by WebKit) |
-| Fetch metadata | `UserDefaults`: `ContentBlocker.{id}.lastFetch`, `ContentBlocker.{id}.etag`, `ContentBlocker.{id}.ruleCount` |
+| Fetch metadata | `UserDefaults`: `ContentBlocker.{id}.lastFetch`, `ContentBlocker.{id}.etag`, `ContentBlocker.{id}.ruleCount`, `ContentBlocker.{id}.compiledRuleCount` |
+
+These are the locations for the default data directory. A non-default data
+directory (`DETOUR_DATA_DIR`, as set for test runs and isolated launches) gets its
+own of all three
+(`ContentBlockerStorage`): `ContentBlocker/` and a `ContentRuleLists/` rule list
+store inside that directory under Application Support, and its own defaults suite,
+so it never compiles into or refreshes the production lists.

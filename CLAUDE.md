@@ -20,7 +20,7 @@ xcodebuild -scheme DetourTests -configuration Debug test -only-testing:DetourTes
 
 ## Architecture
 
-macOS native browser (Swift 5.10, macOS 14+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
+macOS native browser (Swift 5.10, macOS 15.4+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
 
 ### Key Architectural Decisions
 
@@ -124,6 +124,14 @@ Prefer TDD where it makes sense:
 Run `/code-review --fix` first, then `/verify`, and the test suites the change could affect. Commit only when the review findings are resolved, the tests pass and the runtime check is clean; if any of them shows a gap, fix it through normal editing and run it again. Summarize the results in the Backlog task (tests run with counts, what was checked at runtime, what was not verified). Docs-only and Backlog-only commits skip this.
 
 The `/verify` skill lives in `.claude/skills/verify/SKILL.md`: build, launch in an isolated profile (`DETOUR_DATA_DIR`), observe. When a change touches the UI in ways the tests cannot cover (layout, hosting, focus, animation, anything only visible on screen), `/verify` must exercise that UI in the running app rather than stop at "it builds and launches".
+
+## Wiki
+
+`wiki/` is the project's accumulated knowledge: how the subsystems work, their invariants, why decisions went the way they did, WebKit/AppKit quirks, investigations, and runtime-verification playbooks. It is an [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle (markdown concepts with YAML frontmatter) that agents maintain; its rules are in `wiki/meta/conventions.md`.
+
+* **Before working in an area**, read `wiki/index.md` and the pages for that area. A page without `verified` in its frontmatter is an agent's unreviewed summary: check the code before relying on a claim that matters.
+* **After learning something that outlives the task** (a root cause, a platform quirk, a design choice and what it rejected, a verification recipe, a page that turned out wrong), update the pages it touches or add one, following the conventions' ingest workflow, then run `python3 scripts/wiki-lint.py --fix` and add a line to `wiki/log.md`. Do this as part of finishing the task, in the same commit as the change it documents.
+* The wiki holds knowledge, not rules or status: instructions stay in this file, task state stays in Backlog, and feature design documents stay in `docs/`.
 
 ## Model delegation when running as Fable
 

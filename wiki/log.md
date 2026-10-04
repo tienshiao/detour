@@ -1,0 +1,10 @@
+# Wiki Update Log
+
+## 2026-10-04
+* **Update**: `scripts/build-release.sh` and `scripts/deploy-1password-test.sh` now resolve the built app from the build settings; updated [Release and website](playbooks/release-and-website.md) and [Runtime verification](playbooks/runtime-verification.md).
+* **Update**: The `/verify` skill now resolves the built app from the build settings; [Runtime verification](playbooks/runtime-verification.md) no longer says the skill is out of date.
+* **Ingest**: TASK-141 — WebKit's `removePort` wipes a page's whole port entry when one port closes, confirmed in the source and by three measurement legs; rewrote that section of [Service worker unload rules](platform/service-worker-unload-rules.md) and the matching limit in [Native port keep-alive](extensions/native-port-keep-alive.md).
+* **Update**: TASK-140 — `docs/` was corrected against the code, so the doc-versus-code notes were removed from the architecture, tabs, sidebar, features and extensions pages that carried them. [Session database](architecture/session-database.md) and [Persistence](architecture/persistence.md) now say the `extensionStorage` table is unused.
+* **Initialization**: Created the wiki as an OKF v0.2 bundle, with its schema in [Wiki conventions](meta/conventions.md) and a lint script at `scripts/wiki-lint.py` (TASK-136).
+* **Creation**: Initial pages for [architecture](architecture/index.md), [tabs](tabs/index.md), [sidebar](sidebar/index.md), [features](features/index.md), [extensions](extensions/index.md), [platform](platform/index.md), [playbooks](playbooks/index.md) and [decisions](decisions/index.md), written from the code on `main`, `docs/`, the Backlog tasks up to TASK-133 and agent session notes. All pages start unverified.
+* **Creation**: [Claude extension epic](extensions/claude-extension-epic.md) is a draft built from the TASK-132 tasks only; the epic's code is on the `epic-claude-extension` branch and is to be ingested when it merges.

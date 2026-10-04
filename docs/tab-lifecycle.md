@@ -72,8 +72,11 @@ BrowserTab(id: tabID, title: title, url: url, faviconURL: faviconURL,
 
 New tabs are inserted at a computed position via `tabInsertionIndex()` in `TabInsertion.swift`:
 
-- If the tab has a `parentID`, it's inserted after the parent and any existing children of that parent
-- Otherwise, it's appended to the end of the tab list
+- If the tab has a `parentID` naming a normal tab, it's inserted after the parent and the run of that parent's existing children directly below it
+- If the parent is a pinned tab (or is not in the list), it's inserted at the top of the normal tabs, or after the first run of that parent's existing children when there is one
+- Otherwise (no parent), it's inserted at index 0, the top of the tab list
+
+`TabStore.insertTab` then snaps the index out of the interior of a split group (`snappedToSplitGroupBoundary`).
 
 This creates a natural grouping where child tabs (opened from links) cluster next to their parent.
 
@@ -179,29 +182,29 @@ The tab gets a new UUID because the old tab object is gone. The user experience 
 TabStore.shared.pinTab(id: tabID, in: space, at: destinationIndex)
 ```
 
-1. Remove tab from `space.tabs`
-2. Set `isPinned = true`, capture `pinnedURL` and `pinnedTitle` from current state
-3. Compute sort order (max of existing pinned tabs and folders + 1)
-4. Insert into `space.pinnedTabs`
+1. Remove tab from `space.tabs` (it leaves its split group, if it was in one)
+2. Create a `PinnedEntry` backed by the tab, capturing `pinnedURL` and `pinnedTitle` from the tab's current state
+3. Compute sort order (max of existing pinned entries and folders + 1)
+4. Insert into `space.pinnedEntries`
 5. Notify via `tabStoreDidPinTab` (atomic: includes both source and destination indices)
 
 ### Closing a Pinned Tab
 
 ```swift
-TabStore.shared.closePinnedTab(id: tabID, in: space)
+TabStore.shared.closePinnedTab(id: entryID, in: space)
 ```
 
-**Two behaviors**:
-- If the tab is at its pinned home URL: fully remove it (like closing a regular tab)
-- If the tab has navigated away: reset it to `pinnedURL` via `resetToPinnedHome()`
+The entry always stays in the sidebar. Wherever the tab had navigated, its backing tab is torn down (the favicon is cached on the entry first) and the entry becomes **dormant** (`entry.tab = nil`). No closed-tab record is written; Undo brings the discarded tab back with its URL and interaction state. Selecting a dormant entry gives it a fresh backing tab at `pinnedURL` (`activatePinnedEntry`).
+
+Removing the entry itself is a separate call, `deletePinnedEntry(id:in:)`. A close request from the sidebar on an entry that is already dormant goes there.
 
 ### Unpinning
 
 ```swift
-TabStore.shared.unpinTab(id: tabID, in: space)
+TabStore.shared.unpinTab(id: entryID, in: space)
 ```
 
-Reverse of pinning: moves from `pinnedTabs` back to `tabs`, clears all pinned properties.
+Reverse of pinning: removes the entry from `pinnedEntries` and inserts its backing tab into `tabs` (at the top unless a destination index is given). A dormant entry gets a tab created at `pinnedURL` first.
 
 ---
 
