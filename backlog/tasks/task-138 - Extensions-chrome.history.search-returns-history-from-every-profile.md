@@ -1,10 +1,10 @@
 ---
 id: TASK-138
 title: 'Extensions: chrome.history.search returns history from every profile'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 01:58'
-updated_date: '2026-10-04 08:24'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -88,4 +88,12 @@ Three existing HistoryDatabaseTests used searchHistoryGlobal as a premise; they 
 - Not run in the app (/verify) and no /code-review: left to the supervising session. The API Explorer History section now prints each result's visit count, typed count and last-visit time, so the same search from two profiles' popups shows the difference.
 - searchURLs was not benchmarked. With empty text the window function runs over every in-scope visit in the range; it is off the main thread, but a DatabaseQueue serialises the palette's main-thread read behind it. HistoryBenchmarkTests has no leg for it.
 - The whole test suite was not run, only the suites above.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+chrome.history.search read every profile's history through searchHistoryGlobal. It now calls HistoryDatabase.searchURLs with the calling profile's spaces; counts, last-visit time and titles come from that profile's visits only, the Private profile gets an empty list, and the query arguments are validated (a malformed query is rejected instead of returning everything). The other chrome.history methods are JS stubs with nothing to scope. Tests: storage (13) and real extension contexts in two profiles, both transports, promise and callback forms (14), failing before the fix. Open from review: an empty-text search has no lower time bound and runs a window function over all in-scope visits, unbenchmarked. Found, not changed: favicon.lookup has a similar cross-profile gap.
+<!-- SECTION:FINAL_SUMMARY:END -->

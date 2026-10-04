@@ -3,10 +3,10 @@ id: TASK-139
 title: >-
   Extensions: a crafted CRX header can crash the app at install (unchecked
   UInt64 length in CRXUnpacker.extractPublicKey)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 01:58'
-updated_date: '2026-10-04 08:09'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -43,4 +43,12 @@ CRXUnpacker.extractPublicKey (Detour/Extensions/Installer/CRXUnpacker.swift) rea
 <!-- SECTION:NOTES:BEGIN -->
 Tests before the fix: testTheUnpackerRejectsOversizedHeaderFieldLengthsWithoutCrashing and testUnpackingAFileWithAnOversizedHeaderFieldLengthThrows both killed the test host ('Fatal error: Not enough bits to represent the passed value', three host restarts in the run). After the fix: CRX3VerifierTests 15/15.
 Audit (AC #2): CRXUnpacker.extractPublicKey was the only unchecked site and now has the UInt64 guard. extractFieldBytes and CRX3Verifier.verify already had it. The container's header length is a UInt32, so 12 + Int(headerLen) cannot overflow, and is checked against the file size. readVarint stops at 64 bits of shift and only advances inside the data. DER.readElement reads at most 4 length bytes (below 2^32) and checks pos + length against the data. While there: CRXUnpacker.unpack read the version and header length with an aligned native-endian load; it now uses loadUnaligned + littleEndian like the verifier.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CRXUnpacker.extractPublicKey converted a header field length with Int(length) and added it to the offset before its bounds check, so a crafted CRX trapped the app at install. The length is now compared with the remaining bytes as UInt64 first; the other conversions in CRXUnpacker and CRX3Verifier were audited and are bounded. The new tests killed the test host before the fix and pass after.
+<!-- SECTION:FINAL_SUMMARY:END -->

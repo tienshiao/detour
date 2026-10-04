@@ -3,10 +3,10 @@ id: TASK-149
 title: >-
   Session: TabStore.saveNow writes in several transactions, so a crash mid-save
   can lose pinned entries
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 02:29'
-updated_date: '2026-10-04 08:45'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -73,4 +73,12 @@ Launch, tab and window changes, quit: browser.db held the session afterwards (1 
 
 Code review of the batch (5bc537c..822e798) found that the save inserted pinned folders in the store's array order, which is not parent-first (a folder dragged into one created later, Undo Delete Folder, a relaunch). pinnedFolder.parentFolderID is an immediate foreign key, so the child row is refused. Before this task that lost the space's pinned rows on such a save; as one transaction it failed the whole session save every time. Fixed: writePinnedFoldersAndTabs inserts through parentFirst(_:). Two new tests in SessionSaveAtomicityTests failed with the foreign-key error before and pass after; SessionSaveAtomicityTests, AppDatabaseTests, PinnedTabMoveTests and TabStoreTests: 95 tests, 0 failures.
 Left open by the review, for a decision: TabStore.saveNow ignores the result of saveSessionSnapshot, so a save that keeps failing is only a log line while nothing is persisted.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix. (before the parent-first fix, which was then covered by a 95-test run of the session suites).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TabStore.saveNow builds one SessionSnapshot and AppDatabase.saveSessionSnapshot writes it in one transaction, so an interrupted save leaves the previous state complete (tests fail the save at each step with a trigger; 6 of 7 failed before). A 2,000-tab save went from 262 ms in 26 commits to 232 ms in 1. Review follow-up in the same task: pinned folders are inserted parent-first, without which a nested folder ahead of its parent failed the whole save. A failure in any step now fails the whole save and is only logged.
+<!-- SECTION:FINAL_SUMMARY:END -->

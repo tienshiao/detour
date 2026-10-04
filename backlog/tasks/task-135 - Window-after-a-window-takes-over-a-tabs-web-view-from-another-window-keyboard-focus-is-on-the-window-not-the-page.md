@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-04 01:54'
-updated_date: '2026-10-04 08:22'
+updated_date: '2026-10-04 08:46'
 labels:
   - bug
 dependencies: []
@@ -25,9 +25,9 @@ When a window claims a tab's web view that another window was hosting — Browse
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Reproduced or refuted by hand or with real key events: two windows on one space with the same tab selected, switch windows, type — the result is recorded
-- [ ] #2 After a window becomes key and takes over the web view, the page has keyboard focus when focus was not held by a control in that window (the TASK-128 rule), and focus held by a control such as the sidebar or the palette is left alone
-- [ ] #3 The window losing the web view shows its snapshot and keeps no stale first responder
-- [ ] #4 Tests cover the hand-off focus rule; InitialWindowFocus, CommandPaletteFocus and SidebarPageFocus tests still pass
+- [x] #2 After a window becomes key and takes over the web view, the page has keyboard focus when focus was not held by a control in that window (the TASK-128 rule), and focus held by a control such as the sidebar or the palette is left alone
+- [x] #3 The window losing the web view shows its snapshot and keeps no stale first responder
+- [x] #4 Tests cover the hand-off focus rule; InitialWindowFocus, CommandPaletteFocus and SidebarPageFocus tests still pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -43,4 +43,11 @@ When a window claims a tab's web view that another window was hosting — Browse
 
 <!-- SECTION:NOTES:BEGIN -->
 Tests before the fix (the new focus call switched off): WebViewHandoffFocusTests 7 tests, 4 failing — the window taking over, switching back, ensureOwnsWebView and becoming key with nothing focused all left the window as first responder ('got Optional(<NSWindow …>)'). The three others passed without the fix: focus held by a control and an open palette are left alone, and the losing window's first responder already fell back to the window (AppKit does that when the view leaves).
+
+With the fix: WebViewHandoffFocusTests 7/7 (run together with NewProfileExtensionLoadTests 8, RuntimeInstalledEventLoadFailureTests 14, RuntimeInstalledEventTests 19: 48 tests, 0 failures).
+
+Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated profile, SCREEN LOCKED (so no real key or mouse events; calls go through the app's own entry points).
+AC #1 NOT done: with the screen locked the app is not active and no window becomes key (isKeyWindow stayed false for both windows after makeKeyAndOrderFront), so the real hand-off never ran. Owed: two windows on one space with the same tab, Cmd-backtick, type.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix. InitialWindowFocusTests, CommandPaletteFocusTests and SidebarPageFocusTests pass in it. Left In Progress for AC #1 (a real window switch and typing, which needs an unlocked screen).
 <!-- SECTION:NOTES:END -->

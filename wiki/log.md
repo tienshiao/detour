@@ -1,6 +1,8 @@
 # Wiki Update Log
 
 ## 2026-10-04
+* **Update**: TASK-149 review — pinned folder rows are inserted parent-first; [Persistence](architecture/persistence.md) and [Session database](architecture/session-database.md) say why the store's folder order cannot be written as is.
+* **Update**: TASK-133 — the Control+Tab monitor's optional-chaining bug is fixed; [Tab switching](tabs/tab-switching.md) replaces its open-defect section with the cause and the trap to avoid.
 * **Update**: TASK-135 — a window that takes a tab's web view over from another window gives the page keyboard focus when nothing in it holds the keyboard; added the row to rule 2 of [Keyboard focus](sidebar/keyboard-focus.md) and a note to [Web view ownership](architecture/webview-ownership.md).
 * **Update**: TASK-134 — a `runtime.onInstalled` claim from a background context with no listener is undone when that context fails to load; added "When a claim counts as a delivery" to [runtime.onInstalled](extensions/runtime-installed-event.md), with the measured order of the claim and the failure report.
 * **Update**: TASK-151 — a first install from a CRX now passes `CRXInstallGate` (verified signatures, id from the verified key, never over an installed extension, manifest key must agree); updated [Installer and CRX](extensions/installer-and-crx.md) and the consequences of [CRX verification gate](decisions/crx-verification-gate.md).

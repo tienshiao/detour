@@ -4,7 +4,7 @@ title: 'Tabs: the Control+Tab switcher does not swallow the keys it handles'
 status: In Progress
 assignee: []
 created_date: '2026-10-04 01:24'
-updated_date: '2026-10-04 08:09'
+updated_date: '2026-10-04 08:46'
 labels:
   - bug
 dependencies: []
@@ -29,7 +29,7 @@ Not yet observed in the app, and what it visibly breaks is unknown. Candidates t
 - [x] #1 A test fails on the current code: a key the switcher handles (Control+Tab; and Escape, Return, an arrow and a letter while it is active) is returned as nil by the monitor's closure, and a key it does not handle is returned unchanged
 - [ ] #2 With the fix those keys no longer reach the first responder: verified in the running app that Control+Tab does not move keyboard focus or reach the page, and that Return, Escape, arrows and letters typed while the overlay is up do not reach the page or the sidebar
 - [x] #3 When the switcher has been deallocated the monitor passes events through unchanged
-- [ ] #4 Control+Tab switching itself (TASK-108) behaves as before, and RecentTabOrderTests and the switcher's tests pass
+- [x] #4 Control+Tab switching itself (TASK-108) behaves as before, and RecentTabOrderTests and the switcher's tests pass
 - [ ] #5 The task records what the leak visibly caused before the fix, or that nothing was observable
 <!-- AC:END -->
 
@@ -47,4 +47,9 @@ Not yet observed in the app, and what it visibly breaks is unknown. Candidates t
 <!-- SECTION:NOTES:BEGIN -->
 Tests before the fix (monitorResult with the original expression 'switcher?.handle(event) ?? event'): RecentTabSwitcherMonitorTests 10 tests, 6 failing with 9 assertion failures — every swallow case returned the event (Control+Tab, Control+Shift+Tab, Control+Tab with nothing to switch to, Escape, Return, arrows/letter/space while active); the 4 pass-through cases passed. So the monitor never swallowed anything, as the task suspected.
 After the fix: RecentTabSwitcherMonitorTests 10/10, RecentTabOrderTests 10/10.
+
+Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated profile, SCREEN LOCKED (so no real key or mouse events; calls go through the app's own entry points).
+AC #2 and AC #5 NOT done: they need real key events reaching a page, which a locked screen does not deliver. Owed: with a page focused, Control+Tab (does focus move, does the page see Tab), and Return / Escape / arrows / letters while the overlay is up; and the same on main to record what the leak caused.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix. Left In Progress for AC #2 and #5 (real key events against a page, which need an unlocked screen). wiki/tabs/tab-switching.md no longer lists the leak as an open defect.
 <!-- SECTION:NOTES:END -->

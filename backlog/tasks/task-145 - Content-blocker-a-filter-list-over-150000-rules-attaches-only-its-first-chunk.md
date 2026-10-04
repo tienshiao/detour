@@ -3,10 +3,10 @@ id: TASK-145
 title: >-
   Content blocker: a filter list over 150,000 rules attaches only its first
   chunk
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 02:29'
-updated_date: '2026-10-04 08:24'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -77,4 +77,12 @@ Found, out of scope, NOT changed: exceptions do not cross chunks. WebKit evaluat
 Docs: docs/content-blocking.md (new section Lists Over the Rule Cap, pipeline, apply, Settings, cache locations), wiki/features/content-blocking.md (new section, gotchas, state table, tests), wiki/log.md. wiki-lint: 0 errors, 0 warnings.
 
 Not verified: a real list over 150,000 rules (by design: memory), the Settings pane on screen with a split list, and the app at runtime. No /code-review or /verify run by this agent.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+No list is near the cap today (easylist 75,661 rules of 150,000). A list over the cap is compiled in chunks and every chunk is now attached, counted in Settings, removed when the list is disabled or shrinks (ContentRuleListChunks holds the arithmetic; the cap is injectable for tests). Tests with a small cap failed before the fix. Not verified: a real list over 150,000 rules. Known limits recorded in the docs: an exception rule in a later chunk than its block rule does not apply, and chunks compiled by an older build are not found.
+<!-- SECTION:FINAL_SUMMARY:END -->

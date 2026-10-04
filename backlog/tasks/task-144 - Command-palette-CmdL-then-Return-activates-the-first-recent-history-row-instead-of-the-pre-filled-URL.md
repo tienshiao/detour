@@ -3,10 +3,10 @@ id: TASK-144
 title: >-
   Command palette: Cmd+L then Return activates the first recent-history row
   instead of the pre-filled URL
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 02:23'
-updated_date: '2026-10-04 08:20'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -30,7 +30,7 @@ Expected: with a pre-filled, unedited field, Return acts on the field's URL (as 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The behaviour is reproduced (or refuted) in the running app first, with the result recorded in the task
+- [x] #1 The behaviour is reproduced (or refuted) in the running app first, with the result recorded in the task
 - [x] #2 Cmd+L then Return on an unedited field submits the pre-filled URL, whatever the default list's first row is; covered by a test of the selection/submit rule that fails before the fix
 - [x] #3 Arrow-key selection of a default row followed by Return still activates that row, and typed input keeps its current top-hit behaviour
 - [x] #4 The empty Cmd+T + Return behaviour is decided and recorded (kept or changed)
@@ -77,4 +77,15 @@ After the fix: PaletteSelectionTests 14/14, PaletteReturnKeyTests 9/9, PaletteTa
 Not verified: nothing in the launched app (real key presses, the row highlight being absent on open, mouse hover/click, the anchored address-bar entry, Peek). The typed-query view test checks only the instant list (the verbatim row); the background history pass re-selecting row 0 goes through the same initialRow call and is not separately tested. /code-review and /verify are left to the supervising session.
 
 Docs: docs/command-palette.md (Default Suggestions, Activation, Keyboard Navigation), wiki/features/command-palette.md (keyboard section, tests, sources), wiki/features/suggestion-pipeline.md (one sentence), wiki/log.md.
+
+Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated profile, SCREEN LOCKED (so no real key or mouse events; calls go through the app's own entry points).
+AC #1, reproduced in the launched app on the commit before the fix (279c9ae): tab A on https://example.com/?a=1 selected, tab B committed a navigation more recently; focusAddressBar (Cmd+L's action) pre-filled A's URL, Return sent as the field editor's insertNewline: the window switched to the other tab (the default list's first row, an open-tab row for B). Same steps on the fix: A stays selected on its URL, the palette closes and the page has focus. Not done: a physical Cmd+L / Return key press.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The default list (nothing typed) no longer starts with a keyboard-selected row, so Return after Cmd+L submits the pre-filled URL instead of activating the most recent history row; Cmd+T then Return on the empty field now does nothing (decided: changed). Down still selects the first row and Return then activates it; typed input keeps its top hit. Rules are in PaletteSelection with unit and in-view tests failing before the fix. Reproduced in the launched app on the commit before the fix (the window switched to another tab) and checked fixed, with Return sent as the field editor's insertNewline rather than a physical key. Also changed: arrowing back out of the list restores an unedited pre-filled URL.
+<!-- SECTION:FINAL_SUMMARY:END -->

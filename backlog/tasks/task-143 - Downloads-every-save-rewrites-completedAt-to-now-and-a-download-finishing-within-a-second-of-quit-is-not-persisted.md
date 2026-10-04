@@ -3,10 +3,10 @@ id: TASK-143
 title: >-
   Downloads: every save rewrites completedAt to now, and a download finishing
   within a second of quit is not persisted
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 02:23'
-updated_date: '2026-10-04 08:08'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -61,4 +61,15 @@ Tests run: DetourTests/DownloadManagerTests, 12 tests, 0 failures (own DerivedDa
 Not verified: nothing was run in the app. The one-line call in applicationWillTerminate has no test (the test covers flushPendingSave itself), and the delegate callbacks were not exercised with a real WKDownload. /code-review and /verify are left to the supervising session.
 
 Docs: docs/data-model.md (completedAt column, save paragraph); wiki features/downloads, architecture/persistence, architecture/app-shell, log.
+
+Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated profile, SCREEN LOCKED (so no real key or mouse events; calls go through the app's own entry points).
+A download ended and the app was quit in the same run-loop turn (NSApp.terminate, 'Quit' pressed in the confirmation): after exit the download table held the row with completedAt set, so the termination flush is wired. Earlier rows kept their completedAt.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+completedAt is set once when a download completes (DownloadItem.markCompleted), written unchanged by later saves and loaded back after a relaunch; DownloadManager.flushPendingSave writes a save still in the debounce window and applicationWillTerminate calls it. DownloadManager takes its database, clock and scheduler, so the rules are tested without sleeps (tests failing before the fix). Checked in the launched app: a download ending in the same turn as the quit was in the table afterwards. Rows written by earlier builds keep their old (last-save) completedAt.
+<!-- SECTION:FINAL_SUMMARY:END -->

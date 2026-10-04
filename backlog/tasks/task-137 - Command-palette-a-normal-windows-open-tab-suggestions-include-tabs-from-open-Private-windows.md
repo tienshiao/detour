@@ -3,10 +3,10 @@ id: TASK-137
 title: >-
   Command palette: a normal window's open-tab suggestions include tabs from open
   Private windows
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 01:58'
-updated_date: '2026-10-04 08:12'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -61,4 +61,15 @@ After the fix: PaletteTabScopeTests 8/8, PaletteTabScopeWiringTests 2/2, Suggest
 Not verified: nothing was checked in the running app (the leak itself was never observed at runtime either); /code-review and /verify are left to the supervising session.
 
 Docs: wiki/architecture/incognito.md (new rule section, item removed from 'Not covered'), wiki/features/suggestion-pipeline.md (new 'Which open tabs are candidates' section, invariant, tests), wiki/features/command-palette.md (edge case), docs/command-palette.md (Open Tabs paragraph), wiki/log.md. CLAUDE.md's directory layout does not list the new file (not edited by the agent).
+
+Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated profile, SCREEN LOCKED (so no real key or mouse events; calls go through the app's own entry points).
+A normal window and a Private window open, both palettes shown: the normal palette's gatherTabInfos listed the two normal tabs and not the Private tab; the Private palette listed only its own tab.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A normal window's palette was handed the tabs of every space, including open Private windows' spaces. The space filter is now PaletteTabScope.offeredSpaceIDs: a normal window gets non-incognito spaces only, a Private window only its own space (and a window showing an incognito space is treated as Private even when not flagged). Unit and wiring tests failed before the fix; checked in the launched app with a normal and a Private window side by side.
+<!-- SECTION:FINAL_SUMMARY:END -->
