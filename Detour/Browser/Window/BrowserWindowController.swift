@@ -12,6 +12,12 @@ class BrowserWindowController: NSWindowController {
     var sidebarSplitView: NSSplitView { splitViewController.splitView }
     let tabSidebar = TabSidebarViewController()
     let contentContainerView = NSView()
+    /// Where this window keeps the containers of automation-attached tabs it
+    /// is not showing: hidden, at the bottom of the content area's z-order
+    /// (TASK-132.3, `AutomationParking`).
+    let automationParkingView = AutomationParkingView()
+    /// Set once the window has closed; it can no longer keep a parked tab.
+    private(set) var hasClosed = false
     var sidebarItem: NSSplitViewItem!
     private var contentItem: NSSplitViewItem!
     private var sidebarCollapseObservation: NSKeyValueObservation?
@@ -31,8 +37,11 @@ class BrowserWindowController: NSWindowController {
     /// Derived from the view hierarchy — a container can only be parented in one
     /// window at a time — so it cannot drift out of sync with reality. Split
     /// panes sit one level deeper (inside `hostedSplitView`), hence descendant.
+    /// A container parked in this window's `automationParkingView` is in the
+    /// content area too, but not displayed: the window shows a snapshot of the
+    /// tab and does not own it (TASK-132.3).
     private var ownsWebView: Bool {
-        guard let container = selectedTab?.webViewContainer else { return false }
+        guard let container = selectedTab?.webViewContainer, !container.isInAutomationParking else { return false }
         return container.isDescendant(of: contentContainerView)
     }
 
@@ -176,7 +185,8 @@ class BrowserWindowController: NSWindowController {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let defaultWidth = min(screenFrame.width * 0.8, 1600)
         let defaultHeight = min(screenFrame.height * 0.85, 1100)
-        let window = NSWindow(
+        // `BrowserWindow`: refuses first responder for a parked web view.
+        let window = BrowserWindow(
             contentRect: NSRect(x: 0, y: 0, width: defaultWidth, height: defaultHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -319,6 +329,9 @@ class BrowserWindowController: NSWindowController {
             name: NSWindow.didChangeOcclusionStateNotification,
             object: window
         )
+
+        // An attached tab that had no window to be parked in now has one.
+        AutomationParking.reconcile()
     }
 
     /// Previous value of the window's `.visible` occlusion flag, so only
@@ -596,6 +609,9 @@ class BrowserWindowController: NSWindowController {
         NotificationCenter.default.addObserver(self, selector: #selector(contentContainerFrameDidChange),
                                                name: NSView.frameDidChangeNotification,
                                                object: contentContainerView)
+        automationParkingView.controller = self
+        automationParkingView.frame = contentContainerView.bounds
+        contentContainerView.addSubview(automationParkingView, positioned: .below, relativeTo: nil)
         contentContainerView.addSubview(emptyStateLabel)
         NSLayoutConstraint.activate([
             emptyStateLabel.centerXAnchor.constraint(equalTo: contentContainerView.centerXAnchor),
@@ -1020,7 +1036,9 @@ class BrowserWindowController: NSWindowController {
         // Update favorite selection highlight
         tabSidebar.updateFavoriteSelection(selectedTabID: id)
 
-        if window?.isKeyWindow == true || members.allSatisfy({ $0.webViewContainer?.superview == nil }) {
+        // Not key: claim only what no window is showing. A parked container is
+        // in a window without being shown, so it counts as free (TASK-132.3).
+        if window?.isKeyWindow == true || members.allSatisfy({ !$0.isHostedForDisplay }) {
             claimWebView(for: tab)
         } else {
             showSnapshot(for: tab)
@@ -1046,6 +1064,10 @@ class BrowserWindowController: NSWindowController {
         // window) — so the page takes keys without a click (TASK-128). Focus
         // held by a control, such as the sidebar row just clicked, stays.
         if paletteWasShowing || isKeyboardFocusUnheld { restoreWebContentFocus() }
+
+        // The tab just left stays in the window, hidden, if an extension is
+        // driving it (TASK-132.3).
+        AutomationParking.reconcile(preferring: self)
     }
 
     /// Whether keyboard focus is on nothing the user is looking at: the window
@@ -1145,6 +1167,9 @@ class BrowserWindowController: NSWindowController {
         for member in members {
             member.loadIfStalled()
         }
+        // A claim that collapsed a split, or took a pane from another window's
+        // split, leaves a partner's container unparented (TASK-132.3).
+        AutomationParking.reconcile(preferring: self)
     }
 
     private func wireOwnedWebView(_ webView: WKWebView) {
@@ -1247,12 +1272,16 @@ class BrowserWindowController: NSWindowController {
         // Snapshot what the previous owner displayed at its current size: the
         // whole split view when the pane was hosted in one (both panes, one
         // image), otherwise the container (webView + any docked inspector).
+        // A parked container was displayed by nobody, so there is nothing to
+        // hand over — and a hidden view would only draw blank (TASK-132.3).
         let snapshotTarget = (container.superview as? NSSplitView) ?? container
-        let priorSnapshot = snapshotWithinSuperview(of: snapshotTarget)
+        let priorSnapshot = tab.isAutomationParked ? nil : snapshotWithinSuperview(of: snapshotTarget)
 
         removeContentViews()
 
         container.removeFromSuperview()
+        // It arrives hidden from a parking host.
+        container.isHidden = false
         resetSplitPaneChrome(container)
         wireOwnedWebView(webView)
 
@@ -1316,8 +1345,9 @@ class BrowserWindowController: NSWindowController {
         for member in members { member.noteShown() }
 
         // Snapshot what the previous owner displayed (see claimSingleWebView).
+        // A parked pane was displayed by nobody (TASK-132.3).
         let snapshotTarget = containers.compactMap { $0.superview as? NSSplitView }.first
-            ?? containers.first { $0.superview != nil }
+            ?? containers.first { $0.superview != nil && !($0.superview is AutomationParkingView) }
         let priorSnapshot = snapshotTarget.flatMap { snapshotWithinSuperview(of: $0) }
 
         removeContentViews()
@@ -1793,7 +1823,7 @@ class BrowserWindowController: NSWindowController {
         // split drop re-runs within a tick (deferred sidebar selection restore
         // → selectTab) and must not cut the animation short. The claim paths
         // remove it themselves when hosting moves to different content.
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay {
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay && subview !== automationParkingView {
             for webView in webViews(in: subview) {
                 for name in Self.ownedScriptHandlerNames {
                     webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
@@ -1844,6 +1874,8 @@ class BrowserWindowController: NSWindowController {
                 }
                 pipping.removeFromSuperview()
                 if self.pipContentView === pipping { self.pipContentView = nil }
+                // An attached tab's pane goes from the capture hold to parking.
+                AutomationParking.reconcile(preferring: self)
             }
         }
     }
@@ -2007,6 +2039,9 @@ class BrowserWindowController: NSWindowController {
                 localSnapshot = image
             }
             showSnapshot(for: tab)
+            // Whatever the claiming window left behind of our hosted content
+            // (the other pane of a split it did not take) is unparented now.
+            AutomationParking.reconcile(preferring: self)
         }
     }
 
@@ -2352,6 +2387,7 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.tableView.deselectAll(nil)
         tabSidebar.updateFavoriteSelection(selectedTabID: nil)
         window?.title = "Detour"
+        AutomationParking.reconcile(preferring: self)
     }
 
     @objc func closeCurrentTab(_ sender: Any?) {
@@ -3163,6 +3199,12 @@ extension BrowserWindowController: NSWindowDelegate {
         if isIncognito, let spaceID = incognitoSpaceID {
             store.removeIncognitoSpace(id: spaceID)
         }
+
+        // Last: the incognito space's tabs are gone by now (closing one drops
+        // its attachments). Whatever attached tab is still in this window —
+        // parked, or the one it was displaying — moves to another window.
+        hasClosed = true
+        AutomationParking.windowWillClose(self)
     }
 
     /// Remove the script message handlers this controller registered on the

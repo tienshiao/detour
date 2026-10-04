@@ -66,6 +66,10 @@ final class RecentTabSwitcher {
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window else { return event }
+        // A key an extension sent to a page, declined and handed back by
+        // WebKit, is not the user's: `AutomationInput`'s monitor drops it
+        // (TASK-132.3), whichever of the two runs first.
+        guard !AutomationInput.isDrivenKeyDown(event) else { return event }
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
 
         if event.type == .flagsChanged {

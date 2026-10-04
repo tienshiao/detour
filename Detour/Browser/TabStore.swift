@@ -4503,8 +4503,14 @@ class TabStore {
         /// two windows on one space share a single `lastDeselectedAt`, so the
         /// one that deselects the tab stamps it while the other still shows it,
         /// and releasing the web view would blank that window's content area.
+        ///
+        /// An automation-attached tab never sleeps, under either rule: an
+        /// extension is driving its web view, displayed or parked
+        /// (TASK-132.3). Its split partner stays awake with it, by the
+        /// partner rule below.
         func offScreenSince(_ tab: BrowserTab) -> Date? {
-            guard !tab.isPlayingAudio, tab.webViewContainer?.superview == nil else { return nil }
+            guard !tab.isPlayingAudio, !tab.isAutomationAttached,
+                  tab.webViewContainer?.superview == nil else { return nil }
             return tab.lastDeselectedAt
         }
 
@@ -4577,8 +4583,11 @@ class TabStore {
             guard threshold != .never else { continue }
             let cutoff = now.addingTimeInterval(-threshold.rawValue)
 
+            /// An automation-attached tab is never archived out from under the
+            /// extension driving it (TASK-132.3); the group rule below keeps
+            /// its split partner with it.
             func isStale(_ tab: BrowserTab) -> Bool {
-                guard let lastDeselected = tab.lastDeselectedAt else { return false }
+                guard !tab.isAutomationAttached, let lastDeselected = tab.lastDeselectedAt else { return false }
                 return lastDeselected < cutoff
             }
 

@@ -106,6 +106,7 @@ Tabs are put to sleep to conserve memory. This preserves their state without kee
 - a tab that is selected somewhere (`lastDeselectedAt == nil`) or whose container is still in a window. Two windows on one space share a single timestamp.
 - one member of a split while its partner doesn't qualify too
 - any tab in a profile whose `sleepThreshold` is `.never`, under either rule
+- an automation-attached tab (TASK-132.3): an extension is driving its web view, which stays in a window — displayed or parked hidden — until the attachment is released. See [WebView Ownership](webview-ownership.md#automation-attached-tabs-parked)
 
 A sleeping pinned entry or favourite keeps its tab, which is live but asleep, so selecting it wakes the tab from its saved state instead of reloading the page from scratch. For testing, `DETOUR_SLEEP_SHOW_BUDGET` and `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS` override the two constants when the app launches.
 
@@ -134,6 +135,7 @@ Tabs that have been inactive longer than the profile's `archiveThreshold` are au
 - Same 5-minute archive timer as sleep
 - Only applies to non-incognito spaces
 - Never archives the last remaining tab in a space
+- Never archives an automation-attached tab (TASK-132.3), nor the split it is part of
 
 **Process**: Calls `closeTab(id:in:archivedAt:)` with the current timestamp. The `archivedAt` field distinguishes auto-archived tabs from manually closed ones.
 

@@ -3,11 +3,11 @@ id: TASK-132.3
 title: >-
   Extensions: unselected tabs stay renderable and able to take synthesized input
   while an extension is driving them
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-03 23:07'
-updated_date: '2026-10-03 23:38'
+updated_date: '2026-10-04 00:39'
 labels: []
 dependencies: []
 parent_task_id: TASK-132
@@ -25,14 +25,14 @@ Product decision: Claude must drive tabs that are not selected. Today a hidden t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An automation-attached tab that is not selected produces a snapshot of its current page at the content-area size, not a blank or stale image
-- [ ] #2 A sleeping tab is woken when attached, and an attached tab is not put to sleep or archived
-- [ ] #3 Selecting the tab, showing it in a second window, or closing it while attached leaves web view ownership consistent (no blank pane, no double-hosted web view)
-- [ ] #4 Attaching never changes the selected tab, the key window or the first responder
-- [ ] #5 Releasing the attachment returns the tab to normal hidden-tab behaviour
-- [ ] #6 docs/webview-ownership.md describes the attached state
-- [ ] #7 Only tabs with a live extension attachment are kept at elevated priority or kept rendering; every other hidden tab, including unattached members of the extension's tab group, keeps today's background de-prioritisation, verified by comparing the process assertion state of an attached and an unattached hidden tab
-- [ ] #8 No app-wide, profile-wide or configuration-level change raises the priority of hidden tabs in general
+- [x] #1 An automation-attached tab that is not selected produces a snapshot of its current page at the content-area size, not a blank or stale image
+- [x] #2 A sleeping tab is woken when attached, and an attached tab is not put to sleep or archived
+- [x] #3 Selecting the tab, showing it in a second window, or closing it while attached leaves web view ownership consistent (no blank pane, no double-hosted web view)
+- [x] #4 Attaching never changes the selected tab, the key window or the first responder
+- [x] #5 Releasing the attachment returns the tab to normal hidden-tab behaviour
+- [x] #6 docs/webview-ownership.md describes the attached state
+- [x] #7 Only tabs with a live extension attachment are kept at elevated priority or kept rendering; every other hidden tab, including unattached members of the extension's tab group, keeps today's background de-prioritisation, verified by comparing the process assertion state of an attached and an unattached hidden tab
+- [x] #8 No app-wide, profile-wide or configuration-level change raises the priority of hidden tabs in general
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -65,4 +65,25 @@ Probe results, macOS 26.7, 2026-10-03 (web views: A front, B covered sibling, C 
 Open question for the user: should an attached tab be held at foreground priority even while Detour's window is occluded or minimised (a pending callAsyncJavaScript on that tab only does it)? Default in this plan: no extra hold.
 
 Follow-up probe 2026-10-03 (user asked whether elevation is needed at all): a web view that is IN the window but isHidden (D) can be driven fully without counting as visible. Click on a button, click on an input, keyDown and insertText all arrived as trusted events (value 'ahéllo'), a snapshot after a DOM change was fresh, and the window veto kept first responder on the front view (it fired for D as well). D stayed visibilityState hidden, timers 1/s, rAF stalled, and its process stayed at assertion type 1/0 (background or none) while the two visible views were at type 3. So what input needs is a window, not visibility: parking the container hidden gives input and snapshots with no priority change, and un-hiding the parked container is the single switch that makes that one tab foreground. Only the no-window case loses mouseup/click.
+
+Implemented 2026-10-03 (Opus agent, reviewed by the main session).
+- New Detour/Browser/Window/AutomationParking.swift: TabAutomationOwner, TabAutomationHosting, AutomationParkingView (per-window host, bottom of the content area, ends a parked page's responder chain, own undo manager, no hit testing or key equivalents), BrowserWindow (refuses first responder for a parked view), AutomationParking (reconcile: wake + park every attached tab no window displays), AutomationInput.sendKey.
+- API for the debugger tasks: tab.attachAutomation(TabAutomationOwner(extensionID:reason:)) / detachAutomation; tab.isAutomationAttached; tab.automationHosting (.notAttached / .displayed / .parked / .unhosted); tab.automationDrivableWebView(); AutomationInput.sendKey(event, to:); mouse events and insertText(_:replacementRange:) go straight to the view with events built for webView.window.
+- Parking window rule: the window that just stopped displaying the tab; else the first window showing its space, else the first on its profile, else the first browser window; no window -> .unhosted, parked when a controller is created.
+- Sleep/archive: sleep() refuses while attached; sleepStaleTabs and archiveStaleTabs skip attached tabs; a forced sleep (profile swap, cross-profile move, retarget) still releases the web view and the tab is re-woken and re-parked on the next main-queue turn. The attachment survives a profile change, so the debugger task must detach on ExtensionTabLifecycle.didClose.
+- Addition beyond the plan: AutomationInput.sendKey. WebKit re-sends a key down the page declined through NSApp.sendEvent, so a declined letter sent to a parked page was typed into the visible page's focused field and a declined Cmd-key fired a menu item (.claude/scratch/task132.3/declined-key-spike.m). sendKey remembers the key downs it sends and a local monitor drops them when they come back.
+- Reserve switch: AutomationParking.revealsParkedWebViews (false). On, the parked container is not hidden and that tab alone goes to a foreground assertion with full-rate timers and rAF.
+
+Priority measurement (by hand, window on screen, not key): selected page visible, 38 ticks of a 100 ms timer in 4 s, 291 rAF frames, assertion type 3; parked attached page hidden, 9 ticks, rAF stalled, assertion type 1 (background), reaching type 3 only for the 5-30 ms a callAsyncJavaScript or input was in flight; plain hidden page hidden, 9 ticks, rAF stalled, type 0 from about 3 s after load. So a parked tab is never foreground, but it holds a background assertion where an ordinary hidden tab drops to none: its suspend preparation keeps retrying markLayersVolatile. That is the one difference from an ordinary hidden tab.
+
+Verification: 455 tests in the new and affected suites, 0 failures, 1 skipped (the env-gated assertion probe), .claude/scratch/task132.3/06-regression.log; the two new classes re-run by the reviewer on the final sources: 32 tests, 0 failures, 1 skipped. App builds and launches in an isolated profile with no error-level log lines. The full suite was not run.
+
+Not verified: where a declined key lands inside the real app (the test proves WebKit re-sent it and sendKey dropped it; that a dropped key goes nowhere rests on the spike); undo-manager isolation beyond TabStore.undoManager.canUndo being unchanged; the key-equivalent block and responder-chain sink have no direct test; attaching a Peek tab is handled in code but untested; reveal mode's foreground state is from the by-hand run only.
+For TASK-132.14: WebKit queues mouse and key events separately (a key sent right after a click can arrive before the click moves focus, so wait for the click to land); a synthesized right-click pops a real context menu on screen (not handled); WebKit asks for first responder only when the page wants focus.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A tab an extension has attached now stays awake and, when no window displays it, is parked hidden in a browser window at content-area size, so it can be snapshotted and sent trusted mouse, key and text input without changing the selected tab, the key window or first responder. No priority is raised: a parked page stays visibilityState hidden with throttled timers and no foreground assertion (it holds a background assertion where an ordinary hidden tab drops to none). Attached tabs are exempt from sleep and archive; select/deselect, split panes, ownership transfer, window close and tab close keep ownership consistent; releasing the last attachment returns the tab to ordinary hidden-tab behaviour. Declined synthesized keys are stopped from leaking into the user's window. 32 new tests; 455 tests across the affected suites pass. docs/webview-ownership.md describes the parked state.
+<!-- SECTION:FINAL_SUMMARY:END -->

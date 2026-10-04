@@ -215,6 +215,46 @@ class BrowserTab: NSObject {
     private(set) var showsSinceWake: Int = 0
     private var cachedInteractionState: Data?
 
+    // MARK: - Automation attachment (TASK-132.3)
+
+    /// Who is driving this tab right now — an extension holding a debugger
+    /// attachment, or a command in flight. While the set is non-empty the tab
+    /// is *automation-attached*: it stays awake (`sleep()` refuses, `TabStore`'s
+    /// sleep and archive sweeps skip it) and its web view stays in a window —
+    /// displayed if a window shows the tab, otherwise parked hidden
+    /// (`AutomationParking`) — so it can be snapshotted and sent synthesized
+    /// input. Nothing else about the tab changes: its page stays hidden to
+    /// WebKit and its process priority is not raised.
+    ///
+    /// In memory only, and per tab: other hidden tabs — the same extension's
+    /// tab group included — are untouched. Mutated only through
+    /// `attachAutomation(_:)` / `detachAutomation(_:)`; `teardown()` drops
+    /// every owner.
+    private(set) var automationOwners: Set<TabAutomationOwner> = []
+    var isAutomationAttached: Bool { !automationOwners.isEmpty }
+    /// Set by `teardown()`: a closed tab cannot be attached (attaching wakes).
+    private var isTornDown = false
+
+    /// Records `owner` as driving this tab. The first owner wakes a sleeping
+    /// tab and parks it if no window displays it; neither the selected tab,
+    /// the key window nor the first responder changes. Idempotent per owner.
+    /// Returns false, recording nothing, for a tab that has been closed.
+    @discardableResult
+    func attachAutomation(_ owner: TabAutomationOwner) -> Bool {
+        guard !isTornDown else { return false }
+        automationOwners.insert(owner)
+        AutomationParking.tabDidAttach(self)
+        return true
+    }
+
+    /// Drops `owner`. With the last owner gone the tab is unparked and is an
+    /// ordinary hidden tab again (it stays awake until the sleep policy says
+    /// otherwise). A no-op for an owner that is not attached.
+    func detachAutomation(_ owner: TabAutomationOwner) {
+        guard automationOwners.remove(owner) != nil, automationOwners.isEmpty else { return }
+        AutomationParking.tabDidDetach(self)
+    }
+
     // MARK: - Peek State
     /// A live peek is enumerated right after its host, so pointing at it here is
     /// what reports it open (TASK-52, see `ExtensionTabLifecycle`).
@@ -608,6 +648,12 @@ class BrowserTab: NSObject {
             .store(in: &faviconCancellables)
     }
 
+    /// Whether the web view is in a window and not hidden there.
+    private var isWebViewOnScreen: Bool {
+        guard let webView, webView.window != nil else { return false }
+        return !webView.isHiddenOrHasHiddenAncestor
+    }
+
     private func restartLoadStallTimer(isLoading: Bool) {
         loadStallWorkItem?.cancel()
         loadStallWorkItem = nil
@@ -616,8 +662,10 @@ class BrowserTab: NSObject {
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.isLoading else { return }
             // A web view on screen runs at foreground priority; keep watching
-            // in case the tab goes to the background mid-load.
-            guard self.webView?.window == nil else {
+            // in case the tab goes to the background mid-load. A parked
+            // automation tab is in a window but hidden, so it loads at
+            // background priority like any other hidden tab (TASK-132.3).
+            guard !self.isWebViewOnScreen else {
                 self.restartLoadStallTimer(isLoading: true)
                 return
             }
@@ -695,6 +743,14 @@ class BrowserTab: NSObject {
         // TabStore remove notification.
         // No-op (and idempotent) when the tab was never reported open.
         ExtensionTabLifecycle.didClose(self)
+        // A closed tab is nobody's to drive: drop the attachments before the
+        // release below, which would otherwise ask for the tab to be woken and
+        // parked again (TASK-132.3).
+        isTornDown = true
+        if isAutomationAttached {
+            automationOwners.removeAll()
+            AutomationParking.tabDidDetach(self)
+        }
         webView?.pauseAllMediaPlayback(completionHandler: nil)
         releaseWebView()
     }
@@ -720,6 +776,12 @@ class BrowserTab: NSObject {
         webViewContainer?.removeFromSuperview()
         webViewContainer = nil
         self.webView = nil
+        // A forced sleep (a profile swap, a move across profiles, a retarget)
+        // releases even an attached tab's web view. The attachment stands, so
+        // the tab is woken and parked again once the caller has finished
+        // rebinding it — not here, where the wake would still build from the
+        // configuration being left (TASK-132.3).
+        if isAutomationAttached { AutomationParking.setNeedsReconcile() }
     }
 
     /// A window just hosted this tab's web view — the pane was attached, or an
@@ -748,8 +810,12 @@ class BrowserTab: NSObject {
     /// `force` sleeps the tab even while it is playing audio (pausing the media
     /// first). Used when the tab must release its webView regardless of playback,
     /// e.g. a profile swap rebinding the tab to a different data store.
+    ///
+    /// An automation-attached tab is spared like an audible one: whoever is
+    /// driving it needs its web view (TASK-132.3). `force` still releases it;
+    /// `releaseWebView` then asks for it to be woken and parked again.
     func sleep(force: Bool = false) {
-        guard let webView, !isSleeping, force || !isPlayingAudio else { return }
+        guard let webView, !isSleeping, force || (!isPlayingAudio && !isAutomationAttached) else { return }
         if force {
             webView.pauseAllMediaPlayback(completionHandler: nil)
         }
@@ -845,6 +911,7 @@ class BrowserTab: NSObject {
     ///   decision came first would spend it and the other be refused.
     func wake(supersededByLoad: Bool = false) {
         guard webView == nil else { return }
+        isTornDown = false
 
         let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
         self.webView = Self.makeWebView(configuration: wakeConfiguration(in: space))
