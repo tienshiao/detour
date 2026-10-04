@@ -37,6 +37,12 @@ sources:
   - id: task-152
     resource: backlog:TASK-152
     title: favicon.lookup answers from every profile's history, without a permission check
+  - id: task-153
+    resource: backlog:TASK-153
+    title: chrome.history.search with empty text scans every visit of the profile
+  - id: url-search-bench
+    resource: ../../DetourTests/HistoryURLSearchBenchmarkTests.swift
+    title: HistoryURLSearchBenchmarkTests.swift
   - id: url-search-tests
     resource: ../../DetourTests/HistoryURLSearchTests.swift
     title: HistoryURLSearchTests.swift
@@ -189,7 +195,7 @@ over the rows that survived `LIMIT`, never over every candidate.
 
 ## One select for both profile-scoped searches
 
-`searchVisits` and `searchURLs` are built on the same inner select,
+`searchVisits` and `searchURLs` with text are built on the same inner select,
 `scopedVisitsSelect`: the scope filter, the `[from, until)` window, the
 candidate gate and the own-title matcher, with `ROW_NUMBER()` numbering each
 URL's qualifying visits newest first. Both keep `rn = 1`, so a row in either
@@ -204,14 +210,66 @@ They differ in two things:
 | A row carries | the visit: id, time, title | the URL: id, title, and `visitCount`, `typedCount`, `lastVisitTime` aggregated over **all** of the scope's visits of it, not only those in the window |
 | Title of a title-less (pre-`h4`) visit | `COALESCE(v.title, h.title)`, unguarded | the shared title only while no space **outside the scope** has visited the URL; otherwise none, and the caller shows the URL |
 
-The aggregates come from a join on `historyVisit` in an outer select over
-the rows that survived `LIMIT`. The scope is also given to the statement as a
-CTE (`scope`), because the guarded title expression is repeated once per
-query token and so cannot bind the space list itself.
+The aggregates come from a join on `historyVisit` in an outer select
+(`urlEntriesSelect`) over the rows that survived `LIMIT`. The scope is also
+given to the statement as a CTE (`scope`), because the guarded title
+expression is repeated once per query token and so cannot bind the space list
+itself. The join's scope test is written `+c.spaceID IN (…)`, for the reason
+given under Deletion: the visits to aggregate are reached by URL, never by
+walking the profile.
 
 The extension's title rule is stricter than the History page's on purpose:
 what it returns leaves the browser, to extension code. See
 [history own-title matching](../decisions/history-own-title-matching.md).
+
+## The empty-text listing is a walk, not a window
+
+`chrome.history.search({ text: '' })` asks for the most recently visited URLs
+and matches nothing. `scopedVisitsSelect` answers that too, with no tokens,
+but only after numbering **every** in-scope visit in the range and evaluating
+the title rule for each, to return 100 rows. Since TASK-153 `searchURLs` with
+an empty text takes another route (`listedURLEntries`) that must give the
+same rows:[^task-153]
+
+1. **Walk** (`newestVisitPerURL`). One cursor per space of the scope, each
+   reading `WHERE spaceID = ? [window] ORDER BY visitTime DESC, id DESC`
+   straight off the (`spaceID`, `visitTime`) index, merged in Swift by
+   (`visitTime`, `id`). The first visit of a URL the walk meets is that URL's
+   newest in-scope, in-range visit, so it is kept and later ones are skipped;
+   the walk stops at `limit` URLs.
+2. **Describe.** The kept visit ids go, 500 at a time, through the same outer
+   select as the text path: URL, the guarded title of that visit, and the
+   aggregates over all of the scope's visits of the URL.
+
+Both steps run inside one read, so they see the same history.
+
+Why the merge is in Swift: SQLite cannot read an index in order across
+`spaceID IN (…)`. It either sorts every in-scope visit before returning the
+first, or walks the plain `visitTime` index through every other profile's
+visits.
+
+What must stay true, and what checks it:
+
+| Rule | Check in `HistoryURLSearchTests` |
+|---|---|
+| Same rows, order, counts, times and titles as the windowed select with no tokens | `testTheListingAgreesWithTheWindowedSelect`: random histories with tied times, strangers on the same URLs, titled, empty-titled and title-less visits, compared for several scopes, ranges and limits. `windowedURLEntries` is not private so the test can call it |
+| The work follows the rows returned, not the size of the scope | `testListingTheNewestURLsDoesNotWalkTheWholeScope` counts SQLite virtual-machine steps through a progress handler: a history ten times the size may take at most twice the steps. The windowed select took 9.7 times (917,030 against 94,280)[^task-153] |
+
+The walk degrades to the whole scope only when the caller asks for it: a
+`limit` larger than the number of URLs in the range, or a range in which a
+few URLs have nearly all the visits.
+
+The text path still windows over every qualifying visit. Its known bad shape
+is a query that matches a much-visited URL whose visits have no title of
+their own: `extensionTitleExpression`'s `NOT EXISTS` probe runs per
+title-less candidate visit and walks all visits of the URL when no other
+profile has visited it, which is quadratic. In the measurements below that
+is 396 title-less visits of a 5,225-visit URL, and it is what the 2.2 s of
+"text matching every URL" is attributed to: the same query takes 352 ms in
+the 99,000-visit profile and 164 ms in the 45,000-visit one, neither of which
+visited that URL. (Inferred from those controls; the URL was not removed to
+isolate it.) Not fixed; the default range of `chrome.history.search` keeps
+the common call away from it.
 
 All FTS query tokens are double-quoted (`"tok"*`). FTS5 reserves `AND`, `OR`
 and `NOT`; unquoted, typing "not found" was a syntax error and every lookup
@@ -308,6 +366,10 @@ anti-join is off the launch path.
 - `DatabaseQueue` is one connection: a long write blocks every read behind
   it, including the palette's main-thread query. "Clear all" on 50,000
   visits took about 357 ms in a Debug build.[^task-96]
+- A long **read** does the same. A query run off the main thread still holds
+  the queue, and a palette read issued meanwhile waits for all of it: 2.4 s
+  behind an extension's unbounded empty-text search before TASK-153; see
+  [the measurements](#chromehistorysearch-on-a-large-history).[^task-153]
 - The temp staging table outlives its transaction on that single connection,
   so each delete drops and recreates it.
 
@@ -331,6 +393,57 @@ The benchmark is `HistoryBenchmarkTests`, gated behind
 `TEST_RUNNER_HISTORY_BENCH=1` in `xcodebuild`'s environment. See
 [build and test](../playbooks/build-and-test.md).
 
+## chrome.history.search on a large history
+
+`HistoryURLSearchBenchmarkTests`, gated behind
+`TEST_RUNNER_HISTORY_SEARCH_BENCH=1`. Debug build, median of 5, measured on
+2026-10-04 (once before the change, twice after, the two agreeing within 10%)
+on a machine under heavy load (load average above 40), so the numbers are
+orders of magnitude. 300,000 visits of 40,000 URLs over 90 days in
+a file database; three profiles over five spaces; the profile measured has two
+spaces and 155,327 visits; one URL has 2% of all visits; the oldest fifth of
+the visits has no title of its own.[^task-153]
+
+`searchURLs`, the profile's two spaces, `limit` 100 unless stated:
+
+| Query | Before TASK-153 | After |
+|---|---|---|
+| Empty text, all history | 2,157 ms | 12.7 ms |
+| Empty text, all history, the profile owning 15% of the visits | 126 ms | 4.9 ms |
+| Empty text, last 24 hours | 15.1 ms | 12.5 ms |
+| Empty text, all history, `limit` 1,000 | 2,165 ms | 59 ms |
+| Empty text, all history, `limit` 10,000 | 2,440 ms | 367 ms |
+| Empty text, all history, no limit (26,333 rows) | 2,648 ms | 776 ms |
+| Text, a URL token, all history | 48 ms | 49 ms |
+| Text, a common title word, all history | 171 ms | 170 ms |
+| Text, a common title word, last 24 hours | 15 ms | 16 ms |
+| Text matching every URL, all history | 2,281 ms | 2,251 ms |
+| Text matching every URL, last 24 hours | 34 ms | 34 ms |
+| Text matching every URL, all history, the 99,000-visit profile | not measured | 352 ms |
+| Text matching every URL, all history, the 45,000-visit profile | not measured | 164 ms |
+
+The budget TASK-153 holds the listing to: an empty-text search for Chrome's
+default 100 results takes at most 50 ms on this history in a Debug build,
+whatever the range. Past that the cost follows the rows asked for, about
+30–60 µs each.
+
+A palette read made on the main thread while an extension's search holds the
+queue (the read's whole duration, wait included):
+
+| Read | Alone | Behind empty text, all history, 100 | Behind empty text, all history, no limit | Behind text matching every URL, all history |
+|---|---|---|---|---|
+| `recentHistory` before | 142 ms | 2,416 ms | 2,849 ms | 2,477 ms |
+| `recentHistory` after | 151 ms | 164 ms | 919 ms | 2,399 ms |
+| `searchHistory("a")` before | 216 ms | 2,433 ms | | |
+| `searchHistory("a")` after | 219 ms | 226 ms | | |
+
+So a default-size listing now delays a palette read by its own 13 ms. The two
+waits that remain are an extension asking for the whole history in one call,
+and a text search over all history that hits the bad shape above; nothing
+bounds those short of giving the main thread a connection of its own. The
+"alone" column is also worth a look: on a history this size the palette's own
+reads take longer than the wait this task removed.
+
 # Tests
 
 `HistoryDatabaseTests`, `HistoryURLSearchTests` (`searchURLs`: isolation
@@ -339,6 +452,10 @@ between two profiles, own counts, times and titles, the legacy-title guard),
 delete path, the differential gate test), `HistoryDeletionIntegrationTests`,
 `HistoryTitleUpdateTests`, `SameDocumentVisitTests`, `HistoryTimeRangeTests`,
 `HistoryBenchmarkTests`.
+
+For the empty-text listing, `HistoryURLSearchTests` also holds the differential
+test against the windowed select and the step-count test described above;
+`HistoryURLSearchBenchmarkTests` is the gated timing run.
 
 # Related
 
@@ -352,4 +469,5 @@ delete path, the differential gate test), `HistoryDeletionIntegrationTests`,
 [^task-96]: Index every title a URL has had
 [^task-138]: chrome.history.search returns history from every profile
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
+[^task-153]: chrome.history.search with empty text scans every visit of the profile
 [^history-notes]: Session notes on the History feature

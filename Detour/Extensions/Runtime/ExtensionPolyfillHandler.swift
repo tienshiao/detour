@@ -42,6 +42,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// rows of it a request may see is decided per request, from `profile`.
     var historyDatabase: HistoryDatabase = .shared
 
+    /// The clock `history.search` measures its default range from (TASK-153),
+    /// as a test seam for the same reason. Production never assigns it.
+    var now: () -> Date = Date.init
+
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
 
@@ -267,13 +271,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     // MARK: - chrome.history arguments
 
-    /// A `chrome.history.search` query that passed validation (TASK-138).
+    /// A `chrome.history.search` query that passed validation (TASK-138), with
+    /// Chrome's defaults applied.
     struct HistorySearchQuery: Equatable {
         var text: String
         var maxResults: Int
         /// Seconds since 1970, as the history database stores visit times
         /// (the extension sends milliseconds). The range is half-open,
-        /// `[startTime, endTime)`.
+        /// `[startTime, endTime)`; nil is no bound on that side.
         var startTime: Double?
         var endTime: Double?
     }
@@ -286,6 +291,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     /// Chrome's `maxResults` default.
     static let historySearchDefaultMaxResults = 100
+
+    /// Chrome's `startTime` default (TASK-153): a query that names none covers
+    /// the 24 hours before now.
+    static let historySearchDefaultRange: TimeInterval = 24 * 3600
 
     /// Validate the `query` of a `history.search` request.
     ///
@@ -300,7 +309,21 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// `maxResults` a non-negative integer, the times finite. Whether a number
     /// arrives as an integer or a double depends on the transport, so both
     /// are accepted.
-    static func historySearchQuery(from params: [String: Any]) -> Result<HistorySearchQuery, PolyfillArgumentError> {
+    ///
+    /// The range follows Chrome (TASK-153). With no `startTime` it begins 24
+    /// hours before `now`, whatever `text`, `maxResults` and `endTime` say —
+    /// Chrome sets its default range first and then overwrites each bound the
+    /// query gives (`HistorySearchFunction` in `history_api.cc`). That is also
+    /// what keeps the common call cheap: `search({ text: '' })`, which a
+    /// new-tab page makes on every open, reads a day and not the profile's
+    /// whole history. A `startTime` that is given is taken as given, and 0 is
+    /// how an extension asks for everything, so 0 (or less: nothing was
+    /// visited before 1970) is no lower bound at all rather than a bound for
+    /// the query to compare every visit with. An omitted `endTime` stays no
+    /// upper bound; Chrome's is "now", which differs only for a visit dated in
+    /// the future.
+    static func historySearchQuery(from params: [String: Any],
+                                   now: Date) -> Result<HistorySearchQuery, PolyfillArgumentError> {
         func refuse(_ what: String) -> Result<HistorySearchQuery, PolyfillArgumentError> {
             .failure(PolyfillArgumentError(message: "history.search: \(what)"))
         }
@@ -322,7 +345,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             return refuse("query.text must be a string")
         }
 
-        var parsed = HistorySearchQuery(text: text, maxResults: historySearchDefaultMaxResults)
+        var parsed = HistorySearchQuery(text: text, maxResults: historySearchDefaultMaxResults,
+                                        startTime: now.timeIntervalSince1970 - historySearchDefaultRange)
         if let raw = member("maxResults", of: query) {
             guard let value = number(raw), value >= 0, value == value.rounded() else {
                 return refuse("query.maxResults must be a non-negative integer")
@@ -331,7 +355,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
         if let raw = member("startTime", of: query) {
             guard let value = number(raw) else { return refuse("query.startTime must be a number") }
-            parsed.startTime = value / 1000.0
+            parsed.startTime = value > 0 ? value / 1000.0 : nil
         }
         if let raw = member("endTime", of: query) {
             guard let value = number(raw) else { return refuse("query.endTime must be a number") }
@@ -546,7 +570,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 return
             }
             let query: HistorySearchQuery
-            switch Self.historySearchQuery(from: params) {
+            switch Self.historySearchQuery(from: params, now: now()) {
             case .success(let parsed):
                 query = parsed
             case .failure(let error):
@@ -563,8 +587,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(["results": [[String: Any]]()], nil)
                 return
             }
-            // Off the main thread, like the History page's query: listing a
-            // profile's history walks every visit in the range.
+            // Off the main thread, like the History page's query. It still
+            // holds history's one serial queue while it runs, so a palette
+            // read on the main thread waits for it: the default range above
+            // and `searchURLs`' listing path are what keep that wait short
+            // (TASK-153).
             let database = historyDatabase
             DispatchQueue.global(qos: .userInitiated).async {
                 let items = database.searchURLs(

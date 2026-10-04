@@ -415,8 +415,19 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     // MARK: - 1. The query parser
 
+    /// The parser's clock in these tests: a fixed instant, so the default
+    /// range is a number a test can state.
+    private static let parserNow = 1_900_000_000.0
+    private static let dayBeforeParserNow = parserNow - 86_400
+
+    private func parse(_ params: [String: Any]) -> Result<ExtensionPolyfillHandler.HistorySearchQuery,
+                                                          ExtensionPolyfillHandler.PolyfillArgumentError> {
+        ExtensionPolyfillHandler.historySearchQuery(from: params,
+                                                    now: Date(timeIntervalSince1970: Self.parserNow))
+    }
+
     func testQueryParserAcceptsAChromeQuery() throws {
-        let parsed = try ExtensionPolyfillHandler.historySearchQuery(from: [
+        let parsed = try parse([
             "query": ["text": "inbox", "maxResults": 25, "startTime": 1_000_000.0, "endTime": 2_500_000] as [String: Any],
         ]).get()
         XCTAssertEqual(parsed, .init(text: "inbox", maxResults: 25, startTime: 1000, endTime: 2500),
@@ -424,20 +435,42 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     }
 
     func testQueryParserAppliesChromesDefaults() throws {
-        let parsed = try ExtensionPolyfillHandler.historySearchQuery(from: ["query": ["text": ""]]).get()
-        XCTAssertEqual(parsed, .init(text: "", maxResults: 100, startTime: nil, endTime: nil))
+        let parsed = try parse(["query": ["text": ""]]).get()
+        XCTAssertEqual(parsed, .init(text: "", maxResults: 100, startTime: Self.dayBeforeParserNow, endTime: nil),
+                       "100 results, from 24 hours before now, no upper bound")
 
         // An optional member sent as null is the same as leaving it out.
-        let nulls = try ExtensionPolyfillHandler.historySearchQuery(from: [
+        let nulls = try parse([
             "query": ["text": "", "maxResults": NSNull(), "startTime": NSNull(), "endTime": NSNull()] as [String: Any],
         ]).get()
         XCTAssertEqual(nulls, parsed)
 
         // JS numbers arrive as doubles; a whole one is an integer.
-        let whole = try ExtensionPolyfillHandler.historySearchQuery(from: [
-            "query": ["text": "", "maxResults": 7.0] as [String: Any],
-        ]).get()
+        let whole = try parse(["query": ["text": "", "maxResults": 7.0] as [String: Any]]).get()
         XCTAssertEqual(whole.maxResults, 7)
+    }
+
+    /// TASK-153: Chrome's rule for `startTime`. Left out, it is 24 hours
+    /// before now, whatever else the query says; given, it is taken as given,
+    /// and 0 — how an extension asks for all of the history — is no lower
+    /// bound at all.
+    func testQueryParserReadsAnOmittedStartTimeAsTheLastDay() throws {
+        func startTime(_ query: [String: Any]) throws -> Double? {
+            try parse(["query": query]).get().startTime
+        }
+        XCTAssertEqual(try startTime(["text": ""]), Self.dayBeforeParserNow)
+        XCTAssertEqual(try startTime(["text": "inbox"]), Self.dayBeforeParserNow,
+                       "a typed query has the same default")
+        XCTAssertEqual(try startTime(["text": "", "maxResults": 5_000]), Self.dayBeforeParserNow,
+                       "asking for more results does not widen the range")
+        XCTAssertEqual(try startTime(["text": "", "endTime": 5_000_000]), Self.dayBeforeParserNow,
+                       "endTime does not move the default: Chrome sets the two independently")
+
+        XCTAssertEqual(try startTime(["text": "", "startTime": 1_000_000.0]), 1000, "given, it is taken as given")
+        XCTAssertEqual(try startTime(["text": "", "startTime": (Self.parserNow + 60) * 1000]), Self.parserNow + 60)
+        XCTAssertNil(try startTime(["text": "", "startTime": 0]), "0 is all of the history: no lower bound")
+        XCTAssertNil(try startTime(["text": "", "startTime": 0.0]))
+        XCTAssertNil(try startTime(["text": "", "startTime": -1]), "nothing was visited before 1970 either")
     }
 
     func testQueryParserRefusesBadArguments() {
@@ -457,7 +490,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
             (["query": ["text": "", "endTime": Double.nan] as [String: Any]], "query.endTime must be a number"),
         ]
         for (params, expected) in cases {
-            switch ExtensionPolyfillHandler.historySearchQuery(from: params) {
+            switch parse(params) {
             case .success(let parsed):
                 XCTFail("\(params) must be refused, parsed as \(parsed)")
             case .failure(let error):
@@ -547,6 +580,54 @@ final class ExtensionHistoryScopeTests: XCTestCase {
             "query": ["text": "", "maxResults": 1] as [String: Any],
         ]))
         XCTAssertEqual(capped.map(\.url), [Self.shared])
+    }
+
+    /// TASK-153: a query without `startTime` covers the 24 hours before now,
+    /// as Chrome's does, with the handler's clock injected so the edge is
+    /// exact. `startTime: 0` is how an extension asks for everything.
+    func testHandlerReadsAnOmittedStartTimeAsTheLastDay() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["history"])
+        let a = try makeProfile("History Scope Default Range", database: db)
+        let handler = try XCTUnwrap(a.profile.polyfillHandler)
+        let now = 1_900_000_000.0
+        handler.now = { Date(timeIntervalSince1970: now) }
+
+        let space = a.space.id.uuidString
+        let recent = "https://recent.example/"
+        let edge = "https://edge.example/"
+        let old = "https://old.example/"
+        try seedVisit(db, url: recent, title: "Recent notes", space: space, visitTime: now - 3_600)
+        try seedVisit(db, url: edge, title: "Edge notes", space: space, visitTime: now - 86_400)
+        try seedVisit(db, url: old, title: "Old notes", space: space, visitTime: now - 86_401)
+
+        func urls(_ query: [String: Any]) async throws -> [String] {
+            try results(await search(handler, extensionID: ext.id, params: ["query": query])).map(\.url)
+        }
+
+        let listed = try await urls(["text": ""])
+        XCTAssertEqual(listed, [recent, edge],
+                       "a visit exactly 24 hours old is inside the range, one a second older is not")
+        let nulled = try await urls(["text": "", "startTime": NSNull()])
+        XCTAssertEqual(nulled, [recent, edge], "null is the same as leaving it out")
+        let typed = try await urls(["text": "notes"])
+        XCTAssertEqual(typed, [recent, edge], "a typed query has the same default")
+        let more = try await urls(["text": "", "maxResults": 1_000])
+        XCTAssertEqual(more, [recent, edge], "asking for more results does not widen the range")
+
+        // POSITIVE control: the old visit is there for a query that asks for it.
+        let everything = try await urls(["text": "", "startTime": 0])
+        XCTAssertEqual(everything, [recent, edge, old], "startTime 0 is all of the history")
+        let everythingTyped = try await urls(["text": "notes", "startTime": 0])
+        XCTAssertEqual(everythingTyped, [recent, edge, old])
+        let explicit = try await urls(["text": "", "startTime": (now - 86_401) * 1000])
+        XCTAssertEqual(explicit, [recent, edge, old], "a given startTime is taken as given")
+
+        // The default lower bound stands next to an explicit upper one.
+        let capped = try await urls(["text": "", "endTime": (now - 7_200) * 1000])
+        XCTAssertEqual(capped, [edge])
+        let before = try await urls(["text": "", "endTime": (now - 86_401) * 1000])
+        XCTAssertEqual(before, [], "the default range ends before it starts: nothing, as in Chrome")
     }
 
     /// The Private profile records no history, so its extensions get none —
@@ -682,6 +763,54 @@ final class ExtensionHistoryScopeTests: XCTestCase {
             let workerMiss = try await workerOutcome("historyPromise", query: ["text": foreign], via: page)
             XCTAssertEqual(try items(workerMiss["value"]), [], "\(name), worker: \"\(foreign)\" is the other profile's")
         }
+    }
+
+    /// TASK-153 in real contexts: `search({ text: '' })` answers with the last
+    /// 24 hours, `startTime: 0` with everything, from an extension page and
+    /// from the worker, in both forms. The clock is the real one here, so the
+    /// two visits sit hours away from the edge.
+    func testAnOmittedStartTimeCoversTheLastDayFromBothTransports() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["history"])
+        let a = try makeProfile("History Scope Live Range", database: db)
+        let base = Self.wholeSecondBase()
+        let space = a.space.id.uuidString
+        try seedVisit(db, url: Self.onlyA, title: "Today", space: space, visitTime: base - 2 * 3_600)
+        try seedVisit(db, url: Self.shared, title: "The day before", space: space, visitTime: base - 30 * 3_600)
+        let today = [Item(url: Self.onlyA, title: "Today", visitCount: 1, typedCount: 0,
+                          lastVisitTime: (base - 2 * 3_600) * 1000)]
+        let everything = today + [Item(url: Self.shared, title: "The day before", visitCount: 1, typedCount: 0,
+                                       lastVisitTime: (base - 30 * 3_600) * 1000)]
+
+        let page = try await loadPage(ext, in: a.profile)
+
+        // Extension page, promise and callback form.
+        let promise = try await pagePromise("{ text: '' }", in: page)
+        XCTAssertEqual(try items(promise["value"]), today, "page promise: \(promise)")
+        let callback = try await pageCallback("{ text: '' }", in: page)
+        XCTAssertEqual(try callbackItems(callback), today, "page callback")
+        let allPromise = try await pagePromise("{ text: '', startTime: 0 }", in: page)
+        XCTAssertEqual(try items(allPromise["value"]), everything, "page promise, startTime 0: \(allPromise)")
+        let allCallback = try await pageCallback("{ text: '', startTime: 0 }", in: page)
+        XCTAssertEqual(try callbackItems(allCallback), everything, "page callback, startTime 0")
+        let typed = try await pagePromise("{ text: 'day' }", in: page)
+        XCTAssertEqual(try items(typed["value"]), [], "page promise: the matching visit is older than a day")
+
+        // Service worker, promise and callback form.
+        let workerPromise = try await workerOutcome("historyPromise", query: ["text": ""], via: page)
+        XCTAssertEqual(try items(workerPromise["value"]), today, "worker promise: \(workerPromise)")
+        let workerCallback = try await workerOutcome("historyCallback", query: ["text": ""], via: page)
+        XCTAssertNil(workerCallback["lastErrorInCallback"] as? String, "worker callback: \(workerCallback)")
+        XCTAssertEqual(try items(workerCallback["arg0"]), today, "worker callback")
+        let workerAll = try await workerOutcome("historyPromise", query: ["text": "", "startTime": 0] as [String: Any],
+                                                via: page)
+        XCTAssertEqual(try items(workerAll["value"]), everything, "worker promise, startTime 0: \(workerAll)")
+        let workerAllCallback = try await workerOutcome("historyCallback",
+                                                        query: ["text": "", "startTime": 0] as [String: Any], via: page)
+        XCTAssertEqual(try items(workerAllCallback["arg0"]), everything, "worker callback, startTime 0")
+        let workerTyped = try await workerOutcome("historyPromise", query: ["text": "day", "startTime": 0] as [String: Any],
+                                                  via: page)
+        XCTAssertEqual(try items(workerTyped["value"]).map(\.url), [Self.shared], "worker promise, typed, startTime 0")
     }
 
     /// AC #3, permission gating: an extension that does not declare `history`

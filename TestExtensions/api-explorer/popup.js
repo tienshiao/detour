@@ -897,7 +897,10 @@ document.getElementById('btn-lasterror-worker').addEventListener('click', async 
 document.getElementById('btn-history-search').addEventListener('click', async () => {
   try {
     const text = document.getElementById('input-history-query').value;
-    const { results } = await sendBg({ type: 'historySearch', text });
+    // With no startTime a search covers the last 24 hours, as in Chrome
+    // (TASK-153); startTime 0 asks for all of the history.
+    const allTime = document.getElementById('input-history-all-time').checked;
+    const { results } = await sendBg({ type: 'historySearch', text, allTime });
     // Counts and times are this profile's own (TASK-138): the same search from
     // another profile's popup must show that profile's URLs and numbers only.
     showResult('res-history', results.map(r =>

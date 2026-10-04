@@ -49,6 +49,12 @@ sources:
   - id: task-138
     resource: backlog:TASK-138
     title: chrome.history.search returns history from every profile
+  - id: task-153
+    resource: backlog:TASK-153
+    title: chrome.history.search with empty text scans every visit of the profile
+  - id: chrome-history-api
+    resource: https://github.com/chromium/chromium/blob/main/chrome/browser/extensions/api/history/history_api.cc
+    title: "Chromium, history_api.cc (HistorySearchFunction)"
   - id: history-scope-tests
     resource: ../../DetourTests/ExtensionHistoryScopeTests.swift
     title: ExtensionHistoryScopeTests
@@ -201,14 +207,51 @@ visited twice.[^task-138]
 | `title` | The title the profile's own visit recorded; the URL when it has none it may show ([history database](../architecture/history-database.md)) |
 | `text` | Matched like the History page's search: alphanumeric tokens, prefix, OR'd, against the URL text and the profile's own titles. Empty lists everything in the range |
 | `startTime` / `endTime` | Milliseconds, half-open `[startTime, endTime)`, select a URL by the profile's own visits |
+| `startTime` left out | 24 hours before now, as in Chrome; see [the default range](#the-default-range-is-the-last-24-hours) |
 | Order | Newest of the profile's qualifying visits first (with text it was FTS rank, then the shared visit count) |
 | Arguments | `query` must be an object and `text` a string; `maxResults` a non-negative integer, the times numbers. Anything else is refused (`history.search: query.text must be a string`), where a lenient parse used to answer `search({})` with the whole history |
 
-The query runs off the main thread and the reply is posted back to it.
+The query runs off the main thread and the reply is posted back to it. It
+still holds history's one serial queue while it runs, so a
+[command palette](../features/command-palette.md) read on the main thread
+waits for it; what that costs is measured on
+[history database](../architecture/history-database.md).
 
-Not carried over from Chrome, unchanged by TASK-138: an omitted `startTime`
-means no lower bound (Chrome defaults to 24 hours ago), and `maxResults: 0`
-returns nothing (Chrome reads it as no limit).
+Not carried over from Chrome: `maxResults: 0` returns nothing (Chrome reads it
+as no limit), and an omitted `endTime` is no upper bound (Chrome's is "now",
+which differs only for a visit dated in the future).
+
+### The default range is the last 24 hours
+
+A query with no `startTime` (absent or `null`) covers the 24 hours before now.
+Until TASK-153 it had no lower bound.
+
+| Query | Range |
+|---|---|
+| `{ text: '' }`, `{ text: 'inbox' }` | from 24 hours ago, whatever `maxResults` and `endTime` say |
+| `{ text: '', startTime: 0 }` | all of the profile's history: 0 or less is no lower bound |
+| `{ text: '', startTime: t }` | from `t`, taken as given |
+| `{ text: '', endTime: e }` with `e` more than a day ago | nothing: the default start is after the end |
+
+Why Chrome's rule and not "no lower bound":
+
+- It is what an extension written for Chrome expects. Chrome's schema says of
+  `startTime` "If property is not specified, it will default to 24 hours", and
+  `HistorySearchFunction` sets a one-day range and 100 results first, then
+  overwrites each of start, end and count that the query names — so the default
+  does not depend on the text or on the other two.[^chrome-history-api]
+  `startTime: 0` is how an extension asks for everything.
+- `search({ text: '' })` is what new-tab pages and history sidebars call on
+  every open. Bounded to a day it read about 3,000 visits instead of 155,000
+  on the benchmark history: 15 ms where the unbounded listing took 2.2 s
+  before its query was rewritten.[^task-153]
+
+The rule lives where the extension's arguments become a range,
+`ExtensionPolyfillHandler.historySearchQuery(from:now:)`. The clock is a
+parameter there, and `ExtensionPolyfillHandler.now` is the seam a test sets to
+put a visit exactly on the edge (24 hours old is inside, a second older is
+not). Because `startTime: 0` still reaches the unbounded query, that query has
+to be cheap on its own; it is, for an empty text, since TASK-153.
 
 The other `chrome.history` members need no scoping because they read and
 write nothing: `getVisits` answers `[]`, `addUrl`, `deleteUrl`, `deleteRange`
@@ -323,7 +366,7 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillTests](../../DetourTests/ExtensionPolyfillTests.swift) | The JavaScript against a bare web view with shimmed `chrome`; handler cases; sender verification with stub origins |
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
-| [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate and bad arguments from an extension page and a worker, promise and callback form |
+| [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate, bad arguments and the default range from an extension page and a worker, promise and callback form |
 | [ExtensionFaviconScopeTests](../../DetourTests/ExtensionFaviconScopeTests.swift) | `_favicon` through the same wiring: one extension in two profiles, another profile's WebKit host, a tab's handler, the `favicon` permission, the Private profile, what a worker's `fetch` gets, and the removed `favicon.lookup` message from a page and a worker |
 
 A new or changed API needs all three kinds, from both transports; the policy is
@@ -342,3 +385,5 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-3]: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
 [^task-138]: chrome.history.search returns history from every profile
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
+[^task-153]: chrome.history.search with empty text scans every visit of the profile
+[^chrome-history-api]: Chromium, history_api.cc (HistorySearchFunction)

@@ -672,7 +672,9 @@ async function handleMessage(message) {
     }
 
     case 'historySearch': {
-      const results = await chrome.history.search({ text: message.text || '', maxResults: message.maxResults || 10 });
+      const query = { text: message.text || '', maxResults: message.maxResults || 10 };
+      if (message.allTime) query.startTime = 0;
+      const results = await chrome.history.search(query);
       return { results };
     }
 

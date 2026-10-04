@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import SQLite3
 @testable import Detour
 
 /// `HistoryDatabase.searchURLs` — the profile-scoped, one-row-per-URL search
@@ -256,6 +257,198 @@ final class HistoryURLSearchTests: XCTestCase {
         XCTAssertTrue(db.searchURLs(query: "!!!", spaceIDs: ["A"], limit: 10).isEmpty)
         XCTAssertEqual(db.searchURLs(query: "   ", spaceIDs: ["A"], limit: 10).count, 1,
                        "whitespace alone is an empty text")
+    }
+
+    // MARK: - The listing (empty text, TASK-153)
+
+    /// The same walk order whatever the scope's spaces: each space's visits
+    /// are read newest first and merged, so a URL two spaces visited comes
+    /// back once, at its newest visit, and visits sharing a time are ordered
+    /// by id like everywhere else.
+    func testTheListingMergesTheScopesSpacesNewestFirst() throws {
+        let db = try makeDatabase()
+        try seedTitledVisit(db, url: "https://one.example/", title: "One in A1", spaceID: "A1", visitTime: 100)
+        try seedTitledVisit(db, url: "https://two.example/", title: "Two in A2", spaceID: "A2", visitTime: 200)
+        try seedTitledVisit(db, url: "https://one.example/", title: "One in A2", spaceID: "A2", visitTime: 300)
+        try seedTitledVisit(db, url: "https://three.example/", title: "Three in A1", spaceID: "A1", visitTime: 300)
+        try seedTitledVisit(db, url: "https://four.example/", title: "Four in B", spaceID: "B", visitTime: 400)
+        try seedTitledVisit(db, url: "https://two.example/", title: "Two in B", spaceID: "B", visitTime: 500)
+
+        let rows = db.searchURLs(query: "", spaceIDs: ["A1", "A2"], limit: 10)
+        XCTAssertEqual(rows.map(\.url),
+                       ["https://three.example/", "https://one.example/", "https://two.example/"],
+                       "three and one share a time; three's visit has the higher id")
+        XCTAssertEqual(rows.map(\.title), ["Three in A1", "One in A2", "Two in A2"])
+        XCTAssertEqual(rows.map(\.visitCount), [1, 2, 1])
+        XCTAssertEqual(rows.map(\.lastVisitTime), [300, 300, 200])
+        XCTAssertEqual(db.searchURLs(query: "", spaceIDs: ["A2", "A1"], limit: 10), rows,
+                       "the order the scope lists its spaces in changes nothing")
+        XCTAssertEqual(db.searchURLs(query: "", spaceIDs: ["A1", "A2", "A1"], limit: 10), rows,
+                       "nor does naming a space twice")
+        XCTAssertEqual(db.searchURLs(query: "", spaceIDs: ["A1", "A2"], limit: 2), Array(rows.prefix(2)))
+    }
+
+    /// `limit` counts URLs, not visits: a page revisited many times is one row
+    /// and does not use up the list.
+    func testTheListingCountsURLsNotVisitsTowardsTheLimit() throws {
+        let db = try makeDatabase()
+        try seedTitledVisit(db, url: "https://first.example/", title: "First", spaceID: "A", visitTime: 10)
+        try seedTitledVisit(db, url: "https://second.example/", title: "Second", spaceID: "A", visitTime: 20)
+        for n in 0 ..< 60 {
+            try seedTitledVisit(db, url: "https://inbox.example/", title: "Inbox (\(n))", spaceID: "A",
+                                visitTime: 100 + Double(n), typed: n % 2 == 0)
+        }
+
+        let rows = db.searchURLs(query: "", spaceIDs: ["A"], limit: 3)
+        XCTAssertEqual(rows.map(\.url),
+                       ["https://inbox.example/", "https://second.example/", "https://first.example/"])
+        XCTAssertEqual(rows.first?.title, "Inbox (59)")
+        XCTAssertEqual(rows.first?.visitCount, 60)
+        XCTAssertEqual(rows.first?.typedCount, 30)
+        XCTAssertEqual(rows.first?.lastVisitTime, 159)
+    }
+
+    /// More rows than one statement describes at a time (the rows are fetched
+    /// in batches): every URL comes back once, in order, with its own values.
+    func testALongListingKeepsItsOrderAcrossBatches() throws {
+        let db = try makeDatabase()
+        let count = 1_234
+        try db.dbQueue.write { conn in
+            for i in 0 ..< count {
+                try conn.execute(sql: """
+                    INSERT INTO historyURL (url, title, faviconURL, visitCount, lastVisitTime)
+                    VALUES (?, ?, NULL, 2, ?)
+                    """, arguments: ["https://long.example/\(i)", "Page \(i)", Double(i)])
+                let urlID = conn.lastInsertedRowID
+                // An older visit from the other space of the profile, and one
+                // from a stranger that is newer than both.
+                for (space, time) in [("A2", Double(i) - 0.5), ("A1", Double(i)), ("B", Double(i) + 5_000)] {
+                    try conn.execute(sql: """
+                        INSERT INTO historyVisit (urlID, spaceID, visitTime, isTyped, title)
+                        VALUES (?, ?, ?, 0, ?)
+                        """, arguments: [urlID, space, time, "Page \(i) in \(space)"])
+                }
+            }
+        }
+
+        let rows = db.searchURLs(query: "", spaceIDs: ["A1", "A2"], limit: 5_000)
+        XCTAssertEqual(rows.count, count)
+        XCTAssertEqual(rows.map(\.url), (0 ..< count).reversed().map { "https://long.example/\($0)" })
+        XCTAssertTrue(rows.allSatisfy { $0.visitCount == 2 }, "the profile's two visits, not the stranger's third")
+        XCTAssertEqual(rows.first?.title, "Page \(count - 1) in A1")
+        XCTAssertEqual(rows.last?.lastVisitTime, 0)
+    }
+
+    /// The listing is a second way to compute what the windowed select
+    /// computes with no text, so the two are compared directly: random
+    /// histories with few distinct times (ties within a URL, across URLs and
+    /// across spaces), strangers on the same URLs, and visits with a title, an
+    /// empty title or none. Rows, order, counts, times and titles must be
+    /// equal for every scope, range and limit.
+    func testTheListingAgreesWithTheWindowedSelect() throws {
+        var rng = SplitMix(seed: 153)
+        let scopes = [["A1", "A2", "A3"], ["A2"], ["A3", "A1"]]
+        let ranges: [(from: Double?, until: Double?)] = [
+            (nil, nil), (10, nil), (nil, 30), (10, 30), (39, 40), (100, nil), (0, nil),
+        ]
+        var compared = 0
+        for round in 0 ..< 10 {
+            let db = try makeDatabase()
+            let urlCount = 1 + rng.below(30)
+            for _ in 0 ..< (20 + rng.below(160)) {
+                let space = rng.below(4) == 0 ? ["B", "C"][rng.below(2)] : ["A1", "A2", "A3"][rng.below(3)]
+                let visitTitle: String? = [nil, "", "Own \(rng.below(4))", "Own \(rng.below(4))"][rng.below(4)]
+                try seedVisit(db, url: "https://u\(rng.below(urlCount)).example/", title: "Shared \(rng.below(4))",
+                              visitTitle: visitTitle, spaceID: space, visitTime: Double(rng.below(40)),
+                              typed: rng.below(3) == 0)
+            }
+            for scope in scopes {
+                for range in ranges {
+                    for limit in [1, 2, 7, 1_000] {
+                        let expected = try db.dbQueue.read { conn in
+                            try db.windowedURLEntries(conn, text: "", tokens: [], spaceIDs: scope,
+                                                      from: range.from, until: range.until, limit: limit)
+                        }
+                        XCTAssertEqual(db.searchURLs(query: "", spaceIDs: scope, from: range.from,
+                                                     until: range.until, limit: limit),
+                                       expected,
+                                       "round \(round), scope \(scope), range \(range), limit \(limit)")
+                        compared += expected.count
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(compared, 1_000, "the comparison must not be between empty lists")
+    }
+
+    /// What the task is about: listing the ten most recently visited URLs must
+    /// cost what ten URLs cost, not what the profile's whole history costs.
+    /// Counted in SQLite virtual-machine steps rather than timed, so the test
+    /// is deterministic: a history ten times the size may not take more than
+    /// twice the work. Windowing over every in-scope visit took ten times.
+    func testListingTheNewestURLsDoesNotWalkTheWholeScope() throws {
+        func steps(visits: Int) throws -> Int {
+            let db = try makeDatabase()
+            let urls = visits / 5
+            try db.dbQueue.write { conn in
+                for i in 0 ..< urls {
+                    try conn.execute(sql: """
+                        INSERT INTO historyURL (url, title, faviconURL, visitCount, lastVisitTime)
+                        VALUES (?, ?, NULL, 5, 0)
+                        """, arguments: ["https://scale.example/\(i)", "Scale \(i)"])
+                }
+                for n in 0 ..< visits {
+                    let index = (n * 7_919) % urls
+                    // Every fifth visit has no title of its own (TASK-91).
+                    try conn.execute(sql: """
+                        INSERT INTO historyVisit (urlID, spaceID, visitTime, isTyped, title)
+                        VALUES (?, ?, ?, 0, ?)
+                        """, arguments: [index + 1, ["A1", "A2", "B"][n % 3], Double(n),
+                                         n % 5 == 0 ? nil : "Scale \(index)"])
+                }
+            }
+            var rows = 0
+            let count = countingSteps(db) { rows = db.searchURLs(query: "", spaceIDs: ["A1", "A2"], limit: 10).count }
+            XCTAssertEqual(rows, 10)
+            return count
+        }
+
+        let small = try steps(visits: 1_500)
+        let large = try steps(visits: 15_000)
+        XCTAssertGreaterThan(small, 0, "the counter must have seen the query")
+        XCTAssertLessThanOrEqual(large, small * 2,
+                                 "10 rows of a 15,000-visit history took \(large) steps, of a 1,500-visit one \(small)")
+    }
+
+    /// The SQLite virtual-machine steps `body` makes the database run, counted
+    /// by a progress handler on the queue's one connection.
+    private func countingSteps(_ db: HistoryDatabase, _ body: () -> Void) -> Int {
+        let period: Int32 = 10
+        let counter = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+        counter.initialize(to: 0)
+        defer { counter.deallocate() }
+        db.dbQueue.inDatabase { conn in
+            sqlite3_progress_handler(conn.sqliteConnection, period, { context in
+                context?.assumingMemoryBound(to: Int.self).pointee += 1
+                return 0
+            }, counter)
+        }
+        body()
+        db.dbQueue.inDatabase { conn in sqlite3_progress_handler(conn.sqliteConnection, 0, nil, nil) }
+        return counter.pointee * Int(period)
+    }
+
+    /// Deterministic random numbers for the differential test.
+    private struct SplitMix {
+        private var state: UInt64
+        init(seed: UInt64) { state = seed }
+        mutating func below(_ bound: Int) -> Int {
+            state &+= 0x9E3779B97F4A7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+            z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+            return Int((z ^ (z >> 31)) % UInt64(bound))
+        }
     }
 
     /// FTS5 reserves AND / OR / NOT; every MATCH this builds quotes its tokens
