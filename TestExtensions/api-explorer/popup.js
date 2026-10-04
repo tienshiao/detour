@@ -1173,8 +1173,15 @@ document.getElementById('btn-lasterror-worker').addEventListener('click', async 
 document.getElementById('btn-history-search').addEventListener('click', async () => {
   try {
     const text = document.getElementById('input-history-query').value;
-    const { results } = await sendBg({ type: 'historySearch', text });
-    showResult('res-history', results.map(r => `${r.title}\n  ${r.url}`).join('\n') || '(no results)');
+    // With no startTime a search covers the last 24 hours, as in Chrome
+    // (TASK-153); startTime 0 asks for all of the history.
+    const allTime = document.getElementById('input-history-all-time').checked;
+    const { results } = await sendBg({ type: 'historySearch', text, allTime });
+    // Counts and times are this profile's own (TASK-138): the same search from
+    // another profile's popup must show that profile's URLs and numbers only.
+    showResult('res-history', results.map(r =>
+      `${r.title}\n  ${r.url}\n  visits: ${r.visitCount} (typed: ${r.typedCount}), last: ${new Date(r.lastVisitTime).toLocaleString()}`
+    ).join('\n') || '(no results)');
   } catch (e) { showResult('res-history', e.message, true); }
 });
 
@@ -1256,6 +1263,41 @@ document.getElementById('btn-ws-probe').addEventListener('click', async () => {
     showResult('res-websocket', result, !!result.error || !result.opened);
   } catch (e) {
     showResult('res-websocket', e.message, true);
+  }
+});
+
+// --- Favicon (_favicon) ---
+// chrome.runtime.getURL('/_favicon/?pageUrl=…') answers from this profile's
+// history only (TASK-152): a page visited in this profile shows its icon, and a
+// page visited only in another profile gets the same 1×1 transparent pixel as a
+// page nobody visited. The same URL from another profile's popup must show
+// that profile's answer.
+document.getElementById('btn-favicon-show').addEventListener('click', () => {
+  const pageUrl = document.getElementById('input-favicon-url').value.trim();
+  if (!pageUrl) { showResult('res-favicon', 'Enter a page URL', true); return; }
+  const url = chrome.runtime.getURL('/_favicon/?pageUrl=' + encodeURIComponent(pageUrl) + '&size=32');
+  const img = document.getElementById('img-favicon');
+  img.onload = () => {
+    const none = img.naturalWidth <= 1;
+    showResult('res-favicon', none
+      ? `no icon (1×1 transparent pixel): not visited in this profile, or no icon recorded\n${url}`
+      : `icon ${img.naturalWidth}×${img.naturalHeight}\n${url}`, false);
+  };
+  img.onerror = () => showResult('res-favicon', `the image did not load\n${url}`, true);
+  img.src = url;
+});
+
+// The favicon.lookup polyfill message used to hand any extension the icon URL
+// of a page any profile had visited. It is gone, so the bridge must refuse it.
+document.getElementById('btn-favicon-lookup-raw').addEventListener('click', async () => {
+  const pageUrl = document.getElementById('input-favicon-url').value.trim() || 'https://example.com/';
+  try {
+    const reply = await webkit.messageHandlers.detourPolyfill.postMessage({
+      type: 'favicon.lookup', extensionID: chrome.runtime.id, params: { pageUrl },
+    });
+    showResult('res-favicon', 'UNEXPECTED: favicon.lookup answered\n' + JSON.stringify(reply), true);
+  } catch (e) {
+    showResult('res-favicon', 'refused, as expected: ' + (e && e.message ? e.message : e), false);
   }
 });
 

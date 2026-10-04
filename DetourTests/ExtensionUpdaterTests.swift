@@ -28,6 +28,12 @@ final class ExtensionUpdaterTests: XCTestCase {
         let codebase = URL(string: "https://updates.test/blobs/ext_2_0.crx")!
     }
 
+    /// A stand-in for the Web Store's publisher key (TASK-157). The fixture is
+    /// a store install, so every update offered to it must carry this key's
+    /// proof beside the developer's; the updater under test expects it in
+    /// place of the real one.
+    private let storeKey = P256.Signing.PrivateKey()
+
     private var installedIDs: [String] = []
     private var tempDirs: [URL] = []
     private var createdProfiles: [Profile] = []
@@ -95,14 +101,19 @@ final class ExtensionUpdaterTests: XCTestCase {
         return fixture
     }
 
+    /// A CRX for the fixture. `storeSigned` false leaves out the store's proof:
+    /// what a self-hosted CRX, or a file made with the developer's key alone,
+    /// looks like.
     private func crx(_ fixture: Fixture, version: String, permissions: [String] = ["storage"],
-                     hostPermissions: [String] = [], signer: CRX3TestBuilder.Signer? = nil) throws -> Data {
+                     hostPermissions: [String] = [], signer: CRX3TestBuilder.Signer? = nil,
+                     storeSigned: Bool = true) throws -> Data {
         let zip = try CRX3TestBuilder.zip(files: [
             "manifest.json": manifestJSON(version: version, permissions: permissions,
                                           hostPermissions: hostPermissions, updateURL: fixture.updateURL.absoluteString),
             "options.html": "<html><body>v\(version)</body></html>",
         ])
-        return try CRX3TestBuilder.build(zip: zip, signers: [signer ?? .rsa(fixture.pair)],
+        return try CRX3TestBuilder.build(zip: zip,
+                                         signers: [signer ?? .rsa(fixture.pair)] + (storeSigned ? [.ecdsa(storeKey)] : []),
                                          declaredKey: fixture.pair.publicKeySPKI)
     }
 
@@ -119,7 +130,8 @@ final class ExtensionUpdaterTests: XCTestCase {
     }
 
     private func makeUpdater(_ fetcher: FakeFetcher, now: @escaping () -> Date = Date.init) -> ExtensionUpdater {
-        ExtensionUpdater(fetcher: fetcher, now: now)
+        ExtensionUpdater(fetcher: fetcher, now: now,
+                         storeFormat: .publisherProof(keyHash: CRX3TestBuilder.keyHash(storeKey)))
     }
 
     private func requestURL(_ fixture: Fixture, version: String, updater: ExtensionUpdater) throws -> URL {
@@ -244,7 +256,10 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
 
         let otherZip = try CRX3TestBuilder.zip(files: ["manifest.json": manifestJSON(version: "2.0")])
-        let otherKey = try CRX3TestBuilder.build(zip: otherZip, signers: [.rsa(forger)])
+        // Signed by the store as well, as another publisher's store file is:
+        // what refuses it is the id, not a missing proof.
+        let otherKey = try CRX3TestBuilder.build(zip: otherZip, signers: [.rsa(forger), .ecdsa(storeKey)],
+                                                 declaredKey: forger.publicKeySPKI)
         fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: otherKey)
         fetcher.responses[fixture.codebase] = otherKey
         guard case .failed(let idReason) = await updater.checkForUpdate(extensionID: fixture.id) else {
@@ -252,6 +267,67 @@ final class ExtensionUpdaterTests: XCTestCase {
         }
         XCTAssertTrue(idReason.contains("signed for extension"), idReason)
         XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
+    }
+
+    /// TASK-157 AC #3: a Web Store install takes an update only from a file
+    /// the store signed. This one is everything else an update has to be —
+    /// newer, the announced hash, correctly signed with the installed
+    /// extension's own key — and is still refused.
+    func testAStoreInstallRefusesAnUpdateTheStoreDidNotSign() async throws {
+        let fixture = try await installVersionOne()
+        let fetcher = FakeFetcher()
+        let updater = makeUpdater(fetcher)
+        let developerOnly = try crx(fixture, version: "2.0", storeSigned: false)
+        XCTAssertEqual(CRX3Verifier.verify(crxData: developerOnly, format: .developerProof), .verified(publicKey: fixture.pair.publicKeySPKI),
+                       "the file itself is correctly signed by the developer")
+        fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: developerOnly)
+        fetcher.responses[fixture.codebase] = developerOnly
+
+        guard case .failed(let reason) = await updater.checkForUpdate(extensionID: fixture.id) else {
+            return XCTFail("a store install must not take an update the store did not sign")
+        }
+        XCTAssertTrue(reason.contains("not signed by the Chrome Web Store"), reason)
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
+        XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "nothing is staged either")
+
+        // A second proof by a key that is not the store's does not help.
+        let zip = try CRX3TestBuilder.zip(files: [
+            "manifest.json": manifestJSON(version: "2.0", updateURL: fixture.updateURL.absoluteString),
+            "options.html": "<html></html>",
+        ])
+        let otherSecondProof = try CRX3TestBuilder.build(
+            zip: zip, signers: [.rsa(fixture.pair), .ecdsa(P256.Signing.PrivateKey())],
+            declaredKey: fixture.pair.publicKeySPKI)
+        fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: otherSecondProof)
+        fetcher.responses[fixture.codebase] = otherSecondProof
+        guard case .failed(let secondReason) = await updater.checkForUpdate(extensionID: fixture.id) else {
+            return XCTFail("a proof by another key is not the store's")
+        }
+        XCTAssertTrue(secondReason.contains("not signed by the Chrome Web Store"), secondReason)
+        XCTAssertEqual(ExtensionManager.shared.extension(withID: fixture.id)?.manifest.version, "1.0")
+
+        // POSITIVE: the same version, signed by the store as well, installs.
+        let storeSigned = try crx(fixture, version: "2.0")
+        fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: storeSigned)
+        fetcher.responses[fixture.codebase] = storeSigned
+        let outcome = await updater.checkForUpdate(extensionID: fixture.id)
+        XCTAssertEqual(outcome, .updated(version: "2.0"))
+    }
+
+    /// The store's proof is asked of store installs only: a CRX installed from
+    /// anywhere else keeps updating on its developer's proof alone.
+    func testANonStoreInstallUpdatesOnTheDevelopersProofAlone() async throws {
+        let fixture = try await installVersionOne()
+        let ext = try XCTUnwrap(ExtensionManager.shared.extension(withID: fixture.id))
+        ext.source = .crx
+        let fetcher = FakeFetcher()
+        let updater = makeUpdater(fetcher)
+        let developerOnly = try crx(fixture, version: "2.0", storeSigned: false)
+        fetcher.responses[try requestURL(fixture, version: "1.0", updater: updater)] = updateXML(fixture, version: "2.0", crx: developerOnly)
+        fetcher.responses[fixture.codebase] = developerOnly
+
+        let outcome = await updater.checkForUpdate(extensionID: fixture.id)
+        XCTAssertEqual(outcome, .updated(version: "2.0"))
     }
 
     func testADownloadThatDoesNotMatchTheAnnouncedHashIsRejected() async throws {
@@ -592,7 +668,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         let unpacked = try CRXUnpacker.unpack(data: crx)
         let t0 = Date()
         ExtensionManager.shared.awaitUpdateAvailable(extensionID: fixture.id, profileID: profile.id, reply: { _, _ in }, now: t0)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "2.0", for: fixture.id)
         let late = t0.addingTimeInterval(ExtensionManager.reloadAfterUpdateAvailableWindow + 1)
         XCTAssertFalse(ExtensionManager.shared.backgroundContextDidStart(extensionID: fixture.id, profileID: profile.id, now: late),
@@ -610,7 +686,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
         let crx = try crx(fixture, version: "2.0")
         let unpacked = try CRXUnpacker.unpack(data: crx)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "2.0", for: fixture.id)
         let t0 = Date()
         var delivered: [String: Any]?
@@ -638,7 +714,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         // Stage a verified copy by hand, as the updater would have at the last quit.
         let crx = try crx(fixture, version: "2.0", permissions: ["storage", "history"])
         let unpacked = try CRXUnpacker.unpack(data: crx)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "2.0", for: fixture.id)
 
         // The launch path: before any record is read or context loaded.
@@ -668,7 +744,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         let (fixture, _, _, _) = try await busyFixture()
         let crx = try crx(fixture, version: "1.0")
         let unpacked = try CRXUnpacker.unpack(data: crx)
-        _ = try ExtensionManager.shared.stageUpdate(from: unpacked.directory, publicKey: fixture.pair.publicKeySPKI,
+        _ = try ExtensionManager.shared.stageUpdate(from: unpacked, publicKey: fixture.pair.publicKeySPKI,
                                                     version: "1.0", for: fixture.id)
         XCTAssertNil(try ExtensionManager.shared.applyStagedUpdate(for: fixture.id), "not newer: rejected, not installed")
         XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "and gone")

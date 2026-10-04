@@ -142,6 +142,8 @@ Variables the tests read (name as seen in the host):
 | `DETOUR_MEASURE_WORKER_UNLOAD=1`, `DETOUR_MEASURE_WORKER_UNLOAD_SECONDS` | the worker unload leg (default 300 s) |
 | `DETOUR_MEASURE_PRIVATE_WORKER=1`, `DETOUR_MEASURE_PRIVATE_WORKER_SECONDS` | the long Private-store worker leg in `ExtensionPrivateStoreTests` (90 s instead of 5) |
 | `HISTORY_BENCH=1` | `HistoryBenchmarkTests` |
+| `HISTORY_SEARCH_BENCH=1` | `HistoryURLSearchBenchmarkTests`: `chrome.history.search`'s query on a 300,000-visit history, and the palette's wait behind it; about 50 s |
+| `SESSION_SAVE_BENCH=1` | `SessionSaveBenchmarkTests`: the cost of one `saveNow()` on a 2,000-tab session, about 5 s |
 
 The gated legs skip themselves otherwise. Leave them off in ordinary runs
 and reviews. What the unload legs measure is on

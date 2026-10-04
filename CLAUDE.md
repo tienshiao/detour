@@ -56,7 +56,8 @@ Detour/
 │   ├── InternalPages/            detour:// pages (History): InternalPage, scheme handler, bridges
 │   ├── ContentBlocker/           ContentBlockerManager, ContentRuleStore, EasyListParser, ContentBlockerWhitelist
 │   ├── ExternalApps/             ExternalAppLaunchPolicy, ExternalAppPermissionStore
-│   ├── Downloads/                DownloadManager, DownloadPopoverViewController, DownloadCellView, DownloadAnimation
+│   ├── Downloads/                DownloadManager, PrivateDownloadClosePolicy, DownloadPopoverViewController, DownloadCellView,
+│   │                             DownloadAnimation
 │   ├── Settings/                 SettingsWindowController + General/Profiles/Spaces/Extensions/ContentBlocker panes
 │   └── Shared/                   HoverButton, WindowDragView, ToastView, LinkStatusBar, PeekOverlayView,
 │                                 GlassContainerView, FaviconLoader, UIConstants, NSColor+Hex

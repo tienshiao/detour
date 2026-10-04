@@ -150,7 +150,7 @@ Stack of closed tabs for Reopen Closed Tab (Cmd+Shift+T). Records are per space;
 
 #### `download`
 
-File download records. `DownloadManager` writes a row once a download has finished, failed or been cancelled; a download still in progress is not written.
+File download records. `DownloadManager` writes a row once a download has finished, failed or been cancelled; a download still in progress is not written, and a download started in a Private window is never written (TASK-148).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -162,7 +162,7 @@ File download records. `DownloadManager` writes a row once a download has finish
 | `bytesWritten` | INTEGER | NOT NULL, default 0 | Bytes downloaded |
 | `state` | TEXT | NOT NULL | "completed", "failed", or "cancelled". A "downloading" row, if one is read at launch, loads as failed ("Interrupted") |
 | `createdAt` | DATETIME | NOT NULL | When download started |
-| `completedAt` | DATETIME | | When download finished |
+| `completedAt` | DATETIME | | When the download completed. Set once, when it reaches "completed", and rewritten unchanged by every later save; NULL for a failed or cancelled download. Rows written before TASK-143 hold the time of their last save instead |
 
 #### `contentBlockerWhitelist`
 
@@ -317,16 +317,20 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 
 ### Persistence Strategy
 
-`TabStore.saveNow()` writes the session in several steps:
+`TabStore.saveNow()` builds one `AppDatabase.SessionSnapshot` (`makeSessionSnapshot()`) and writes it with `AppDatabase.saveSessionSnapshot`, in **one transaction** (TASK-149). The steps inside it, in the order the foreign keys dictate:
 
-1. **Session** (`saveSession`, one transaction): delete all `space` rows (cascading to `tab`, `pinnedTab`, `pinnedFolder`), re-insert every persistent space with its normal tabs, pinned backing tabs (`sortOrder = -1`) and favorite backing tabs (`sortOrder = -2`), then upsert `lastActiveSpaceID`.
-2. **Profiles** (`saveProfiles`), after the session so profiles no longer referenced by any space can be deleted without FK violations.
-3. **Pinned items** per space (`savePinnedFoldersAndTabs`, one transaction): folders before entries, since entries reference folders.
-4. **Favorites** per profile (`saveFavorites`).
+1. **Session**: delete all `space` rows (cascading to `tab`, `pinnedTab`, `pinnedFolder`), re-insert every persistent space with its normal tabs, pinned backing tabs (`sortOrder = -1`) and favorite backing tabs (`sortOrder = -2`), then upsert `lastActiveSpaceID`.
+2. **Profiles**, after the session so profiles no longer referenced by any space can be deleted without FK violations.
+3. **Pinned items** per space: folders before entries, since entries reference folders.
+4. **Favorites** per profile.
+
+Step 1's cascade removes the pinned rows that step 3 puts back, so the steps must commit together: a save that fails or is cut short rolls back as a whole and the database keeps the previous save's complete state. A failure in any statement therefore fails the whole one-transaction save, and `saveSessionSnapshot` throws. `TabStore.saveNow()` handles it (TASK-154): pinned rows that could never be valid (a folder with a missing parent, a parent cycle, an entry in a missing folder) are moved to the root in the snapshot before it is written (`SessionSnapshot.repairingInvalidRows()`); when the database still refuses a row (a constraint failure), the snapshot is written again by `saveSessionSnapshotIsolatingFailures` — one transaction, with each space (its row, tabs and pinned rows), the profiles and each profile's favourites in a savepoint of its own — so the unit holding the row keeps what the last good save wrote and every other unit is saved; any other error (a full disk, an I/O error) writes nothing and the last good save stays. `saveNow()` returns the outcome and keeps it in `lastSaveOutcome`; each failure is an error-level log line.
+
+`saveSession`, `saveProfiles`, `savePinnedFoldersAndTabs` and `saveFavorites` still exist as single-step writes, each its own transaction, and share the step code with `saveSessionSnapshot`; only tests call them.
 
 Saves are **debounced**: mutations call `scheduleSave()`, which waits 1 second before writing, so rapid changes coalesce. `saveNow()` also runs on app termination.
 
-Closed tabs, extension state and permissions are written immediately by their own calls rather than by `saveNow()`. Downloads are saved by `DownloadManager`, which debounces its own save by 1 second; removing a download deletes its row immediately.
+Closed tabs, extension state and permissions are written immediately by their own calls rather than by `saveNow()`. Downloads are saved by `DownloadManager`, which debounces its own save by 1 second; `applicationWillTerminate` writes a save still waiting out that second (`flushPendingSave()`), and removing a download deletes its row immediately.
 
 ### Record Types
 

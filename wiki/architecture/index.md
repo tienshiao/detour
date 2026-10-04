@@ -5,7 +5,7 @@
 # Concepts
 
 * [Incognito (Private windows)](incognito.md) - How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept.
-* [Persistence](persistence.md) - What Detour saves, where and when — the two databases, the debounced session save and its write order, session restore, interaction state, and the DETOUR_DATA_DIR switch.
+* [Persistence](persistence.md) - What Detour saves, where and when — the two databases, the debounced one-transaction session save, its write order and what it does when it cannot be written, session restore, interaction state, and the DETOUR_DATA_DIR switch.
 * [Profile data removal and storage scoping](profile-data-removal.md) - What deleting a profile removes and in what order, why the on-disk WebKit data needs a pending row and retries, and how WebKitStorageScope and UserDefaultsScope keep test and verification runs out of the production app's data.
 * [Profiles and spaces](profiles-and-spaces.md) - A profile owns website data, extensions and settings; a space is a tab group that points at one profile; the active space is per window.
 * [Web view ownership](webview-ownership.md) - A tab's web view is hosted by at most one window; the others draw a dimmed snapshot, and hosting moves to whichever window becomes key.

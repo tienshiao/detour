@@ -49,28 +49,38 @@ enum CRX3TestBuilder {
         /// proof whose key does not match its signature).
         case rsaDeclaring(publicKey: Data, signingWith: RSAKeyPair)
         case ecdsa(P256.Signing.PrivateKey)
+        /// The ECDSA counterpart of `rsaDeclaring`: the header names
+        /// `publicKey`, the signature is `signingWith`'s.
+        case ecdsaDeclaring(publicKey: Data, signingWith: P256.Signing.PrivateKey)
 
         var publicKey: Data {
             switch self {
             case .rsa(let pair): return pair.publicKeySPKI
             case .rsaDeclaring(let key, _): return key
             case .ecdsa(let key): return key.publicKey.derRepresentation
+            case .ecdsaDeclaring(let key, _): return key
             }
         }
 
         var fieldNumber: UInt64 {
             switch self {
             case .rsa, .rsaDeclaring: return 2
-            case .ecdsa: return 3
+            case .ecdsa, .ecdsaDeclaring: return 3
             }
         }
 
         func sign(_ message: Data) throws -> Data {
             switch self {
             case .rsa(let pair), .rsaDeclaring(_, let pair): return try pair.sign(message)
-            case .ecdsa(let key): return try key.signature(for: message).derRepresentation
+            case .ecdsa(let key), .ecdsaDeclaring(_, let key): return try key.signature(for: message).derRepresentation
             }
         }
+    }
+
+    /// The hash `CRX3Verifier.Format.publisherProof` identifies a key by:
+    /// SHA-256 of its SubjectPublicKeyInfo.
+    static func keyHash(_ key: P256.Signing.PrivateKey) -> Data {
+        Data(SHA256.hash(data: key.publicKey.derRepresentation))
     }
 
     // MARK: - Files

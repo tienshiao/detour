@@ -4,7 +4,7 @@ title: History search matches titles only through the scope's own visits
 description: Why a page title may match or label a history result only through visits made in the asking scope, how the title index makes that cheap, and the designs that were tried and dropped on the way.
 tags: [history, privacy, profiles, search, sqlite]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
 sources:
   - id: history-db
     resource: ../../Detour/Storage/HistoryDatabase.swift
@@ -21,6 +21,9 @@ sources:
   - id: task-96
     resource: backlog:TASK-96
     title: Index every title a URL has had
+  - id: task-138
+    resource: backlog:TASK-138
+    title: chrome.history.search returns history from every profile
   - id: title-index-tests
     resource: ../../DetourTests/HistoryTitleIndexTests.swift
     title: HistoryTitleIndexTests.swift
@@ -55,7 +58,9 @@ gets written when is in
 
 1. **A title may match or label a result only through a visit made in the
    asking scope.** The scope is the profile's spaces on the
-   [History page](../features/history-page.md) and a single space in the
+   [History page](../features/history-page.md) and for the
+   `chrome.history.search` extension API (the calling context's profile,
+   TASK-138), and a single space in the
    [command palette](../features/suggestion-pipeline.md). Keeping the palette
    space-scoped rather than widening it to the profile was a product decision
    made in TASK-94.
@@ -81,17 +86,23 @@ gets written when is in
 ## Legacy visits
 
 Visits recorded before h4 have `title IS NULL`; nothing ever stored what the
-page was called at the time. The two surfaces treat them differently, on
+page was called at the time. The three surfaces treat them differently, on
 purpose:
 
 | Surface | Fallback for a title-less visit |
 |---|---|
 | History page (`visits`, `searchVisits`) | `COALESCE(v.title, h.title)`, unguarded. A profile-aware guard was considered and not filed: the case only affects pre-h4 visits and ages out with the 90-day expiry.[^task-94] |
 | Palette (`scopedTitleExpression`, source C of `searchHistory`) | The shared title only when **no other space** has visited the URL; otherwise the empty string, and `SuggestionProvider.displayTitle` shows the URL instead. |
+| Extension API (`extensionTitleExpression` in `searchURLs`) | The shared title only when **no space outside the profile** has visited the URL; otherwise none: the visit cannot match through a title, and the item's `title` is the URL.[^task-138] |
 
 The History page cannot reuse the palette's guard: its scope is several space
 IDs, so `o.spaceID <> v.spaceID` would read a sibling space of the same profile
-as foreign.
+as foreign. The extension API has the profile-aware form of it, written
+against a `scope` CTE of the profile's space IDs (`o.spaceID NOT IN (SELECT
+spaceID FROM scope)`). It was added there and not on the History page because
+the reader is different: the History page shows a title to the person who made
+the visit, the extension API hands it to third-party code. The same guard
+would fit the History page; that was left as it is.
 
 # Alternatives rejected
 
@@ -157,9 +168,18 @@ All figures are medians of five runs on a synthetic fixture (50,000 visits,
 **Not covered, deliberately**
 
 - `historyURL.faviconURL`, `visitCount` and the bm25 `rank` are still
-  cross-space. The last two only order results; the favicon is displayed.
-- `searchHistoryGlobal` (the `chrome.history.search` extension API) is global
-  by design and returns the shared title.
+  cross-space in the palette. The last two only order results; the favicon is
+  displayed.
+
+**Overturned**
+
+- `chrome.history.search` was listed here as global by design: it read
+  `historyURL` through `searchHistoryGlobal` and returned the shared title,
+  count and last-visit time. That was a leak between profiles to any
+  extension holding `history`, and TASK-138 removed the function. The API now
+  follows rule 1 with the calling context's profile as its scope, and takes
+  its counts and times from in-scope visits
+  ([polyfill layer](../extensions/polyfill-layer.md)).[^task-138]
 
 **Traps this design creates**
 
@@ -186,3 +206,4 @@ All figures are medians of five runs on a synthetic fixture (50,000 visits,
 [^task-93]: History search matches titles only through the profile's own visits
 [^task-94]: Command palette history suggestions show and match another profile's page title
 [^task-96]: Index every title a URL has had
+[^task-138]: chrome.history.search returns history from every profile

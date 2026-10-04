@@ -113,7 +113,7 @@ final class ExternalAppLaunchPolicyTests: XCTestCase {
         XCTAssertEqual(decide(hasHandler: false, isHostedInWindow: false), .ignore,
                        "a background tab does not raise a toast either")
         XCTAssertEqual(decide(hasHandler: false, isMainFrameRequest: false), .ignore,
-                       "a subframe (data: iframe, app probe) does not toast on page load")
+                       "a subframe (an app probe) does not toast on page load")
     }
 
     func testSubframeRequestWithHandlerStillPrompts() {
@@ -135,6 +135,27 @@ final class ExternalAppLaunchPolicyTests: XCTestCase {
     func testOriginlessRequestPromptsWithoutRememberingAndIsNeverAutoOpened() {
         XCTAssertEqual(decide(origin: nil), .prompt(canRemember: false))
         XCTAssertEqual(decide(isAllowed: true, origin: nil), .prompt(canRemember: false))
+    }
+
+    // MARK: - Which schemes are an application's (TASK-159)
+
+    func testSchemesAWebViewLoadsItselfAreNotAnApplications() {
+        for scheme in ["http", "https", "about", "blob", "data", "webkit-extension", ErrorPage.scheme] {
+            XCTAssertFalse(ExternalAppLaunchPolicy.isForExternalApp(scheme: scheme), scheme)
+        }
+    }
+
+    /// A `data:` URL is a document. Treated as an application's, a tab on
+    /// screen never loaded one and a `data:` frame was dropped.
+    func testADataURLIsLoadedNotHandedToAnApplication() {
+        XCTAssertFalse(ExternalAppLaunchPolicy.isForExternalApp(scheme: "data"))
+        XCTAssertFalse(ExternalAppLaunchPolicy.isForExternalApp(scheme: "DATA"))
+    }
+
+    func testOtherSchemesAreAnApplications() {
+        for scheme in ["mailto", "zoommtg", "itms-apps", "slack", "tel"] {
+            XCTAssertTrue(ExternalAppLaunchPolicy.isForExternalApp(scheme: scheme), scheme)
+        }
     }
 
     func testOriginKey() {

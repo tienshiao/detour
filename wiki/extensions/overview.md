@@ -114,13 +114,13 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 | `webNavigation` | WebKit, patched | Missing events filled in; `getAllFrames` / `getFrame` are native and deliberately not polyfilled |
 | `runtime.onInstalled` | Detour | WebKit's is suppressed ([runtime.onInstalled](./runtime-installed-event.md)) |
 | `runtime.requestUpdateCheck`, `runtime.onUpdateAvailable` | Polyfill | [Updates](./updates.md) |
-| `runtime.getURL('/_favicon/…')` | Polyfill | Rewritten to `detour-favicon://`, served by `FaviconSchemeHandler` to extensions with the `favicon` permission |
+| `runtime.getURL('/_favicon/…')` | Polyfill | Rewritten to `detour-favicon://`, served by `FaviconSchemeHandler` to extensions with the `favicon` permission, from the calling profile's history only ([favicons](../features/favicons.md)) |
 | `runtime.getContexts`, `runtime.ContextType` | Polyfill | Lists what Detour hosts for the calling extension in the calling profile ([runtime.getContexts](./runtime-get-contexts.md)) |
 | `offscreen` | Polyfill | Shipped WebKit has none ([Offscreen documents](./offscreen-documents.md)) |
 | `sidePanel` | Polyfill | Only with the `sidePanel` permission; the panel is a web view Detour hosts beside the tab ([Side panel](./side-panel.md)) |
 | `idle` | Polyfill | `IdleMonitor` |
 | `notifications` | Polyfill | `ExtensionNotificationManager` (`UNUserNotificationCenter`) |
-| `history` | Polyfill | Only `search` is real; `getVisits` answers `[]`, the writes are no-ops |
+| `history` | Polyfill | Only `search` is real, and it reads the calling profile's history only ([polyfill layer](./polyfill-layer.md)); `getVisits` answers `[]`, the writes are no-ops |
 | `management` | Polyfill | `getSelf`, `getAll`; `setEnabled` is a permission-gated no-op |
 | `fontSettings.getFontList` | Polyfill | System font families only |
 | `sessions` | Polyfill | `restore` reopens a closed tab; `getRecentlyClosed` and `getDevices` answer `[]` |
@@ -160,8 +160,6 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
   ([Side panel](./side-panel.md)). `runtime.getContexts` reports no
   `documentId`, lists no extension frames inside web pages, and always lists
   the background ([runtime.getContexts](./runtime-get-contexts.md)).
-- `history.search` reads the shared `historyURL` table with no profile filter,
-  so it is not profile-scoped the way the History page is.
 - The polyfilled `idle`, `notifications`, `history` and `management` event
   objects accept listeners but never fire ([Polyfill layer](./polyfill-layer.md)).
 - An extension's origin changes at every launch, so its IndexedDB,

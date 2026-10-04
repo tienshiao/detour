@@ -4,7 +4,7 @@ title: Favicons
 description: "How a tab finds its icon (an optimistic /favicon.ico guess, an early link report from a private content world, an end-of-load lookup), and the two shared loaders that hand icons to AppKit and to web views."
 tags: [favicons, webkit, sidebar, caching, content-world]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
 sources:
   - id: loader
     resource: ../../Detour/Browser/Shared/FaviconLoader.swift
@@ -30,6 +30,9 @@ sources:
   - id: task-86
     resource: backlog:TASK-86
     title: Profile-scoped History page in a tab
+  - id: task-152
+    resource: backlog:TASK-152
+    title: favicon.lookup answers from every profile's history, without a permission check
   - id: task-98
     resource: backlog:TASK-98
     title: FavoriteFaviconTests fails intermittently on a clean tree
@@ -124,9 +127,20 @@ tiles stayed on the globe.[^task-53] See [favorites](../tabs/favorites.md).
 ## FaviconPNGLoader
 
 Serves bytes to web views. The caller names a **page** URL; the icon URL is
-resolved natively through `HistoryDatabase.faviconURL(for:)` (exact URL, then
-the most recently visited entry with the same host), so a caller can never
-point it at a host of its own choosing.
+resolved natively from the [history database](../architecture/history-database.md)
+(exact URL, then the most recently visited page of the same host), so a caller
+can never point it at a host of its own choosing.
+
+Every caller also names a `Scope`, with no default, because an icon existing
+for a page says the page was visited (TASK-152):
+
+- `.spaces(ids)` — only pages, or hosts, visited in those spaces
+  (`faviconURL(for:visitedInSpaces:)`). The extension route passes its
+  profile's spaces.
+- `.everyProfile` — any visit (`faviconURLInAnyProfile(for:)`). Only the
+  History page uses it, for rows it already listed from its own profile.
+
+A lookup that finds nothing in scope makes no network request.[^task-152]
 
 - The cache (200 entries) is keyed by the resolved favicon URL plus size, not
   by page URL: a hundred history rows of one site fetch one icon.
@@ -142,8 +156,45 @@ point it at a host of its own choosing.
 
 | Route | Gate | No icon |
 |---|---|---|
-| `detour-favicon://<extension host>/?pageUrl=…&size=…` (`FaviconSchemeHandler`) | the extension's WebKit host must have been granted the `favicon` manifest permission at load time | a 1×1 transparent PNG, so the extension's `<img>` shows nothing |
+| `detour-favicon://<extension host>/_favicon/?pageUrl=…&size=…` (`FaviconSchemeHandler`) | the host must be an extension context loaded in the handler's own profile, holding the `favicon` manifest permission; the lookup is scoped to that profile's spaces | a 1×1 transparent PNG, so the extension's `<img>` shows nothing. A refused request gets the same pixel |
 | `detour://history/favicon?pageUrl=…&size=…` | served only into the internal History document | a 404; the page hides the image |
+
+## The extension route belongs to a profile
+
+`chrome.runtime.getURL('/_favicon/?pageUrl=…')` is Chrome's favicon API for
+extensions (permission `favicon`); the polyfill rewrites it to
+`detour-favicon://<the context's WebKit host>/_favicon/…`. One
+`FaviconSchemeHandler` is built per profile for its extension pages
+(`Profile.extensionController`) and per space configuration for tabs
+(`Space.makeWebViewConfiguration`, where an extension's frame can sit inside a
+web page), and each holds its profile. What a request learns is decided from
+that profile, never from the request:[^task-152]
+
+| Rule | Detail |
+|---|---|
+| Host | Must be the WebKit host of a context loaded in this profile (`Profile.extensionID(forOriginScheme:host:)`). Another profile's host is refused, even for an extension installed in both |
+| Permission | That extension's manifest must list `favicon`, read at request time |
+| Scope | The profile's spaces, by `HistoryPageBridge.scope(forProfile:)` — the scope of its History page and of `chrome.history`. The Private profile, a deleted profile and a profile no space uses have none |
+| Refusal | The transparent pixel, the same answer as "no icon": a page only another profile visited cannot be told from one nobody visited |
+
+Before TASK-152 the permission was a process-wide set of WebKit hosts filled at
+load time, and the lookup had no scope: an extension holding `favicon` in any
+profile, the Private one included, could tell whether any profile had visited a
+page or a site, and a web view of any profile accepted any profile's host. A
+second route, the `favicon.lookup` polyfill message, did the same lookup with
+no permission check and returned the icon's URL; no polyfill API sent it, and
+it was removed.
+
+Known limit: WebKit does not tell a scheme handler which frame is asking, so
+the handler cannot check that the requester *is* the extension the host names.
+A frame in the same profile that knows the WebKit host of a `favicon`
+extension loaded there gets what that extension would get. The host is a
+random UUID per load, but a page that embeds one of the extension's
+web-accessible frames can read it.
+
+A service worker's `fetch` of the route reaches the handler but its answer
+cannot be read: see the worker row in
+[polyfill layer](../extensions/polyfill-layer.md#favicons-are-profile-scoped).
 
 # Invariants
 
@@ -188,8 +239,15 @@ point it at a host of its own choosing.
   three behaviour tests fail with the bridge disabled.[^task-112]
 - `FavoriteFaviconTests` - restore with a sleeping backing tab, two tiles for
   one favourite, a dormant download, rebinding on a tab swap.
-- `HistoryDatabaseTests` - `faviconURL(for:)`: exact match, host fallback,
-  most recent entry for a host.
+- `HistoryDatabaseTests` - `faviconURLInAnyProfile(for:)`: exact match, host
+  fallback, most recent entry for a host.
+- `FaviconLookupScopeTests` - the scoped lookup: out-of-scope pages and hosts
+  answer nothing, the newest in-scope visit wins the host fallback, the host
+  ends at the host.
+- `ExtensionFaviconScopeTests` - the extension route in real contexts: one
+  extension in two profiles, another profile's host, the tab route, the
+  permission, the Private profile, the worker, and the removed
+  `favicon.lookup` message from both transports.
 - `InternalPageIntegrationTests` and `HistoryDeletionIntegrationTests` replace
   `FaviconPNGLoader.fetch` so the History page's rows never reach the network.
 
@@ -206,4 +264,5 @@ point it at a host of its own choosing.
 [^task-53]: Favourites tiles show the globe placeholder instead of favicons on first launch
 [^task-86]: Profile-scoped History page in a tab
 [^task-98]: FavoriteFaviconTests fails intermittently on a clean tree
+[^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^task-112]: Some sites never get their favicon, and their sidebar rows show a stray grey box

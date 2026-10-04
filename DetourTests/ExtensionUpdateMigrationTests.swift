@@ -110,29 +110,33 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
         XCTAssertEqual(db.extensionUpdateLastCheckAt()?.timeIntervalSince1970 ?? 0, when.timeIntervalSince1970, accuracy: 0.001)
     }
 
+    /// `fromWebStore` is the install gate's verdict (served by a store host and
+    /// signed by the store, TASK-157), not the download URL.
     func testClassifyCRXFromADownload() {
-        let store = ExtensionSource.classifyCRX(
-            downloadURL: URL(string: "https://clients2.google.com/service/update2/crx?response=redirect")!,
-            manifestUpdateURL: nil)
+        let store = ExtensionSource.classifyCRX(fromWebStore: true, manifestUpdateURL: nil)
         XCTAssertEqual(store.source, .webStore)
         XCTAssertEqual(store.updateURL, ExtensionSource.webStoreUpdateURL)
 
         let storeDeclared = ExtensionSource.classifyCRX(
-            downloadURL: URL(string: "https://clients2.googleusercontent.com/crx/blobs/x.crx")!,
-            manifestUpdateURL: "https://clients2.google.com/service/update2/crx")
+            fromWebStore: true, manifestUpdateURL: "https://clients2.google.com/service/update2/crx")
         XCTAssertEqual(storeDeclared.source, .webStore)
 
         let selfHosted = ExtensionSource.classifyCRX(
-            downloadURL: URL(string: "https://example.test/ext.crx")!,
-            manifestUpdateURL: "https://example.test/updates.xml")
+            fromWebStore: false, manifestUpdateURL: "https://example.test/updates.xml")
         XCTAssertEqual(selfHosted.source, .crx)
         XCTAssertEqual(selfHosted.updateURL, URL(string: "https://example.test/updates.xml"))
 
-        let noURL = ExtensionSource.classifyCRX(downloadURL: URL(string: "https://example.test/ext.crx")!, manifestUpdateURL: nil)
+        // A manifest that names the store's update URL does not make a file a
+        // store install: it is polled there, as a CRX.
+        let namesTheStore = ExtensionSource.classifyCRX(
+            fromWebStore: false, manifestUpdateURL: "https://clients2.google.com/service/update2/crx")
+        XCTAssertEqual(namesTheStore.source, .crx)
+
+        let noURL = ExtensionSource.classifyCRX(fromWebStore: false, manifestUpdateURL: nil)
         XCTAssertEqual(noURL.source, .crx)
         XCTAssertNil(noURL.updateURL, "no update URL means it never updates")
 
-        let insecure = ExtensionSource.classifyCRX(downloadURL: URL(string: "https://example.test/ext.crx")!,
+        let insecure = ExtensionSource.classifyCRX(fromWebStore: false,
                                                    manifestUpdateURL: "http://example.test/updates.xml")
         XCTAssertNil(insecure.updateURL, "an http update URL is not polled")
     }

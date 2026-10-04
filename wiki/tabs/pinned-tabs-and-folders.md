@@ -4,7 +4,7 @@ title: Pinned tabs and folders
 description: The pinned section's model (PinnedEntry with an optional backing tab, PinnedFolder, per-level sort order), what live, asleep and dormant mean, how closing and home work, and why a dormant tile can refuse to open.
 tags: [tabs, pinned, folders, sidebar, model]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:36:48Z }
 sources:
   - id: entry
     resource: ../../Detour/Browser/PinnedEntry.swift
@@ -39,6 +39,9 @@ sources:
   - id: task-40
     resource: backlog:TASK-40
     title: Undo actions registered before Delete Space act on a stale Space object after Undo Delete Space
+  - id: task-154
+    resource: backlog:TASK-154
+    title: A session save that fails is handled, not only logged
 ---
 
 # Summary
@@ -108,6 +111,11 @@ screen.** Display order comes from `folderID` plus `sortOrder`:
 - `movePinnedFolder` walks up from the target parent and refuses a move into
   itself or a descendant. A cycle would make `flattenPinnedTree` recurse
   forever.
+- The database refuses a folder whose parent has no row and an entry whose
+  folder has no row. Should the store ever hold one, or a parent cycle, the
+  session save moves it to the root in the rows it writes, so the tree comes
+  back valid at the next launch; the store itself is not changed. See
+  [persistence](../architecture/persistence.md).
 - `isCollapsed` is model state, saved with the folder.
 
 ## Flattening for the sidebar

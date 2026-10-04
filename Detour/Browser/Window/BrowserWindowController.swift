@@ -118,6 +118,18 @@ class BrowserWindowController: NSWindowController {
 
     private(set) var isIncognito = false
     private var incognitoSpaceID: UUID?
+    /// Which downloads this window starts, lists and badges (TASK-148): a
+    /// Private window's own, a normal window's the shared normal list. Keyed on
+    /// the space the window was created with, so it still answers while the
+    /// window closes and the space is already gone.
+    var downloadScope: DownloadScope {
+        incognitoSpaceID.map { .incognito(spaceID: $0) } ?? .normal
+    }
+    /// Asks whether to close this Private window although downloads of its
+    /// own are still running; true goes ahead and cancels them (TASK-156). A
+    /// variable so a test answers instead of a modal alert.
+    var confirmClosingWithPrivateDownloads: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+        BrowserWindowController.runPrivateDownloadCloseAlert
 
     enum ContextMenuLinkAction {
         case none, openInNewTab, openInNewWindow
@@ -2063,6 +2075,12 @@ class BrowserWindowController: NSWindowController {
             // The tab's side panel goes with its web view (TASK-132.8).
             settleSidePanels()
         }
+        // The web view that left may have been the first responder. AppKit
+        // resets that when a view leaves its window; never leave a responder
+        // that now lives in the other window (TASK-135).
+        if let window, let responder = window.firstResponder as? NSView, responder.window !== window {
+            window.makeFirstResponder(nil)
+        }
     }
 
     @objc private func handleExtensionTabShouldSelect(_ notification: Notification) {
@@ -2079,7 +2097,19 @@ class BrowserWindowController: NSWindowController {
     func ensureOwnsWebView() {
         if !ownsWebView, let tab = selectedTab {
             claimWebView(for: tab)
+            focusWebContentIfUnheld()
         }
+    }
+
+    /// After this window took a web view over from another one — or became key
+    /// with its own — the page gets the keyboard when nothing in the window
+    /// holds it (TASK-135). The window lost its first responder when the web
+    /// view left for the other window, and `claimWebView` only re-hosts; without
+    /// this the page takes no keys until it is clicked. Focus held by a control
+    /// (the sidebar, the palette, the find bar) stays where it is: the same rule
+    /// as after a tab switch (TASK-128).
+    private func focusWebContentIfUnheld() {
+        if isKeyboardFocusUnheld { restoreWebContentFocus() }
     }
 
 
@@ -3176,6 +3206,8 @@ extension BrowserWindowController: NSWindowDelegate {
             // peek (possibly navigated away from `peekURL`) is reused rather
             // than destroyed and recreated at its opening URL.
             restorePeekOverlayIfNeeded()
+            // After the peek is back, so a presented peek is what gets focus.
+            focusWebContentIfUnheld()
         }
     }
 
@@ -3193,6 +3225,39 @@ extension BrowserWindowController: NSWindowDelegate {
         guard let split = hostedSplitView else { return }
         split.frame = hostedSplitFrame
         updateSplitPaneFocus()
+    }
+
+    /// A Private window's list of downloads goes with the window, so its
+    /// downloads still in flight are cancelled when it closes; the user is
+    /// asked first (`PrivateDownloadClosePolicy`, TASK-156). Only
+    /// `performClose` comes through here. A window closed with `close()` (an
+    /// extension's `windows.remove`) is not asked about, and
+    /// `DownloadManager.discardIncognitoDownloads` cancels its downloads when
+    /// the space goes.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let manager = DownloadManager.shared
+        let closing = PrivateDownloadClosePolicy.Closing.window(downloadScope)
+        let inFlight = manager.privateDownloadsInFlight(closing: closing).count
+        switch PrivateDownloadClosePolicy.decision(inFlightCount: inFlight) {
+        case .close:
+            return true
+        case .confirm(let prompt):
+            guard confirmClosingWithPrivateDownloads(prompt) else { return false }
+            manager.cancelPrivateDownloads(closing: closing)
+            return true
+        }
+    }
+
+    /// The default `confirmClosingWithPrivateDownloads`. Return closes the
+    /// window, Escape keeps it.
+    static func runPrivateDownloadCloseAlert(_ prompt: PrivateDownloadClosePolicy.Prompt) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = prompt.messageText
+        alert.informativeText = prompt.informativeText
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: prompt.closeButtonTitle)
+        alert.addButton(withTitle: prompt.keepButtonTitle).keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -3378,7 +3443,7 @@ extension BrowserWindowController: DownloadManagerObserver {
     }
 
     private func updateDownloadBadge() {
-        tabSidebar.updateDownloadBadge(hasActive: DownloadManager.shared.hasActiveDownloads)
+        tabSidebar.updateDownloadBadge(hasActive: DownloadManager.shared.hasActiveDownloads(in: downloadScope))
     }
 }
 

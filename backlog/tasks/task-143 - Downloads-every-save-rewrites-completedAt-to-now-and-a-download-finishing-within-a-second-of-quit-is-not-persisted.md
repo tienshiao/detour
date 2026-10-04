@@ -3,9 +3,10 @@ id: TASK-143
 title: >-
   Downloads: every save rewrites completedAt to now, and a download finishing
   within a second of quit is not persisted
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-04 02:23'
+updated_date: '2026-10-04 08:46'
 labels: []
 dependencies: []
 references:
@@ -27,8 +28,48 @@ Two defects in DownloadManager's persistence (Detour/Browser/Downloads/DownloadM
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 completedAt is set once, when the download reaches the completed state, and later saves leave it unchanged; a test fails before the fix
-- [ ] #2 A state change pending in the debounce window is written before the app terminates; a test covers the flush
-- [ ] #3 DownloadItem carries the completion time across a relaunch (loaded from the record), or the task records why the column is dropped instead
-- [ ] #4 docs/data-model.md and wiki/features/downloads.md match the result
+- [x] #1 completedAt is set once, when the download reaches the completed state, and later saves leave it unchanged; a test fails before the fix
+- [x] #2 A state change pending in the debounce window is written before the app terminates; a test covers the flush
+- [x] #3 DownloadItem carries the completion time across a relaunch (loaded from the record), or the task records why the column is dropped instead
+- [x] #4 docs/data-model.md and wiki/features/downloads.md match the result
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Make DownloadManager testable: an internal init taking the AppDatabase, a clock (now) and a save scheduler (the 1 s debounce); shared uses AppDatabase.shared, Date() and a main-queue DispatchWorkItem. Route the WKDownloadDelegate terminal callbacks through one internal method so tests can drive a state change without a WKDownload.
+2. Red: DownloadManagerTests (in-memory AppDatabase, fixed clock, manual scheduler) — completedAt is the completion time and a later save leaves it unchanged; it survives a reload through DownloadItem(record:); a change pending in the debounce window is written by flushPendingSave(); nothing is written when nothing is pending. Run against a behaviour-preserving refactor (saveNow still stamps now(), flush is a stub) and record which tests fail.
+3. Green: DownloadItem.completedAt, set once when the item reaches .completed, written unchanged by saveNow, loaded from the record. flushPendingSave() writes only if a debounced save is pending; AppDelegate.applicationWillTerminate calls it.
+4. Update docs/data-model.md and wiki/features/downloads.md (edge case and Tests), wiki lint, wiki/log.md.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented on an agent worktree branch (review and finalization by the supervising session).
+
+What changed
+- DownloadManager is constructible for tests: init(database:now:scheduler:) (shared = AppDatabase.shared, Date(), a main-queue DispatchWorkItem). The two WKDownloadDelegate terminal callbacks now call downloadDidEnd(_:failure:), which tests call directly with a manual item.
+- DownloadItem.completedAt is set once by markCompleted(at:) when the item reaches .completed; saveNow writes item.completedAt unchanged; DownloadItem(record:) loads it (only for a completed row). Failed and cancelled items have none.
+- flushPendingSave() writes only when a debounced save is pending; AppDelegate.applicationWillTerminate calls it after TabStore.saveNow().
+- Rows written by older builds keep their last-save time in completedAt (not recoverable); recorded in docs/data-model.md and the wiki.
+
+TDD: DownloadManagerTests (new, 12 tests) was run first against a behaviour-preserving refactor (saveNow still stamping now(), markCompleted not recording, flushPendingSave an empty stub). 7 tests failed for the intended reasons: testCompletedAtIsTheTimeTheDownloadCompleted, testLaterSavesLeaveCompletedAtUnchanged (row moved from 08:00 to 09:00 on the later save), testMarkCompletedTwiceKeepsTheFirstTime, testCompletedAtSurvivesARelaunchAndTheNextSave, testFlushWritesAChangeStillInTheDebounceWindow, testFlushWritesACancelStillInTheDebounceWindow, testADownloadStillInFlightIsNeverWritten (it saves through the flush). The other 5 (debounce, burst, nil completedAt for failed/cancelled, flush with nothing pending, non-completed record) passed before and after.
+
+Tests run: DetourTests/DownloadManagerTests, 12 tests, 0 failures (own DerivedData, DETOUR_DATA_DIR=DetourTests-downloads).
+
+Not verified: nothing was run in the app. The one-line call in applicationWillTerminate has no test (the test covers flushPendingSave itself), and the delegate callbacks were not exercised with a real WKDownload. /code-review and /verify are left to the supervising session.
+
+Docs: docs/data-model.md (completedAt column, save paragraph); wiki features/downloads, architecture/persistence, architecture/app-shell, log.
+
+Runtime check 2026-10-04, harness build of the batch branch at 822e798, isolated profile, SCREEN LOCKED (so no real key or mouse events; calls go through the app's own entry points).
+A download ended and the app was quit in the same run-loop turn (NSApp.terminate, 'Quit' pressed in the confirmation): after exit the download table held the row with completedAt set, so the termination flush is wired. Earlier rows kept their completedAt.
+
+Integrated on branch bugfix-batch; full DetourTests suite there: 1970 tests, 11 skipped (gated measurement legs), 0 failures. Code review of the batch range run with --fix.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+completedAt is set once when a download completes (DownloadItem.markCompleted), written unchanged by later saves and loaded back after a relaunch; DownloadManager.flushPendingSave writes a save still in the debounce window and applicationWillTerminate calls it. DownloadManager takes its database, clock and scheduler, so the rules are tested without sleeps (tests failing before the fix). Checked in the launched app: a download ending in the same turn as the quit was in the table afterwards. Rows written by earlier builds keep their old (last-save) completedAt.
+<!-- SECTION:FINAL_SUMMARY:END -->

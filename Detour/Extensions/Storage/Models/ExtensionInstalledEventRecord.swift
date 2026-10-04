@@ -9,7 +9,7 @@ import GRDB
 /// No foreign keys: rows are written for whatever profile a worker runs in, which
 /// need not have been saved yet, and are removed with the extension in
 /// `AppDatabase.deleteExtension`. Never written for the Private profile (TASK-29).
-struct ExtensionInstalledEventRecord: Codable, FetchableRecord, PersistableRecord {
+struct ExtensionInstalledEventRecord: Codable, Equatable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "extensionInstalledEvent"
 
     var extensionID: String

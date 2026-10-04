@@ -32,7 +32,8 @@ ExtensionTabLifecycle          the one seam for tab open/close/activate/change n
 FauxAddressBar                 pinned extension buttons (icon + badge from ExtensionManager.iconImage)
 ExtensionPopoverController     hosts popup.html in NSPopover (measures content, resize observer)
 ExtensionInstaller             validates, copies, persists new extensions
-CRXUnpacker / CRX3Verifier     extracts CRX3 files; verifies the signature of an update
+CRXUnpacker / CRX3Verifier     extracts CRX3 files; verifies a CRX's signatures (first install and update)
+CRXInstallGate                 what a downloaded CRX must pass before the install prompt
 ExtensionUpdater               polls update URLs, verifies, installs or stages updates
 ```
 
@@ -43,7 +44,8 @@ Detour/Extensions/
 ├── Installer/
 │   ├── ExtensionInstaller.swift          validate + copy + persist
 │   ├── CRXUnpacker.swift                 CRX3 extraction
-│   └── CRX3Verifier.swift                CRX3 signature verification (updates)
+│   ├── CRX3Verifier.swift                CRX3 signature verification (first install and updates)
+│   └── CRXInstallGate.swift              first-install gate: verified key, id not installed, manifest key
 ├── Model/
 │   ├── WebExtension.swift                runtime model (icon, i18n, WKWebExtension ref)
 │   ├── ExtensionManifest.swift           Codable MV3 manifest
@@ -169,14 +171,20 @@ All polyfill messages are handled by `ExtensionPolyfillHandler`, which implement
 
 Extensions can be installed from the Chrome Web Store or from a local unpacked directory. Both paths ask for confirmation before installing; the Web Store and Settings paths list the permissions the manifest requests.
 
-**Chrome Web Store:** `BrowserWindowController` intercepts CRX download responses (`isCRXResponse` in `decidePolicyFor navigationResponse`). The CRX is downloaded with a Chrome User-Agent, unpacked by `CRXUnpacker.unpack(data:)`, and the manifest is parsed to show the permission prompt.
+**Chrome Web Store (and any other `.crx`):** `BrowserWindowController` intercepts CRX download responses (`isCRXResponse` in `decidePolicyFor navigationResponse`), whatever host serves them, and downloads the file with a Chrome User-Agent. Before anything is unpacked or shown, the file must pass `CRXInstallGate.admit` (TASK-151):
+
+1. **Signature.** `CRX3Verifier.verify` must return `.verified`: every proof in the header verifies over the signed header data and the ZIP payload, and one verified key hashes to the header's `crx_id`. The extension id is derived from that verified key and from nothing else, so a file cannot claim another extension's id by carrying its public key. An unsigned file, a CRX2 file, a tampered archive, a proof whose key did not sign the file and a truncated header are all refused here. A file served by a Chrome Web Store host must also carry a verified proof by the store's publisher key (Chrome's `CRX3_WITH_PUBLISHER_PROOF`; the key hash in `CRX3Verifier.webStorePublisherKeyHash` is Chromium's `kPublisherKeyHash`); one that does not is refused (TASK-157).
+2. **Not already installed.** A CRX whose id belongs to an installed extension is refused, whatever its version: a first install never goes over an installed copy (which would hand the new files its per-profile enablement, saved permission decisions and storage). An installed extension moves to a newer version only through the update rules below; reinstalling means removing it first.
+3. **Manifest key.** A manifest `key`, when present, must be the verified signing key; a file that names one key and is signed with another is refused.
+
+A refusal shows "Extension Not Installed" with the reason and where the file came from, and no install prompt. A file that passes is unpacked by `CRXUnpacker.unpack(data:)` and its manifest is parsed for the prompt, which says where the file came from (`CRXInstallGate.Origin`): "From the Chrome Web Store." only when the bytes were served by a store host (`ExtensionSource.webStoreHosts`, taken from the final URL of the fetch) and signed by the store, otherwise "From <host>, not from the Chrome Web Store.", followed by the permissions the manifest requests. The id is checked against the installed extensions once more after the prompt, since the prompt runs a modal loop.
 
 **Local unpacked:** The user picks a directory via `NSOpenPanel` (Settings → Extensions → Add Extension… → Load Unpacked Extension…, or Develop → Load Unpacked Extension…).
 
 After confirmation:
 
 1. `ExtensionInstaller.install(from:publicKey:options:)` validates `manifest.json` (MV3 required).
-2. Extension ID is derived from CRX3 public key (SHA256 → a-p encoding), manifest `key` field, or UUID fallback.
+2. Extension ID is derived from the CRX's verified signing key (SHA256 → a-p encoding); for an unpacked folder, from the manifest `key` field, or a UUID fallback.
 3. Files are copied to `~/Library/Application Support/Detour/Extensions/{extensionID}/` (the data directory is `detourDataDirectory()`, so `DETOUR_DATA_DIR` moves it).
 4. An `ExtensionRecord` is saved to `AppDatabase`, and the manifest's declared permissions and host permissions are recorded as granted where no decision is saved yet.
 5. `ExtensionManager` injects the service worker and content polyfills, loads `WKWebExtension`, and loads a context into the `WKWebExtensionController` of each profile where the extension is enabled. It starts the background content only to deliver `runtime.onInstalled` (`wakeForPendingInstalledEvent`); otherwise WebKit starts it on demand.
@@ -196,7 +204,7 @@ Extensions can be toggled globally (`AppDatabase.setEnabled`) or per-profile (`A
 
 ### Updates
 
-Every installed extension records its **source** (`ExtensionSource`): `webStore` (a CRX downloaded from a Chrome Web Store host), `crx` (any other CRX), or `unpacked` (a folder loaded with Develop → Load Unpacked Extension, whose path is kept as `sourcePath`). CRX installs also record an `updateURL`: the manifest's `update_url` (HTTPS only), or the Web Store's update2 endpoint for store downloads that declare none. A non-store CRX without `update_url` never updates.
+Every installed extension records its **source** (`ExtensionSource`): `webStore` (a CRX served by a Chrome Web Store host and signed by the store; an update of one must be signed by the store too), `crx` (any other CRX), or `unpacked` (a folder loaded with Develop → Load Unpacked Extension, whose path is kept as `sourcePath`). CRX installs also record an `updateURL`: the manifest's `update_url` (HTTPS only), or the Web Store's update2 endpoint for store downloads that declare none. A non-store CRX without `update_url` never updates.
 
 **Checking.** `ExtensionUpdater` polls each CRX install's update URL with an update2 (`x=id=…&v=…`) request. It runs ~30 s after launch when the last full check is older than 5 hours, then on the same 5-hour cadence while the app runs, and on demand from Settings → Extensions → Check for Updates, Extensions → Check for Extension Updates, and `chrome.runtime.requestUpdateCheck` (throttled to one real check per extension per 5 minutes; answers `throttled` / `no_update` / `update_available`).
 
@@ -477,7 +485,7 @@ Extension metadata and storage live in `AppDatabase` (the app's main SQLite data
 
 **`profileExtension`** — per-profile state (profileID + extensionID → isEnabled, isPinned). A missing row means the profile's default: enabled, except in the built-in Private profile, where it means disabled.
 
-**`extensionInstalledEvent`** — the `runtime.onInstalled` ledger: the version the event was last delivered for, per extension and profile.
+**`extensionInstalledEvent`** — the `runtime.onInstalled` ledger: the version the event was last delivered for, per extension and profile. A background context claims the owed event once per start, and the claim says how many `onInstalled` listeners it has. The event is recorded as delivered when a listener was there to receive it. A claim with no listener is recorded too (an extension that does not listen has still had its install, so a later version is an `update` and nothing keeps waking it), unless that context's background content failed to load: the claim is then refused, or undone when WebKit reports the failure after it, and the next context that loads owes the event again (`RuntimeInstalledEvent.claimDisposition`, `ProvisionalInstalledEventClaims`, TASK-134). A claim that found a listener is never undone, so an event is never delivered twice.
 
 `chrome.storage.local`, `chrome.storage.sync` and `chrome.storage.session` are handled natively by WebKit, in the profile's extension controller storage, not in this database. `chrome.storage.session` is in-memory only.
 

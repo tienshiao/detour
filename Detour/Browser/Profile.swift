@@ -235,7 +235,7 @@ class Profile {
 
         // Register favicon scheme handler so extensions can use chrome.runtime.getURL("/_favicon/...")
         config.webViewConfiguration.setURLSchemeHandler(
-            FaviconSchemeHandler(), forURLScheme: FaviconSchemeHandler.scheme
+            FaviconSchemeHandler(profile: self), forURLScheme: FaviconSchemeHandler.scheme
         )
 
         // Inject polyfills for Chrome APIs not natively provided by WKWebExtension
@@ -507,17 +507,19 @@ class Profile {
                 }
                 loggedErrorKeys = currentKeys
                 if backgroundLoadFailed, let self {
+                    // A `runtime.onInstalled` claim this context made with no
+                    // listener was made by a script that never ran to the end:
+                    // the event is owed again (TASK-134).
+                    if let owed = ProvisionalInstalledEventClaims.shared.contextFailedToLoad(
+                        context, extensionID: extID, profileID: self.id.uuidString) {
+                        log.notice("runtime.onInstalled: \(owed.reason.rawValue, privacy: .public) for \(extID, privacy: .public) was claimed by a background context that failed to load without a listener; it is owed again in profile \(self.name, privacy: .public)")
+                    }
                     // Recover outside the notification callback: WebKit is still
                     // recording the error when it posts, so don't unload from here.
                     Task { @MainActor in
                         self.recoverFromBackgroundLoadFailure(extensionID: extID, failedContext: context)
                     }
                 }
-            }
-            // Cache favicon permission for the scheme handler (checked per-request on any thread)
-            if let host = context.baseURL.host,
-               ext.manifest.permissions?.contains("favicon") == true {
-                FaviconSchemeHandler.grantFaviconPermission(forWebKitHost: host)
             }
             log.info("Context loaded for \(ext.id, privacy: .public), baseURL: \(context.baseURL.absoluteString, privacy: .public)")
             // WebKit mints a fresh `webkit-extension://<uuid>/` origin for every
@@ -548,9 +550,6 @@ class Profile {
         externallyConnectablePages.extensionDidUnload(id)
         if let token = extensionErrorObservers.removeValue(forKey: id) {
             NotificationCenter.default.removeObserver(token)
-        }
-        if let host = context.baseURL.host {
-            FaviconSchemeHandler.revokeFaviconPermission(forWebKitHost: host)
         }
         // The offscreen document belongs to this context's origin; a reloaded
         // context gets a new origin, so a lingering host would both leak a web

@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:48:28Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -21,6 +21,12 @@ sources:
   - id: palette
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
     title: CommandPaletteView.swift (gatherTabInfos)
+  - id: palette-scope
+    resource: ../../Detour/Browser/CommandPalette/PaletteTabScope.swift
+    title: PaletteTabScope.swift
+  - id: task-137
+    resource: backlog:TASK-137
+    title: A normal window's open-tab suggestions include tabs from open Private windows
   - id: downloads
     resource: ../../Detour/Browser/Downloads/DownloadManager.swift
     title: DownloadManager.swift
@@ -33,6 +39,12 @@ sources:
   - id: task-38
     resource: backlog:TASK-38
     title: Moving a tab to another space
+  - id: task-148
+    resource: backlog:TASK-148
+    title: Private window downloads are not saved and are listed only in their window
+  - id: task-156
+    resource: backlog:TASK-156
+    title: A Private window's download still running when the window closes is cancelled, after asking
   - id: private-notes
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on the Private profile and extensions
@@ -84,6 +96,8 @@ until quit.[^private-notes]
   profile. Each Private window gets its own space and never switches away
   from it.
 - The window is forced to dark appearance and titled "Private Browsing".
+- `windowShouldClose` asks before closing a Private window whose downloads
+  are still running (see Downloads below).
 - On `windowWillClose` the window calls `removeIncognitoSpace(id:)`, which
   removes the space and **tears down** every tab. The teardown is explicit
   because an undo closure may still retain the space; without it the web
@@ -99,10 +113,39 @@ until quit.[^private-notes]
 | Closed-tab records | `closeTab` pushes a record only for non-incognito spaces. Undo Close Tab still works within the session. |
 | History visits and title corrections | `recordHistoryVisit` returns early; `HistoryTitleUpdatePolicy` refuses. |
 | The History page | `HistoryPageBridge.scope(for:)` returns nil and the page is told `incognito: true`. |
+| `chrome.history.search` from an extension running in Private | `HistoryPageBridge.scope(forProfile:)` returns nil and the extension gets an empty list, never another profile's history ([polyfill layer](../extensions/polyfill-layer.md)). |
 | "Always allow" for external apps | `ExternalAppPermissionStore` keeps a Private decision in memory for the session only; the prompt offers no "remember" option. |
 | `runtime.onInstalled` for extensions | Never delivered or recorded for the Private profile. |
 | Auto-archive | `archiveStaleTabs` skips incognito spaces. |
 | Favorites of the Private profile | `saveNow` skips incognito profiles when saving favorites. |
+| Download records | `DownloadScope.isPersisted`: a download started in a Private window is never written to the `download` table. See below. |
+
+## Downloads
+
+A download started in a Private window carries
+`DownloadScope.incognito(spaceID:)`, the window's own space (TASK-148):
+
+- it is **never saved**: not by the debounced save, not by the flush at app
+  termination;
+- it is **listed only in that window's** downloads popover, and only that
+  window's badge shows it. Other Private windows and normal windows never see
+  it, and a Private window does not list normal downloads;
+- it **leaves the list when the window closes**. `DownloadManager` observes
+  the store and drops the downloads of an incognito space that is gone;
+- one **still running is cancelled** when the window closes, and its partial
+  file removed (TASK-156). Nothing else would stop it: WebKit keeps a
+  download transferring after its web view is gone, and the Private profile's
+  store outlives the window.[^task-156] The window asks first ("N downloads
+  are in progress. Closing this Private window cancels them."), and the quit
+  confirmation says the same for every Private window. A window closed
+  without the question (an extension's `windows.remove`) has its downloads
+  cancelled all the same, when its space is removed;
+- the **file of a finished download stays** in `~/Downloads`, as in Safari
+  and Chrome.
+
+This is per window, unlike the Private profile's cookies, which every Private
+window shares until quit. The mechanics are on
+[downloads](../features/downloads.md).
 
 ## What crosses the boundary: nothing may move
 
@@ -111,6 +154,30 @@ two spaces differ in `isIncognito`. An incognito tab carries its web view and
 its whole interaction state; landing in a persistent space would write that
 to the session database (TASK-38). The sidebar does not offer the menu in a
 Private window; the store-level refusal is the invariant behind it.
+
+## What other windows see of a Private window's tabs: nothing
+
+The command palette offers open tabs as "Switch to Tab" rows, as the top hit
+and as an inline completion. `PaletteTabScope.offeredSpaceIDs` decides which
+spaces those tabs may come from:
+
+| Palette's window | Spaces whose tabs it is handed |
+|---|---|
+| Normal | every non-incognito space |
+| Private | its own space and no other, not even another Private window's |
+
+A window counts as Private when its profile says so **or** when the space it
+is showing is incognito, so a missing profile cannot widen the list.
+`CommandPaletteView.gatherTabInfos` is the only place that builds the
+pipeline's tab list, and it goes through this rule for the empty-query list
+and for typed queries alike.
+
+Before TASK-137 the filter only narrowed the list when the palette's own
+window was Private; a normal window was handed every space in
+`TabStore.spaces`, so a Private tab's URL, title and favicon could be listed,
+completed inline, and switched to from another window. Found by reading the
+code and fixed with unit tests; the leak itself was never observed in the
+running app.[^task-137]
 
 ## UI restrictions in a Private window
 
@@ -136,13 +203,6 @@ windows answer `isPrivate(for:)` with true. Details:
 
 Read from the code; none of these was exercised at runtime for this page.
 
-- **Downloads.** `DownloadManager` has no incognito check. A download started
-  in a Private window is listed and saved to the `download` table like any
-  other.
-- **Open-tab suggestions in other windows.** `CommandPaletteView.gatherTabInfos`
-  narrows the tab list only when the palette's own window is Private. A
-  normal window's list is built from every space in `TabStore.spaces`, which
-  includes the spaces of open Private windows.
 - **Shared network caches.** Favicon downloads and search suggestions go
   through `URLSession.shared`, whose cache and cookie storage are the app's,
   not the profile's.
@@ -162,7 +222,10 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 | Window setup and teardown | `BrowserWindowController.init(incognito:)`, `windowWillClose` |
 | Menu validation | `BrowserWindowController.validateMenuItem` |
 | Entry points | File > New Private Window (Cmd+Shift+N) and the Dock menu, `AppDelegate.createNewIncognitoWindow` |
-| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests` |
+| Download scope rules | `DownloadScope` in [DownloadManager.swift](../../Detour/Browser/Downloads/DownloadManager.swift), `BrowserWindowController.downloadScope` |
+| Downloads in flight at close | `PrivateDownloadClosePolicy` in [PrivateDownloadClosePolicy.swift](../../Detour/Browser/Downloads/PrivateDownloadClosePolicy.swift), `BrowserWindowController.windowShouldClose`, `AppDelegate.applicationShouldTerminate` |
+| The palette's open-tab scope | `PaletteTabScope` in [PaletteTabScope.swift](../../Detour/Browser/CommandPalette/PaletteTabScope.swift), called by `CommandPaletteView.gatherTabInfos` |
+| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests`, `PrivateDownloadClosePolicyTests`, `PrivateDownloadCloseWindowTests`, `PrivateDownloadTransferTests`, `PaletteTabScopeTests`, `PaletteTabScopeWiringTests` |
 
 # Related
 
@@ -171,5 +234,9 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 - [Private profile extensions](../extensions/private-profile-extensions.md) — the extension side.
 - [Data store and ITP](../extensions/data-store-and-itp.md) — why extension pages need the profile's store set explicitly.
 - [History page](../features/history-page.md) — its incognito reply.
+- [Downloads](../features/downloads.md) — the per-window download list and what happens to it on close.
+- [Suggestion pipeline](../features/suggestion-pipeline.md) — where the palette's open-tab candidates come from.
 
 [^private-notes]: Session notes on the Private profile and extensions
+[^task-156]: A Private window's download still running when the window closes is cancelled, after asking
+[^task-137]: A normal window's open-tab suggestions include tabs from open Private windows

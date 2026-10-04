@@ -3,7 +3,21 @@ import AppKit
 class DownloadPopoverViewController: NSViewController {
     private let tableView = NSTableView()
     private let emptyLabel = NSTextField(labelWithString: "No downloads")
-    private var manager: DownloadManager { DownloadManager.shared }
+    private let manager: DownloadManager
+    /// The window this popover belongs to: it lists that window's downloads
+    /// only (TASK-148).
+    private let scope: DownloadScope
+    private var items: [DownloadItem] { manager.items(in: scope) }
+
+    init(scope: DownloadScope, manager: DownloadManager = .shared) {
+        self.scope = scope
+        self.manager = manager
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 300))
@@ -39,7 +53,7 @@ class DownloadPopoverViewController: NSViewController {
         emptyLabel.textColor = .secondaryLabelColor
         emptyLabel.alignment = .center
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-        emptyLabel.isHidden = !manager.items.isEmpty
+        emptyLabel.isHidden = !items.isEmpty
 
         container.addSubview(headerLabel)
         container.addSubview(clearButton)
@@ -71,9 +85,9 @@ class DownloadPopoverViewController: NSViewController {
     }
 
     @objc private func clearCompleted() {
-        manager.clearCompleted()
+        manager.clearCompleted(in: scope)
         tableView.reloadData()
-        emptyLabel.isHidden = !manager.items.isEmpty
+        emptyLabel.isHidden = !items.isEmpty
     }
 }
 
@@ -81,7 +95,7 @@ class DownloadPopoverViewController: NSViewController {
 
 extension DownloadPopoverViewController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        manager.items.count
+        items.count
     }
 }
 
@@ -98,8 +112,9 @@ extension DownloadPopoverViewController: NSTableViewDelegate {
             cell.identifier = cellID
         }
 
-        guard row < manager.items.count else { return cell }
-        let item = manager.items[row]
+        let items = self.items
+        guard row < items.count else { return cell }
+        let item = items[row]
         cell.configure(with: item)
 
         cell.onCancel = { [weak self] in
@@ -121,8 +136,9 @@ extension DownloadPopoverViewController: NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         // Double-click to open completed downloads
-        guard row < manager.items.count else { return false }
-        let item = manager.items[row]
+        let items = self.items
+        guard row < items.count else { return false }
+        let item = items[row]
         if item.state == .completed, let url = item.destinationURL {
             NSWorkspace.shared.open(url)
         }
@@ -133,19 +149,21 @@ extension DownloadPopoverViewController: NSTableViewDelegate {
 // MARK: - DownloadManagerObserver
 
 extension DownloadPopoverViewController: DownloadManagerObserver {
+    // The manager reports every window's downloads; one this window does not
+    // list changes nothing here.
     func downloadManagerDidAddItem(_ item: DownloadItem) {
         tableView.reloadData()
-        emptyLabel.isHidden = true
+        emptyLabel.isHidden = !items.isEmpty
     }
 
     func downloadManagerDidUpdateItem(_ item: DownloadItem) {
-        if let row = manager.items.firstIndex(where: { $0.id == item.id }) {
+        if let row = items.firstIndex(where: { $0.id == item.id }) {
             tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
         }
     }
 
     func downloadManagerDidRemoveItem(_ item: DownloadItem) {
         tableView.reloadData()
-        emptyLabel.isHidden = !manager.items.isEmpty
+        emptyLabel.isHidden = !items.isEmpty
     }
 }

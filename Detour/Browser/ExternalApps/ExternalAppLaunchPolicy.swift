@@ -19,6 +19,24 @@ enum ExternalAppLaunchDecision: Equatable {
 /// and nothing opens unasked unless the origin was allowed before.
 enum ExternalAppLaunchPolicy {
 
+    /// The schemes a web view loads itself. A navigation to any other scheme
+    /// is an external application's (`isForExternalApp(scheme:)`).
+    ///
+    /// `data` is one of them (TASK-159): a `data:` URL is a document, not a
+    /// link to an application. What may navigate to one is WebKit's rule, not
+    /// ours: it loads a `data:` URL the app itself asks for and a `data:`
+    /// frame, and refuses a page's own top-level navigation to one.
+    /// `detour:` is not here because the window's policy settles internal
+    /// pages before it asks.
+    static let schemesLoadedInTheBrowser: Set<String> =
+        ["http", "https", "about", "blob", "data", "webkit-extension", ErrorPage.scheme]
+
+    /// Whether a navigation to a URL with `scheme` is handed to an external
+    /// application instead of being loaded.
+    static func isForExternalApp(scheme: String) -> Bool {
+        !schemesLoadedInTheBrowser.contains(scheme.lowercased())
+    }
+
     /// - Parameters:
     ///   - hasHandler: an application is registered for the URL.
     ///   - isAllowed: the requesting origin was "Always allowed" for this scheme
@@ -28,8 +46,8 @@ enum ExternalAppLaunchPolicy {
     ///     its peek) — a background tab never raises a sheet.
     ///   - isMainFrameRequest: the navigation targets the main frame or a new
     ///     window, not a subframe. A subframe navigating to a scheme nothing
-    ///     handles (a `data:` iframe, a hidden-iframe probe for an app the user
-    ///     does not have) is dropped silently rather than toasting on page load.
+    ///     handles (a hidden-iframe probe for an app the user does not have)
+    ///     is dropped silently rather than toasting on page load.
     ///   - isSheetShowing: the window already has a sheet up; a page looping
     ///     `location = "app:…"` must not queue a prompt per attempt.
     ///   - origin: the requesting frame's origin key (`origin(...)`); nil when it

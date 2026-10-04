@@ -54,7 +54,8 @@ Parse (EasyListParser)
        v
 Compile (ContentRuleStore)
   +-- WKContentRuleListStore.compileContentRuleList(forIdentifier:encodedContentRuleList:)
-  +-- Caches compiled WKContentRuleList in memory
+  +-- More than 150,000 rules: one rule list per chunk (see "Lists Over the Rule Cap")
+  +-- Caches every compiled WKContentRuleList in memory
        |
        v
 Apply (reapplyRuleLists)
@@ -62,6 +63,81 @@ Apply (reapplyRuleLists)
   +-- Each window re-applies rules to its selected tab's panes
       (only the window that owns that web view)
 ```
+
+## Lists Over the Rule Cap
+
+WebKit is handed at most 150,000 rules as one rule list
+(`ContentRuleStore.defaultMaxRulesPerList`). A filter list with more rules is
+compiled as several rule lists, each of at most 150,000 rules: the first under
+the list's identifier, the rest as `<id>-1`, `<id>-2`, …
+(`ContentRuleListChunks`). WebKit's store knows nothing about the grouping, so
+`ContentRuleStore` handles a list's chunks as a set (TASK-145):
+
+| When | What happens to the chunks |
+|------|----------------------------|
+| Compile | Every chunk is compiled. If at least one compiled, the list's chunk count is recorded and `compile` completes with all of the list's chunks; if none did, the list is left as it was |
+| Attach | `cachedLists(forList:)` returns every compiled chunk; `ContentBlockerManager.ruleLists(for:in:)` collects them for the profile's enabled lists and `applyRuleLists` adds them all |
+| List disabled, master switch off | The window removes all rule lists from the web view and re-applies; a disabled list contributes no chunk |
+| Whitelisted site | `_setContentBlockersEnabled:NO` turns off every rule list for the navigation, so every chunk |
+| Launch | `lookUpList` looks up as many chunks as the last compile recorded (`ContentBlocker.{id}.chunkCount` in defaults, written only when above 1) |
+| List shrinks | The chunks the previous, longer compile left behind (`ContentRuleListChunks.staleIdentifiers`) are removed from WebKit's store, from memory and from defaults |
+| Settings | `compiledRuleCount(forList:)` is the sum over the chunks, with an exception the chunks repeat counted once; `isCompiled(list:)` is true when any chunk is compiled |
+| Clear Cache & Redownload | `invalidateAll` removes every chunk and forgets the counts and chunk counts |
+
+Before TASK-145 only the first chunk was attached, counted and looked up, and
+later chunks were never removed.
+
+No list is near the cap. Rules produced by the parser from the lists as fetched
+on 2026-10-04 (the 2026-10-02 copies gave 74,973 / 56,146 / 25,002 / 9,571):
+
+| List | Parsed rules | Compiled | Share of the cap |
+|------|--------------|----------|------------------|
+| `easylist` | 75,661 | 75,661 | 50.4% |
+| `easyprivacy` | 56,158 | 56,158 | 37.4% |
+| `easylist-cookie` | 25,010 | 25,008 (2 stripped as invalid) | 16.7% |
+| `urlhaus-filter` | 9,605 | 9,605 | 6.4% |
+
+### What a Chunk Holds
+
+WebKit evaluates each rule list on its own, and an `ignore-previous-rules` rule
+(an `@@` exception) only undoes rules **earlier in its own list**. Chunks that
+were plain slices of the list would therefore lose every exception that landed
+in a different chunk from the block rule it was written for. So a split list is
+laid out by `ContentRuleListChunks.chunks(of:maxRulesPerList:isException:)`
+(TASK-155):
+
+- the rules that are not exceptions are sliced in list order;
+- every slice is followed by **all of the list's exceptions**, in list order,
+  so each chunk's exceptions come after, and undo, that chunk's block rules;
+- a slice holds the cap less the number of exceptions it carries, so no chunk
+  exceeds the cap.
+
+With a cap of 4, `b0 b1 x0 b2 b3 b4 b5 b6` (`x0` an exception) becomes
+`[b0 b1 b2 x0] [b3 b4 b5 x0] [b6 x0]`.
+
+| Case | Rule |
+|------|------|
+| A list within the cap | One chunk, in list order, exactly as before. Nothing is moved |
+| Rule count | Each chunk records how many of its rules count (`Chunk.countedRuleCount`): the repeated exceptions count in the first chunk only, so the list's count is the number of distinct rules compiled. A bad rule stripped by the fallback lowers the count only where it was counted |
+| Exceptions near the cap | The chunks carry at most half the cap of exceptions (`maxCarriedExceptions`, 75,000), the first ones in list order, so every chunk keeps room for at least as many block rules and the number of chunks at most doubles. Exceptions beyond that are **left out** of a split list and logged as an error (`droppedExceptionCount`); "Active" is then lower than "In List" |
+| A split list of only exceptions | One chunk of the carried exceptions. It undoes nothing, but the compile does not read as a failure |
+
+Until TASK-155 chunks were slices of the list in order and an exception in a
+later chunk than its block rule did not apply.
+
+Limits that remain, none exercised by a real list yet:
+
+- **A split list treats exceptions differently from an unsplit one.** In a
+  split list every exception follows every block rule of its chunk, so it
+  applies whatever its position in the list. A list within the cap keeps list
+  order, where an exception only undoes the block rules before it (WebKit's
+  rule, not checked in a web view).
+- **Exceptions still do not cross lists.** An exception in EasyPrivacy cannot
+  un-block something EasyList blocks.
+- **A chunk that cannot be compiled** (even after stripping bad rules) leaves
+  the list active with the chunks that did compile; the "Active" count in
+  Settings is then lower than "In List". A chunk an earlier compile left under
+  the same identifier stays in use.
 
 ## Applying Rules to WebViews
 
@@ -71,9 +147,10 @@ Rules are applied when creating a new `WKWebViewConfiguration` in `Space.makeWeb
 ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
 ```
 
-This method adds each enabled filter list's compiled `WKContentRuleList` when
-`profile.isAdBlockingEnabled`, and nothing else — no user script, so it is safe to
-call again after `removeAllContentRuleLists()` on every rules change.
+This method adds each enabled filter list's compiled `WKContentRuleList`s (every
+chunk of a list over the rule cap) when `profile.isAdBlockingEnabled`, and nothing
+else — no user script, so it is safe to call again after
+`removeAllContentRuleLists()` on every rules change.
 
 On `.contentBlockerRulesDidChange`,
 `BrowserWindowController.handleContentBlockerRulesChanged` does exactly that, but
@@ -137,7 +214,7 @@ A page with content blockers disabled produces no callbacks at all.
 
 `ContentBlockerSettingsViewController` provides:
 
-- Per-list display: parsed rule count ("In List"), compiled rule count ("Active"), status, last fetch date
+- Per-list display: parsed rule count ("In List"), compiled rule count ("Active", summed over the chunks of a split list with a repeated exception counted once), status, last fetch date
 - Update All Now: re-fetches every list (`forceRefreshAll`; the fetch is conditional, so an unchanged list is not recompiled). There is no per-list refresh
 - Clear Cache & Redownload: invalidates all compiled rules, deletes cached text and fetch metadata, re-fetches everything
 
@@ -148,8 +225,9 @@ A page with content blockers disabled produces no callbacks at all.
 | Data | Location |
 |------|----------|
 | Raw filter text | `~/Library/Application Support/Detour/ContentBlocker/{identifier}.txt` |
-| Compiled rules | WebKit's internal `WKContentRuleListStore` (managed by WebKit) |
-| Fetch metadata | `UserDefaults`: `ContentBlocker.{id}.lastFetch`, `ContentBlocker.{id}.etag`, `ContentBlocker.{id}.ruleCount`, `ContentBlocker.{id}.compiledRuleCount` |
+| Compiled rules | WebKit's internal `WKContentRuleListStore` (managed by WebKit): one rule list per chunk, `{id}`, `{id}-1`, … |
+| Fetch metadata | `UserDefaults`: `ContentBlocker.{id}.lastFetch`, `ContentBlocker.{id}.etag`, `ContentBlocker.{id}.ruleCount` |
+| Compile metadata | `UserDefaults`: `ContentBlocker.{chunk id}.compiledRuleCount` per compiled chunk (the rules that chunk adds to the list's count), `ContentBlocker.{id}.chunkCount` for a list of more than one chunk |
 
 These are the locations for the default data directory. A non-default data
 directory (`DETOUR_DATA_DIR`, as set for test runs and isolated launches) gets its

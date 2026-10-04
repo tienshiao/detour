@@ -123,8 +123,8 @@ Detour/
 |   +-- CommandPalette/           CommandPaletteView, SuggestionProvider, SuggestionItem,
 |   |                             SearchSuggestionsService, AddressInputClassifier
 |   +-- InternalPages/            detour:// pages (History): InternalPage, scheme handler, bridges
-|   +-- Downloads/                DownloadManager, DownloadPopoverViewController, DownloadCellView,
-|   |                             DownloadAnimation
+|   +-- Downloads/                DownloadManager, PrivateDownloadClosePolicy, DownloadPopoverViewController,
+|   |                             DownloadCellView, DownloadAnimation
 |   +-- Settings/                 SettingsWindowController + General, Profiles, Spaces, Extensions,
 |   |                             ContentBlocker panes
 |   +-- ContentBlocker/           ContentBlockerManager, ContentRuleStore, EasyListParser,

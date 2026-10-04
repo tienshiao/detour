@@ -101,6 +101,12 @@ By the time the notification arrives the container has already been
 reparented, so `ownsWebView` is already false in the losing window. It tells
 "I was the owner" by `snapshotImageView == nil`.
 
+A transfer moves the view, not the keyboard. The losing window's first
+responder falls back to the window when the web view leaves it (the handler
+also clears a responder that now lives in another window), and the claimant
+gives the page focus afterwards only when nothing in it holds the keyboard.
+See [keyboard focus](../sidebar/keyboard-focus.md), rule 2.
+
 ## The snapshot view
 
 `showSnapshot(for:)` installs an `NSImageView` at 50% opacity. Its image is

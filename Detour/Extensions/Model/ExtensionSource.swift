@@ -24,22 +24,26 @@ enum ExtensionSource: String, Codable, Equatable {
         "chrome.google.com", "chromewebstore.google.com",
     ]
 
-    /// Whether `url` is on a Web Store host, so a CRX from it counts as a store
-    /// install and a manifest without `update_url` still updates from the store.
+    /// Whether `url` is on a Web Store host. That alone does not make a CRX a
+    /// store install: the file must also carry the store's proof
+    /// (`CRXInstallGate.verify`, TASK-157).
     static func isWebStoreURL(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         return webStoreHosts.contains(host)
     }
 
-    /// The source and update URL to record for a CRX that was just downloaded from
-    /// `downloadURL` and whose manifest declares `manifestUpdateURL`.
+    /// The source and update URL to record for a CRX that just passed the
+    /// install gate and whose manifest declares `manifestUpdateURL`.
+    /// `fromWebStore` is the gate's verdict (`CRXInstallGate.Origin.webStore`:
+    /// a store host served the file and the store signed it), never the
+    /// download URL on its own.
     ///
-    /// A store download always gets an update URL — the manifest's, or the store's
+    /// A store install always gets an update URL — the manifest's, or the store's
     /// default — because store extensions are meant to update. Any other CRX
     /// updates only from a URL its manifest names; without one it stays put.
-    static func classifyCRX(downloadURL: URL?, manifestUpdateURL: String?) -> (source: ExtensionSource, updateURL: URL?) {
+    static func classifyCRX(fromWebStore: Bool, manifestUpdateURL: String?) -> (source: ExtensionSource, updateURL: URL?) {
         let declared = pollableUpdateURL(manifestUpdateURL)
-        if let downloadURL, isWebStoreURL(downloadURL) {
+        if fromWebStore {
             return (.webStore, declared ?? webStoreUpdateURL)
         }
         return (.crx, declared)

@@ -4,7 +4,7 @@ title: History recording and search
 description: When a visit is recorded, how its title is stored and corrected, how in-page navigations become visits, and which query serves which consumer under which scope.
 tags: [history, tabs, search, privacy, sqlite]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -42,6 +42,9 @@ sources:
   - id: history-db-tests
     resource: ../../DetourTests/HistoryDatabaseTests.swift
     title: HistoryDatabaseTests.swift
+  - id: task-138
+    resource: backlog:TASK-138
+    title: chrome.history.search returns history from every profile
 ---
 
 # Summary
@@ -193,10 +196,12 @@ so that column runs ahead of the visit rows. Delete reconciliation therefore
 sets it to `max(visitCount - deletedHere, remaining rows)` instead of a plain
 count, which would silently demote the URL for every other profile.
 
-# Search: one database, three scopes
+# Search: one database, two scopes
 
 The history database has no notion of profiles. A profile's history is the
-visits of the spaces that use it, and callers pass those space IDs in.
+visits of the spaces that use it, and callers pass those space IDs in. Every
+reader is scoped, to one space or to a profile's spaces; the unscoped query
+`chrome.history.search` used to run was removed by TASK-138.
 
 | Consumer | Function | Scope | A row is | Title shown |
 |---|---|---|---|---|
@@ -205,7 +210,7 @@ visits of the spaces that use it, and callers pass those space IDs in.
 | Palette inline completion | `bestURLCompletion` | one space | a URL | same |
 | History page list | `visits` | the profile's spaces | a visit | `COALESCE(v.title, h.title)` |
 | History page search | `searchVisits` | the profile's spaces | a URL, stood for by its latest in-scope, in-range visit that itself matches | same |
-| `chrome.history.search` | `searchHistoryGlobal` | everything | a URL | the shared `historyURL.title` |
+| `chrome.history.search` | `searchURLs` | the calling extension context's profile's spaces | a URL, chosen like a History page search row, with its count and last-visit time aggregated from the profile's own visits | `v.title`; the shared title for a title-less visit only while no space outside the profile has visited the URL |
 
 Shared semantics, kept identical on both the FTS side and in
 `HistoryDatabase.titleMatches`:
@@ -220,9 +225,10 @@ Which titles may match and which may be displayed, and why, is the subject of
 [history own-title matching](../decisions/history-own-title-matching.md).
 
 **Never read `historyURL.visitCount` or `lastVisitTime` into a scoped view.**
-They aggregate across all profiles; the History page derives every time and
-count from in-scope `historyVisit` rows
-(`testVisitsNeverLeakAnotherProfilesVisitTime`).
+They aggregate across all profiles; the History page and the extension API
+derive every time and count from in-scope `historyVisit` rows
+(`testVisitsNeverLeakAnotherProfilesVisitTime`,
+`testAURLVisitedInBothProfilesReportsThisProfilesCountTimeAndTitle`).
 
 # Where it lives
 
@@ -259,6 +265,9 @@ count from in-scope `historyVisit` rows
   back/forward item, so it cannot be used here.
 - `HistoryDatabaseTests`, `HistoryTitleIndexTests` - queries, deletes,
   isolation, the title index.
+- `HistoryURLSearchTests`, `ExtensionHistoryScopeTests` - the extension
+  API's profile-scoped search, in the database and from real extension
+  contexts in two profiles.
 - Test-infrastructure finding: a `WKWebView` with **no navigation delegate**
   never sends the request for `load(_:)`; an offscreen test that needs a real
   load must install one.[^task-91]
@@ -270,6 +279,7 @@ count from in-scope `historyVisit` rows
 - [History own-title matching](../decisions/history-own-title-matching.md) - the isolation rule and the designs rejected on the way.
 - [History page](./history-page.md) - the profile-scoped reader and the only caller of the delete APIs.
 - [Suggestion pipeline](./suggestion-pipeline.md) - the space-scoped reader.
+- [Polyfill layer](../extensions/polyfill-layer.md) - `chrome.history.search`, the other profile-scoped reader.
 - [Tab lifecycle](../tabs/tab-lifecycle.md) - where loads start and end.
 - [Incognito](../architecture/incognito.md) - why nothing is recorded there.
 

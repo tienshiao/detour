@@ -77,7 +77,17 @@ enum HistoryPageBridge {
     /// page never names a profile or a space. Nil for incognito (nothing is
     /// recorded, and the page must not fall through to another profile).
     static func scope(for tab: BrowserTab, in store: TabStore = .shared) -> [String]? {
-        guard let profile = tab.owningProfile, !profile.isIncognito, !profile.isDeleted else { return nil }
+        scope(forProfile: tab.owningProfile, in: store)
+    }
+
+    /// The same rule for a caller that holds the profile rather than a tab of
+    /// it: the `chrome.history` extension API, whose handler belongs to one
+    /// profile (TASK-138). One definition, so "this profile's history" cannot
+    /// mean one thing on the History page and another to an extension. Nil for
+    /// no profile, the Private profile and a deleted one; an empty list for a
+    /// profile no space uses.
+    static func scope(forProfile profile: Profile?, in store: TabStore = .shared) -> [String]? {
+        guard let profile, !profile.isIncognito, !profile.isDeleted else { return nil }
         return store.spaces.filter { $0.profileID == profile.id }.map { $0.id.uuidString }
     }
 

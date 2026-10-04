@@ -139,23 +139,26 @@ card view handles `rightMouseDown` as a click.
 
 # Edge cases
 
-## Open defect: handled keys are probably not swallowed
+## A swallowed key must stay swallowed
 
-The monitor is installed as
+`handle(_:)` returns `NSEvent?` and returns nil to swallow a key: Control+Tab
+itself, and every key while the switcher is active. The monitor used to be
+installed as
 
 ```swift
 MainActor.assumeIsolated { self?.handle(event) ?? event }
 ```
 
-`handle(_:)` returns `NSEvent?` and returns nil to swallow a key (Control+Tab
-itself, and every key while the switcher is active). Optional chaining flattens
-that to one optional, so "handled, swallow it" and "self is gone" are the same
-nil, and `?? event` turns both back into the event. A standalone program with
-the same shape returned the event in the swallow case.[^task-133] The likely
-effect is that the switcher acts on the key *and* the key continues to the
-first responder. This has not been observed in the app, and what it visibly
-breaks is not known. The code on `main` still has this shape; TASK-133 holds
-the acceptance tests for the fix.
+Optional chaining flattens `handle`'s result into the chain's optional, so
+"handled, swallow it" and "self is gone" were the same nil, and `?? event`
+turned both back into the event. The monitor never swallowed anything: the
+switcher acted on the key and the key went on to the first responder.[^task-133]
+The closure now calls `RecentTabSwitcher.monitorResult(for:switcher:)`, which
+passes events through only when the switcher has been released.
+`RecentTabSwitcherMonitorTests` pins both directions.
+
+The same trap waits in any monitor written as
+`self?.method(event) ?? event` where the method's nil means "consume".
 
 ## Not verified at runtime
 
@@ -167,7 +170,8 @@ Cmd+Option+Up/Down no manual pass was recorded.[^task-107]
 # Tests
 
 `TabNavigationTests` (11) and `RecentTabOrderTests` (10) cover the pure order
-and state. The switcher's event handling was checked with an in-process harness
+and state; `RecentTabSwitcherMonitorTests` (10) covers which keys the monitor
+swallows and which it passes on. The switcher's event handling was checked with an in-process harness
 posting real key and mouse events (quick tap, hold and advance, Shift start,
 Escape, card click);[^task-108] see
 [in-process UI automation](../playbooks/in-process-ui-automation.md). A click
