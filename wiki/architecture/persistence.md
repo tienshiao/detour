@@ -4,7 +4,7 @@ title: Persistence
 description: What Detour saves, where and when — the two databases, the debounced session save and its write order, session restore, interaction state, and the DETOUR_DATA_DIR switch.
 tags: [architecture, storage, session, restore]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -64,7 +64,7 @@ Website data (cookies, local storage) is WebKit's, keyed by profile; see
 | Spaces, tabs, pinned entries, folders, favorites, all profiles | `TabStore.saveNow()` | 1 s after the last `scheduleSave()`; immediately on app termination, window close and at the start of `deleteProfile`. |
 | One profile | `AppDatabase.saveProfile` | Immediately, in `addProfile` / `updateProfile`. |
 | Closed-tab records | `pushClosedTab`, `deleteClosedTab…` | Immediately, inside `closeTab`, reopen, undo. Never loaded into memory (TASK-117). |
-| Downloads | `DownloadManager` | Its own 1 s debounce. |
+| Downloads | `DownloadManager` | Its own 1 s debounce; a save still pending at app termination is written by `flushPendingSave()`. See [downloads](../features/downloads.md). |
 | Extension records, permissions, per-profile enablement | `AppDatabase` calls from the extension layer | Immediately. |
 | History visits and title corrections | `HistoryDatabase.recordVisit`, `updateTitle` | Asynchronous writes, serialised in call order on GRDB's writer queue. |
 

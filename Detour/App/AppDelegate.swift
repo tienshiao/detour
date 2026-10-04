@@ -112,6 +112,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         TabStore.shared.undoManager.removeAllActions()
         TabStore.shared.saveNow()
+        // A download that ended inside the manager's 1 s save debounce would
+        // otherwise be missing after the relaunch (TASK-143).
+        DownloadManager.shared.flushPendingSave()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

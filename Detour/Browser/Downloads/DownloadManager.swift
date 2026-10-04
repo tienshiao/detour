@@ -31,6 +31,10 @@ class DownloadItem: NSObject {
 
     let id: UUID
     let createdAt: Date
+    /// When the download finished. Set once, by `markCompleted(at:)`, and
+    /// carried through every later save and a relaunch (TASK-143). Nil for a
+    /// download that is in flight, failed or was cancelled.
+    private(set) var completedAt: Date?
     var download: WKDownload?
     var urlSessionTask: URLSessionTask?
 
@@ -44,9 +48,9 @@ class DownloadItem: NSObject {
 
     private var progressObservation: AnyCancellable?
 
-    init(download: WKDownload, sourceURL: URL?) {
+    init(download: WKDownload, sourceURL: URL?, createdAt: Date = Date()) {
         self.id = UUID()
-        self.createdAt = Date()
+        self.createdAt = createdAt
         self.download = download
         self.sourceURL = sourceURL
         super.init()
@@ -61,9 +65,9 @@ class DownloadItem: NSObject {
             }
     }
 
-    init(filename: String, sourceURL: URL?) {
+    init(filename: String, sourceURL: URL?, createdAt: Date = Date()) {
         self.id = UUID()
-        self.createdAt = Date()
+        self.createdAt = createdAt
         super.init()
         self.filename = filename
         self.sourceURL = sourceURL
@@ -96,6 +100,16 @@ class DownloadItem: NSObject {
         super.init()
 
         self.state = State(persistenceString: record.state)
+        // Only a completed download has a completion time; a row in any other
+        // state loads without one whatever its column holds.
+        self.completedAt = state == .completed ? record.completedAt : nil
+    }
+
+    /// Moves the item to `.completed`. The completion time is recorded the
+    /// first time only; a repeated call cannot move it.
+    func markCompleted(at date: Date) {
+        if completedAt == nil { completedAt = date }
+        state = .completed
     }
 }
 
@@ -116,17 +130,38 @@ extension DownloadManagerObserver {
 // MARK: - DownloadManager
 
 class DownloadManager: NSObject {
-    static let shared = DownloadManager()
+    static let shared = DownloadManager(database: .shared)
+
+    /// Runs `work` after `delay` unless the returned closure (cancel) is called
+    /// first. Injected so tests drive the save debounce without waiting.
+    typealias SaveScheduler = (_ delay: TimeInterval, _ work: @escaping () -> Void) -> () -> Void
+
+    static let saveDebounce: TimeInterval = 1.0
+
+    static let mainQueueScheduler: SaveScheduler = { delay, work in
+        let item = DispatchWorkItem(block: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        return { item.cancel() }
+    }
 
     private(set) var items: [DownloadItem] = []
     private var observers: [WeakDownloadObserver] = []
-    private var saveWorkItem: DispatchWorkItem?
+    private let database: AppDatabase
+    private let now: () -> Date
+    private let scheduleAfter: SaveScheduler
+    /// Cancels the debounced save. Non-nil exactly while a save is pending.
+    private var cancelPendingSave: (() -> Void)?
 
     var hasActiveDownloads: Bool {
         items.contains { $0.state == .downloading }
     }
 
-    private override init() {
+    init(database: AppDatabase,
+         now: @escaping () -> Date = Date.init,
+         scheduler: @escaping SaveScheduler = DownloadManager.mainQueueScheduler) {
+        self.database = database
+        self.now = now
+        self.scheduleAfter = scheduler
         super.init()
         loadPersistedDownloads()
     }
@@ -159,12 +194,12 @@ class DownloadManager: NSObject {
 
     @discardableResult
     func handleNewDownload(_ download: WKDownload, sourceURL: URL?) -> DownloadItem {
-        insertAndNotify(DownloadItem(download: download, sourceURL: sourceURL))
+        insertAndNotify(DownloadItem(download: download, sourceURL: sourceURL, createdAt: now()))
     }
 
     @discardableResult
     func addManualItem(filename: String, sourceURL: URL?) -> DownloadItem {
-        insertAndNotify(DownloadItem(filename: filename, sourceURL: sourceURL))
+        insertAndNotify(DownloadItem(filename: filename, sourceURL: sourceURL, createdAt: now()))
     }
 
     private func insertAndNotify(_ item: DownloadItem) -> DownloadItem {
@@ -183,10 +218,25 @@ class DownloadManager: NSObject {
         scheduleSave()
     }
 
+    /// The download behind `item` ended on its own: it finished or failed. The
+    /// `WKDownloadDelegate` callbacks land here; a cancel goes through
+    /// `cancelDownload`.
+    func downloadDidEnd(_ item: DownloadItem, failure: String? = nil) {
+        if let failure {
+            item.state = .failed(failure)
+        } else {
+            item.markCompleted(at: now())
+            item.fractionCompleted = 1.0
+        }
+        item.download = nil
+        notifyObservers { $0.downloadManagerDidUpdateItem(item) }
+        scheduleSave()
+    }
+
     func removeDownload(_ item: DownloadItem) {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         items.remove(at: index)
-        AppDatabase.shared.deleteDownload(id: item.id.uuidString)
+        database.deleteDownload(id: item.id.uuidString)
         notifyObservers { $0.downloadManagerDidRemoveItem(item) }
     }
 
@@ -194,7 +244,7 @@ class DownloadManager: NSObject {
         let inactive = items.filter { $0.state != .downloading }
         items.removeAll { $0.state != .downloading }
         for item in inactive {
-            AppDatabase.shared.deleteDownload(id: item.id.uuidString)
+            database.deleteDownload(id: item.id.uuidString)
             notifyObservers { $0.downloadManagerDidRemoveItem(item) }
         }
     }
@@ -202,7 +252,7 @@ class DownloadManager: NSObject {
     // MARK: - Persistence
 
     private func loadPersistedDownloads() {
-        let records = AppDatabase.shared.loadDownloads()
+        let records = database.loadDownloads()
         for record in records {
             let item = DownloadItem(record: record)
             // Mark stale "downloading" items as failed
@@ -214,17 +264,23 @@ class DownloadManager: NSObject {
     }
 
     func scheduleSave() {
-        saveWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
+        cancelPendingSave?()
+        cancelPendingSave = scheduleAfter(Self.saveDebounce) { [weak self] in
             self?.saveNow()
         }
-        saveWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    /// Writes a save that is still waiting out the debounce. Called before the
+    /// app terminates, so a download that ended in the last second is not lost
+    /// (TASK-143). Does nothing when no save is pending.
+    func flushPendingSave() {
+        guard cancelPendingSave != nil else { return }
+        saveNow()
     }
 
     private func saveNow() {
-        saveWorkItem?.cancel()
-        saveWorkItem = nil
+        cancelPendingSave?()
+        cancelPendingSave = nil
 
         for item in items where item.state != .downloading {
             let record = DownloadRecord(
@@ -236,9 +292,9 @@ class DownloadManager: NSObject {
                 bytesWritten: item.bytesWritten,
                 state: item.state.persistenceString,
                 createdAt: item.createdAt,
-                completedAt: item.state == .completed ? Date() : nil
+                completedAt: item.completedAt
             )
-            AppDatabase.shared.saveDownload(record)
+            database.saveDownload(record)
         }
     }
 }
@@ -280,19 +336,12 @@ extension DownloadManager: WKDownloadDelegate {
 
     func downloadDidFinish(_ download: WKDownload) {
         guard let item = items.first(where: { $0.download === download }) else { return }
-        item.state = .completed
-        item.fractionCompleted = 1.0
-        item.download = nil
-        notifyObservers { $0.downloadManagerDidUpdateItem(item) }
-        scheduleSave()
+        downloadDidEnd(item)
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         guard let item = items.first(where: { $0.download === download }) else { return }
-        item.state = .failed(error.localizedDescription)
-        item.download = nil
-        notifyObservers { $0.downloadManagerDidUpdateItem(item) }
-        scheduleSave()
+        downloadDidEnd(item, failure: error.localizedDescription)
     }
 }
 

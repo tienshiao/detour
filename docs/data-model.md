@@ -162,7 +162,7 @@ File download records. `DownloadManager` writes a row once a download has finish
 | `bytesWritten` | INTEGER | NOT NULL, default 0 | Bytes downloaded |
 | `state` | TEXT | NOT NULL | "completed", "failed", or "cancelled". A "downloading" row, if one is read at launch, loads as failed ("Interrupted") |
 | `createdAt` | DATETIME | NOT NULL | When download started |
-| `completedAt` | DATETIME | | When download finished |
+| `completedAt` | DATETIME | | When the download completed. Set once, when it reaches "completed", and rewritten unchanged by every later save; NULL for a failed or cancelled download. Rows written before TASK-143 hold the time of their last save instead |
 
 #### `contentBlockerWhitelist`
 
@@ -326,7 +326,7 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 
 Saves are **debounced**: mutations call `scheduleSave()`, which waits 1 second before writing, so rapid changes coalesce. `saveNow()` also runs on app termination.
 
-Closed tabs, extension state and permissions are written immediately by their own calls rather than by `saveNow()`. Downloads are saved by `DownloadManager`, which debounces its own save by 1 second; removing a download deletes its row immediately.
+Closed tabs, extension state and permissions are written immediately by their own calls rather than by `saveNow()`. Downloads are saved by `DownloadManager`, which debounces its own save by 1 second; `applicationWillTerminate` writes a save still waiting out that second (`flushPendingSave()`), and removing a download deletes its row immediately.
 
 ### Record Types
 
