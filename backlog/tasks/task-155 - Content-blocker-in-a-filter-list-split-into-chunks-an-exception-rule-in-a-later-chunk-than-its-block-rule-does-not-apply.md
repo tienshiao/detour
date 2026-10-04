@@ -3,10 +3,10 @@ id: TASK-155
 title: >-
   Content blocker: in a filter list split into chunks, an exception rule in a
   later chunk than its block rule does not apply
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 09:14'
-updated_date: '2026-10-04 09:54'
+updated_date: '2026-10-04 10:23'
 labels:
   - bug
 dependencies: []
@@ -77,4 +77,14 @@ ContentRuleListChunkTests 35/35 (20 before; 11 new pure tests for the layout, th
 ## Docs (AC #4)
 
 docs/content-blocking.md (What a Chunk Holds, the Settings rows, the limits) and wiki/features/content-blocking.md (What a chunk holds, limits, tests), wiki/log.md.
+
+Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2), 2026-10-04. Full DetourTests suite on the integrated tree: 2081 tests, 10 skipped (gated legs), 0 failures; after the review fixes 2083 tests, 10 skipped, 1 failure — ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection ('no collection observed in 10 rounds'), a garbage-collection timing test outside this batch that passed in the first run and passes alone (26/26). Code review of the range a98904c..HEAD run with --fix (high).
+Review, three notes, none changed here: (1) an unsplit list keeps file order, where an exception does not undo block rules that FOLLOW it — the same defect this task fixes for split lists, and EasyList has exception sections ahead of later block sections; recorded as a known difference in docs/content-blocking.md, needs its own task and a check in a web view. (2) Chunks compiled under the old layout are found by lookUpList and reused until the next successful refresh; latent, since no shipped list is split. (3) compile() filters every rule through isException a second time for a log line.
+No runtime check: no real list reaches the cap, so the split path does not run in the app.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+In a filter list split into chunks, every chunk now carries the list's exception rules after its block rules (up to half the cap; beyond that they are dropped with an error log), so an exception applies whichever chunk its block rule landed in. Settings counts a repeated exception once. A test with a real WKContentRuleListStore failed before the fix. Not reachable in the running app today: no list is split.
+<!-- SECTION:FINAL_SUMMARY:END -->

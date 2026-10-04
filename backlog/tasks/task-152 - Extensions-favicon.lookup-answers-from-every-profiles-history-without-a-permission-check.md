@@ -3,10 +3,10 @@ id: TASK-152
 title: >-
   Extensions: favicon.lookup answers from every profile's history, without a
   permission check
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 08:53'
-updated_date: '2026-10-04 09:46'
+updated_date: '2026-10-04 10:23'
 labels:
   - bug
   - extensions
@@ -81,4 +81,14 @@ Merging into epic-claude-extension (simulated with git merge-file against that b
 Review and the runtime check happen at batch integration.
 
 Suites run with the fix (2026-10-04): FaviconLookupScopeTests, ExtensionFaviconScopeTests, HistoryDatabaseTests, InternalPageIntegrationTests, HistoryDeletionIntegrationTests, ExtensionHistoryScopeTests, ExtensionPolyfillProfileWiringTests, ExtensionPolyfillIntegrationTests, ExtensionPolyfillTests: 484 tests, 7 skipped (gated legs), 0 failures.
+
+Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2), 2026-10-04. Full DetourTests suite on the integrated tree: 2081 tests, 10 skipped (gated legs), 0 failures; after the review fixes 2083 tests, 10 skipped, 1 failure — ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection ('no collection observed in 10 rounds'), a garbage-collection timing test outside this batch that passed in the first run and passes alone (26/26). Code review of the range a98904c..HEAD run with --fix (high).
+Review: nothing wrong found in the favicon scoping. One efficiency note, accepted: the scoped same-host fallback joins and sorts the in-scope visits of every URL on the host to pick one row (the unscoped query ordered historyURL rows). It runs only for a page with no exact row, off the main thread; ordering by the shared lastVisitTime instead would let another profile's visits choose which of the profile's own icons is answered, so the in-scope order stays.
+Runtime check (harness build, isolated profile, real install of the API Explorer, a real visit to https://www.wikipedia.org/ in profile A, the icon fetched from the network, a second profile B with one space; extension pages opened the way the app opens them): profile A's page got 32x32 for the visited page and 1x1 for a never-visited one; profile B's page got 1x1 for the page A visited; favicon.lookup posted by hand was refused in both ('Unknown polyfill message type: favicon.lookup'). Not checked at runtime: the Private profile (covered by tests), the API Explorer's own buttons (the harness ran the same calls from its page).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+An extension's favicons (chrome.runtime.getURL('/_favicon/…'), served on detour-favicon://) now come from the calling profile's history only: FaviconSchemeHandler belongs to a profile, accepts only that profile's extension hosts holding 'favicon', and looks up through HistoryDatabase.faviconURL(for:visitedInSpaces:); a refusal is the same transparent pixel as 'no icon'. The favicon.lookup polyfill message (no sender, no permission check, returned the icon URL) is removed. Storage tests failed before the fix; real-context tests cover two profiles, another profile's host, a tab's handler, the permission, Private, the worker and both transports of the removed message, and fail with the scope taken out. Verified in the running app with a real visit and two profiles. Merging into epic-claude-extension conflicts in two places (ExtensionPolyfillHandler's favicon.lookup case, the API Explorer manifest's permissions line); the resolutions are in the notes. Left for its own task: a frame in the same profile that knows a favicon extension's WebKit host gets that extension's answers.
+<!-- SECTION:FINAL_SUMMARY:END -->

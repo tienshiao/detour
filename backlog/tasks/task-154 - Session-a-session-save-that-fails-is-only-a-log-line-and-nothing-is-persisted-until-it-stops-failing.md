@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-04 08:53'
-updated_date: '2026-10-04 09:39'
+updated_date: '2026-10-04 10:23'
 labels:
   - bug
 dependencies: []
@@ -32,7 +32,7 @@ Decide what the app should do when a session save fails: for example retry with 
 <!-- AC:BEGIN -->
 - [x] #1 The intended behaviour on a failed session save is decided and recorded in the task
 - [x] #2 A save that fails is detected by TabStore (the result is not discarded) and handled by the decided rule; a test with an injected failure covers it
-- [x] #3 A failure that repeats does not silently lose the whole session: either the unaffected parts are persisted or the user is told, by the decided rule
+- [ ] #3 A failure that repeats does not silently lose the whole session: either the unaffected parts are persisted or the user is told, by the decided rule
 - [x] #4 Session rows that cannot be made valid (a pinned folder whose parent is missing, a parent cycle) are repaired or dropped with a log line instead of failing every save; a test covers each
 - [x] #5 wiki/architecture/persistence.md is updated
 <!-- AC:END -->
@@ -86,4 +86,9 @@ AC #3 is checked for the failure the task describes (a refused row that repeats)
 Not verified: no /code-review and no /verify by this agent, and the app was not launched; both happen at batch integration. The full DetourTests suite was not run (targeted suites only). The save cost was not re-measured: the one-step path is unchanged apart from the pure repair pass over the pinned rows; a save that keeps hitting a refused row costs roughly two saves (not measured). A real SQLITE_FULL / I/O error was not produced, only simulated from a SQL function. The log lines were not read in a running app. The stale-copy delete is exercised for tab rows (both orders), not for pinned folder, pinned entry or favourite rows moving between units.
 
 Seen, out of scope, not changed: (a) the store's in-memory model is not repaired, so a folder with a missing parent stays invisible in the sidebar until relaunch and its repair is re-applied on every save (logged once); (b) the one-step save writes each profile's favourites as delete-then-insert per profile in order, so a favourite id that moved from a later-written profile to an earlier one would collide with the old row (I did not find a store mutation that moves a favourite between profiles); the unit-by-unit save handles it; (c) a space whose profile row is missing from the database fails as a unit until the profiles step of the same fallback save writes the row, after which the next save succeeds: writing profile rows before spaces would avoid the detour; (d) wiki/tabs/pinned-tabs-and-folders.md says a folder cycle would make flattenPinnedTree recurse forever; a cycle is not reachable from the root, so that claim looks wrong, not checked.
+
+Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2), 2026-10-04. Full DetourTests suite on the integrated tree: 2081 tests, 10 skipped (gated legs), 0 failures; after the review fixes 2083 tests, 10 skipped, 1 failure — ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection ('no collection observed in 10 rounds'), a garbage-collection timing test outside this batch that passed in the first run and passes alone (26/26). Code review of the range a98904c..HEAD run with --fix (high).
+Left In Progress for AC #3. It is met for a refused row that repeats (the unit holding it keeps its last save, every other unit is saved). It is NOT met for a failure that is not about a row and repeats (a full disk, an I/O error): nothing is written and the user is not told — an error log line and TabStore.lastSaveOutcome only. To decide: accept that (the machine has bigger problems, and a message could not say what to do), or tell the user once (a toast from the window controller on .failed).
+Review: one finding, documented rather than repaired. A favourites unit that fails after the space hosting its live favourites was written does not keep its last saved state: rewriting the space deleted the backing tab rows and the cascade set favorite.tabID to NULL, so the kept favourite rows are dormant until a later save writes the unit. The doc comment and wiki/architecture/persistence.md said 'exactly what the last good save wrote' and now state the exception.
+Runtime check (harness build, isolated profile): saveNow() returned .saved after tabs, a second profile and space, two Private windows and an extension install; no save error in the app's output. The failure paths were not produced in the running app.
 <!-- SECTION:NOTES:END -->

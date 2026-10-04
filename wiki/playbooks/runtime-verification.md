@@ -4,7 +4,7 @@ title: Runtime verification
 description: How to build, launch and observe Detour in an isolated profile (the /verify skill), including how to be sure the app you launched is the build you just made.
 tags: [playbook, verify, runtime, isolation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:31:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:25:00Z }
 sources:
   - id: verify-skill
     resource: ../../.claude/skills/verify/SKILL.md
@@ -183,6 +183,20 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 - **Write outputs to a directory you can read back later.** A sandboxed and
   an unsandboxed command can see different `$TMPDIR` values; use one
   absolute path for everything.
+- **An extension page in a harness needs the extension's configuration.**
+  `TabStore.addTab(in:url:)` with a `webkit-extension://` URL builds the tab
+  from the space's configuration and the load fails (the tab shows the error
+  page for `NSURLErrorDomain -1008`, and `chrome` is undefined in it). Open
+  it as the app does: `TabStore.addExtensionTab(in:url:configuration:)` with
+  the context's `webViewConfiguration`. Then `callAsyncJavaScript` in the
+  page world reaches the real `chrome.*`, polyfills included. Wrap a probe
+  script in `try`/`catch` and return the error text: WebKit reports any throw
+  as "A JavaScript exception occurred".
+- **A real download needs a server that controls the pace.** A loopback
+  server that streams a large `Content-Disposition: attachment` body a few
+  KiB at a time keeps a `WKDownload` in flight for as long as a check needs,
+  and its log shows the moment the client goes away. Point
+  `DownloadManager.shared.downloadsDirectory` at a scratch folder first.
 
 # Related
 

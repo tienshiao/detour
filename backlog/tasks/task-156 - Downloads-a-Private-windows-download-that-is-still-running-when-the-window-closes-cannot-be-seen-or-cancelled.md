@@ -3,10 +3,10 @@ id: TASK-156
 title: >-
   Downloads: a Private window's download that is still running when the window
   closes cannot be seen or cancelled
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 09:14'
-updated_date: '2026-10-04 09:49'
+updated_date: '2026-10-04 10:23'
 labels: []
 dependencies: []
 references:
@@ -92,4 +92,15 @@ Not unit-tested: the three lines in applicationShouldTerminate (the alert is mod
 ## Wiki (AC #4)
 
 wiki/features/downloads.md (window-close section rewritten, edge cases, tests), wiki/architecture/incognito.md (downloads rules, where it lives), wiki/architecture/app-shell.md (quit), wiki/log.md.
+
+Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2), 2026-10-04. Full DetourTests suite on the integrated tree: 2081 tests, 10 skipped (gated legs), 0 failures; after the review fixes 2083 tests, 10 skipped, 1 failure — ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection ('no collection observed in 10 rounds'), a garbage-collection timing test outside this batch that passed in the first run and passes alone (26/26). Code review of the range a98904c..HEAD run with --fix (high).
+Correction to the note above: the three unlistedItems tests were replaced by six, not five.
+Review: nothing found in the close policy or the cancel path.
+Runtime check (harness build, isolated profile, a loopback server streaming a 200 MB attachment slowly, downloads directed to a scratch folder): with the download running in a Private window, windowShouldClose showed 'Close this Private window? — 1 download is in progress. Closing this Private window cancels it.'; Continue Downloading kept the window and the download; Close Window closed it, the item was gone from every list, the partial file was removed and the server saw the connection close. With a second Private window's download running, Quit showed 'You have 2 windows open. 1 download in a Private window is in progress and will be cancelled.', and after Quit the server saw the close and the folder was empty. The alerts were answered by the harness (screen not confirmed unlocked), so how they look was not checked.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A Private window's download still running when the window closes is cancelled, after asking (Chrome's rule): closing asks, Close Window cancels and removes the partial file, Continue Downloading keeps the window; quitting names the Private downloads in the quit alert and cancels them; unlistedItems is gone, so nothing runs unseen. Measured first: WebKit keeps a WKDownload transferring after its web view and non-persistent store are released. Verified in the running app with a real slow download.
+<!-- SECTION:FINAL_SUMMARY:END -->

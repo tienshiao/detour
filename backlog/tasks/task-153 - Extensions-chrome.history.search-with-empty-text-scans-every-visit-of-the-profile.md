@@ -3,10 +3,10 @@ id: TASK-153
 title: >-
   Extensions: chrome.history.search with empty text scans every visit of the
   profile
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 08:53'
-updated_date: '2026-10-04 09:48'
+updated_date: '2026-10-04 10:23'
 labels:
   - extensions
   - performance
@@ -144,4 +144,14 @@ API Explorer: the History section has an 'All time (startTime: 0)' checkbox; unc
 - The text path of searchURLs has the quadratic title-rule probe described above (2.25 s for a query matching every URL over all history in profile A). Only reachable with an explicit old startTime now. A fix would evaluate the guarded title for the representative rows only, and once per URL in the matcher.
 - A long read on the history queue blocks main-thread reads behind it (the History page's search has the same shape). A second, read-only connection for the main thread would bound all of these.
 - .derived is not ignored on main's .gitignore in this worktree; it was kept out of the commit by adding files by path.
+
+Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2), 2026-10-04. Full DetourTests suite on the integrated tree: 2081 tests, 10 skipped (gated legs), 0 failures; after the review fixes 2083 tests, 10 skipped, 1 failure — ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection ('no collection observed in 10 rounds'), a garbage-collection timing test outside this batch that passed in the first run and passes alone (26/26). Code review of the range a98904c..HEAD run with --fix (high).
+Review: nothing found in the listing path or the default range.
+Runtime check (harness build, isolated profile, API Explorer page): chrome.history.search({text: ''}) in the profile that had just visited https://www.wikipedia.org/ returned that URL, and with startTime: 0 one row; the same calls in a second profile returned nothing. Only a one-visit history: the timings are the benchmark's, not the running app's.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+chrome.history.search with no startTime now covers the last 24 hours, as in Chrome (startTime 0 is still all history), and an empty-text search walks each space's visits newest first and stops at maxResults instead of windowing over every in-scope visit. On the 300,000-visit benchmark history (Debug) the default call went from 2,157 ms to about 13 ms and a palette read issued behind it from 2,416 ms to about 164 ms; larger limits and the text path are measured and recorded, not bounded. A differential test holds the new listing equal to the windowed select.
+<!-- SECTION:FINAL_SUMMARY:END -->

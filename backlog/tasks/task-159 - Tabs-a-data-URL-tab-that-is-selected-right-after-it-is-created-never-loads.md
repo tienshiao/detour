@@ -1,10 +1,10 @@
 ---
 id: TASK-159
 title: 'Tabs: a data: URL tab that is selected right after it is created never loads'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 09:14'
-updated_date: '2026-10-04 09:51'
+updated_date: '2026-10-04 10:23'
 labels:
   - bug
 dependencies: []
@@ -76,4 +76,14 @@ After: DataURLTabTests 8/8 (the eighth, a sleeping tab woken by selecting it, wa
 ## Wiki
 
 wiki/features/external-apps.md (where it is caught, a section on data: URLs with the cause and WebKit's rules, edge cases, tests), wiki/log.md.
+
+Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2), 2026-10-04. Full DetourTests suite on the integrated tree: 2081 tests, 10 skipped (gated legs), 0 failures; after the review fixes 2083 tests, 10 skipped, 1 failure — ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection ('no collection observed in 10 rounds'), a garbage-collection timing test outside this batch that passed in the first run and passes alone (26/26). Code review of the range a98904c..HEAD run with --fix (high).
+Review: one real bug, fixed and folded into this task's commit. With data: allowed by the window's navigation policy, a page's target=_blank link to a data: URL reached createWebViewWith, which loads the URL into a new tab as an app-started load that WebKit does not refuse — so a page could open a top-level data: document (window.open could already, before this task). createWebViewWith now refuses a data: URL for a page's own new-window request; the context menu's Open Link in New Tab/Window still opens one. Two tests added (the _blank link and window.open), both failing before the fix; DataURLTabTests 10/10.
+Runtime check (harness build, isolated profile): a data: tab created and selected in the same turn loaded (title and body present), as did one left in the background.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A data: URL now loads in a tab on screen: the window's navigation policy sent every scheme outside its list to the external-app prompt and cancelled it, and data was not on the list. The scheme rule is the pure ExternalAppLaunchPolicy.isForExternalApp(scheme:). Detour adds no rule of its own for browser-started data: loads; a page's own top-level navigation to one stays refused by WebKit, and its _blank link or window.open to one is refused in createWebViewWith (found in review). Verified in the running app.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,10 +3,10 @@ id: TASK-157
 title: >-
   Extensions: a CRX is called 'From the Chrome Web Store' by its download host;
   the store's publisher proof is not checked
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-04 09:14'
-updated_date: '2026-10-04 09:53'
+updated_date: '2026-10-04 10:23'
 labels:
   - extensions
   - security
@@ -78,4 +78,14 @@ Tests.
 Known limits, recorded in wiki/extensions/installer-and-crx.md: an install recorded as webStore before this change is not re-checked (its next update is); a copy already staged under the old rule is applied without the publisher check.
 Epic branch: the touched files merge cleanly into its working tree (git merge-file simulation).
 Not done here: the install through the UI (prompt and refusal alert wording) — runtime check at batch integration. Review happens at batch integration too.
+
+Integrated on branch bugfix-batch-2 (worktree .claude/worktrees/bugfix-batch-2), 2026-10-04. Full DetourTests suite on the integrated tree: 2081 tests, 10 skipped (gated legs), 0 failures; after the review fixes 2083 tests, 10 skipped, 1 failure — ExtensionPolyfillIntegrationTests.testStorageManagedInRealExtensionContextSurvivesGarbageCollection ('no collection observed in 10 rounds'), a garbage-collection timing test outside this batch that passed in the first run and passes alone (26/26). Code review of the range a98904c..HEAD run with --fix (high).
+Review: one finding taken — CRX3Verifier.verify defaulted its format to the developer's proof, so a store path that forgot to name one would have got the weaker check; the parameter is now required (folded into the TASK-158 commit, which touches the same tests).
+Runtime check (harness build, isolated profile): the real store URL for Claude (clients2.google.com update2, redirected to clients2.googleusercontent.com) passed the production gate and the prompt began 'From the Chrome Web Store.'; the same file opened from disk prompted 'From a file on this Mac (claude.crx), not from the Chrome Web Store.'. Both were cancelled at the prompt, nothing was installed. Not checked at runtime: an install carried through (the source row), an update of a store install against the live store, and the refusal alert for a store-host file without the proof (no way to serve one from a store host; covered by CRXInstallGateTests).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+'From the Chrome Web Store' now means a store host served the file AND a verified proof in it is the store's publisher key (hash from Chromium's crx_verifier.cc, confirmed in the real 1Password and Claude files). CRX3Verifier.verify takes Chrome's two formats; a store-host file without the proof is refused before anything is unpacked, the prompt and the recorded source follow the gate's verdict (CRXInstallGate.Origin) instead of the URL, and an update of a webStore install is accepted only with the proof. Tests build files with and without a stand-in publisher proof and failed before enforcement; the gated real-file test passes both store files through the production gate; the prompt wording was checked in the running app.
+<!-- SECTION:FINAL_SUMMARY:END -->
