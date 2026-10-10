@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-04 21:51'
-updated_date: '2026-10-04 22:12'
+updated_date: '2026-10-10 08:38'
 labels:
   - bug
   - tests
@@ -64,4 +64,10 @@ Where to start: bisect the suite order with -only-testing (the wiring suite plus
 - testASupersededKeepAlivePortStopsInsteadOfReconnecting
 
 The first two fail at the same shared wait (line 3362, 'timed out after 20.0 s waiting for the background page to be dispatched the install'); the third fails with 'no heartbeat from the real background page' (line 2987). So the common symptom is a background page that does not answer, not onInstalled in particular. The suite alone on the same build passes: 50 tests, 7 skipped, 0 failures. No other suite failed in the full run. The suite runs 41st of 141. Not checked: whether the three extra cases come from main's changes or from the changed set of suites that run before this one; main alone has still not had a full run.
+
+2026-10-10, after merging main (c37c76a: TASK-167/168/169) into epic-claude-extension: a full run (2,415 tests, 12 skipped) fails eight cases of this suite: the seven above plus testAnOrdinaryExtensionPageCannotClaimTheInstalledEventThroughTheBridge, with the same 20 s wait. No other suite failed. The suite alone on the same build passes again: 50 tests, 7 skipped, 0 failures. So the eighth case is the same order-dependent symptom, not something the merge broke in that test; why it joined the list in this run is not known.
+
+main at db9024b had a full run the same day (2,095 tests, 11 skipped) with 0 failures, so main is not affected by this in a full run (AC #3).
+
+Separately, on main the same day: ExtensionOriginTrackingPreventionTests.testTrackingPreventionPassSparesOriginsWithALoggedInteraction passed in one full run, then timed out ('waiting for the uninteracted origin's localStorage to be deleted', 30 s) in a full run on main + TASK-169 and twice alone a few minutes later, on that branch and on main; it passed again in the epic's full run half an hour after that. Not investigated; recorded here because it is another test whose result changed with no code change.
 <!-- SECTION:NOTES:END -->
