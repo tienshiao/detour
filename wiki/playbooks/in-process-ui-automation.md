@@ -4,8 +4,11 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
 sources:
+  - id: task-169
+    resource: backlog:TASK-169
+    title: A hover-revealed sidebar sometimes stays open instead of hiding again
   - id: task-89
     resource: backlog:TASK-89
     title: Permanent in-process UI automation hook (debug builds only)
@@ -88,7 +91,7 @@ and visual checks have to wait; report them as not run, never as passed.
 | Dark mode | `NSApp.appearance = NSAppearance(named: .darkAqua)`, wait, capture | |
 | Split, second window, Private window | create them through `TabStore` / `BrowserWindowController` | |
 | A trackpad swipe between spaces | synthetic continuous scroll events, below | |
-| Sidebar hover reveal/hide | inject `SidebarVisibilityState` events through a temporary accessor | real tracking-area enter/exit cannot be synthesized[^notes-probes] |
+| Sidebar hover reveal/hide | `wc.sidebarHoverZoneEntered(.edge)` / `sidebarHoverZoneExited(.sidebar)`, with `sidebarPointerProbeForTesting` or a window placed relative to the real pointer ([UI probes](./ui-probes.md)) | real tracking-area enter/exit cannot be synthesized; posted `mouseMoved` events produce none[^notes-probes][^task-169] |
 
 Posted mouse and key events, as used against the History page (a short
 pause between down and up, and a longer one to let the page settle):
@@ -215,5 +218,6 @@ above.
 [^notes-harness]: Session notes on the runtime debug harness
 [^notes-keyloop]: Session notes on the key-view loop probe
 [^notes-probes]: Session notes on hit-test and resize probes
+[^task-169]: A hover-revealed sidebar sometimes stays open instead of hiding again
 [^notes-updates]: Session notes on verifying the extension update UI
 [^notes-capture]: Session notes on screen capture for UI verification

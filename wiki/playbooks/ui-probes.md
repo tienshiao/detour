@@ -4,8 +4,11 @@ title: UI probes
 description: Measurements to paste into a debug harness when clicks do not land, a window edge will not resize, or keyboard focus is somewhere unexpected — hit-test maps, resize-region probes, first-responder and key-view loop dumps, layout gaps.
 tags: [playbook, harness, appkit, focus, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
 sources:
+  - id: task-169
+    resource: backlog:TASK-169
+    title: A hover-revealed sidebar sometimes stays open instead of hiding again
   - id: task-126
     resource: backlog:TASK-126
     title: The Downloads button's left and bottom edges do not respond to clicks
@@ -220,19 +223,25 @@ See [settings](../features/settings.md) and
 
 ## Injected sidebar visibility events
 
-Real tracking-area enter and exit cannot be synthesized. Add a temporary
-accessor that forwards to the controller's private handler and feed the
-state machine directly:
+Real tracking-area enter and exit cannot be synthesized: `mouseMoved`
+events posted with `NSApp.postEvent` produced no `mouseEntered` or
+`mouseExited`, even for an `.activeAlways` tracking area.[^task-169] Call
+what the tracking areas would call, and replace or position the pointer:
 
 ```swift
-// TEMP extension of BrowserWindowController
-func debugSidebarEvent(_ event: SidebarVisibilityState.Event) { handleSidebarEvent(event) }
-
 wc.toggleSidebarAutoHide()
-wc.debugSidebarEvent(.hoverReveal(isCollapsed: wc.sidebarItem.isCollapsed))
-// … click a sidebar button that opens a popover …
-wc.debugSidebarEvent(.hoverHide(isCollapsed: wc.sidebarItem.isCollapsed))
+wc.sidebarPointerProbeForTesting = { false }   // or leave nil: the real pointer
+wc.sidebarHoverZoneEntered(.edge)              // the reveal
+wc.sidebarHoverZoneExited(.sidebar)            // an exit, if the case has one
+// … then log wc.sidebarItem.isCollapsed and wc.sidebarVisibility over time
 ```
+
+The pointer's real *position* can be part of the check without moving it:
+read `NSEvent.mouseLocation` and place the window so that the sidebar is
+away from the pointer, or under it. The second only tells something if
+nobody moves the pointer in the meantime; the one attempt ended with the
+pointer moved away a second later. The kept harness is
+[docs/harness/task169-harness.patch](../../docs/harness/task169-harness.patch).[^task-169]
 
 Popovers are `_NSPopoverWindow` child windows whose `parent` is the
 browser window, so `wc.window?.childWindows` tells whether one is still
@@ -270,6 +279,7 @@ the pointer never moved. See
 [^task-127]: TASK-127
 [^task-128]: TASK-128
 [^task-130]: TASK-130
+[^task-169]: TASK-169
 [^notes-probes]: Session notes on hit-test and resize probes
 [^notes-keyloop]: Session notes on the key-view loop probe
 [^notes-updates]: Session notes on verifying the extension update UI

@@ -5,7 +5,7 @@ description: The per-window controller — what each of its extension files hand
 resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [architecture, window, selection, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T19:44:58Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
 sources:
   - id: window-controller
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -57,7 +57,7 @@ The class is split across extension files under
 | `+TabStore.swift` | `TabStoreObserver` | Turning store callbacks into sidebar updates and selection repair. |
 | `+TabSidebar.swift` | `TabSidebarDelegate` | Every sidebar gesture: select, close, move, pin, split, favorites, folders, spaces, archive. |
 | `+Navigation.swift` | `WKNavigationDelegate` | Navigation policy (modifier clicks, Peek, external apps, downloads, CRX installs), commit and failure forwarding, process termination, authentication challenges, blocked-load counting. |
-| `+WKUIDelegate.swift` | `WKUIDelegate` | `window.open`, JavaScript dialogs, file upload, media capture permission, return from Picture in Picture. |
+| `+WKUIDelegate.swift` | `WKUIDelegate` | `window.open`, `window.close`, JavaScript dialogs, file upload, media capture permission, return from Picture in Picture. |
 | `+ExternalApps.swift` | — | Confirming non-HTTP URL schemes ([external apps](../features/external-apps.md)). |
 | `+RecentTabSwitcher.swift` | — | Control+Tab MRU overlay ([tab switching](../tabs/tab-switching.md)). |
 | `+SidePanel.swift` | — | Which tabs' live web views the window shows (`sidePanelDisplayedTabs`), the panel it displays, and putting a panel's view beside the content ([side panel](../extensions/side-panel.md)). |
@@ -242,7 +242,9 @@ deactivated; otherwise the tab closes.
 
 - `window.open()` never goes through `decidePolicyFor`; it arrives at
   `createWebViewWith`. Policy that must cover scripted opens (the internal
-  page refusal, the Peek rule) is duplicated there. See
+  page refusal, the Peek rule) is duplicated there. It returns the new
+  tab's web view, made from the configuration WebKit supplies; returning nil
+  leaves the page's `window.open()` with null. See
   [WKWebView delegate order](../platform/wkwebview-delegate-order.md).
 - `handleSpaceTabsNeedRehost` leaves a window alone when the notification
   names tabs and none of them is displayed here, precisely because

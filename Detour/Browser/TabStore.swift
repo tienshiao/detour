@@ -183,15 +183,33 @@ class Space {
         // (TASK-152). With no usable profile it answers nothing.
         config.setURLSchemeHandler(FaviconSchemeHandler(profile: profile), forURLScheme: FaviconSchemeHandler.scheme)
 
+        config.userContentController = makeUserContentController()
+
+        // Set Detour app name as default; Safari/Custom modes override via
+        // webView.customUserAgent in BrowserTab.applyUserAgent()
+        config.applicationNameForUserAgent = UserAgentMode.detourAppName
+
+        return config
+    }
+
+    /// The user content controller every web view of this space starts with:
+    /// the hover and focus scripts, the profile's content-blocking rules, the
+    /// Chrome Web Store interceptor and the profile's externally-connectable
+    /// pages. One per web view — a window adds and
+    /// removes its own message handlers on the controller of the web view it
+    /// hosts, so two tabs must never share one.
+    func makeUserContentController() -> WKUserContentController {
+        let controller = WKUserContentController()
+
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-        config.userContentController.addUserScript(script)
+        controller.addUserScript(script)
 
         let editableFocusScript = WKUserScript(source: Space.editableFieldFocusScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-        config.userContentController.addUserScript(editableFocusScript)
+        controller.addUserScript(editableFocusScript)
 
         // Apply content blocking rules
-        if let profile {
-            ContentBlockerManager.shared.applyRuleLists(to: config.userContentController, profile: profile)
+        if let profile = usableProfile {
+            ContentBlockerManager.shared.applyRuleLists(to: controller, profile: profile)
         }
 
         // Inject Chrome Web Store install interceptor (at document start for API polyfill)
@@ -200,24 +218,20 @@ class Space {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
-        config.userContentController.addUserScript(cwsEarlyScript)
+        controller.addUserScript(cwsEarlyScript)
         // DOM-based fallback at document end
         let cwsScript = WKUserScript(
             source: Space.chromeWebStoreScript,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         )
-        config.userContentController.addUserScript(cwsScript)
+        controller.addUserScript(cwsScript)
 
         // `chrome.runtime` on the pages this profile's loaded extensions list in
         // `externally_connectable` (TASK-132.6). Nothing is added while none does.
-        profile?.externallyConnectablePages.install(on: config.userContentController)
+        usableProfile?.externallyConnectablePages.install(on: controller)
 
-        // Set Detour app name as default; Safari/Custom modes override via
-        // webView.customUserAgent in BrowserTab.applyUserAgent()
-        config.applicationNameForUserAgent = UserAgentMode.detourAppName
-
-        return config
+        return controller
     }
 
     private static let linkHoverScript = """
@@ -2357,6 +2371,26 @@ class TabStore {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.load(URLRequest(url: url))
         return addTab(in: space, webView: webView)
+    }
+
+    /// Opens the tab for a window a page asked for (`window.open`, a
+    /// `target=_blank` link), from the configuration WebKit hands
+    /// `createWebViewWith`. The tab's web view has to be made from that
+    /// configuration and returned to WebKit for the page to get a window back
+    /// (TASK-167): it carries the opener's data store and web process, and
+    /// WebKit — not this tab — then performs the navigation.
+    ///
+    /// The configuration also carries the opener's user content controller;
+    /// the tab gets one of the space's own instead, like every other tab.
+    @discardableResult
+    func addTab(in space: Space, openedWith configuration: WKWebViewConfiguration, parentID: UUID? = nil) -> BrowserTab {
+        configuration.userContentController = space.makeUserContentController()
+        let tab = BrowserTab(configuration: configuration)
+        insertTab(tab, in: space, parentID: parentID)
+        // The tab was built before it had a space, and it never calls `load`,
+        // where every other new tab picks up its profile's user agent.
+        tab.applyUserAgent()
+        return tab
     }
 
     @discardableResult

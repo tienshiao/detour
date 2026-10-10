@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -33,6 +33,12 @@ sources:
   - id: task-79
     resource: backlog:TASK-79
     title: Closing a tab with a playing video starts picture-in-picture that vanishes mid-transition
+  - id: task-167
+    resource: backlog:TASK-167
+    title: window.open() hands the page no window back, so an xterm.js terminal link opens an empty tab
+  - id: task-168
+    resource: backlog:TASK-168
+    title: A sign-in popup cannot reach the page that opened it or close itself
   - id: task-85
     resource: backlog:TASK-85
     title: target=_blank links in a pinned tab or favourite open in a Peek
@@ -72,7 +78,7 @@ extension contexts (the list's `didSet`, see
 | Submitting the [command palette](../features/command-palette.md) in new-tab mode | `addTab(in:)`, then `tab.load(url, typed:)` | yes |
 | Cmd+click on a link | `addTab(in:url:parentID:)` with the selected tab as parent | no (a toast says so when the sidebar is collapsed) |
 | Context menu "Open Link in New Tab" | sets `contextMenuLinkAction`, replays WebKit's own item, lands in `createWebViewWith` → `addTab(in:url:parentID:)` | no |
-| `window.open` or a `_blank` link in a normal tab | `createWebViewWith` → `addTab(in:url:parentID:)` | yes |
+| `window.open` or a `_blank` link in a normal tab | `createWebViewWith` → `addTab(in:openedWith:parentID:)`, with the opener as parent, in the opener's space; the tab's web view is returned to WebKit, which loads the URL | yes, unless the opener is in a space the window is not showing |
 | Option+click on a link | `addTabInSplit(with:url:in:)` ([split](./split-tabs.md)) | yes |
 | Expanding a Peek | `addTab(in:webView:parentID:)`, adopting the Peek's web view | yes |
 | An extension page | `addExtensionTab(in:url:configuration:)`, built from the context's configuration | caller decides |
@@ -83,9 +89,31 @@ Things that follow from the code and are easy to assume wrong:
 
 - **Cmd+T creates nothing.** It only opens the palette; the tab is created on
   submit.
-- **`createWebViewWith` always returns nil.** Detour never hands WebKit the
-  configuration-matched web view it asks for; it opens the URL in a tab of its
-  own. The opener relationship is therefore lost for every `window.open`.[^task-85]
+- **A page's new window is a WebKit child.** `createWebViewWith` builds the
+  tab from the configuration WebKit supplies and returns its web view, so the
+  page gets a window back and keeps the opener link; the tab never calls
+  `load` — WebKit navigates it, and the tab learns its URL from the web view.
+  Until TASK-167 it returned nil and loaded the URL into a tab of its own,
+  which left `window.open()` returning null. It still returns nil for the
+  context menu's actions, for a [Peek](./peek.md), for the internal-page
+  and `data:` refusals, and for a window an **extension page** opens: WebKit
+  supplies the extension context's configuration there, which a web page must
+  not load in, so that window is still a tab the app loads itself.[^task-167]
+- **Such a tab shares its opener's data store and web process, not its user
+  content controller.** The supplied configuration carries the opener's
+  controller; the store replaces it with one of the space's own
+  (`Space.makeUserContentController()`), because a window adds and removes its
+  message handlers on the controller of the web view it hosts. When the tab
+  later sleeps and wakes it is rebuilt from the space's configuration and the
+  opener link is gone.[^task-167]
+- **A tab that never called `load` has no `lastAttemptedURL` to blame.** When
+  such a window's first load fails, the URL for the error page comes from the
+  error itself (`NSURLErrorFailingURLErrorKey`); the web view only ever
+  reported `about:blank`.[^task-167]
+- **Such a tab gets its user agent from the store.** `init` applies the
+  profile's user agent before the tab has a space, and `load` applies it
+  again; a tab that never calls `load` is given it by
+  `addTab(in:openedWith:)` once placed.[^task-167]
 - **`addTab(in:url:)` cannot open an internal page.** Its callers include web
   content and extensions; `addTab(in:internalPage:)` is the only store-level
   way in.
@@ -151,10 +179,19 @@ For a normal tab the window **settles selection first, then removes**:
    removes the tab, calls `teardown()`, dissolves its split group, registers the
    undo and notifies `tabStoreDidRemoveTab`.
 
+A page's `window.close()` arrives as `webViewDidClose` on the window that
+hosts the tab. WebKit has already decided the script may close it (a window a
+script opened, or one with nothing to go back to). The tab closes like one the
+user closed, with one difference in what is selected next: the tab that opened
+it (`parentID`), ahead of the close rule's siblings, since a window that
+closes itself is done and its opener is where the result went. A split pane
+keeps the split rule. Only normal tabs are handled: a `window.close()` from a
+Peek, a pinned tab or a favourite is ignored (TASK-171).[^task-168]
+
 A removal that did *not* go through the window's own close (an extension's
-`tabs.remove`, an undo, `window.close()` from the page) reaches the window with
-its selection still on the removed tab. `tabStoreDidRemoveTab` then picks the
-tab now at the same index, a blunter choice than the close rule.
+`tabs.remove`, an undo) reaches the window with its selection still on the
+removed tab. `tabStoreDidRemoveTab` then picks the tab now at the same index,
+a blunter choice than the close rule.
 
 `closeTab` has three knobs: `undoable: false` writes no record and no undo (a
 page that could never be reopened); `registersUndo: false` writes the record
@@ -206,7 +243,7 @@ skipped.
 - [BrowserWindowController+Navigation.swift](../../Detour/Browser/Window/BrowserWindowController+Navigation.swift):
   the policy order and `tab(owning:)`.
 - [BrowserWindowController+WKUIDelegate.swift](../../Detour/Browser/Window/BrowserWindowController+WKUIDelegate.swift):
-  `createWebViewWith`.
+  `createWebViewWith`, `webViewDidClose`.
 
 # Tests
 
@@ -227,5 +264,7 @@ skipped.
 - [Media and picture-in-picture](../platform/media-and-pip.md): the close-time PiP problem.
 
 [^task-79]: Closing a tab with a playing video starts picture-in-picture that vanishes mid-transition
+[^task-167]: window.open() hands the page no window back, so an xterm.js terminal link opens an empty tab
+[^task-168]: A sign-in popup cannot reach the page that opened it or close itself
 [^task-85]: target=_blank links in a pinned tab or favourite open in a Peek
 [^task-119]: Archived Tabs page; close undos skip consumed records

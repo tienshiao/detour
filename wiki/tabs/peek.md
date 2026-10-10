@@ -4,7 +4,7 @@ title: Peek
 description: The overlay that shows a linked page over the current tab; which links open in one, how it is anchored to its host tab, parked, restored and expanded, and how extensions see it.
 tags: [tabs, peek, overlay, navigation, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
 sources:
   - id: anchor
     resource: ../../Detour/Browser/Window/PeekAnchor.swift
@@ -76,7 +76,9 @@ What does **not** peek:
 - Any navigation that is not a link activation: redirects and script-driven
   location changes navigate an anchored tab in place.
 - A popup-style `window.open` (size, position or the `popup` feature, as OAuth
-  and payment windows ask for) keeps its own tab. The test is WebKit's
+  and payment windows ask for) keeps its own tab, which is a real child of
+  the page: it has `window.opener` and can close itself. A window that peeks
+  is not — the page's `window.open` returns null. The test is WebKit's
   `_wantsPopup` on `WKWindowFeatures` when available (macOS 14.2+), else
   explicit x/y/width/height.[^task-85]
 - Hostless targets (`about:blank`, `blob:`, `window.open("")`).

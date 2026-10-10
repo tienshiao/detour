@@ -1,0 +1,221 @@
+TASK-169 runtime harness: a hover-revealed sidebar that must hide again.
+Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task169-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT="$PWD/.derived-logs/task169"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify169 DETOUR_VERIFY_DIR="$OUT" \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for the "done" line in $OUT/verify.log (about 40 s), then kill that pid
+    git apply -R docs/harness/task169-harness.patch && xcodegen generate
+
+What it does: puts the window in auto-hide mode, moves the window (never the
+pointer) so that the sidebar is away from the real pointer, and reports the
+edge enter and sidebar exit that tracking areas would send, by calling
+sidebarHoverZoneEntered / sidebarHoverZoneExited. Real tracking-area events
+are not produced: posted mouse-moved events do not generate them. S1 and S2
+use the real pointer position; S3 to S6 replace it through
+sidebarPointerProbeForTesting.
+
+    S1  exit inside the reveal grace period      hides about 1 s after the reveal
+    S2  no exit at all                           hides about 1.25 s after the reveal
+    S3  pointer inside, then outside, no exit    stays, then hides
+    S4  popover shown, pointer leaves            stays until the popover closes
+    S5  Toggle Sidebar while revealed            pinned, stays
+    S6  context menu open, pointer outside       stays while the menu is open
+
+S7 runs only with DETOUR_VERIFY_UNDER_POINTER set: it moves the window under
+the real pointer and away again, to check "stays while the real pointer is
+over it" without a stand-in. It puts a window under the pointer of whoever is
+at the machine and tells nothing if they move the pointer meanwhile.
+
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,9 @@
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask169HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+--- a/Detour/Browser/Window/BrowserWindowController.swift
++++ b/Detour/Browser/Window/BrowserWindowController.swift
+@@ -886,6 +886,20 @@
+         // window would count as being in it.
+         let sidebarView = tabSidebar.view
+         return sidebarView.visibleRect.contains(sidebarView.convert(window.mouseLocationOutsideOfEventStream, from: nil))
++    }
++
++    // TEMP TASK-169 harness accessors — DO NOT COMMIT
++    static let debugHarnessVariant = "fixed (level-triggered hide)"
++    func debugEdgeEntered() { sidebarHoverZoneEntered(.edge) }
++    func debugSidebarExited() { sidebarHoverZoneExited(.sidebar) }
++    func debugSetPointer(_ inSidebar: Bool?) {
++        sidebarPointerProbeForTesting = inSidebar.map { value in { value } }
++    }
++    func debugSidebarLine() -> String {
++        let s = sidebarVisibility
++        let view = tabSidebar.view
++        let real = window.map { view.convert($0.mouseLocationOutsideOfEventStream, from: nil) } ?? .zero
++        return "collapsed=\(sidebarItem.isCollapsed) autoHides=\(s.autoHides) openedByHover=\(s.openedByHover) heldOpen=\(s.heldOpen) expectedCollapsed=\(s.expectedCollapsed) graceActive=\(s.inRevealGrace) hideScheduled=\(s.hidePending) pointerInSidebar=\(isPointerInSidebar) [real pointer: inBounds=\(view.bounds.contains(real)) inVisibleRect=\(view.visibleRect.contains(real)) visibleRect=\(view.visibleRect)]"
+     }
+ 
+     override func mouseEntered(with event: NSEvent) {
+--- /dev/null
++++ b/Detour/App/Task169Harness.swift
+@@ -0,0 +1,151 @@
++// TEMP TASK-169 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask169HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.2f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        func state(_ label: String) { log("\(label): \(wc.debugSidebarLine())") }
++        // Steps are laid out on one timeline; each `at` is relative to the
++        // previous one. Common modes, so they also run during menu tracking.
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier) variant=\(BrowserWindowController.debugHarnessVariant)")
++
++        at(0) {
++            guard let window = wc.window, let screen = window.screen ?? NSScreen.main else { log("no window"); return }
++            // Move the window, never the pointer: the sidebar (the window's
++            // leading 350 pt at most) is put away from the real pointer.
++            let p = NSEvent.mouseLocation
++            let vf = screen.visibleFrame
++            var frame = NSRect(x: 0, y: vf.minY + 40, width: 760, height: min(600, vf.height - 80))
++            frame.origin.x = p.x < vf.midX ? min(p.x + 120, vf.maxX - frame.width) : vf.minX + 20
++            window.setFrame(frame, display: true)
++            log("real pointer=\(p) window=\(window.frame) active=\(NSApp.isActive)")
++            if !wc.sidebarVisibility.autoHides { wc.toggleSidebarAutoHide() }
++            state("setup (auto-hide mode)")
++        }
++
++        // S1: exit inside the reveal grace period, real pointer outside the sidebar.
++        at(1.0) { wc.debugEdgeEntered(); state("S1 edge entered") }
++        at(0.2) { wc.debugSidebarExited(); state("S1 exit at +0.2 s (inside the grace period)") }
++        at(0.8) { state("S1 +1.0") }
++        at(0.7) { state("S1 +1.7") }
++        at(1.3) { state("S1 +3.0 RESULT") }
++        at(0.1) { if !wc.sidebarItem.isCollapsed { wc.debugSidebarExited(); state("S1 cleanup: second exit sent") } }
++        at(1.2) { state("S1 after cleanup") }
++
++        // S2: no exit event at all, real pointer outside the sidebar.
++        at(0.3) { wc.debugEdgeEntered(); state("S2 edge entered, no exit will be sent") }
++        at(1.0) { state("S2 +1.0") }
++        at(1.0) { state("S2 +2.0") }
++        at(1.0) { state("S2 +3.0 RESULT") }
++        at(0.1) { if !wc.sidebarItem.isCollapsed { wc.debugSidebarExited(); state("S2 cleanup: exit sent") } }
++        at(1.2) { state("S2 after cleanup") }
++
++        // S3: pointer in the sidebar (stand-in), then elsewhere with no exit event.
++        at(0.3) { wc.debugSetPointer(true); wc.debugEdgeEntered(); state("S3 edge entered, pointer stand-in inside") }
++        at(1.5) { state("S3 +1.5") }
++        at(1.5) { state("S3 +3.0 RESULT stays") }
++        at(0.1) { wc.debugSetPointer(false); state("S3 pointer stand-in outside, no exit sent") }
++        at(1.0) { state("S3 outside +1.0") }
++        at(1.0) { state("S3 outside +2.0 RESULT") }
++        at(0.1) { if !wc.sidebarItem.isCollapsed { wc.debugSidebarExited(); state("S3 cleanup: exit sent") } }
++        at(1.2) { state("S3 after cleanup") }
++
++        // S4: a popover holds the revealed sidebar; closing it lets it hide.
++        var popover: NSPopover?
++        at(0.3) { wc.debugSetPointer(true); wc.debugEdgeEntered(); state("S4 edge entered") }
++        at(0.8) {
++            let p = NSPopover()
++            let vc = NSViewController()
++            vc.view = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 80))
++            p.contentViewController = vc
++            p.behavior = .semitransient
++            p.show(relativeTo: NSRect(x: 40, y: 200, width: 20, height: 20), of: wc.tabSidebar.view, preferredEdge: .maxX)
++            popover = p
++            state("S4 popover show() returned")
++        }
++        at(1.2) { wc.debugSetPointer(false); wc.debugSidebarExited(); state("S4 pointer left for the popover (exit sent)") }
++        at(1.0) { state("S4 held +1.0") }
++        at(1.5) { state("S4 held +2.5 RESULT stays (popover shown=\(popover?.isShown ?? false))") }
++        at(0.1) { popover?.close(); state("S4 popover close()") }
++        at(1.0) { state("S4 closed +1.0") }
++        at(1.0) { state("S4 closed +2.0 RESULT") }
++        at(0.1) { popover = nil; if !wc.sidebarItem.isCollapsed { wc.debugSidebarExited(); state("S4 cleanup: exit sent") } }
++        at(1.2) { state("S4 after cleanup") }
++
++        // S5: Toggle Sidebar pins a hover-revealed sidebar.
++        at(0.3) { wc.debugSetPointer(true); wc.debugEdgeEntered(); state("S5 edge entered") }
++        at(0.8) { wc.toggleSidebarAutoHide(); state("S5 Toggle Sidebar") }
++        at(0.1) { wc.debugSetPointer(false); wc.debugSidebarExited(); state("S5 pointer left (exit sent)") }
++        at(2.5) { state("S5 +2.5 RESULT stays pinned") }
++        at(0.1) { wc.toggleSidebarAutoHide(); state("S5 Toggle Sidebar again (back to auto-hide)") }
++
++        // S6: a context menu open over the revealed sidebar, pointer outside it.
++        at(1.0) { wc.debugSetPointer(true); wc.debugEdgeEntered(); state("S6 edge entered") }
++        at(0.8) { wc.debugSetPointer(false); wc.debugSidebarExited(); state("S6 pointer left (exit sent), menu opens next") }
++        at(0.1) {
++            let menu = NSMenu()
++            menu.addItem(withTitle: "TASK-169 harness", action: nil, keyEquivalent: "")
++            let during = Timer(timeInterval: 1.2, repeats: false) { _ in state("S6 menu open for 1.2 s RESULT") }
++            let cancel = Timer(timeInterval: 1.6, repeats: false) { _ in menu.cancelTracking() }
++            RunLoop.main.add(during, forMode: .common)
++            RunLoop.main.add(cancel, forMode: .common)
++            state("S6 popUp")
++            _ = menu.popUp(positioning: nil, at: NSPoint(x: 40, y: 200), in: wc.tabSidebar.view)
++            state("S6 menu closed")
++        }
++        at(2.6) { state("S6 menu closed +1.0 RESULT") }
++        at(0.1) { if !wc.sidebarItem.isCollapsed { wc.debugSidebarExited(); state("S6 cleanup: exit sent") } }
++
++        at(1.2) { wc.debugSetPointer(nil) }
++
++        // S7, only with DETOUR_VERIFY_UNDER_POINTER set: the real pointer, no
++        // stand-in. The window is moved under the pointer and then away from
++        // it; the pointer itself is never moved. It puts a window under the
++        // pointer of whoever is at the machine, and tells nothing if they
++        // move the pointer meanwhile.
++        guard ProcessInfo.processInfo.environment["DETOUR_VERIFY_UNDER_POINTER"] != nil else {
++            at(0.5) { state("end"); log("done") }
++            return
++        }
++        at(0.5) {
++            guard let window = wc.window else { return }
++            let p = NSEvent.mouseLocation
++            var f = window.frame
++            f.origin.x = p.x - 100          // the pointer ends up 100 pt inside the leading edge
++            f.origin.y = p.y - f.height / 2
++            window.setFrame(f, display: true)
++            wc.debugEdgeEntered()
++            state("S7 window \(window.frame) moved under the real pointer \(p), edge entered")
++        }
++        at(1.0) { state("S7 +1.0 (real pointer \(NSEvent.mouseLocation))") }
++        at(1.5) { state("S7 +2.5 RESULT stays (real pointer \(NSEvent.mouseLocation))") }
++        at(0.1) {
++            guard let window = wc.window else { return }
++            let p = NSEvent.mouseLocation
++            var f = window.frame
++            f.origin.x = p.x + 150          // the whole window is right of the pointer
++            window.setFrame(f, display: true)
++            state("S7 window \(window.frame) moved away from the real pointer \(p), no exit sent")
++        }
++        at(1.0) { state("S7 away +1.0 (real pointer \(NSEvent.mouseLocation))") }
++        at(1.0) { state("S7 away +2.0 RESULT") }
++        at(0.5) { state("end"); log("done") }
++    }
++}
++#endif

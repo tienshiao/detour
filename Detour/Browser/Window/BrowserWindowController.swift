@@ -27,11 +27,29 @@ class BrowserWindowController: NSWindowController {
     /// Sidebar mode (pinned vs auto-hidden) and hover state; see
     /// `SidebarVisibilityState`. Mutated only through `handleSidebarEvent`.
     private(set) var sidebarVisibility = SidebarVisibilityState()
-    private var sidebarHoverGraceActive = false
-    private var autoHideWorkItem: DispatchWorkItem?
+    /// The timers behind the reducer's `startHoverGrace` and `scheduleAutoHide`,
+    /// and the pointer sample that runs while the sidebar is hover-revealed
+    /// (TASK-169). All three are scheduled in the default run loop mode only,
+    /// so none fires while AppKit tracks a menu, a drag session or a control:
+    /// the sidebar does not collapse under an open context menu or under a
+    /// tab being dragged out of it.
+    private var sidebarHoverGraceTimer: Timer?
+    private var sidebarAutoHideTimer: Timer?
+    private var sidebarPointerSampleTimer: Timer?
+    /// The reveal grace period and the hide delay (the same length), and how
+    /// often the pointer is sampled meanwhile. Variables so that tests can
+    /// shorten them; nothing else sets them.
+    var sidebarHoverDelay: TimeInterval = 0.5
+    var sidebarPointerSampleInterval: TimeInterval = 0.25
+    /// Test seam: stands in for the real pointer (position and buttons) when
+    /// the window asks whether the pointer is over the sidebar.
+    var sidebarPointerProbeForTesting: (() -> Bool)?
     private var hasSettledInitialFocus = false
-    /// Popovers of this window that are on screen (see `popoverDidShow`).
-    private var sidebarHoldingPopovers: Set<ObjectIdentifier> = []
+    /// Popovers shown on this window that have not reported closing (see
+    /// `popoverDidShow`). Held weakly and re-checked against `isShown`
+    /// (`refreshSidebarPopoverHold`), so a `didClose` that never arrives
+    /// cannot hold the sidebar open.
+    private let sidebarHoldingPopovers = NSHashTable<NSPopover>.weakObjects()
 
     var selectedTabID: UUID?
     private var activeTabSubscriptions = Set<AnyCancellable>()
@@ -714,7 +732,7 @@ class BrowserWindowController: NSWindowController {
             rect: .zero,
             options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
             owner: self,
-            userInfo: ["zone": "edge"]
+            userInfo: [Self.sidebarHoverZoneKey: SidebarHoverZone.edge.rawValue]
         )
         edgeView.addTrackingArea(edgeArea)
 
@@ -722,10 +740,18 @@ class BrowserWindowController: NSWindowController {
             rect: .zero,
             options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
             owner: self,
-            userInfo: ["zone": "sidebar"]
+            userInfo: [Self.sidebarHoverZoneKey: SidebarHoverZone.sidebar.rawValue]
         )
         tabSidebar.view.addTrackingArea(sidebarArea)
     }
+
+    /// The two tracking areas behind the hover reveal: the strip along the
+    /// window's leading edge, and the sidebar itself.
+    enum SidebarHoverZone: String {
+        case edge, sidebar
+    }
+
+    private static let sidebarHoverZoneKey = "zone"
 
     func toggleSidebarAutoHide() {
         handleSidebarEvent(.toggle(isCollapsed: sidebarItem.isCollapsed))
@@ -749,29 +775,88 @@ class BrowserWindowController: NSWindowController {
                     splitViewController.toggleSidebar(nil)
                 }
             case .cancelAutoHide:
-                autoHideWorkItem?.cancel()
-                autoHideWorkItem = nil
+                sidebarAutoHideTimer?.invalidate()
+                sidebarAutoHideTimer = nil
             case .startHoverGrace:
-                sidebarHoverGraceActive = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.sidebarHoverGraceActive = false
+                sidebarHoverGraceTimer?.invalidate()
+                sidebarHoverGraceTimer = Timer.scheduledTimer(withTimeInterval: sidebarHoverDelay,
+                                                              repeats: false) { [weak self] _ in
+                    guard let self else { return }
+                    self.sidebarHoverGraceTimer = nil
+                    // With a button down the sidebar is kept for now; the
+                    // sample looks again once the button is up.
+                    self.handleSidebarEvent(.hoverGraceEnded(pointerInSidebar: self.sidebarPointerReading ?? true))
                 }
             case .scheduleAutoHide:
                 scheduleSidebarAutoHide()
             }
         }
+        updateSidebarPointerSampling()
     }
 
     /// Hides a hover-revealed sidebar after the hover delay, unless the
-    /// pointer comes back (or a popover opens) first.
+    /// pointer comes back (or a popover opens) first. The reducer decides
+    /// from where the pointer is when the delay elapses.
     private func scheduleSidebarAutoHide() {
-        autoHideWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
+        sidebarAutoHideTimer?.invalidate()
+        sidebarAutoHideTimer = Timer.scheduledTimer(withTimeInterval: sidebarHoverDelay,
+                                                    repeats: false) { [weak self] _ in
             guard let self else { return }
-            self.handleSidebarEvent(.hoverHide(isCollapsed: self.sidebarItem.isCollapsed))
+            self.sidebarAutoHideTimer = nil
+            self.refreshSidebarPopoverHold()
+            // With a button down the hide is put off, not dropped: the
+            // reducer keeps the session and the sample starts the delay again.
+            self.handleSidebarEvent(.hoverHide(isCollapsed: self.sidebarItem.isCollapsed,
+                                               pointerInSidebar: self.sidebarPointerReading ?? true))
         }
-        autoHideWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+    }
+
+    // MARK: - Pointer sample
+
+    /// Runs the pointer sample exactly while the reducer wants it: while the
+    /// sidebar is hover-revealed. The hide must not hang on one `mouseExited`
+    /// (TASK-169): AppKit sends none while a mouse button is down or a drag
+    /// session is live, nor when the view under a still pointer changes.
+    private func updateSidebarPointerSampling() {
+        guard sidebarVisibility.watchesPointer else {
+            sidebarPointerSampleTimer?.invalidate()
+            sidebarPointerSampleTimer = nil
+            return
+        }
+        guard sidebarPointerSampleTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: sidebarPointerSampleInterval,
+                                         repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            self.sampleSidebarPointer()
+        }
+        timer.tolerance = sidebarPointerSampleInterval / 5
+        sidebarPointerSampleTimer = timer
+    }
+
+    private func sampleSidebarPointer() {
+        guard let inSidebar = sidebarPointerReading else { return }
+        refreshSidebarPopoverHold()
+        handleSidebarEvent(.pointerObserved(inSidebar: inSidebar))
+    }
+
+    /// What the hide rule is told about the pointer when the window looks for
+    /// itself. `nil` while a mouse button is down: a press or drag that began
+    /// in the sidebar keeps it, as it did when only exit events counted (AppKit
+    /// sends none during one), and a hide in the middle of a drag in the page
+    /// would resize the page under it.
+    private var sidebarPointerReading: Bool? {
+        if let probe = sidebarPointerProbeForTesting { return probe() }
+        guard NSEvent.pressedMouseButtons == 0 else { return nil }
+        return isPointerInSidebar
+    }
+
+    private func stopSidebarHoverTimers() {
+        sidebarHoverGraceTimer?.invalidate()
+        sidebarHoverGraceTimer = nil
+        sidebarAutoHideTimer?.invalidate()
+        sidebarAutoHideTimer = nil
+        sidebarPointerSampleTimer?.invalidate()
+        sidebarPointerSampleTimer = nil
     }
 
     // MARK: - Popover hold
@@ -782,43 +867,80 @@ class BrowserWindowController: NSWindowController {
     /// say what it is anchored to, and while the sidebar is hover-revealed
     /// the pointer is in it, so that is where a popover comes from.
     @objc private func popoverDidShow(_ notification: Notification) {
-        guard let popover = notification.object as? NSPopover, let window,
-              popover.contentViewController?.view.window?.parent === window else { return }
-        let wasHolding = !sidebarHoldingPopovers.isEmpty
-        sidebarHoldingPopovers.insert(ObjectIdentifier(popover))
-        if !wasHolding { handleSidebarEvent(.holdBegan) }
+        guard let popover = notification.object as? NSPopover, isPopoverOnThisWindow(popover) else { return }
+        sidebarHoldingPopovers.add(popover)
+        refreshSidebarPopoverHold()
     }
 
     @objc private func popoverDidClose(_ notification: Notification) {
         guard let popover = notification.object as? NSPopover,
-              sidebarHoldingPopovers.remove(ObjectIdentifier(popover)) != nil,
-              sidebarHoldingPopovers.isEmpty else { return }
-        handleSidebarEvent(.holdEnded(pointerInSidebar: isPointerInSidebar))
+              sidebarHoldingPopovers.contains(popover) else { return }
+        sidebarHoldingPopovers.remove(popover)
+        refreshSidebarPopoverHold()
+    }
+
+    private func isPopoverOnThisWindow(_ popover: NSPopover) -> Bool {
+        guard let window, let popoverWindow = popover.contentViewController?.view.window else { return false }
+        return popoverWindow.parent === window
+    }
+
+    /// Brings the reducer's hold in line with the popovers that are really
+    /// up. `didShow` and `didClose` call it, and so does every pointer sample
+    /// and every elapsed hide delay: a popover that went away without a
+    /// `didClose` stops holding the sidebar the next time anyone looks.
+    private func refreshSidebarPopoverHold() {
+        var holding = false
+        for popover in sidebarHoldingPopovers.allObjects {
+            if popover.isShown && isPopoverOnThisWindow(popover) {
+                holding = true
+            } else {
+                sidebarHoldingPopovers.remove(popover)
+            }
+        }
+        guard holding != sidebarVisibility.heldOpen else { return }
+        handleSidebarEvent(holding ? .holdBegan : .holdEnded(pointerInSidebar: isPointerInSidebar))
     }
 
     private var isPointerInSidebar: Bool {
-        guard let window, !sidebarItem.isCollapsed else { return false }
+        if let probe = sidebarPointerProbeForTesting { return probe() }
+        // A window that is off screen (hidden app, minimized, closed) has no
+        // pointer in it: its hover session ends instead of being sampled on.
+        guard let window, window.isVisible, !sidebarItem.isCollapsed else { return false }
+        // The visible part only: while the sidebar slides in, its bounds
+        // reach past the window's edge, and a pointer just outside the
+        // window would count as being in it.
         let sidebarView = tabSidebar.view
-        return sidebarView.bounds.contains(sidebarView.convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        return sidebarView.visibleRect.contains(sidebarView.convert(window.mouseLocationOutsideOfEventStream, from: nil))
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard let userInfo = event.trackingArea?.userInfo,
-              let zone = userInfo["zone"] as? String else { return }
-        if zone == "edge" {
-            handleSidebarEvent(.hoverReveal(isCollapsed: sidebarItem.isCollapsed))
-        } else if zone == "sidebar" && sidebarVisibility.openedByHover {
-            autoHideWorkItem?.cancel()
-            autoHideWorkItem = nil
-        }
+        guard let zone = Self.sidebarHoverZone(of: event) else { return }
+        sidebarHoverZoneEntered(zone)
     }
 
     override func mouseExited(with event: NSEvent) {
-        guard let userInfo = event.trackingArea?.userInfo,
-              let zone = userInfo["zone"] as? String else { return }
-        if zone == "sidebar" && sidebarVisibility.openedByHover && !sidebarHoverGraceActive {
-            scheduleSidebarAutoHide()
+        guard let zone = Self.sidebarHoverZone(of: event) else { return }
+        sidebarHoverZoneExited(zone)
+    }
+
+    private static func sidebarHoverZone(of event: NSEvent) -> SidebarHoverZone? {
+        (event.trackingArea?.userInfo?[sidebarHoverZoneKey] as? String).flatMap(SidebarHoverZone.init(rawValue:))
+    }
+
+    /// What the tracking areas report, apart from the `NSEvent` plumbing:
+    /// enter and exit events cannot be synthesized, so tests call these.
+    func sidebarHoverZoneEntered(_ zone: SidebarHoverZone) {
+        switch zone {
+        case .edge:
+            handleSidebarEvent(.hoverReveal(isCollapsed: sidebarItem.isCollapsed))
+        case .sidebar:
+            handleSidebarEvent(.pointerObserved(inSidebar: true))
         }
+    }
+
+    func sidebarHoverZoneExited(_ zone: SidebarHoverZone) {
+        guard zone == .sidebar else { return }
+        handleSidebarEvent(.pointerObserved(inSidebar: false))
     }
 
     private func setupDragHandle() {
@@ -3263,6 +3385,7 @@ extension BrowserWindowController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         selectedTab?.savePeekStateForPersistence()
         recentTabSwitcher?.invalidate()
+        stopSidebarHoverTimers()
         // The tab leaves the screen with the window; see `setActiveSpace`.
         if let outgoing = selectedTab {
             stampDeselected(outgoing)

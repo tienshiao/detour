@@ -5,7 +5,7 @@ description: "The tab model — an optional WKWebView with published state, slee
 resource: ../../Detour/Browser/BrowserTab.swift
 tags: [architecture, tabs, webkit, sleep]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
 sources:
   - id: browser-tab
     resource: ../../Detour/Browser/BrowserTab.swift
@@ -57,8 +57,8 @@ type.
 
 | Initialiser | Web view | Used for |
 |---|---|---|
-| `init(id:configuration:)` | Built now from the configuration | New tabs (`TabStore.addTab`). |
-| `init(id:webView:)` | Adopts an existing, already loading web view | `window.open` targets and extension pages (`addTab(in:webView:)`, `addExtensionTab`). Seeds `url`, `title`, `isLoading` from the web view. |
+| `init(id:configuration:)` | Built now from the configuration | New tabs (`TabStore.addTab`). Also a window a page opened (`addTab(in:openedWith:)`), where the configuration is the one WebKit supplied and WebKit, not `load`, starts the navigation. |
+| `init(id:webView:)` | Adopts an existing, already loading web view | An expanded Peek and extension pages (`addTab(in:webView:)`, `addExtensionTab`). Seeds `url`, `title`, `isLoading` from the web view. |
 | `init(id:title:url:faviconURL:cachedInteractionState:spaceID:)` | None; `isSleeping = true` | Session restore of unselected tabs, and tabs created asleep. |
 
 A convenience initialiser
