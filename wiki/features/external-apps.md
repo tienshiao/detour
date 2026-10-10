@@ -4,7 +4,7 @@ title: External application links
 description: "What happens when a page navigates to a non-web scheme such as zoommtg: or mailto: - the confirmation sheet, the pure launch policy, and the per-profile 'Always allow' store keyed by origin and scheme."
 tags: [navigation, security, external-apps, profiles, permissions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:50:59Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
 sources:
   - id: policy
     resource: ../../Detour/Browser/ExternalApps/ExternalAppLaunchPolicy.swift
@@ -89,12 +89,14 @@ it. Checked in a real window on macOS 26's WebKit, 2026-10-04:[^task-159]
 
 One place needs a rule of Detour's to keep WebKit's. A page's new-window
 request (a `target=_blank` link, a script's `window.open`) is answered by
-`createWebViewWith`, which returns no web view and loads the URL into a new
-tab or a peek itself. WebKit takes that load for the app's and allows it, so
-a page could open a top-level `data:` document that way: the `_blank` link
-since `data` joined the list above, `window.open` all along (it never
-consults the navigation policy). `createWebViewWith` therefore refuses a
-`data:` URL for a page's own request. The context menu's "Open Link in New
+`createWebViewWith`. When this was found it returned no web view and loaded
+the URL into a new tab or a peek itself; WebKit takes such a load for the
+app's and allows it, so a page could open a top-level `data:` document that
+way: the `_blank` link since `data` joined the list above, `window.open` all
+along (it never consults the navigation policy). `createWebViewWith`
+therefore refuses a `data:` URL for a page's own request. Since TASK-167 a
+new tab's web view is handed back to WebKit, which navigates it itself; a
+peek is still loaded by the app, and the refusal stays in front of both. The context menu's "Open Link in New
 Tab" and "Open Link in New Window" are the user's choice and still open
 one.[^task-159]
 

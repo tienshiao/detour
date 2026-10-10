@@ -4,7 +4,7 @@ title: WKWebView delegate call order
 description: Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
 tags: [webkit, navigation, delegates, peek, internal-pages]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-spike
@@ -25,6 +25,15 @@ sources:
   - id: task-122
     resource: backlog:TASK-122
     title: A background tab whose load fails never shows the error page
+  - id: task-167
+    resource: backlog:TASK-167
+    title: window.open() hands the page no window back, so an xterm.js terminal link opens an empty tab
+  - id: task-168
+    resource: backlog:TASK-168
+    title: A sign-in popup cannot reach the page that opened it or close itself
+  - id: spike-167
+    resource: ../../docs/harness/task167-window-open-spike.swift
+    title: Standalone spike — what createWebViewWith receives and what the page gets back
   - id: navigation
     resource: ../../Detour/Browser/Window/BrowserWindowController+Navigation.swift
     title: BrowserWindowController+Navigation.swift
@@ -67,6 +76,59 @@ Consequences:
 - A rule written only in `decidePolicyFor` misses every script-opened window.
   Google Calendar opens an event's video-call link through `window.open`,
   not a `_blank` anchor, which is how this was found.[^task-85]
+
+## What the page gets back
+
+Measured 2026-10-10 on macOS 26 with a standalone binary, the delegate
+returning nil, then a web view made from the supplied configuration.[^spike-167]
+
+| Page action | `request.url` in `createWebViewWith` | Delegate returns nil | Delegate returns a web view |
+|---|---|---|---|
+| `window.open()` (no URL) | non-nil, the empty string | `window.open()` returns `null` | A window. The child shows `about:blank` with no policy call; the page's later `w.location.href = …` is a navigation of the child (`decidePolicyFor` on the child, type `.other`) |
+| `window.open(url)` | the URL | `null` | A window. **WebKit loads the URL in the child itself**; `window.opener` is set and `opener.postMessage` arrives |
+| `window.open(url, '_blank', 'noopener')` | the URL | `null` | Still `null` for the page, by design. The delegate is called all the same and WebKit loads the URL in the child, whose `window.opener` is null |
+| `<a target="_blank">`, with or without `rel=noopener` | the URL | no window | WebKit loads the URL in the child |
+
+So a delegate that returns nil and loads the URL into a web view of its own
+gives the page nothing to hold: a page that opens a blank window and
+navigates it afterwards is left with an empty window, and a popup has no
+opener to report to. xterm.js's link handler is the first shape
+(`const w = window.open(); w.opener = null; w.location.href = uri`, and only
+a console warning when `w` is null); a sign-in popup is the second.[^task-167][^task-168]
+
+Other facts from the same runs:
+
+- The supplied configuration shares the opener's `websiteDataStore` **and its
+  `userContentController`** (the same object). Replacing
+  `configuration.userContentController` with a fresh controller before
+  creating the child is accepted: the child's user scripts and message
+  handlers come from the new controller, and the opener link, `postMessage`
+  and `window.close()` work as before.
+- `window.close()` is reported to the **closing** web view's UI delegate as
+  `webViewDidClose(_:)`, for a close called by the child, by the opener on its
+  handle, and by a `noopener` child. The opener then reads `closed === true`
+  on its handle. The child's UI delegate has to be set for any of that to be
+  seen. Detour had implemented `webView(_:didClose:)`, which is not a
+  `WKUIDelegate` method, so no page had ever closed a tab.[^task-168]
+
+- **By the time a provisional failure is reported, `WKWebView.url` no longer
+  names what failed.** A script-opened window whose first load failed left
+  the tab's URL observer with `about:blank` as the last URL, and the error
+  page was raised for that. The same was then measured in an ordinary tab: a
+  page at P that sets `location.href` to a dead server gets the error page for
+  **P**, and Reload retries P. (WebKit's source commits the page load state,
+  reverting the URL, before it calls the failure delegate; the two runs agree
+  with that but did not observe the order directly.) The failed URL is in the
+  error's `NSURLErrorFailingURLErrorKey`.
+  `BrowserTab.didFailProvisionalNavigation` takes it from there only when the
+  tab has no URL of its own (nil or `about:blank`), which covers the opened
+  window; the ordinary-tab case is open as TASK-170.[^task-167]
+- **An extension page's `window.open` is supplied the extension context's
+  configuration** (`_requiredWebExtensionBaseURL` set; CORS checks off for the
+  extension's hosts). A child built from it for a web URL carried the
+  extension's base URL and never loaded the page. Detour keeps the old path
+  for such an opener: a tab of the space's own that the app loads, and null
+  for the extension page.[^task-167]
 
 ## Telling a popup from a tab in `createWebViewWith`
 
@@ -139,6 +201,9 @@ Verified 2026-09-19 while designing the `detour://` pages.[^notes-spike][^task-8
 |---|---|---|
 | In a pinned tab or favourite, every user-activated `_blank` link opens a Peek | nil `targetFrame` arrives in `decidePolicyFor` before any new web view exists | Peek branch of `decidePolicyFor` passes `opensNewWindow: navigationAction.targetFrame == nil` to `PeekAnchor.shouldPeek` |
 | A tab-style `window.open` from an anchored tab also peeks; a popup-style one (OAuth, payment) keeps its own tab | `window.open` skips `decidePolicyFor`; `_wantsPopup` | `createWebViewWith` → `PeekAnchor.shouldPeekScriptedWindow(to:wantsPopup:)`, `wantsPopup(_:)` falls back to explicit x/y/width/height when the SPI is missing |
+| A page's new window is a tab whose web view WebKit asked for | the page gets a window only when the delegate returns a web view made from the supplied configuration; WebKit then does the navigation | `createWebViewWith` → `TabStore.addTab(in:openedWith:parentID:)`, which swaps in a user content controller of the space's own |
+| A window an extension page opens is not a child | the supplied configuration is the extension context's | `isExtensionContextConfiguration` in `BrowserWindowController+WKUIDelegate.swift` |
+| `window.close()` closes the tab and returns to the tab that opened it | `webViewDidClose(_:)` on the closing web view's UI delegate | `webViewDidClose` in `BrowserWindowController+WKUIDelegate.swift` |
 | `window.open` to an internal page is refused | `createWebViewWith` is the only hook for it | `InternalPage.isInternal(url)` check at the top of `createWebViewWith` |
 | An internal page loads only when the tab was armed for it, or as a revisit of an entry already in the tab's back/forward list | An app `load()` is indistinguishable from a script navigation; session restore arrives as `.backForward`; redirects keep the navigation type | `InternalPageNavigationPolicy.decision` — trust is carried out of band by `BrowserTab.loadInternalPage(_:)`, and a `.backForward`/`.reload` must name a URL that is in `sessionEntryURLs` |
 | The scheme handler serves only main documents on the internal scheme | `mainDocumentURL` | `InternalPageSchemeHandler` |
@@ -188,6 +253,7 @@ example of such a binary).
 # Tests
 
 - [PeekAnchorTests](../../DetourTests/PeekAnchorTests.swift) — the peek-vs-tab routing for `_blank` and scripted opens.
+- [PageOpenedWindowTests](../../DetourTests/PageOpenedWindowTests.swift) — page-opened windows in a real window against loopback pages: the blank-then-navigate sequence, a single load, `noopener`, a failed first load, the opener link across origins, `window.close()`; and `ExtensionPageOpenedWindowTests` in the same file for the extension-page exception.
 - [InternalPageTests](../../DetourTests/InternalPageTests.swift), [InternalPageIntegrationTests](../../DetourTests/InternalPageIntegrationTests.swift) — navigation policy, scheme handler, bridge isolation.
 - [NavigationErrorClassificationTests](../../DetourTests/NavigationErrorClassificationTests.swift) — the ignored and not-ignored error sets.
 - [BrowserTabUnclaimedNavigationTests](../../DetourTests/BrowserTabUnclaimedNavigationTests.swift) — real failures reaching an unclaimed tab.
@@ -206,6 +272,9 @@ delegate order and the `_wantsPopup` values were.[^task-85]
 - [WebKit source lookup](./webkit-source-lookup.md) — reading the WebKit functions named above.
 - [AppKit gotchas](./appkit-gotchas.md) — the companion page for AppKit behaviour.
 
+[^task-167]: window.open() hands the page no window back, so an xterm.js terminal link opens an empty tab
+[^task-168]: A sign-in popup cannot reach the page that opened it or close itself
+[^spike-167]: Standalone spike — what createWebViewWith receives and what the page gets back
 [^notes-spike]: WKWebView delegate spike — verified call order and custom-scheme facts
 [^task-85]: Peek: target=_blank links in a pinned tab or favourite open in a Peek
 [^task-86]: History page and the internal-page infrastructure

@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-10-10
+* **Ingest**: TASK-167, TASK-168 — a window a page opens is now a WebKit child: `createWebViewWith` returns the new tab's web view, made from the supplied configuration, and `webViewDidClose` closes a tab its page closed. Added "What the page gets back" (measured with [the spike](../docs/harness/task167-window-open-spike.swift): what `window.open()` returns for nil and for a web view, who loads the URL, the shared user content controller, where the close is reported) to [WKWebView delegate order](platform/wkwebview-delegate-order.md); rewrote the creation row, the gotchas and the script-close paragraph of [Tab lifecycle](tabs/tab-lifecycle.md); touched [BrowserTab](architecture/browser-tab.md), [Browser window controller](architecture/browser-window-controller.md), [External application links](features/external-apps.md), [Internal pages](features/internal-pages.md) and [Peek](tabs/peek.md).
+
 ## 2026-10-04
 * **Update**: TASK-135 — the two-window hand-off was run with the screen unlocked, with and without the focus call: [Keyboard focus](sidebar/keyboard-focus.md) now states what was seen, and [Runtime verification](playbooks/runtime-verification.md) says how to run a check that needs key windows.
 * **Update**: follow-up batch runtime check — two traps added to [Runtime verification](playbooks/runtime-verification.md): an extension page in a harness must be opened with the extension's configuration (`addExtensionTab`), and a real download check needs a loopback server that controls the pace.

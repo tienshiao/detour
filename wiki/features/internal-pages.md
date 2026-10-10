@@ -5,7 +5,7 @@ description: "How Detour serves its own privileged pages into ordinary tabs: sin
 resource: ../../Detour/Browser/InternalPages
 tags: [internal-pages, security, webkit, bridge, navigation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
 sources:
   - id: internal-page
     resource: ../../Detour/Browser/InternalPages/InternalPage.swift
@@ -144,8 +144,10 @@ The handler `webkit.messageHandlers.detourInternal` is a
 `WKScriptMessageHandlerWithReply` added to that world only. Page-world script
 and extension content-script worlds cannot see it at all: `window.webkit` is
 undefined there.[^delegate-spike] That is exposure control, not the guarantee.
-A `WKUserContentController` can be shared between web views (a `window.open`
-child gets its opener's), so each message is re-verified:
+A `WKUserContentController` can be shared between web views (WebKit hands a
+`window.open` child its opener's; Detour's tabs replace it with their own
+since TASK-167, but the check does not rely on that), so each message is
+re-verified:
 
 - `message.world` is the bridge's world;
 - `InternalPageBridge.authorizedPage(...)`: main frame, security origin

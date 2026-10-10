@@ -22,10 +22,10 @@ extension BrowserWindowController: WKUIDelegate {
             }
         case .none:
             // A page's own new-window request (a `target=_blank` link, a
-            // script's window.open) for a `data:` URL. Everything below loads
-            // the URL into a tab or a peek itself, and a load the app asks for
-            // is one WebKit allows — where it refuses a page's top-level
-            // navigation to a `data:` URL. Refused here to keep that rule
+            // script's window.open) for a `data:` URL. A peek below loads the
+            // URL itself, and a load the app asks for is one WebKit allows —
+            // where it refuses a page's top-level navigation to a `data:` URL.
+            // Refused here, before a peek or a tab exists, to keep that rule
             // (TASK-159). The context menu's own actions, above, are the
             // user's choice and still open one.
             if url.scheme?.lowercased() == "data" { return nil }
@@ -39,11 +39,71 @@ extension BrowserWindowController: WKUIDelegate {
                 presentPeek(of: url, on: host, firing: webView)
                 return nil
             }
-            let tab = TabStore.shared.addTab(in: space, url: url, parentID: selectedTabID)
-            selectTab(id: tab.id)
+            // The page's new window is a real WebKit child: a tab whose web
+            // view is made from `configuration` and handed back, so the page
+            // gets a window from window.open() and WebKit performs the
+            // navigation. Loading the URL into an unrelated tab instead left
+            // `window.open()` returning null — an empty tab for a page that
+            // opens a blank window and navigates it afterwards, as xterm.js's
+            // link handler does (TASK-167).
+            let opener = openerPlacement(for: webView, activeSpace: space)
+            // Not for a window an extension page opens. `configuration` is a
+            // copy of the opener's, and an extension page's is its context's:
+            // CORS checks off for the extension's hosts, third-party cookie
+            // blocking relaxed, the web view counted as one of the extension's
+            // own pages. A web page must not load in a web view built from
+            // that, so such a window stays what it was before TASK-167: a tab
+            // of the space's own that the app loads, and no window for the
+            // extension page.
+            if Self.isExtensionContextConfiguration(configuration, opener: webView) {
+                let tab = store.addTab(in: opener.space, url: url.absoluteString.isEmpty ? nil : url,
+                                       parentID: opener.parentID)
+                if opener.space.id == space.id { selectTab(id: tab.id) }
+                return nil
+            }
+            let tab = store.addTab(in: opener.space, openedWith: configuration, parentID: opener.parentID)
+            if opener.space.id == space.id {
+                selectTab(id: tab.id)
+            } else {
+                // Opened by a tab of a space this window is not showing: it
+                // stays in the background there. No window has claimed it, so
+                // nothing else would make it answer its own window requests.
+                tab.webView?.uiDelegate = self
+            }
+            return tab.webView
         }
 
         return nil
+    }
+
+    /// Where a window opened by `webView`'s page goes: the space holding the
+    /// tab that opened it, and that tab as its parent. The active space is
+    /// asked first, since a favourite's tab belongs to every space of its
+    /// profile. The space matters because the new tab shares its opener's data
+    /// store: put in whichever space is on screen, a window opened by a tab of
+    /// another profile's space would carry that profile's cookies into this one.
+    private func openerPlacement(for webView: WKWebView, activeSpace: Space) -> (space: Space, parentID: UUID?) {
+        let spaces = [activeSpace] + store.spaces.filter { $0.id != activeSpace.id }
+        for space in spaces {
+            guard let tab = store.tab(hosting: webView, in: space) else { continue }
+            // A peek opens windows on behalf of the tab it is peeked from.
+            return (space, (store.tab(hostingPeek: tab) ?? tab).id)
+        }
+        return (activeSpace, selectedTabID)
+    }
+
+    /// Whether the configuration WebKit supplies for a new window is an
+    /// extension context's (`WKWebExtensionContext.webViewConfiguration`),
+    /// which is what an extension page's web view is built from and what its
+    /// `window.open` child would inherit. The context marks its configuration
+    /// with `_requiredWebExtensionBaseURL` (SPI, read by key behind a
+    /// `responds(to:)` guard); the opener showing an extension page is the
+    /// same answer without the SPI.
+    private static func isExtensionContextConfiguration(_ configuration: WKWebViewConfiguration,
+                                                        opener: WKWebView) -> Bool {
+        if isExtensionPageURL(opener.url) { return true }
+        guard configuration.responds(to: NSSelectorFromString("_requiredWebExtensionBaseURL")) else { return false }
+        return configuration.value(forKey: "_requiredWebExtensionBaseURL") as? URL != nil
     }
 
     /// Whether a `window.open` asked for a popup rather than a tab. WebKit's
@@ -94,13 +154,31 @@ extension BrowserWindowController: WKUIDelegate {
 
     // MARK: - Window Close
 
-    func webView(_ webView: WKWebView, didClose: WKWebView) {
-        let store = TabStore.shared
+    /// A page closed its own window with `window.close()`. WebKit decides
+    /// whether it may (a window a script opened, or one with nothing to go
+    /// back to) and only then calls this; the tab goes away like one the user
+    /// closed, and stays reopenable.
+    ///
+    /// A window that closes itself has finished what it was opened for — a
+    /// sign-in popup handing its result to its opener — so when it is the tab
+    /// on screen the tab that opened it comes back, ahead of the usual close
+    /// order's siblings (TASK-168).
+    func webViewDidClose(_ webView: WKWebView) {
         for space in store.spaces {
-            if let tab = space.tabs.first(where: { $0.webView === webView }) {
-                store.closeTab(id: tab.id, in: space)
-                return
+            guard let index = space.tabs.firstIndex(where: { $0.webView === webView }) else { continue }
+            let tab = space.tabs[index]
+            if space.id == activeSpaceID, tab.id == selectedTabID {
+                settlingSelectionForClose {
+                    if store.splitGroup(containing: tab.id, in: space) == nil,
+                       let opener = tab.parentID.flatMap({ space.displayableTab(id: $0) }) {
+                        selectTab(id: opener.id)
+                    } else {
+                        settleSelectionLeaving(tabAt: index, in: space)
+                    }
+                }
             }
+            store.closeTab(id: tab.id, in: space)
+            return
         }
     }
 

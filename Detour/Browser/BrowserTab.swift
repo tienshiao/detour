@@ -421,7 +421,11 @@ class BrowserTab: NSObject {
         NotificationCenter.default.removeObserver(self, name: .init("UserAgentDidChange"), object: nil)
     }
 
-    private func applyUserAgent() {
+    /// Sets the web view's user agent from the profile of the tab's space.
+    /// `init` runs this before the tab has a space; `load(_:)` runs it again,
+    /// and a tab that never calls `load` (a window a page opened) is given it
+    /// by the store once placed.
+    func applyUserAgent() {
         if let spaceID, let profile = TabStore.shared.space(withID: spaceID)?.profile {
             webView?.customUserAgent = profile.resolvedUserAgent()
         } else {
@@ -1102,7 +1106,16 @@ class BrowserTab: NSObject {
         // failed request of the user's: keep the session, title and favicon
         // (TASK-45). `reload()` goes through `load(_:)`, so retrying it still
         // shows the error page on failure.
-        guard !restoringSession, let lastAttemptedURL else { return }
+        guard !restoringSession else { return }
+        // A window a page opened has no URL of its own to blame: this tab
+        // never called `load`, and WebKit keeps a script-opened window at
+        // about:blank until its first load commits, so the URL observer never
+        // saw where it was going (TASK-167). The error names what failed.
+        if lastAttemptedURL == nil || lastAttemptedURL == Self.blankURL,
+           let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+            lastAttemptedURL = failingURL
+        }
+        guard let lastAttemptedURL else { return }
         showErrorPage(for: lastAttemptedURL, error: error)
     }
 
