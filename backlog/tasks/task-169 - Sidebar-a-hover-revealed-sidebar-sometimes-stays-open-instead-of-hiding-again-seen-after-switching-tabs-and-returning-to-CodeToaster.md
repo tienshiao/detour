@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-10 07:08'
-updated_date: '2026-10-10 07:59'
+updated_date: '2026-10-10 08:15'
 labels:
   - bug
 dependencies: []
@@ -40,8 +40,8 @@ The fix should not depend on one exit event: whatever the cause, a revealed side
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The stuck state is reproduced, or caught in the running app with enough logging to name it: the reducer's state (autoHides, openedByHover, heldOpen, expectedCollapsed), whether a hide was scheduled, and the event that was missed
-- [ ] #2 The cause is recorded in the task, including which of the listed candidates were ruled out and how
+- [x] #1 The stuck state is reproduced, or caught in the running app with enough logging to name it: the reducer's state (autoHides, openedByHover, heldOpen, expectedCollapsed), whether a hide was scheduled, and the event that was missed
+- [x] #2 The cause is recorded in the task, including which of the listed candidates were ruled out and how
 - [x] #3 A hover-revealed sidebar hides after the pointer has left it in each case found, including an exit during the reveal grace period and a tab switch made from the revealed sidebar
 - [x] #4 A hover-revealed sidebar still stays open while the pointer is in it and while a popover opened from it is showing (TASK-127), and Toggle Sidebar still pins it
 - [x] #5 The rule is in the pure reducer with tests in SidebarVisibilityStateTests that fail before the fix; anything that cannot be a reducer test has a stated reason
@@ -112,4 +112,14 @@ Not applied, for review:
 The review ran its own 'xcodebuild build' in this worktree's .derived without waiting for other builds.
 
 Final code, harness removed: xcodebuild -scheme DetourTests -configuration Debug test -derivedDataPath .derived -only-testing:DetourTests/SidebarVisibilityStateTests -only-testing:DetourTests/BrowserWindowSidebarModeTests -only-testing:DetourTests/SidebarPageFocusTests = 63 run, 0 failed, 0 skipped (window tests 8.3 s). Harness rerun on that code (isolated profile DetourVerify169d): S1-S6 as before (S1 hidden by +1.7 s, S2 by +2.0 s, S3 stays then hides, S4 held then hides, S5 pinned, S6 stays under the menu then hides). S7 is now behind DETOUR_VERIFY_UNDER_POINTER and was not rerun. The mouse-button rule and the hidden-window rule were not exercised at runtime or in a test.
+
+## Integration and review by the main session, 2026-10-10
+
+The agent's commit is cherry-picked onto main's tip (db9024b, which has TASK-167/168) as branch task-169-sidebar-autohide; one conflict in wiki/log.md, both entries kept. Reducer and window glue read through: the hide rule is one function (settleHide), the window only reports where the pointer is, and the three timers run in the default run loop mode.
+
+AC #1 and #2 checked by the main session: the stuck state was reproduced in the running app on the unfixed build and named (collapsed=false autoHides=true openedByHover=true heldOpen=false, no hide scheduled, the missed event an exit in the grace period or no exit at all), and each candidate has a verdict with its evidence above. The caveat stands: the events were injected, and which mechanism the user's own occurrence was is not known. AC #6 stays open: it needs real pointer movement on a page that takes mouse input.
+
+Full DetourTests run on the branch: 2,116 tests, 11 skipped, 1 failure: ExtensionOriginTrackingPreventionTests.testTrackingPreventionPassSparesOriginsWithALoggedInteraction ('timed out after 30.0 s waiting for the uninteracted origin's localStorage to be deleted'). Not from this change: run alone a few minutes later it fails the same way on this branch and on main at db9024b, where it had passed in a full run about half an hour earlier (2,095 tests, 0 failures). Cause not established (the test drives WebKit's tracking-prevention pass, which has time-dependent rules).
+
+One thing for the user to rule out, since it looks the same as a sidebar that failed to hide: Toggle Sidebar is Cmd+S and reaches the menu when the page does not take the key, so Cmd+S pressed in a web app pins a hidden or hover-revealed sidebar.
 <!-- SECTION:NOTES:END -->
