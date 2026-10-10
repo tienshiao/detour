@@ -4,7 +4,7 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: window
@@ -70,6 +70,9 @@ sources:
   - id: task-131
     resource: backlog:TASK-131
     title: A focused tab list loses keyboard focus when the space list changes
+  - id: task-169
+    resource: backlog:TASK-169
+    title: A hover-revealed sidebar sometimes stays open instead of hiding again
   - id: notes-keyloop
     resource: "Agent session notes, 2026-10-02 (not in the repository)"
     title: Key-view loop probe findings
@@ -120,6 +123,7 @@ Related.
 | Traffic lights sit inside the sidebar area only if the window has a toolbar. | Window setup | An empty unified `NSToolbar` (`setupToolbar`) |
 | During a fullscreen transition the title-bar container is reparented into an auxiliary window before `styleMask` reports `.fullScreen`. Converting a standard window button's frame then gives a plausible but wrong rect. | Title-bar control alignment in the sidebar | Check `zoomButton.window === window` before converting (`alignTitleBarControls`) |
 | `NSSplitViewController.toggleSidebar(nil)` and `setPosition(0, …)` both flip `isCollapsed` and fire its KVO **synchronously** inside the call. The split view's autosave is applied when the controller's view loads, and written back on AppKit's own deferred schedule — including after the window closes.[^task-39] | Sidebar mode attribution; a flaky autosave test | Make state logic independent of KVO timing ([visibility and auto-hide](../sidebar/visibility-and-auto-hide.md)). In tests poll for the autosave write and let the close-time write land before removing the key |
+| `toggleSidebar(nil)` twice in one run loop turn, collapse then expand, ends **collapsed**: each call flips `isCollapsed` synchronously, then a third KVO (`true`) arrives after both returned. Expand then collapse in one turn, and either order 50 ms apart, behaved as asked (standalone probe, macOS 26).[^task-169] | Tests that put a window into auto-hide mode and revealed the sidebar at once saw it "hide" in 0.1 s | Let a collapse settle for a run loop turn before expanding; in the app the stray collapse is adopted as external, which leaves a consistent hidden state |
 
 # Hit testing and mouse events
 
@@ -130,7 +134,10 @@ Related.
 | A view with `mouseDownCanMoveWindow == true` moves the window from any point no subview claims. A control narrower than its drawn hover shape leaves a rim that drags the window. | Bottom-bar buttons | Make the frame cover what is drawn (28 pt wide for a 27 pt circle) |
 | A table view that is a drag source delays window ordering on **every** mouse-down so a row can be dragged out of a background window. A mouse-down that instead moves the window then drags a background window around underneath the others. | Sidebar list, empty area below the rows | `shouldDelayWindowOrdering(for:)` returns `false` when the point is not on a row (`DraggableTableView`) |
 | `WindowDragView.mouseDown` runs a nested `trackEvents` loop. Entered from inside a Swift `Task` (events delivered with `window.sendEvent`), AppKit throws from `nextEventMatchingMask` and the app aborts.[^notes-inprocess] | In-process UI automation | Deliver synthetic events with `NSApp.postEvent(_:atStart:)`; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
-| Tracking areas do not reliably send `mouseExited` when scrolling moves a view from under the pointer, and send nothing while a drag session is active.[^commit-b9ef265] | Hover backgrounds stuck on rows after scrolls and drags | `recheckHover()` from `mouseLocationOutsideOfEventStream`, called after scrolls, batch updates and drag end |
+| Tracking areas do not reliably send `mouseExited` when scrolling moves a view from under the pointer, and send nothing while a drag session is active.[^commit-b9ef265] | Hover backgrounds stuck on rows after scrolls and drags; a hover-revealed sidebar that stayed open (TASK-169) | Do not let state hang on one exit event: re-derive it from `mouseLocationOutsideOfEventStream` (`recheckHover()` after scrolls, batch updates and drag end; the sidebar's pointer sample, see [visibility and auto-hide](../sidebar/visibility-and-auto-hide.md)) |
+| `mouseMoved` events posted with `NSApp.postEvent` do not produce `mouseEntered` or `mouseExited`, even for an `.activeAlways` tracking area.[^task-169] | Trying to drive hover from a harness | Call the code the tracking area would call; say that the pointer never moved |
+| A view's `bounds` are not what is on screen while it slides in: the sidebar's bounds reached past the window's edge during the reveal animation, and a pointer outside the window tested as inside them. `visibleRect` was empty then, and equal to the bounds once settled.[^task-169] | "Is the pointer over the sidebar" during a hover reveal | Test against `visibleRect` |
+| A `Timer` scheduled in the default run loop mode does not fire while AppKit tracks a context menu; a `DispatchQueue.main.asyncAfter` block does (it ran in `NSEventTrackingRunLoopMode`). `NSMenu.didBeginTrackingNotification` and `didEndTrackingNotification` are posted for a context menu too.[^task-169] | The sidebar's hide delay collapsed it under an open context menu | Use a default-mode `Timer` for anything that must wait for a menu or drag to finish |
 | On macOS 26 the sidebar is inset 8 pt from the window edge, and the window's resize region is only the bottom 3 pt plus the rounded-corner cutout.[^task-126][^notes-hittest] | Suspected, wrongly, of eating the Downloads button's clicks | Probe rather than assume |
 
 # Table views and drag sessions
@@ -152,7 +159,8 @@ Related.
 |---|---|---|
 | Collapsing the view a popover is anchored to takes the popover away with it.[^task-127] | Downloads popover vanished when an auto-hidden sidebar hid | Hold the sidebar open while a popover is up |
 | `NSPopover` does not expose its positioning view. Its window is a child of the presenting window, but only from `didShow`; at `willShow` it is not yet.[^task-127] | Deciding which popovers belong to the window | Observe `NSPopover.didShowNotification` and test `popover.contentViewController?.view.window?.parent === window` |
-| A `.semitransient` popover whose anchor collapses under it can stay shown and post no `didClose` (seen in a standalone probe, not reproduced in the app).[^task-127] | A hold keyed on `didClose` could stick | Known gap, unfixed |
+| A `.semitransient` popover whose anchor collapses under it can stay shown and post no `didClose` (seen in a standalone probe, not reproduced in the app).[^task-127] Ordering its parent window out, or minimizing it, also leaves it `isShown` with no `didClose`; it returns with the window. A shown popover with no remaining reference stays alive and shown. Removing the anchor's view from the hierarchy closes it, with `didClose`.[^task-169] | A hold keyed on `didClose` could stick | Keep popovers weakly and ask `isShown` when the answer matters (`refreshSidebarPopoverHold`) |
+| For an animated popover `didShow` was posted about 0.5 s after `show(relativeTo:of:preferredEdge:)` returned; `isShown` and the child-window relation were true as soon as it returned.[^task-169] | The sidebar's popover hold starts late | Known gap, unfixed |
 
 # Appearance and capture
 
@@ -202,6 +210,7 @@ from a probe or a measurement.
 [^task-129]: Favorite drop hint without a layout shift, and drops that land from the release point
 [^task-130]: Keyboard focus stays behind on a tab list whose page has slid off screen
 [^task-131]: A focused tab list loses keyboard focus when the space list changes
+[^task-169]: A hover-revealed sidebar sometimes stays open instead of hiding again
 [^design]: Split tabs design (sections 5 and 11)
 [^commit-b9ef265]: Sidebar: ID-based drag payloads, pure drop resolver, drag fixes
 [^notes-keyloop]: Key-view loop probe findings

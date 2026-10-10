@@ -15,4 +15,4 @@
 
 # Features
 
-* [Sidebar visibility and auto-hide](visibility-and-auto-hide.md) - The sidebar's two modes (pinned and auto-hidden), the pure SidebarVisibilityState reducer that attributes every collapse to its source, edge-hover reveal, and how open popovers hold a revealed sidebar.
+* [Sidebar visibility and auto-hide](visibility-and-auto-hide.md) - The sidebar's two modes (pinned and auto-hidden), the pure SidebarVisibilityState reducer that attributes every collapse to its source, edge-hover reveal, the level-triggered hover hide, and how open popovers hold a revealed sidebar.
