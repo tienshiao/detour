@@ -4,7 +4,7 @@
 
 # Concepts
 
-* [Keyboard focus in the window and sidebar](keyboard-focus.md) - Which view holds first responder in a browser window, when focus is handed back to the web page, and why only the sidebar page on screen may take the keyboard.
+* [Keyboard focus in the window and sidebar](keyboard-focus.md) - Which view holds first responder in a browser window, when focus is handed back to the web page, why a space's tab list never takes the keyboard, and why the archive page takes it only while on screen.
 * [Sidebar drag and drop](drag-and-drop.md) - The sidebar's drag pipeline: ID-based payloads, the pure validate / destination / resolve functions, the drop transaction, drop landing and the favorite drop hint.
 * [Sidebar row layout](row-layout.md) - How a sidebar table row maps to a pinned item or a tab-list item, why an item index is not a tab index, and the pure functions every conversion must go through.
 

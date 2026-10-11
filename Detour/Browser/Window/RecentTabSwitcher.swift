@@ -20,6 +20,9 @@ final class RecentTabSwitcher {
         /// Whether this is the window's current item (always the first entry
         /// when present; absent when the window has no selection).
         var isCurrent = false
+        /// The tab whose Peek comes back over this item when it is chosen:
+        /// the pane that gets focus, if it has one (TASK-173).
+        var peekHost: BrowserTab?
     }
 
     /// The switchable items, current first (see `recentTabOrder`).
@@ -207,7 +210,7 @@ final class RecentTabSwitcherView: NSView {
     init(entries: [RecentTabSwitcher.Entry]) {
         super.init(frame: .zero)
         cards = entries.enumerated().map { index, entry in
-            let card = RecentTabCardView(tabs: entry.tabs)
+            let card = RecentTabCardView(tabs: entry.tabs, peekHost: entry.peekHost)
             card.onHover = { [weak self] in self?.onHover(index) }
             card.onClick = { [weak self] in self?.onClick(index) }
             return card
@@ -288,7 +291,9 @@ private final class FlippedRowView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// One switcher card. A split shows both panes side by side.
+/// One switcher card. A split shows both panes side by side. A tab that comes
+/// back with a Peek shows it as on screen: the page dimmed, the Peek in a
+/// panel over it (TASK-173).
 @MainActor
 private final class RecentTabCardView: NSView {
 
@@ -308,14 +313,19 @@ private final class RecentTabCardView: NSView {
     }
 
     private let tabs: [BrowserTab]
+    private let peekHost: BrowserTab?
     private let previews: [CALayer]
     private let previewFrame = CALayer()
+    private let peekDim = CALayer()
+    private let peekPanel = CALayer()
     private let fallbackIcon = NSImageView()
+    private let peekFallbackIcon = NSImageView()
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
 
-    init(tabs: [BrowserTab]) {
+    init(tabs: [BrowserTab], peekHost: BrowserTab?) {
         self.tabs = tabs
+        self.peekHost = peekHost
         previews = tabs.map { _ in
             let layer = CALayer()
             layer.contentsGravity = .resizeAspectFill
@@ -330,6 +340,15 @@ private final class RecentTabCardView: NSView {
         previewFrame.masksToBounds = true
         previewFrame.backgroundColor = NSColor.textBackgroundColor.cgColor
         previews.forEach(previewFrame.addSublayer)
+        if peekHost != nil {
+            peekDim.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+            peekPanel.cornerRadius = 4
+            peekPanel.masksToBounds = true
+            peekPanel.contentsGravity = .resizeAspectFill
+            peekPanel.backgroundColor = NSColor.textBackgroundColor.cgColor
+            previewFrame.addSublayer(peekDim)
+            previewFrame.addSublayer(peekPanel)
+        }
         layer?.addSublayer(previewFrame)
 
         let lead = tabs.first
@@ -337,6 +356,13 @@ private final class RecentTabCardView: NSView {
         fallbackIcon.image = lead?.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
         fallbackIcon.imageScaling = .scaleProportionallyUpOrDown
         addSubview(fallbackIcon)
+        if let peekHost {
+            // Shown while the Peek has no picture (parked before it was ever
+            // left on screen, or a failed capture).
+            peekFallbackIcon.image = peekHost.displayPeekFavicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+            peekFallbackIcon.imageScaling = .scaleProportionallyUpOrDown
+            addSubview(peekFallbackIcon)
+        }
         reloadPreviews()
 
         icon.image = lead?.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
@@ -356,7 +382,18 @@ private final class RecentTabCardView: NSView {
         for (layer, tab) in zip(previews, tabs) {
             layer.contents = tab.switcherPreview
         }
-        fallbackIcon.isHidden = tabs.contains { $0.switcherPreview != nil }
+        let peekPreview = peekHost?.peekTab?.switcherPreview
+        peekPanel.contents = peekPreview
+        peekFallbackIcon.isHidden = peekPreview != nil
+        // The panel covers the middle of the card, where this icon sits.
+        fallbackIcon.isHidden = peekHost != nil || tabs.contains { $0.switcherPreview != nil }
+    }
+
+    /// The Peek's panel within the card's preview. The real one is inset 64 pt
+    /// at the sides and 12 pt above and below, which at card size would be a
+    /// hairline; these proportions keep it reading as a panel over the page.
+    static func peekPanelFrame(in preview: NSRect) -> NSRect {
+        preview.insetBy(dx: (preview.width * 0.1).rounded(), dy: (preview.height * 0.07).rounded())
     }
 
     override var isFlipped: Bool { true }
@@ -375,8 +412,12 @@ private final class RecentTabCardView: NSView {
             pane.frame = NSRect(x: CGFloat(index) * paneWidth, y: 0,
                                 width: paneWidth - (index < previews.count - 1 ? 1 : 0), height: previewRect.height)
         }
+        // Over both panes of a split, as the overlay is.
+        peekDim.frame = previewFrame.bounds
+        peekPanel.frame = Self.peekPanelFrame(in: previewFrame.bounds)
         CATransaction.commit()
         fallbackIcon.frame = NSRect(x: previewRect.midX - 16, y: previewRect.midY - 16, width: 32, height: 32)
+        peekFallbackIcon.frame = fallbackIcon.frame
 
         let titleY = previewRect.maxY + 4
         icon.frame = NSRect(x: inset, y: titleY + 1, width: 16, height: 16)

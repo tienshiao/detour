@@ -238,6 +238,13 @@ class BrowserTab: NSObject {
         peekTab?.favicon ?? peekFavicon
     }
 
+    /// Whether selecting this tab brings a Peek back over it: a live one is
+    /// presented again, a parked or session-restored one is rebuilt from
+    /// `peekURL` (`restorePeekOverlayIfNeeded`).
+    var hasPeek: Bool {
+        peekTab?.webView != nil || peekURL != nil
+    }
+
     func clearPeekState() {
         peekTab = nil
         peekURL = nil

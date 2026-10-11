@@ -153,9 +153,12 @@ extension BrowserWindowController: TabSidebarDelegate {
         SettingsWindowController.shared.showSpacesPane(selectSpaceID: spaceID)
     }
 
-    /// The page takes the keyboard a sidebar page gave up — as it does when
-    /// nothing holds it after a tab switch (TASK-128).
+    /// The page takes the keyboard the sidebar gave up or never wanted (a
+    /// click on a tab list, TASK-174) — as it does when nothing holds it after
+    /// a tab switch (TASK-128). Not from the command palette: a click on the
+    /// New Tab row has just opened it, and it is typed into.
     func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController) {
+        guard commandPaletteView == nil else { return }
         restoreWebContentFocus()
     }
 

@@ -1,0 +1,205 @@
+TASK-173 / TASK-174 runtime harness: the Control+Tab switcher's card for a tab
+with a Peek, and the keyboard after a click on the sidebar's tab list.
+Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task173-174-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT="$PWD/.derived-logs/task173"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify173 DETOUR_VERIFY_DIR="$OUT" \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for the "done" line in $OUT/verify.log (about 40 s), then kill that pid
+    git apply -R docs/harness/task173-174-harness.patch && xcodegen generate
+
+It needs the sandbox off and the screen unlocked. At each "SHOT <name>
+window=<id>" line the overlay stays up for 3 s: capture it from the shell with
+`screencapture -x -o -l <id> shot.png`.
+
+    K1  posted click on another tab's row, then a posted key
+    K2  find bar focused, posted click on a row, then a posted key
+    K3  nothing focused, posted click on the selected row, then a posted key
+    SHOT 1  a tab left with a Peek: its card shows the Peek over a dimmed page
+    SHOT 2  the same with the Peek's picture removed: the panel shows a globe
+    SHOT 3  the current tab has the Peek presented
+    SHOT 4  the Peek closed: no panel
+
+Each K step logs the first responder and the keys each page's keydown listener
+received. With the list refusing focus the selected page receives the key;
+with the old code first responder is DraggableTableView and no page does.
+
+Launched from a shell the app is not the active application, and a posted
+click then does not change the list's selection (the K steps all stay on the
+first tab). Whether it does in an active application (launched with `open -n`
+and no `-g`) was not tried.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 10a3d14..3176d13 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -107,6 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask173HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task173Harness.swift b/Detour/App/Task173Harness.swift
+new file mode 100644
+index 0000000..51fce49
+--- /dev/null
++++ b/Detour/App/Task173Harness.swift
+@@ -0,0 +1,151 @@
++// TEMP TASK-173 / TASK-174 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++import Carbon.HIToolbox
++
++extension AppDelegate {
++    func runTask173HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.2f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        func page(_ name: String, _ color: String) -> URL {
++            let html = """
++            <title>\(name)</title><body style="margin:0;background:\(color);font:bold 120px -apple-system;color:white">\
++            <div style="padding:60px">\(name)</div>\
++            <script>window.keys='';addEventListener('keydown',e=>{window.keys+=e.key})</script>
++            """
++            return URL(string: "data:text/html;base64," + Data(html.utf8).base64EncodedString())!
++        }
++        func responder() -> String {
++            guard let window = wc.window else { return "no window" }
++            let fr = window.firstResponder
++            if fr === window { return "WINDOW (nothing)" }
++            var view = fr as? NSView
++            while let v = view {
++                if let web = v as? WKWebView { return "web view '\(web.title ?? "?")'" }
++                view = v.superview
++            }
++            return String(describing: fr.map { type(of: $0) })
++        }
++        func state(_ label: String) {
++            log("\(label): selected='\(wc.selectedTab?.title ?? "nil")' firstResponder=\(responder()) key=\(wc.window?.isKeyWindow ?? false) active=\(NSApp.isActive)")
++        }
++        var eventNumber = 500
++        func mouse(_ type: NSEvent.EventType, at point: NSPoint) {
++            guard let window = wc.window else { return }
++            eventNumber += 1
++            if let e = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime,
++                                          windowNumber: window.windowNumber, context: nil,
++                                          eventNumber: eventNumber, clickCount: 1,
++                                          pressure: type == .leftMouseDown ? 1 : 0) {
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func clickRow(of tab: BrowserTab) {
++            guard let space = wc.activeSpace, let index = space.tabs.firstIndex(where: { $0.id == tab.id }) else { log("no row"); return }
++            let table = wc.tabSidebar.tableView
++            let rect = table.rect(ofRow: rowForNormalTab(at: index, pinnedItemCount: wc.tabSidebar.flattenedPinnedItems.count))
++            let point = table.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
++            mouse(.leftMouseDown, at: point)
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { mouse(.leftMouseUp, at: point) }
++        }
++        func key(_ code: Int, _ chars: String, flags: NSEvent.ModifierFlags = [], up: Bool = true) {
++            guard let window = wc.window else { return }
++            for type in (up ? [NSEvent.EventType.keyDown, .keyUp] : [.keyDown]) {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
++                                            timestamp: ProcessInfo.processInfo.systemUptime,
++                                            windowNumber: window.windowNumber, context: nil,
++                                            characters: chars, charactersIgnoringModifiers: chars,
++                                            isARepeat: false, keyCode: UInt16(code)) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func keys(_ label: String, _ tabs: [BrowserTab]) {
++            for tab in tabs {
++                tab.webView?.evaluateJavaScript("window.keys") { value, _ in
++                    log("\(label): page '\(tab.title)' received keys='\(value as? String ?? "?")'")
++                }
++            }
++        }
++        func shot(_ name: String) {
++            log("SHOT \(name) window=\(wc.window?.windowNumber ?? -1)")
++        }
++
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        var a: BrowserTab!, b: BrowserTab!, c: BrowserTab!
++
++        at(0) {
++            guard let space = wc.activeSpace, let window = wc.window, let screen = window.screen ?? NSScreen.main else { log("no space"); return }
++            let vf = screen.visibleFrame
++            window.setFrame(NSRect(x: vf.minX + 40, y: vf.maxY - 800, width: 1100, height: 760), display: true)
++            a = TabStore.shared.addTab(in: space, url: page("Alpha", "#b33"))
++            b = TabStore.shared.addTab(in: space, url: page("Bravo", "#36b"))
++            c = TabStore.shared.addTab(in: space, url: page("Charlie", "#383"))
++            wc.selectTab(id: a.id)
++        }
++        at(2.5) { state("setup") }
++
++        // --- TASK-174: a click on the tab list leaves the keyboard on the page.
++        at(0.2) { clickRow(of: b) }
++        at(0.8) { state("K1 after click on Bravo's row"); key(kVK_ANSI_X, "x") }
++        at(0.6) { keys("K1 RESULT", [a, b, c]) }
++
++        at(0.4) { wc.showFindBar(nil); state("K2 find bar focused") }
++        at(0.3) { clickRow(of: c) }
++        at(0.8) { state("K2 after click on Charlie's row"); key(kVK_ANSI_Y, "y") }
++        at(0.6) { keys("K2 RESULT", [a, b, c]) }
++        at(0.3) { wc.dismissFindBar(nil) }
++
++        // Clicking the row that is already selected, with nothing focused.
++        at(0.4) { wc.window?.makeFirstResponder(nil); state("K3 nothing focused") }
++        at(0.2) { if let tab = wc.selectedTab { clickRow(of: tab) } }
++        at(0.8) { state("K3 after click on the selected row"); key(kVK_ANSI_Z, "z") }
++        at(0.6) { keys("K3 RESULT", [a, b, c]) }
++
++        // --- TASK-173: the switcher shows the Peek a tab comes back with.
++        at(0.5) {
++            wc.selectTab(id: a.id)
++            wc.showPeekOverlay(url: page("PEEK", "#a6a"))
++        }
++        at(3.0) { state("P1 peek presented on Alpha (has=\(a.hasPeek))"); wc.selectTab(id: b.id) }
++        at(1.5) {
++            log("P1 pictures: alpha=\(a.switcherPreview != nil) peek=\(a.peekTab?.switcherPreview != nil) requests=\(a.peekTab?.switcherPreviewRequest ?? -1)")
++            key(kVK_Tab, "\t", flags: .control, up: false)
++        }
++        at(1.0) { shot("1-left-with-peek") }
++        at(3.0) { key(kVK_Escape, "\u{1b}", up: false) }
++
++        at(0.5) { a.peekTab?.switcherPreview = nil; key(kVK_Tab, "\t", flags: .control, up: false) }
++        at(1.0) { shot("2-peek-without-picture") }
++        at(3.0) { key(kVK_Escape, "\u{1b}", up: false) }
++
++        at(0.5) { wc.selectTab(id: a.id) }
++        at(1.5) { state("P3 back on Alpha"); key(kVK_Tab, "\t", flags: .control, up: false) }
++        at(1.0) { shot("3-current-with-peek") }
++        at(3.0) { key(kVK_Escape, "\u{1b}", up: false) }
++
++        at(0.5) { wc.closePeekOverlay() }
++        at(0.8) { wc.selectTab(id: b.id) }
++        at(1.2) { key(kVK_Tab, "\t", flags: .control, up: false) }
++        at(1.0) { shot("4-peek-closed") }
++        at(3.0) { key(kVK_Escape, "\u{1b}", up: false) }
++        at(0.5) { state("end"); log("done") }
++    }
++}
++#endif

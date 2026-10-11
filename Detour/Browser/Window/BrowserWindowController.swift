@@ -1092,8 +1092,9 @@ class BrowserWindowController: NSWindowController {
                 peekTab.enterPictureInPicture()
                 pipContentView = peekTab.webView
             }
-            hidePeekUI()
+            // Before the Peek leaves the screen: it is pictured with its host.
             stampDeselected(previousTab)
+            hidePeekUI()
             if !selectionLeavesClosingTab, previousTab.isPlayingAudio {
                 previousTab.enterPictureInPicture()
                 // Keep the container in the hierarchy so WebKit can capture the
@@ -1178,7 +1179,8 @@ class BrowserWindowController: NSWindowController {
         // Also when nothing holds keyboard focus — the selection at launch, or
         // a switch away from a page that had it (its web view just left the
         // window) — so the page takes keys without a click (TASK-128). Focus
-        // held by a control, such as the sidebar row just clicked, stays.
+        // held by a control, such as the find bar, stays; the sidebar's tab
+        // list holds none, and hands it over after a click (TASK-174).
         if paletteWasShowing || isKeyboardFocusUnheld { restoreWebContentFocus() }
     }
 
@@ -1208,6 +1210,8 @@ class BrowserWindowController: NSWindowController {
             captureSwitcherPreview(of: member)
             member.switcherPreviewAt = now
         }
+        // The Peek over the tab is part of what its card shows (TASK-173).
+        tab.peekTab.map(captureSwitcherPreview(of:))
     }
 
     /// The selected tab's split partners (both panes, visual order) — or just

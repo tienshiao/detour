@@ -24,7 +24,8 @@ extension BrowserWindowController {
 
     /// The active space's live tabs — pinned, favourite and normal, a split as
     /// one entry — in switcher order. Dormant pinned entries and favourites
-    /// have no tab, so they are never offered; Peeks are not tabs.
+    /// have no tab, so they are never offered; Peeks are not tabs, and show
+    /// on their host's entry (`peekHost`).
     func recentTabSwitcherEntries() -> [RecentTabSwitcher.Entry] {
         guard let space = activeSpace else { return [] }
         let live = space.pinnedEntries.compactMap(\.tab)
@@ -46,8 +47,11 @@ extension BrowserWindowController {
         }
         return recentTabOrder(candidates, selectedTabID: selectedTabID).compactMap { candidate in
             guard let members = itemsByFirstID[candidate.tabIDs[0]] else { return nil }
-            return RecentTabSwitcher.Entry(tabs: members, focusTabID: switcherFocusTab(of: members).id,
-                                           isCurrent: members.contains { $0.id == selectedTabID })
+            // Only the focused pane's Peek is presented (`restorePeekOverlayIfNeeded`).
+            let focus = switcherFocusTab(of: members)
+            return RecentTabSwitcher.Entry(tabs: members, focusTabID: focus.id,
+                                           isCurrent: members.contains { $0.id == selectedTabID },
+                                           peekHost: focus.hasPeek ? focus : nil)
         }
     }
 
@@ -64,13 +68,16 @@ extension BrowserWindowController {
     }
 
     /// The panes on screen now get fresh pictures, so the current card shows
-    /// the page as it is (including a tab visited for the first time).
+    /// the page as it is (including a tab visited for the first time) — and
+    /// the Peek over it, if one is presented.
     private func captureVisibleSwitcherPreviews() {
         guard let tab = selectedTab else { return }
         splitMembers(of: tab).forEach(captureSwitcherPreview(of:))
+        tab.peekTab.map(captureSwitcherPreview(of:))
     }
 
-    /// Pictures `tab` if its web view is on screen in this window. Never
+    /// Pictures `tab` — a tab, or a Peek, which keeps its picture on its own
+    /// `BrowserTab` — if its web view is on screen in this window. Never
     /// hosts or wakes a hidden tab to do so — every show of a page costs GPU
     /// surfaces (TASK-104) — so a failed capture keeps the older picture.
     ///

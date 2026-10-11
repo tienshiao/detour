@@ -98,16 +98,19 @@ final class InitialWindowFocusTests: XCTestCase {
         XCTAssertTrue(wc.window?.firstResponder === second.webView)
     }
 
-    func testSelectingATabLeavesFocusOnASidebarControl() throws {
+    /// A switch that did not come from a click on the tab list (Control+Tab,
+    /// Cmd+Option+Up/Down) leaves the keyboard with a control that holds it.
+    func testSelectingATabLeavesFocusOnAControlThatHoldsIt() throws {
         let (wc, space) = try makeController()
         wc.showWindow(nil)
         let tab = addTab(to: wc, in: space)
         let window = try XCTUnwrap(wc.window)
-        // As a click on the tab's row does.
-        XCTAssertTrue(window.makeFirstResponder(wc.tabSidebar.tableView))
+        wc.showFindBar(nil)
+        let held = try XCTUnwrap(window.firstResponder)
+        XCTAssertFalse(held === window, "the find bar's field took the keyboard")
 
         wc.selectTab(id: tab.id)
-        XCTAssertTrue(window.firstResponder === wc.tabSidebar.tableView)
+        XCTAssertTrue(window.firstResponder === held)
     }
 
     /// The archive page sits off screen before the first space, which makes

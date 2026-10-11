@@ -160,12 +160,18 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
         return true
     }
 
+    /// Escape cancels, Return and Tab commit; either way the keyboard goes
+    /// back to the page — the list does not take it (TASK-174). Left alone,
+    /// Return keeps it on the label and Tab leaves it with nothing.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(cancelOperation(_:)) {
-            endEditing(commit: false)
-            window?.makeFirstResponder(enclosingScrollView?.documentView)
-            return true
+        // Before the commit, which can reload this row out of the list.
+        let list = enclosingScrollView?.documentView as? DraggableTableView
+        switch commandSelector {
+        case #selector(cancelOperation(_:)): endEditing(commit: false)
+        case #selector(insertNewline(_:)), #selector(insertTab(_:)), #selector(insertBacktab(_:)): endEditing(commit: true)
+        default: return false
         }
-        return false
+        list?.releaseKeyboardFocus()
+        return true
     }
 }
