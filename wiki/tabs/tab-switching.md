@@ -4,7 +4,7 @@ title: Tab switching by keyboard
 description: Cmd+Option+Up/Down steps through a space's sidebar rows in order; Control+Tab switches between recently used tabs with a preview overlay. Both treat a split as one item.
 tags: [tabs, keyboard, switcher, mru, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-11T08:08:38Z }
 sources:
   - id: navigation
     resource: ../../Detour/Browser/Sidebar/TabNavigation.swift
@@ -36,6 +36,12 @@ sources:
   - id: task-133
     resource: backlog:TASK-133
     title: The Control+Tab switcher does not swallow the keys it handles
+  - id: peek-tests
+    resource: ../../DetourTests/RecentTabSwitcherPeekTests.swift
+    title: RecentTabSwitcherPeekTests.swift
+  - id: task-173
+    resource: backlog:TASK-173
+    title: The Control+Tab switcher gives no sign that a tab has a Peek open
 ---
 
 # What it does
@@ -118,6 +124,18 @@ are never offered; Peeks are not tabs. Choosing a split focuses the currently
 selected member, else this window's remembered pane, else the member left most
 recently.
 
+**A tab that comes back with a Peek shows it.** Selecting a tab that has a
+[Peek](./peek.md) presents the Peek again, so a card that showed only the
+page underneath said nothing about where the user would land.[^task-173] An
+entry carries `peekHost`: the tab that gets focus when the entry is chosen,
+if `BrowserTab.hasPeek` (a live Peek, or a parked or session-restored one
+that `restorePeekOverlayIfNeeded` rebuilds from `peekURL`). For a split that
+is the focused pane only, because only its Peek is presented. The card dims
+its preview and draws the Peek's picture in a panel over it, across both
+panes of a split as the overlay is. The panel's insets are proportions of
+the card (10% at the sides, 7% above and below), not the overlay's 64 pt and
+12 pt, which at card size would be a hairline.
+
 **Previews.** `captureSwitcherPreview(of:)` uses `WKWebView.takeSnapshot` at
 480 px wide. It is taken as a tab is left (in `stampDeselected`) and, for the
 visible panes, when the switcher begins.
@@ -133,6 +151,14 @@ visible panes, when the switcher begins.
 - A per-tab counter (`switcherPreviewRequest`) drops a slower, older snapshot
   that arrives after a newer one.
 - Previews live in memory only and survive sleep.
+- A Peek is pictured with its host, at the same two moments, and keeps the
+  picture on its own `BrowserTab` (`host.peekTab.switcherPreview`), so
+  closing the Peek drops it. This is why `selectTab` stamps the outgoing
+  tab *before* `hidePeekUI()`: the capture needs the Peek's web view still
+  in the window. The host's own snapshot never includes the Peek, which is
+  a sibling view. A parked Peek keeps its picture, since the host keeps the
+  parked object. With no picture (a failed capture) the panel shows the
+  Peek's favicon.
 
 Clicks on a card arrive as *secondary* clicks, because Control is held; the
 card view handles `rightMouseDown` as a click.
@@ -164,14 +190,21 @@ The same trap waits in any monitor written as
 
 Recorded as unexercised for the switcher: hover highlight, split, pinned and
 favourite entries, a row long enough to scroll, dark mode, and the effect of
-the leave-time snapshots on the GPU surface count.[^task-108] For
+the leave-time snapshots on the GPU surface count.[^task-108] The Peek panel
+was captured in the running app for a tab left with a Peek, the same with no
+picture (a globe in the panel), the current tab with its Peek presented, and
+after the Peek was closed (no panel); not for a split, a parked Peek, or dark
+mode.[^task-173] For
 Cmd+Option+Up/Down no manual pass was recorded.[^task-107]
 
 # Tests
 
 `TabNavigationTests` (11) and `RecentTabOrderTests` (10) cover the pure order
 and state; `RecentTabSwitcherMonitorTests` (10) covers which keys the monitor
-swallows and which it passes on. The switcher's event handling was checked with an in-process harness
+swallows and which it passes on; `RecentTabSwitcherPeekTests` (7) covers which
+entries carry a Peek (left, current, closed, parked, the focused pane of a
+split) and that the Peek is pictured when its tab is left and when the
+switcher opens. The switcher's event handling was checked with an in-process harness
 posting real key and mouse events (quick tap, hold and advance, Shift start,
 Escape, card click);[^task-108] see
 [in-process UI automation](../playbooks/in-process-ui-automation.md). A click
@@ -190,3 +223,4 @@ the switcher.
 [^task-107]: Cmd+Option+Up/Down selects the previous/next tab in the space's sidebar order
 [^task-108]: Control+Tab MRU switcher with an overlay
 [^task-133]: The Control+Tab switcher does not swallow the keys it handles
+[^task-173]: The Control+Tab switcher gives no sign that a tab has a Peek open

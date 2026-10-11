@@ -79,6 +79,44 @@ final class PeekStateTests: XCTestCase {
         XCTAssertEqual(host.peekInteractionState, state)
     }
 
+    // MARK: - hasPeek
+
+    func testATabWithoutPeekStateHasNoPeek() {
+        XCTAssertFalse(makeSleepingTab().hasPeek)
+    }
+
+    func testALivePeekCounts() {
+        let host = makeSleepingTab()
+        host.peekTab = BrowserTab(configuration: WKWebViewConfiguration())
+        XCTAssertTrue(host.hasPeek)
+    }
+
+    /// Parked (the host slept) or restored with the session: no web view, but
+    /// selecting the host rebuilds the Peek from its URL.
+    func testAPeekKnownOnlyByItsURLCounts() {
+        let host = makeSleepingTab()
+        host.peekURL = URL(string: "https://peek.example.com")
+        XCTAssertTrue(host.hasPeek)
+        host.peekTab = makeSleepingTab()
+        XCTAssertTrue(host.hasPeek)
+    }
+
+    /// A Peek object that lost its web view and has no URL to rebuild from
+    /// cannot be shown again.
+    func testAPeekWithNeitherWebViewNorURLDoesNotCount() {
+        let host = makeSleepingTab()
+        host.peekTab = makeSleepingTab()
+        XCTAssertFalse(host.hasPeek)
+    }
+
+    func testClearingPeekStateRemovesThePeek() {
+        let host = makeSleepingTab()
+        host.peekTab = BrowserTab(configuration: WKWebViewConfiguration())
+        host.peekURL = URL(string: "https://peek.example.com")
+        host.clearPeekState()
+        XCTAssertFalse(host.hasPeek)
+    }
+
     // MARK: - displayPeekFavicon
 
     func testDisplayPeekFaviconPrefersLivePeekTabFavicon() {

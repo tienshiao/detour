@@ -1,16 +1,24 @@
 import AppKit
 
-/// A sidebar page's list, whose keyboard focus the page switches off while it
-/// is off screen (`SpacePageView.acceptsKeyboardFocus`,
-/// `ArchivePageView.acceptsKeyboardFocus`). `becomeFirstResponder` too:
-/// `makeFirstResponder` does not ask `acceptsFirstResponder`.
+/// The Archived Tabs page's list, whose keyboard focus the page switches off
+/// while it is off screen (`ArchivePageView.acceptsKeyboardFocus`).
+/// `becomeFirstResponder` too: `makeFirstResponder` does not ask
+/// `acceptsFirstResponder`.
 class FocusGatedTableView: NSTableView {
     var allowsKeyboardFocus = true
     override var acceptsFirstResponder: Bool { allowsKeyboardFocus && super.acceptsFirstResponder }
     override func becomeFirstResponder() -> Bool { allowsKeyboardFocus && super.becomeFirstResponder() }
 }
 
-class DraggableTableView: FocusGatedTableView {
+/// A space's tab list. It never takes keyboard focus (TASK-174): choosing a
+/// tab is not a reason to type at the list, so the keyboard stays with — or
+/// goes to — the page. Only a row being renamed holds it inside the list.
+class DraggableTableView: NSTableView {
+    override var acceptsFirstResponder: Bool { false }
+
+    /// `makeFirstResponder` does not ask `acceptsFirstResponder`.
+    override func becomeFirstResponder() -> Bool { false }
+
     override var mouseDownCanMoveWindow: Bool { false }
 
     /// Last mouse-down location in table coordinates. `pasteboardWriterForRow`
@@ -21,6 +29,22 @@ class DraggableTableView: FocusGatedTableView {
     /// Fired from `draggingExited`/`draggingEnded` so the sidebar can clear
     /// drop affordances the table-view delegate is never told about.
     var onDragTargetingEnded: (() -> Void)?
+
+    /// The list has no use for the keyboard: the window decides who takes
+    /// it — the page, unless something the click opened already has it.
+    var onReleaseKeyboardFocus: (() -> Void)?
+
+    /// Ends a rename in one of the rows (committing it, as any loss of focus
+    /// does) and gives the keyboard up.
+    func releaseKeyboardFocus() {
+        endRename()
+        onReleaseKeyboardFocus?()
+    }
+
+    private func endRename() {
+        guard let window, let responder = window.firstResponder as? NSView, responder.isDescendant(of: self) else { return }
+        window.makeFirstResponder(nil)
+    }
 
     // NSDraggingDestination methods are declared on NSView's interface (so the
     // overrides compile) but not necessarily implemented — an unguarded super
@@ -66,12 +90,17 @@ class DraggableTableView: FocusGatedTableView {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         lastMouseDownPoint = point
+        // The list used to end a rename by taking the focus the click gave it.
+        endRename()
         let clickedRow = row(at: point)
         if clickedRow >= 0 {
             super.mouseDown(with: event)
         } else {
             window?.performDrag(with: event)
         }
+        // A click on the list leaves the keyboard wherever it was. It chose
+        // a page (or nothing), so the page gets it.
+        onReleaseKeyboardFocus?()
     }
 }
 

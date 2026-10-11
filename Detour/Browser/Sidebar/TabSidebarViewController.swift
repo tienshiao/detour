@@ -73,8 +73,9 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64)
     /// Clear Archive… for `spaceIDs`, which hold `count` records; the receiver confirms.
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int)
-    /// A sidebar page that held keyboard focus left the screen, and the
-    /// sidebar gave the focus up: nothing holds it now.
+    /// The sidebar has no use for the keyboard and the page should take it:
+    /// a page that held focus left the screen, a rename ended, or a tab list
+    /// was clicked.
     func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController)
 }
 
@@ -1040,16 +1041,14 @@ class TabSidebarViewController: NSViewController {
         }
 
         // Recreating the pages must not show: the active space's new list
-        // takes over its predecessor's selected row — the highlight, and
-        // where the arrow keys start from — and its keyboard focus, which
-        // tearing the old list out of the window would leave with nothing
+        // takes over its predecessor's selected row, the highlight
         // (TASK-131). Only while the active page stays on the same space:
-        // with that space gone the page falls back to another one, whose
-        // list has neither that row nor the user's focus — the window then
-        // switches space, and the web page takes the keyboard (TASK-130).
+        // with that space gone the page falls back to another one, which
+        // has no such row. A rename under way goes down with its row, and
+        // the keyboard it held would be left with nothing: the page gets it.
         let carriedSpaceID = activePageSpaceID
         let selectedRow = tableView.selectedRow
-        let activeListHadFocus = activeSpacePageHoldsKeyboardFocus
+        let renameHeldKeyboard = activeSpacePageHoldsKeyboardFocus
         pageSpaceIDs = newIDs
 
         // Tear down old pages
@@ -1075,6 +1074,10 @@ class TabSidebarViewController: NSViewController {
             // The delegate hears nothing when a drag leaves the table — clear
             // the split-edge highlight from the view's own exit notifications.
             page.tableView.onDragTargetingEnded = { [weak self] in self?.hideSplitDropOverlay() }
+            page.tableView.onReleaseKeyboardFocus = { [weak self] in
+                guard let self else { return }
+                self.delegate?.tabSidebarDidReleaseKeyboardFocus(self)
+            }
 
             // Update favorites from profile
             if let profile = space.profile {
@@ -1087,15 +1090,14 @@ class TabSidebarViewController: NSViewController {
 
         relayoutPages()
         updateActivePage()
-        if let carriedSpaceID, activePageSpaceID == carriedSpaceID {
-            if selectedRow >= 0, selectedRow < tableView.numberOfRows {
-                suppressingSelectionCallbacks {
-                    tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
-                }
+        if let carriedSpaceID, activePageSpaceID == carriedSpaceID,
+           selectedRow >= 0, selectedRow < tableView.numberOfRows {
+            suppressingSelectionCallbacks {
+                tableView.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
             }
-            if activeListHadFocus {
-                view.window?.makeFirstResponder(tableView)
-            }
+        }
+        if renameHeldKeyboard, let window = view.window, window.firstResponder === window {
+            delegate?.tabSidebarDidReleaseKeyboardFocus(self)
         }
 
         // Observe scroll (clip view bounds changes) to fix hover state on scroll
@@ -1517,8 +1519,8 @@ class TabSidebarViewController: NSViewController {
         return activePageIndex < spacePages.count ? spacePages[activePageIndex] : nil
     }
 
-    /// Whether keyboard focus is inside the active space's page — its tab
-    /// list, or a row being renamed.
+    /// Whether keyboard focus is inside the active space's page: a row being
+    /// renamed, since the tab list itself never takes it.
     private var activeSpacePageHoldsKeyboardFocus: Bool {
         guard !isShowingArchivePage, let page = currentPage,
               let responder = view.window?.firstResponder as? NSView else { return false }
@@ -1530,17 +1532,14 @@ class TabSidebarViewController: NSViewController {
         activePageIndex < pageSpaceIDs.count ? pageSpaceIDs[activePageIndex] : nil
     }
 
-    /// Only the current page takes keyboard focus. The others are off screen,
-    /// where a focused list would still answer the arrow keys — switching
-    /// tabs behind the archive page, or walking the rows of a space the user
-    /// has left (TASK-128, TASK-130). By state, not per control: which of the
-    /// strip's views AppKit links into its key-view loop depends on what
-    /// existed when the window was first shown.
+    /// The archive page takes keyboard focus only while it shows: off screen
+    /// its search field and list would still answer the keyboard (TASK-128,
+    /// TASK-130). The space pages' tab lists never take it (TASK-174). By
+    /// state, not per control: which of the strip's views AppKit links into
+    /// its key-view loop depends on what existed when the window was first
+    /// shown.
     private func updatePageKeyboardFocus() {
         archivePage?.acceptsKeyboardFocus = isShowingArchivePage
-        for (index, page) in spacePages.enumerated() {
-            page.acceptsKeyboardFocus = !isShowingArchivePage && index == activePageIndex
-        }
         resignOffscreenPageFocus()
     }
 

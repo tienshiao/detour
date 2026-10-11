@@ -4,11 +4,14 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-11T08:08:50Z }
 sources:
   - id: task-169
     resource: backlog:TASK-169
     title: A hover-revealed sidebar sometimes stays open instead of hiding again
+  - id: task-174
+    resource: backlog:TASK-174
+    title: "A space's tab list takes keyboard focus, so keys go to the list instead of the page after a click"
   - id: task-89
     resource: backlog:TASK-89
     title: Permanent in-process UI automation hook (debug builds only)
@@ -179,6 +182,14 @@ edges ([UI probes](./ui-probes.md)).
   [AppKit gotchas](../platform/appkit-gotchas.md).
 - **`mouseMoved(with:)` does not produce a `:hover` look** in a
   `cacheDisplay` capture.[^notes-inproc]
+- **A posted click does not select an `NSTableView` row when the app is not
+  active.** In a shell-launched instance and in the test host, a posted
+  mouse-down and mouse-up on a sidebar row went through `NSWindow.sendEvent`
+  (first responder moved to a list that accepted it) but the selection did
+  not change; nor did it with `tableView.mouseDown(with:)` called directly
+  and the mouse-up queued. Not tried in an active application. Make the
+  selection with `selectRowIndexes` (it runs the delegate's selection
+  handler) and use the posted click for what else the click does.[^task-174]
 - **A shell-launched instance is not the key application.** Anything
   enabled by `NSApp.keyWindow` (for example menu items validated against
   the key window) cannot be driven; say so.[^notes-updates]
@@ -219,5 +230,6 @@ above.
 [^notes-keyloop]: Session notes on the key-view loop probe
 [^notes-probes]: Session notes on hit-test and resize probes
 [^task-169]: A hover-revealed sidebar sometimes stays open instead of hiding again
+[^task-174]: A space's tab list takes keyboard focus, so keys go to the list instead of the page after a click
 [^notes-updates]: Session notes on verifying the extension update UI
 [^notes-capture]: Session notes on screen capture for UI verification

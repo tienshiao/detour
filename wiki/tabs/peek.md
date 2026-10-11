@@ -4,7 +4,7 @@ title: Peek
 description: The overlay that shows a linked page over the current tab; which links open in one, how it is anchored to its host tab, parked, restored and expanded, and how extensions see it.
 tags: [tabs, peek, overlay, navigation, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-11T08:08:38Z }
 sources:
   - id: anchor
     resource: ../../Detour/Browser/Window/PeekAnchor.swift
@@ -176,6 +176,12 @@ The host carries three persisted fields: `peekURL`, `peekInteractionState` and
 The peek columns are saved for normal tabs, pinned backing tabs and favourite
 backing tabs alike.[^task-42]
 
+`BrowserTab.hasPeek` is "selecting this tab brings a Peek back": a live Peek
+(`peekTab` with a web view) or a `peekURL` to rebuild one from. It is the
+same condition `restorePeekOverlayIfNeeded` acts on. The Control+Tab
+switcher uses it to draw the Peek on the host's card
+([tab switching](./tab-switching.md)).
+
 ## Closing and expanding
 
 - `closePeekOverlay` clears the host's peek state, animates out and calls
@@ -229,7 +235,8 @@ Details of registration are in
 
 `PeekAnchorTests` (23: anchor lookup, host resolution including the unfocused
 pane and the "inside a Peek" case, the three peek predicates), `PeekStateTests`
-(save, clear, favicon precedence), `FavoritePeekPersistenceTests` (round trip
+(save, clear, favicon precedence, `hasPeek`), `RecentTabSwitcherPeekTests`
+(the switcher's entries and the Peek's picture), `FavoritePeekPersistenceTests` (round trip
 through save and restore), `FavoriteTileBadgeTests`,
 `ExtensionActiveTabTests` (a real window presenting and closing a Peek),
 `ExtensionTabLifecycleTests` (park closes the registration).
