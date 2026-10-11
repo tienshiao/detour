@@ -1,11 +1,11 @@
 ---
 id: TASK-131
 title: 'Sidebar: a focused tab list loses keyboard focus when the space list changes'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-02 07:35'
-updated_date: '2026-10-02 08:35'
+updated_date: '2026-10-11 08:22'
 labels:
   - sidebar
   - bug
@@ -53,4 +53,12 @@ Code review (Oct 2) found one real bug in the first version and fixed it: when t
 Left open by the review: (a) the rebuild still resets the active list's scroll position, so a carried selected row can end up off screen (not confirmed in-app); (b) a tab or folder rename in progress is ended by the teardown and may commit a half-typed name; (c) design: rebuildPages() recreates every page on any space-list change, and reusing the page of each surviving space would keep focus, selection, scroll and an open rename without carry-over code.
 
 Pre-commit in-app check on the review-corrected code (rebuild and left-behind probes): unchanged from the earlier passing run — the rebuilt list keeps focus and its selected row, Down arrow moves to the next tab, the web page keeps focus when it had it. Deleting the active space was not run in the app; it is covered by the unit test only.
+
+Closed 2026-10-11 (user decision): superseded by TASK-174. A space's tab list can no longer hold keyboard focus, so there is no focused list to lose it when the pages are rebuilt. What remains of this task's change in rebuildPages() is the selected-row carry-over (AC #5); the focus carry-over was removed, and a rename lost with its row now hands the keyboard to the page. The focus tests in SidebarPageFocusTests were rewritten for the new rule in TASK-174's commit (eb5327f).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+rebuildPages() keeps the active list's selected row across a rebuild. The focus carry-over this task added was removed by TASK-174, which made the tab list unable to take keyboard focus; the keyboard is handed to the page instead.
+<!-- SECTION:FINAL_SUMMARY:END -->
