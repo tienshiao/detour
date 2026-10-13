@@ -4,7 +4,7 @@ title: Hidden web view load stalls
 description: Why a tab opened in the background can sit part-loaded until it is shown — WebKit drops a hidden page's web process to background priority about a second after commit — and what Detour does about it.
 tags: [webkit, loading, tabs, sidebar, performance]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-124
@@ -198,6 +198,8 @@ history recording keep seeing the truth.
 
 # Related
 
+- [Abandoned GPU process](./abandoned-gpu-process.md) — a page whose process is at 0% CPU because it is blocked, not de-prioritised; showing the tab does not help there.
+- [Unresponsive web process](./unresponsive-web-process.md) — what WebKit reports when a process does not read a load request at all.
 - [BrowserTab](../architecture/browser-tab.md) — the unclaimed-web-view delegate and published load state.
 - [Web view ownership](../architecture/webview-ownership.md) — why a background tab's web view is in no window.
 - [Tab cell](../sidebar/tab-cell.md) — how the row draws and fades the progress bar.

@@ -3,11 +3,11 @@ id: TASK-110
 title: >-
   Website: replace the HTML feature mockups with real screenshots and loops; add
   Split Tabs and Favorites
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-23 07:52'
-updated_date: '2026-09-23 08:43'
+updated_date: '2026-10-13 01:22'
 labels:
   - website
 dependencies: []
@@ -26,8 +26,8 @@ detour-website (../detour-website, separate repo): the middle feature sections (
 - [x] #1 Staged demo profile: Spaces/Profiles/pinned folders/favourites/split seeded reproducibly in an isolated data dir, public pages only
 - [x] #2 Spaces, Pinned Tabs & Folders and Profiles sections use real captures (still, montage or MP4 loop) instead of HTML mockups
 - [x] #3 New Split Tabs and Favorites sections with copy and real captures
-- [ ] #4 Loops are muted/autoplay/looping with a poster, respect prefers-reduced-motion, and stay small (target < 1.5 MB each); images have alt text and fixed dimensions
-- [ ] #5 Page checked in a browser at desktop and phone widths
+- [x] #4 Loops are muted/autoplay/looping with a poster, respect prefers-reduced-motion, and stay small (target < 1.5 MB each); images have alt text and fixed dimensions
+- [x] #5 Page checked in a browser at desktop and phone widths
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -40,4 +40,12 @@ Fixed: the three loops had a ~9 pt dark strip on the left (virtual-display backg
 Re-recorded per user feedback (corners lacked concentricity with the CSS 18px radius): whole-window captures with native corners + shadow over a virtual-display wallpaper of #F7F2EA, page adds no framing. Spaces 808 KB, Pinned 195 KB, Favorites 419 KB, Split still 205 KB (WebP with alpha shadow). Loop background decodes to 248,241,234 vs page 247,242,234 (tone curve in encode.sh). The old dark strip was the Dock on the virtual display. Details in docs/task-110/README.md.
 
 Kit fix: the wallpaper command replaced the user's Aerial on every display/Space (restored from the store's untouched entries). demo.sh wallpaper now snapshots the store first, the harness refuses without the snapshot, demo.sh wallpaper-restore restores it.
+
+2026-10-12, task sweep, checked against ../detour-website at 1993a58 (the page as published for 0.3.0). Criterion 4: the three loops (spaces 808 KB, pinned 195 KB, favorites 419 KB, all under 1.5 MB) are muted, loop, playsinline, have a poster and fixed width/height; they have no autoplay attribute, script.js plays each when it scrolls into view and pauses it when it leaves or when prefers-reduced-motion is set; all 4 img tags have alt text and dimensions. Criterion 5: served locally and loaded in Chrome. At 1699 px wide: five feature sections, no broken images, no horizontal overflow, a loop played when scrolled into view (currentTime advanced) and paused when scrolled away. At 390 px (in a 390 px frame, Chrome's window does not go below 500): the sections stack, media are 350 px wide inside the margins, no text block or media past the edge, no horizontal overflow. Not checked: a real phone, Safari, and the reduced-motion branch at runtime (read in the script only).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The website's Spaces, Pinned Tabs & Folders and Profiles sections use real captures of Detour instead of HTML mockups, and Split Tabs and Favorites sections were added (website commit 66ec40d). The capture kit that staged the demo profile and recorded the loops is in docs/task-110. Loops and images meet the size, attribute and reduced-motion requirements; the page was checked at desktop and phone widths.
+<!-- SECTION:FINAL_SUMMARY:END -->

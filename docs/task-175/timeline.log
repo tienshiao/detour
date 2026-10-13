@@ -1,0 +1,94 @@
+# Unified log of the installed Detour (pid 72620), 2026-10-12. Timestamps are local (PDT).
+# Predicate: GPU process lifecycle, GPUProcessConnection lines of the web processes, responsiveness reports.
+14:38:16.828 Df [com.apple.WebKit:RemoteLayerBuffers] WebContent[23764] [renderingBackend=11] RemoteRenderingBackendProxy::didBecomeUnresponsive
+14:38:21.051 E  [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::childConnectionDidBecomeUnresponsive:
+14:38:21.051 E  [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::didBecomeUnresponsive: GPUProcess with PID 46533 became unresponsive, terminating it
+14:38:21.051 Df [com.apple.WebKit:Process] AuxiliaryProcessProxy::terminate: PID=46533
+14:38:21.483 Df [com.apple.WebKit:Process] WebContent[23764] 0x10a04c0e0 - GPUProcessConnection::didInitialize
+14:38:21.487 Df (libxpc.dylib) Could not signal service com.apple.WebKit.GPU: 1: Operation not permitted
+14:38:21.487 E  [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::gpuProcessExited: reason=Unresponsive
+14:38:26.018 Df [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::didFinishLaunching:
+14:38:26.018 F  [com.apple.WebKit:Process] GPU process (0x11d1841f0) took 3.758267 seconds to launch
+14:38:26.018 Df [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::connectionWillOpen:
+14:38:26.149 Df [com.apple.WebKit:Process] WebContent[25277] GPUProcessConnection::create - 0x10a04f2c0
+14:38:26.162 Df [com.apple.WebKit:Process] WebContent[25247] GPUProcessConnection::create - 0x10a04f1e0
+14:38:27.792 Df [com.apple.WebKit:Process] WebContent[25277] 0x10a04f2c0 - GPUProcessConnection::didInitialize
+14:38:27.792 Df [com.apple.WebKit:Process] WebContent[25247] 0x10a04f1e0 - GPUProcessConnection::didInitialize
+14:38:31.926 E  [com.apple.WebKit:Process] WebContent[73116] 0x10b04c0e0 - GPUProcessConnection::didClose
+14:38:32.017 Df [com.apple.WebKit:Process] WebContent[73116] GPUProcessConnection::create - 0x10b04c1c0
+14:39:01.889 Df [com.apple.WebKit:RemoteLayerBuffers] WebContent[73116] [renderingBackend=14] RemoteRenderingBackendProxy::didBecomeUnresponsive
+14:39:41.343 Df [com.apple.WebKit:Process] WebContent[25290] GPUProcessConnection::create - 0x10a04c0e0
+14:39:42.296 Df (libxpc.dylib) Could not signal service com.apple.WebKit.GPU: 113: Could not find specified service
+14:39:49.971 E  [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::childConnectionDidBecomeUnresponsive:
+14:39:49.971 E  [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::didBecomeUnresponsive: GPUProcess with PID 25143 became unresponsive, terminating it
+14:39:49.971 Df [com.apple.WebKit:Process] AuxiliaryProcessProxy::terminate: PID=25143
+14:39:49.971 Df (libxpc.dylib) Could not signal service com.apple.WebKit.GPU: 1: Operation not permitted
+14:39:49.971 E  [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::gpuProcessExited: reason=Unresponsive
+14:39:49.972 E  [com.apple.WebKit:Process] WebContent[25277] 0x10a04f2c0 - GPUProcessConnection::didClose
+14:39:49.972 E  [com.apple.WebKit:Process] WebContent[25247] 0x10a04f1e0 - GPUProcessConnection::didClose
+14:39:49.973 Df [com.apple.WebKit:Process] WebContent[25277] GPUProcessConnection::create - 0x10a04c540
+14:39:49.973 Df [com.apple.WebKit:Process] WebContent[25247] GPUProcessConnection::create - 0x10a04c0e0
+14:39:51.554 E  [com.apple.WebKit:Process] WebContent[15227] 0x15e3380e0 - GPUProcessConnection::didClose
+14:39:51.688 Df [com.apple.WebKit:Process] WebContent[15227] GPUProcessConnection::create - 0x10b4c8d20
+14:39:55.510 E  [com.apple.WebKit:Process] WebContent[73062] 0x425d1aca0 - GPUProcessConnection::didClose
+14:39:55.510 Df [com.apple.WebKit:Process] WebContent[73062] GPUProcessConnection::create - 0x178367020
+14:39:56.420 Df [com.apple.WebKit:RemoteLayerBuffers] WebContent[25290] [renderingBackend=11] RemoteRenderingBackendProxy::didBecomeUnresponsive
+14:39:57.581 Df [com.apple.WebKit:Process] 0x11d1843e0 - GPUProcessProxy::didFinishLaunching:
+14:39:57.581 F  [com.apple.WebKit:Process] GPU process (0x11d1843e0) took 7.608832 seconds to launch
+14:39:57.581 Df [com.apple.WebKit:Process] 0x11d1843e0 - GPUProcessProxy::connectionWillOpen:
+14:39:57.582 E  [com.apple.WebKit:Process] 0x11d1843e0 - GPUProcessProxy::childConnectionDidBecomeUnresponsive:
+14:39:57.582 E  [com.apple.WebKit:Process] 0x11d1843e0 - GPUProcessProxy::didBecomeUnresponsive: GPUProcess with PID 26842 became unresponsive, terminating it
+14:39:57.582 Df [com.apple.WebKit:Process] AuxiliaryProcessProxy::terminate: PID=26842
+14:39:57.582 Df (libxpc.dylib) Could not signal service com.apple.WebKit.GPU: 1: Operation not permitted
+14:39:57.582 E  [com.apple.WebKit:Process] 0x11d1843e0 - GPUProcessProxy::gpuProcessExited: reason=Unresponsive
+14:39:57.661 Df [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::didFinishLaunching:
+14:39:57.661 Df [com.apple.WebKit:Process] 0x11d1841f0 - GPUProcessProxy::connectionWillOpen:
+14:39:57.940 Df [com.apple.WebKit:Process] WebContent[26841] GPUProcessConnection::create - 0x10f04f1e0
+14:39:58.273 Df [com.apple.WebKit:Process] WebContent[26841] 0x10f04f1e0 - GPUProcessConnection::didInitialize
+14:39:58.622 Df [com.apple.WebKit:Process] WebContent[73116] 0x10b04c1c0 - GPUProcessConnection::didInitialize
+14:39:58.622 E  [com.apple.WebKit:Process] WebContent[73116] 0x10b04c1c0 - GPUProcessConnection::didClose
+14:39:58.677 Df [com.apple.WebKit:Process] WebContent[73116] GPUProcessConnection::create - 0x10b1d6e60
+14:39:58.980 Df [com.apple.WebKit:Process] WebContent[27049] GPUProcessConnection::create - 0x10a04c540
+14:39:59.045 Df [com.apple.WebKit:Process] WebContent[73116] 0x10b1d6e60 - GPUProcessConnection::didInitialize
+14:39:59.045 Df [com.apple.WebKit:Process] WebContent[27049] 0x10a04c540 - GPUProcessConnection::didInitialize
+14:39:59.154 E  [com.apple.WebKit:Process] WebContent[73230] 0x15667ae60 - GPUProcessConnection::didClose
+14:39:59.199 Df [com.apple.WebKit:Process] WebContent[73230] GPUProcessConnection::create - 0x1554d1180
+14:39:59.853 Df [com.apple.WebKit:Process] WebContent[73230] 0x1554d1180 - GPUProcessConnection::didInitialize
+14:40:04.027 E  [com.apple.WebKit:Process] WebContent[52598] 0x10fb3d500 - GPUProcessConnection::didClose
+14:40:04.059 Df [com.apple.WebKit:Process] WebContent[52598] GPUProcessConnection::create - 0x1614d9260
+14:40:05.018 Df [com.apple.WebKit:RemoteLayerBuffers] WebContent[25277] [renderingBackend=11] RemoteRenderingBackendProxy::didBecomeUnresponsive
+14:40:05.018 Df [com.apple.WebKit:RemoteLayerBuffers] WebContent[25247] [renderingBackend=11] RemoteRenderingBackendProxy::didBecomeUnresponsive
+14:40:06.537 Df [com.apple.WebKit:Process] WebContent[52598] 0x1614d9260 - GPUProcessConnection::didInitialize
+14:40:06.822 Df [com.apple.WebKit:RemoteLayerBuffers] WebContent[15227] [renderingBackend=185] RemoteRenderingBackendProxy::didBecomeUnresponsive
+14:40:15.282 Df [com.apple.WebKit:RemoteLayerBuffers] WebContent[73062] [renderingBackend=14] RemoteRenderingBackendProxy::didBecomeUnresponsive
+14:40:28.441 Df (libxpc.dylib) Could not signal service com.apple.WebKit.GPU: 113: Could not find specified service
+14:40:28.889 Df (libxpc.dylib) Could not signal service com.apple.WebKit.GPU: 1: Operation not permitted
+# ...
+16:15:08.354 Df [com.apple.WebKit:ViewState] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::updateActivityState: view visibility state changed 0 -> 1
+16:15:13.806 Df [com.apple.WebKit:ViewState] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::updateActivityState: view visibility state changed 1 -> 0
+16:15:16.727 Df [com.apple.WebKit:ViewState] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::updateActivityState: view visibility state changed 0 -> 1
+16:15:21.459 Df [com.apple.WebKit:Loading] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::reload:
+16:15:24.460 E  [com.apple.WebKit:Process] 0x11d145d80 - [PID=73062] WebProcessProxy::didBecomeUnresponsive:
+16:15:26.589 Df [com.apple.WebKit:ViewState] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::updateActivityState: view visibility state changed 1 -> 0
+16:15:26.589 Df [com.apple.WebKit:Process] 0x11d145d80 - [PID=73062] WebProcessProxy::didBecomeResponsive:
+16:15:27.699 Df [com.apple.WebKit:ViewState] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::updateActivityState: view visibility state changed 0 -> 1
+16:15:43.452 Df [com.apple.WebKit:Loading] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::stopLoading:
+16:15:44.271 Df [com.apple.WebKit:Loading] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::stopLoading:
+16:15:45.921 Df [com.apple.WebKit:Loading] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::stopLoading:
+16:15:46.522 Df [com.apple.WebKit:Loading] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::stopLoading:
+16:15:46.523 E  [com.apple.WebKit:Process] 0x11d145d80 - [PID=73062] WebProcessProxy::didBecomeUnresponsive:
+16:15:51.608 Df [com.apple.WebKit:Loading] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::stopLoading:
+16:15:52.073 Df [com.apple.WebKit:Loading] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::stopLoading:
+16:15:54.789 Df [com.apple.WebKit:ViewState] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::updateActivityState: view visibility state changed 1 -> 0
+16:15:54.789 Df [com.apple.WebKit:Process] 0x11d145d80 - [PID=73062] WebProcessProxy::didBecomeResponsive:
+16:15:58.657 Df [com.apple.WebKit:ViewState] 0x9f7a69518 - [pageProxyID=196, webPageID=197, PID=73062] WebPageProxy::updateActivityState: view visibility state changed 0 -> 1
+16:16:10.716 E  [com.apple.WebKit:Process] 0x11d145d80 - [PID=73062] WebProcessProxy::didBecomeUnresponsive:
+# 16:26:00 kill -9 26842
+16:26:01.293 Df [com.apple.WebKit:ResourceLoading] WebContent[73062]: [pageID=197 frameID=4294967301 isMainFrame=1] FrameLoader::reload: frame load started
+16:26:01.322 Df [com.apple.WebKit:Network] WebContent[73062] 0x15c406000 - [pageID=197, frameID=4294967301, isMainFrame=1] DocumentLoader::setMainDocumentError: (type=3, code=-999)
+16:26:01.443 E  [com.apple.WebKit:Process] WebContent[73062] 0x178367020 - GPUProcessConnection::didClose
+16:26:01.443 Df [com.apple.WebKit:Process] WebContent[73062] GPUProcessConnection::create - 0x4077687e0
+16:26:01.455 Df [com.apple.WebKit:Process] WebContent[73062] 0x4077687e0 - GPUProcessConnection::didInitialize
+16:26:04.003 E  [com.apple.WebKit:Process] WebContent[15227] 0x10b4c8d20 - GPUProcessConnection::didClose
+16:26:04.027 Df [com.apple.WebKit:Process] WebContent[15227] GPUProcessConnection::create - 0x15ce1bd40
+16:26:05.902 Df [com.apple.WebKit:Process] WebContent[15227] 0x15ce1bd40 - GPUProcessConnection::didInitialize

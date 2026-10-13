@@ -1,0 +1,97 @@
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -895,5 +898,84 @@
+     /// window such as Settings is in front).
+     var frontmostBrowserWindowController: BrowserWindowController? {
+         browserWindowControllersFrontToBack.first
++    }
++}
++
++// MARK: - TEMP verify harness (TASK-175, TASK-176) — DO NOT COMMIT
++extension AppDelegate {
++    /// `DETOUR_VERIFY_DIR` names the output directory; `DETOUR_VERIFY_MODE` is
++    /// `orphan` (a page that keeps drawing through the GPU process, so the
++    /// runner can SIGSTOP that process and watch the reaper) or `reload` (a
++    /// page that blocks its main thread, then Reload through the window).
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        let environment = ProcessInfo.processInfo.environment
++        guard let outDir = environment["DETOUR_VERIFY_DIR"] else { return }
++        let mode = environment["DETOUR_VERIFY_MODE"] ?? "orphan"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let started = Date()
++        func log(_ line: String) {
++            let stamped = String(format: "%6.1f  %@\n", Date().timeIntervalSince(started), line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        func after(_ t: TimeInterval, _ block: @escaping () -> Void) {
++            DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block)
++        }
++        func webPID(_ tab: BrowserTab?) -> Int32 {
++            (tab?.webView?.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value ?? 0
++        }
++        log("harness armed mode=\(mode) pid=\(ProcessInfo.processInfo.processIdentifier)")
++
++        let drawingPage = """
++        <html><head><title>frame 0</title></head><body><canvas id=c width=300 height=200></canvas><script>
++        const ctx = document.getElementById('c').getContext('2d'); let n = 0;
++        function tick() { n++; ctx.fillStyle = 'hsl(' + (n % 360) + ',80%,50%)'; ctx.fillRect(0, 0, 300, 200);
++          ctx.getImageData(0, 0, 1, 1); document.title = 'frame ' + n; return n; }
++        </script></body></html>
++        """
++        let blockingPage = """
++        <html><head><title>loaded</title></head><body>blocks in 2 s<script>
++        document.title = 'loaded at ' + Date.now();
++        setTimeout(() => { const t = Date.now(); while (Date.now() - t < 40000) {} }, 2000);
++        </script></body></html>
++        """
++        let html = mode == "reload" ? blockingPage : drawingPage
++        let fileURL = URL(fileURLWithPath: outDir).appendingPathComponent("page.html")
++        try? Data(html.utf8).write(to: fileURL)
++
++        after(2) {
++            guard let space = wc.activeSpace else { log("no space"); return }
++            // Served over HTTP by the runner: the window's navigation policy
++            // does not load a file: or data: URL in a web view it has claimed.
++            let port = environment["DETOUR_VERIFY_PORT"] ?? "8175"
++            let tab = TabStore.shared.addTab(in: space, url: URL(string: "http://127.0.0.1:\(port)/page.html")!)
++            wc.selectTab(id: tab.id)
++            // The harness drives the drawing: a window launched behind others
++            // is hidden to WebKit, and a hidden page's own timers barely run on
++            // a busy machine. A pending script call also keeps the web process
++            // at foreground priority.
++            var drawing = false
++            var frame = "-"
++            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
++                if mode != "reload", !drawing {
++                    drawing = true
++                    tab.webView?.evaluateJavaScript("tick()") { result, error in
++                        drawing = false
++                        frame = result.map { "\($0)" } ?? "error \((error as NSError?)?.code ?? 0)"
++                    }
++                }
++                let own = GPUProcessTable.ownGPUProcesses().map { "\($0.pid)" }.joined(separator: ",")
++                let current = "\(GPUProcessRecycler.webKitGPUProcess())"
++                log("frame=\(frame) drawing=\(drawing) title=\(tab.webView?.title ?? "nil") web=\(webPID(tab)) loading=\(tab.isLoading) gpu=\(current) ownGPU=[\(own)] selected=\(wc.selectedTab === tab) inWindow=\(tab.webView?.window != nil)")
++            }
++            if mode == "reload" {
++                after(6) {
++                    log("ACTION reloadPage (the Reload button's and Cmd+R's action)")
++                    wc.reloadPage(nil)
++                }
++            }
++        }
+     }
+ }

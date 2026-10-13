@@ -3,10 +3,10 @@ id: TASK-6
 title: >-
   1Password: test whether a Developer ID Debug build is trusted by
   BrowserSupport
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-11 22:28'
-updated_date: '2026-09-12 00:33'
+updated_date: '2026-10-13 01:22'
 labels:
   - 1password
   - dev-loop
@@ -25,7 +25,7 @@ The iteration loop today is scripts/deploy-1password-test.sh: Release build, sig
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Documented result in docs/1password-integration-plan.md: whether a Debug build launched from DerivedData connects to 1Password, and what BrowserSupport logged for the verification
+- [x] #1 Documented result in docs/1password-integration-plan.md: whether a Debug build launched from DerivedData connects to 1Password, and what BrowserSupport logged for the verification
 - [ ] #2 If trusted, scripts/deploy-1password-test.sh or CLAUDE.md describes the faster loop
 <!-- AC:END -->
 
@@ -33,4 +33,12 @@ The iteration loop today is scripts/deploy-1password-test.sh: Release build, sig
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-09-11 data point (obtained during TASK-2 work): a Debug build of HEAD running from DerivedData (Developer ID signed, hardened runtime per project.yml) is NOT trusted. BrowserSupport log 1Password_rCURRENT.log: 'Verifying browser "/Users/.../Library/Developer/Xcode/DerivedData/Detour-.../Build/Products/Debug/Detour.app/..."' -> 'parent browser was not valid' (browser_verification/apple.rs:53) -> 'Browser support error: UnsupportedBrowser'. Detour's side logs 'Connected to native host' and sends the first frame before the host exits. Still untested: the same Debug configuration copied to /Applications/Detour.app (separates the path check from the configuration check), and whether the trust record path is what matters. TASK-7 (dev bridge) remains relevant unless that variant passes.
+
+2026-10-12, task sweep: the question is answered and documented (docs/1password-integration-plan.md, Phase 4: 'not trusted from DerivedData', with BrowserSupport's 'parent browser was not valid' -> UnsupportedBrowser). Criterion 2 applies only if the build were trusted, so it is left unticked. One variant was never tried: the Debug configuration copied to /Applications/Detour.app, which would separate the path check from the configuration check. TASK-7 (the dev bridge) stays relevant.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A Developer ID signed Debug build launched from DerivedData is not trusted by 1Password's BrowserSupport, so the Release-build-and-copy loop stays. Recorded in docs/1password-integration-plan.md.
+<!-- SECTION:FINAL_SUMMARY:END -->

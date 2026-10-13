@@ -3,11 +3,11 @@ id: TASK-168
 title: >-
   Navigation: a sign-in popup (Google sign-in from claude.ai) cannot reach the
   page that opened it or close itself, so the sign-in never completes
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-10 07:08'
-updated_date: '2026-10-10 07:55'
+updated_date: '2026-10-13 01:22'
 labels:
   - bug
 dependencies:
@@ -45,7 +45,7 @@ Depends on TASK-167, which makes a page-opened window a real WebKit child.
 - [x] #4 window.close() does not close a tab the user opened themselves (WebKit's rule for script-closable windows is kept)
 - [x] #5 The opening page sees closed == true on its window handle after the popup tab is closed, whether the page or the user closed it
 - [x] #6 Tests with local fixture pages cover the popup round trip (open, message the opener, close) in a real BrowserWindowController
-- [ ] #7 Signing in to claude.ai with Google completes in the running app: the Google tab goes away and the claude.ai tab ends up signed in (checked by the user if it needs their account)
+- [x] #7 Signing in to claude.ai with Google completes in the running app: the Google tab goes away and the claude.ai tab ends up signed in (checked by the user if it needs their account)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -93,4 +93,12 @@ AC #4 as tested: WebKit lets a script close a window a script opened, or one wit
 Full DetourTests run on the final code: 2,095 tests, 0 failures, 11 skipped. /verify repeated on a build of the final code: popup on another origin opens with an opener, messages it, closes itself; its tab leaves the session and is in the closed-tab list; the opener is selected again and reads closed === true.
 
 Left open, both need the user's Google account in a build with this change: AC #1 (which mechanism claude.ai's sign-in uses) and AC #7 (the real sign-in completes). The task stays In Progress until the user has tried it.
+
+2026-10-12, task sweep: the user confirmed criterion 7. Signing in to claude.ai with Google completes in the build they have run since 2026-10-11: the Google tab goes away and the claude.ai tab ends up signed in. Criterion 1 is left unticked on purpose: what stopped the sign-in in Detour is recorded (a window a page opened was not a WebKit child, so it had no window.opener and its window.close() did nothing), but which of the two the sign-in depends on, opener messaging or a redirect followed by close, was never traced with the real flow.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A window a page opens is now a real WebKit child: it has window.opener, opener.postMessage reaches the opening page across origins, window.close() closes its tab and reselects the opener, and the opener reads closed == true. A tab the user opened and navigated is not closable by its page (WebKit's rule). Tests use local fixture pages in a real BrowserWindowController. The user confirmed that Google sign-in on claude.ai now completes (2026-10-12). Not established: which mechanism that sign-in uses to return its result (criterion 1).
+<!-- SECTION:FINAL_SUMMARY:END -->

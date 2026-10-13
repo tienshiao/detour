@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-25 06:09'
-updated_date: '2026-09-25 07:17'
+updated_date: '2026-10-13 01:22'
 labels:
   - tabs
   - privacy
@@ -40,7 +40,7 @@ Open design point: the per-URL deletion case (deleting one history row / all vis
 - [ ] #2 History page 'delete since' / clear-all for a scope deletes that scope's closedTab rows with closedAt in the range (rows with NULL closedAt are treated as old / included in clear-all)
 - [ ] #3 Deleting individual history rows deletes closedTab rows whose current url matches within the same spaces and range; the back/forward-list decision is recorded in notes
 - [ ] #4 Space deletion and the orphaned-space history sweep (TabStore ~1699) leave no closedTab rows behind
-- [ ] #5 The 100-row count cap (Database.closedTabCap) is removed, or replaced by a high per-space backstop whose value and rationale are documented in code
+- [x] #5 The 100-row count cap (Database.closedTabCap) is removed, or replaced by a high per-space backstop whose value and rationale are documented in code
 - [ ] #6 Optional blob stripping of old records (reopen by URL only) is decided and recorded in notes
 - [ ] #7 Unit tests cover expiry, range deletion, per-URL deletion, and the cap change
 <!-- AC:END -->
@@ -55,4 +55,6 @@ Sep 24 2026 review (on hold by user decision; 115/117/116 proceed first). Design
 - Orphan sweep: DELETE FROM closedTab WHERE spaceID NOT IN (live spaces ∪ spaceIDsDeletedThisSession), from the same deferred launch block as sweepHistoryOfDeletedSpaces. No FK to space: saveSession deletes and re-inserts every space row, so a cascade would wipe the table on each save.
 
 Sep 25 2026: the user removed the row cap outright (see the 'remove the closed-tab row cap' task) — AC #5 is moot; the Archived Tabs panel (TASK-119) gets a Clear Archive action. When this task resumes, retention/blob stripping is the only automatic bound.
+
+2026-10-12, task sweep: criterion 5 is already met by TASK-120 (a189541): the row cap is gone and AppDatabaseTests.testClosedTabRecordsAreNeverEvictedByCount covers it. The first half of criterion 4 was true before this task (both space-deletion paths call deleteClosedTabs(spaceID:)); the second half is not (sweepHistoryOfDeletedSpaces only deletes visits). Nothing else has been started.
 <!-- SECTION:NOTES:END -->

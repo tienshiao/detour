@@ -1,0 +1,55 @@
+# Runtime check, 2026-10-12: Debug build with docs/harness/task175-176-harness.patch, isolated data directory,
+# DETOUR_GPU_ORPHAN_MIN_AGE_SECONDS=20 DETOUR_GPU_ORPHAN_CHECK_SECONDS=10. The runner sent SIGSTOP to the GPU process.
+# Harness log (seconds since launch; frame = the page's draw counter, driven by the harness once a second):
+   0.0  harness armed mode=orphan pid=20610
+   3.1  frame=- web=20631 gpu=running(20616) ownGPU=[20616]
+   4.1  frame=1 web=20631 gpu=running(20616) ownGPU=[20616]
+  15.1  frame=12 web=20631 gpu=running(20616) ownGPU=[20616]
+RUNNER SIGSTOP 20616
+  16.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  17.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  18.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  19.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  20.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  21.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  22.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  23.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  24.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  25.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  26.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  27.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  28.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  29.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  30.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  31.1  frame=13 web=20631 gpu=running(20616) ownGPU=[20616]
+  32.1  frame=14 web=20631 gpu=none ownGPU=[20616]
+  33.2  frame=14 web=20631 gpu=none ownGPU=[20616]
+  34.2  frame=14 web=20631 gpu=none ownGPU=[20616]
+  35.2  frame=14 web=20631 gpu=none ownGPU=[20616]
+  36.1  frame=14 web=20631 gpu=none ownGPU=[20616]
+  37.1  frame=14 web=20631 gpu=none ownGPU=[20616]
+  38.1  frame=14 web=20631 gpu=none ownGPU=[20616]
+  39.1  frame=14 web=20631 gpu=none ownGPU=[20616]
+  40.1  frame=14 web=20631 gpu=none ownGPU=[20616]
+RUNNER gpu 20616 gone
+  41.2  frame=15 web=20631 gpu=running(20879) ownGPU=[20879]
+  42.1  frame=16 web=20631 gpu=running(20879) ownGPU=[20879]
+  43.2  frame=17 web=20631 gpu=running(20879) ownGPU=[20879]
+  44.2  frame=18 web=20631 gpu=running(20879) ownGPU=[20879]
+  45.2  frame=19 web=20631 gpu=running(20879) ownGPU=[20879]
+  46.2  frame=20 web=20631 gpu=running(20879) ownGPU=[20879]
+  47.2  frame=21 web=20631 gpu=running(20879) ownGPU=[20879]
+# Unified log of the same run:
+17:30:30.018 Df [com.apple.WebKit:Process] 0x11d1101f0 - GPUProcessProxy::didFinishLaunching:
+17:30:30.080 Df [com.apple.WebKit:Process] WebContent[20617] GPUProcessConnection::create - 0x10a04f100
+17:30:30.268 Df [com.apple.WebKit:Process] WebContent[20617] 0x10a04f100 - GPUProcessConnection::didInitialize
+17:30:32.152 Df [com.apple.WebKit:Process] WebContent[20631] GPUProcessConnection::create - 0x10c04f100
+17:30:32.155 Df [com.apple.WebKit:Process] WebContent[20631] 0x10c04f100 - GPUProcessConnection::didInitialize
+17:31:01.081 E  [com.apple.WebKit:Process] 0x11d1101f0 - GPUProcessProxy::didBecomeUnresponsive: GPUProcess with PID 20616 became unresponsive, terminating it
+17:31:01.082 Df (libxpc.dylib) Could not signal service com.apple.WebKit.GPU: 1: Operation not permitted
+17:31:01.082 E  [com.apple.WebKit:Process] 0x11d1101f0 - GPUProcessProxy::gpuProcessExited: reason=Unresponsive
+17:31:10.078 Df [com.detourbrowser.mac:gpu-orphan] Killing abandoned GPU process 20616, launched 40 s ago; WebKit's GPU process is 0
+17:31:10.112 E  [com.apple.WebKit:Process] WebContent[20631] 0x10c04f100 - GPUProcessConnection::didClose
+17:31:10.112 Df [com.apple.WebKit:Process] WebContent[20631] GPUProcessConnection::create - 0x10c04cb60
+17:31:10.179 Df [com.apple.WebKit:Process] 0x11d1101f0 - GPUProcessProxy::didFinishLaunching:
+17:31:10.393 Df [com.apple.WebKit:Process] WebContent[20631] 0x10c04cb60 - GPUProcessConnection::didInitialize

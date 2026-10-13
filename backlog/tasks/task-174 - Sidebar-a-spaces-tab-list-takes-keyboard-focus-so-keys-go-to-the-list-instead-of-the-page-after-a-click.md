@@ -3,11 +3,11 @@ id: TASK-174
 title: >-
   Sidebar: a space's tab list takes keyboard focus, so keys go to the list
   instead of the page after a click
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-11 07:21'
-updated_date: '2026-10-11 08:17'
+updated_date: '2026-10-13 01:22'
 labels:
   - sidebar
   - focus
@@ -67,10 +67,12 @@ Code review (/code-review --fix) found and fixed: (1) the first version compared
 Runtime (harness docs/harness/task173-174-harness.patch, isolated profiles, posted mouse and key events, app launched from a shell and so not active). New code: after a posted click on a row the web view keeps first responder and the page's keydown listener receives the posted key, in all three steps (page focused; find bar focused; nothing focused and the selected row clicked). Old sidebar code, same harness: first responder is DraggableTableView after each click and no page receives the key. NOT verified at runtime: the posted click did not change the list's selection in either build (the app was not active), so 'click another tab's row, then type' was not seen end to end with a real selection change — that needs a click by a person, or the app launched active. Also not run: rename by Return/Tab/Escape in the app (tests only), Full Keyboard Access.
 
 Known gap, recorded in wiki/sidebar/keyboard-focus.md: a row reloaded under its own rename (reloadData(forRowIndexes:) while the pinned tab being renamed changes title or favicon) ends the rename and leaves the keyboard with the window until the next click or tab switch; before, the list picked it up. Two hooks in the cell were tried and did not fire with the cell still attached.
+
+2026-10-12, task sweep: the user confirmed the one thing left to try by hand. In the build they have run since 2026-10-11, after a click on a tab row the keys go to the page.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-A space's tab list no longer takes keyboard focus. A click on it leaves the keyboard on the selected tab's page (or gives it to the page from wherever it was, the find bar included); the command palette opened by New Tab keeps it. An inline rename is the only thing in a space page that holds the keyboard, and it gives it to the page when it ends (Return, Tab, Escape, a click elsewhere in the list, rebuilt pages). The Archived Tabs page is unchanged. Arrow-key row walking in the list is gone with it; Cmd+Option+Up/Down and Control+Tab remain. Tests: SidebarPageFocusTests, InitialWindowFocusTests. Runtime: posted clicks and keys, before and after. Still to try by hand: click a tab and type.
+A space's tab list no longer takes keyboard focus. A click on it leaves the keyboard on the selected tab's page (or gives it to the page from wherever it was, the find bar included); the command palette opened by New Tab keeps it. An inline rename is the only thing in a space page that holds the keyboard, and it gives it to the page when it ends (Return, Tab, Escape, a click elsewhere in the list, rebuilt pages). The Archived Tabs page is unchanged. Arrow-key row walking in the list is gone with it; Cmd+Option+Up/Down and Control+Tab remain. Tests: SidebarPageFocusTests, InitialWindowFocusTests. Runtime: posted clicks and keys, before and after; click a tab and type confirmed by the user in daily use (2026-10-12).
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -4,7 +4,7 @@ title: Reading runtime logs
 description: Unified log recipes for Detour and its WebKit helper processes — categories, predicates, which process logs what, how to read extension console output, and the traps that produce false hits or empty results.
 tags: [playbook, logs, extensions, webkit, diagnostics]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:45Z }
 sources:
   - id: plan-doc
     resource: ../../docs/1password-integration-plan.md
@@ -48,6 +48,9 @@ sources:
   - id: notes-itp
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on the extension data store and ITP
+  - id: task-175
+    resource: backlog:TASK-175
+    title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
 ---
 
 Detour logs through `os.Logger` under the subsystem `com.detourbrowser.mac`,
@@ -81,6 +84,11 @@ reconstructing what happened in the last few minutes.
 
 ## 2. Filter to the right process
 
+A helper's lines forwarded by WebKit (`WebContent[<pid>] …`) are logged
+under Detour's pid, so one `processIdentifier == <detour pid>` query shows
+the UI process and its web processes together; the GPU and Networking
+processes' own lines need their pids.[^task-175]
+
 `process == "Detour"` matches every Detour on the machine: an installed
 app, a Debug build started from Xcode, an isolated verification run and
 the XCTest host all have that process name and the same bundle id. Filter
@@ -107,6 +115,8 @@ Detour's categories (subsystem `com.detourbrowser.mac`), from the code:
 | `extension-installer`, `extension-updater` | install and update pipeline |
 | `profiles`, `storage`, `app` | profile data removal, database errors, launch |
 | `gpu-recycle` | GPU process surface counts and recycles |
+| `gpu-orphan` | each kill of a GPU process WebKit abandoned (notice) |
+| `web-process` | a web process replaced because it never read a load request (notice) |
 | `content-blocker`, `InternalPageBridge` | those features |
 
 WebKit lines worth knowing, and who logs them:
@@ -121,6 +131,11 @@ WebKit lines worth knowing, and who logs them:
 | `Updating process assertion type to …` | Detour | `ProcessSuspension` |
 | `Tab not found for message for content script message` | Detour | `Extensions` (WebKit's, capital E) |
 | `per client IOSurface limit` | `com.apple.WebKit.GPU` | `Layers` |
+| `GPUProcessProxy::didBecomeUnresponsive: GPUProcess with PID N became unresponsive, terminating it`, `GPUProcessProxy::didFinishLaunching`, `GPU process (…) took N seconds to launch` | Detour | `Process`[^task-175] |
+| `Could not signal service com.apple.WebKit.GPU: 1: Operation not permitted` (follows every terminate; the process exits by itself or not at all) | Detour | none (libxpc) |
+| `WebContent[pid] GPUProcessConnection::create` / `didInitialize` / `didClose` (a `create` with neither of the others after it is a connection to a process that never answered) | Detour, relayed from the web process | `Process` |
+| `WebProcessProxy::didBecomeUnresponsive:` / `didBecomeResponsive:` (the second is also logged whenever the view is hidden, with the process still blocked) | Detour | `Process` |
+| `WebPageProxy::reload:`, `stopLoading:`, `didStartProvisionalLoadForFrame`, `updateActivityState: view visibility state changed` | Detour | `Loading`, `ViewState` |
 
 The two filters the plan document keeps:
 
@@ -233,6 +248,7 @@ Background: [native port keep-alive](../extensions/native-port-keep-alive.md),
 - [WebKit helper diagnostics](./webkit-helper-diagnostics.md) — when the log is not enough.
 - [Console bridge](../extensions/console-bridge.md) — where `[SW …]` lines come from and their rate limit.
 - [GPU IOSurface limit](../platform/gpu-iosurface-limit.md) — the GPU-process queries.
+- [Abandoned GPU process](../platform/abandoned-gpu-process.md) — a timeline reconstructed from the `Process` and `Loading` lines.
 - [Hidden web view load stalls](../platform/hidden-webview-load-stalls.md) — reading `ProcessSuspension`.
 
 [^notes-logs]: Session notes on reading the unified log during harness runs
@@ -243,3 +259,4 @@ Background: [native port keep-alive](../extensions/native-port-keep-alive.md),
 [^task-21]: TASK-21
 [^task-71]: TASK-71
 [^task-1]: TASK-1
+[^task-175]: TASK-175

@@ -3,10 +3,10 @@ id: TASK-169
 title: >-
   Sidebar: a hover-revealed sidebar sometimes stays open instead of hiding again
   (seen after switching tabs and returning to CodeToaster)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-10 07:08'
-updated_date: '2026-10-10 08:15'
+updated_date: '2026-10-13 01:22'
 labels:
   - bug
 dependencies: []
@@ -45,7 +45,7 @@ The fix should not depend on one exit event: whatever the cause, a revealed side
 - [x] #3 A hover-revealed sidebar hides after the pointer has left it in each case found, including an exit during the reveal grace period and a tab switch made from the revealed sidebar
 - [x] #4 A hover-revealed sidebar still stays open while the pointer is in it and while a popover opened from it is showing (TASK-127), and Toggle Sidebar still pins it
 - [x] #5 The rule is in the pure reducer with tests in SidebarVisibilityStateTests that fail before the fix; anything that cannot be a reducer test has a stated reason
-- [ ] #6 Checked in the running app with real pointer movement, on a page that takes mouse input (an xterm.js terminal with mouse reporting on); the wiki's auto-hide page is updated
+- [x] #6 Checked in the running app with real pointer movement, on a page that takes mouse input (an xterm.js terminal with mouse reporting on); the wiki's auto-hide page is updated
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -122,4 +122,12 @@ AC #1 and #2 checked by the main session: the stuck state was reproduced in the 
 Full DetourTests run on the branch: 2,116 tests, 11 skipped, 1 failure: ExtensionOriginTrackingPreventionTests.testTrackingPreventionPassSparesOriginsWithALoggedInteraction ('timed out after 30.0 s waiting for the uninteracted origin's localStorage to be deleted'). Not from this change: run alone a few minutes later it fails the same way on this branch and on main at db9024b, where it had passed in a full run about half an hour earlier (2,095 tests, 0 failures). Cause not established (the test drives WebKit's tracking-prevention pass, which has time-dependent rules).
 
 One thing for the user to rule out, since it looks the same as a sidebar that failed to hide: Toggle Sidebar is Cmd+S and reaches the menu when the page does not take the key, so Cmd+S pressed in a web app pins a hidden or hover-revealed sidebar.
+
+2026-10-12, task sweep: the user confirmed criterion 6 from daily use of the build they have run since 2026-10-11, including on a page that takes mouse input (a CodeToaster terminal): a hover-revealed sidebar hides again after the pointer leaves. The wiki page (sidebar/visibility-and-auto-hide) was rewritten with the fix on 2026-10-10. Which of the reproduced mechanisms the user's original occurrences were is still not known.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A hover-revealed sidebar now hides without waiting for an exit event: the reducer takes every report of where the pointer is through one rule (settleHide), re-checks the pointer when the hide delay elapses, and re-derives the popover hold. The stuck state was reproduced on the unfixed build and named; tests are in SidebarVisibilityStateTests. Confirmed by the user in daily use on a page that takes mouse input (2026-10-12).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -119,7 +119,15 @@ extension BrowserWindowController: WKUIDelegate {
 
     // MARK: - JavaScript Dialogs
 
-    private func showJSAlert(from frame: WKFrameInfo, message: String, showCancel: Bool = false, accessoryView: NSView? = nil, completion: @escaping (NSApplication.ModalResponse) -> Void) {
+    private func showJSAlert(in webView: WKWebView, from frame: WKFrameInfo, message: String, showCancel: Bool = false, accessoryView: NSView? = nil, completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        // The page's process waits on this dialog for as long as the user
+        // takes; the tab must not mistake that for a hang (TASK-176).
+        let tab = tab(owning: webView)
+        tab?.scriptDialogDidBegin()
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
+            tab?.scriptDialogDidEnd()
+            completion(response)
+        }
         let alert = NSAlert()
         alert.messageText = "\(frame.securityOrigin.host) says"
         alert.informativeText = message
@@ -135,11 +143,11 @@ extension BrowserWindowController: WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-        showJSAlert(from: frame, message: message) { _ in completionHandler() }
+        showJSAlert(in: webView, from: frame, message: message) { _ in completionHandler() }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-        showJSAlert(from: frame, message: message, showCancel: true) { response in
+        showJSAlert(in: webView, from: frame, message: message, showCancel: true) { response in
             completionHandler(response == .alertFirstButtonReturn)
         }
     }
@@ -147,7 +155,7 @@ extension BrowserWindowController: WKUIDelegate {
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         textField.stringValue = defaultText ?? ""
-        showJSAlert(from: frame, message: prompt, showCancel: true, accessoryView: textField) { response in
+        showJSAlert(in: webView, from: frame, message: prompt, showCancel: true, accessoryView: textField) { response in
             completionHandler(response == .alertFirstButtonReturn ? textField.stringValue : nil)
         }
     }

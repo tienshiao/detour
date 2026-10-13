@@ -1,6 +1,9 @@
 import AppKit
 import WebKit
 import Combine
+import os.log
+
+private let webProcessLog = Logger(subsystem: "com.detourbrowser.mac", category: "web-process")
 
 // Private C API to enable PiP support in WKWebView on macOS
 @_silgen_name("WKPreferencesSetAllowsPictureInPictureMediaPlayback")
@@ -112,6 +115,23 @@ class BrowserTab: NSObject {
     private var loadStallWorkItem: DispatchWorkItem?
     /// The progress the sidebar row draws: nothing once a hidden load has stalled.
     var sidebarProgress: Double { isLoadProgressStalled ? 0 : estimatedProgress }
+    /// How long a requested load may stay unstarted, once WebKit has reported
+    /// the web process unresponsive, before the process is replaced (TASK-176).
+    static var unresponsiveLoadPatience: TimeInterval = 5
+    private var loadRecovery = UnresponsiveLoadRecovery()
+    private var loadRecoveryWorkItem: DispatchWorkItem?
+    /// True only inside the call that terminates an unresponsive web process.
+    /// WebKit reports the termination to the navigation delegate before that
+    /// call returns; the delegate must neither reload (the tab issues the load
+    /// itself) nor count it as a crash.
+    private(set) var isTerminatingUnresponsiveProcess = false
+    /// The web process of each script dialog this tab has up.
+    private var scriptDialogProcesses: [pid_t] = []
+    /// How many script dialogs each web process has up, across tabs: a window
+    /// a page opened shares its opener's process, and a dialog in one blocks
+    /// both.
+    private static var scriptDialogCounts: [pid_t: Int] = [:]
+    private static let killWebContentProcessSelector = NSSelectorFromString("_killWebContentProcessAndResetState")
     @Published var favicon: NSImage?
     private(set) var faviconURL: URL?
     /// The space this tab belongs to. `wake()` resolves it to pick the
@@ -608,6 +628,10 @@ class BrowserTab: NSObject {
             .sink { [weak self] loading in
                 guard let self else { return }
                 self.isLoading = loading
+                // Finished, failed, stopped, or refused before it began (a
+                // download, an external-app link): either way the process
+                // answered. A process that died reads the same way.
+                if !loading { self.applyLoadRecovery(.answered) }
                 if !loading && self.navigationPending {
                     self.navigationPending = false
                     self.updateTitle()
@@ -788,6 +812,8 @@ class BrowserTab: NSObject {
         restoringSession = false
         faviconCancellables.removeAll()
         restartLoadStallTimer(isLoading: false)
+        applyLoadRecovery(.reset)
+        while !scriptDialogProcesses.isEmpty { scriptDialogDidEnd() }
         // The window hosting this web view registered itself on its content
         // controller, which holds it strongly. A release the window did not
         // start — the store closing its selected tab (`tabs.remove`, another
@@ -1132,7 +1158,7 @@ class BrowserTab: NSObject {
             }
         }
         updateTitle()
-        webView?.load(URLRequest(url: url))
+        issue(.url(url))
     }
 
     func reload() {
@@ -1154,8 +1180,156 @@ class BrowserTab: NSObject {
             // but the user asking to reload must still retry the page.
             loadRecordedURL(retryURL)
         } else {
-            webView?.reload()
+            issue(.reload)
         }
+    }
+
+    // MARK: - Unresponsive web process (TASK-175, TASK-176)
+
+    /// The user's Stop. Goes through the recovery rule like a load does: a
+    /// web process that never reads the stop would leave the tab "loading",
+    /// with a Stop button that does nothing, for good.
+    func stopLoading() {
+        // With nothing in flight there is nothing for the process to answer,
+        // and no `isLoading` change would ever clear the request.
+        if webView?.isLoading == true { applyLoadRecovery(.stopped) }
+        webView?.stopLoading()
+    }
+
+    /// The page put up a script dialog (alert, confirm, prompt) or took it
+    /// down. Its process answers nothing while one is up, and that is the user
+    /// taking their time, not a hang.
+    func scriptDialogDidBegin() {
+        let process = webProcessIdentifier
+        scriptDialogProcesses.append(process)
+        Self.scriptDialogCounts[process, default: 0] += 1
+        applyLoadRecovery(.waitingOnUser)
+    }
+
+    func scriptDialogDidEnd() {
+        guard let process = scriptDialogProcesses.popLast() else { return }
+        let remaining = (Self.scriptDialogCounts[process] ?? 1) - 1
+        Self.scriptDialogCounts[process] = remaining > 0 ? remaining : nil
+    }
+
+    /// Whether this tab's web process is held by a script dialog — this tab's,
+    /// or one of another tab in the same process.
+    private var isWaitingOnUser: Bool {
+        if !scriptDialogProcesses.isEmpty { return true }
+        let process = webProcessIdentifier
+        return process != 0 && Self.scriptDialogCounts[process] != nil
+    }
+
+    /// 0 when there is no web view, no process yet, or no SPI.
+    private var webProcessIdentifier: pid_t {
+        let selector = NSSelectorFromString("_webProcessIdentifier")
+        guard let webView, webView.responds(to: selector) else { return 0 }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> pid_t
+        return unsafeBitCast(webView.method(for: selector), to: Getter.self)(webView, selector)
+    }
+
+    /// WebKit reported a provisional load starting — through whichever
+    /// navigation delegate the web view has, like the callbacks below.
+    func didStartProvisionalNavigation() {
+        applyLoadRecovery(.answered)
+    }
+
+    /// WebKit asked what to do with a main-frame navigation — through
+    /// whichever navigation delegate the web view has. Only a web process that
+    /// is reading its messages asks, so whatever was requested of it has been
+    /// read. A request that ends here starts no provisional load: one the
+    /// policy refuses (an external-app link), a jump within the document, a
+    /// load that continues in another web process. While an earlier load keeps
+    /// `isLoading` true nothing else would mark it answered, and the next
+    /// unresponsive report — a busy page is enough — would replay it in a new
+    /// process.
+    func didReceiveMainFrameNavigationPolicyRequest() {
+        applyLoadRecovery(.answered)
+    }
+
+    func webProcessDidBecomeUnresponsive() {
+        // The symptom an abandoned GPU process produces, and killing that
+        // process unfreezes the page where it is (TASK-175).
+        MainActor.assumeIsolated { GPUProcessOrphanReaper.shared.sweep() }
+        applyLoadRecovery(.becameUnresponsive)
+    }
+
+    func webProcessDidBecomeResponsive() {
+        applyLoadRecovery(.becameResponsive)
+    }
+
+    /// The web process went away by itself (a crash, a memory kill).
+    func webProcessDidTerminate() {
+        applyLoadRecovery(.reset)
+    }
+
+    /// Asks the web view for `load`, in a fresh web process when this one is
+    /// already known not to be reading its messages.
+    private func issue(_ load: UnresponsiveLoadRecovery.Load) {
+        // No web view, nothing to wait on: a request remembered here would be
+        // replayed into whichever web view the tab got next.
+        guard webView != nil else { return }
+        guard !applyLoadRecovery(.requested(load)) else { return }
+        perform(load)
+        // Nothing went in flight (a reload with nothing to reload): there is
+        // nothing to answer, and no `isLoading` change to say so later.
+        if webView?.isLoading != true { applyLoadRecovery(.answered) }
+    }
+
+    private func perform(_ load: UnresponsiveLoadRecovery.Load) {
+        switch load {
+        case .reload: webView?.reload()
+        case .url(let url): webView?.load(URLRequest(url: url))
+        }
+    }
+
+    /// Returns whether the event ended with its load issued in a fresh web
+    /// process.
+    @discardableResult
+    private func applyLoadRecovery(_ event: UnresponsiveLoadRecovery.Event) -> Bool {
+        var event = event
+        if isWaitingOnUser {
+            switch event {
+            case .becameUnresponsive, .patienceElapsed:
+                // Not answering because the user has not: no hang, no wait.
+                event = .waitingOnUser
+            case .requested, .stopped:
+                // Whatever was reported before the dialog went up is stale.
+                _ = loadRecovery.handle(.waitingOnUser)
+            default:
+                break
+            }
+        }
+        switch loadRecovery.handle(event) {
+        case .none:
+            return false
+        case .waitForPatience(let token):
+            loadRecoveryWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                self?.applyLoadRecovery(.patienceElapsed(token: token))
+            }
+            loadRecoveryWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.unresponsiveLoadPatience, execute: item)
+            return false
+        case .terminate(let load):
+            // The kill turns the web view's `isLoading` false, which the
+            // observer reads as the navigation being over. The URL issued next
+            // is that same navigation, still pending: without this a redirect
+            // on the way would become the retry target and the row's icon.
+            let navigationWasPending = navigationPending
+            terminateUnresponsiveProcess()
+            if case .url = load { navigationPending = navigationWasPending }
+            perform(load)
+            return true
+        }
+    }
+
+    private func terminateUnresponsiveProcess() {
+        guard let webView, webView.responds(to: Self.killWebContentProcessSelector) else { return }
+        webProcessLog.notice("Terminating an unresponsive web process to start the load it never read")
+        isTerminatingUnresponsiveProcess = true
+        webView.perform(Self.killWebContentProcessSelector)
+        isTerminatingUnresponsiveProcess = false
     }
 
     func didCommitNavigation() {
@@ -1293,6 +1467,7 @@ class BrowserTab: NSObject {
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        if navigationAction.targetFrame?.isMainFrame == true { didReceiveMainFrameNavigationPolicyRequest() }
         guard authorizesNavigation(navigationAction, in: webView) else { return (.cancel, preferences) }
         if navigationAction.targetFrame?.isMainFrame == true, let profile = owningProfile {
             ContentBlockerManager.shared.configure(preferences,
@@ -1321,6 +1496,24 @@ extension BrowserTab: WKNavigationDelegate {
     /// See `webView(_:didFailProvisionalNavigation:withError:)`.
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         didFailNavigation(error: error)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        didStartProvisionalNavigation()
+    }
+
+    /// `WKNavigationDelegatePrivate`: WebKit's responsiveness timer, started by
+    /// a load request or an input event, ran out (three seconds).
+    @objc(_webViewWebProcessDidBecomeUnresponsive:)
+    func webViewWebProcessDidBecomeUnresponsive(_ webView: WKWebView) {
+        webProcessDidBecomeUnresponsive()
+    }
+
+    /// `WKNavigationDelegatePrivate`. Also sent when the view is hidden, with
+    /// the process as blocked as before.
+    @objc(_webViewWebProcessDidBecomeResponsive:)
+    func webViewWebProcessDidBecomeResponsive(_ webView: WKWebView) {
+        webProcessDidBecomeResponsive()
     }
 }
 

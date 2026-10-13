@@ -5,7 +5,7 @@ description: How to attribute CPU in a WebKit helper process (Networking, WebCon
 tags: [playbook, webkit, diagnostics, cpu, indexeddb, extensions]
 status: stable
 stale_after: 2027-04-01T00:00:00Z
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:45Z }
 sources:
   - id: task-50
     resource: backlog:TASK-50
@@ -28,6 +28,9 @@ sources:
   - id: notes-stalls
     resource: "Agent session notes, 2026-10-01 (not in the repository)"
     title: Session notes on hidden web view load stalls
+  - id: task-175
+    resource: backlog:TASK-175
+    title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
 ---
 
 Activity Monitor says `com.apple.WebKit.Networking` or a
@@ -54,8 +57,25 @@ ps -axo pid,ppid,%cpu,rss,lstart,command | grep -E 'Detour|com.apple.WebKit' | g
 
 In a sandboxed agent shell, `ps`, `sample`, `lsof`, `top` and `vmmap` need
 the sandbox off. Several Detour processes may exist (installed app, Debug
-build, test host); helpers are children of their own Detour, so follow
-`ppid`.
+build, test host), and other WebKit apps have helpers of the same names.
+The helpers are XPC services: their parent is launchd (`ppid` 1), not the
+app.[^task-175] What ties a helper to its app is the process the system
+holds responsible for it, which is also what Activity Monitor groups by:
+
+```bash
+python3 - <<'PY'
+import ctypes, subprocess
+f = ctypes.CDLL(None).responsibility_get_pid_responsible_for_pid
+for line in subprocess.run(['ps', '-axo', 'pid=,lstart=,comm='], capture_output=True, text=True).stdout.splitlines():
+    if 'com.apple.WebKit.' in line:
+        pid = int(line.split()[0])
+        print(pid, line.split('/')[-1], ' '.join(line.split()[1:6]), '-> responsible pid', f(pid))
+PY
+```
+
+For web processes Detour's own log is quicker: every WebKit line about a
+page carries `PID=<web process>`, and a web process's own lines are
+relayed as `WebContent[<pid>]` under Detour's pid.
 
 ## 2. Sample the hot process
 
@@ -74,6 +94,8 @@ unsandboxed commands may see different `$TMPDIR` values.
 | Detour (UI process) | `WebExtensionContext::runtimeSendMessage` → `getCurrentTab` → `openTabs` → `WebExtensionTab::webView()` | a flood of `runtime.sendMessage` from a content script[^task-50] |
 | WebContent | `RejectedPromiseTracker::reportUnhandledRejections` → `JSEventListener` → `JSWebExtensionAPIRuntime::sendMessage` | the other half of that flood: an unhandled-rejection reporter whose own `sendMessage` rejects[^task-50] |
 | WebContent (hidden tab) | main thread parked at one address inside a page script, 0% CPU | not a hang: the process is at background priority, see [hidden web view load stalls](../platform/hidden-webview-load-stalls.md)[^notes-stalls] |
+| WebContent | every main-thread sample in `IPC::Connection::sendSyncMessage` → `waitForSyncReply` (under `RemoteAudioSession::ensureConnection` in the case found), and `ps -o time` not advancing at all | blocked on a process that will never answer: look for an [abandoned GPU process](../platform/abandoned-gpu-process.md)[^task-175] |
+| GPU (not the app's current one) | main thread stuck in one place, a few hundredths of a second of CPU in its whole life | WebKit dropped it and it never exited; killing it unfreezes the pages waiting on it[^task-175] |
 
 ## 3. Which origin: open files
 
@@ -182,7 +204,11 @@ Everything else is on
 # Traps
 
 - **Killing the busiest WebContent.** It may be someone's tab. Identify
-  the worker process by the log, and identify the app instance by `ppid`.[^notes-itp]
+  the worker process by the log, and the app a helper belongs to by its
+  responsible process (step 1), not by `ppid`.[^notes-itp]
+- **"0% CPU" has two meanings.** `ps -o %cpu` is a decaying average. Read
+  `ps -o time` twice a few seconds apart: a de-prioritised process creeps
+  forward, a blocked one does not move.[^task-175]
 - **Reading throughput into a stuck queue.** A hot
   `takeNextRunnableTransaction` with no backing-store frames means nothing
   is running.
@@ -206,6 +232,7 @@ Everything else is on
 # Related
 
 - [Reading runtime logs](./reading-runtime-logs.md) — the log half of every step here.
+- [Abandoned GPU process](../platform/abandoned-gpu-process.md) — a whole diagnosis done with these steps on a running app.
 - [Diagnosing extension problems](./diagnosing-extension-problems.md) — symptom to cause.
 - [Data store and ITP](../extensions/data-store-and-itp.md) — why extension storage gets deleted.
 - [Tab and window bridge](../extensions/tab-and-window-bridge.md) — why an unregistered tab causes a message flood.
@@ -218,3 +245,4 @@ Everything else is on
 [^notes-cpu]: Session notes on WebKit helper CPU diagnostics
 [^notes-itp]: Session notes on the extension data store and ITP
 [^notes-stalls]: Session notes on hidden web view load stalls
+[^task-175]: TASK-175

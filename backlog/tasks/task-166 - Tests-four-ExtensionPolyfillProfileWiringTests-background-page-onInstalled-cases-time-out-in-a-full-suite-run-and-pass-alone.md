@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-04 21:51'
-updated_date: '2026-10-10 08:38'
+updated_date: '2026-10-13 01:22'
 labels:
   - bug
   - tests
@@ -49,7 +49,7 @@ Where to start: bisect the suite order with -only-testing (the wiring suite plus
 <!-- AC:BEGIN -->
 - [ ] #1 The earlier suite or suites that make the four cases fail are identified, with a minimal -only-testing order that reproduces the failure
 - [ ] #2 The cause is explained: what state crosses from the earlier suite and why it stops the background page answering the test's probe
-- [ ] #3 It is stated whether main is affected or only the epic branch
+- [x] #3 It is stated whether main is affected or only the epic branch
 - [ ] #4 The fix is in the right place: test isolation if the leak is the test's, product code with a regression test if a real extension would hit it
 - [ ] #5 A full DetourTests run passes these four cases three times in a row, and wiki/playbooks/build-and-test.md section 8 is updated with the cause
 <!-- AC:END -->
@@ -70,4 +70,6 @@ The first two fail at the same shared wait (line 3362, 'timed out after 20.0 s w
 main at db9024b had a full run the same day (2,095 tests, 11 skipped) with 0 failures, so main is not affected by this in a full run (AC #3).
 
 Separately, on main the same day: ExtensionOriginTrackingPreventionTests.testTrackingPreventionPassSparesOriginsWithALoggedInteraction passed in one full run, then timed out ('waiting for the uninteracted origin's localStorage to be deleted', 30 s) in a full run on main + TASK-169 and twice alone a few minutes later, on that branch and on main; it passed again in the epic's full run half an hour after that. Not investigated; recorded here because it is another test whose result changed with no code change.
+
+2026-10-12, task sweep: main is not affected, as far as full runs show. The four cases passed in every full DetourTests run of main-based code on 2026-10-12 (four runs while TASK-175/176 were developed, the last at what is now main's tip 829d88a: 2,180 tests, 0 failures), and in the full run of main at db9024b on 2026-10-10. The failures have only been seen on epic-claude-extension. Criteria 1, 2, 4 and 5 are open.
 <!-- SECTION:NOTES:END -->

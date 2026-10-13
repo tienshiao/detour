@@ -4,7 +4,7 @@ title: Debug harness
 description: How to drive and observe the running app from a temporary, environment-gated block in AppDelegate — the pattern, the seeding calls, the stub drag info, and how to keep it out of commits.
 tags: [playbook, harness, runtime, debugging]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T00:33:19Z }
 sources:
   - id: app-delegate
     resource: ../../Detour/App/AppDelegate.swift
@@ -42,6 +42,9 @@ sources:
   - id: patches
     resource: ../../docs/harness/README.md
     title: Per-task harness patches and WebKit spikes kept in docs/harness
+  - id: task-175
+    resource: backlog:TASK-175
+    title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
 ---
 
 There is no permanent automation hook in Detour. Runtime checks that need
@@ -211,6 +214,7 @@ These exist in the shipped code and are useful from a harness run:
 | `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` | extra native-host manifest directory, searched first (Debug builds only) | `NativeMessagingHost.searchDirectories` |
 | `DETOUR_SLEEP_SHOW_BUDGET`, `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS` | shrink the show-budget sleep rule | `TabStore` |
 | `DETOUR_GPU_RECYCLE_SOFT_LIMIT`, `_HARD_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`, `_MIN_INTERVAL_SECONDS`, `DETOUR_GPU_RECYCLE_CHECK_SECONDS` | make the GPU recycler fire quickly | `GPUProcessRecycler` |
+| `DETOUR_GPU_ORPHAN_MIN_AGE_SECONDS`, `DETOUR_GPU_ORPHAN_CHECK_SECONDS` | make the abandoned-GPU-process reaper act within seconds | `GPUProcessOrphanReaper` |
 | `-ExtensionConsoleLogPublic YES` (launch argument) | extension console text readable in the log | `ExtensionPolyfillHandler` |
 
 See [sleeping and archiving](../tabs/sleeping-and-archiving.md),
@@ -236,6 +240,13 @@ In the repository:
   the key-view loop probe, the extension harnesses of the Claude extension
   epic, and the side panel harness whose procedure is the
   [side panel runtime check](./side-panel-runtime-check.md).
+- [docs/harness/task175-176-harness.patch](../../docs/harness/task175-176-harness.patch)
+  — two modes: a page the harness keeps drawing through the GPU process,
+  so an outside script can `SIGSTOP` that process and watch the reaper
+  ([abandoned GPU process](../platform/abandoned-gpu-process.md)); and a
+  page that blocks its main thread, then `reloadPage`
+  ([unresponsive web process](../platform/unresponsive-web-process.md)).
+  It logs the web and GPU pids once a second.
 
 The patches were written against the `AppDelegate` of their day and may
 need a hunk fixed up. The techniques are written up on
@@ -254,6 +265,19 @@ longer applied and were not kept.
 - **Timers hide races.** `after(2)` works on an idle machine and fails on
   a busy one. Poll for the condition (the document exists, the favicon
   arrived) instead of sleeping where the step matters.
+- **A `file:` or `data:` page does not load in the selected tab.** The
+  window's navigation policy does not load those schemes in a web view it
+  has claimed (TASK-159): a tab that is selected right after `addTab` stays
+  empty, with no error. Serve the fixture from a local HTTP server
+  (`python3 -m http.server --bind 127.0.0.1 --directory <dir>`), started by
+  the same command that launches the app.[^task-175]
+- **The harness window is hidden to WebKit.** An app launched from a shell
+  comes up behind the other windows, so its page counts as hidden, and on a
+  busy machine a hidden page's own timers all but stop
+  ([hidden web view load stalls](../platform/hidden-webview-load-stalls.md)).
+  A page that must keep doing something should be driven from the harness
+  with `evaluateJavaScript` on a timer; a pending call also holds the web
+  process at foreground priority.[^task-175]
 - **Do not seed under an invented space id.** History visits of spaces
   that do not exist are swept shortly after launch; create a real space.
 - **Attaching a debugger to an app launched from Xcode.** `lldb -p` fails
@@ -278,3 +302,4 @@ longer applied and were not kept.
 [^notes-updates]: Session notes on verifying the extension update UI
 [^notes-private]: Session notes on Private profile extensions
 [^task-121]: TASK-121
+[^task-175]: TASK-175

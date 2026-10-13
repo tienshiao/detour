@@ -5,7 +5,7 @@ description: The per-window controller — what each of its extension files hand
 resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [architecture, window, selection, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
 sources:
   - id: window-controller
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -256,7 +256,10 @@ deactivated; otherwise the tab closes.
 - A web content process that dies leaves a white, unresponsive view with no
   further callback. `webViewWebContentProcessDidTerminate` reloads, capped by
   `BrowserTab.noteProcessTermination()` so a page that kills its process on
-  every load does not loop.
+  every load does not loop. A termination the tab asked for itself
+  (`isTerminatingUnresponsiveProcess`) is skipped: the tab issues the load
+  when the kill returns
+  ([unresponsive web process](../platform/unresponsive-web-process.md)).
 
 # Tests
 

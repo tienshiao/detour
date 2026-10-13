@@ -1,0 +1,47 @@
+Analysis of sampling com.apple.WebKit.WebContent (pid 73062) every 1 millisecond
+Process:         com.apple.WebKit.WebContent [73062]
+Identifier:      com.apple.WebKit.WebContent
+Version:         21624 (21624.5.1.11.3)
+Code Type:       ARM64E
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-10-12 16:18:49.190 -0700
+Launch Time:     2026-10-11 02:04:00.354 -0700
+OS Version:      macOS 26.7 (25G229)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         972.0M
+Physical footprint (peak):  1.5G
+Idle exit:                  clean
+
+Call graph:
+    2554 Thread_95041194   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 2554 start  (in dyld) + 6992  [0x1805784e4]
+    +   2554 WebKit::XPCServiceMain(int, char const**)  (in WebKit) + 48  [0x1ab7d5918]
+    +     2554 xpc_main  (in libxpc.dylib) + 64  [0x180628628]
+    +       2554 _xpc_main  (in libxpc.dylib) + 40  [0x18063aae4]
+    +         2554 _xpc_objc_main  (in libxpc.dylib) + 668  [0x180628a68]
+    +           2554 -[NSRunLoop(NSRunLoop) run]  (in Foundation) + 64  [0x1822c40d0]
+    +             2554 -[NSRunLoop(NSRunLoop) runMode:beforeDate:]  (in Foundation) + 212  [0x18224bc34]
+    +               2554 _CFRunLoopRunSpecificWithOptions  (in CoreFoundation) + 532  [0x180ad2508]
+    +                 2554 __CFRunLoopRun  (in CoreFoundation) + 820  [0x1809ff8d4]
+    +                   2554 __CFRunLoopDoSources0  (in CoreFoundation) + 232  [0x180a00cb0]
+    +                     2554 __CFRunLoopDoSource0  (in CoreFoundation) + 172  [0x180a00f44]
+    +                       2554 __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__  (in CoreFoundation) + 28  [0x180a00fb0]
+    +                         2554 WTF::RunLoop::performWork(void*)  (in JavaScriptCore) + 36  [0x1a2b77af8]
+    +                           2554 WTF::RunLoop::performWork()  (in JavaScriptCore) + 460  [0x1a2b76548]
+    +                             2554 WTF::Detail::CallableWrapper<WebCore::MediaSessionManagerInterface::scheduleUpdateSessionState()::$_0, void>::call()  (in WebCore) + 60  [0x1a98f4b50]
+    +                               2554 WebCore::MediaSessionManagerCocoa::updateSessionState()  (in WebCore) + 780  [0x1a7faf5f4]
+    +                                 2554 WebKit::RemoteAudioSession::setPreferredBufferSize(unsigned long)  (in WebKit) + 64  [0x1ac1397b0]
+    +                                   2554 WebKit::RemoteAudioSession::ensureConnection()  (in WebKit) + 340  [0x1ac1392d0]
+    +                                     2554 IPC::Connection::sendSyncMessage(WTF::ObjectIdentifierGeneric<IPC::SyncRequestIDType, WTF::ObjectIdentifierThreadSafeAccessTraits<unsigned long long>, unsigned long long>, WTF::UniqueRef<IPC::Encoder>&&, IPC::Time
+    +                                       2554 IPC::Connection::waitForSyncReply(WTF::ObjectIdentifierGeneric<IPC::SyncRequestIDType, WTF::ObjectIdentifierThreadSafeAccessTraits<unsigned long long>, unsigned long long>, IPC::MessageName, IPC::Timeout, WTF::O
+    +                                         2554 WTF::BinarySemaphore::waitUntil(WTF::TimeWithDynamicClockType const&)  (in JavaScriptCore) + 76  [0x1a2b1ddb0]
+    +                                           2554 WTF::Condition::waitUntilUnchecked<WTF::Lock>(WTF::Lock&, WTF::TimeWithDynamicClockType const&)  (in JavaScriptCore) + 216  [0x1a2b195c4]
+    +                                             2554 WTF::ParkingLot::parkConditionallyImpl(void const*, WTF::ScopedLambda<bool ()> const&, WTF::ScopedLambda<void ()> const&, WTF::TimeWithDynamicClockType const&)  (in JavaScriptCore) + 4112  [0x1a2b6be44]
+    +                                               2554 WTF::ThreadCondition::timedWait(WTF::Mutex&, WTF::WallTime)  (in JavaScriptCore) + 164  [0x1a2bc2d74]
+    +                                                 2554 _pthread_cond_wait  (in libsystem_pthread.dylib) + 980  [0x180944128]
+    +                                                   2554 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x18090350c]

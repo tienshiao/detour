@@ -93,6 +93,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Recycle WebKit's GPU process before it runs out of IOSurfaces (TASK-105)
         GPUProcessRecycler.shared.start()
 
+        // Kill GPU processes WebKit abandoned without them exiting (TASK-175)
+        GPUProcessOrphanReaper.shared.start()
+
         // Set the window's active space from the restored session
         if let restored, TabStore.shared.space(withID: restored.spaceID) != nil {
             wc.setActiveSpace(id: restored.spaceID)

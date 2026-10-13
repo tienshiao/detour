@@ -171,7 +171,7 @@ final class GPUProcessRecycler {
             // confirm it is still *our* GPU process (the name alone would also
             // match another app's WebKit GPU process on a reused pid).
             guard Self.gpuProcessIdentifier() == pid,
-                  Self.processName(pid) == "com.apple.WebKit.GPU" else { return }
+                  GPUProcessTable.name(of: pid) == GPUProcessTable.processName else { return }
             log.notice("Recycling GPU process \(pid) at \(surfaceCount) IOSurfaces")
             lastRecycleAt = inputs.now
             kill(pid, SIGKILL)
@@ -192,15 +192,59 @@ final class GPUProcessRecycler {
         return webView.cameraCaptureState != .none || webView.microphoneCaptureState != .none
     }
 
-    /// The GPU process is shared by every web view in the app; ask any live one.
-    /// 0 (not launched yet) and a missing SPI both read as nil.
-    private static func gpuProcessIdentifier() -> pid_t? {
+    /// What WebKit says its GPU process is. The process is one per app, shared
+    /// by every web view.
+    enum WebKitGPUProcess: Equatable {
+        /// Nothing could be asked: no web view named a process, and the
+        /// app-wide SPI is missing.
+        case unknown
+        /// WebKit tracks no launched GPU process: none was needed yet, one is
+        /// launching, or WebKit dropped the last one and no page has asked for
+        /// another since. (Not called `none`: on an optional of this type that
+        /// name would silently mean "could not ask".)
+        case notRunning
+        case running(pid_t)
+    }
+
+    static func webKitGPUProcess() -> WebKitGPUProcess {
+        webKitGPUProcess(askedOf: liveTabs().lazy.compactMap(\.webView))
+    }
+
+    /// A web view that names a process is believed first: it answers for its
+    /// own process pool, every pool forgets the GPU process the moment it
+    /// exits, so a pid named here is the live one. But a pool whose pages have
+    /// not needed the GPU process since its last relaunch answers 0, and "every
+    /// tab answers 0" does not mean there is none — so only the app-wide answer
+    /// (`+[WKProcessPool _gpuProcessInfo]`) can say `.notRunning` (TASK-175).
+    static func webKitGPUProcess<WebViews: Sequence>(askedOf webViews: WebViews) -> WebKitGPUProcess
+    where WebViews.Element == WKWebView {
+        if let pid = gpuProcessIdentifier(of: webViews) { return .running(pid) }
+        let infoSelector = NSSelectorFromString("_gpuProcessInfo")
+        let poolClass: AnyObject = WKProcessPool.self
+        guard poolClass.responds(to: infoSelector) else { return .unknown }
+        guard let info = poolClass.perform(infoSelector)?.takeUnretainedValue() as? NSObject,
+              info.responds(to: NSSelectorFromString("pid")),
+              let pid = (info.value(forKey: "pid") as? NSNumber)?.int32Value, pid > 0 else { return .notRunning }
+        return .running(pid)
+    }
+
+    /// The pid of WebKit's GPU process, when it has one running.
+    static func gpuProcessIdentifier() -> pid_t? {
+        if case .running(let pid) = webKitGPUProcess() { return pid }
+        return nil
+    }
+
+    /// The first GPU process any of `webViews` names; 0 (see
+    /// `webKitGPUProcess(askedOf:)`) and a missing SPI are skipped.
+    static func gpuProcessIdentifier<WebViews: Sequence>(of webViews: WebViews) -> pid_t?
+    where WebViews.Element == WKWebView {
         let selector = NSSelectorFromString("_gpuProcessIdentifier")
-        guard let webView = liveTabs().lazy.compactMap(\.webView).first,
-              webView.responds(to: selector) else { return nil }
         typealias Getter = @convention(c) (AnyObject, Selector) -> pid_t
-        let pid = unsafeBitCast(webView.method(for: selector), to: Getter.self)(webView, selector)
-        return pid > 0 ? pid : nil
+        for webView in webViews where webView.responds(to: selector) {
+            let pid = unsafeBitCast(webView.method(for: selector), to: Getter.self)(webView, selector)
+            if pid > 0 { return pid }
+        }
+        return nil
     }
 
     /// Counts `pid`'s VM regions tagged VM_MEMORY_IOSURFACE — the same figure
@@ -222,11 +266,5 @@ final class GPUProcessRecycler {
             address = next
         }
         return regions > 0 ? surfaces : nil
-    }
-
-    private static func processName(_ pid: pid_t) -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) * 2 + 1)
-        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
-        return String(cString: buffer)
     }
 }
