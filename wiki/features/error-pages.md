@@ -4,7 +4,7 @@ title: Error pages
 description: "What a failed load looks like: the browser-error:// page, which failures earn one and which are ignored, how the tab keeps the URL the user asked for, and how retry, restore and background tabs behave."
 tags: [navigation, errors, webkit, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
 sources:
   - id: scheme-handler
     resource: ../../Detour/Browser/Window/ErrorSchemeHandler.swift
@@ -162,7 +162,9 @@ loads the original URL again.
 - **Crashed web content process.** Not an error page:
   `webViewWebContentProcessDidTerminate` reloads the tab, at most twice in a
   row (`noteProcessTermination`); past the cap the pane stays blank until a
-  manual reload.
+  manual reload. A process the tab replaced because it was not answering a
+  load is not counted
+  ([unresponsive web process](../platform/unresponsive-web-process.md)).
 - **Back/forward re-attempt targets the selected tab.** The branch calls
   `selectedTab?.load(originalURL)` rather than resolving the tab from the web
   view that fired. Read from the code; the case of an unfocused split pane

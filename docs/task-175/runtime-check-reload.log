@@ -1,0 +1,27 @@
+# Runtime check, 2026-10-12: same build, DETOUR_VERIFY_MODE=reload. The page blocks its main thread 2 s after each load;
+# the harness calls reloadPage (the Reload button's and Cmd+R's action) at 8.1 s.
+   0.0  harness armed mode=reload pid=16044
+   3.1  title=loaded at 1791850825581 web=16057 loading=false inWindow=true
+   8.1  title=loaded at 1791850825581 web=16057 loading=false inWindow=true
+   8.1  ACTION reloadPage (the Reload button's and Cmd+R's action)
+   9.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  10.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  11.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  12.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  13.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  14.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  15.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  16.1  title=loaded at 1791850825581 web=16057 loading=true inWindow=true
+  17.1  title=loaded at 1791850839844 web=16106 loading=false inWindow=true
+  18.1  title=loaded at 1791850839844 web=16106 loading=false inWindow=true
+  19.1  title=loaded at 1791850839844 web=16106 loading=false inWindow=true
+  20.1  title=loaded at 1791850839844 web=16106 loading=false inWindow=true
+  21.1  title=loaded at 1791850839844 web=16106 loading=false inWindow=true
+  22.1  title=loaded at 1791850839844 web=16106 loading=false inWindow=true
+# Unified log of the same run:
+17:20:31.492 Df [com.apple.WebKit:Loading] 0x977969518 - [pageProxyID=56, webPageID=57, PID=16057] WebPageProxy::reload:
+17:20:34.494 E  [com.apple.WebKit:Process] 0x1210d0c40 - [PID=16057] WebProcessProxy::didBecomeUnresponsive:
+17:20:39.742 Df [com.detourbrowser.mac:web-process] Terminating an unresponsive web process to start the load it never read
+17:20:39.743 E  [com.apple.WebKit:Process] 0x1210d0c40 - [PID=16057] WebProcessProxy::processDidTerminateOrFailedToLaunch: reason=RequestedByClient
+17:20:39.743 E  [com.apple.WebKit:Process] 0x977969518 - [pageProxyID=56, webPageID=57, PID=16057] WebPageProxy::processDidTerminate: (pid 16057), reason=RequestedByClient
+17:20:39.744 Df [com.apple.WebKit:Loading] 0x977969518 - [pageProxyID=56, webPageID=57, PID=16057] WebPageProxy::reload:

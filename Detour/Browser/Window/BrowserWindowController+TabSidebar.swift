@@ -42,7 +42,7 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestStop(_ sidebar: TabSidebarViewController) {
-        selectedTab?.webView?.stopLoading()
+        selectedTab?.stopLoading()
     }
 
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect) {

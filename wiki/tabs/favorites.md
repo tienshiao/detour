@@ -4,7 +4,7 @@ title: Favourites
 description: Per-profile tiles above the tab list, each with an optional backing tab that lives on the profile rather than in any space; how they are selected, moved, parked, peeked and kept visible to extensions.
 tags: [tabs, favorites, sidebar, profile, peek]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
 sources:
   - id: model
     resource: ../../Detour/Browser/Favorite.swift
@@ -191,6 +191,9 @@ next save. A profile with no space left restores its favourites dormant.
 
 # Edge cases
 
+- A favourite has no sidebar row, so it has no progress bar: while it is
+  selected the Reload/Stop button is the only sign of a load in flight
+  (TASK-177).
 - Closing the selected favourite deselects rather than picking a neighbour:
   there is no "next tab" for something that is not in the list.
 - Removing a favourite whose tab hosted a Peek tears the Peek down too

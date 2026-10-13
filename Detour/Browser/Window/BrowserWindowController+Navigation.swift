@@ -10,6 +10,11 @@ extension BrowserWindowController: WKNavigationDelegate {
     /// implementing this one keeps every branch of the decision below in effect.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        // Before the decision: a navigation refused below never starts, and the
+        // tab must still learn its web process read the request (TASK-176).
+        if navigationAction.targetFrame?.isMainFrame == true {
+            tab(owning: webView)?.didReceiveMainFrameNavigationPolicyRequest()
+        }
         let policy = await decidePolicy(for: navigationAction, in: webView)
         // Main frame only: a subframe's preferences do not govern the document's
         // content blocking, and the host that decides is the page's. The profile
@@ -328,8 +333,29 @@ extension BrowserWindowController: WKNavigationDelegate {
             webView.reload()
             return
         }
+        // The tab replaced an unresponsive process itself and issues the load
+        // it was asked for when the kill returns (TASK-176): not a crash.
+        guard !tab.isTerminatingUnresponsiveProcess else { return }
+        tab.webProcessDidTerminate()
         guard tab.noteProcessTermination() <= 2 else { return }
         tab.reload()
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        tab(owning: webView)?.didStartProvisionalNavigation()
+    }
+
+    /// `WKNavigationDelegatePrivate`: the web process has not answered for
+    /// three seconds after a load request or an input event. WebKit does
+    /// nothing further; see `UnresponsiveLoadRecovery`.
+    @objc(_webViewWebProcessDidBecomeUnresponsive:)
+    func webViewWebProcessDidBecomeUnresponsive(_ webView: WKWebView) {
+        tab(owning: webView)?.webProcessDidBecomeUnresponsive()
+    }
+
+    @objc(_webViewWebProcessDidBecomeResponsive:)
+    func webViewWebProcessDidBecomeResponsive(_ webView: WKWebView) {
+        tab(owning: webView)?.webProcessDidBecomeResponsive()
     }
 
     /// WebKit's per-list action report (`WKNavigationDelegatePrivate`): called

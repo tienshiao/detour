@@ -1,0 +1,83 @@
+Analysis of sampling com.apple.WebKit.GPU (pid 26842) every 1 millisecond
+Process:         com.apple.WebKit.GPU [26842]
+Identifier:      com.apple.WebKit.GPU
+Version:         21624 (21624.5.1.11.3)
+Code Type:       ARM64E
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-10-12 16:20:11.835 -0700
+Launch Time:     2026-10-12 14:39:50.063 -0700
+OS Version:      macOS 26.7 (25G229)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         5456K
+Physical footprint (peak):  5456K
+Idle exit:                  dirty
+
+Call graph:
+    1697 Thread_101139535   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 1697 start  (in dyld) + 6992  [0x1805784e4]
+    +   1697 WebKit::XPCServiceMain(int, char const**)  (in WebKit) + 48  [0x1ab7d5918]
+    +     1697 xpc_main  (in libxpc.dylib) + 64  [0x180628628]
+    +       1697 _xpc_main  (in libxpc.dylib) + 40  [0x18063aae4]
+    +         1697 _xpc_objc_main  (in libxpc.dylib) + 668  [0x180628a68]
+    +           1697 -[NSRunLoop(NSRunLoop) run]  (in Foundation) + 64  [0x1822c40d0]
+    +             1697 -[NSRunLoop(NSRunLoop) runMode:beforeDate:]  (in Foundation) + 212  [0x18224bc34]
+    +               1697 _CFRunLoopRunSpecificWithOptions  (in CoreFoundation) + 532  [0x180ad2508]
+    +                 1697 __CFRunLoopRun  (in CoreFoundation) + 820  [0x1809ff8d4]
+    +                   1697 __CFRunLoopDoSources0  (in CoreFoundation) + 232  [0x180a00cb0]
+    +                     1697 __CFRunLoopDoSource0  (in CoreFoundation) + 172  [0x180a00f44]
+    +                       1697 __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__  (in CoreFoundation) + 28  [0x180a00fb0]
+    +                         1697 WTF::RunLoop::performWork(void*)  (in JavaScriptCore) + 36  [0x1a2b77af8]
+    +                           1697 WTF::RunLoop::performWork()  (in JavaScriptCore) + 460  [0x1a2b76548]
+    +                             1697 WTF::Detail::CallableWrapper<IPC::Connection::SyncMessageState::processIncomingMessage(IPC::Connection&, WTF::UniqueRef<IPC::Decoder>&)::$_0, void>::call()  (in WebKit) + 708  [0x1ac41aafc]
+    +                               1697 IPC::Connection::SyncMessageState::ConnectionAndIncomingMessage::dispatch()  (in WebKit) + 60  [0x1ac3f10a8]
+    +                                 1697 IPC::Connection::dispatchMessage(WTF::UniqueRef<IPC::Decoder>)  (in WebKit) + 324  [0x1ac3f5b24]
+    +                                   1697 WebKit::GPUProcess::didReceiveMessage(IPC::Connection&, IPC::Decoder&)  (in WebKit) + 324  [0x1ab727f20]
+    +                                     1697 IPC::handleMessageAsync<Messages::GPUProcess::CreateGPUConnectionToWebProcess, IPC::Connection, WebKit::GPUProcess, WebKit::GPUProcess, void (WTF::ObjectIdentifierGeneric<WebCore::ProcessIdentifierType, WTF::Objec
+    +                                       1697 WebKit::GPUProcess::createGPUConnectionToWebProcess(WTF::ObjectIdentifierGeneric<WebCore::ProcessIdentifierType, WTF::ObjectIdentifierMainThreadAccessTraits<unsigned long long>, unsigned long long>, PAL::Session
+    +                                         1697 WebKit::GPUConnectionToWebProcess::GPUConnectionToWebProcess(WebKit::GPUProcess&, WTF::ObjectIdentifierGeneric<WebCore::ProcessIdentifierType, WTF::ObjectIdentifierMainThreadAccessTraits<unsigned long long>, u
+    +                                           1697 WebCore::av1HardwareDecoderAvailableInProcess()  (in WebCore) + 60  [0x1aa455a70]
+    +                                             1697 VTIsHardwareDecodeSupported  (in VideoToolbox) + 116  [0x192a294b0]
+    +                                               1697 VTSelectAndCreateVideoDecoderInstance  (in VideoToolbox) + 48  [0x192a0bb64]
+    +                                                 1697 ???  (in VideoToolbox)  load address 0x192a08000 + 0x4e5bd8  [0x192eedbd8]
+    +                                                   1697 ???  (in VideoToolbox)  load address 0x192a08000 + 0x1f1318  [0x192bf9318]
+    +                                                     1697 ???  (in VideoToolbox)  load address 0x192a08000 + 0x4e6fc4  [0x192eeefc4]
+    +                                                       1697 VTCopyRenderIDArrayForIORegistryKey  (in VideoToolbox) + 96  [0x192a0bbd0]
+    +                                                         1697 pthread_once  (in libsystem_pthread.dylib) + 100  [0x18093fb50]
+    +                                                           1697 _os_once  (in libsystem_platform.dylib) + 76  [0x18094ab6c]
+    +                                                             1697 _os_once_callout  (in libsystem_platform.dylib) + 32  [0x18094ab98]
+    +                                                               1697 __pthread_once_handler  (in libsystem_pthread.dylib) + 72  [0x18093fbb4]
+    +                                                                 1697 ???  (in VideoToolbox)  load address 0x192a08000 + 0x4e4970  [0x192eec970]
+    +                                                                   1697 MTLCopyAllDevicesWithObserver  (in Metal) + 32  [0x18cfdfb40]
+    +                                                                     1697 MTLDeviceArrayInitialize()  (in Metal) + 1148  [0x18d0d3a48]
+    +                                                                       1697 _dispatch_once_callout  (in libdispatch.dylib) + 32  [0x18078a630]
+    +                                                                         1697 _dispatch_client_callout  (in libdispatch.dylib) + 16  [0x1807a14b0]
+    +                                                                           1697 invocation function for block in MTLDeviceArrayInitialize()  (in Metal) + 128  [0x18cfe206c]
+    +                                                                             1697 IOSurfaceClientCopyGPUPolicies  (in IOSurface) + 20  [0x18cf94118]
+    +                                                                               1697 _ioSurfaceConnectInternal  (in IOSurface) + 180  [0x18cf98c8c]
+    +                                                                                 1697 _dispatch_once_callout  (in libdispatch.dylib) + 32  [0x18078a630]
+    +                                                                                   1697 _dispatch_client_callout  (in libdispatch.dylib) + 16  [0x1807a14b0]
+    +                                                                                     1697 ___ioSurfaceConnectInternal_block_invoke  (in IOSurface) + 2924  [0x18cf99800]
+    +                                                                                       1697 _CFPreferencesCopyValueWithContainer  (in CoreFoundation) + 120  [0x1809d71e0]
+    +                                                                                         1697 -[_CFXPreferences copyValueForKey:identifier:user:host:container:]  (in CoreFoundation) + 212  [0x1809d72e0]
+    +                                                                                           1697 -[_CFXPreferences withSourceForIdentifier:user:byHost:container:cloud:perform:]  (in CoreFoundation) + 840  [0x180af4c8c]
+    +                                                                                             1697 __66-[_CFXPreferences copyValueForKey:identifier:user:host:container:]_block_invoke  (in CoreFoundation) + 32  [0x1809d7364]
+    +                                                                                               1697 -[CFPrefsPlistSource copyValueForKey:]  (in CoreFoundation) + 60  [0x1809d73b8]
+    +                                                                                                 1697 _copyValueForKey  (in CoreFoundation) + 268  [0x1809d74e8]
+    +                                                                                                   1697 -[CFPrefsPlistSource alreadylocked_requestNewData]  (in CoreFoundation) + 336  [0x1809f2944]
+    +                                                                                                     1697 -[_CFXPreferences withConnectionForRole:andUserIdentifier:performBlock:]  (in CoreFoundation) + 52  [0x180b7bb3c]
+    +                                                                                                       1697 __50-[CFPrefsPlistSource alreadylocked_requestNewData]_block_invoke  (in CoreFoundation) + 112  [0x1809f2aa8]
+    +                                                                                                         1697 -[CFPrefsPlistSource sendRequestNewDataMessage:toConnection:retryCount:error:]  (in CoreFoundation) + 340  [0x1809f2cd8]
+    +                                                                                                           1697 CFPREFERENCES_IS_WAITING_FOR_DIRECT_CFPREFSD  (in CoreFoundation) + 100  [0x180b3763c]
+    +                                                                                                             1697 __78-[CFPrefsPlistSource sendRequestNewDataMessage:toConnection:retryCount:error:]_block_invoke  (in CoreFoundation) + 32  [0x1809f2ed0]
+    +                                                                                                               1697 xpc_connection_send_message_with_reply_sync  (in libxpc.dylib) + 284  [0x18061beb0]
+    +                                                                                                                 1697 dispatch_mach_send_with_result_and_wait_for_reply  (in libdispatch.dylib) + 60  [0x1807a3004]
+    +                                                                                                                   1697 _dispatch_mach_send_and_wait_for_reply  (in libdispatch.dylib) + 548  [0x1807a2c64]
+    +                                                                                                                     1697 mach_msg  (in libsystem_kernel.dylib) + 24  [0x1808fffc0]
+    +                                                                                                                       1697 mach_msg_overwrite  (in libsystem_kernel.dylib) + 480  [0x1809089c0]
+    +                                                                                                                         1697 mach_msg2_internal  (in libsystem_kernel.dylib) + 76  [0x1809125a4]
+    +                                                                                                                           1697 mach_msg2_trap  (in libsystem_kernel.dylib) + 8  [0x1808ffc34]

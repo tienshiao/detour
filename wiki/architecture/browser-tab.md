@@ -5,7 +5,7 @@ description: "The tab model — an optional WKWebView with published state, slee
 resource: ../../Detour/Browser/BrowserTab.swift
 tags: [architecture, tabs, webkit, sleep]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
 sources:
   - id: browser-tab
     resource: ../../Detour/Browser/BrowserTab.swift
@@ -37,6 +37,9 @@ sources:
   - id: task-104
     resource: backlog:TASK-104
     title: GPU process IOSurface leak and the show budget
+  - id: task-176
+    resource: backlog:TASK-176
+    title: Reload on a tab whose web process is unresponsive does nothing; terminate the process and reload
 ---
 
 # Role
@@ -205,6 +208,7 @@ delegate. The tab's delegate implements only what the window would forward:
 | `decidePolicyFor:preferences:` | Applies the internal page policy and the per-site content blocker switch. With no delegate WebKit uses default preferences (TASK-69). |
 | `didCommit` | Without it a stalled background load kept its URL as its title until the load finished (TASK-114). |
 | `didFailProvisionalNavigation`, `didFail` | Without them a failing background load never showed the error page (TASK-122). |
+| `didStartProvisionalNavigation`, `_webViewWebProcessDidBecomeUnresponsive:`, `_webViewWebProcessDidBecomeResponsive:` | The events of the unresponsive-load rule (TASK-176); a background tab's blocked process is replaced the same way as an on-screen one. `webViewWebContentProcessDidTerminate` is deliberately **not** implemented here: doing so would switch off WebKit's own reload of a crashed background page when it is next shown. |
 
 A window never clears itself as delegate when the user switches tabs; it
 resolves callbacks through `tab(owning:)`. When a window closes it hands each
@@ -240,6 +244,14 @@ Which failures are ignored is decided once, in the tab
 - `noteProcessTermination()` — counts web content process deaths less than
   30 s apart; the window auto-reloads the first two of a streak and leaves
   the pane blank from the third.
+- `loadRecovery` (`UnresponsiveLoadRecovery`), `stopLoading()`,
+  `scriptDialogDidBegin()` / `scriptDialogDidEnd()`,
+  `isTerminatingUnresponsiveProcess` — a load or a Stop that a blocked web
+  process never answers gets a new process. `reload()` and `load(_:)` go
+  through `issue(_:)`; Stop must go through `BrowserTab.stopLoading()`, not
+  the web view, and whoever shows a script dialog must bracket it, or the
+  rule sees a hang where the page is waiting on the user
+  ([unresponsive web process](../platform/unresponsive-web-process.md)).
 
 # Gotchas
 

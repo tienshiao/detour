@@ -4,7 +4,7 @@ title: GPU process IOSurface limit
 description: After days of uptime WebKit's GPU process reaches the kernel's 16,384-IOSurface limit, WebGL and canvas die in every page and YouTube stops playing; how it was diagnosed, the show-budget sleep rule and the GPU process recycler that contain it.
 tags: [webkit, gpu, performance, sleeping, media]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T00:32:53Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-104
@@ -34,6 +34,9 @@ sources:
   - id: iosurfacepool
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/cg/IOSurfacePool.cpp
     title: WebKit IOSurfacePool.cpp
+  - id: task-175
+    resource: backlog:TASK-175
+    title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
 ---
 
 The kernel caps a process at 16,384 IOSurfaces. WebKit's GPU process, which
@@ -204,8 +207,13 @@ does this before the limit is reached. `AppDelegate` starts
 
 Every 120 s (`DETOUR_GPU_RECYCLE_CHECK_SECONDS`) it:
 
-1. Gets the GPU pid from the SPI `-[WKWebView _gpuProcessIdentifier]` on any
-   live tab web view. The pid tracks relaunches.
+1. Gets the GPU pid from `GPUProcessRecycler.webKitGPUProcess`: the SPI
+   `-[WKWebView _gpuProcessIdentifier]` asked of the live tab web views
+   until one names a process (each answers for its own process pool, and a
+   pool that has not needed the GPU process yet answers 0), then the
+   app-wide `+[WKProcessPool _gpuProcessInfo]`.[^task-175] The pid tracks
+   relaunches. See [abandoned GPU process](./abandoned-gpu-process.md) for
+   the three answers.
 2. Counts the process's IOSurfaces off the main thread
    (`ioSurfaceCount(pid:)`): a `proc_pidinfo(PROC_PIDREGIONINFO)` walk
    counting regions whose `pri_user_tag` is 88 (`VM_MEMORY_IOSURFACE`). It
@@ -285,6 +293,7 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 
 # Related
 
+- [Abandoned GPU process](./abandoned-gpu-process.md) — the other way the GPU process breaks pages: one WebKit dropped without it exiting.
 - [Sleeping and archiving](../tabs/sleeping-and-archiving.md) — the sleep policy the show budget extends.
 - [BrowserTab](../architecture/browser-tab.md) — `showsSinceWake`, `noteShown`, `wake`.
 - [Web view ownership](../architecture/webview-ownership.md) — where panes are attached, and so where shows are counted.
@@ -298,3 +307,4 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 [^task-105]: GPU-process recycle valve
 [^task-109]: Does the GPU process ever get the memory-pressure pool flush
 [^notes-gpu]: GPU IOSurface limit diagnosis and measurement recipes
+[^task-175]: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it

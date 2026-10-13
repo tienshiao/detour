@@ -4,7 +4,7 @@ title: WebKit source lookup
 description: How to read the WebKit source that explains a behaviour seen in Detour — fetching files and older revisions from GitHub, which files answered which questions, and how far a source reading can be trusted.
 tags: [webkit, reference, debugging, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-source
@@ -40,6 +40,12 @@ sources:
   - id: runtime-patching
     resource: ../../docs/chrome-runtime-patching.md
     title: chrome.runtime patching design note
+  - id: task-175
+    resource: backlog:TASK-175
+    title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
+  - id: task-176
+    resource: backlog:TASK-176
+    title: Reload on a tab whose web process is unresponsive does nothing; terminate the process and reload
 ---
 
 Much of what Detour knows about WebKit came from reading WebKit's source
@@ -112,8 +118,12 @@ web-process file `…/WebProcess/Extensions/API/Cocoa/WebExtensionAPI<X>Cocoa.mm
 | `Source/WebCore/platform/graphics/cg/IOSurfacePool.cpp`, `.h` | The pool is capped by bytes, never by count; `collectionTimerFired` only marks surfaces volatile[^task-104] — see [GPU IOSurface limit](./gpu-iosurface-limit.md) |
 | `Source/WebKit/GPUProcess/GPUProcess.cpp`, `GPUConnectionToWebProcess.cpp` | `lowMemoryHandler` and `prepareToSuspend` discard every connection's pool[^task-109] |
 | `Source/WebKit/UIProcess/GPU/GPUProcessProxy.cpp` | `gpuProcessExited` and how pages reconnect |
+| `Source/WebKit/Shared/EntryPointUtilities/Cocoa/XPCService/XPCServiceMain.mm` | A helper exits on a dropped XPC connection by posting `exitProcess` to its main run loop, so a helper with a blocked main thread never exits[^task-175] — see [abandoned GPU process](./abandoned-gpu-process.md) |
+| `Source/WebKit/WebProcess/GPU/media/RemoteAudioSession.cpp` | `ensureConnection` sends `EnsureAudioSession` synchronously with no timeout[^task-175] |
+| `Source/WebKit/UIProcess/WebProcessPool.cpp` | `ensureGPUProcess`: the GPU process is per pool until asked for, which is why `_gpuProcessIdentifier` can be 0 on one web view and not another[^task-175] |
+| `Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp` | `startResponsivenessTimer` is deferred while the process launches[^task-176] — see [unresponsive web process](./unresponsive-web-process.md) |
 | `Source/WebKit/UIProcess/ProcessThrottler.cpp` | Foreground and background activities; prints the "Updating process assertion type" log line — see [hidden web view load stalls](./hidden-webview-load-stalls.md) |
-| `Source/WebKit/UIProcess/WebPageProxy.cpp` | `decidePolicyForNewWindowAction` — see [WKWebView delegate order](./wkwebview-delegate-order.md) |
+| `Source/WebKit/UIProcess/WebPageProxy.cpp` | `decidePolicyForNewWindowAction` — see [WKWebView delegate order](./wkwebview-delegate-order.md); the responsiveness timer is stopped when the view is hidden, which reports a blocked process as responsive[^task-176]; `gpuProcessID` |
 | `Source/WebCore/loader/FrameLoader.cpp` | `loadURL`, the new-window path |
 | `Source/WebKit/WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp` | `committedLoad` cancels a media document's main resource with error 204[^task-121] — see [media and picture-in-picture](./media-and-pip.md) |
 | `Source/WebKit/NetworkProcess/Classifier/ResourceLoadStatisticsStore.cpp` | What a tracking-prevention pass deletes[^task-70] — see [data store and ITP](../extensions/data-store-and-itp.md) |
@@ -174,3 +184,5 @@ on [service worker unload rules](./service-worker-unload-rules.md).[^notes-sourc
 [^task-70]: Tracking prevention deletes an extension origin's script-written storage
 [^task-69]: The per-site content blocking switch does not take effect
 [^task-132-21]: A window with nothing selected reports no tabs to extensions
+[^task-175]: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
+[^task-176]: Reload on a tab whose web process is unresponsive does nothing; terminate the process and reload
