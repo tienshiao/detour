@@ -868,6 +868,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let routes: [String: String]
     private let pending: [String: String]
     private let stalled: [String: String]
+    private let truncated: [String: String]
     private let lock = NSLock()
     private var _requestedPaths: [String] = []
     private var _requestHeads: [String] = []
@@ -923,11 +924,16 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     ///   - stalled: routes that send *nothing* until `release(_:)`, when the
     ///     whole response goes out — a navigation that stays provisional, so the
     ///     web view is still on the previous document and entry.
+    ///   - truncated: routes whose head promises more than is ever sent: the
+    ///     value goes out as the start of the body, and `release(_:)` closes
+    ///     the connection with the rest still owed — a navigation that commits,
+    ///     renders what arrived and then *fails* (TASK-178).
     init(routes: [String: String], pending: [String: String] = [:],
-         stalled: [String: String] = [:]) throws {
+         stalled: [String: String] = [:], truncated: [String: String] = [:]) throws {
         self.routes = routes
         self.pending = pending
         self.stalled = stalled
+        self.truncated = truncated
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         params.requiredInterfaceType = .loopback
@@ -972,20 +978,19 @@ final class LoopbackHTTPServer: @unchecked Sendable {
 
     /// Finishes the withheld responses of a `pending` or `stalled` route: what
     /// is left of the response goes out and the connection closes, which is what
-    /// ends the load.
+    /// ends the load. A `truncated` route has nothing left to send, so the
+    /// close alone ends its load, short of the promised length.
     func release(_ path: String) {
         lock.lock()
         let connections = _held.removeValue(forKey: path) ?? []
         lock.unlock()
         var rest = Data()
-        if let body = pending[path] {
+        if truncated[path] != nil {
+            // Nothing: the close is the response ending short.
+        } else if let body = pending[path] {
             rest = Data(body.utf8)
         } else if let body = stalled[path] {
-            let header = "HTTP/1.1 200 OK\r\n"
-                + "Content-Type: text/html; charset=utf-8\r\n"
-                + "Content-Length: \(body.utf8.count)\r\n"
-                + "Connection: close\r\n\r\n"
-            rest = Data((header + body).utf8)
+            rest = Data((Self.head(contentLength: body.utf8.count) + body).utf8)
         }
         for connection in connections {
             connection.send(content: rest, completion: .contentProcessed { _ in
@@ -1032,17 +1037,21 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         _requestHeads.append(String(request[..<headEnd]))
         lock.unlock()
 
-        if pending[path] != nil || stalled[path] != nil {
+        if pending[path] != nil || stalled[path] != nil || truncated[path] != nil {
             lock.lock()
             _held[path, default: []].append(connection)
             lock.unlock()
+            if let start = truncated[path] {
+                // More is promised than `release(_:)` will ever deliver.
+                let header = Self.head(contentLength: start.utf8.count + 4096)
+                connection.send(content: Data((header + start).utf8), completion: .contentProcessed { _ in })
+                return
+            }
             guard pending[path] != nil else { return } // stalled: not a byte yet
             // Headers only, no Content-Length: the body is terminated by the
             // close in `release(_:)`, so the resource stays in flight until then.
-            let header = "HTTP/1.1 200 OK\r\n"
-                + "Content-Type: text/html; charset=utf-8\r\n"
-                + "Connection: close\r\n\r\n"
-            connection.send(content: Data(header.utf8), completion: .contentProcessed { _ in })
+            connection.send(content: Data(Self.head(contentLength: nil).utf8),
+                            completion: .contentProcessed { _ in })
             return
         }
 
@@ -1051,14 +1060,19 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         let route = routes[path] ?? routes[String(path.prefix { $0 != "?" })]
         let body = Data((route ?? "<html><body>not found</body></html>").utf8)
         let status = route == nil ? "404 Not Found" : "200 OK"
-        let header = "HTTP/1.1 \(status)\r\n"
-            + "Content-Type: text/html; charset=utf-8\r\n"
-            + "Content-Length: \(body.count)\r\n"
-            + "Connection: close\r\n\r\n"
-        var response = Data(header.utf8)
+        var response = Data(Self.head(status: status, contentLength: body.count).utf8)
         response.append(body)
         connection.send(content: response, completion: .contentProcessed { _ in
             connection.cancel()
         })
+    }
+
+    /// The head of an HTML response whose connection closes after it. Without
+    /// a `contentLength` the close is what ends the body.
+    private static func head(status: String = "200 OK", contentLength: Int?) -> String {
+        "HTTP/1.1 \(status)\r\n"
+            + "Content-Type: text/html; charset=utf-8\r\n"
+            + (contentLength.map { "Content-Length: \($0)\r\n" } ?? "")
+            + "Connection: close\r\n\r\n"
     }
 }

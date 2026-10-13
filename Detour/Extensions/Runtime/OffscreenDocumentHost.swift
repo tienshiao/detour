@@ -291,8 +291,8 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
     /// the second, so the load stays pending for that `didFinish` (and is still
     /// settled by `stop()` if the document is closed first). Anything else is a
     /// real failure: a missing page, a blocked load, a dropped connection. That
-    /// includes WebKit's media-document 204 (`isPlugInHandledLoadError`): the
-    /// window delegate tolerates it, but here no `didFinish` would ever follow,
+    /// includes WebKit's media-document 204 (`isPlugInHandledLoadError`): a
+    /// tab leaves it alone, but here no `didFinish` would ever follow,
     /// so waiting on it would leave `createDocument` pending forever — only the
     /// superseded set may keep the load open. The dead web view itself is torn
     /// down by whoever owns the host (the polyfill handler unregisters and stops

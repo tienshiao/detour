@@ -309,16 +309,13 @@ extension BrowserWindowController: WKNavigationDelegate {
         // Native WKWebExtension handles chrome.webNavigation events
     }
 
-    // Both failure callbacks forward as they are: the tab decides which
-    // failures earn an error page (`BrowserTab.didFailProvisionalNavigation`),
-    // the same way for an owned web view as for one it is its own delegate of.
+    // The failure forwards as it is: the tab decides which failures earn an
+    // error page (`BrowserTab.didFailProvisionalNavigation`), the same way for
+    // an owned web view as for one it is its own delegate of. A failure after
+    // commit (`didFail`) is deliberately not implemented; see there.
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         tab(owning: webView)?.didFailProvisionalNavigation(error: error)
-    }
-
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        tab(owning: webView)?.didFailNavigation(error: error)
     }
 
     /// A dead web content process leaves the view white and unresponsive with
@@ -543,9 +540,10 @@ extension Error {
 
     /// The failures a tab must not turn into an error page, whichever
     /// navigation delegate reports them: the page either is still loading
-    /// (superseded) or is showing fine (media document). Callers that instead
-    /// need "will another callback follow?" want `isSupersededNavigationError`
-    /// alone.
+    /// (superseded) or is showing fine (media document). The 204 arrives after
+    /// commit, where a tab no longer acts on any failure (TASK-178), so for a
+    /// tab that half is a backstop. Callers that instead need "will another
+    /// callback follow?" want `isSupersededNavigationError` alone.
     var isIgnoredNavigationError: Bool {
         isSupersededNavigationError || isPlugInHandledLoadError
     }

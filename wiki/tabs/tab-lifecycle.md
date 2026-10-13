@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -138,7 +138,11 @@ tab ([history recording](../features/history-recording-and-search.md)).
 
 - A web view no window has claimed is its tab's own delegate (the
   `BrowserTab: WKNavigationDelegate` extension): the content-blocker
-  preferences, the commit and the two failure callbacks, nothing else.
+  preferences, the commit, the provisional failure and the events of the
+  unresponsive-load rule, nothing else
+  ([BrowserTab](../architecture/browser-tab.md#its-own-navigation-delegate)
+  has the list). A failure after commit is handled by neither delegate
+  ([error pages](../features/error-pages.md#failures-after-commit)).
 - When a window claims the web view (`wireOwnedWebView`) the window becomes
   delegate and UI delegate. **Nothing clears that on a tab switch.** Callbacks
   keep arriving for tabs the window no longer shows, including tabs of spaces it

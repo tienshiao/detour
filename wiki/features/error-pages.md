@@ -1,17 +1,17 @@
 ---
 type: Feature
 title: Error pages
-description: "What a failed load looks like: the browser-error:// page, which failures earn one and which are ignored, how the tab keeps the URL the user asked for, and how retry, restore and background tabs behave."
+description: "What a failed load looks like: the browser-error:// page, which failures earn one (only those before commit) and which are ignored, how the tab keeps the URL the user asked for, and how retry, restore and background tabs behave."
 tags: [navigation, errors, webkit, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:07:51Z }
 sources:
   - id: scheme-handler
     resource: ../../Detour/Browser/Window/ErrorSchemeHandler.swift
     title: ErrorSchemeHandler.swift (ErrorPage, ErrorSchemeHandler)
   - id: browser-tab
     resource: ../../Detour/Browser/BrowserTab.swift
-    title: BrowserTab.swift (didFailProvisionalNavigation, didFailNavigation, showErrorPage, reload, the tab's own WKNavigationDelegate)
+    title: BrowserTab.swift (didFailProvisionalNavigation, showErrorPage, reload, the tab's own WKNavigationDelegate)
   - id: navigation
     resource: ../../Detour/Browser/Window/BrowserWindowController+Navigation.swift
     title: BrowserWindowController+Navigation.swift (failure forwarding, error classification)
@@ -24,6 +24,12 @@ sources:
   - id: task-122
     resource: backlog:TASK-122
     title: A background (unowned) tab whose load fails never shows the error page
+  - id: task-178
+    resource: backlog:TASK-178
+    title: A load that fails after the page committed replaces the working page with the full error page
+  - id: committed-tests
+    resource: ../../DetourTests/CommittedLoadFailureTests.swift
+    title: CommittedLoadFailureTests.swift
   - id: classification-tests
     resource: ../../DetourTests/NavigationErrorClassificationTests.swift
     title: NavigationErrorClassificationTests.swift
@@ -37,11 +43,12 @@ sources:
 
 # What it does
 
-When a navigation fails, the tab's web view is sent to
+When a navigation fails before anything committed, the tab's web view is sent to
 `browser-error://error?failedURL=…&message=…`, a static page that shows
 "Looks like you took a Detour.", the failed URL and the error's localised
 description. The sidebar and the faux address bar keep showing the URL the
-user asked for, and Reload retries it.
+user asked for, and Reload retries it. A failure after commit shows nothing:
+the document that committed stays on screen.
 
 # How it works
 
@@ -62,8 +69,8 @@ failure. Both delegates are pure forwarders:
 
 | Web view state | Delegate | Calls |
 |---|---|---|
-| owned by a window | `BrowserWindowController` | `tab(owning:)?.didFailProvisionalNavigation(error:)` / `didFailNavigation(error:)` |
-| never claimed, or its window closed | the `BrowserTab` itself | the same two methods |
+| owned by a window | `BrowserWindowController` | `tab(owning:)?.didFailProvisionalNavigation(error:)` |
+| never claimed, or its window closed | the `BrowserTab` itself | the same method |
 
 `BrowserTab.didFailProvisionalNavigation(error:)`:
 
@@ -71,11 +78,37 @@ failure. Both delegates are pure forwarders:
 2. `restoringSession` is set - return (the restored session is kept);
 3. otherwise `showErrorPage(for: lastAttemptedURL, error:)`.
 
-`didFailNavigation(error:)` (a failure after commit) skips ignored errors and
-shows the page for `webView.url ?? lastAttemptedURL`.
+Neither delegate implements `webView(_:didFail:withError:)`, the failure of
+a navigation that already committed. See
+[Failures after commit](#failures-after-commit).
 
 `showErrorPage` sets `tab.url` to the failed URL, clears the favicon, bumps
 `faviconGeneration`, resets `previousHost`, and loads the error URL.
+
+## Failures after commit
+
+A committed navigation has a document on screen, so its failure is not a
+request that produced no page, and the error page would replace something the
+user is looking at. WebKit finishes the document with what arrived
+(`didFinishDocumentLoad` follows the failure), `isLoading` goes false and the
+tab's URL, title and favicon stay as they were.
+
+Found on a YouTube Short (2026-10-12): the navigation committed in 0.4 s and
+the video played, but the HTML response itself never finished. 62 s after
+commit the main resource timed out (`NSURLErrorTimedOut`), WebKit reported
+`didFailLoadForFrame` for the main frame, and the tab loaded the error page
+over the playing video in the same millisecond.[^task-178] Why the response
+stalled is not known.
+
+Rejected:
+
+- **An error page only when the committed document is empty.** A response
+  that commits and dies before anything rendered leaves a blank page with no
+  explanation. Telling that case apart needs an asynchronous look into the
+  document after the failure, and the other browsers show the partial
+  document too. Not built; nothing reported it.
+- **Ignoring only timeouts after commit.** A dropped connection
+  (`NSURLErrorNetworkConnectionLost`) over a rendered page is the same case.
 
 ## Which errors are ignored
 
@@ -87,6 +120,10 @@ Defined once, as an extension on `Error` in
 | `isSupersededNavigationError` | `WebKitErrorDomain` 102 (frame load interrupted by a policy change, e.g. a download); `NSURLErrorCancelled` | the load was replaced; **another callback follows** |
 | `isPlugInHandledLoadError` | `WebKitErrorDomain` 204 | a media document whose player took over the load; the page is committed and playing, and **no `didFinish` follows** |
 | `isIgnoredNavigationError` | either | no error page |
+
+The 204 arrives after commit, so since TASK-178 it could not raise an error
+page anyway; the predicate still covers it for a caller that sees both kinds
+of failure.
 
 The two are separate on purpose. Code that waits for a navigation to *end*
 must use `isSupersededNavigationError` alone: a 204 is the end of the
@@ -147,8 +184,8 @@ loads the original URL again.
   `navigationPending`, so a restore whose kick fails offline is kept rather
   than replaced by an error page.
 - **Background tabs (TASK-122).** Before the tab's own delegate implemented
-  the two failure callbacks, a failing load in a never-shown tab sat silently
-  and selecting the tab later did not surface it.
+  the provisional failure callback, a failing load in a never-shown tab sat
+  silently and selecting the tab later did not surface it.
 - **Closed windows.** A window stays the navigation delegate of every web view
   it ever hosted; nothing clears it on a tab switch, and `tab(owning:)` relies
   on that. The reference is weak, so after the window closed those web views
@@ -179,10 +216,15 @@ loads the original URL again.
   just-freed loopback port shows the error page in an unowned tab; a
   superseded load shows none; a failed restore keeps its session.
   Mutation-checked: each test fails without the code it covers.[^task-122]
+- `CommittedLoadFailureTests` - a server sends the start of a page under a
+  `Content-Length` it never honours and then closes the connection; the tab
+  stays on the page with its URL, title and favicon, both unowned and as a
+  window's selected tab. Both fail without the fix.[^task-178]
 - `BrowserTabWakeTests` - a failed wake keeps session, title and favicon;
   reload after it retries; a commit ends the protection; a failed *user* load
   still shows the error page.
-- Runtime check for 204: with the fix a `.mp4` tab's `webView.url` stays on
+- Runtime check for 204 (before TASK-178 removed the committed-failure
+  handler): with the 204 ignored a `.mp4` tab's `webView.url` stayed on
   `https://` through load and reload; without it the URL became
   `browser-error://…Plug-in%20handled%20load` within 4 s.[^task-121]
 
@@ -197,3 +239,4 @@ loads the original URL again.
 
 [^task-121]: A tab showing a standalone video shows the error page with "Plug-in handled load"
 [^task-122]: A background (unowned) tab whose load fails never shows the error page
+[^task-178]: TASK-178, from the unified log of the affected process
