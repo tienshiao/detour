@@ -1280,6 +1280,14 @@ class BrowserTab: NSObject {
     /// WebKit reported a failure before anything committed — through whichever
     /// navigation delegate the web view had (the owning window's, or the tab's
     /// own while unclaimed).
+    ///
+    /// The failure of a navigation that *did* commit has no counterpart, and
+    /// neither delegate implements `webView(_:didFail:withError:)`: there is a
+    /// document on screen, WebKit finishes it with what arrived, and an error
+    /// page would replace something the user is looking at. A YouTube Short
+    /// whose HTML response stalled was playing when its main resource timed
+    /// out a minute after commit, and became "The request timed out."
+    /// (TASK-178).
     func didFailProvisionalNavigation(error: Error) {
         // A superseded load is followed by its replacement; nothing to show.
         guard !error.isIgnoredNavigationError else { return }
@@ -1298,16 +1306,6 @@ class BrowserTab: NSObject {
         }
         guard let lastAttemptedURL else { return }
         showErrorPage(for: lastAttemptedURL, error: error)
-    }
-
-    /// WebKit reported a failure of a committed navigation; see
-    /// `didFailProvisionalNavigation(error:)`.
-    func didFailNavigation(error: Error) {
-        // Superseded, or a media document whose player took over the load
-        // (TASK-121): the page is still loading or showing fine.
-        guard !error.isIgnoredNavigationError else { return }
-        guard let failedURL = webView?.url ?? lastAttemptedURL else { return }
-        showErrorPage(for: failedURL, error: error)
     }
 
     private func showErrorPage(for failedURL: URL, error: Error) {
@@ -1376,13 +1374,13 @@ class BrowserTab: NSObject {
 /// implemented — what the window forwards once it owns the web view. The
 /// commit: without it a background load that stalls (hidden web views can stay
 /// loading until first shown) kept the URL as its title until the load
-/// finished (TASK-114). The two failures: without them a failing background
-/// load never showed the error page (TASK-122). Every other callback stays at
-/// WebKit's default, exactly as with no delegate; a window replaces this the
-/// moment it claims the tab and hands it back when it closes while still
-/// owning the web view (`releaseOwnedWebViewHandlers`) — the delegate
-/// reference is weak, and a dead window would otherwise leave the web view
-/// with no delegate at all until another window claims it.
+/// finished (TASK-114). The provisional failure: without it a failing
+/// background load never showed the error page (TASK-122). Every other
+/// callback stays at WebKit's default, exactly as with no delegate; a window
+/// replaces this the moment it claims the tab and hands it back when it closes
+/// while still owning the web view (`releaseOwnedWebViewHandlers`) — the
+/// delegate reference is weak, and a dead window would otherwise leave the web
+/// view with no delegate at all until another window claims it.
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
@@ -1403,18 +1401,13 @@ extension BrowserTab: WKNavigationDelegate {
         didCommitNavigation()
     }
 
-    /// Mirrors `BrowserWindowController`'s failure handlers: a failing
+    /// Mirrors `BrowserWindowController`'s failure handler: a failing
     /// background load otherwise never shows the error page, and selecting the
     /// tab later does not surface it (TASK-122). Which failures are ignored is
     /// the tab's business (`didFailProvisionalNavigation(error:)`).
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
         didFailProvisionalNavigation(error: error)
-    }
-
-    /// See `webView(_:didFailProvisionalNavigation:withError:)`.
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        didFailNavigation(error: error)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {

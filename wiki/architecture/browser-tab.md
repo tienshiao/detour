@@ -5,7 +5,7 @@ description: "The tab model — an optional WKWebView with published state, slee
 resource: ../../Detour/Browser/BrowserTab.swift
 tags: [architecture, tabs, webkit, sleep]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
 sources:
   - id: browser-tab
     resource: ../../Detour/Browser/BrowserTab.swift
@@ -207,7 +207,7 @@ delegate. The tab's delegate implements only what the window would forward:
 |---|---|
 | `decidePolicyFor:preferences:` | Applies the internal page policy and the per-site content blocker switch. With no delegate WebKit uses default preferences (TASK-69). |
 | `didCommit` | Without it a stalled background load kept its URL as its title until the load finished (TASK-114). |
-| `didFailProvisionalNavigation`, `didFail` | Without them a failing background load never showed the error page (TASK-122). |
+| `didFailProvisionalNavigation` | Without it a failing background load never showed the error page (TASK-122). `didFail`, the failure of a navigation that already committed, is deliberately **not** implemented, here or in the window: the committed document stays on screen (TASK-178, see [error pages](../features/error-pages.md#failures-after-commit)). |
 | `didStartProvisionalNavigation`, `_webViewWebProcessDidBecomeUnresponsive:`, `_webViewWebProcessDidBecomeResponsive:` | The events of the unresponsive-load rule (TASK-176); a background tab's blocked process is replaced the same way as an on-screen one. `webViewWebContentProcessDidTerminate` is deliberately **not** implemented here: doing so would switch off WebKit's own reload of a crashed background page when it is next shown. |
 
 A window never clears itself as delegate when the user switches tabs; it
@@ -218,7 +218,8 @@ delegate.
 
 Which failures are ignored is decided once, in the tab
 (`isIgnoredNavigationError`): superseded loads (WebKit error 102,
-`NSURLErrorCancelled`) and media documents (WebKit error 204). See
+`NSURLErrorCancelled`) and media documents (WebKit error 204, which arrives
+after commit and so reaches no tab since TASK-178). See
 [error pages](../features/error-pages.md) and
 [media and PiP](../platform/media-and-pip.md).
 

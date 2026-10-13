@@ -4,7 +4,7 @@ title: WKWebView delegate call order
 description: Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
 tags: [webkit, navigation, delegates, peek, internal-pages]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-spike
@@ -175,6 +175,7 @@ navigation:
 | A load superseded by another (a page that navigates itself before its first load finishes) | `NSURLErrorCancelled` for the first, then the replacement's own `didFinish` or failure |
 | A download-policy interruption | `WebKitErrorDomain` 102 (`WebKitErrorFrameLoadInterruptedByPolicyChange`); Detour treats it like a superseded load |
 | A standalone media URL (media document) | Commit, then `didFail` with `WebKitErrorDomain` 204 and **no** `didFinish` — see [media and picture-in-picture](./media-and-pip.md)[^task-121] |
+| A response that ends short after the navigation committed (a dropped connection, a timeout) | Commit, then `didFail` with the URL error (`NSURLErrorNetworkConnectionLost`, `NSURLErrorTimedOut`); WebKit finishes the document with what arrived and `isLoading` goes false. Detour's tab delegates do not implement `didFail`, so the page stays — see [error pages](../features/error-pages.md#failures-after-commit) |
 | A URL on a restricted port (`http://127.0.0.1:1/`; ports 1, 7, 9 …) | No failure at all: WebKit commits `about:blank` and calls `didFinish`[^task-122] |
 | A web view with no navigation delegate | Nothing is reported to anyone; a failed load leaves `about:blank` or the previous content |
 

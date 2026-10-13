@@ -4,7 +4,7 @@ title: Media and picture-in-picture
 description: WebKit media behaviour Detour has to accommodate — picture-in-picture needs the video's view on screen to start and to return, a standalone video URL ends its navigation with error 204, and audio and capture state gate sleeping and GPU process recycling.
 tags: [webkit, media, picture-in-picture, navigation, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-79
@@ -145,8 +145,10 @@ The error classification lives in `extension Error` in
 | `isIgnoredNavigationError` | either | Do not show an error page |
 
 The distinction matters to anything that waits for a navigation to end.
-`BrowserTab.didFailProvisionalNavigation(error:)` and
-`didFailNavigation(error:)` use `isIgnoredNavigationError`.
+`BrowserTab.didFailProvisionalNavigation(error:)` uses
+`isIgnoredNavigationError`. A tab no longer acts on a failure after commit at
+all (see [error pages](../features/error-pages.md)), which is where the 204
+arrives.
 `OffscreenDocumentHost.failLoad` uses `isSupersededNavigationError` alone: for
 an [offscreen document](../extensions/offscreen-documents.md) a 204 must
 settle `createDocument` as a failure, because no `didFinish` will ever
