@@ -4,11 +4,11 @@ title: >-
   GPU-process recycle valve: when the app has been in the background with
   nothing playing and a WebGL canary reports the GPU process starved, relaunch
   it
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-22 03:10'
-updated_date: '2026-09-28 19:01'
+updated_date: '2026-10-13 01:22'
 labels:
   - webkit
   - performance
@@ -47,4 +47,12 @@ Sep 28 2026: recurred in prod after 2.5 days despite the TASK-104 show budget (1
 Live test (user-approved) on prod Detour pid 43917: SIGKILL of GPU pid 43948 at 14.2k surfaces -> WebKit logged gpuProcessExited reason=Crash, every WebContent reconnected (GPUProcessConnection::didClose), zero WebContent terminations, new GPU pid 51354 at 91 surfaces. Harness run (isolated DETOUR_DATA_DIR, soft/hard=1, check 10 s, min interval 30 s): recycler logged 'Recycling GPU process 56699 at 62 IOSurfaces', subsequent ticks resolved the NEW pid 56773 via _gpuProcessIdentifier (0 surfaces on an idle page -> keep). GPUProcessRecyclePolicyTests 14/14 + SleepShowBudgetTests green. Note: an unfocused app's timer ran on schedule (no App Nap stall observed at 10 s).
 
 Code review (--fix): media gate now also blocks on camera/microphone capture (WKWebView cameraCaptureState/microphoneCaptureState != .none — capture runs in the GPU process); kill re-resolves _gpuProcessIdentifier and requires the same pid (proc_name alone matches other apps' GPU processes). Screen-share capture has no public state and is not covered.
+
+2026-10-12, task sweep: all three criteria were met and the code has been on main since c13b3d0 (2026-09-28); the status was never changed. The signal is the GPU process's IOSurface count, not the WebGL canary of the title. One defect found since and fixed under TASK-175 (829d88a): the recycler asked only the first live web view for the GPU pid, and a web view answers for its own process pool, so it could read 'no GPU process' and skip a check. No recycle appears in the installed app's log for the last three days: WebKit itself replaced the GPU process five times on 2026-10-12, so the count never reached the soft limit.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+GPUProcessRecycler counts the GPU process's IOSurfaces every 120 s and kills the process (WebKit relaunches it, pages reconnect) once the count passes 12,000 with the app inactive for 5 minutes, or 15,000 with the user idle for a minute; never while a tab plays audio or captures camera or microphone, and at most once an hour. The policy is a pure function with 14 tests. Verified by a live SIGKILL at 14.2k surfaces and a harness run with lowered limits.
+<!-- SECTION:FINAL_SUMMARY:END -->
