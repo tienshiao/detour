@@ -105,7 +105,7 @@ out, items = [], []
 for line in open(src, encoding="utf-8"):
     line = line.rstrip("\n")
     if line.startswith("# "):
-        out.append(f"<h2>{html.escape(line[2:].strip())}</h2>")
+        out.append(f"<h2>{html.escape(line[2:].strip(), quote=False)}</h2>")
     elif line.startswith("- "):
         text = html.escape(line[2:].strip(), quote=False)
         items.append("  <li>" + re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text) + "</li>")
