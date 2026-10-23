@@ -1,14 +1,23 @@
 ---
 type: Playbook
 title: Release and website
-description: How a signed, notarized Detour DMG is built and published through Sparkle, and how the website's screenshots and feature loops are captured from a staged demo profile.
+description: How a signed, notarized Detour DMG is built and published (Sparkle appcast on R2, GitHub release, website), and how the website's screenshots and feature loops are captured from a staged demo profile.
 tags: [playbook, release, sparkle, notarization, website, capture]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:31:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-23T02:30:00Z }
 sources:
   - id: build-release
     resource: ../../scripts/build-release.sh
     title: build-release.sh
+  - id: publish-release
+    resource: ../../scripts/publish-release.sh
+    title: publish-release.sh
+  - id: release-notes
+    resource: ../../docs/releases/
+    title: Release notes, one Markdown file per version
+  - id: task-179
+    resource: backlog:TASK-179
+    title: Release 0.3.1 from main, and script the publish steps
   - id: deploy-script
     resource: ../../scripts/deploy-1password-test.sh
     title: deploy-1password-test.sh
@@ -45,7 +54,8 @@ sources:
 ---
 
 Two procedures that share tools: making a release
-([scripts/build-release.sh](../../scripts/build-release.sh)) and capturing
+([scripts/build-release.sh](../../scripts/build-release.sh), then
+[scripts/publish-release.sh](../../scripts/publish-release.sh)) and capturing
 real screenshots and short video loops for the website
 ([docs/task-110](../../docs/task-110/README.md)). The website itself is a
 separate repository; only the capture kit lives here.
@@ -75,8 +85,29 @@ From the script's header:
    artifacts under DerivedData (`…/SourcePackages/artifacts/sparkle/Sparkle/bin/`);
    the public key is `SUPublicEDKey` in `Info.plist`. The private key
    stays in the keychain of the machine that signs updates.
+4. `gh` logged in to the `tienshiao` account, and wrangler logged in to the
+   Cloudflare account that owns the R2 bucket `detour-updates` and the
+   `detour-website` Worker (`npx wrangler login`; `npx wrangler whoami`
+   checks it). The OAuth token expires; wrangler refreshes it, which needs
+   write access to `~/Library/Preferences/.wrangler/`.
 
-## Steps
+## Where a release goes
+
+| What | Where | Read by |
+|---|---|---|
+| DMG | GitHub pre-release `v<version>` on `tienshiao/detour` | the website's download buttons |
+| DMG, `Detour<build>-<build>.delta` files, `appcast.xml` | R2 bucket `detour-updates`, served as `https://updates.detourbrowser.com/` | Sparkle in the installed app (`SUFeedURL`) |
+| Version, links, `.dmg` size | `../detour-website` (`public/index.html`, `public/sitemap.xml`), deployed with `wrangler deploy` (Worker `detour-website`, static assets) | detourbrowser.com |
+
+`build/` (git-ignored) is the release archive: every earlier DMG,
+`appcast.xml` and the deltas stay there between releases, because
+`generate_appcast` re-reads the feed and makes deltas from the earlier
+DMGs. On 2026-10-22 the live `appcast.xml` was byte-identical to
+`build/appcast.xml`. Losing `build/` means fetching the feed back with
+`npx wrangler r2 object get detour-updates/appcast.xml --remote --file build/appcast.xml`
+and the earlier DMGs from the GitHub releases.
+
+## Build
 
 ```bash
 ./scripts/build-release.sh 1.2.3     # set the version, increment the build number, build
@@ -95,20 +126,47 @@ What it does, in order:
 | Package | a DMG with the app and an `/Applications` symlink, at `build/Detour-<version>.dmg` |
 | Notarize | `xcrun notarytool submit … --wait`, then `xcrun stapler staple` |
 
-Success ends with `Release artifact: build/Detour-<version>.dmg` and the
-two remaining manual steps. The script prints the first with the real path
-of this checkout's DerivedData directory:
+Success ends with `Release artifact: build/Detour-<version>.dmg`.
+
+## Publish
+
+Write the notes as `docs/releases/<version>.md`: a `# What's New in
+Detour <version>` heading, then one `- **Title** — text` line per item,
+nothing else (the script refuses other lines). They become the Sparkle
+release notes and the GitHub release body. Then:
 
 ```bash
-<DerivedData directory of this checkout>/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast build/
+./scripts/publish-release.sh --dry-run   # checks, writes build/ only
+./scripts/publish-release.sh             # [--skip-website]
 ```
 
-then upload the DMG and `appcast.xml`. The running app looks for updates
-at `SUFeedURL` in `Info.plist`.
+Every step checks whether it is done already, so a run that stopped can
+be run again:
+
+| Step | Detail |
+|---|---|
+| Preflight | on `main`; nothing uncommitted except `Info.plist` and the notes; the DMG is stapled; the app inside it passes `codesign --verify` and has the version and build in `Info.plist` |
+| Appcast | notes → `build/Detour-<version>.html`; `generate_appcast --download-url-prefix https://updates.detourbrowser.com/ --embed-release-notes build/`; the feed's first item must be this version, build, URL and size, with notes |
+| Git | commit `Info.plist` and the notes, annotated tag `v<version>`, push `main` and the tag |
+| GitHub | pre-release `v<version>` with the DMG, body = compare link + the notes' items |
+| Update server | `wrangler r2 object put --remote`: the DMG, this build's deltas, then `appcast.xml` last so the feed never names a file not yet uploaded; then the live feed and DMG size are checked with `curl` |
+| Website | replaces the previous version and size (taken from the page's schema block) everywhere in `index.html`, sets the sitemap's `lastmod`, commits, pushes, deploys a `git archive` of the commit (not the working copy, which holds `.DS_Store` files), checks the live page |
 
 ## Traps
 
-- **It is not a script for an agent to run unprompted.** It needs the
+- **Neither script is for an agent to run unprompted**, and Claude Code's
+  auto mode refuses to run `build-release.sh` even when asked (classified
+  as a production deploy, 2026-10-22); the person runs it with `!` in the
+  session. `publish-release.sh --dry-run` publishes nothing and writes
+  only `build/`, so it is the safe way for an agent to check a release.
+- **Content types on R2.** What was there before the script: the feed is
+  served as `text/xml`, DMGs as `application/x-diskcopy`. The script sets
+  both explicitly; `wrangler r2 object put` otherwise guesses.
+- **Pushing the website does not publish it.** The Worker's versions come
+  from `wrangler` (version metadata `source: wrangler`), not a git build.[^task-179]
+- **Earlier text here said "upload to GitHub Releases"** for the appcast.
+  Only the DMG goes to GitHub; Sparkle reads R2.
+- **What build-release.sh touches.** It needs the
   signing identity and the notary credentials, edits `Info.plist`, and
   submits to Apple's notary service.
 - **Until 2026-10-04 the app it signed might not be the one it just
@@ -118,10 +176,12 @@ at `SUFeedURL` in `Info.plist`.
   checkout's older build. They now ask `xcodebuild -showBuildSettings` for
   this checkout's products directory. The new lookup was exercised on its
   own (real and stubbed `xcodebuild` output); a full release run with it
-  has not been made yet, so on the first one compare the signed app's
-  version and build number with `Info.plist`.
-- **The version edit is uncommitted.** A release built from a dirty tree
-  cannot be reproduced; commit the bump.
+  has not been made yet. publish-release.sh's preflight now mounts the
+  DMG and compares the app's version and build with `Info.plist`.
+- **The version edit is uncommitted** after build-release.sh. A release
+  built from a dirty tree cannot be reproduced; publish-release.sh commits
+  the bump with the notes and tags that commit, and refuses any other
+  uncommitted change.
 - **`--timestamp` needs the network.** The local-test workaround
   (`--timestamp=none`) must never be used for a release: notarization
   requires a secure timestamp.
@@ -250,5 +310,6 @@ process that runs the shell.[^notes-capture]
 - [Updates](../extensions/updates.md) — extension updates, which are unrelated to Sparkle.
 
 [^task-110]: TASK-110
+[^task-179]: TASK-179
 [^task-112]: TASK-112
 [^notes-capture]: Session notes on screen capture for UI verification
