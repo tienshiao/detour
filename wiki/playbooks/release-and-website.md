@@ -154,10 +154,12 @@ be run again:
 
 ## Traps
 
-- **Neither script is for an agent to run unprompted**, and Claude Code's
-  auto mode refuses to run `build-release.sh` even when asked (classified
-  as a production deploy, 2026-10-22); the person runs it with `!` in the
-  session. `publish-release.sh --dry-run` publishes nothing and writes
+- **Neither script is for an agent to run unprompted.** Claude Code's
+  auto mode refused `build-release.sh` as a production deploy when the
+  request was only implied, and ran it once the person asked in so many
+  words to build and publish (2026-10-22); otherwise the person runs it
+  with `!` in the session. Both scripts need the sandbox off (keychain,
+  notary service, `hdiutil`, wrangler's token refresh). `publish-release.sh --dry-run` publishes nothing and writes
   only `build/`, so it is the safe way for an agent to check a release.
 - **Content types on R2.** What was there before the script: the feed is
   served as `text/xml`, DMGs as `application/x-diskcopy`. The script sets
