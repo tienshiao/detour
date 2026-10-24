@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -45,6 +45,9 @@ sources:
   - id: task-119
     resource: backlog:TASK-119
     title: Archived Tabs page; close undos skip consumed records
+  - id: task-185
+    resource: backlog:TASK-185
+    title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
 ---
 
 # Summary
@@ -79,8 +82,9 @@ extension contexts (the list's `didSet`, see
 | Cmd+click on a link | `addTab(in:url:parentID:)` with the selected tab as parent | no (a toast says so when the sidebar is collapsed) |
 | Context menu "Open Link in New Tab" | sets `contextMenuLinkAction`, replays WebKit's own item, lands in `createWebViewWith` → `addTab(in:url:parentID:)` | no |
 | `window.open` or a `_blank` link in a normal tab | `createWebViewWith` → `addTab(in:openedWith:parentID:)`, with the opener as parent, in the opener's space; the tab's web view is returned to WebKit, which loads the URL | yes, unless the opener is in a space the window is not showing |
-| Option+click on a link | `addTabInSplit(with:url:in:)` ([split](./split-tabs.md)) | yes |
+| Option+click on a link, or "Open Link in Split View" | `addTabInSplit(with:url:in:)`, or from a favourite or lone pinned tab `addSplitInNormalSection(copying:rightPane:in:)`, which adds two tabs ([split](./split-tabs.md#opening-a-split-from-a-tab))[^task-185] | yes (the right pane) |
 | Expanding a Peek | `addTab(in:webView:parentID:)`, adopting the Peek's web view | yes |
+| A Peek's Open in Split View | `addTabInSplit(with:webView:in:)` or `addSplitInNormalSection(copying:rightPane: .webView)`, adopting the Peek's web view | yes (the right pane) |
 | An extension page | `addExtensionTab(in:url:configuration:)`, built from the context's configuration | caller decides |
 | An [internal page](../features/internal-pages.md) (Cmd+Y) | `addTab(in:internalPage:)` | yes |
 | Reopen Closed Tab, undo of a close, restore from the archive | `restoredTab(...)`, then a direct insert at the saved index | yes |
@@ -272,3 +276,4 @@ skipped.
 [^task-168]: A sign-in popup cannot reach the page that opened it or close itself
 [^task-85]: target=_blank links in a pinned tab or favourite open in a Peek
 [^task-119]: Archived Tabs page; close undos skip consumed records
+[^task-185]: Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section

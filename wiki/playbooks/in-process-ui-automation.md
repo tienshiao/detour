@@ -4,7 +4,7 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-11T08:08:50Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
 sources:
   - id: task-169
     resource: backlog:TASK-169
@@ -15,6 +15,9 @@ sources:
   - id: task-89
     resource: backlog:TASK-89
     title: Permanent in-process UI automation hook (debug builds only)
+  - id: harness-185
+    resource: ../../docs/harness/task185-harness.patch
+    title: TASK-185 harness (posted Option-click, the real link menu)
   - id: verify-skill
     resource: ../../.claude/skills/verify/SKILL.md
     title: The /verify skill (observation channels and permission gotchas)
@@ -91,6 +94,8 @@ and visual checks have to wait; report them as not run, never as passed.
 | A menu item or toolbar action | `NSApp.sendAction(_:to:from:)` | |
 | A native button | `button.performClick(nil)` | |
 | A native `<select>` | posted click opens its `NSMenu`; posted Down/Up arrows and Return choose | only with the screen unlocked[^notes-inproc] |
+| A modifier-click on a link (Option, Shift, Cmd) | posted down and up with `modifierFlags: .option` (etc.) at the link | reaches `decidePolicy` with those flags, as a person's click does |
+| The page's context menu, and choosing an item | a posted `rightMouseDown`/`Up` on the element; WebKit builds the menu and calls `BrowserWebView.willOpenMenu`, where a temporary hook can read the items and, from a `.common`-mode timer, `menu.performActionForItem(at:)` then `cancelTracking()` | performs WebKit's own items (they need its live menu), so the action takes the real path; only with the screen unlocked[^harness-185] |
 | Dark mode | `NSApp.appearance = NSAppearance(named: .darkAqua)`, wait, capture | |
 | Split, second window, Private window | create them through `TabStore` / `BrowserWindowController` | |
 | A trackpad swipe between spaces | synthetic continuous scroll events, below | |
@@ -233,3 +238,4 @@ above.
 [^task-174]: A space's tab list takes keyboard focus, so keys go to the list instead of the page after a click
 [^notes-updates]: Session notes on verifying the extension update UI
 [^notes-capture]: Session notes on screen capture for UI verification
+[^harness-185]: TASK-185 harness (posted Option-click, the real link menu)

@@ -77,19 +77,7 @@ extension BrowserWindowController: WKNavigationDelegate {
             // Resolved from the firing webView, not selectedTab: in a split, a
             // link can be Option-clicked in the unfocused pane.
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if let group = self.store.splitGroup(containing: clickedTab.id, in: space),
-                   let otherPane = group.members.first(where: { $0.id != clickedTab.id }) {
-                    // Already split: send the link to the other pane.
-                    otherPane.load(url)
-                } else if let newTab = self.store.addTabInSplit(with: clickedTab.id, url: url, in: space) {
-                    // New right pane, focused.
-                    self.selectTab(id: newTab.id)
-                } else {
-                    // Pinned/favorite/peek tabs can't join groups — fall back
-                    // to Cmd+click behavior (background tab).
-                    _ = self.store.addTab(in: space, url: url, parentID: self.selectedTabID)
-                }
+                self?.openLinkInSplit(url, from: clickedTab, in: space)
             }
             return .cancel
         }
@@ -376,6 +364,39 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     private static let blockedLoadSelector = NSSelectorFromString("blockedLoad")
+
+    /// Opens `url` in a split from `clickedTab`, the tab whose page the link is
+    /// in: Option-click, and the link menu's Open Link in Split View (TASK-185).
+    func openLinkInSplit(_ url: URL, from clickedTab: BrowserTab, in space: Space) {
+        if let group = store.splitGroup(containing: clickedTab.id, in: space),
+           let otherPane = group.members.first(where: { $0.id != clickedTab.id }) {
+            // Already split: send the link to the other pane.
+            otherPane.load(url)
+            return
+        }
+        // Selected right below, so not a background tab.
+        let newPane: BrowserTab? = withoutBackgroundTabToast {
+            switch store.splitOpening(from: clickedTab.id, in: space) {
+            case .besideTab:
+                // The clicked tab becomes the left pane.
+                store.addTabInSplit(with: clickedTab.id, url: url, in: space)
+            case .inNormalSection:
+                // A favourite or a lone pinned tab stays put: a copy of it is the
+                // left pane of a new split in the normal section.
+                store.addSplitInNormalSection(copying: clickedTab.id, rightPane: .url(url), in: space)
+            case nil:
+                nil
+            }
+        }
+        if let newPane {
+            // The new right pane, focused.
+            selectTab(id: newPane.id)
+        } else {
+            // A peek, a pinned split pane whose partner is dormant, an
+            // extension's page — fall back to Cmd+click behavior (background tab).
+            _ = store.addTab(in: space, url: url, parentID: selectedTabID)
+        }
+    }
 
     /// Resolve the tab (or peek tab) that owns the web view firing a navigation
     /// callback. Callbacks must act on the owning tab, not `selectedTab`: a peek

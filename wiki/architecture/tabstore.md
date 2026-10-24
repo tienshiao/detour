@@ -5,7 +5,7 @@ description: The state singleton that owns profiles, spaces and tabs — its obs
 resource: ../../Detour/Browser/TabStore.swift
 tags: [architecture, state, tabs, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -108,7 +108,7 @@ Why a protocol and not a Combine publisher:
 | Spaces | `addSpace`, `deleteSpace`, `updateSpace`, `moveSpace`, `ensureDefaultSpace`, `addIncognitoSpace`, `removeIncognitoSpace` |
 | Normal tabs | `addTab(in:url:)`, `addTab(in:internalPage:)`, `addTab(in:webView:)`, `addExtensionTab`, `closeTab`, `moveTab(from:to:in:)`, `moveTab(id:toGapIndex:in:)`, `detachTab` |
 | Across spaces | `moveTab(id:from:to:)`, `movePinnedEntry(id:from:to:)`, `canMoveTab`, `moveTabRefusal` |
-| Splits | `createSplit`, `addTabInSplit`, `separateSplit`, `removeTabFromSplit`, `closeSplitGroup`, `setSplitFraction`, and the pinned variants |
+| Splits | `createSplit`, `addTabInSplit` (URL and web-view variants), `addSplitInNormalSection`, `splitOpening`, `separateSplit`, `removeTabFromSplit`, `closeSplitGroup`, `setSplitFraction`, and the pinned variants |
 | Pinned | `pinTab`, `pinURL`, `unpinTab`, `closePinnedTab`, `deletePinnedEntry`, `activatePinnedEntry`, folder add/delete/rename/move |
 | Favorites | `addFavorite`, `moveTabToFavorites`, `activateFavorite`, `deactivateFavorite`, `removeFavorite`, `restoreFavoriteAsTab`, `restoreFavoriteAsPinned`, `reorderFavorite` |
 | Closed tabs | `reopenClosedTab`, `restoreClosedTab`, `deleteClosedTabRecord`, `clearClosedTabRecords`, `archiveEntries` |

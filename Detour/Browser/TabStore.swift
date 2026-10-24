@@ -2341,14 +2341,12 @@ class TabStore {
 
     // MARK: - Tab Mutations
 
-    @discardableResult
-    private func insertTab(_ tab: BrowserTab, in space: Space, parentID: UUID?) -> Int {
-        tab.spaceID = space.id
-        tab.parentID = parentID
-
+    /// Where a new tab opened from `parentID` goes in `space.tabs`: the
+    /// `TabInsertion` rule, snapped out of any split group's interior.
+    private func newTabInsertionIndex(parentID: UUID?, in space: Space) -> Int {
         let existingTabs = space.tabs.map { (id: $0.id, parentID: $0.parentID) }
         let pinnedTabIDs = Set(space.pinnedEntries.compactMap { $0.tab?.id })
-        let insertionIndex = snappedToSplitGroupBoundary(
+        return snappedToSplitGroupBoundary(
             tabInsertionIndex(
                 parentID: parentID,
                 existingTabs: existingTabs,
@@ -2356,6 +2354,14 @@ class TabStore {
             ),
             groupIDs: space.tabs.map(\.splitGroupID)
         )
+    }
+
+    @discardableResult
+    private func insertTab(_ tab: BrowserTab, in space: Space, parentID: UUID?) -> Int {
+        tab.spaceID = space.id
+        tab.parentID = parentID
+
+        let insertionIndex = newTabInsertionIndex(parentID: parentID, in: space)
 
         space.tabs.insert(tab, at: insertionIndex)
         subscribeToTab(tab)
@@ -3134,11 +3140,15 @@ class TabStore {
     /// Returns nil (caller falls back) if `tabID` is not an ungrouped normal tab.
     @discardableResult
     func addTabInSplit(with tabID: UUID, url: URL, in space: Space) -> BrowserTab? {
+        addTabInSplit(with: tabID, rightPane: .url(url), in: space)
+    }
+
+    private func addTabInSplit(with tabID: UUID, rightPane: SplitPaneContent, in space: Space) -> BrowserTab? {
         guard let anchorIndex = space.tabs.firstIndex(where: { $0.id == tabID }),
               space.tabs[anchorIndex].splitGroupID == nil else { return nil }
 
         let anchor = space.tabs[anchorIndex]
-        let tab = BrowserTab(configuration: space.makeWebViewConfiguration())
+        let tab = makeSplitPane(rightPane, in: space)
         tab.spaceID = space.id
         tab.parentID = tabID
         let insertAt = anchorIndex + 1
@@ -3151,30 +3161,143 @@ class TabStore {
             member.splitFraction = 0.5
         }
 
-        // Undo is a non-archiving removal: the pane never existed as a lone tab,
-        // so it must not land in the Cmd+Shift+T closed-tab stack the way
-        // closeTab's undo path would put it there.
-        // The id, not the tab: Undo Delete Space rebuilds the space's tabs as
-        // fresh objects of the same ids, so a captured instance would be an
-        // orphan (TASK-40).
-        let newTabID = tab.id
-        registerUndo(actionName: "Open in Split") { [weak self] in
-            guard let self else { return }
-            guard let index = space.tabs.firstIndex(where: { $0.id == newTabID }) else {
-                log.error("Undo Open in Split skipped: tab \(newTabID.uuidString, privacy: .public) is gone")
-                return
-            }
-            self.tabSubscriptions.removeValue(forKey: newTabID)
-            let removed = space.tabs.remove(at: index)
-            removed.teardown()
-            self.leaveSplitGroup(removed, in: space)
-            self.notifyObservers { $0.tabStoreDidRemoveTab(removed, at: index, in: space) }
-            self.scheduleSave()
-        }
+        registerOpenInSplitUndo(removing: [tab.id], in: space)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertAt, in: space) }
         scheduleSave()
-        tab.load(url)
+        if case .url(let url) = rightPane { tab.load(url) }
         return tab
+    }
+
+    /// A new pane for `content`: a tab built from the space's configuration to
+    /// load a URL, or one adopting a live web view the way
+    /// `addTab(in:webView:parentID:)` does.
+    private func makeSplitPane(_ content: SplitPaneContent, in space: Space) -> BrowserTab {
+        switch content {
+        case .url: BrowserTab(configuration: space.makeWebViewConfiguration())
+        case .webView(let webView): BrowserTab(webView: webView)
+        }
+    }
+
+    /// The undo of a split opened around new tabs: removes them (the ones still
+    /// there) without closed-tab records — the panes never existed as lone tabs,
+    /// so they must not land in the Cmd+Shift+T closed-tab stack the way
+    /// closeTab's undo path would put them there. By id, not instance: Undo
+    /// Delete Space rebuilds the space's tabs as fresh objects of the same ids,
+    /// so a captured instance would be an orphan (TASK-40).
+    private func registerOpenInSplitUndo(removing tabIDs: [UUID], in space: Space) {
+        registerUndo(actionName: "Open in Split") { [weak self] in
+            guard let self else { return }
+            // All removed before any observer hears of it, so a window settling
+            // its selection never lands on the other new pane. Each index is
+            // reported in the final list (see below), so `tabs[index]` is the
+            // tab that followed the removed block, as after a single close.
+            var removed: [(tab: BrowserTab, index: Int)] = []
+            for id in tabIDs.reversed() {
+                guard let index = space.tabs.firstIndex(where: { $0.id == id }) else {
+                    log.error("Undo Open in Split skipped: tab \(id.uuidString, privacy: .public) is gone")
+                    continue
+                }
+                self.tabSubscriptions.removeValue(forKey: id)
+                let tab = space.tabs.remove(at: index)
+                tab.teardown()
+                self.leaveSplitGroup(tab, in: space)
+                removed.append((tab, index))
+            }
+            guard !removed.isEmpty else { return }
+            // An index taken at a tab's own removal is one too far for every
+            // later-removed tab that stood before it: with both panes gone, the
+            // right pane's index would name the second tab after the pair.
+            for (k, entry) in removed.enumerated() {
+                let shift = removed[(k + 1)...].filter { $0.index < entry.index }.count
+                let index = entry.index - shift
+                self.notifyObservers { $0.tabStoreDidRemoveTab(entry.tab, at: index, in: space) }
+            }
+            self.scheduleSave()
+        }
+    }
+
+    /// How a split opened from a tab is formed (TASK-185): Option-click, the
+    /// link menu's Open Link in Split View, the Peek's Open in Split View.
+    enum SplitOpening: Equatable {
+        /// An ungrouped normal tab: it becomes the left pane (`addTabInSplit`).
+        case besideTab
+        /// A favourite's or a lone pinned entry's backing tab: a new split in the
+        /// normal section, a copy of the tab on the left (`addSplitInNormalSection`).
+        case inNormalSection
+    }
+
+    /// What a new right pane shows: a URL to load, or a live web view it adopts
+    /// (the Peek hand-off, which keeps the page's history).
+    enum SplitPaneContent {
+        case url(URL)
+        case webView(WKWebView)
+    }
+
+    /// How a split opened from `tabID` is formed, or nil when none can be: the
+    /// tab is already a pane (normal or pinned split, a dormant partner
+    /// included), is a peek, or is in no section of `space`.
+    func splitOpening(from tabID: UUID, in space: Space) -> SplitOpening? {
+        if let tab = space.tabs.first(where: { $0.id == tabID }) {
+            return tab.splitGroupID == nil ? .besideTab : nil
+        }
+        // A dormant partner still makes the entry a pane: the group is on it.
+        if let entry = space.pinnedEntries.first(where: { $0.tab?.id == tabID }) {
+            guard entry.splitGroupID == nil else { return nil }
+        } else if space.profile?.favorites.contains(where: { $0.tab?.id == tabID }) != true {
+            return nil
+        }
+        // The copy is built from the space's configuration, which cannot load
+        // an extension's page.
+        guard let url = space.displayableTab(id: tabID)?.url, !isExtensionPageURL(url) else { return nil }
+        return .inNormalSection
+    }
+
+    /// Peek hand-off: `webView` (the Peek's own) becomes a new right pane split
+    /// with `tabID`. Same rules and undo as `addTabInSplit(with:url:in:)`.
+    @discardableResult
+    func addTabInSplit(with tabID: UUID, webView: WKWebView, in space: Space) -> BrowserTab? {
+        addTabInSplit(with: tabID, rightPane: .webView(webView), in: space)
+    }
+
+    /// A split opened from a favourite or a lone pinned tab lands in the normal
+    /// section: two new tabs, one group — on the left a copy loading the parent's
+    /// current URL, on the right `rightPane`. The favourite or entry and its tab
+    /// are not touched. Returns the right pane, or nil unless `splitOpening`
+    /// says `.inNormalSection`.
+    ///
+    /// Placement is the `TabInsertion` rule for a new tab opened from that
+    /// parent — the top of the normal section, after the run of tabs it already
+    /// opened — snapped out of a group's interior, with the pair as one block.
+    /// Both panes are the parent's children, so the next tab or split it opens
+    /// lands after this one.
+    @discardableResult
+    func addSplitInNormalSection(copying parentTabID: UUID, rightPane: SplitPaneContent,
+                                 in space: Space) -> BrowserTab? {
+        guard splitOpening(from: parentTabID, in: space) == .inNormalSection,
+              let parentURL = space.displayableTab(id: parentTabID)?.url else { return nil }
+
+        let left = BrowserTab(configuration: space.makeWebViewConfiguration())
+        let right = makeSplitPane(rightPane, in: space)
+        let groupID = UUID()
+        for pane in [left, right] {
+            pane.spaceID = space.id
+            pane.parentID = parentTabID
+            pane.splitGroupID = groupID
+            pane.splitFraction = 0.5
+        }
+        let insertAt = newTabInsertionIndex(parentID: parentTabID, in: space)
+        space.tabs.insert(contentsOf: [left, right], at: insertAt)
+        subscribeToTab(left)
+        subscribeToTab(right)
+
+        registerOpenInSplitUndo(removing: [left.id, right.id], in: space)
+        notifyObservers { $0.tabStoreDidInsertTab(left, at: insertAt, in: space) }
+        notifyObservers { $0.tabStoreDidInsertTab(right, at: insertAt + 1, in: space) }
+        scheduleSave()
+        // The parent's own committed URL, which may be one of Detour's pages.
+        left.loadRecordedURL(parentURL)
+        if case .url(let url) = rightPane { right.load(url) }
+        return right
     }
 
     /// "Separate Tabs": dissolves the group; members stay adjacent as two rows.

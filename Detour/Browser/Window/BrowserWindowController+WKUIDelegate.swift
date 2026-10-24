@@ -6,19 +6,27 @@ extension BrowserWindowController: WKUIDelegate {
     // MARK: - window.open() and context menu link actions
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        // Consumed by this request whatever happens below: a menu action left
+        // set by an early return would route the next page's own window.open
+        // through it, past the `data:` and extension-context checks below.
+        let linkAction = contextMenuLinkAction
+        contextMenuLinkAction = .none
         guard let url = navigationAction.request.url, let space = activeSpace else { return nil }
         // window.open() never consults decidePolicy; refuse here rather than
         // open a tab whose only navigation the policy would then cancel.
         if InternalPage.isInternal(url) { return nil }
 
-        switch contextMenuLinkAction {
+        switch linkAction {
         case .openInNewTab:
-            contextMenuLinkAction = .none
             _ = TabStore.shared.addTab(in: space, url: url, parentID: selectedTabID)
         case .openInNewWindow:
-            contextMenuLinkAction = .none
             if let appDelegate = NSApp.delegate as? AppDelegate {
                 appDelegate.createNewWindowWithURL(url)
+            }
+        case .openInSplitView:
+            // The tab whose page the menu was opened on, by Option-click's rules.
+            if let clickedTab = tab(owning: webView) {
+                openLinkInSplit(url, from: clickedTab, in: space)
             }
         case .none:
             // A page's own new-window request (a `target=_blank` link, a

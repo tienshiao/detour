@@ -51,25 +51,32 @@ private class GlassCircleButton: NSView {
 class PeekOverlayView: NSView {
     var onClose: (() -> Void)?
     var onExpand: (() -> Void)?
+    var onSplit: (() -> Void)?
 
     private let shadowContainer = NSView()
     private let panelView = NSView()
     private let closeButton: NSView
     private let expandButton: NSView
+    /// Open in Split View (TASK-185). Hidden when the host is already a pane
+    /// of a split, or otherwise cannot open one.
+    private let splitButton: NSView
     /// Click point in overlay (superview) coordinates.
     private var clickPoint: CGPoint?
     private var isClosing = false
 
-    init(clickPoint: CGPoint? = nil) {
+    init(clickPoint: CGPoint? = nil, showsSplitButton: Bool = false) {
         self.clickPoint = clickPoint
         if #available(macOS 26.0, *) {
             let close = GlassCircleButton(symbolName: "xmark", accessibilityDescription: "Close")
             let expand = GlassCircleButton(symbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Open in New Tab")
+            let split = GlassCircleButton(symbolName: "rectangle.split.2x1", accessibilityDescription: "Open in Split View")
             closeButton = close
             expandButton = expand
+            splitButton = split
             super.init(frame: .zero)
             close.onTap = { [weak self] in self?.onClose?() }
             expand.onTap = { [weak self] in self?.onExpand?() }
+            split.onTap = { [weak self] in self?.onSplit?() }
         } else {
             let symbolConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
             let close = NSButton(
@@ -80,7 +87,11 @@ class PeekOverlayView: NSView {
                 image: NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right.circle.fill", accessibilityDescription: "Open in New Tab")!.withSymbolConfiguration(symbolConfig)!,
                 target: nil, action: nil
             )
-            for button in [close, expand] {
+            let split = NSButton(
+                image: NSImage(systemSymbolName: "rectangle.split.2x1.fill", accessibilityDescription: "Open in Split View")!.withSymbolConfiguration(symbolConfig)!,
+                target: nil, action: nil
+            )
+            for button in [close, expand, split] {
                 button.bezelStyle = .inline
                 button.isBordered = false
                 button.imagePosition = .imageOnly
@@ -88,13 +99,22 @@ class PeekOverlayView: NSView {
             }
             closeButton = close
             expandButton = expand
+            splitButton = split
             super.init(frame: .zero)
             close.target = self
             close.action = #selector(closeTapped)
             expand.target = self
             expand.action = #selector(expandTapped)
+            split.target = self
+            split.action = #selector(splitTapped)
         }
+        splitButton.isHidden = !showsSplitButton
         setupViews()
+    }
+
+    var showsSplitButton: Bool {
+        get { !splitButton.isHidden }
+        set { splitButton.isHidden = !newValue }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -105,6 +125,10 @@ class PeekOverlayView: NSView {
 
     @objc private func expandTapped() {
         onExpand?()
+    }
+
+    @objc private func splitTapped() {
+        onSplit?()
     }
 
     private func setupViews() {
@@ -131,8 +155,10 @@ class PeekOverlayView: NSView {
         // Buttons
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         expandButton.translatesAutoresizingMaskIntoConstraints = false
+        splitButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
         addSubview(expandButton)
+        addSubview(splitButton)
 
         NSLayoutConstraint.activate([
             // Shadow container: centered with equal insets, reserving space for buttons
@@ -157,6 +183,11 @@ class PeekOverlayView: NSView {
             expandButton.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 4),
             expandButton.widthAnchor.constraint(equalToConstant: 32),
             expandButton.heightAnchor.constraint(equalToConstant: 32),
+
+            splitButton.leadingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: 8),
+            splitButton.topAnchor.constraint(equalTo: expandButton.bottomAnchor, constant: 4),
+            splitButton.widthAnchor.constraint(equalToConstant: 32),
+            splitButton.heightAnchor.constraint(equalToConstant: 32),
         ])
     }
 
@@ -207,6 +238,7 @@ class PeekOverlayView: NSView {
         shadowContainer.alphaValue = 0
         closeButton.alphaValue = 0
         expandButton.alphaValue = 0
+        splitButton.alphaValue = 0
 
         if let fromTransform = scaledDownTransform(), let layer = shadowContainer.layer {
             layer.transform = CATransform3DIdentity
@@ -221,6 +253,7 @@ class PeekOverlayView: NSView {
             shadowContainer.alphaValue = 1
             closeButton.alphaValue = 1
             expandButton.alphaValue = 1
+            splitButton.alphaValue = 1
         }
     }
 
@@ -247,6 +280,7 @@ class PeekOverlayView: NSView {
             shadowContainer.alphaValue = 0
             closeButton.alphaValue = 0
             expandButton.alphaValue = 0
+            splitButton.alphaValue = 0
         }, completionHandler: completion)
     }
 

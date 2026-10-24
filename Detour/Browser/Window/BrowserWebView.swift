@@ -81,6 +81,16 @@ class BrowserWebView: WKWebView {
             newWindowItem.target = windowController
             newWindowItem.image = NSImage(systemSymbolName: "macwindow.badge.plus", accessibilityDescription: nil)
             menu.insertItem(newWindowItem, at: min(insertIndex + 1, menu.items.count))
+
+            // Not in a Peek: its page hands over to a split by the panel's own
+            // button, and Option-click inside a Peek is left alone too.
+            if let windowController, windowController.selectedTab?.peekTab?.webView !== self {
+                let splitItem = NSMenuItem(title: "Open Link in Split View", action: #selector(BrowserWindowController.contextMenuOpenInSplitView(_:)), keyEquivalent: "")
+                splitItem.representedObject = originalItem
+                splitItem.target = windowController
+                splitItem.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: nil)
+                menu.insertItem(splitItem, at: min(insertIndex + 2, menu.items.count))
+            }
         }
 
         // --- Extension context menu items ---
@@ -120,6 +130,14 @@ extension BrowserWindowController {
     @objc func contextMenuOpenInNewWindow(_ sender: NSMenuItem) {
         guard let originalItem = sender.representedObject as? NSMenuItem else { return }
         contextMenuLinkAction = .openInNewWindow
+        _ = originalItem.target?.perform(originalItem.action, with: originalItem)
+    }
+
+    /// Open Link in Split View: Option-click's rules for the tab the menu is in
+    /// (TASK-185), applied in `createWebViewWith`.
+    @objc func contextMenuOpenInSplitView(_ sender: NSMenuItem) {
+        guard let originalItem = sender.representedObject as? NSMenuItem else { return }
+        contextMenuLinkAction = .openInSplitView
         _ = originalItem.target?.perform(originalItem.action, with: originalItem)
     }
 

@@ -8,7 +8,7 @@ extension BrowserWindowController: TabStoreObserver {
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
 
-        if sidebarItem.isCollapsed {
+        if sidebarItem.isCollapsed, !suppressesBackgroundTabToast {
             toastManager.show(message: "Opened new tab in background")
         }
     }

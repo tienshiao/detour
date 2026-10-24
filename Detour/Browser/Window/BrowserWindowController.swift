@@ -140,9 +140,23 @@ class BrowserWindowController: NSWindowController {
         BrowserWindowController.runPrivateDownloadCloseAlert
 
     enum ContextMenuLinkAction {
-        case none, openInNewTab, openInNewWindow
+        case none, openInNewTab, openInNewWindow, openInSplitView
     }
     var contextMenuLinkAction: ContextMenuLinkAction = .none
+
+    /// Set while this window inserts tabs it is about to select (a split opened
+    /// from a link or a Peek): the collapsed sidebar's "Opened new tab in
+    /// background" toast is wrong for them, and would fire once per pane.
+    var suppressesBackgroundTabToast = false
+
+    /// Runs `body` with the background-tab toast off; see
+    /// `suppressesBackgroundTabToast`.
+    func withoutBackgroundTabToast<T>(_ body: () -> T) -> T {
+        let previous = suppressesBackgroundTabToast
+        suppressesBackgroundTabToast = true
+        defer { suppressesBackgroundTabToast = previous }
+        return body()
+    }
 
     var peekOverlayView: PeekOverlayView?
     /// Funnels this window's activation announcements to the extension
@@ -2928,13 +2942,16 @@ class BrowserWindowController: NSWindowController {
     private func presentPeekWebView(_ peekWebView: WKWebView, for peek: BrowserTab,
                                     clickPoint: CGPoint?, animate: Bool) {
         assertExtensionRegistered(peek, "the presented peek \(peek.id)")
-        let overlay = PeekOverlayView(clickPoint: clickPoint)
+        let overlay = PeekOverlayView(clickPoint: clickPoint, showsSplitButton: peekCanOpenInSplitView)
         overlay.translatesAutoresizingMaskIntoConstraints = false
         overlay.onClose = { [weak self] in
             self?.closePeekOverlay()
         }
         overlay.onExpand = { [weak self] in
             self?.expandPeekToNewTab()
+        }
+        overlay.onSplit = { [weak self] in
+            self?.openPeekInSplitView()
         }
 
         contentContainerView.addSubview(overlay)
@@ -3091,6 +3108,96 @@ class BrowserWindowController: NSWindowController {
         })
 
         // Fade out peek chrome AFTER starting the constraint animation
+        overlay.animateClose {
+            overlay.removeFromSuperview()
+        }
+    }
+
+    /// Whether the Peek's host can take the Peek into a split: not when the
+    /// host is already a pane of one, normal or pinned (TASK-185).
+    var peekCanOpenInSplitView: Bool {
+        guard let host = selectedTab, let space = activeSpace else { return false }
+        return store.splitOpening(from: host.id, in: space) != nil
+    }
+
+    /// Open in Split View (TASK-185): the Peek's page becomes the right pane of
+    /// a split, handing over the Peek's own web view so its history survives.
+    /// An ungrouped normal host becomes the left pane; a favourite or pinned
+    /// host stays where it is, and the split opens in the normal section with a
+    /// copy of the host on the left. The right pane ends selected and focused.
+    func openPeekInSplitView() {
+        guard let overlay = peekOverlayView,
+              let host = selectedTab,
+              let oldPeekTab = host.peekTab,
+              let webView = oldPeekTab.webView,
+              let space = activeSpace else {
+            closePeekOverlay()
+            return
+        }
+        // Decided before anything is handed over. The host can have joined a
+        // split since the button was shown (a sidebar drop while the Peek is up).
+        guard let opening = store.splitOpening(from: host.id, in: space) else {
+            overlay.showsSplitButton = false
+            return
+        }
+
+        // The hand-off sequence of `expandPeekToNewTab`: the Peek is closed for
+        // the extension contexts before its web view joins a tab (TASK-50/52).
+        peekTabSubscriptions.removeAll()
+        ExtensionTabLifecycle.didClose(oldPeekTab)
+        host.clearPeekState()
+        reloadSelectedTabSidebarCell()
+        store.scheduleSave()
+
+        displayTabSubscriptions.removeAll()
+
+        // Selected once the glide below ends, so not a background tab.
+        let pane: BrowserTab = withoutBackgroundTabToast {
+            switch opening {
+            case .besideTab:
+                store.addTabInSplit(with: host.id, webView: webView, in: space)
+                    ?? store.addTab(in: space, webView: webView, parentID: host.id)
+            case .inNormalSection:
+                store.addSplitInNormalSection(copying: host.id, rightPane: .webView(webView), in: space)
+                    ?? store.addTab(in: space, webView: webView, parentID: host.id)
+            }
+        }
+
+        peekOverlayView = nil
+
+        // Glide the page from the Peek panel to where the right pane will be.
+        let bounds = contentContainerView.bounds
+        let target = splitPaneRects(in: bounds, inset: hostedSplitIsFullBleed ? 0 : UIConstants.splitPaneInset,
+                                    gap: UIConstants.splitPaneGap, fraction: 0.5).right
+        if let layer = webView.layer {
+            let radiusAnim = CABasicAnimation(keyPath: "cornerRadius")
+            radiusAnim.fromValue = layer.cornerRadius
+            radiusAnim.toValue = hostedSplitCornerRadius
+            radiusAnim.duration = 0.35
+            radiusAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(radiusAnim, forKey: "cornerRadius")
+            layer.cornerRadius = hostedSplitCornerRadius
+        }
+        NSAnimationContext.runAnimationGroup({ [weak self] context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self?.peekWebViewTopConstraint?.animator().constant = bounds.maxY - target.maxY
+            self?.peekWebViewBottomConstraint?.animator().constant = bounds.minY - target.minY
+            self?.peekWebViewLeadingConstraint?.animator().constant = target.minX - bounds.minX
+            self?.peekWebViewTrailingConstraint?.animator().constant = target.maxX - bounds.maxX
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            // The pane's container gives it its corners from here on.
+            webView.layer?.cornerRadius = 0
+            webView.layer?.masksToBounds = false
+            // A tab the user picked during the glide keeps the selection.
+            guard self.selectedTabID == host.id else { return }
+            self.selectTab(id: pane.id)
+            if pane.id == self.selectedTabID, let paneWebView = pane.webView, paneWebView.window === self.window {
+                self.window?.makeFirstResponder(paneWebView)
+            }
+        })
+
         overlay.animateClose {
             overlay.removeFromSuperview()
         }

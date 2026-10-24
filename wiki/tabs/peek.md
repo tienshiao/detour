@@ -4,7 +4,7 @@ title: Peek
 description: The overlay that shows a linked page over the current tab; which links open in one, how it is anchored to its host tab, parked, restored and expanded, and how extensions see it.
 tags: [tabs, peek, overlay, navigation, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-11T08:08:38Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
 sources:
   - id: anchor
     resource: ../../Detour/Browser/Window/PeekAnchor.swift
@@ -45,6 +45,12 @@ sources:
   - id: task-85
     resource: backlog:TASK-85
     title: target=_blank links in a pinned tab or favourite should open in a Peek instead of a new tab
+  - id: task-185
+    resource: backlog:TASK-185
+    title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
+  - id: harness-185
+    resource: ../../docs/harness/task185-harness.patch
+    title: TASK-185 runtime harness and its results
 ---
 
 # What it does
@@ -52,7 +58,8 @@ sources:
 A Peek shows a page in a rounded panel over the current tab, dimming what is
 behind it. It is for following a link without leaving, or losing, the page you
 were on. Escape, Cmd+W, the close button or a click outside the panel dismiss
-it; the expand button turns it into a normal tab.
+it; the expand button turns it into a normal tab, and the split button puts its
+page beside the host in a [split](./split-tabs.md).
 
 # When a link opens in a Peek
 
@@ -192,6 +199,26 @@ switcher uses it to draw the Peek on the host's card
   area, then selects the tab. It closes the old Peek object for the extension
   contexts first: two open tabs sharing one web view would leave WebKit mapping
   the page to the dead one.
+- **Open in Split View** (`openPeekInSplitView`, the third button) hands the
+  same web view to the right pane of a split, so the Peek's back list and page
+  state survive. The hand-off runs in the same order as expanding (close the
+  old Peek for the extension contexts, clear the host's peek state, then the
+  store mutation places the web view in a tab), glides the web view from the
+  panel to the right pane's frame (`splitPaneRects`), and then `selectTab`s
+  the pane and makes its web view first responder.[^task-185]
+  - An ungrouped normal host becomes the left pane
+    (`addTabInSplit(with:webView:in:)`).
+  - A favourite or pinned host stays where it is: the split opens in the
+    normal section with a copy of the host on the left
+    (`addSplitInNormalSection(copying:rightPane:in:)`), see
+    [split tabs](./split-tabs.md#opening-a-split-from-a-tab).
+  - The button is shown only when `TabStore.splitOpening(from:in:)` answers
+    for the host: never on a pane of a normal or pinned split (the overlay
+    spans both panes, and a third pane is not a thing). It is decided when the
+    overlay is built and asked again on the click, before anything is handed
+    over, because the host can join a split from the sidebar while the Peek is
+    up; then the button just hides.
+  - The Peek is never a member: it hands its page over and is gone.
 - Closing or removing the host tears the Peek down with it
   (`BrowserTab.teardown()` cascades).
 
@@ -229,7 +256,9 @@ Details of registration are in
 - **Opening a Peek to a different URL than the parked one** clears the parked
   favicon and URL first, so the badge cannot show the previous Peek's icon.
 - Reload, back and forward act on the Peek while the host has one.
-- Option+click inside a Peek is left alone, so it still downloads there.
+- Option+click inside a Peek is left alone, so it still downloads there. The
+  link menu inside a Peek has no Open Link in Split View either; the panel's
+  own button is the way to split from a Peek.
 
 # Tests
 
@@ -239,7 +268,14 @@ pane and the "inside a Peek" case, the three peek predicates), `PeekStateTests`
 (the switcher's entries and the Peek's picture), `FavoritePeekPersistenceTests` (round trip
 through save and restore), `FavoriteTileBadgeTests`,
 `ExtensionActiveTabTests` (a real window presenting and closing a Peek),
-`ExtensionTabLifecycleTests` (park closes the registration).
+`ExtensionTabLifecycleTests` (park closes the registration),
+`SplitOpeningTests` (the store half of Open in Split View: the web view kept,
+the button's rule).
+
+Checked at runtime only ([harness](../../docs/harness/task185-harness.patch)):
+the button's visibility on each kind of host, the web view and its back list
+surviving the hand-off, the right pane selected and first responder, and a
+second window on the same space keeping its snapshot.
 
 Not covered by a test: re-presenting a parked Peek registers the new Peek
 exactly once (verified by reading `showPeekOverlay`), and the Google Calendar
@@ -259,3 +295,4 @@ exactly once (verified by reading `showPeekOverlay`), and the Google Calendar
 [^task-51]: Make a presented Peek the extension-visible active tab while it is open
 [^task-57]: A parked Peek stays registered as an open extension tab after its host sleeps
 [^task-85]: target=_blank links in a pinned tab or favourite should open in a Peek instead of a new tab
+[^task-185]: Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section
