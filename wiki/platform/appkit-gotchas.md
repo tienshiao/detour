@@ -4,9 +4,12 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T21:45:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
+  - id: task-186-3
+    resource: backlog:TASK-186.3
+    title: "Dev mode: capture buttons in the dev toolbar"
   - id: task-186-2
     resource: backlog:TASK-186.2
     title: "Dev mode: an under-construction toolbar above the page with the URL"
@@ -121,6 +124,7 @@ Related.
 | `NSSplitView` overwrites its panes' autoresizing masks while tiling. | A web view container returned to single hosting kept a fixed size instead of following window resizes | `resetSplitPaneChrome` restores `[.width, .height]` |
 | Auto Layout constraints on a `WKWebView`'s container break the docked Web Inspector. | Web view hosting | Web view containers are frame-based: `container.frame = contentContainerView.bounds`, and split panes sit in an `NSSplitView`, which frames its children directly. A throwaway spike on 2026-07-11 confirmed the inspector docks inside a pane and survives divider moves.[^design] See [split tabs hosting](../tabs/split-tabs-hosting.md) |
 | `NSStackView.edgeInsets` on the **cross axis** are hugging-priority constraints only. In a height-constrained column the bottom inset silently collapses while the top survives.[^task-113] | Update banner in the Extensions settings pane: the button sat on the border | Add your own required constraints for insets that must hold; pin the content's bottom to the container. Measure in the running app rather than judging by eye |
+| An `NSBox` with `boxType = .separator` has no intrinsic width. In a horizontal `NSStackView` given only a height, it can be stretched to take the stack's slack and turns into a horizontal line; with one separator in the dev toolbar it happened to stay narrow, with two (TASK-186.3) one stretched to 473 pt and pulled the link button to the URL.[^task-186-3] | Dev toolbar trailing groups | Constrain both dimensions (`addTrailingGroup` gives each separator width 1, height 14); the frame is then about 5 pt wide around a 1 pt alignment rect |
 | `NSBox`'s content view is sized by autoresizing, so the box does not grow to an Auto Layout content's fitting height.[^task-113] | Same banner | A plain layer-backed container (`TintedBannerView`) |
 | A button's frame is larger than its height constraint: the constraint applies to the alignment rect. A 24 pt button measured 31 pt tall.[^task-126][^notes-hittest] | The Downloads button's hover circle was derived from the frame | State sizes that must be exact (`HoverButton.fixedHoverSize`); do not derive them from `bounds` |
 | Traffic lights sit inside the sidebar area only if the window has a toolbar. | Window setup | An empty unified `NSToolbar` (`setupToolbar`) |
@@ -222,3 +226,4 @@ from a probe or a measurement.
 [^notes-harness]: Runtime debug harness notes (zero-width split pane root cause)
 [^notes-inprocess]: In-process UI verification notes
 [^task-186-2]: Dev mode: an under-construction toolbar above the page with the URL
+[^task-186-3]: Dev mode: capture buttons in the dev toolbar

@@ -157,6 +157,12 @@ class BrowserWindowController: NSWindowController {
     /// never clobbers the user's clipboard.
     var urlPasteboard: NSPasteboard = .general
 
+    /// Where the dev toolbar's captures go (TASK-186.3): the clipboard, and
+    /// the folder an Option-click saves to (Downloads, as for downloads). A
+    /// test or harness substitutes its own so the user's are left alone.
+    var capturePasteboard: NSPasteboard = .general
+    var captureSaveDirectory: () -> URL = { DownloadManager.shared.downloadsDirectory }
+
     /// What the dev toolbar's Web Inspector buttons drive (TASK-186.4); a
     /// test substitutes a recorder.
     var webInspectorToggler: WebInspectorToggling = WebInspectorToggler.shared
@@ -669,6 +675,7 @@ class BrowserWindowController: NSWindowController {
             emptyStateLabel.centerYAnchor.constraint(equalTo: contentContainerView.centerYAnchor),
         ])
         toastManager.parentView = contentContainerView
+        toastManager.topInset = { [weak self] size in self?.toastTopInset(toastSize: size) ?? ToastManager.defaultTopInset }
         contentItem = NSSplitViewItem(viewController: contentVC)
         splitViewController.addSplitViewItem(contentItem)
 
@@ -996,13 +1003,31 @@ class BrowserWindowController: NSWindowController {
         let size = findBar.fittingSize
         let spot = NSRect(x: 12, y: bounds.maxY - Self.findBarTopInset - size.height,
                           width: size.width, height: size.height)
-        let covered = hostedPaneTabs.contains { tab in
+        let constant = Self.findBarTopInset + (devToolbarCovers(spot) ? DevToolbarLayout.height : 0)
+        if findBarTopConstraint?.constant != constant { findBarTopConstraint?.constant = constant }
+    }
+
+    /// The toast sits at the content area's top right, which is on a dev
+    /// toolbar's capture and inspector buttons when the pane there shows one:
+    /// it goes below the toolbar then, so it never covers the button that
+    /// just showed it (TASK-186.3). The spot is the toast's own size, so a
+    /// long toast over a narrow right pane also clears the left pane's bar.
+    func toastTopInset(toastSize: NSSize = NSSize(width: 28, height: 20)) -> CGFloat {
+        let bounds = contentContainerView.bounds
+        let spot = NSRect(x: bounds.maxX - ToastManager.trailingInset - toastSize.width,
+                          y: bounds.maxY - ToastManager.defaultTopInset - toastSize.height,
+                          width: toastSize.width, height: toastSize.height)
+        return ToastManager.defaultTopInset + (devToolbarCovers(spot) ? DevToolbarLayout.height : 0)
+    }
+
+    /// Whether a hosted pane's dev toolbar lies under `spot` (in the content
+    /// area's coordinates): the find bar and the toast then go below it.
+    private func devToolbarCovers(_ spot: NSRect) -> Bool {
+        hostedPaneTabs.contains { tab in
             guard let container = tab.webViewContainer, container.isShowingDevToolbar,
                   let toolbar = container.devToolbar else { return false }
             return toolbar.convert(toolbar.bounds, to: contentContainerView).intersects(spot)
         }
-        let constant = Self.findBarTopInset + (covered ? DevToolbarLayout.height : 0)
-        if findBarTopConstraint?.constant != constant { findBarTopConstraint?.constant = constant }
     }
 
     private var linkStatusBarConstraints: [NSLayoutConstraint] = []

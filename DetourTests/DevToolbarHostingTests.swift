@@ -91,6 +91,24 @@ final class DevToolbarHostingTests: XCTestCase {
         XCTAssertNil(tab.webViewContainer?.devToolbar, "no toolbar is built for a page that never needed one")
     }
 
+    /// TASK-186.3: a toast (Screenshot copied) must not cover the toolbar's
+    /// right-hand buttons.
+    func testTheToastGoesBelowAToolbarUnderItsSpot() throws {
+        let (wc, space) = try makeController()
+        let local = addTab(localURL, to: wc, in: space)
+        let remote = addTab(remoteURL, to: wc, in: space)
+        wc.selectTab(id: local.id)
+        XCTAssertEqual(wc.toastTopInset(), ToastManager.defaultTopInset + DevToolbarLayout.height)
+        wc.selectTab(id: remote.id)
+        XCTAssertEqual(wc.toastTopInset(), ToastManager.defaultTopInset)
+        // A split with only the left pane local: the toast's spot is over the
+        // right pane, which has no toolbar.
+        wc.store.createSplit(draggedTabID: remote.id, targetTabID: local.id, edge: .right, in: space)
+        wc.selectTab(id: local.id)
+        XCTAssertTrue(try XCTUnwrap(local.webViewContainer).isShowingDevToolbar)
+        XCTAssertEqual(wc.toastTopInset(), ToastManager.defaultTopInset)
+    }
+
     func testTheToolbarFollowsNavigationInTheSameTab() throws {
         let (wc, space) = try makeController()
         let tab = addTab(localURL, to: wc, in: space)

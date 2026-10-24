@@ -74,7 +74,65 @@ extension BrowserWindowController {
         toolbar.onCopyClick = { [weak self, weak tab] in
             self?.copyURL(tab?.url)
         }
+        wireCaptureButtons(of: toolbar, to: tab)
         wireInspectorButtons(of: toolbar, to: tab)
+    }
+
+    /// The capture buttons (TASK-186.3) capture this pane's own web view,
+    /// which in a split may be the unfocused pane: like the inspector
+    /// buttons, they focus the pane but act on their web view either way.
+    private func wireCaptureButtons(of toolbar: DevToolbarView, to tab: BrowserTab) {
+        let group = DevToolbarCaptureGroup.install(in: toolbar)
+        group.onCapture = { [weak self, weak tab, weak group] kind, toFile in
+            guard let self, let tab, let group else { return }
+            _ = self.focusPane(tab)
+            self.capturePage(kind, of: tab, toFile: toFile, group: group)
+        }
+    }
+
+    /// Captures `tab`'s page and puts the PNG on the clipboard, or saves it
+    /// to Downloads, with a toast either way.
+    private func capturePage(_ kind: PageCapture.Kind, of tab: BrowserTab, toFile: Bool, group: DevToolbarCaptureGroup) {
+        guard let webView = tab.webView else {
+            toastManager.show(message: "Couldn’t capture the page")
+            return
+        }
+        group.isCapturing = true
+        let host = devModeHostLabel(for: tab.url)
+        let date = Date()   // the click, not the end of a slow full-page capture
+        PageCapture.capture(kind, of: webView) { [weak self, weak group] result in
+            guard let self, case .success(let capture) = result else {
+                group?.isCapturing = false
+                self?.toastManager.show(message: "Couldn’t capture the page")
+                return
+            }
+            let scaled = capture.scaledDown ? " (scaled down)" : ""
+            guard toFile else {
+                group?.isCapturing = false
+                CaptureDelivery.copy(png: capture.png, to: self.capturePasteboard)
+                let what = kind == .fullPage ? "Full-page screenshot" : "Screenshot"
+                self.toastManager.show(message: "\(what) copied\(scaled)")
+                return
+            }
+            let directory = self.captureSaveDirectory()
+            let name = CaptureFileName.make(host: host, date: date, fullPage: kind == .fullPage)
+            // A tall page's PNG is tens of MB: written off the main thread, on
+            // one serial queue so two saves never pick the same free name.
+            CaptureDelivery.saveQueue.async {
+                let saved = Swift.Result { try CaptureDelivery.save(png: capture.png, name: name, in: directory) }
+                DispatchQueue.main.async { [weak self, weak group] in
+                    group?.isCapturing = false
+                    guard let self else { return }
+                    switch saved {
+                    case .success(let url):
+                        let folder = FileManager.default.displayName(atPath: directory.path)
+                        self.toastManager.show(message: "Saved “\(url.lastPathComponent)” to \(folder)\(scaled)")
+                    case .failure:
+                        self.toastManager.show(message: "Couldn’t save the screenshot")
+                    }
+                }
+            }
+        }
     }
 
     /// The Console, Network and element picker buttons (TASK-186.4) act on

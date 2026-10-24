@@ -221,8 +221,11 @@ final class WebInspectorControlTests: XCTestCase {
         wc.selectTab(id: tab.id)   // claimed again: wired again
         let toolbar = try XCTUnwrap(tab.webViewContainer?.devToolbar)
         let group = try XCTUnwrap(toolbar.inspectorGroup)
-        XCTAssertEqual(toolbar.trailingStack.arrangedSubviews.filter { $0 is NSBox }.count, 1)
+        // One separator before the capture group (TASK-186.3), one before this one.
+        XCTAssertEqual(toolbar.trailingStack.arrangedSubviews.filter { $0 is NSBox }.count, 2)
         XCTAssertEqual(group.buttons.count, 3)
+        XCTAssertEqual(toolbar.captureGroup?.buttons.count, 2)
+        XCTAssertEqual(toolbar.trailingStack.arrangedSubviews.count, 1 + 1 + 2 + 1 + 3)
     }
 
     func testTheUnfocusedPanesButtonsActOnThatPanesWebView() throws {

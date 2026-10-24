@@ -31,6 +31,8 @@ final class DevToolbarView: NSView {
     let copyButton = HoverButton()
     /// The right-hand controls, in groups separated by a hairline.
     let trailingStack = NSStackView()
+    /// The capture buttons, once installed (TASK-186.3).
+    var captureGroup: DevToolbarCaptureGroup?
     /// The Web Inspector buttons, once installed (TASK-186.4).
     var inspectorGroup: DevToolbarInspectorGroup?
 
@@ -155,7 +157,12 @@ final class DevToolbarView: NSView {
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
-        separator.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        // Both dimensions fixed: a separator box has no intrinsic width, and
+        // with two groups the stack stretched one across the bar (TASK-186.3).
+        NSLayoutConstraint.activate([
+            separator.widthAnchor.constraint(equalToConstant: 1),
+            separator.heightAnchor.constraint(equalToConstant: 14),
+        ])
         let group = TrailingGroup(order: order, separator: separator, buttons: buttons)
         let index = trailingGroups.firstIndex { $0.order > order } ?? trailingGroups.count
         trailingGroups.insert(group, at: index)

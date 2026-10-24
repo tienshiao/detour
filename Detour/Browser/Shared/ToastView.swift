@@ -2,6 +2,11 @@ import AppKit
 
 class ToastManager {
     weak var parentView: NSView?
+    static let defaultTopInset: CGFloat = 12
+    static let trailingInset: CGFloat = 12
+    /// How far below the parent's top the toast sits, given its size; read
+    /// when it shows.
+    var topInset: (NSSize) -> CGFloat = { _ in ToastManager.defaultTopInset }
     private var currentToast: ToastView?
     private var hideGeneration = 0
 
@@ -17,8 +22,8 @@ class ToastManager {
         currentToast = toast
 
         NSLayoutConstraint.activate([
-            toast.topAnchor.constraint(equalTo: parent.topAnchor, constant: 12),
-            toast.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -12),
+            toast.topAnchor.constraint(equalTo: parent.topAnchor, constant: topInset(toast.fittingSize)),
+            toast.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -Self.trailingInset),
         ])
 
         NSAnimationContext.runAnimationGroup { ctx in

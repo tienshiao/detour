@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Dev mode
-description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a hazard border and a host line, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working) with its Console, Network and element picker buttons."
+description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a hazard border and a host line, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working) with its capture buttons (visible area and full page, to the clipboard or Downloads) and its Console, Network and element picker buttons."
 tags: [dev-mode, sidebar, tabs, url-rules, site-settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T19:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T21:45:00Z }
 sources:
   - id: rule
     resource: ../../Detour/Browser/DevMode/DevMode.swift
@@ -72,6 +72,24 @@ sources:
   - id: inspector-tests
     resource: ../../DetourTests/WebInspectorControlTests.swift
     title: WebInspectorControlTests.swift
+  - id: capture-group
+    resource: ../../Detour/Browser/DevMode/DevToolbarCaptureGroup.swift
+    title: DevToolbarCaptureGroup.swift
+  - id: page-capture
+    resource: ../../Detour/Browser/DevMode/PageCapture.swift
+    title: PageCapture.swift (PageCapture, CaptureImage, CaptureDelivery)
+  - id: capture-geometry
+    resource: ../../Detour/Browser/DevMode/PageCaptureGeometry.swift
+    title: PageCaptureGeometry.swift (CaptureGeometry, CaptureFileName)
+  - id: capture-tests
+    resource: ../../DetourTests/PageCaptureTests.swift
+    title: PageCaptureTests.swift
+  - id: harness-1863
+    resource: ../../docs/harness/task186-3-harness.patch
+    title: TASK-186.3 runtime harness
+  - id: task-186-3
+    resource: backlog:TASK-186.3
+    title: "Dev mode: capture buttons in the dev toolbar"
   - id: harness-1864
     resource: ../../docs/harness/task186-4-harness.patch
     title: TASK-186.4 runtime harness
@@ -260,15 +278,19 @@ A 30 pt bar across the top of a dev-mode tab's web content, modelled on
 Arc's (faint diagonal stripes on a light bar).[^arc-toolbar] Left to right:
 an info button (`info.circle`, "Site Settings"), the page's URL in 11 pt
 monospace, truncated in the middle, and a trailing stack holding the copy
-button (`link`, "Copy URL") and, after a hairline, the Web Inspector group:
-Console (`terminal`), Network (`globe`) and Select Element (`scope`), as in
-Arc.[^toolbar-view][^inspector-group]
+button (`link`, "Copy URL"), after a hairline the capture group: Capture
+Visible Area (`camera`) and Capture Full Page (`rectangle.expand.vertical`),
+and after another the Web Inspector group: Console (`terminal`), Network
+(`globe`) and Select Element (`scope`), as in
+Arc.[^toolbar-view][^capture-group][^inspector-group]
 
 | Control | Does |
 |---|---|
 | Info | Opens the site settings popover (the one behind the address bar's slider button) under the info button, without the address bar's hover buttons showing |
 | URL | Opens the command palette prefilled with the URL, navigating the tab in place (a new tab while a Peek is up), anchored at the toolbar |
 | Copy | Copies the toolbar's own pane's URL, with the "URL copied" toast, through the same `copyURL` the address bar uses |
+| Capture Visible Area | Puts a PNG of this pane's visible page on the clipboard ("Screenshot copied"); Option-click saves it to Downloads ([below](#captures)) |
+| Capture Full Page | The same for the whole document ("Full-page screenshot copied") |
 | Console | Opens this pane's inspector on Console; closes it when it already shows Console; switches to Console when it shows another tab |
 | Network | The same for the Network tab |
 | Select Element | Toggles WebKit's element picker; the button is tinted with the accent colour while it is on. Picking an element opens the inspector on Elements |
@@ -277,13 +299,71 @@ Arc.[^toolbar-view][^inspector-group]
 A click on a control in the unfocused pane of a split focuses that pane
 first (`makeFirstResponder` on its web view), so the palette and the popover
 act on it; they stop if the pane did not take focus. The inspector buttons
-focus the pane too but act on their pane's own web view either way: the
-inspector call names its web view, so it cannot land on the other pane.
+and the capture buttons focus the pane too but act on their pane's own web
+view either way: the call names its web view, so it cannot land on the
+other pane.
 Groups are added with `addTrailingGroup(_:order:)`, which puts a hairline
-separator before each group and keeps them in `TrailingGroupOrder`
-(`.capture` before `.inspector`), so TASK-186.3's capture group lands
-between the link and the inspector whichever is added first. Every button
+separator (fixed at 1 x 14 pt: with two groups an unsized separator
+stretched across the bar, see [AppKit gotchas](../platform/appkit-gotchas.md#layout))
+before each group and keeps them in `TrailingGroupOrder`
+(`.capture` before `.inspector`), so the capture group lands between the
+link and the inspector whichever is added first. Every button
 carries an accessibility label; the bar is an accessibility toolbar.
+
+### Captures
+
+TASK-186.3.[^task-186-3] Decisions (user): two buttons, the visible area and
+the full page; a click puts a PNG on the clipboard with a toast; an
+Option-click saves it to Downloads instead, with a toast naming the file; no
+area selection. The toast has no action, so there is no "Show in Finder".
+
+| | Visible area | Full page |
+|---|---|---|
+| What | `takeSnapshot` of the pane's web view `bounds`: the page only, never the toolbar or a docked inspector (siblings in the container) | The whole document, wherever it is scrolled; the page is not scrolled |
+| How | Public API | WebKit's private whole-document snapshot (`_usesContentsRect`) while the raw image is at most 2^26 px, then scaled down to the caps; above that, `createPDF` rasterised at the capped size |
+| Size | Web view points x the device scale (1172 x 830 pt at 2x → 2344 x 1660 px) | Document points x the device scale, scaled down to at most 16384 px on the long edge and 2^26 px in all; the toast then says "(scaled down)" |
+
+Why the full page cannot be a big snapshot rect, what each method does with
+fixed, sticky, filtered and GPU content, and how device pixels are read out
+of the snapshot are on [WKWebView snapshots](../platform/wkwebview-snapshots.md).[^page-capture]
+
+- **Pixel math** is the pure `CaptureGeometry` (`pixelSize(points:scale:)`
+  with the caps, `fullPageMethod`, `documentPoints`, `dpi`).[^capture-geometry]
+  The scale comes from the page: `devicePixelRatio / pageZoom`. The PNG
+  records 72 dpi per pixel per point (144 at 2x), so it previews at the
+  page's size. 16384 px is the texture limit of most GPUs and about the
+  largest image paste targets accept unshrunk; 2^26 px is 256 MB of RGBA,
+  which the page's process paints and the app copies and encodes. PNG
+  encoding, scaling and PDF rasterising run off the main thread.
+- **Clipboard:** a pasteboard item with `public.png`, plus `public.tiff`
+  made on demand (from the PNG, LZW, same DPI) by an
+  `NSPasteboardItemDataProvider`, for apps that read only TIFF; a TIFF of a
+  tall page is tens of MB, so it is not made unless asked for.
+- **File:** `CaptureFileName.make`: "Screenshot localhost-3000 2026-10-24 at
+  21.05.03.png", "... (full page).png" (the host line with `:` as `-`,
+  since Finder shows a colon as a slash; no host, no host part); then
+  `unique`, which adds " (2)", " (3)" so nothing is overwritten (two captures
+  in one second), and the write is `.withoutOverwriting`. The folder is
+  `DownloadManager.shared.downloadsDirectory` (the user's Downloads; no
+  setting chooses another). The toast names the file and the folder.
+- **Busy and failure:** both buttons of the pane are disabled while its
+  capture is in flight (a visible capture takes under 0.1 s, a 5320 pt page
+  at 2x about 2.5 s with encoding). A web view with no page, a failed
+  snapshot or PDF, or no answer within 60 s shows "Couldn't capture the
+  page"; a failed write "Couldn't save the screenshot".
+- **Seams:** the window's `capturePasteboard` and `captureSaveDirectory`, and
+  the group's `modifierFlags`, so tests and the harness never touch the
+  user's clipboard or Downloads.
+- **The toast moves below the toolbar.** It sits at the content area's top
+  right, over the capture buttons when the pane there shows a toolbar; the
+  window's `toastTopInset()` puts it 30 pt lower then (the same geometric
+  test as the find bar), so it never covers the button just pressed.
+
+Tests: `PageCaptureGeometryTests` (pure), `PageCaptureImageTests` (PNG, PDF,
+pasteboard, files), `PageCaptureWebViewTests` (real web views at 2x through
+`_overrideDeviceScaleFactor`: visible, full page by both methods, no page)
+and `DevToolbarCaptureGroupTests`.[^capture-tests] Runtime: on a 2x virtual
+display, single tab, split, docked inspector, light and dark.[^harness-1863]
 
 **The inspector buttons** (TASK-186.4)[^task-186-4] use private WebKit API
 kept in one type, `WebInspectorControl`; the calls, the guards and what was
@@ -502,5 +582,11 @@ captured in light and dark.[^harness-1865]
 [^inspector-control]: WebInspectorControl.swift
 [^inspector-tests]: WebInspectorControlTests.swift
 [^harness-1864]: TASK-186.4 runtime harness
+[^task-186-3]: Dev mode: capture buttons in the dev toolbar
+[^capture-group]: DevToolbarCaptureGroup.swift
+[^page-capture]: PageCapture.swift (PageCapture, CaptureImage, CaptureDelivery)
+[^capture-geometry]: PageCaptureGeometry.swift (CaptureGeometry, CaptureFileName)
+[^capture-tests]: PageCaptureTests.swift
+[^harness-1863]: TASK-186.3 runtime harness
 [^task-186-4]: Dev mode: toolbar buttons that toggle the Web Inspector's Console and Network tabs
 [^hosting-tests]: DevToolbarHostingTests.swift

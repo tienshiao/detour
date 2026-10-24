@@ -13,6 +13,7 @@
 * [Unresponsive web process](unresponsive-web-process.md) - What WebKit does and does not do when a page's web process stops reading its messages — reload and stop are queued behind the hang, one "unresponsive" report arrives after three seconds, the "responsive" report is unreliable — and the rule by which Detour replaces the process for a load or a Stop it never answers.
 * [WebKit test host traps](webkit-test-host-traps.md) - WebKit and macOS behaviours that crash the DetourTests host, make it eat memory, or let a test run write into the installed app's data — and the guard the project has for each.
 * [WKWebView delegate call order](wkwebview-delegate-order.md) - Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
+* [WKWebView snapshots on macOS](wkwebview-snapshots.md) - What WKWebView.takeSnapshot really captures on macOS — a software paint at the device scale, clipped to the visible viewport whatever rect is asked for — how a whole-document capture is made instead (the private _usesContentsRect, or createPDF rasterised), what each does with fixed, sticky, filtered and GPU content, and the NSImage size quirks that decide how to get device pixels out. *(draft)*
 
 # References
 
