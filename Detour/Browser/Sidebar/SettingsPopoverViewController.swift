@@ -11,15 +11,20 @@ class SettingsPopoverViewController: NSViewController {
 
     var host: String = ""
     var isBlockingEnabled: Bool = true
+    /// The site's picture in picture switch (TASK-188): whether switching away
+    /// from its playing tab enters picture in picture.
+    var isPictureInPictureEnabled: Bool = true
     var blockedCount: Int = 0
     var extensions: [ExtensionItem] = []
 
     var onBlockingToggle: (() -> Void)?
+    var onPictureInPictureToggle: ((Bool) -> Void)?
     var onPinToggle: ((String) -> Void)?
     var onExtensionClick: ((String) -> Void)?
     var onOpenExtensionSettings: (() -> Void)?
 
     private let toggleSwitch = NSSwitch()
+    private let pictureInPictureSwitch = NSSwitch()
 
     override func loadView() {
         let margin: CGFloat = 16
@@ -94,6 +99,19 @@ class SettingsPopoverViewController: NSViewController {
         toggleSwitch.action = #selector(toggleClicked)
         toggleSwitch.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(toggleSwitch)
+
+        let pictureInPictureLabel = NSTextField(labelWithString: "Picture in picture on tab switch")
+        pictureInPictureLabel.font = .systemFont(ofSize: 13)
+        pictureInPictureLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(pictureInPictureLabel)
+
+        pictureInPictureSwitch.state = isPictureInPictureEnabled ? .on : .off
+        pictureInPictureSwitch.isEnabled = !host.isEmpty
+        pictureInPictureSwitch.target = self
+        pictureInPictureSwitch.action = #selector(pictureInPictureToggleClicked)
+        pictureInPictureSwitch.setAccessibilityLabel("Picture in picture on tab switch")
+        pictureInPictureSwitch.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(pictureInPictureSwitch)
 
         // Separator
         let separator = NSBox()
@@ -172,7 +190,13 @@ class SettingsPopoverViewController: NSViewController {
             toggleSwitch.centerYAnchor.constraint(equalTo: toggleLabel.centerYAnchor),
             toggleSwitch.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
 
-            separator.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: margin),
+            pictureInPictureLabel.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: spacing + 6),
+            pictureInPictureLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
+
+            pictureInPictureSwitch.centerYAnchor.constraint(equalTo: pictureInPictureLabel.centerYAnchor),
+            pictureInPictureSwitch.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
+
+            separator.topAnchor.constraint(equalTo: pictureInPictureLabel.bottomAnchor, constant: margin),
             separator.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
 
@@ -246,6 +270,10 @@ class SettingsPopoverViewController: NSViewController {
 
     @objc private func toggleClicked() {
         onBlockingToggle?()
+    }
+
+    @objc private func pictureInPictureToggleClicked() {
+        onPictureInPictureToggle?(pictureInPictureSwitch.state == .on)
     }
 
     @objc private func extensionNameClicked(_ sender: NSButton) {

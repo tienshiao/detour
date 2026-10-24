@@ -1083,6 +1083,22 @@ class BrowserWindowController: NSWindowController {
 
     // MARK: - Tab Selection & WebView Ownership
 
+    /// Whether leaving `tab` (the outgoing tab or its Peek) puts its playing
+    /// video into picture in picture: not when the tab is closing, nor on a
+    /// site whose picture in picture switch is off (TASK-188).
+    private func entersPictureInPictureOnLeaving(_ tab: BrowserTab) -> Bool {
+        let host = tab.url?.host ?? ""
+        // `selectedTab` resolves in the active space, so the outgoing tab (and
+        // its Peek) is always under the active space's profile. On a space
+        // switch it does not resolve at all and nothing enters PiP.
+        let siteOverride = activeSpace?.profile.flatMap {
+            SiteSettingsStore.shared.override(.pictureInPicture, forHost: host, profileID: $0.id)
+        }
+        return AutomaticPictureInPicture.shouldEnter(isPlayingAudio: tab.isPlayingAudio,
+                                                     leavesClosingTab: selectionLeavesClosingTab,
+                                                     siteOverride: siteOverride)
+    }
+
     func selectTab(id: UUID) {
         guard let tab = activeSpace?.displayableTab(id: id) else { return }
 
@@ -1093,14 +1109,14 @@ class BrowserWindowController: NSWindowController {
 
         if let previousTab = selectedTab {
             // Enter PiP for peek before hidePeekUI() removes it from the hierarchy.
-            if !selectionLeavesClosingTab, let peekTab = previousTab.peekTab, peekTab.isPlayingAudio {
+            if let peekTab = previousTab.peekTab, entersPictureInPictureOnLeaving(peekTab) {
                 peekTab.enterPictureInPicture()
                 pipContentView = peekTab.webView
             }
             // Before the Peek leaves the screen: it is pictured with its host.
             stampDeselected(previousTab)
             hidePeekUI()
-            if !selectionLeavesClosingTab, previousTab.isPlayingAudio {
+            if entersPictureInPictureOnLeaving(previousTab) {
                 previousTab.enterPictureInPicture()
                 // Keep the container in the hierarchy so WebKit can capture the
                 // video's on-screen frame for the PiP animation origin.

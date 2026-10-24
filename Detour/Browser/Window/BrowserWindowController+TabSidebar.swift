@@ -178,6 +178,8 @@ extension BrowserWindowController: TabSidebarDelegate {
         let vc = SettingsPopoverViewController()
         vc.host = host
         vc.isBlockingEnabled = !isWhitelisted
+        vc.isPictureInPictureEnabled = host.isEmpty ? true
+            : SiteSettingsStore.shared.override(.pictureInPicture, forHost: host, profileID: profileID) ?? true
         vc.blockedCount = displayTab?.blockedCount ?? 0
 
         // Populate extensions list (fetch pinned IDs once to avoid per-extension DB queries)
@@ -207,6 +209,18 @@ extension BrowserWindowController: TabSidebarDelegate {
             for pane in panes
             where pane.url?.host.map({ ContentBlockerWhitelist.covers(host: $0, whitelistedHosts: [host]) }) == true {
                 pane.reload()
+            }
+        }
+
+        vc.onPictureInPictureToggle = { [weak self] isOn in
+            guard let profile = self?.activeSpace?.profile, !host.isEmpty else { return }
+            // Off stores this host; on clears every row covering it, since a
+            // parent site's row would keep it off. Takes effect at the next
+            // tab switch, so nothing reloads.
+            if isOn {
+                SiteSettingsStore.shared.resetToDefault(.pictureInPicture, forHost: host, profileID: profile.id)
+            } else {
+                SiteSettingsStore.shared.set(.pictureInPicture, site: host, to: false, profileID: profile.id)
             }
         }
 

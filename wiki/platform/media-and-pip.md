@@ -34,6 +34,9 @@ sources:
   - id: classification-tests
     resource: ../../DetourTests/NavigationErrorClassificationTests.swift
     title: NavigationErrorClassificationTests.swift
+  - id: task-188
+    resource: backlog:TASK-188
+    title: Picture in picture - a per-site switch for opening PiP automatically when you leave a playing tab
 ---
 
 Two WebKit media behaviours have caused bugs, and both come from the same
@@ -119,7 +122,7 @@ background played fine and broke once the tab was selected.[^task-121][^task-122
 
 | Need | What the code does |
 |---|---|
-| Start PiP when switching away from a playing tab | `selectTab` calls `enterPictureInPicture()` on the outgoing tab (and on its playing Peek, before the Peek UI is hidden) when `isPlayingAudio` is true |
+| Start PiP when switching away from a playing tab | `selectTab` calls `enterPictureInPicture()` on the outgoing tab (and on its playing Peek, before the Peek UI is hidden) when `AutomaticPictureInPicture.shouldEnter` allows it: `isPlayingAudio`, not closing, and the site's `pictureInPicture` switch not off (the site popover's "Picture in picture on tab switch", default on, stored as a [site setting](../architecture/site-settings.md)). The switch governs only this automatic entry; a page's own PiP request still works[^task-188] |
 | Keep the video on screen long enough to capture | The outgoing container is remembered in `pipContentView`; `removeContentViews()` leaves it parented and removes it 0.5 s later. For a split, the PiP pane is re-parented as a direct subview at its on-screen frame with its autoresizing mask cleared, so a window resize during the hold cannot move it off the captured frame |
 | Do not rip out a tab re-selected inside that 0.5 s | The delayed cleanup checks whether the view is now the selected tab's container and only drops the stale reference |
 | Do not start PiP for a tab that is being closed | `settlingSelectionForClose { … }` sets `selectionLeavesClosingTab`; `selectTab` skips both PiP entries (tab and Peek) while it is set. Used by `closeTab(at:wasSelected:)`, `closePinnedTab(at:)` and the close-split-group handler |
@@ -192,3 +195,4 @@ arrive and waiting on one would hang the call.[^task-121]
 [^task-121]: A standalone video URL shows the error page with "Plug-in handled load"
 [^task-122]: A background tab whose load fails never shows the error page
 [^task-105]: GPU-process recycle valve
+[^task-188]: Picture in picture - a per-site switch for opening PiP automatically when you leave a playing tab

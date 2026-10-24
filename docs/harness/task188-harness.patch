@@ -1,0 +1,166 @@
+TASK-188 runtime harness: the per-site picture in picture switch. Temporary
+code, never committed to Detour/. Needs a local server with a playing video:
+
+    SP=<scratch>/www; mkdir -p $SP
+    ffmpeg -f lavfi -i testsrc=size=640x360:rate=30 -f lavfi -i sine=frequency=440 \
+        -t 120 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest $SP/tone.mp4
+    # video.html: <video src=tone.mp4 autoplay loop> plus a wrapper around
+    # HTMLVideoElement.prototype.webkitSetPresentationMode that sets
+    # document.title = 'PIP ' + mode; blank.html: any page.
+    python3 -m http.server 8765 --bind 127.0.0.1 --directory $SP &
+    git apply docs/harness/task188-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    DETOUR_DATA_DIR=DetourVerify188 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8765 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # "SHOOT <name> <windowNumber> <popoverWindowNumber>": screencapture -x -l <popover>
+    # within 2 s; wait for "done" (about 37 s), kill that pid and the server.
+    git apply -R docs/harness/task188-harness.patch && xcodegen generate
+
+Opens the video at localhost (no setting) and at 127.0.0.1, leaves each while
+it plays, and drives the site popover's switch with performClick, light then
+dark. The macOS PiP window really opens on the default-site leg.
+
+Results (2026-10-24): default site, leaving the playing tab entered PiP
+(title "PIP picture-in-picture"); switch off for 127.0.0.1 stored one row
+(127.0.0.1 pictureInPicture false, also covering a.127.0.0.1) and leaving
+the playing tab did not enter PiP; switch back on removed the row and leaving
+entered PiP again. Popover captured light and dark with the new row under
+content blocking's switch.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..8432319 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask188HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task188Harness.swift b/Detour/App/Task188Harness.swift
+new file mode 100644
+index 0000000..fd89aef
+--- /dev/null
++++ b/Detour/App/Task188Harness.swift
+@@ -0,0 +1,117 @@
++// TEMP TASK-188 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask188HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window else { return log("no window") }
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        let store = TabStore.shared
++        var offTab: BrowserTab?    // 127.0.0.1: the switch turned off
++        var onTab: BrowserTab?     // localhost: no setting
++        var otherTab: BrowserTab?
++        func describe(_ tab: BrowserTab?) -> String {
++            guard let tab else { return "nil" }
++            return "host=\(tab.url?.host ?? "-") playing=\(tab.isPlayingAudio) title=\"\(tab.title)\""
++        }
++        func popoverWindow() -> NSWindow? {
++            NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
++        }
++        func popoverSwitches() -> [NSSwitch] {
++            guard let content = popoverWindow()?.contentView else { return [] }
++            return allSubviews(content).compactMap { $0 as? NSSwitch }
++        }
++        func showPopover() {
++            wc.tabSidebarDidRequestShowSettings(wc.tabSidebar, sourceButton: wc.tabSidebar.fauxAddressBar)
++        }
++        func closePopover() {
++            popoverWindow()?.orderOut(nil)
++            NSApp.windows.filter { String(describing: type(of: $0)).contains("Popover") }.forEach { $0.close() }
++        }
++        func shoot(_ name: String) {
++            guard let w = popoverWindow() else { return log("SHOOT \(name): no popover") }
++            log("SHOOT \(name) \(window.windowNumber) \(w.windowNumber)")
++        }
++        func override(_ host: String) -> String {
++            let profileID = wc.activeSpace?.profile?.id ?? UUID()
++            return String(describing: SiteSettingsStore.shared.override(.pictureInPicture, forHost: host, profileID: profileID))
++        }
++
++        at(0) {
++            guard let space = wc.activeSpace else { return log("no active space") }
++            offTab = store.addTab(in: space, url: URL(string: "http://127.0.0.1:\(port)/video.html"))
++            onTab = store.addTab(in: space, url: URL(string: "http://localhost:\(port)/video.html"))
++            otherTab = store.addTab(in: space, url: URL(string: "http://127.0.0.1:\(port)/blank.html"))
++            log("seeded")
++        }
++        // Leg 1: no setting — leaving a playing tab enters PiP.
++        at(1.0) { wc.selectTab(id: onTab!.id); log("selected on-tab") }
++        at(4.0) { log("on-tab before leaving: \(describe(onTab))") }
++        at(0.2) { wc.selectTab(id: otherTab!.id); log("left on-tab") }
++        at(2.5) { log("RESULT default site, after leaving: \(describe(onTab))") }
++
++        // Leg 2: the popover, light, then turn 127.0.0.1 off with its switch.
++        at(0.5) { NSApp.appearance = NSAppearance(named: .aqua); wc.selectTab(id: offTab!.id); log("selected off-tab") }
++        at(4.0) {
++            log("off-tab before: \(describe(offTab)) override=\(override("127.0.0.1"))")
++            showPopover()
++        }
++        at(1.0) {
++            let switches = popoverSwitches()
++            log("popover switches=\(switches.count) states=\(switches.map { $0.state == .on }) enabled=\(switches.map(\.isEnabled))")
++            shoot("popover-light-before")
++        }
++        at(2.0) {
++            guard let pip = popoverSwitches().last else { return log("no PiP switch") }
++            pip.performClick(nil)
++            log("clicked PiP switch: state=\(pip.state == .on) override=\(override("127.0.0.1")) sub=\(override("a.127.0.0.1"))")
++            log("db rows: \(AppDatabase.shared.loadSiteSettings().map { "\($0.site) \($0.setting) \($0.value)" })")
++        }
++        at(0.5) { shoot("popover-light-off") }
++        at(2.0) { closePopover() }
++        at(0.5) { wc.selectTab(id: otherTab!.id); log("left off-tab") }
++        at(2.5) { log("RESULT switch off, after leaving: \(describe(offTab))") }
++
++        // Leg 3: dark popover, turn it back on, leave again.
++        at(0.5) { NSApp.appearance = NSAppearance(named: .darkAqua); wc.selectTab(id: offTab!.id); log("back to off-tab") }
++        at(3.0) { log("off-tab: \(describe(offTab))"); showPopover() }
++        at(1.0) { shoot("popover-dark-off") }
++        at(2.0) {
++            guard let pip = popoverSwitches().last else { return log("no PiP switch") }
++            pip.performClick(nil)
++            log("clicked PiP switch: state=\(pip.state == .on) override=\(override("127.0.0.1"))")
++            log("db rows: \(AppDatabase.shared.loadSiteSettings().map { "\($0.site) \($0.setting) \($0.value)" })")
++        }
++        at(0.5) { shoot("popover-dark-on") }
++        at(2.0) { closePopover(); wc.evaluateResetTitle(offTab) }
++        at(0.5) { wc.selectTab(id: otherTab!.id); log("left off-tab (switch on again)") }
++        at(2.5) { log("RESULT switch back on, after leaving: \(describe(offTab))") }
++        at(1.0) { log("done") }
++    }
++}
++
++extension BrowserWindowController {
++    func evaluateResetTitle(_ tab: BrowserTab?) {
++        tab?.webView?.evaluateJavaScript("document.title = 'Video'")
++    }
++}
++#endif

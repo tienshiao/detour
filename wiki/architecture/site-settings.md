@@ -24,6 +24,12 @@ sources:
   - id: task-187
     resource: backlog:TASK-187
     title: Storage - a per-site settings table, with content blocking's site list migrated into it
+  - id: task-188
+    resource: backlog:TASK-188
+    title: Picture in picture - a per-site switch for opening PiP automatically when you leave a playing tab
+  - id: pip-tests
+    resource: ../../DetourTests/AutomaticPictureInPictureTests.swift
+    title: AutomaticPictureInPictureTests.swift
 ---
 
 # Site settings
@@ -31,8 +37,8 @@ sources:
 Per-site preferences live in one table of the
 [session database](./session-database.md), `siteSetting`, so each new
 per-site switch adds a `SiteSetting` case rather than a table.[^task-187]
-Content blocking was the first; dev mode (TASK-186.5) and automatic
-picture in picture (TASK-188) are planned to follow.
+Content blocking was the first, automatic picture in picture the
+second;[^task-188] dev mode (TASK-186.5) is planned to follow.
 
 ## Table
 
@@ -46,8 +52,15 @@ picture in picture (TASK-188) are planned to follow.
 
 Profile deletion removes the rows explicitly in `deleteProfileRows`, like the
 other per-profile tables ([profile data removal](./profile-data-removal.md)).
-The Private profile's rows are written like any other profile's: its profile
-row is saved under its fixed id, as before the move.
+Whether the Private profile's values reach the table depends on the setting
+(`SiteSetting.persistsInPrivate`). Content blocking's are written like any
+other profile's (its profile row is saved under its fixed id, as before the
+move); TASK-195 is to stop that. Picture in picture's are kept in the cache
+only, so a site visited in Private is not left on disk, and
+`discardPrivateSession()` drops them when the last Private space is removed
+(`TabStore.removeIncognitoSpace`, through the shared store's `siteSettings`).
+The user chose this on 2026-10-24, matching the external-app permissions,
+which keep Private decisions in memory too.[^task-188][^pip-tests]
 
 ## SiteSettingsStore
 
@@ -60,12 +73,16 @@ build) is skipped on load and left in the table.
   among the stored sites that cover the host by the setting's rule, the most
   specific (longest) wins. Nil means "use the default".
 - `overrides(_:profileID:)` lists the stored sites for one setting.
+- `resetToDefault(_:forHost:profileID:)` clears every stored site that
+  covers the host, since a parent site's row left behind would still apply;
+  a switch turned back on uses it.
 
 Each setting owns its matching rule (`SiteSetting.site(_:covers:)`):
 
 | Setting | `false` means | Matches |
 |---|---|---|
 | `contentBlocking` | blocking off for the site | the host or any parent host (`example.com` covers `www.example.com`) |
+| `pictureInPicture` | no automatic PiP when leaving the site's playing tab | the same |
 
 ## Content blocking's site list
 
@@ -82,3 +99,5 @@ are dropped, so they cannot fail the migration's foreign key check. The
 migration is tested against a database migrated to v17.
 
 [^task-187]: Storage - a per-site settings table, with content blocking's site list migrated into it
+[^task-188]: Picture in picture - a per-site switch for opening PiP automatically when you leave a playing tab
+[^pip-tests]: AutomaticPictureInPictureTests.swift

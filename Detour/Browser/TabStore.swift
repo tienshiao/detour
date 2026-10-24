@@ -383,6 +383,7 @@ class TabStore {
     static let shared: TabStore = {
         let store = TabStore()
         store.thumbnailCache = .shared
+        store.siteSettings = .shared
         return store
     }()
     static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -442,6 +443,10 @@ class TabStore {
     var thumbnailCache: TabThumbnailCache?
     /// The live keys of the last sweep; nil before the first.
     private var lastSweptThumbnailKeys: Set<UUID>?
+    /// Told when the last Private space goes, so the Private session's
+    /// in-memory site settings go with it (TASK-188). Only the shared store
+    /// has one.
+    var siteSettings: SiteSettingsStore?
 
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
          profileDataRemover: ProfileDataRemoval.Remover = .webKit,
@@ -2330,6 +2335,7 @@ class TabStore {
             }
         }
         // Keep the built-in incognito profile — it persists across sessions
+        if !spaces.contains(where: \.isIncognito) { siteSettings?.discardPrivateSession() }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
     }
 

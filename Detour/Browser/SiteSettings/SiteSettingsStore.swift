@@ -5,6 +5,21 @@ import Foundation
 enum SiteSetting: String, CaseIterable {
     /// `false` turns content blocking off for the site (`ContentBlockerWhitelist`).
     case contentBlocking
+    /// `false` keeps the site's playing video out of the picture in picture
+    /// Detour enters on a tab switch (`AutomaticPictureInPicture`, TASK-188).
+    case pictureInPicture
+
+    /// Whether a value set in the Private profile is written to disk. One that
+    /// is not lives in memory until the Private session ends
+    /// (`SiteSettingsStore.discardPrivateSession`), so the sites a Private
+    /// window visited are not left in the database. Content blocking has
+    /// always saved them, and does until it is moved over.
+    var persistsInPrivate: Bool {
+        switch self {
+        case .contentBlocking: return true
+        case .pictureInPicture: return false
+        }
+    }
 
     /// Whether an override stored for `site` applies to a page on `host`.
     /// Both are compared lowercased; an empty host or site matches nothing.
@@ -13,7 +28,7 @@ enum SiteSetting: String, CaseIterable {
         let host = host.lowercased()
         guard !site.isEmpty, !host.isEmpty else { return false }
         switch self {
-        case .contentBlocking:
+        case .contentBlocking, .pictureInPicture:
             // The host or any parent host, as the whitelist always matched.
             return host == site || host.hasSuffix("." + site)
         }
@@ -21,7 +36,9 @@ enum SiteSetting: String, CaseIterable {
 }
 
 /// The session database's `siteSetting` table, cached per profile. Sites are
-/// stored lowercased. Loaded once at creation; every change is written through.
+/// stored lowercased. Loaded once at creation; every change is written
+/// through, except the Private profile's values of a setting that does not
+/// persist in Private.
 final class SiteSettingsStore {
     static let shared = SiteSettingsStore(database: .shared)
 
@@ -57,6 +74,7 @@ final class SiteSettingsStore {
         let site = site.lowercased()
         guard !site.isEmpty else { return }
         values[profileID, default: [:]][setting, default: [:]][site] = value
+        guard writesThrough(setting, profileID: profileID) else { return }
         database.saveSiteSetting(SiteSettingRecord(profileID: profileID.uuidString, site: site,
                                                    setting: setting.rawValue, value: value))
     }
@@ -67,6 +85,29 @@ final class SiteSettingsStore {
         for site in sites {
             values[profileID]?[setting]?[site] = nil
         }
+        guard writesThrough(setting, profileID: profileID) else { return }
         database.deleteSiteSettings(profileID: profileID.uuidString, setting: setting.rawValue, sites: sites)
+    }
+
+    /// Puts `host` back on the default by removing every stored value that
+    /// covers it: a parent site's row left behind would still apply.
+    func resetToDefault(_ setting: SiteSetting, forHost host: String, profileID: UUID) {
+        let covering = overrides(setting, profileID: profileID).keys.filter { setting.site($0, covers: host) }
+        guard !covering.isEmpty else { return }
+        clear(setting, sites: Set(covering), profileID: profileID)
+    }
+
+    /// The last Private window closed: forgets the Private profile's values of
+    /// the settings kept in memory only.
+    func discardPrivateSession() {
+        for setting in SiteSetting.allCases where !setting.persistsInPrivate {
+            values[TabStore.incognitoProfileID]?[setting] = nil
+        }
+    }
+
+    /// Whether `setting`'s values for `profileID` are in the database: all but
+    /// the Private profile's values of a setting kept in memory there.
+    private func writesThrough(_ setting: SiteSetting, profileID: UUID) -> Bool {
+        profileID != TabStore.incognitoProfileID || setting.persistsInPrivate
     }
 }
