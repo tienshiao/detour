@@ -62,25 +62,62 @@ enum DevModeRowMarking: Equatable {
     case split(left: Bool, right: Bool)
 }
 
+/// The site a dev-mode override is stored under (TASK-186.5): the host plus
+/// a non-default port, the same string as `devModeHostLabel(for:)`, so two
+/// local apps on different ports are separate sites. Nil for a URL that is
+/// not `http`/`https` or has no host: such a page is never in dev mode.
+func devModeSiteKey(for url: URL?) -> String? {
+    guard let scheme = url?.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+    let key = devModeHostLabel(for: url)
+    return key.isEmpty ? nil : key
+}
+
 enum DevMode {
-    /// Whether a page at `url` is in dev mode. Every caller decides through
-    /// here, so the per-site override (TASK-186.5) is added in one place:
-    /// effective state = the site's override, else `isLocalDevelopmentURL`.
-    static func isActive(for url: URL?) -> Bool {
-        isLocalDevelopmentURL(url)
+    /// The rule: the site's stored override (TASK-186.5), else the
+    /// local-development default (`isLocalDevelopmentURL`).
+    static func isActive(url: URL?, override: Bool?) -> Bool {
+        override ?? isLocalDevelopmentURL(url)
+    }
+
+    /// Whether a page at `url` is in dev mode in `profileID`. Every caller
+    /// decides through here. With no profile there is no override to read.
+    static func isActive(for url: URL?, profileID: UUID?, store: SiteSettingsStore = .shared) -> Bool {
+        isActive(url: url, override: override(for: url, profileID: profileID, store: store))
+    }
+
+    /// The site's stored `devMode` value, matched exactly by site key.
+    static func override(for url: URL?, profileID: UUID?, store: SiteSettingsStore = .shared) -> Bool? {
+        guard let profileID, let key = devModeSiteKey(for: url) else { return nil }
+        return store.override(.devMode, forSite: key, profileID: profileID)
     }
 
     /// A tab follows its current URL; a sleeping tab keeps its stored one.
-    static func isActive(for tab: BrowserTab) -> Bool {
-        isActive(for: tab.url)
+    static func isActive(for tab: BrowserTab, store: SiteSettingsStore = .shared) -> Bool {
+        isActive(for: tab.url, profileID: tab.owningProfile?.id, store: store)
     }
 
-    static func rowMarking(for url: URL?) -> DevModeRowMarking {
-        isActive(for: url) ? .tab(hostLabel: devModeHostLabel(for: url)) : .none
+    /// The popover's switch: stores `isOn` for `url`'s site, or removes the
+    /// site's row when `isOn` is what the URL rule gives anyway, so no
+    /// redundant override is kept and the site follows the rule again. The
+    /// rule depends only on the host, so it is the same for every page of
+    /// one site key.
+    static func setEnabled(_ isOn: Bool, for url: URL?, profileID: UUID, store: SiteSettingsStore = .shared) {
+        guard let key = devModeSiteKey(for: url) else { return }
+        if isOn == isLocalDevelopmentURL(url) {
+            store.clear(.devMode, sites: [key], profileID: profileID)
+        } else {
+            store.set(.devMode, site: key, to: isOn, profileID: profileID)
+        }
     }
 
-    static func splitRowMarking(left: URL?, right: URL?) -> DevModeRowMarking {
-        let left = isActive(for: left), right = isActive(for: right)
+    static func rowMarking(for url: URL?, profileID: UUID?, store: SiteSettingsStore = .shared) -> DevModeRowMarking {
+        isActive(for: url, profileID: profileID, store: store) ? .tab(hostLabel: devModeHostLabel(for: url)) : .none
+    }
+
+    static func splitRowMarking(left: URL?, right: URL?, profileID: UUID?,
+                                store: SiteSettingsStore = .shared) -> DevModeRowMarking {
+        let left = isActive(for: left, profileID: profileID, store: store)
+        let right = isActive(for: right, profileID: profileID, store: store)
         return left || right ? .split(left: left, right: right) : .none
     }
 }

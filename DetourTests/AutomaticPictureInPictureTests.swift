@@ -57,9 +57,9 @@ final class AutomaticPictureInPictureTests: XCTestCase {
         let store = SiteSettingsStore(database: try makeDatabase())
         store.set(.pictureInPicture, site: "youtube.com", to: false, profileID: profileID)
 
-        XCTAssertEqual(store.override(.pictureInPicture, forHost: "www.youtube.com", profileID: profileID), false)
-        XCTAssertNil(store.override(.pictureInPicture, forHost: "notyoutube.com", profileID: profileID))
-        XCTAssertNil(store.override(.contentBlocking, forHost: "youtube.com", profileID: profileID),
+        XCTAssertEqual(store.override(.pictureInPicture, forSite: "www.youtube.com", profileID: profileID), false)
+        XCTAssertNil(store.override(.pictureInPicture, forSite: "notyoutube.com", profileID: profileID))
+        XCTAssertNil(store.override(.contentBlocking, forSite: "youtube.com", profileID: profileID),
                      "settings are independent")
     }
 
@@ -70,9 +70,9 @@ final class AutomaticPictureInPictureTests: XCTestCase {
         store.set(.pictureInPicture, site: "music.youtube.com", to: false, profileID: profileID)
         store.set(.pictureInPicture, site: "other.test", to: false, profileID: profileID)
 
-        store.resetToDefault(.pictureInPicture, forHost: "music.youtube.com", profileID: profileID)
+        store.resetToDefault(.pictureInPicture, forSite: "music.youtube.com", profileID: profileID)
 
-        XCTAssertNil(store.override(.pictureInPicture, forHost: "music.youtube.com", profileID: profileID),
+        XCTAssertNil(store.override(.pictureInPicture, forSite: "music.youtube.com", profileID: profileID),
                      "a parent row left behind would keep the switch off")
         XCTAssertEqual(store.overrides(.pictureInPicture, profileID: profileID), ["other.test": false])
         XCTAssertEqual(SiteSettingsStore(database: db).overrides(.pictureInPicture, profileID: profileID),
@@ -84,7 +84,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
         let store = SiteSettingsStore(database: db)
         store.set(.pictureInPicture, site: "youtube.com", to: false, profileID: TabStore.incognitoProfileID)
 
-        XCTAssertEqual(store.override(.pictureInPicture, forHost: "youtube.com",
+        XCTAssertEqual(store.override(.pictureInPicture, forSite: "youtube.com",
                                       profileID: TabStore.incognitoProfileID), false)
         XCTAssertTrue(db.loadSiteSettings().isEmpty, "the site a Private window visited is not written to disk")
     }
@@ -97,8 +97,8 @@ final class AutomaticPictureInPictureTests: XCTestCase {
 
         store.discardPrivateSession()
 
-        XCTAssertNil(store.override(.pictureInPicture, forHost: "youtube.com", profileID: TabStore.incognitoProfileID))
-        XCTAssertEqual(store.override(.pictureInPicture, forHost: "youtube.com", profileID: profileID), false,
+        XCTAssertNil(store.override(.pictureInPicture, forSite: "youtube.com", profileID: TabStore.incognitoProfileID))
+        XCTAssertEqual(store.override(.pictureInPicture, forSite: "youtube.com", profileID: profileID), false,
                        "other profiles keep theirs")
     }
 
@@ -111,7 +111,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
         store.discardPrivateSession()
 
         XCTAssertEqual(db.loadSiteSettings().map(\.site), ["example.com"])
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "example.com",
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "example.com",
                                       profileID: TabStore.incognitoProfileID), false)
     }
 
@@ -125,12 +125,12 @@ final class AutomaticPictureInPictureTests: XCTestCase {
         settings.set(.pictureInPicture, site: "youtube.com", to: false, profileID: TabStore.incognitoProfileID)
 
         store.removeIncognitoSpace(id: first.id)
-        XCTAssertEqual(settings.override(.pictureInPicture, forHost: "youtube.com",
+        XCTAssertEqual(settings.override(.pictureInPicture, forSite: "youtube.com",
                                          profileID: TabStore.incognitoProfileID), false,
                        "another Private window is still open")
 
         store.removeIncognitoSpace(id: second.id)
-        XCTAssertNil(settings.override(.pictureInPicture, forHost: "youtube.com",
+        XCTAssertNil(settings.override(.pictureInPicture, forSite: "youtube.com",
                                        profileID: TabStore.incognitoProfileID))
     }
 }

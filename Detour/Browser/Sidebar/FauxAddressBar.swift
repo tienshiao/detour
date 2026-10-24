@@ -69,7 +69,7 @@ class FauxAddressBar: NSView {
         // Settings button
         settingsButton.bezelStyle = .inline
         settingsButton.isBordered = false
-        settingsButton.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: "Settings")
+        settingsButton.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: "Site Settings")
         settingsButton.contentTintColor = .secondaryLabelColor
         settingsButton.target = self
         settingsButton.action = #selector(settingsClicked)

@@ -14,17 +14,23 @@ class SettingsPopoverViewController: NSViewController {
     /// The site's picture in picture switch (TASK-188): whether switching away
     /// from its playing tab enters picture in picture.
     var isPictureInPictureEnabled: Bool = true
+    /// The site's dev mode switch (TASK-186.5): the effective state, and
+    /// whether the page has a site key to store a choice under.
+    var isDevModeEnabled: Bool = false
+    var isDevModeAvailable: Bool = false
     var blockedCount: Int = 0
     var extensions: [ExtensionItem] = []
 
     var onBlockingToggle: (() -> Void)?
     var onPictureInPictureToggle: ((Bool) -> Void)?
+    var onDevModeToggle: ((Bool) -> Void)?
     var onPinToggle: ((String) -> Void)?
     var onExtensionClick: ((String) -> Void)?
     var onOpenExtensionSettings: (() -> Void)?
 
     private let toggleSwitch = NSSwitch()
     private let pictureInPictureSwitch = NSSwitch()
+    private let devModeSwitch = NSSwitch()
 
     override func loadView() {
         let margin: CGFloat = 16
@@ -113,6 +119,19 @@ class SettingsPopoverViewController: NSViewController {
         pictureInPictureSwitch.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(pictureInPictureSwitch)
 
+        let devModeLabel = NSTextField(labelWithString: "Dev mode for this site")
+        devModeLabel.font = .systemFont(ofSize: 13)
+        devModeLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(devModeLabel)
+
+        devModeSwitch.state = isDevModeEnabled ? .on : .off
+        devModeSwitch.isEnabled = isDevModeAvailable
+        devModeSwitch.target = self
+        devModeSwitch.action = #selector(devModeToggleClicked)
+        devModeSwitch.setAccessibilityLabel("Dev mode for this site")
+        devModeSwitch.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(devModeSwitch)
+
         // Separator
         let separator = NSBox()
         separator.boxType = .separator
@@ -196,7 +215,13 @@ class SettingsPopoverViewController: NSViewController {
             pictureInPictureSwitch.centerYAnchor.constraint(equalTo: pictureInPictureLabel.centerYAnchor),
             pictureInPictureSwitch.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
 
-            separator.topAnchor.constraint(equalTo: pictureInPictureLabel.bottomAnchor, constant: margin),
+            devModeLabel.topAnchor.constraint(equalTo: pictureInPictureLabel.bottomAnchor, constant: spacing + 6),
+            devModeLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
+
+            devModeSwitch.centerYAnchor.constraint(equalTo: devModeLabel.centerYAnchor),
+            devModeSwitch.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
+
+            separator.topAnchor.constraint(equalTo: devModeLabel.bottomAnchor, constant: margin),
             separator.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
 
@@ -274,6 +299,10 @@ class SettingsPopoverViewController: NSViewController {
 
     @objc private func pictureInPictureToggleClicked() {
         onPictureInPictureToggle?(pictureInPictureSwitch.state == .on)
+    }
+
+    @objc private func devModeToggleClicked() {
+        onDevModeToggle?(devModeSwitch.state == .on)
     }
 
     @objc private func extensionNameClicked(_ sender: NSButton) {

@@ -8,6 +8,9 @@ enum SiteSetting: String, CaseIterable {
     /// `false` keeps the site's playing video out of the picture in picture
     /// Detour enters on a tab switch (`AutomaticPictureInPicture`, TASK-188).
     case pictureInPicture
+    /// Dev mode for the site (TASK-186.5): `true` turns it on for any site,
+    /// `false` turns it off for a local development URL (`DevMode`).
+    case devMode
 
     /// Whether a value set in the Private profile is written to disk. One that
     /// is not lives in memory until the Private session ends
@@ -17,20 +20,26 @@ enum SiteSetting: String, CaseIterable {
     var persistsInPrivate: Bool {
         switch self {
         case .contentBlocking: return true
-        case .pictureInPicture: return false
+        case .pictureInPicture, .devMode: return false
         }
     }
 
-    /// Whether an override stored for `site` applies to a page on `host`.
-    /// Both are compared lowercased; an empty host or site matches nothing.
-    func site(_ site: String, covers host: String) -> Bool {
+    /// Whether an override stored for `site` applies to a page whose site is
+    /// `key`. The key's form is the setting's: the page's host for content
+    /// blocking and picture in picture, its host plus a non-default port
+    /// (`devModeSiteKey`) for dev mode. Both are compared lowercased; an empty
+    /// key or site matches nothing.
+    func site(_ site: String, covers key: String) -> Bool {
         let site = site.lowercased()
-        let host = host.lowercased()
-        guard !site.isEmpty, !host.isEmpty else { return false }
+        let key = key.lowercased()
+        guard !site.isEmpty, !key.isEmpty else { return false }
         switch self {
         case .contentBlocking, .pictureInPicture:
             // The host or any parent host, as the whitelist always matched.
-            return host == site || host.hasSuffix("." + site)
+            return key == site || key.hasSuffix("." + site)
+        case .devMode:
+            // Exact: a site key names one app, and a port is not a subdomain.
+            return key == site
         }
     }
 }
@@ -40,6 +49,13 @@ enum SiteSetting: String, CaseIterable {
 /// through, except the Private profile's values of a setting that does not
 /// persist in Private.
 final class SiteSettingsStore {
+    /// Posted (object: the store) when a stored value changes or is removed, with
+    /// the `SiteSetting` under `settingKey` and the profile's UUID under
+    /// `profileIDKey`, so a view showing a site's state can follow at once.
+    static let didChangeNotification = Notification.Name("SiteSettingsStoreDidChange")
+    static let settingKey = "setting"
+    static let profileIDKey = "profileID"
+
     static let shared = SiteSettingsStore(database: .shared)
 
     private let database: AppDatabase
@@ -56,11 +72,12 @@ final class SiteSettingsStore {
         }
     }
 
-    /// The stored value that applies to `host`: of the sites covering it, the
-    /// most specific (longest). Nil when none does.
-    func override(_ setting: SiteSetting, forHost host: String, profileID: UUID) -> Bool? {
+    /// The stored value that applies to a page whose site is `key` (in the
+    /// setting's form, `SiteSetting.site(_:covers:)`): of the sites covering
+    /// it, the most specific (longest). Nil when none does.
+    func override(_ setting: SiteSetting, forSite key: String, profileID: UUID) -> Bool? {
         overrides(setting, profileID: profileID)
-            .filter { setting.site($0.key, covers: host) }
+            .filter { setting.site($0.key, covers: key) }
             .max { $0.key.count < $1.key.count }?
             .value
     }
@@ -73,26 +90,32 @@ final class SiteSettingsStore {
     func set(_ setting: SiteSetting, site: String, to value: Bool, profileID: UUID) {
         let site = site.lowercased()
         guard !site.isEmpty else { return }
+        let changed = values[profileID]?[setting]?[site] != value
         values[profileID, default: [:]][setting, default: [:]][site] = value
-        guard writesThrough(setting, profileID: profileID) else { return }
-        database.saveSiteSetting(SiteSettingRecord(profileID: profileID.uuidString, site: site,
-                                                   setting: setting.rawValue, value: value))
+        if writesThrough(setting, profileID: profileID) {
+            database.saveSiteSetting(SiteSettingRecord(profileID: profileID.uuidString, site: site,
+                                                       setting: setting.rawValue, value: value))
+        }
+        if changed { postChange(setting, profileID: profileID) }
     }
 
     /// Removes the stored values for `sites`, so they fall back to the default.
     func clear(_ setting: SiteSetting, sites: Set<String>, profileID: UUID) {
         let sites = Set(sites.map { $0.lowercased() })
+        var removed = false
         for site in sites {
-            values[profileID]?[setting]?[site] = nil
+            removed = values[profileID]?[setting]?.removeValue(forKey: site) != nil || removed
         }
-        guard writesThrough(setting, profileID: profileID) else { return }
-        database.deleteSiteSettings(profileID: profileID.uuidString, setting: setting.rawValue, sites: sites)
+        if writesThrough(setting, profileID: profileID) {
+            database.deleteSiteSettings(profileID: profileID.uuidString, setting: setting.rawValue, sites: sites)
+        }
+        if removed { postChange(setting, profileID: profileID) }
     }
 
-    /// Puts `host` back on the default by removing every stored value that
-    /// covers it: a parent site's row left behind would still apply.
-    func resetToDefault(_ setting: SiteSetting, forHost host: String, profileID: UUID) {
-        let covering = overrides(setting, profileID: profileID).keys.filter { setting.site($0, covers: host) }
+    /// Puts the site `key` back on the default by removing every stored value
+    /// that covers it: a parent site's row left behind would still apply.
+    func resetToDefault(_ setting: SiteSetting, forSite key: String, profileID: UUID) {
+        let covering = overrides(setting, profileID: profileID).keys.filter { setting.site($0, covers: key) }
         guard !covering.isEmpty else { return }
         clear(setting, sites: Set(covering), profileID: profileID)
     }
@@ -103,6 +126,11 @@ final class SiteSettingsStore {
         for setting in SiteSetting.allCases where !setting.persistsInPrivate {
             values[TabStore.incognitoProfileID]?[setting] = nil
         }
+    }
+
+    private func postChange(_ setting: SiteSetting, profileID: UUID) {
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self,
+                                        userInfo: [Self.settingKey: setting, Self.profileIDKey: profileID])
     }
 
     /// Whether `setting`'s values for `profileID` are in the database: all but

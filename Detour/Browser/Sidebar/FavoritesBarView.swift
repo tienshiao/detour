@@ -23,6 +23,15 @@ class FavoritesBarView: NSView, NSDraggingSource {
     /// another window's bars are rejected. Set by TabSidebarViewController.
     var sidebarID: UUID?
 
+    /// The profile the favourites belong to, whose per-site dev-mode override
+    /// the tiles read (TASK-186.5). Set by TabSidebarViewController.
+    var profileID: UUID? {
+        didSet {
+            guard profileID != oldValue else { return }
+            for tile in tileViews { tile.profileID = profileID }
+        }
+    }
+
     private static let tileSize: CGFloat = 40
     private static let iconSize: CGFloat = 16
     private static let maxPerRow = 4
@@ -115,7 +124,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
                 existing.refreshDevMode()
                 newTiles.append(existing)
             } else {
-                let tile = FavoriteTileView(favorite: fav, index: index)
+                let tile = FavoriteTileView(favorite: fav, index: index, profileID: profileID)
                 tile.selectionColor = selectionColor
                 tile.isSelected = fav.tab?.id == selectedTabID
                 if index < targetFrames.count {
@@ -174,7 +183,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
         tileViews.removeAll()
 
         for (index, fav) in favorites.enumerated() {
-            let tile = FavoriteTileView(favorite: fav, index: index)
+            let tile = FavoriteTileView(favorite: fav, index: index, profileID: profileID)
             tile.selectionColor = selectionColor
             tile.isSelected = fav.tab?.id == selectedTabID
             addSubview(tile)
@@ -186,6 +195,11 @@ class FavoritesBarView: NSView, NSDraggingSource {
             heightConstraintRef?.constant = newHeight
         }
         needsLayout = true
+    }
+
+    /// Re-reads every tile's dev-mode state: a site's override changed.
+    func refreshDevMode() {
+        tileViews.forEach { $0.refreshDevMode() }
     }
 
     /// Refreshes the favicon and peek badge on the tile backed by `tabID`, if
@@ -550,13 +564,16 @@ class FavoriteTileView: NSView {
 
     var isSelected = false { didSet { updateBackground() } }
     var selectionColor: NSColor? { didSet { updateBackground() } }
+    /// The bar's profile, for dev mode's per-site override.
+    var profileID: UUID? { didSet { applyDevMode() } }
 
     // Prevent window drag when clicking/dragging on tiles
     override var mouseDownCanMoveWindow: Bool { false }
 
-    init(favorite: Favorite, index: Int) {
+    init(favorite: Favorite, index: Int, profileID: UUID? = nil) {
         self.favorite = favorite
         self.index = index
+        self.profileID = profileID
         super.init(frame: .zero)
         setup()
     }
@@ -607,7 +624,7 @@ class FavoriteTileView: NSView {
     }
 
     private func applyDevMode() {
-        devModeBorder.isHidden = !DevMode.isActive(for: favorite.devModeURL)
+        devModeBorder.isHidden = !DevMode.isActive(for: favorite.devModeURL, profileID: profileID)
     }
 
     /// Syncs the main favicon with the favourite and rebinds the two sources

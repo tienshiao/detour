@@ -193,7 +193,16 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   ([in-process UI automation](./in-process-ui-automation.md)). A watcher can wait for
   the unlock by polling `CGSessionCopyCurrentDictionary()`'s
   `CGSSessionScreenIsLocked` from a tiny compiled Swift tool (the sandbox
-  blocks `ioreg`, and the system Python has no Quartz module).
+  blocks `ioreg`, and the system Python has no Quartz module). When the
+  session dictionary has no `CGSSessionScreenIsLocked` key at all (such a
+  tool prints `locked=absent`), the screen is unlocked: wait while the value
+  is 1, not until it is 0, or the loop never ends.
+- **Make the harness wait for its captures.** On a saturated machine a
+  shell watcher can fall seconds behind a timer-driven harness and shoot a
+  later state under an earlier name (TASK-186.5: up to 9 s at load ~1000).
+  Run the steps in sequence and start each only once every PNG requested so
+  far exists, and have the watcher read only the log's new lines
+  ([TASK-186.5 harness](../../docs/harness/task186-5-harness.patch)).
 - **Capture by window number, not region.** A shell-launched app stays behind
   the frontmost app, so `screencapture -R` picks up whatever covers it;
   `screencapture -l <windowNumber>` captures the window even when covered,

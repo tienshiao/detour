@@ -29,7 +29,7 @@ final class SiteSettingsStoreTests: XCTestCase {
 
     func testASiteWithNoRowHasNoOverride() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
-        XCTAssertNil(store.override(.contentBlocking, forHost: "example.com", profileID: profileA))
+        XCTAssertNil(store.override(.contentBlocking, forSite: "example.com", profileID: profileA))
         XCTAssertTrue(store.overrides(.contentBlocking, profileID: profileA).isEmpty)
     }
 
@@ -38,11 +38,11 @@ final class SiteSettingsStoreTests: XCTestCase {
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
 
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "example.com", profileID: profileA), false)
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "example.com", profileID: profileA), false)
         XCTAssertEqual(store.overrides(.contentBlocking, profileID: profileA), ["example.com": false])
 
         let reloaded = SiteSettingsStore(database: db)
-        XCTAssertEqual(reloaded.override(.contentBlocking, forHost: "example.com", profileID: profileA), false)
+        XCTAssertEqual(reloaded.override(.contentBlocking, forSite: "example.com", profileID: profileA), false)
         XCTAssertEqual(db.loadSiteSettings().map(\.setting), ["contentBlocking"])
     }
 
@@ -52,7 +52,7 @@ final class SiteSettingsStoreTests: XCTestCase {
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
         store.set(.contentBlocking, site: "example.com", to: true, profileID: profileA)
 
-        XCTAssertEqual(SiteSettingsStore(database: db).override(.contentBlocking, forHost: "example.com",
+        XCTAssertEqual(SiteSettingsStore(database: db).override(.contentBlocking, forSite: "example.com",
                                                                 profileID: profileA), true)
         XCTAssertEqual(db.loadSiteSettings().count, 1)
     }
@@ -74,7 +74,7 @@ final class SiteSettingsStoreTests: XCTestCase {
 
         store.clear(.contentBlocking, sites: ["example.com"], profileID: profileA)
 
-        XCTAssertNil(store.override(.contentBlocking, forHost: "example.com", profileID: profileA))
+        XCTAssertNil(store.override(.contentBlocking, forSite: "example.com", profileID: profileA))
         XCTAssertEqual(store.overrides(.contentBlocking, profileID: profileA), ["other.test": false])
         XCTAssertEqual(SiteSettingsStore(database: db).overrides(.contentBlocking, profileID: profileA),
                        ["other.test": false])
@@ -85,9 +85,9 @@ final class SiteSettingsStoreTests: XCTestCase {
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
 
-        XCTAssertNil(store.override(.contentBlocking, forHost: "example.com", profileID: profileB))
+        XCTAssertNil(store.override(.contentBlocking, forSite: "example.com", profileID: profileB))
         store.clear(.contentBlocking, sites: ["example.com"], profileID: profileB)
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "example.com", profileID: profileA), false,
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "example.com", profileID: profileA), false,
                        "clearing in another profile leaves this one's row")
     }
 
@@ -100,7 +100,7 @@ final class SiteSettingsStoreTests: XCTestCase {
                           arguments: [profileA.uuidString])
         }
         let store = SiteSettingsStore(database: db)
-        XCTAssertNil(store.override(.contentBlocking, forHost: "example.com", profileID: profileA))
+        XCTAssertNil(store.override(.contentBlocking, forSite: "example.com", profileID: profileA))
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
         XCTAssertEqual(Set(db.loadSiteSettings().map(\.setting)), ["futureSetting", "contentBlocking"])
     }
@@ -111,10 +111,10 @@ final class SiteSettingsStoreTests: XCTestCase {
         let store = SiteSettingsStore(database: try makeDatabase())
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
 
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "www.example.com", profileID: profileA), false)
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "A.B.Example.com", profileID: profileA), false)
-        XCTAssertNil(store.override(.contentBlocking, forHost: "notexample.com", profileID: profileA))
-        XCTAssertNil(store.override(.contentBlocking, forHost: "", profileID: profileA))
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "www.example.com", profileID: profileA), false)
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "A.B.Example.com", profileID: profileA), false)
+        XCTAssertNil(store.override(.contentBlocking, forSite: "notexample.com", profileID: profileA))
+        XCTAssertNil(store.override(.contentBlocking, forSite: "", profileID: profileA))
     }
 
     func testTheMostSpecificSiteWins() throws {
@@ -122,9 +122,9 @@ final class SiteSettingsStoreTests: XCTestCase {
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
         store.set(.contentBlocking, site: "www.example.com", to: true, profileID: profileA)
 
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "www.example.com", profileID: profileA), true)
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "a.www.example.com", profileID: profileA), true)
-        XCTAssertEqual(store.override(.contentBlocking, forHost: "mail.example.com", profileID: profileA), false)
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "www.example.com", profileID: profileA), true)
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "a.www.example.com", profileID: profileA), true)
+        XCTAssertEqual(store.override(.contentBlocking, forSite: "mail.example.com", profileID: profileA), false)
     }
 
     // MARK: - Migration v18

@@ -35,7 +35,7 @@ class ContentBlockerWhitelist {
     }
 
     func isWhitelisted(host: String, profileID: UUID) -> Bool {
-        store.override(.contentBlocking, forHost: host, profileID: profileID) == false
+        store.override(.contentBlocking, forSite: host, profileID: profileID) == false
     }
 
     /// Turns blocking off for `host` (stores that host, lowercased), or back on by

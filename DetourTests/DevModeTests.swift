@@ -251,21 +251,21 @@ final class DevModeTests: XCTestCase {
     // MARK: - Effective state and row marking
 
     func testRowMarking() {
-        XCTAssertEqual(DevMode.rowMarking(for: URL(string: "http://localhost:4000/")),
+        XCTAssertEqual(DevMode.rowMarking(for: URL(string: "http://localhost:4000/"), profileID: nil),
                        .tab(hostLabel: "localhost:4000"))
-        XCTAssertEqual(DevMode.rowMarking(for: URL(string: "https://example.com/")), DevModeRowMarking.none)
-        XCTAssertEqual(DevMode.rowMarking(for: nil), DevModeRowMarking.none)
+        XCTAssertEqual(DevMode.rowMarking(for: URL(string: "https://example.com/"), profileID: nil), DevModeRowMarking.none)
+        XCTAssertEqual(DevMode.rowMarking(for: nil, profileID: nil), DevModeRowMarking.none)
     }
 
     /// A split row marks the local pane's half only and never shows a host line.
     func testSplitRowMarking() {
         let local = URL(string: "http://localhost:3000/")
         let remote = URL(string: "https://example.com/")
-        XCTAssertEqual(DevMode.splitRowMarking(left: local, right: remote), .split(left: true, right: false))
-        XCTAssertEqual(DevMode.splitRowMarking(left: remote, right: local), .split(left: false, right: true))
-        XCTAssertEqual(DevMode.splitRowMarking(left: local, right: local), .split(left: true, right: true))
-        XCTAssertEqual(DevMode.splitRowMarking(left: remote, right: remote), DevModeRowMarking.none)
-        XCTAssertEqual(DevMode.splitRowMarking(left: nil, right: nil), DevModeRowMarking.none)
+        XCTAssertEqual(DevMode.splitRowMarking(left: local, right: remote, profileID: nil), .split(left: true, right: false))
+        XCTAssertEqual(DevMode.splitRowMarking(left: remote, right: local, profileID: nil), .split(left: false, right: true))
+        XCTAssertEqual(DevMode.splitRowMarking(left: local, right: local, profileID: nil), .split(left: true, right: true))
+        XCTAssertEqual(DevMode.splitRowMarking(left: remote, right: remote, profileID: nil), DevModeRowMarking.none)
+        XCTAssertEqual(DevMode.splitRowMarking(left: nil, right: nil, profileID: nil), DevModeRowMarking.none)
     }
 
     private func makeSleepingTab(url: String) -> BrowserTab {
@@ -289,7 +289,7 @@ final class DevModeTests: XCTestCase {
         XCTAssertEqual(entry.devModeURL, URL(string: "http://localhost:3000/"))
         entry.tab = makeSleepingTab(url: "https://example.com/")
         XCTAssertEqual(entry.devModeURL, URL(string: "https://example.com/"))
-        XCTAssertFalse(DevMode.isActive(for: entry.devModeURL))
+        XCTAssertFalse(DevMode.isActive(for: entry.devModeURL, profileID: nil))
     }
 
     func testFavoriteUsesLiveURLElseItsURL() {
@@ -297,7 +297,7 @@ final class DevModeTests: XCTestCase {
         XCTAssertEqual(favorite.devModeURL, URL(string: "https://example.com/"))
         favorite.tab = makeSleepingTab(url: "http://127.0.0.1:8000/")
         XCTAssertEqual(favorite.devModeURL, URL(string: "http://127.0.0.1:8000/"))
-        XCTAssertTrue(DevMode.isActive(for: favorite.devModeURL))
+        XCTAssertTrue(DevMode.isActive(for: favorite.devModeURL, profileID: nil))
     }
 
     // MARK: - Tab cell

@@ -179,7 +179,10 @@ extension BrowserWindowController: TabSidebarDelegate {
         vc.host = host
         vc.isBlockingEnabled = !isWhitelisted
         vc.isPictureInPictureEnabled = host.isEmpty ? true
-            : SiteSettingsStore.shared.override(.pictureInPicture, forHost: host, profileID: profileID) ?? true
+            : SiteSettingsStore.shared.override(.pictureInPicture, forSite: host, profileID: profileID) ?? true
+        let pageURL = displayTab?.url
+        vc.isDevModeAvailable = devModeSiteKey(for: pageURL) != nil
+        vc.isDevModeEnabled = DevMode.isActive(for: pageURL, profileID: profileID)
         vc.blockedCount = displayTab?.blockedCount ?? 0
 
         // Populate extensions list (fetch pinned IDs once to avoid per-extension DB queries)
@@ -218,10 +221,20 @@ extension BrowserWindowController: TabSidebarDelegate {
             // parent site's row would keep it off. Takes effect at the next
             // tab switch, so nothing reloads.
             if isOn {
-                SiteSettingsStore.shared.resetToDefault(.pictureInPicture, forHost: host, profileID: profile.id)
+                SiteSettingsStore.shared.resetToDefault(.pictureInPicture, forSite: host, profileID: profile.id)
             } else {
                 SiteSettingsStore.shared.set(.pictureInPicture, site: host, to: false, profileID: profile.id)
             }
+        }
+
+        // The profile the switch's state was read from, not whichever space is
+        // active when it is clicked.
+        let devModeProfileID = activeSpace?.profile?.id
+        vc.onDevModeToggle = { isOn in
+            guard let devModeProfileID else { return }
+            // The store's change notification re-marks every sidebar row on
+            // this site in every window; nothing reloads.
+            DevMode.setEnabled(isOn, for: pageURL, profileID: devModeProfileID)
         }
 
         vc.onPinToggle = { [weak self] extensionID in

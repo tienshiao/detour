@@ -1106,7 +1106,7 @@ class BrowserWindowController: NSWindowController {
         // its Peek) is always under the active space's profile. On a space
         // switch it does not resolve at all and nothing enters PiP.
         let siteOverride = activeSpace?.profile.flatMap {
-            SiteSettingsStore.shared.override(.pictureInPicture, forHost: host, profileID: $0.id)
+            SiteSettingsStore.shared.override(.pictureInPicture, forSite: host, profileID: $0.id)
         }
         return AutomaticPictureInPicture.shouldEnter(isPlayingAudio: tab.isPlayingAudio,
                                                      leavesClosingTab: selectionLeavesClosingTab,
