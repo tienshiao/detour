@@ -130,13 +130,14 @@ site and could not use the index.
 
 ## Custom SQL functions
 
-Two functions are registered on the connection by `registerFunctions(on:)`,
-and both queries **and migrations** call them:
+Three functions are registered on the connection by `registerFunctions(on:)`;
+queries **and migrations** call the first two:
 
 | Function | Does |
 |---|---|
 | `history_fold(text)` | Case- and diacritic-insensitive, locale-independent folding (`String.folding`). `ß` → `ss`, the `ﬁ` ligature → `fi`. |
 | `history_title_matches(title, query)` | The matcher: fold both sides, split into alphanumeric runs, true when some title token **starts with** some query token. Terms are OR'd. |
+| `history_display_host(url)` | `SuggestionProvider.displayHost`: the URL without scheme, `www.`, path, query or fragment, lowercased. `bestHostCompletions` groups URLs by it (TASK-182). |
 
 The shared instance registers them through `Configuration.prepareDatabase`;
 `init(dbQueue:)` registers them on the injected queue before migrating,

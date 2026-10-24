@@ -178,7 +178,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
     /// A palette over a default list of [newestURL, olderURL], shown as Cmd+L
     /// shows it (`initialText` = the current URL) or as Cmd+T does (nil).
-    private func showPalette(initialText: String?) throws -> CommandPaletteView {
+    private func showPalette(initialText: String?, alsoVisited: [String] = []) throws -> CommandPaletteView {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let db = try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -187,6 +187,9 @@ final class PaletteReturnKeyTests: XCTestCase {
         db.recordVisit(url: olderURL, title: "Older", faviconURL: nil, spaceID: spaceID.uuidString)
         db.recordVisit(url: newestURL, title: "Newest", faviconURL: nil, spaceID: spaceID.uuidString)
         XCTAssertEqual(db.recentHistory(spaceID: spaceID.uuidString).map(\.url), [newestURL, olderURL])
+        for url in alsoVisited {
+            db.recordVisit(url: url, title: "", faviconURL: nil, spaceID: spaceID.uuidString)
+        }
 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
                               styleMask: [.titled], backing: .buffered, defer: true)
@@ -215,6 +218,22 @@ final class PaletteReturnKeyTests: XCTestCase {
     private func pressReturn() throws { try press(#selector(NSResponder.insertNewline(_:))) }
     private func pressDown() throws { try press(#selector(NSResponder.moveDown(_:))) }
     private func pressUp() throws { try press(#selector(NSResponder.moveUp(_:))) }
+
+    private func type(_ text: String) throws {
+        let editor = try fieldEditor()
+        editor.insertText(text, replacementRange: editor.selectedRange())
+    }
+
+    /// Spins the main run loop until the field shows `text`: a history-derived
+    /// inline completion lands from the palette's background query.
+    private func waitForField(_ text: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        let editor = try fieldEditor()
+        let deadline = Date().addingTimeInterval(5)
+        while editor.string != text, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(editor.string, text, file: file, line: line)
+    }
 
     // MARK: - Cmd+L
 
@@ -311,5 +330,75 @@ final class PaletteReturnKeyTests: XCTestCase {
         try pressReturn()
 
         XCTAssertEqual(spy.events, [.input("swift")])
+    }
+
+    // MARK: - Inline completion (TASK-181)
+
+    private let deepURL = "https://www.example.com/watch?v=abc"
+
+    /// The reproduction of TASK-181: Cmd+Right moved the caret to the end, but
+    /// the completion was still pending, so Backspace dropped it and left the
+    /// field at the typed prefix instead of deleting the last character.
+    func testBackspaceAfterMovingToTheEndDeletesTheLastCharacter() throws {
+        _ = try showPalette(initialText: nil, alsoVisited: [deepURL])
+
+        try type("example.com/w")
+        try waitForField("example.com/watch?v=abc")
+        XCTAssertEqual(try fieldEditor().selectedRange(), NSRange(location: 13, length: 10),
+                       "the completed suffix is selected")
+
+        try press(#selector(NSResponder.moveToRightEndOfLine(_:)))
+        try press(#selector(NSResponder.deleteBackward(_:)))
+
+        XCTAssertEqual(try fieldEditor().string, "example.com/watch?v=ab")
+        try pressReturn()
+        XCTAssertEqual(spy.events.last, .input("example.com/watch?v=ab"),
+                       "Return submits the field as edited, not a stale completion")
+    }
+
+    /// The caret placed inside the completion (a click, Left arrow) accepts it
+    /// too: Backspace deletes before the caret.
+    func testBackspaceAfterPlacingTheCaretInsideTheCompletionDeletesBeforeTheCaret() throws {
+        _ = try showPalette(initialText: nil, alsoVisited: [deepURL])
+
+        try type("example.com/w")
+        try waitForField("example.com/watch?v=abc")
+
+        try fieldEditor().setSelectedRange(NSRange(location: 17, length: 0))
+        try press(#selector(NSResponder.deleteBackward(_:)))
+
+        XCTAssertEqual(try fieldEditor().string, "example.com/watc?v=abc")
+    }
+
+    /// Unchanged: with the completion still selected, Backspace removes only
+    /// the completion.
+    func testBackspaceWhileTheCompletionIsSelectedRemovesOnlyTheCompletion() throws {
+        _ = try showPalette(initialText: nil, alsoVisited: [deepURL])
+
+        try type("example.com/w")
+        try waitForField("example.com/watch?v=abc")
+        try press(#selector(NSResponder.deleteBackward(_:)))
+
+        XCTAssertEqual(try fieldEditor().string, "example.com/w")
+    }
+
+    /// Tab with no completion pending (here: the caret moved off it, which
+    /// accepts it) must not move keyboard focus out of the open palette.
+    func testTabAfterMovingOffTheCompletionKeepsFocusInTheField() throws {
+        let palette = try showPalette(initialText: nil, alsoVisited: [deepURL])
+        // Something else focusable in the window, so Tab has somewhere to go.
+        let other = NSTextField(frame: NSRect(x: 10, y: 10, width: 100, height: 22))
+        palette.superview?.addSubview(other, positioned: .below, relativeTo: palette)
+        window?.autorecalculatesKeyViewLoop = true
+        window?.recalculateKeyViewLoop()
+
+        try type("example.com/w")
+        try waitForField("example.com/watch?v=abc")
+        let editor = try fieldEditor()
+        try press(#selector(NSResponder.moveToRightEndOfLine(_:)))
+        try press(#selector(NSResponder.insertTab(_:)))
+
+        XCTAssertTrue(window?.firstResponder === editor, "the palette's field keeps focus")
+        XCTAssertEqual(editor.string, "example.com/watch?v=abc")
     }
 }

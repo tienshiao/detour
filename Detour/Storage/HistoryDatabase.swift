@@ -57,6 +57,14 @@ struct HistoryDatabase {
     static func registerFunctions(on db: Database) {
         db.add(function: titleMatchFunction)
         db.add(function: foldFunction)
+        db.add(function: displayHostFunction)
+    }
+
+    /// `history_display_host(url)` — `SuggestionProvider.displayHost`, so host
+    /// completion groups URLs by the same host the palette shows (TASK-182).
+    static let displayHostFunction = DatabaseFunction("history_display_host", argumentCount: 1, pure: true) { values in
+        guard let url = String.fromDatabaseValue(values[0]) else { return nil }
+        return SuggestionProvider.displayHost(url)
     }
 
     // MARK: - Title matching (TASK-93)
@@ -1435,8 +1443,8 @@ struct HistoryDatabase {
         Array(repeating: "?", count: count).joined(separator: ", ")
     }
 
-    /// Return the best URL completion for a typed prefix, matching against scheme-stripped URLs.
-    /// Uses prefix-matching with schemes prepended so SQLite can use the index on `url`.
+    /// Return the best URL completion for a typed prefix, matching against scheme-stripped URLs
+    /// (`urlPrefixPatterns`).
     ///
     /// Candidates are ranked by a Firefox-style frecency score: each visit
     /// contributes a recency-bucket weight (visits in the last 4 days count 10×
@@ -1450,36 +1458,15 @@ struct HistoryDatabase {
     /// select needs no order of its own.
     func bestURLCompletion(prefix: String, spaceID: String) -> HistoryURL? {
         guard !prefix.isEmpty else { return nil }
-        let escaped = prefix
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_")
-        let patterns = [
-            "https://\(escaped)%",
-            "http://\(escaped)%",
-            "https://www.\(escaped)%",
-            "http://www.\(escaped)%",
-        ]
-        let now = Date().timeIntervalSince1970
-        let day = 24.0 * 3600
         let sql = Self.labelledSelect(inner: """
             SELECT \(Self.historyURLProjection)
                         FROM historyURL h
                         JOIN historyVisit v ON v.urlID = h.id
                         WHERE v.spaceID = ?
-                          AND (h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\'
-                            OR h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\')
+                          AND \(Self.urlPrefixCondition)
                           AND v.visitTime >= ?
                         GROUP BY h.url
-                        ORDER BY SUM(
-                            (CASE WHEN v.isTyped THEN 2.0 ELSE 1.0 END) *
-                            (CASE
-                                WHEN v.visitTime >= ? THEN 100.0
-                                WHEN v.visitTime >= ? THEN 70.0
-                                WHEN v.visitTime >= ? THEN 50.0
-                                WHEN v.visitTime >= ? THEN 30.0
-                                ELSE 10.0
-                            END)) DESC,
+                        ORDER BY SUM(\(Self.visitFrecencyWeight)) DESC,
                             MAX(v.visitTime) DESC
                         LIMIT 1
             """, orderedBy: "")
@@ -1487,10 +1474,8 @@ struct HistoryDatabase {
         // computed Doubles is more than the type checker will sit through.
         var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
         args.append(spaceID)
-        args.append(contentsOf: patterns)
-        for days in [90.0, 4.0, 14.0, 31.0, 90.0] {
-            args.append(now - days * day)
-        }
+        args.append(contentsOf: Self.urlPrefixPatterns(prefix))
+        args.append(contentsOf: Self.frecencyArguments(now: Date().timeIntervalSince1970))
         do {
             return try dbQueue.read { db in
                 try HistoryURL.fetchOne(db, sql: sql, arguments: StatementArguments(args))
@@ -1498,6 +1483,153 @@ struct HistoryDatabase {
         } catch {
             log.error("Failed to find URL completion: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    /// `h.url` starts with one of `urlPrefixPatterns`' four scheme variants.
+    private static let urlPrefixCondition = """
+        (h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\'
+                            OR h.url LIKE ? ESCAPE '\\' OR h.url LIKE ? ESCAPE '\\')
+        """
+
+    /// The `LIKE` patterns that find URLs whose scheme-stripped form starts
+    /// with `prefix`: prefix matches with the schemes prepended. They do not
+    /// use the index on `url` (`LIKE` is case-insensitive, the index is
+    /// `BINARY`), so the completion queries scan `historyURL`.
+    private static func urlPrefixPatterns(_ prefix: String) -> [String] {
+        let escaped = likeEscaped(prefix)
+        return [
+            "https://\(escaped)%",
+            "http://\(escaped)%",
+            "https://www.\(escaped)%",
+            "http://www.\(escaped)%",
+        ]
+    }
+
+    private static func likeEscaped(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+    }
+
+    /// One visit's frecency weight (see `bestURLCompletion`); summed per URL or
+    /// per host. Binds the four bucket boundaries of `frecencyArguments`.
+    private static let visitFrecencyWeight = """
+        (CASE WHEN v.isTyped THEN 2.0 ELSE 1.0 END) *
+                            (CASE
+                                WHEN v.visitTime >= ? THEN 100.0
+                                WHEN v.visitTime >= ? THEN 70.0
+                                WHEN v.visitTime >= ? THEN 50.0
+                                WHEN v.visitTime >= ? THEN 30.0
+                                ELSE 10.0
+                            END)
+        """
+
+    /// The 90-day cutoff, then `visitFrecencyWeight`'s four bucket boundaries:
+    /// the order those binds appear in after the URL patterns.
+    private static func frecencyArguments(now: Double) -> [DatabaseValueConvertible] {
+        let day = 24.0 * 3600
+        return [90.0, 4.0, 14.0, 31.0, 90.0].map { now - $0 * day }
+    }
+
+    /// A site the palette can complete a typed host prefix to (TASK-182).
+    struct HostCompletion: Equatable {
+        /// The host as the field shows it: `SuggestionProvider.displayHost`.
+        let host: String
+        /// The site root to open: the space's own visit of it when there is
+        /// one, else built from the scheme and `www.` the host's best page uses.
+        let url: String
+        /// The root's title in this space; empty when the space never visited
+        /// the root itself.
+        let title: String
+        let faviconURL: String?
+    }
+
+    /// The visited hosts a typed host prefix completes to, best first: hosts
+    /// whose display form starts with `prefix`, ranked by the frecency of all
+    /// their pages together, so a site visited across many pages (videos, mail
+    /// threads) beats one page visited a little more than each of them.
+    ///
+    /// Space-scoped like `bestURLCompletion`; the root's title is labelled the
+    /// same way (`labelledSelect`), so no other profile's title shows.
+    func bestHostCompletions(prefix: String, spaceID: String, limit: Int) -> [HostCompletion] {
+        let prefix = prefix.lowercased()
+        guard !prefix.isEmpty, limit > 0 else { return [] }
+        // MATERIALIZED: both correlated subqueries read `perURL`, which must be
+        // computed once rather than per host. `topHosts` ranks and LIMITs first
+        // (also MATERIALIZED, so it is not flattened back into the outer
+        // select): the correlated subqueries then run only for the hosts that
+        // survived LIMIT, not for every host a broad prefix like `s` matches.
+        let hostsSQL = """
+            WITH perURL AS MATERIALIZED (
+                SELECT h.url AS url, h.faviconURL AS faviconURL,
+                       history_display_host(h.url) AS host,
+                       SUM(\(Self.visitFrecencyWeight)) AS score,
+                       MAX(v.visitTime) AS lastVisit
+                FROM historyURL h
+                JOIN historyVisit v ON v.urlID = h.id
+                WHERE v.spaceID = ?
+                  AND \(Self.urlPrefixCondition)
+                  AND v.visitTime >= ?
+                GROUP BY h.id
+            ),
+            topHosts AS MATERIALIZED (
+                SELECT host, SUM(score) AS total, MAX(lastVisit) AS lastVisit
+                FROM perURL
+                WHERE host LIKE ? ESCAPE '\\'
+                GROUP BY host
+                ORDER BY total DESC, lastVisit DESC
+                LIMIT ?
+            )
+            SELECT t.host AS host,
+                   (SELECT p.url FROM perURL p WHERE p.host = t.host
+                    ORDER BY p.score DESC, p.lastVisit DESC LIMIT 1) AS sampleURL,
+                   (SELECT p.faviconURL FROM perURL p WHERE p.host = t.host AND p.faviconURL IS NOT NULL
+                    ORDER BY p.lastVisit DESC LIMIT 1) AS faviconURL
+            FROM topHosts t
+            ORDER BY t.total DESC, t.lastVisit DESC
+            """
+        // The weight's four binds come before the patterns in the statement,
+        // so they cannot reuse `frecencyArguments`' order.
+        let frecency = Self.frecencyArguments(now: Date().timeIntervalSince1970)
+        var hostArgs: [DatabaseValueConvertible] = Array(frecency[1...])
+        hostArgs.append(spaceID)
+        hostArgs.append(contentsOf: Self.urlPrefixPatterns(prefix))
+        hostArgs.append(frecency[0])
+        hostArgs.append("\(Self.likeEscaped(prefix))%")
+        hostArgs.append(limit)
+
+        let rootSQL = Self.labelledSelect(inner: """
+            SELECT \(Self.historyURLProjection)
+                        FROM historyURL h
+                        JOIN historyVisit v ON v.urlID = h.id
+                        WHERE v.spaceID = ? AND h.url IN (?, ?, ?, ?)
+                        GROUP BY h.url
+                        ORDER BY MAX(v.visitTime) DESC
+                        LIMIT 1
+            """, orderedBy: "")
+        do {
+            return try dbQueue.read { db in
+                try Row.fetchAll(db, sql: hostsSQL, arguments: StatementArguments(hostArgs)).compactMap { row in
+                    guard let host: String = row["host"], let sampleURL: String = row["sampleURL"] else { return nil }
+                    var rootArgs: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
+                    rootArgs.append(spaceID)
+                    rootArgs.append(contentsOf: ["https://", "https://www.", "http://", "http://www."].map {
+                        "\($0)\(host)/"
+                    })
+                    let root = try HistoryURL.fetchOne(db, sql: rootSQL, arguments: StatementArguments(rootArgs))
+                    let hostFavicon: String? = row["faviconURL"]
+                    return HostCompletion(
+                        host: host,
+                        url: root?.url ?? SuggestionProvider.rootURL(host: host, like: sampleURL),
+                        title: root?.title ?? "",
+                        faviconURL: root?.faviconURL ?? hostFavicon)
+                }
+            }
+        } catch {
+            log.error("Failed to find host completions: \(error.localizedDescription)")
+            return []
         }
     }
 

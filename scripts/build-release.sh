@@ -1,5 +1,6 @@
 #!/bin/bash
 # Build a signed, notarized, DMG-packaged release of Detour.
+# scripts/publish-release.sh publishes it.
 #
 # Usage:
 #   ./scripts/build-release.sh 1.2.3    # set version, increment build number, build release
@@ -129,7 +130,6 @@ echo "  Release artifact: $DMG_PATH"
 echo "========================================="
 echo ""
 echo "Next steps:"
-echo "  1. Generate/update appcast:"
-echo "     ${APP_PATH%/Build/Products/*}/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast ${BUILD_DIR}/"
-echo ""
-echo "  2. Upload ${DMG_NAME} and appcast.xml to GitHub Releases"
+echo "  1. Write the release notes: docs/releases/${VERSION}.md"
+echo "  2. Publish (appcast, tag, GitHub release, update server, website):"
+echo "     ./scripts/publish-release.sh --dry-run   # then without --dry-run"

@@ -5,7 +5,7 @@ description: How the command palette's rows are produced - open tabs, space-scop
 resource: ../../Detour/Browser/CommandPalette/SuggestionProvider.swift
 tags: [command-palette, history, search, frecency, performance]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:06:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T08:30:00Z }
 sources:
   - id: provider
     resource: ../../Detour/Browser/CommandPalette/SuggestionProvider.swift
@@ -40,6 +40,12 @@ sources:
   - id: task-137
     resource: backlog:TASK-137
     title: A normal window's open-tab suggestions include tabs from open Private windows
+  - id: task-182
+    resource: backlog:TASK-182
+    title: Complete a typed host prefix to the site (youtube.com), not to one deep URL
+  - id: bench
+    resource: ../../DetourTests/HistoryBenchmarkTests.swift
+    title: HistoryBenchmarkTests.swift (completion legs)
   - id: tab-scope-tests
     resource: ../../DetourTests/PaletteTabScopeTests.swift
     title: PaletteTabScopeTests.swift
@@ -77,15 +83,53 @@ returns, in order, capped at `maxSuggestions` (12):
 
 | # | Rows | Source | Limit |
 |---|---|---|---|
-| 1 | Top hit | first open tab (not the current one) whose display URL starts with the query; else `bestURLCompletion` | 1, only when `allowAutocomplete` |
+| 1 | Top hit | `tabTopHit` (open tabs); else, for a host query, the best `bestHostCompletions` host; otherwise `bestURLCompletion` | 1, only when `allowAutocomplete` |
 | 2 | `.searchInput` | the typed text | 1 |
-| 3 | Open tabs | URL or title *contains* the query, case-insensitive | 3 |
-| 4 | History | `searchHistory(query:spaceID:limit: 8)`, minus URLs already shown as tabs or as the top hit | 8 |
-| 5 | Search suggestions | appended later by the view | 4, and only while the list has room under 12 |
+| 3 | Other hosts | `bestHostCompletions` minus the top hit's host and any host whose root is already an open-tab row; host queries only | 2 (`maxOtherHosts`) |
+| 4 | Open tabs | URL or title *contains* the query, case-insensitive (`matchingTabs`) | 3 |
+| 5 | History | `searchHistory(query:spaceID:limit: 8)`, minus URLs already shown as tabs, as the top hit or as host rows | 8 |
+| 6 | Search suggestions | appended later by the view | 4, and only while the list has room under 12 |
 
-The top hit also supplies `inlineCompletion`, the scheme-stripped display URL
-(`displayURL` drops `https://`, `http://`, a leading `www.` and one trailing
-slash).
+The top hit also supplies `inlineCompletion`: for a host query the host
+(`displayHost`), otherwise the scheme-stripped display URL (`displayURL`
+drops `https://`, `http://`, a leading `www.` and one trailing slash).
+
+## Host queries complete to the site
+
+A query that could still be a bare host (`isHostQuery`: no whitespace and no
+`/`, `?` or `#` yet, so `youtu` or `localhost:30`) completes to a **host**,
+not to one page on it. `youtube.com/` and anything longer completes URL by
+URL as before. Until TASK-182 the top hit was the first open tab whose
+display URL started with the query, so with several video tabs open, `you`
+completed to `youtube.com/watch?v=…` and nothing offered the site itself;
+getting to the front page meant typing the whole domain.[^task-182]
+
+| Source | Top hit |
+|---|---|
+| An open `http(s)` tab whose `displayHost` starts with the query (the first one in tab order; the current tab counts) | a tab already at that host's root (not the current tab) as Switch to Tab; otherwise the root URL as a navigating `.historyResult`, titled with the host, or with the root's own title and favicon when history has them |
+| No such tab: `bestHostCompletions` | the best host's root |
+
+`bestHostCompletions(prefix:spaceID:limit:)` finds the space's visits of the
+last 90 days whose URL matches the prefix (the same four scheme patterns as
+`bestURLCompletion`), sums each URL's frecency, groups the URLs by
+`history_display_host(url)` and ranks the hosts by the sum. A site visited
+across many pages beats one page visited a little more than each of them,
+which ranking URL by URL got backwards. For each of the (at most three)
+hosts kept it looks up the root (`https://host/`, `https://www.host/`, and
+`http`) among the space's own visits, labelled through `labelledSelect` like
+every other palette row; a root never visited is built from the scheme and
+`www.` that the host's best page uses (`rootURL(host:like:)`).
+
+With autocomplete off (after a Backspace, or trailing whitespace) there is no
+top hit, but the matching hosts still appear as rows after the verbatim one.
+Internal pages and `about:blank` tabs never complete a host
+(`TabInfo.isWebPage`).
+
+Chosen to match Firefox's origin completion rather than Chrome's
+inline-the-best-URL. Two alternatives were set aside: completing to the
+host only when the top URL hit is a deep page (still offers nothing for a
+host whose pages are all deep), and adding a host row without changing the
+completion (leaves the field completing to a video).
 
 For an empty query `defaultSuggestions` returns `recentHistory(limit: 12)`,
 with a row turned into `.openTab` when a tab already shows that URL. This
@@ -116,8 +160,9 @@ rule and its fail-closed cases are on [incognito](../architecture/incognito.md).
 the main thread:
 
 1. **Instant pass, main thread, no SQLite.** Open tabs only: the tab-based top
-   hit and its inline completion, the verbatim row, up to three tab matches.
-   Typing never waits on the database.
+   hit and its inline completion, the verbatim row, up to three tab matches,
+   from the same `SuggestionProvider.tabTopHit` and `matchingTabs` the
+   background pass uses. Typing never waits on the database.
 2. **Background pass.** `provider.localSuggestions` runs on a serial
    `historyQueryQueue` and the authoritative list replaces the instant one on
    main. The result is dropped if `localSuggestionGeneration` advanced or the
@@ -160,8 +205,11 @@ URL's latest title came from was deleted.
 
 `bestURLCompletion(prefix:spaceID:)` matches the prefix against scheme-stripped
 URLs by prepending the four scheme variants (`https://`, `http://`,
-`https://www.`, `http://www.`) as `LIKE 'prefix%'` patterns, so SQLite can use
-the index on `url`. `%`, `_` and `\` in the prefix are escaped. Candidates are
+`https://www.`, `http://www.`) as `LIKE 'prefix%'` patterns. `%`, `_` and `\`
+in the prefix are escaped. The code comment says this lets SQLite use the
+index on `url`; it does not. `LIKE` is case-insensitive and the index is
+`BINARY`, so `EXPLAIN QUERY PLAN` shows a scan of `historyURL` (checked for
+TASK-182; see the benchmark numbers under Gotchas). Candidates are
 ranked by a Firefox-style score summed over the space's visits from the last
 90 days:
 
@@ -213,11 +261,13 @@ it. Errors yield an empty list silently.
 
 - A history row's title comes only from the asking space's own visits, or from
   the shared title when no other space has visited the URL.
-- The current tab is never the top hit.
+- The current tab is never switched to by the top hit. Its host can still be
+  completed to (the row then navigates to the root).
 - No row, top hit or inline completion comes from a tab of an incognito space
   unless the palette belongs to that space's own Private window.
-- A URL appears once: tab matches and the top hit are excluded from the
-  history rows.
+- A URL appears once: tab matches, the top hit and host rows are excluded
+  from the history rows, and a host whose root is an open-tab row is not
+  offered again as a host row.
 - Stale results never land: both asynchronous passes are guarded
   (generation plus text for history, query equality for network).
 
@@ -235,11 +285,19 @@ it. Errors yield an empty list silently.
   the space per URL before taking the newest 12: 25–28 ms at 50,000 visits in
   a Debug build, on the main thread.[^task-97] TASK-97 proposes walking visits
   newest-first and stopping early.
-- **The instant pass and `localSuggestions` duplicate the tab-matching code.**
-  A change to tab matching or the top-hit rule must be made in both
-  `CommandPaletteView.refreshLocalSuggestions` and
-  `SuggestionProvider.localSuggestions`, or the list will flicker between two
-  answers.
+- **The instant pass and `localSuggestions` share the tab rules.** Before
+  TASK-182 the view's instant pass had its own copy of the tab top hit and
+  tab matching, and a change to one copy made the list flicker between two
+  answers. Both now call `SuggestionProvider.tabTopHit` and `matchingTabs`;
+  keep it that way (`testTheInstantPassTopHitIsTheProvidersTabRule`).
+- **Completion queries scan.** Inline completion runs once per keystroke on
+  `historyQueryQueue`. At 55,000 visits (Debug, median of five, visits moved
+  into the last 90 days): `bestURLCompletion` 23 ms and
+  `bestHostCompletions` 36 ms for the one-letter `s` that matches every URL,
+  and about 15 ms each for `site13`. A host query runs the host lookup *in
+  place of* the URL lookup, not as well.[^bench] The benchmark fixture's
+  visits date from 1970; legs that depend on the 90-day window must move
+  them first, or they measure an empty result.
 - **`visitCount`, `rank` and `faviconURL` are cross-space values.** The first
   two only order results. The favicon is displayed: one icon per URL, whoever
   fetched it last.
@@ -254,6 +312,11 @@ it. Errors yield an empty list silently.
 - `SuggestionProviderTests` - order (top hit, verbatim, tabs, history),
   dedup against open tabs, the cap of 12, current tab excluded, autocomplete
   suppression, and the cross-profile label and match cases.
+- `SuggestionProviderTests` host cases (TASK-182): a host prefix with only
+  deep-URL tabs open, a tab at the root, the current tab's host, frecency
+  summed per host, the root's own title, space scoping, host rows with
+  autocomplete off, the cap of two, a query with a path, non-web tabs, and
+  the instant pass agreeing with the provider.
 - `AddressInputClassifierTests` - every row of the table above, including the
   false positives.
 - `PaletteTabScopeTests` - the space rule in both directions (a normal window
@@ -265,7 +328,13 @@ it. Errors yield an empty list silently.
   `bestURLCompletion` isolation and ordering
   (`testSearchHistoryNeverMatchesThroughAnotherProfilesTitle`,
   `testFTSKeywordTokensAreSearchableRatherThanASyntaxError`).
-- `HistoryBenchmarkTests` - env-gated timings (`TEST_RUNNER_HISTORY_BENCH=1`).
+- `HistoryBenchmarkTests` - env-gated timings (`TEST_RUNNER_HISTORY_BENCH=1`),
+  including the completion legs.
+- Runtime, in a Debug build with the [TASK-181/182 harness](../../docs/harness/task181-182-harness.patch)
+  (keys through the field editor's real key bindings): with three sleeping
+  video tabs and a typed visit to another `you…` host, Cmd+T and `you`
+  completed the field to `youtube.com` and listed the site root, the verbatim
+  row, the other host and the three videos. Pixels were not captured.
 
 # Related
 
@@ -280,3 +349,5 @@ it. Errors yield an empty list silently.
 [^task-137]: A normal window's open-tab suggestions include tabs from open Private windows
 [^task-96]: Index every title a URL has had
 [^task-97]: Recent history aggregates every visit in the space
+[^task-182]: Complete a typed host prefix to the site (youtube.com), not to one deep URL
+[^bench]: HistoryBenchmarkTests.swift (completion legs)
