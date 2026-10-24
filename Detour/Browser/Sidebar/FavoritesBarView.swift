@@ -7,6 +7,12 @@ protocol FavoritesBarDelegate: AnyObject {
     func favoritesBar(_ bar: FavoritesBarView, didDoubleClickFavoriteAt index: Int)
     func favoritesBar(_ bar: FavoritesBarView, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int)
     func favoritesBar(_ bar: FavoritesBarView, didRemoveFavoriteAt index: Int)
+    /// The pointer entered or left `tile` (the sidebar's hover card, TASK-190).
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool)
+}
+
+extension FavoritesBarDelegate {
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool) {}
 }
 
 class FavoritesBarView: NSView, NSDraggingSource {
@@ -712,13 +718,26 @@ class FavoriteTileView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        isHovering = true
-        updateBackground()
+        setHovering(true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        isHovering = false
+        setHovering(false)
+    }
+
+    /// A tile removed from the bar sends no exit.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil { setHovering(false) }
+    }
+
+    private func setHovering(_ hovering: Bool) {
+        guard hovering != isHovering else { return }
+        isHovering = hovering
         updateBackground()
+        if let bar = superview as? FavoritesBarView {
+            bar.delegate?.favoritesBar(bar, tile: self, hoverChanged: hovering)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

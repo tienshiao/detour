@@ -18,3 +18,4 @@
 * [External application links](external-apps.md) - What happens when a page navigates to a non-web scheme such as zoommtg: or mailto: - the confirmation sheet, the pure launch policy, and the per-profile 'Always allow' store keyed by origin and scheme.
 * [Find in page](find-in-page.md) - The Cmd+F find bar: a per-window FindBarView driving WKWebView.find on the selected tab, with a match counter computed separately in JavaScript.
 * [History page](history-page.md) - The detour://history/ page: a profile-scoped list of visits in an ordinary tab, with search, a time-range filter, selection and delete, and a natively confirmed Clear History.
+* [Tab hover card](tab-hover-card.md) - The card shown beside the sidebar when the pointer rests on a tab row or favourite tile: the full title, the URL with its host emphasised and a page thumbnail; when it shows, what it describes, where thumbnails come from (memory, then a per-row JPEG on disk) and what dismisses it.

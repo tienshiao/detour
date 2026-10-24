@@ -380,7 +380,11 @@ class Space {
 // MARK: - TabStore
 
 class TabStore {
-    static let shared = TabStore()
+    static let shared: TabStore = {
+        let store = TabStore()
+        store.thumbnailCache = .shared
+        return store
+    }()
     static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
     private let appDB: AppDatabase
@@ -432,6 +436,12 @@ class TabStore {
 
     /// Removes deleted profiles' on-disk WebKit data (TASK-32).
     private let profileDataRemoval: ProfileDataRemoval
+
+    /// Hover-card thumbnails (TASK-190), swept after each save so a key that
+    /// has gone takes its file with it. Only the shared store has one.
+    var thumbnailCache: TabThumbnailCache?
+    /// The live keys of the last sweep; nil before the first.
+    private var lastSweptThumbnailKeys: Set<UUID>?
 
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
          profileDataRemover: ProfileDataRemoval.Remover = .webKit,
@@ -643,6 +653,15 @@ class TabStore {
 
         let outcome = writeSessionSnapshot(snapshot)
         lastSaveOutcome = outcome
+        // Only a save whose live keys changed can have orphaned a file, so
+        // most saves (navigations, title changes) skip the directory scan.
+        if case .saved = outcome, let thumbnailCache {
+            let keys = liveThumbnailKeys
+            if keys != lastSweptThumbnailKeys {
+                thumbnailCache.sweep(keeping: keys, olderThan: Date())
+                lastSweptThumbnailKeys = keys
+            }
+        }
         return outcome
     }
 
@@ -4991,5 +5010,42 @@ enum SameDocumentVisitPolicy {
         guard let currentItem else { return .skip }
         guard let lastRecordedItem else { return .adoptBaseline }
         return currentItem == lastRecordedItem ? .skip : .record
+    }
+}
+
+// MARK: - Tab thumbnails (TASK-190)
+
+extension TabStore {
+    /// What `tab`'s hover-card thumbnail is stored under (`TabThumbnailCache`):
+    /// the pinned entry's or favourite's own id when the tab backs one, so a
+    /// dormant tile keeps its picture, else the tab's id. Nil for a Private
+    /// tab (never written) and for a tab no sidebar row lists, such as a Peek.
+    func thumbnailKey(for tab: BrowserTab) -> UUID? {
+        if let (profile, favorite) = favorite(backedBy: tab) {
+            return profile.isIncognito ? nil : favorite.id
+        }
+        for space in spaces {
+            if let entry = space.pinnedEntries.first(where: { $0.tab === tab }) {
+                return space.isIncognito ? nil : entry.id
+            }
+            if space.tabs.contains(where: { $0 === tab }) {
+                return space.isIncognito ? nil : tab.id
+            }
+        }
+        return nil
+    }
+
+    /// Every key a thumbnail may still be shown for: the normal tabs, pinned
+    /// entries (live or dormant) and favourites of every profile.
+    var liveThumbnailKeys: Set<UUID> {
+        var keys = Set<UUID>()
+        for space in spaces {
+            keys.formUnion(space.tabs.map(\.id))
+            keys.formUnion(space.pinnedEntries.map(\.id))
+        }
+        for profile in profiles {
+            keys.formUnion(profile.favorites.map(\.id))
+        }
+        return keys
     }
 }

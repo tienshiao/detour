@@ -5,7 +5,7 @@ description: "The sidebar's row views — TabCellView, FolderCellView and friend
 tags: [sidebar, cells, progress, split-tabs, appkit]
 status: stable
 resource: ../../Detour/Browser/Sidebar/TabCellView.swift
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:31:06Z }
 sources:
   - id: tab-cell
     resource: ../../Detour/Browser/Sidebar/TabCellView.swift
@@ -61,7 +61,7 @@ mute, rename and collapse.
 | Favicon | always | Globe symbol when the tab has none. Leading inset is `4 + 16 × indentLevel` (folder depth) |
 | Sleep badge (moon) | the tab is sleeping, or a pinned entry is dormant | A split row shows it only when *both* members are asleep or dormant |
 | Speaker button | playing audio or muted | Slides the title from 8 to 24 pt. The icon is updated even when the playing/muted union did not change, or muting a playing tab would not swap it |
-| Title | always | Pinned entries show `displayTitle`; the tooltip is the pinned title |
+| Title | always | Pinned entries show `displayTitle`. There is no tooltip: the sidebar's [tab hover card](../features/tab-hover-card.md) replaced it, and the cell's `accessibilityHelp` keeps the old tooltip text (the tab title, a pinned entry's pinned title, a split row's "left — right") |
 | Close button | hover only | Glyph says what it will do: xmark closes a normal tab; **minus** makes a live pinned entry dormant; xmark on a dormant entry removes the pin (`updatePinnedMode`) |
 | Peek favicon | the tab has a parked [Peek](../tabs/peek.md) | Trailing chip; never used for split rendering |
 | Split segment | the row is a split | See below |
@@ -145,6 +145,10 @@ Passing `nil` for both favicon and title clears split rendering.
   its own entry's live or dormant state (`updateSplitPinnedMode`).
 - **Hover is per half.** The tracking area includes `.mouseMoved` so the
   highlight and close button follow the pointer across the divider.
+  `updateHover(to:at:)` is the one place hover and the half are decided; it
+  reports every change to the cell's `hoverDelegate` (the sidebar, for the
+  [tab hover card](../features/tab-hover-card.md)), as do `prepareForReuse`
+  and `viewWillMove(toWindow: nil)` for a hovered cell whose row is gone.
 - **Formation and dissolve animate inside the row.** The table diff keeps
   the row in place across a split forming or dissolving
   ([row layout](./row-layout.md)), so the same cell is reconfigured from

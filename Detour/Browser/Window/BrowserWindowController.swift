@@ -11,6 +11,8 @@ class BrowserWindowController: NSWindowController {
     /// The split view hosting the sidebar and content split items — what tests reach for.
     var sidebarSplitView: NSSplitView { splitViewController.splitView }
     let tabSidebar = TabSidebarViewController()
+    /// The sidebar's tab hover card (TASK-190).
+    let hoverCard = TabHoverCardController()
     let contentContainerView = NSView()
     var sidebarItem: NSSplitViewItem!
     private var contentItem: NSSplitViewItem!
@@ -602,6 +604,8 @@ class BrowserWindowController: NSWindowController {
 
     private func setupSplitView() {
         tabSidebar.delegate = self
+        hoverCard.host = self
+        tabSidebar.hoverCard = hoverCard
         tabSidebar.fauxAddressBar.onCopyURL = { [weak self] in
             self?.copyCurrentURL(nil)
         }
@@ -663,6 +667,7 @@ class BrowserWindowController: NSWindowController {
     /// are hidden while the sidebar is collapsed. The `isCollapsed` observer and
     /// the setup-time sync both go through here, so the two never disagree.
     private func sidebarCollapsedStateChanged(_ collapsed: Bool, animated: Bool) {
+        if collapsed { hoverCard.dismiss() }
         handleSidebarEvent(.collapsedChanged(collapsed))
         setTrafficLightsHidden(collapsed, animated: animated)
     }
@@ -3280,6 +3285,10 @@ extension BrowserWindowController: NSWindowDelegate {
         }
     }
 
+    func windowDidResignKey(_ notification: Notification) {
+        hoverCard.dismiss()
+    }
+
     // The hosted split's chrome differs between windowed (inset rounded
     // cards) and fullscreen (full bleed, square) — re-derive on transitions.
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -3330,6 +3339,7 @@ extension BrowserWindowController: NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        hoverCard.dismiss()
         selectedTab?.savePeekStateForPersistence()
         recentTabSwitcher?.invalidate()
         stopSidebarHoverTimers()
@@ -3509,3 +3519,29 @@ extension BrowserWindowController: DownloadManagerObserver {
     }
 }
 
+
+// MARK: - Hover card host (TASK-190)
+
+extension BrowserWindowController: TabHoverCardHost {
+    var hoverCardParentWindow: NSWindow? { window }
+
+    var hoverCardSidebarRectInWindow: NSRect? {
+        guard !sidebarItem.isCollapsed else { return nil }
+        let view = tabSidebar.view
+        let visible = view.visibleRect
+        guard !visible.isEmpty else { return nil }
+        return view.convert(visible, to: nil)
+    }
+
+    func hoverCardIsOnScreen(_ tab: BrowserTab) -> Bool {
+        guard let selected = selectedTab else { return false }
+        if selected === tab { return true }
+        guard let space = activeSpace,
+              let group = store.splitGroup(containing: selected.id, in: space) else { return false }
+        return group.members.contains { $0 === tab }
+    }
+
+    func hoverCardThumbnailKey(for tab: BrowserTab) -> UUID? {
+        store.thumbnailKey(for: tab)
+    }
+}

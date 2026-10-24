@@ -4,7 +4,7 @@ title: Tab switching by keyboard
 description: Cmd+Option+Up/Down steps through a space's sidebar rows in order; Control+Tab switches between recently used tabs with a preview overlay. Both treat a split as one item.
 tags: [tabs, keyboard, switcher, mru, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-11T08:08:38Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:31:06Z }
 sources:
   - id: navigation
     resource: ../../Detour/Browser/Sidebar/TabNavigation.swift
@@ -42,6 +42,9 @@ sources:
   - id: task-173
     resource: backlog:TASK-173
     title: The Control+Tab switcher gives no sign that a tab has a Peek open
+  - id: task-190
+    resource: backlog:TASK-190
+    title: "Sidebar: custom tab tooltips with the full title, the URL and a page thumbnail"
 ---
 
 # What it does
@@ -150,7 +153,11 @@ visible panes, when the switcher begins.
   renders correctly after the view has left the window.[^task-108]
 - A per-tab counter (`switcherPreviewRequest`) drops a slower, older snapshot
   that arrives after a newer one.
-- Previews live in memory only and survive sleep.
+- Previews live in memory and survive sleep. Each capture is also written
+  to disk as a JPEG for the sidebar's [tab hover card](../features/tab-hover-card.md)
+  (`TabThumbnailCache`, keyed by `TabStore.thumbnailKey(for:)`, never for
+  Private tabs), so a row has a picture after a relaunch. The switcher
+  itself still offers only tabs with an in-memory preview.
 - A Peek is pictured with its host, at the same two moments, and keeps the
   picture on its own `BrowserTab` (`host.peekTab.switcherPreview`), so
   closing the Peek drops it. This is why `selectTab` stamps the outgoing

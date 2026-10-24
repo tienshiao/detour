@@ -139,6 +139,12 @@ class TabSidebarViewController: NSViewController {
     private static let bottomBarButtonInset: CGFloat = 6
 
     weak var delegate: TabSidebarDelegate?
+    /// The window's tab hover card (TASK-190), told about hovered rows.
+    weak var hoverCard: TabHoverCardController?
+    /// The row the hover card was last told about, and the cell showing it
+    /// (or the favourite tile): an exit ends that target even if the cell has
+    /// been reconfigured since.
+    private var cardHover: (view: NSView, target: HoverCardTarget)?
     var isIncognito = false
     private var isBatchUpdating = false
 
@@ -2205,7 +2211,7 @@ class TabSidebarViewController: NSViewController {
             }
             let tab = tabs[index]
             cell.titleLabel.stringValue = tab.title
-            cell.toolTip = tab.title
+            cell.setAccessibilityHelp(tab.title)
             cell.updateFavicon(tab.favicon)
             cell.updatePeekFavicon(tab.displayPeekFavicon)
             cell.updateSplitPane(favicon: nil, title: nil)
@@ -2244,7 +2250,7 @@ class TabSidebarViewController: NSViewController {
             let entry = pinnedEntries[index]
             let tab = entry.tab
             cell.titleLabel.stringValue = entry.displayTitle
-            cell.toolTip = entry.pinnedTitle
+            cell.setAccessibilityHelp(entry.pinnedTitle)
             cell.updateFavicon(entry.displayFavicon)
             cell.updatePeekFavicon(tab?.displayPeekFavicon)
             cell.updateSplitPane(favicon: nil, title: nil)
@@ -2775,7 +2781,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 let isPlayingAudio = tab?.isPlayingAudio ?? false
                 let isMuted = tab?.isMuted ?? false
                 cell.titleLabel.stringValue = title
-                cell.toolTip = entry.pinnedTitle
+                cell.setAccessibilityHelp(entry.pinnedTitle)
                 cell.updateFavicon(favicon)
                 cell.updatePeekFavicon(tab?.displayPeekFavicon)
                 cell.updateSplitPane(favicon: nil, title: nil)
@@ -2825,10 +2831,12 @@ extension TabSidebarViewController: NSTableViewDelegate {
     private func makeTabCell(_ tableView: NSTableView) -> TabCellView {
         let cellID = NSUserInterfaceItemIdentifier("TabCell")
         if let existing = tableView.makeView(withIdentifier: cellID, owner: nil) as? TabCellView {
+            existing.hoverDelegate = self
             return existing
         }
         let cell = TabCellView()
         cell.identifier = cellID
+        cell.hoverDelegate = self
         return cell
     }
 
@@ -2893,7 +2901,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                                     animatedReveal: Bool = false) {
         cell.titleLabel.stringValue = descriptor.left.title
         cell.titleLabel.textColor = descriptor.left.emphasized ? .labelColor : .secondaryLabelColor
-        cell.toolTip = descriptor.tooltip
+        cell.setAccessibilityHelp(descriptor.tooltip)
         cell.updateFavicon(descriptor.left.favicon)
         cell.updatePeekFavicon(nil)
         cell.updateSplitPane(favicon: descriptor.right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"),
@@ -3020,7 +3028,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
 
     private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, indentLevel: Int = 0, animatedReveal: Bool = false, departingFavicon: NSImage? = nil, departingTitle: String? = nil, onClose: @escaping (Int) -> Void) {
         cell.titleLabel.stringValue = title
-        cell.toolTip = tab.title
+        cell.setAccessibilityHelp(tab.title)
         cell.updateFavicon(tab.favicon)
         cell.updatePeekFavicon(tab.displayPeekFavicon)
         cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: animatedReveal,
@@ -3539,5 +3547,66 @@ extension TabSidebarViewController: FavoritesBarDelegate {
 private extension Comparable {
     func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+// MARK: - Hover card (TASK-190)
+
+extension TabSidebarViewController: TabCellHoverDelegate {
+    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?) {
+        guard hovering else {
+            endCardHover(for: cell)
+            return
+        }
+        // Only the active page's rows: a page sliding past mid-swipe is not
+        // the list the user is pointing into.
+        let row = tableView.row(for: cell)
+        guard row >= 0, !isShowingArchivePage, let target = hoverCardTarget(forRow: row, splitSide: splitSide) else {
+            endCardHover(for: cell)
+            return
+        }
+        beginCardHover(target, view: cell)
+    }
+
+    /// The card target for a table row: a tab, a pinned entry, or the hovered
+    /// half of a split. Folders, the New Tab row and the separator get none.
+    private func hoverCardTarget(forRow row: Int, splitSide: Int?) -> HoverCardTarget? {
+        switch sidebarRow(for: row) {
+        case .pinnedItem(let index):
+            guard index < flattenedPinnedItems.count else { return nil }
+            return HoverCardTarget.forPinnedItem(flattenedPinnedItems[index], splitSide: splitSide)
+        case .normalTab(let index):
+            guard index < tabItems.count else { return nil }
+            return HoverCardTarget.forTabItem(tabItems[index], splitSide: splitSide)
+        case .topSpacer, .separator, .newTab:
+            return nil
+        }
+    }
+
+    private func beginCardHover(_ target: HoverCardTarget, view: NSView) {
+        if let current = cardHover, current.view === view, !current.target.isSame(as: target) {
+            hoverCard?.hoverEnded(current.target)
+        }
+        cardHover = (view, target)
+        hoverCard?.hoverBegan(target, rowRectInWindow: view.convert(view.bounds, to: nil))
+    }
+
+    private func endCardHover(for view: NSView) {
+        guard let current = cardHover, current.view === view else { return }
+        cardHover = nil
+        hoverCard?.hoverEnded(current.target)
+    }
+
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool) {
+        guard hovering else {
+            endCardHover(for: tile)
+            return
+        }
+        guard !isShowingArchivePage, activePageIndex < spacePages.count,
+              spacePages[activePageIndex].favoritesBar === bar else {
+            endCardHover(for: tile)
+            return
+        }
+        beginCardHover(.favorite(tile.favorite), view: tile)
     }
 }

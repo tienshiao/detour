@@ -21,6 +21,12 @@ class TabRowView: NSTableRowView {
     }
 }
 
+/// Told when a tab row's hover changes: the sidebar's hover card (TASK-190)
+/// follows `TabCellView`'s own hover state, including which split half.
+protocol TabCellHoverDelegate: AnyObject {
+    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?)
+}
+
 class TabCellView: NSTableCellView, NSTextFieldDelegate {
     enum LoadingIndicatorMode {
         case ringSpinner   // Option A: spinning ring around favicon -- not currently used, still buggy/incomplete
@@ -64,6 +70,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     var onCloseLeft: (() -> Void)?
     var onToggleMute: (() -> Void)?
     var onRename: ((String) -> Void)?
+    weak var hoverDelegate: TabCellHoverDelegate?
     private var isEditing = false
     private var originalEditingValue: String?
     var indentLevel: Int = 0 {
@@ -253,6 +260,8 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        // The row this cell stood for is gone: its hover ends with it.
+        if isHovered { hoverDelegate?.tabCell(self, hoverChanged: false, splitSide: nil) }
         isHovered = false
         hoveredSplitSide = nil
         hasPeek = false
@@ -331,6 +340,13 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// highlight and close button to the half under `point`; a single row
     /// keeps the full-row treatment.
     private func updateHover(to hovering: Bool, at point: NSPoint?) {
+        let wasHovered = isHovered
+        let oldSide = hoveredSplitSide
+        defer {
+            if isHovered != wasHovered || hoveredSplitSide != oldSide {
+                hoverDelegate?.tabCell(self, hoverChanged: isHovered, splitSide: hoveredSplitSide)
+            }
+        }
         isHovered = hovering
         if hovering, hasSplit, let point {
             hoveredSplitSide = splitSide(at: point)
@@ -362,6 +378,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
     override func mouseExited(with event: NSEvent) {
         updateHover(to: false, at: nil)
+    }
+
+    /// A row removed from the table (or a page going away) sends no exit.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil, isHovered { updateHover(to: false, at: nil) }
     }
 
     /// Re-evaluate hover state using the current mouse position.

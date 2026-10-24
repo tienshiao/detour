@@ -1,0 +1,391 @@
+TASK-190 runtime harness: the sidebar's tab hover card. Temporary code, never
+committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task190-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT="$PWD/.derived-logs/task190"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify190 DETOUR_VERIFY_DIR="$OUT" \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for the "done" line in $OUT/verify.log (about 110 s), then kill that pid.
+    # "SHOOT <name> <windowNumber> <panelNumber> <x,y,w,h>" lines are for a
+    # watcher that runs `screencapture -x -o -l <windowNumber>` (and the panel's
+    # number, and -R for the region holding both) within about 2 s.
+    git apply -R docs/harness/task190-harness.patch && xcodegen generate
+
+Seeds seven tabs (network pages), shows each in turn so leaving it captures
+its switcher preview (and the disk thumbnail), then pins one (live pinned
+row), pins and closes another (dormant pinned row with a thumbnail on disk),
+favourites one and splits two. Hover is driven through the cells' and tiles'
+own mouseEntered / mouseMoved / mouseExited (posted mouseMoved events give no
+tracking-area enter or exit), in light then dark: a normal row, the selected
+row (no thumbnail, immediate swap from the previous row), the live pinned
+row, the dormant pinned row, each half of the split and the favourite tile.
+Then dismissals: a posted mouse down, a posted key down, a scroll CGEvent
+posted to the app's own pid, resign key (makeKey on another window; the
+delegate method directly when that cannot make it key) and Cmd+S-style
+sidebar hide; then a hover-revealed sidebar (sidebarHoverZoneEntered with
+sidebarPointerProbeForTesting) and its auto-hide. Every card is logged with
+its text, thumbnail frame, panel frame, the sidebar's visible frame and the
+gap between them; a 120 Hz sampler logs when the card shows and hides.
+
+Results (2026-10-24, screen locked for the whole session, so no window
+captures and no pixels checked): every row kind showed the expected text and
+thumbnail (none for the selected tab), 260 pt wide, 6 pt right of the
+sidebar's visible edge, top level with the row; fresh hovers showed after
+0.458-0.462 s, row-to-row and split-half moves swapped at once; mouse down,
+key down, resign key and sidebar hide each hid the card within ~10 ms and it
+stayed hidden on that row; the hover-revealed sidebar showed the card and its
+auto-hide took it away. The scroll leg did not reach the monitor: the
+CGEvent-built NSEvent had no window and the postToPid event was not delivered
+while locked.
+
+Re-run unlocked (2026-10-24, run6): capture each SHOOT with
+`screencapture -x -o -l <windowNumber>` and `screencapture -x -l <panelNumber>`
+(the panel capture comes out composited over the window, which is the useful
+picture; -R region captures pick up whatever window is in front, since a
+shell-launched app stays behind). Seen: every card kind in light and dark,
+6 pt outside the sidebar, top level with the row; the selected row's compact
+card; split halves; the favourite tile; the hover-revealed sidebar. The glass
+takes its tint from what is behind it (a light card over a white page in dark
+mode), like the palette and the Control+Tab switcher, which use the same
+GlassContainerView. The scroll leg still did not reach the monitor (the
+postToPid scroll is not delivered to a window that is not frontmost).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..70ed0de 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask190HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task190Harness.swift b/Detour/App/Task190Harness.swift
+new file mode 100644
+index 0000000..480e8de
+--- /dev/null
++++ b/Detour/App/Task190Harness.swift
+@@ -0,0 +1,317 @@
++// TEMP TASK-190 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask190HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 2.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window else { return log("no window") }
++        let store = TabStore.shared
++        let sidebar = wc.tabSidebar
++        let card = wc.hoverCard
++        var tabs: [String: BrowserTab] = [:]
++
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func rect(_ r: NSRect) -> String { String(format: "(%.0f,%.0f %.0fx%.0f)", r.minX, r.minY, r.width, r.height) }
++
++        func cells() -> [(row: Int, cell: TabCellView)] {
++            let table = sidebar.tableView
++            return (0 ..< table.numberOfRows).compactMap { row in
++                (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView).map { (row, $0) }
++            }
++        }
++        func cell(titled prefix: String) -> TabCellView? {
++            cells().first { $0.cell.titleLabel.stringValue.hasPrefix(prefix) || $0.cell.splitTitleLabel.stringValue.hasPrefix(prefix) }?.cell
++        }
++        func splitCell() -> TabCellView? {
++            cells().first { !$0.cell.splitTitleLabel.isHidden && !$0.cell.splitTitleLabel.stringValue.isEmpty }?.cell
++        }
++        func tile(_ index: Int = 0) -> FavoriteTileView? {
++            allSubviews(sidebar.view).compactMap { $0 as? FavoritesBarView }
++                .first { !$0.tileViews.isEmpty && $0.window != nil && !$0.visibleRect.isEmpty }?
++                .tileViews[safe: index]
++        }
++        func enterExit(_ type: NSEvent.EventType, _ view: NSView, fx: CGFloat) -> NSEvent {
++            let p = view.convert(NSPoint(x: view.bounds.width * fx, y: view.bounds.midY), to: nil)
++            return NSEvent.enterExitEvent(with: type, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime,
++                                          windowNumber: window.windowNumber, context: nil,
++                                          eventNumber: 0, trackingNumber: 0, userData: nil)!
++        }
++        var hoverStart: TimeInterval = 0
++        func enter(_ view: NSView?, fx: CGFloat = 0.3, _ name: String) {
++            guard let view else { return log("ENTER \(name): no view") }
++            hoverStart = ProcessInfo.processInfo.systemUptime
++            view.mouseEntered(with: enterExit(.mouseEntered, view, fx: fx))
++            log("ENTER \(name) pending=\(card.isPendingForTesting) showing=\(card.isShowing) monitor=\(card.hasEventMonitorForTesting)")
++        }
++        func leave(_ view: NSView?, _ name: String) {
++            guard let view else { return }
++            view.mouseExited(with: enterExit(.mouseExited, view, fx: 0.5))
++            log("EXIT \(name) showing=\(card.isShowing) monitor=\(card.hasEventMonitorForTesting)")
++        }
++        func moveTo(_ view: NSView?, fx: CGFloat, _ name: String) {
++            guard let view else { return }
++            hoverStart = ProcessInfo.processInfo.systemUptime
++            let p = view.convert(NSPoint(x: view.bounds.width * fx, y: view.bounds.midY), to: nil)
++            let e = NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [],
++                                       timestamp: ProcessInfo.processInfo.systemUptime,
++                                       windowNumber: window.windowNumber, context: nil,
++                                       eventNumber: 0, clickCount: 0, pressure: 0)!
++            view.mouseMoved(with: e)
++            log("MOVE \(name) fx=\(fx) showing=\(card.isShowing)")
++        }
++        func describeCard(_ label: String) {
++            guard card.isShowing, let panel = card.panelForTesting else {
++                return log("CARD \(label): not showing (monitor=\(card.hasEventMonitorForTesting))")
++            }
++            let texts = allSubviews(panel.contentView!).compactMap { $0 as? NSTextField }
++                .filter { !$0.isHidden }.map { "\"\($0.stringValue)\"" }
++            let thumb = allSubviews(panel.contentView!).first { $0 is HoverCardThumbnailView }
++            let sidebarScreen = window.convertToScreen(sidebar.view.convert(sidebar.view.visibleRect, to: nil))
++            log("CARD \(label): texts=\(texts) thumbnail=\(thumb.map { $0.isHidden ? "none" : rect($0.frame) } ?? "?") "
++                + "panel=\(rect(panel.frame)) sidebar=\(rect(sidebarScreen)) gap=\(panel.frame.minX - sidebarScreen.maxX) "
++                + "parent=\(panel.parent === window) appearance=\(panel.effectiveAppearance.name.rawValue)")
++        }
++        func snapLayer(_ view: NSView, _ file: String) {
++            guard let layer = view.layer,
++                  let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width) * 2,
++                                             pixelsHigh: Int(view.bounds.height) * 2, bitsPerSample: 8,
++                                             samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
++                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
++                  let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return }
++            ctx.cgContext.scaleBy(x: 2, y: 2)
++            view.effectiveAppearance.performAsCurrentDrawingAppearance { layer.render(in: ctx.cgContext) }
++            try? rep.representation(using: .png, properties: [:])?
++                .write(to: URL(fileURLWithPath: outDir).appendingPathComponent(file))
++        }
++        func shoot(_ name: String) {
++            if card.isShowing, let content = card.panelForTesting?.contentView,
++               let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
++                content.cacheDisplay(in: content.bounds, to: rep)
++                try? rep.representation(using: .png, properties: [:])?
++                    .write(to: URL(fileURLWithPath: outDir).appendingPathComponent("\(name)-inproc-card.png"))
++            }
++            snapLayer(sidebar.view, "\(name)-inproc-sidebar.png")
++            let panelNumber = card.isShowing ? (card.panelForTesting?.windowNumber ?? 0) : 0
++            let frame = window.frame
++            var region = frame
++            if let p = card.panelForTesting, card.isShowing { region = frame.union(p.frame) }
++            // screencapture -R takes top-left-origin coordinates.
++            let screenH = NSScreen.screens.first?.frame.height ?? 0
++            log(String(format: "SHOOT %@ %d %d %.0f,%.0f,%.0f,%.0f", name, window.windowNumber, panelNumber,
++                       region.minX, screenH - region.maxY, region.width, region.height))
++        }
++        // Card show latency, sampled at 120 Hz.
++        var wasShowing = false
++        let sampler = Timer(timeInterval: 1.0 / 120.0, repeats: true) { _ in
++            if card.isShowing != wasShowing {
++                wasShowing = card.isShowing
++                log(String(format: "  card %@ %.3f s after the last hover call", wasShowing ? "SHOWN" : "HIDDEN",
++                           ProcessInfo.processInfo.systemUptime - hoverStart))
++            }
++        }
++        RunLoop.main.add(sampler, forMode: .common)
++
++        // MARK: Seed
++        at(0) {
++            guard let spaceID = wc.activeSpaceID, let space = store.space(withID: spaceID) else { return log("no space") }
++            let urls = [
++                ("wiki", "https://en.wikipedia.org/wiki/Web_browser"),
++                ("iana", "https://www.iana.org/help/example-domains"),
++                ("w3", "https://www.w3.org/"),
++                ("exorg", "https://example.org/"),
++                ("excom", "https://example.com/"),
++                ("pinme", "https://www.rfc-editor.org/"),
++                ("favme", "https://www.ietf.org/"),
++            ]
++            for (name, url) in urls {
++                tabs[name] = store.addTab(in: space, url: URL(string: url))
++            }
++            log("seeded \(space.tabs.count) tabs; screenLocked? check shell")
++        }
++        // Show each tab, so leaving it captures its switcher preview.
++        for name in ["wiki", "iana", "w3", "exorg", "excom", "pinme", "favme", "wiki"] {
++            at(3.0) {
++                guard let tab = tabs[name] else { return }
++                wc.selectTab(id: tab.id)
++                log("selected \(name)")
++            }
++        }
++        at(2.0) {
++            for (name, tab) in tabs.sorted(by: { $0.key < $1.key }) {
++                log("preview \(name): \(tab.switcherPreview.map { "\(Int($0.size.width))x\(Int($0.size.height))" } ?? "none") title=\"\(tab.title)\"")
++            }
++            guard let space = wc.activeSpace, let profileID = space.profile?.id else { return }
++            // Pinned (live) row, a dormant pinned row with a cached picture, a favourite, a split.
++            if let pin = tabs["pinme"] { store.pinTab(id: pin.id, in: space) }
++            if let iana = tabs["iana"] { store.pinTab(id: iana.id, in: space) }
++            if let fav = tabs["favme"] { store.addFavorite(from: fav, profileID: profileID) }
++            if let a = tabs["exorg"], let b = tabs["excom"] {
++                store.createSplit(draggedTabID: b.id, targetTabID: a.id, edge: .right, in: space)
++            }
++            log("pinned/favourited/split; pinned=\(space.pinnedEntries.map(\.pinnedTitle))")
++        }
++        at(1.5) {
++            guard let space = wc.activeSpace, let iana = tabs["iana"],
++                  let entry = space.pinnedEntries.first(where: { $0.tab === iana }) else { return log("no iana entry") }
++            store.closePinnedTab(id: entry.id, in: space)
++            log("iana entry dormant: live=\(entry.isLive) id=\(entry.id) file=\(FileManager.default.fileExists(atPath: detourDataDirectory().appendingPathComponent("TabThumbnails/\(entry.id.uuidString).jpg").path))")
++            for (row, c) in cells() {
++                log("row \(row): \"\(c.titleLabel.stringValue)\" split=\"\(c.splitTitleLabel.stringValue)\" toolTip=\(c.toolTip ?? "nil") axHelp=\(c.accessibilityHelp() ?? "nil")")
++            }
++            let dir = detourDataDirectory().appendingPathComponent("TabThumbnails")
++            log("thumbnail files: \((try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.sorted() ?? [])")
++            window.makeKeyAndOrderFront(nil)
++            log("window key=\(window.isKeyWindow) app active=\(NSApp.isActive)")
++        }
++
++        func scenario(_ name: String, theme: String) {
++            // Normal row with a preview.
++            at(1.0) { enter(cell(titled: "W3C") ?? cell(titled: "World Wide Web"), "normal w3 (\(theme))") }
++            at(0.8) { describeCard("normal \(theme)"); shoot("normal-\(theme)") }
++            // Swap to the next row: exit then enter, immediately.
++            at(2.0) {
++                leave(cell(titled: "W3C") ?? cell(titled: "World Wide Web"), "w3")
++                enter(cell(titled: "Web browser"), "selected wiki (\(theme))")
++            }
++            at(0.5) { describeCard("selected \(theme)"); shoot("selected-\(theme)") }
++            at(2.0) { leave(cell(titled: "Web browser"), "wiki") }
++            // Pinned live row.
++            at(1.0) { enter(cell(titled: "RFC") ?? cell(titled: "rfc"), "pinned live (\(theme))") }
++            at(0.8) { describeCard("pinned live \(theme)"); shoot("pinned-\(theme)") }
++            at(2.0) { leave(cell(titled: "RFC") ?? cell(titled: "rfc"), "pinned") }
++            // Dormant pinned row.
++            at(1.0) { enter(cell(titled: "IANA") ?? cell(titled: "Example Domains"), "pinned dormant (\(theme))") }
++            at(0.8) { describeCard("dormant \(theme)"); shoot("dormant-\(theme)") }
++            at(2.0) { leave(cell(titled: "IANA") ?? cell(titled: "Example Domains"), "dormant") }
++            // Split row: left half, then the right half.
++            at(1.0) { enter(splitCell(), fx: 0.25, "split left (\(theme))") }
++            at(0.8) { describeCard("split left \(theme)"); shoot("split-left-\(theme)") }
++            at(2.0) { moveTo(splitCell(), fx: 0.75, "split right") }
++            at(0.3) { describeCard("split right \(theme)"); shoot("split-right-\(theme)") }
++            at(2.0) { leave(splitCell(), "split") }
++            // Favourite tile.
++            at(1.0) { enter(tile(), fx: 0.5, "favourite (\(theme))") }
++            at(0.8) { describeCard("favourite \(theme)"); shoot("favourite-\(theme)") }
++            at(2.0) { leave(tile(), "favourite") }
++        }
++
++        at(1.0) { NSApp.appearance = NSAppearance(named: .aqua); log("LIGHT") }
++        scenario("light", theme: "light")
++        at(1.0) { NSApp.appearance = NSAppearance(named: .darkAqua); log("DARK") }
++        scenario("dark", theme: "dark")
++
++        // MARK: Dismissals
++        func postMouseDown() {
++            let p = NSPoint(x: window.frame.width - 100, y: 100)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                           timestamp: ProcessInfo.processInfo.systemUptime,
++                                           windowNumber: window.windowNumber, context: nil,
++                                           eventNumber: 7, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func postKey() {
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
++                                         timestamp: ProcessInfo.processInfo.systemUptime,
++                                         windowNumber: window.windowNumber, context: nil,
++                                         characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
++                                         isARepeat: false, keyCode: 53)!
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func postScroll() {
++            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -3, wheel2: 0, wheel3: 0) else { return }
++            let p = sidebar.view.convert(NSPoint(x: 40, y: 200), to: nil)
++            let screen = window.convertPoint(toScreen: p)
++            let screenH = NSScreen.screens.first?.frame.height ?? 0
++            cg.location = CGPoint(x: screen.x, y: screenH - screen.y)
++            cg.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
++            cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
++            // Through the window server, so AppKit sets the event's window
++            // from the location the way it does for a real scroll.
++            cg.postToPid(getpid())
++            log("scroll CGEvent posted to own pid at \(cg.location)")
++        }
++        let target = { cell(titled: "W3C") ?? cell(titled: "World Wide Web") }
++        func dismissal(_ name: String, _ action: @escaping () -> Void) {
++            at(1.0) { enter(target(), "for \(name)") }
++            at(0.8) { describeCard("before \(name)") }
++            at(0.3) { action(); log("did \(name)") }
++            at(0.3) { describeCard("after \(name)") }
++            // Still suppressed on the same row; a re-report must not bring it back.
++            at(0.7) { describeCard("after \(name) +0.7 s") }
++            at(0.2) { leave(target(), "after \(name)") }
++        }
++        at(1.0) { NSApp.appearance = nil; log("SYSTEM APPEARANCE") }
++        dismissal("mouse down") { postMouseDown() }
++        dismissal("key down") { postKey() }
++        dismissal("scroll") { postScroll() }
++        dismissal("resign key") {
++            let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 50, height: 50), styleMask: [.titled], backing: .buffered, defer: false)
++            other.isReleasedWhenClosed = false
++            other.makeKeyAndOrderFront(nil)
++            log("other key=\(other.isKeyWindow) browser key=\(window.isKeyWindow)")
++            if card.isShowing {
++                log("card still up after makeKey(other): calling windowDidResignKey directly")
++                wc.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
++            }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { other.orderOut(nil); window.makeKeyAndOrderFront(nil) }
++        }
++        dismissal("sidebar hide") { wc.toggleSidebarAutoHide() }
++        at(1.5) {
++            log("sidebar collapsed=\(wc.sidebarItem.isCollapsed) mode=\(wc.sidebarVisibility)")
++        }
++        // MARK: Hover-revealed sidebar (auto-hide mode is now on)
++        at(0.5) {
++            wc.sidebarPointerProbeForTesting = { true }
++            wc.sidebarHoverZoneEntered(.edge)
++            log("hover reveal requested")
++        }
++        at(1.5) { log("revealed: collapsed=\(wc.sidebarItem.isCollapsed) sidebar=\(rect(window.convertToScreen(sidebar.view.convert(sidebar.view.visibleRect, to: nil))))") }
++        at(0.5) { enter(target(), "revealed sidebar row") }
++        at(0.8) { describeCard("revealed"); shoot("revealed") }
++        at(2.0) {
++            NSApp.appearance = NSAppearance(named: .darkAqua)
++            leave(target(), "revealed")
++            enter(cell(titled: "RFC") ?? cell(titled: "rfc"), "revealed pinned dark")
++        }
++        at(0.8) { describeCard("revealed dark"); shoot("revealed-dark") }
++        at(2.0) {
++            wc.sidebarPointerProbeForTesting = { false }
++            wc.sidebarHoverZoneExited(.sidebar)
++            log("pointer left revealed sidebar")
++        }
++        at(2.0) { log("after hide: collapsed=\(wc.sidebarItem.isCollapsed)"); describeCard("after auto-hide") }
++        at(0.5) {
++            wc.sidebarPointerProbeForTesting = nil
++            wc.toggleSidebarAutoHide()
++            NSApp.appearance = nil
++            log("sidebar pinned again collapsed=\(wc.sidebarItem.isCollapsed)")
++        }
++        at(1.0) { log("done") }
++    }
++}
++
++private extension Array {
++    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
++}
++#endif

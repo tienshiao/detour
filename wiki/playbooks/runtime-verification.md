@@ -190,7 +190,14 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   "launch, wait, read the log, kill" sequence as one background command.
 - **A locked screen** makes WebKit stop painting and drops posted events;
   check before every harness run
-  ([in-process UI automation](./in-process-ui-automation.md)).
+  ([in-process UI automation](./in-process-ui-automation.md)). A watcher can wait for
+  the unlock by polling `CGSessionCopyCurrentDictionary()`'s
+  `CGSSessionScreenIsLocked` from a tiny compiled Swift tool (the sandbox
+  blocks `ioreg`, and the system Python has no Quartz module).
+- **Capture by window number, not region.** A shell-launched app stays behind
+  the frontmost app, so `screencapture -R` picks up whatever covers it;
+  `screencapture -l <windowNumber>` captures the window even when covered,
+  and a child panel's number gives it composited over its parent.
 - **The isolated app is not the key application** when launched from a
   shell, so behaviour keyed on `NSApp.keyWindow` cannot be driven that
   way.[^notes-updates] A check that needs key windows (the web view hand-off
