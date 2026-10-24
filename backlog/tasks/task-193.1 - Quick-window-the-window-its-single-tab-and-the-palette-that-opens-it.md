@@ -1,10 +1,10 @@
 ---
 id: TASK-193.1
-title: 'Little Detour: the window, its single tab and the palette that opens it'
+title: 'Quick Detour: the window, its single tab and the palette that opens it'
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:10'
-updated_date: '2026-10-24 10:11'
+updated_date: '2026-10-24 10:21'
 labels:
   - window
   - feature

@@ -1,10 +1,10 @@
 ---
 id: TASK-193
-title: 'Little Detour: a minimal one-page window opened by a global hotkey'
+title: 'Quick Detour: a minimal one-page window opened by a global hotkey'
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:10'
-updated_date: '2026-10-24 10:15'
+updated_date: '2026-10-24 10:21'
 labels:
   - window
   - feature
@@ -36,4 +36,6 @@ Subtasks: .1 window and tab model; .2 global hotkey; .3 Open in Space; .4 profil
 Name (user, 2026-10-24): Little Detour, or Small Detour; "quick window" in these tasks was a working name only. Titles use Little Detour; settle between the two before any UI text ships.
 
 Name, 2026-10-24: "a quick detour" and "a short detour" are the most common English phrasings; "little detour" is natural but rarer. Recommendation: Quick Detour (also says what it is for). Pending the user's choice. Quarantine (TASK-194) opens links from other apps in a Private Quick Detour window.
+
+Name decided (user, 2026-10-24): **Quick Detour**. "Little Detour", "quick window" and "Little/Quick Detour" elsewhere in these tasks all mean Quick Detour.
 <!-- SECTION:NOTES:END -->

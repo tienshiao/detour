@@ -4,7 +4,7 @@ title: 'Air Traffic Control: rules that route links and typed URLs to a chosen s
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:44'
-updated_date: '2026-10-24 10:18'
+updated_date: '2026-10-24 10:21'
 labels:
   - links
   - spaces
@@ -44,4 +44,6 @@ Also decided 2026-10-24: the optional **source app** condition is in scope. A ro
 2026-10-24: Little Detour (TASK-193, Detour's equivalent of Little Arc) is now planned, so it can become an Open in target after all, as in Arc; TASK-193.5 decides how its 'links from other apps' setting and the routes fit together.
 
 Decided (user, 2026-10-24): **Private is an Open in target**, reversing "Private spaces are never targets" in the description. A Private space exists only while its window is open, so the target is "Private window", not a space: open the link as a tab in the most recent open Private window, else in a new Private window. It applies to all three origins (other apps, typed, in-browser clicks). The boundary rule becomes one-way: routing *into* Private is allowed; routing *out of* a Private window into a normal space never happens (a click or typed URL in a Private window ignores routes that target normal spaces). Distinct from Quarantine (TASK-194), which is a throwaway Quick Detour window for links from other apps only.
+
+Name decided 2026-10-24: the Little Arc equivalent is **Quick Detour** (TASK-193).
 <!-- SECTION:NOTES:END -->

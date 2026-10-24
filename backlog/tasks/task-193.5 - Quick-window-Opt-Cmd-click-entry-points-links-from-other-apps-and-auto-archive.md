@@ -1,12 +1,12 @@
 ---
 id: TASK-193.5
 title: >-
-  Little Detour: Opt-Cmd-click entry points, links from other apps, and
+  Quick Detour: Opt-Cmd-click entry points, links from other apps, and
   auto-archive
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:11'
-updated_date: '2026-10-24 10:11'
+updated_date: '2026-10-24 10:21'
 labels:
   - window
   - links

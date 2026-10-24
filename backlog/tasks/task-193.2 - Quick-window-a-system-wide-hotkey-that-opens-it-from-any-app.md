@@ -1,10 +1,10 @@
 ---
 id: TASK-193.2
-title: 'Little Detour: a system-wide hotkey that opens it from any app'
+title: 'Quick Detour: a system-wide hotkey that opens it from any app'
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:11'
-updated_date: '2026-10-24 10:11'
+updated_date: '2026-10-24 10:21'
 labels:
   - window
   - feature

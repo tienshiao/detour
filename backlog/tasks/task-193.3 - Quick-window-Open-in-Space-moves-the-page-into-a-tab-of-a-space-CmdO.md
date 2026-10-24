@@ -1,10 +1,10 @@
 ---
 id: TASK-193.3
-title: 'Little Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)'
+title: 'Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)'
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:11'
-updated_date: '2026-10-24 10:11'
+updated_date: '2026-10-24 10:21'
 labels:
   - window
   - spaces

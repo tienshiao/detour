@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:15'
-updated_date: '2026-10-24 10:18'
+updated_date: '2026-10-24 10:21'
 labels:
   - links
   - privacy
@@ -53,4 +53,6 @@ Builds on: TASK-191.1 (target model), TASK-191.2 (external link routing), TASK-1
 
 <!-- SECTION:NOTES:BEGIN -->
 Decided (user, 2026-10-24): quarantine applies to links from other apps only. A route never quarantines typed URLs or in-browser clicks (opening a Quick Detour window from a click does not make sense). For sending in-browser clicks to a private context, use the Private window target of Air Traffic Control instead (TASK-191).
+
+Name decided 2026-10-24: Quick Detour (TASK-193).
 <!-- SECTION:NOTES:END -->

@@ -1,10 +1,10 @@
 ---
 id: TASK-193.4
-title: 'Little Detour: a profile selector in the title bar'
+title: 'Quick Detour: a profile selector in the title bar'
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:11'
-updated_date: '2026-10-24 10:11'
+updated_date: '2026-10-24 10:21'
 labels:
   - window
   - profiles
