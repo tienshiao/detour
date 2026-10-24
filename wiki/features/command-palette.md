@@ -36,6 +36,15 @@ sources:
   - id: task-181
     resource: backlog:TASK-181
     title: Backspace after moving the caret off an inline completion deletes back to the typed prefix
+  - id: task-184
+    resource: backlog:TASK-184
+    title: The list changes height several times per keystroke, so the palette flickers while typing
+  - id: rows
+    resource: ../../Detour/Browser/CommandPalette/PaletteRows.swift
+    title: PaletteRows.swift
+  - id: rows-tests
+    resource: ../../DetourTests/PaletteRowsTests.swift
+    title: PaletteRowsTests.swift
   - id: selection-tests
     resource: ../../DetourTests/PaletteSelectionTests.swift
     title: PaletteSelectionTests.swift
@@ -86,11 +95,51 @@ CommandPaletteView            full-window overlay, catches clicks outside
   GlassContainerView          500 pt wide
     search icon + CommandPaletteTextField
     separator
-    NSScrollView > NSTableView   rows 36 pt, at most 6 visible
+    NSScrollView > NSTableView   rows 36 pt, always 6 rows tall
 ```
 
-The centred position is computed against the palette's *maximum* height, so
-the box does not move as the list grows and shrinks.
+The list area has one height, six rows (`PaletteRows.visibleRows`), whenever
+the palette shows a list, and the rows fill it: like Arc, the palette does not
+show empty rows.[^task-184] For a typed query `PaletteRows.compose` builds the
+list from
+
+1. the matches of the latest local pass (top hit, verbatim row, hosts, open
+   tabs, history);
+2. search suggestions, the usual four, or as many as fill the room below six
+   (the service returns at most five);
+3. rows of the default (empty-field) list as filler, skipping a URL already
+   listed, until there are six. A query with no matches (gibberish, offline,
+   search suggestions off) shows its verbatim row over recent pages.
+
+Only a profile with nothing to pad with (no history, no open tabs) can show
+blank space; an empty default list drops the list area.
+
+Fitting the box to its rows made it flicker, because each keystroke rebuilds
+the list up to three times ([two passes and the
+network](./suggestion-pipeline.md#two-passes-per-keystroke)): a 60 Hz frame
+log of typing and deleting "youtu" counted 9 height changes between 78 and
+258 pt before, none after, and no moment with fewer than six rows. The
+centred position is computed against the same height, so the box does not
+move either.
+
+Two rules keep the rows themselves from jumping:
+
+- **Carried suggestions.** Until the new query's search suggestions arrive,
+  the previous query's suggestions that the new text still prefixes stay
+  (`carriedSearchSuggestions`), so the bottom rows do not blank and refill on
+  every keystroke.
+- **Late passes leave the user's row alone.** Once the user has moved the
+  selection with the arrow keys, a pass that lands later (history, network)
+  is applied only if the rows up to the selected one are unchanged, and then
+  keeps the selection; otherwise it is skipped (`latePassOutcome`). The
+  history pass's inline completion is not applied then either, since the
+  field shows the selected row's text. "Moved" is a flag
+  (`selectionMovedByUser`), not "the index differs from the initial row":
+  Down then Up lands back on row 0, which the user then chose. A skipped
+  pass is retried on the next arrow key, so it lands once the selection
+  allows it (e.g. after arrowing off the list). Before, the history pass
+  reset the selection to the first row, and search suggestions were only
+  appended.
 
 ## Submitting
 
@@ -249,3 +298,4 @@ whatever was under it.
 [^task-78]: After Cmd+L and Return the page does not regain keyboard focus
 [^task-144]: Cmd+L then Return activates the first recent-history row instead of the pre-filled URL
 [^task-181]: Backspace after moving the caret off an inline completion deletes back to the typed prefix
+[^task-184]: The list changes height several times per keystroke, so the palette flickers while typing. Harness: `docs/harness/task184-harness.patch`; rules tested in `PaletteRowsTests`

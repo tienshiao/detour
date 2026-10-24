@@ -1,0 +1,167 @@
+TASK-184 runtime harness: the command palette's height and row count across
+keystrokes and the three list passes (instant, history, search suggestions),
+and a late pass against a row selected with the arrow keys. Temporary code,
+never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task184-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT="$PWD/.derived-logs/task184"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify184 DETOUR_VERIFY_DIR="$OUT" \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for the "done:" line in $OUT/verify.log (about 15 s), then kill that pid;
+    # "SHOOT <windowNumber>" starts a 2 s pause for `screencapture -x -o -l <windowNumber>`
+    git apply -R docs/harness/task184-harness.patch && xcodegen generate
+
+Seeds three sleeping youtube.com tabs and history for eight "y…" hosts, opens
+the palette (Cmd+T, default list), types "youtu" key by key, deletes back to
+the empty field, types "zqxw" (no matches: only the verbatim row), then clears
+it, types "yo" and presses Down twice before the late passes land. A 60 Hz
+timer logs the glass container's window frame and the row count whenever
+either changes; the last line counts height changes and samples with fewer
+than six rows.
+
+Results (2026-10-24): before, 9 height changes (box 78 to 258 pt) and short
+lists throughout; with the fixed height alone, 0 changes but "zqxw" showed one
+row over blank space; with filler rows, 0 changes, 0 short samples, "zqxw"
+shows its row and five recent pages, and the arrowed-to row and the field were
+unchanged 1.5 s later.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..647b246 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask184HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task184Harness.swift b/Detour/App/Task184Harness.swift
+new file mode 100644
+index 0000000..bae6e87
+--- /dev/null
++++ b/Detour/App/Task184Harness.swift
+@@ -0,0 +1,118 @@
++// TEMP TASK-184 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask184HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window else { return log("no window") }
++
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        func palette() -> CommandPaletteView? {
++            allSubviews(window.contentView!).compactMap { $0 as? CommandPaletteView }.first
++        }
++        func key(_ code: UInt16, _ chars: String, flags: NSEvent.ModifierFlags = []) {
++            guard let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
++                                           timestamp: ProcessInfo.processInfo.systemUptime,
++                                           windowNumber: window.windowNumber, context: nil,
++                                           characters: chars, charactersIgnoringModifiers: chars,
++                                           isARepeat: false, keyCode: code) else { return }
++            window.firstResponder?.keyDown(with: e)
++        }
++        // The selected row's text is what the field shows after an arrow key.
++        func selected() -> String {
++            guard let table = palette().flatMap({ allSubviews($0).compactMap { $0 as? NSTableView }.first }) else { return "no table" }
++            let field = (window.firstResponder as? NSTextView)?.string ?? "?"
++            let rows = (0 ..< table.numberOfRows).map { row in
++                table.view(atColumn: 0, row: row, makeIfNecessary: false)
++                    .map { allSubviews($0).compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty }.first ?? "" } ?? "?"
++            }
++            return "field=\"\(field)\" rows=\(rows)"
++        }
++        func typeText(_ text: String) {
++            for ch in text {
++                at(0.12) { key(0, String(ch)); log("key \"\(ch)\"") }
++            }
++        }
++
++        // Sample the glass container's window frame at 60 Hz; log every change.
++        var lastFrame: NSRect?
++        var lastRows = -1
++        var changes = 0
++        var shortSamples = 0
++        let sampler = Timer(timeInterval: 1.0 / 60.0, repeats: true) { _ in
++            guard let p = palette(),
++                  let glass = allSubviews(p).first(where: { $0 is GlassContainerView }) else {
++                if lastFrame != nil { log("FRAME palette gone"); lastFrame = nil; lastRows = -1 }
++                return
++            }
++            p.layoutSubtreeIfNeeded()
++            let frame = glass.convert(glass.bounds, to: nil)
++            let rows = allSubviews(p).compactMap { $0 as? NSTableView }.first?.numberOfRows ?? -1
++            if rows >= 0, rows < PaletteRows.visibleRows { shortSamples += 1 }
++            if frame != lastFrame || rows != lastRows {
++                if lastFrame != nil, frame.height != lastFrame!.height { changes += 1 }
++                let field = (window.firstResponder as? NSTextView)?.string ?? "?"
++                log(String(format: "FRAME y=%.0f h=%.0f rows=%d field=\"%@\"",
++                           frame.minY, frame.height, rows, field))
++                lastFrame = frame
++                lastRows = rows
++            }
++        }
++        RunLoop.main.add(sampler, forMode: .common)
++
++        at(0) {
++            guard let spaceID = wc.activeSpaceID, let space = TabStore.shared.space(withID: spaceID) else {
++                return log("no active space")
++            }
++            for n in 1 ... 3 {
++                space.tabs.append(BrowserTab(id: UUID(), title: "Video \(n)",
++                                             url: URL(string: "https://www.youtube.com/watch?v=\(n)"),
++                                             faviconURL: nil, cachedInteractionState: nil, spaceID: spaceID))
++            }
++            for (i, host) in ["yourstore.example", "youngsters.example", "yoga.example", "yokohama.example",
++                              "yellow.example", "yesterday.example", "yodel.example", "you-and-me.example"].enumerated() {
++                for v in 0 ... i {
++                    HistoryDatabase.shared.recordVisit(url: "https://\(host)/page\(v)", title: "\(host) page \(v)",
++                                                       faviconURL: nil, spaceID: spaceID.uuidString, typed: v == 0)
++                }
++            }
++            log("seeded")
++        }
++
++        at(1.0) { NSApp.sendAction(#selector(BrowserWindowController.newTab(_:)), to: wc, from: nil); log("Cmd+T (default list)") }
++        typeText("youtu")
++        at(0.8) { log("settled after youtu") }
++        for _ in 0 ..< 7 { at(0.15) { key(51, "\u{7F}"); log("Backspace") } }
++        at(0.8) { log("settled after clearing (default list)") }
++        typeText("zqxw")
++        at(0.8) { log("settled after zqxw (verbatim row only)"); log("SHOOT \(window.windowNumber)") }
++        // Arrow down twice right after a keystroke, before the network pass lands.
++        at(2.0) { log("resume") }
++        for _ in 0 ..< 4 { at(0.1) { key(51, "\u{7F}") } }
++        at(0.3) { key(0, "y"); key(0, "o"); key(125, "\u{F701}", flags: [.function, .numericPad]); key(125, "\u{F701}", flags: [.function, .numericPad]); log("typed yo, Down x2: \(selected())") }
++        at(1.5) { log("after late passes: \(selected())") }
++        at(2.0) {
++            key(53, "\u{1B}"); key(53, "\u{1B}"); key(53, "\u{1B}")
++            log("done: \(changes) height changes, \(shortSamples) samples with fewer than \(PaletteRows.visibleRows) rows")
++        }
++    }
++}
++#endif

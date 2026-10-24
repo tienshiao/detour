@@ -88,7 +88,8 @@ returns, in order, capped at `maxSuggestions` (12):
 | 3 | Other hosts | `bestHostCompletions` minus the top hit's host and any host whose root is already an open-tab row; host queries only | 2 (`maxOtherHosts`) |
 | 4 | Open tabs | URL or title *contains* the query, case-insensitive (`matchingTabs`) | 3 |
 | 5 | History | `searchHistory(query:spaceID:limit: 8)`, minus URLs already shown as tabs, as the top hit or as host rows | 8 |
-| 6 | Search suggestions | appended later by the view | 4, and only while the list has room under 12 |
+| 6 | Search suggestions | added by the view (`PaletteRows.compose`) when they arrive | 4, or enough to reach six rows; at most 12 rows in all |
+| 7 | Default-list filler | the empty-field list, minus URLs already listed (`PaletteRows.compose`) | up to six rows in all |
 
 The top hit also supplies `inlineCompletion`: for a host query the host
 (`displayHost`), otherwise the scheme-stripped display URL (`displayURL`
@@ -174,7 +175,13 @@ the main thread:
    no longer equals `suggestionsQuery`.
 
 `updateSuggestions` reconfigures changed rows in place and only inserts or
-removes at the tail, so the list stays visually stable while typing.
+removes at the tail, so the list stays visually stable while typing. The
+view does not show a pass's rows as they come: each pass updates its part
+(`matchRows`, `searchSuggestionTexts`) and `PaletteRows.compose` rebuilds the
+list from them plus default-list filler, so the list area is always six rows
+and the passes change rows, not the box. A pass that lands after the user
+arrowed to a row does not change that row. Details on
+[Command palette](./command-palette.md#view-structure).
 
 Only `loadDefaultSuggestions` (the empty-query list, hence `recentHistory`)
 still reads the database synchronously on the main thread.
