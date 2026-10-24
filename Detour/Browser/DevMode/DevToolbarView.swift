@@ -31,6 +31,8 @@ final class DevToolbarView: NSView {
     let copyButton = HoverButton()
     /// The right-hand controls, in groups separated by a hairline.
     let trailingStack = NSStackView()
+    /// The Web Inspector buttons, once installed (TASK-186.4).
+    var inspectorGroup: DevToolbarInspectorGroup?
 
     private static let buttonSize: CGFloat = 22
     private static let stripeColor = NSColor(name: nil) { appearance in
@@ -94,37 +96,82 @@ final class DevToolbarView: NSView {
     }
 
     private func configure(_ button: HoverButton, symbol: String, label: String, action: Selector) {
+        Self.styleIconButton(button, symbol: symbol, label: label)
+        button.target = self
+        button.action = action
+    }
+
+    /// A toolbar icon button: borderless, a 12 pt SF Symbol, 22 pt square,
+    /// labelled for accessibility and with a tooltip. For the groups other
+    /// files add (`addTrailingGroup`).
+    static func makeIconButton(symbol: String, label: String) -> HoverButton {
+        let button = HoverButton()
+        styleIconButton(button, symbol: symbol, label: label)
+        return button
+    }
+
+    private static func styleIconButton(_ button: HoverButton, symbol: String, label: String) {
         button.bezelStyle = .inline
         button.isBordered = false
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
             .withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
         button.imagePosition = .imageOnly
         button.contentTintColor = .secondaryLabelColor
-        button.target = self
-        button.action = action
         button.toolTip = label
         button.setAccessibilityLabel(label)
-        button.fixedHoverSize = Self.buttonSize
+        button.fixedHoverSize = buttonSize
         button.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: Self.buttonSize),
-            button.heightAnchor.constraint(equalToConstant: Self.buttonSize),
+            button.widthAnchor.constraint(equalToConstant: buttonSize),
+            button.heightAnchor.constraint(equalToConstant: buttonSize),
         ])
     }
 
-    /// Adds a group of buttons at the right end, after a hairline separator.
-    /// Each button should carry its own accessibility label.
-    func addTrailingGroup(_ buttons: [NSButton]) {
+    /// Where a trailing group sits: groups are kept in ascending order after
+    /// the copy button, whichever is added first (Arc: link | capture |
+    /// inspector).
+    enum TrailingGroupOrder: Int, Comparable {
+        case capture = 100
+        case inspector = 200
+        case last = 1000
+
+        static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    private struct TrailingGroup {
+        let order: TrailingGroupOrder
+        let separator: NSView
+        let buttons: [NSButton]
+    }
+
+    private var trailingGroups: [TrailingGroup] = []
+
+    /// Adds a group of buttons at the right end, after a hairline separator,
+    /// in `order` among the groups already added (equal orders keep the order
+    /// they were added in). Each button should carry its own accessibility
+    /// label.
+    func addTrailingGroup(_ buttons: [NSButton], order: TrailingGroupOrder = .last) {
         guard !buttons.isEmpty else { return }
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
         separator.heightAnchor.constraint(equalToConstant: 14).isActive = true
-        trailingStack.addArrangedSubview(separator)
-        trailingStack.setCustomSpacing(8, after: trailingStack.arrangedSubviews[trailingStack.arrangedSubviews.count - 2])
+        let group = TrailingGroup(order: order, separator: separator, buttons: buttons)
+        let index = trailingGroups.firstIndex { $0.order > order } ?? trailingGroups.count
+        trailingGroups.insert(group, at: index)
+
+        // The stack's views: the copy button, then each group's separator and
+        // buttons, in group order.
+        var position = 1 + trailingGroups[..<index].reduce(0) { $0 + 1 + $1.buttons.count }
+        let before = trailingStack.arrangedSubviews[position - 1]
+        for view in [separator] + buttons {
+            trailingStack.insertArrangedSubview(view, at: position)
+            position += 1
+        }
+        trailingStack.setCustomSpacing(8, after: before)
         trailingStack.setCustomSpacing(8, after: separator)
-        for button in buttons {
-            trailingStack.addArrangedSubview(button)
+        if let last = buttons.last, position < trailingStack.arrangedSubviews.count {
+            trailingStack.setCustomSpacing(8, after: last)
         }
     }
 

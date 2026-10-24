@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Dev mode
-description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a hazard border and a host line, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working)."
+description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a hazard border and a host line, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working) with its Console, Network and element picker buttons."
 tags: [dev-mode, sidebar, tabs, url-rules, site-settings]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T19:40:00Z }
@@ -63,6 +63,21 @@ sources:
   - id: hosting-tests
     resource: ../../DetourTests/DevToolbarHostingTests.swift
     title: DevToolbarHostingTests.swift
+  - id: inspector-group
+    resource: ../../Detour/Browser/DevMode/DevToolbarInspectorGroup.swift
+    title: DevToolbarInspectorGroup.swift
+  - id: inspector-control
+    resource: ../../Detour/Browser/DevMode/WebInspectorControl.swift
+    title: WebInspectorControl.swift
+  - id: inspector-tests
+    resource: ../../DetourTests/WebInspectorControlTests.swift
+    title: WebInspectorControlTests.swift
+  - id: harness-1864
+    resource: ../../docs/harness/task186-4-harness.patch
+    title: TASK-186.4 runtime harness
+  - id: task-186-4
+    resource: backlog:TASK-186.4
+    title: "Dev mode: toolbar buttons that toggle the Web Inspector's Console and Network tabs"
   - id: harness-1862
     resource: ../../docs/harness/task186-2-harness.patch
     title: TASK-186.2 runtime harness
@@ -245,21 +260,43 @@ A 30 pt bar across the top of a dev-mode tab's web content, modelled on
 Arc's (faint diagonal stripes on a light bar).[^arc-toolbar] Left to right:
 an info button (`info.circle`, "Site Settings"), the page's URL in 11 pt
 monospace, truncated in the middle, and a trailing stack holding the copy
-button (`link`, "Copy URL").[^toolbar-view]
+button (`link`, "Copy URL") and, after a hairline, the Web Inspector group:
+Console (`terminal`), Network (`globe`) and Select Element (`scope`), as in
+Arc.[^toolbar-view][^inspector-group]
 
 | Control | Does |
 |---|---|
 | Info | Opens the site settings popover (the one behind the address bar's slider button) under the info button, without the address bar's hover buttons showing |
 | URL | Opens the command palette prefilled with the URL, navigating the tab in place (a new tab while a Peek is up), anchored at the toolbar |
 | Copy | Copies the toolbar's own pane's URL, with the "URL copied" toast, through the same `copyURL` the address bar uses |
+| Console | Opens this pane's inspector on Console; closes it when it already shows Console; switches to Console when it shows another tab |
+| Network | The same for the Network tab |
+| Select Element | Toggles WebKit's element picker; the button is tinted with the accent colour while it is on. Picking an element opens the inspector on Elements |
 | Background | Moves the window (`performDrag`), as the drag strip it sits in would |
 
 A click on a control in the unfocused pane of a split focuses that pane
 first (`makeFirstResponder` on its web view), so the palette and the popover
-act on it. TASK-186.3 and TASK-186.4 add their buttons with
-`addTrailingGroup(_:)`, which puts a hairline separator before each group.
-Every button carries an accessibility label; the bar is an accessibility
-toolbar.
+act on it; they stop if the pane did not take focus. The inspector buttons
+focus the pane too but act on their pane's own web view either way: the
+inspector call names its web view, so it cannot land on the other pane.
+Groups are added with `addTrailingGroup(_:order:)`, which puts a hairline
+separator before each group and keeps them in `TrailingGroupOrder`
+(`.capture` before `.inspector`), so TASK-186.3's capture group lands
+between the link and the inspector whichever is added first. Every button
+carries an accessibility label; the bar is an accessibility toolbar.
+
+**The inspector buttons** (TASK-186.4)[^task-186-4] use private WebKit API
+kept in one type, `WebInspectorControl`; the calls, the guards and what was
+rejected are on [Driving the Web Inspector](../platform/web-inspector-control.md).
+The decision is the pure `InspectorToggle.action(isVisible:currentTab:requested:)`:
+closed → `.show(tab)`, open on that tab → `.close`, open on another or an
+unknown tab → `.switchTo(tab)`. `WebInspectorToggler` reads the frontend's
+selected tab when the inspector is open, opens a closed one where WebKit
+last had it (docked by default, on the saved side) and waits for the
+frontend to load before picking Network; a second press while it is still
+opening retargets that open. A button whose calls this WebKit lacks is left
+out. Console and Network show no pressed state: the user can switch tabs
+inside the inspector without the app hearing of it.
 
 **Decisions** (user, TASK-186.2):[^task-186-2] the URL opens the palette (no
 inline editing); the info button opens the site popover; no toolbar inside a
@@ -390,6 +427,26 @@ pane and its unfocused pane navigating, a Peek, the URL click (and focusing
 the other pane first), and the copy button writing its own pane's URL to a
 private pasteboard (`urlPasteboard`).[^hosting-tests]
 
+`WebInspectorControlTests` (22, TASK-186.4): the toggle rule (closed,
+same tab, other tab, unknown tab), the frontend's tab types, which buttons a
+WebKit gets from the selectors it answers, a canary that this Mac's WebKit
+answers all of them, the group's buttons and labels, a capture group added
+later landing before it, no group without capabilities, the picker's tint,
+and in a Private window the group installed once across claims and the
+unfocused pane's buttons acting on that pane's web view (a recording
+`webInspectorToggler`).[^inspector-tests]
+
+The TASK-186.4 [harness](../../docs/harness/task186-4-harness.patch) pressed
+the real buttons and logged the frontend's own selected tab after each:
+Console from closed opened docked on Console, again closed it; Network from
+closed opened on Network; Console on Network switched, Network on Network
+closed; Console after the user picked Elements switched; two presses in one
+turn opened on the second; a right-docked inspector closed and reopened
+docked right; in a split the unfocused pane's Console docked an inspector in
+that pane only; a 422 pt pane got its own inspector window. The picker
+turned on and off with its tint; picking an element was not verified
+(synthetic mouse events do not reach WebKit's overlay).[^harness-1864]
+
 The TASK-186.2 [harness](../../docs/harness/task186-2-harness.patch) checked
 in the running app, with `window.innerHeight` against the container: a
 local tab (730 under a 30 pt bar in a 760 pt container), a remote one (760),
@@ -441,4 +498,9 @@ captured in light and dark.[^harness-1865]
 [^window-toolbar]: BrowserWindowController+DevToolbar.swift
 [^drag-strip]: WindowDragView.swift (WindowDragPassThrough)
 [^toolbar-tests]: DevToolbarLayoutTests.swift
+[^inspector-group]: DevToolbarInspectorGroup.swift
+[^inspector-control]: WebInspectorControl.swift
+[^inspector-tests]: WebInspectorControlTests.swift
+[^harness-1864]: TASK-186.4 runtime harness
+[^task-186-4]: Dev mode: toolbar buttons that toggle the Web Inspector's Console and Network tabs
 [^hosting-tests]: DevToolbarHostingTests.swift

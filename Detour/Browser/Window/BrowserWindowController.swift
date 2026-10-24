@@ -157,6 +157,10 @@ class BrowserWindowController: NSWindowController {
     /// never clobbers the user's clipboard.
     var urlPasteboard: NSPasteboard = .general
 
+    /// What the dev toolbar's Web Inspector buttons drive (TASK-186.4); a
+    /// test substitutes a recorder.
+    var webInspectorToggler: WebInspectorToggling = WebInspectorToggler.shared
+
     /// Runs `body` with the background-tab toast off; see
     /// `suppressesBackgroundTabToast`.
     func withoutBackgroundTabToast<T>(_ body: () -> T) -> T {

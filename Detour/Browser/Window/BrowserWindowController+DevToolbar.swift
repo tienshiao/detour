@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import WebKit
 
 /// Dev mode's in-page toolbar (TASK-186.2), per hosted pane. The toolbar lives
 /// in the tab's `WebViewContainerView` (which lays it out); the window decides
@@ -72,6 +73,35 @@ extension BrowserWindowController {
         }
         toolbar.onCopyClick = { [weak self, weak tab] in
             self?.copyURL(tab?.url)
+        }
+        wireInspectorButtons(of: toolbar, to: tab)
+    }
+
+    /// The Console, Network and element picker buttons (TASK-186.4) act on
+    /// this pane's own web view, which in a split may be the unfocused pane.
+    /// They focus the pane first, as a click in its page would, but go on
+    /// even if it did not take focus: unlike the palette and the popover,
+    /// the inspector call names its web view, so it cannot land on the other
+    /// pane.
+    private func wireInspectorButtons(of toolbar: DevToolbarView, to tab: BrowserTab) {
+        guard let group = DevToolbarInspectorGroup.install(in: toolbar) else { return }
+        group.onToggle = { [weak self, weak tab] inspectorTab in
+            guard let self, let tab, let webView = tab.webView else { return }
+            _ = self.focusPane(tab)
+            self.webInspectorToggler.toggle(inspectorTab, for: webView)
+        }
+        let toggler = webInspectorToggler
+        let pickerState: (WKWebView) -> () -> Bool = { webView in
+            { [weak webView] in webView.map { toggler.isElementSelectionActive(for: $0) } ?? false }
+        }
+        group.onPickElement = { [weak self, weak tab, weak group] in
+            guard let self, let tab, let webView = tab.webView, let group else { return }
+            _ = self.focusPane(tab)
+            toggler.toggleElementSelection(for: webView)
+            group.followElementPicker(pickerState(webView))
+        }
+        if let webView = tab.webView {
+            group.syncElementPicker(pickerState(webView))
         }
     }
 
