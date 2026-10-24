@@ -112,6 +112,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
                 existing.isSelected = fav.tab?.id == selectedTabID
                 existing.refreshFavicon()
                 existing.refreshPeekBadge()
+                existing.refreshDevMode()
                 newTiles.append(existing)
             } else {
                 let tile = FavoriteTileView(favorite: fav, index: index)
@@ -193,6 +194,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
         for tile in tileViews where tile.favorite.tab?.id == tabID {
             tile.refreshFavicon()
             tile.refreshPeekBadge()
+            tile.refreshDevMode()
         }
     }
 
@@ -534,6 +536,9 @@ class FavoriteTileView: NSView {
     let peekFaviconImageView = NSImageView()
     private var peekSubscription: AnyCancellable?
     private var faviconSubscriptions = Set<AnyCancellable>()
+    /// Dev mode's hazard border (TASK-186.1): a tile has no title, so no host line.
+    private let devModeBorder = HazardBorderView()
+    private var devModeSubscription: AnyCancellable?
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
 
@@ -565,6 +570,11 @@ class FavoriteTileView: NSView {
         layer?.cornerRadius = UIConstants.defaultCornerRadius
         updateBackground()
 
+        devModeBorder.frame = bounds
+        devModeBorder.autoresizingMask = [.width, .height]
+        devModeBorder.isHidden = true
+        addSubview(devModeBorder)
+
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
@@ -579,6 +589,25 @@ class FavoriteTileView: NSView {
         refreshFavicon()
         setupPeekBadge()
         refreshPeekBadge()
+        refreshDevMode()
+    }
+
+    var showsDevModeBorder: Bool { !devModeBorder.isHidden }
+
+    /// Syncs the hazard border with the favourite's dev-mode state — the live
+    /// tab's page, else the favourite's URL — and rebinds to the live tab's
+    /// URL so the border follows navigation. Cheap and idempotent: call it
+    /// whenever the tile is reused, like `refreshFavicon`.
+    func refreshDevMode() {
+        devModeSubscription = favorite.tab?.$url
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.applyDevMode() }
+        applyDevMode()
+    }
+
+    private func applyDevMode() {
+        devModeBorder.isHidden = !DevMode.isActive(for: favorite.devModeURL)
     }
 
     /// Syncs the main favicon with the favourite and rebinds the two sources

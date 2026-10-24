@@ -4,6 +4,7 @@ title: 'Dev mode: an under-construction toolbar above the page with the URL'
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:13'
+updated_date: '2026-10-24 17:02'
 labels:
   - dev-mode
   - ui
@@ -32,3 +33,9 @@ Decide: whether clicking the URL opens the command palette in place (like the si
 - [ ] #3 Works per pane in a split, with a Peek open and with the docked Web Inspector; decisions recorded
 - [ ] #4 Checked at runtime (window capture), light and dark
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decisions (user, 2026-10-24): (defaults taken) clicking the URL opens the command palette in place, like the faux address bar; the info button opens the site popover (TASK-186.5); no toolbar inside a Peek panel (the host's toolbar stays).
+<!-- SECTION:NOTES:END -->

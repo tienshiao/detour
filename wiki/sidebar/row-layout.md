@@ -4,7 +4,7 @@ title: Sidebar row layout
 description: How a sidebar table row maps to a pinned item or a tab-list item, why an item index is not a tab index, and the pure functions every conversion must go through.
 tags: [sidebar, layout, split-tabs, invariants]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:17:19Z }
 sources:
   - id: sidebar-layout
     resource: ../../Detour/Browser/Sidebar/SidebarLayout.swift
@@ -57,6 +57,10 @@ With `P` flattened pinned items and `N` tab-list items:
 | `P + 1` | `.separator` | 12 | no | Drop target for "end of the pinned section" |
 | `P + 2` | `.newTab` | 36 | yes | Selecting it opens the command palette, then deselects |
 | `P + 3 … P + 2 + N` | `.normalTab(index:)` | 36 | yes | Index into `[TabListItem]` — an **item** index |
+
+Row heights do not depend on a row's content. A [dev-mode](../features/dev-mode.md)
+row's second line (the host) fits inside the 36 pt row by moving the title
+up, so it changes nothing here.
 
 The whole mapping is four functions in
 [SidebarLayout.swift](../../Detour/Browser/Sidebar/SidebarLayout.swift):

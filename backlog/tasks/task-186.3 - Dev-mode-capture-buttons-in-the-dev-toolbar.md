@@ -4,6 +4,7 @@ title: 'Dev mode: capture buttons in the dev toolbar'
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:13'
+updated_date: '2026-10-24 17:02'
 labels:
   - dev-mode
   - feature
@@ -25,3 +26,9 @@ Third part of TASK-186. Arc's toolbar has image capture buttons (see docs/dev-mo
 - [ ] #1 The chosen capture buttons produce a correct image of the visible page (and full page, if chosen), delivered where decided
 - [ ] #2 Works in a split pane and on a Retina display at the right scale
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decisions (user, 2026-10-24): two buttons, visible area and full page; the PNG goes to the clipboard with a confirming toast; Option-click saves it to Downloads instead.
+<!-- SECTION:NOTES:END -->

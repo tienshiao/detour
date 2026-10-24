@@ -507,6 +507,7 @@ class TabSidebarViewController: NSViewController {
                     cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: true,
                                          departingFavicon: departed?.displayFavicon,
                                          departingTitle: departed?.displayTitle)
+                    cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL))
                     cell.onClose = { [weak self] in
                         guard let self else { return }
                         let row = self.tableView.row(for: cell)
@@ -2215,6 +2216,7 @@ class TabSidebarViewController: NSViewController {
             cell.updateFavicon(tab.favicon)
             cell.updatePeekFavicon(tab.displayPeekFavicon)
             cell.updateSplitPane(favicon: nil, title: nil)
+            cell.updateDevMode(DevMode.rowMarking(for: tab.url))
             cell.updateSleeping(tab.isSleeping)
             cell.updateLoading(tab.isLoading)
             cell.updateProgress(tab.sidebarProgress)
@@ -2254,6 +2256,7 @@ class TabSidebarViewController: NSViewController {
             cell.updateFavicon(entry.displayFavicon)
             cell.updatePeekFavicon(tab?.displayPeekFavicon)
             cell.updateSplitPane(favicon: nil, title: nil)
+            cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL))
             cell.updateSleeping((tab?.isSleeping ?? false) || !entry.isLive)
             cell.updateLoading(tab?.isLoading ?? false)
             cell.updateProgress(tab?.sidebarProgress ?? 0)
@@ -2785,6 +2788,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 cell.updateFavicon(favicon)
                 cell.updatePeekFavicon(tab?.displayPeekFavicon)
                 cell.updateSplitPane(favicon: nil, title: nil)
+                cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL))
                 cell.updateSleeping(isSleeping || !entry.isLive)
                 cell.updateLoading(isLoading)
                 cell.updateProgress(progress)
@@ -2878,6 +2882,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let left: SplitCellHalf
         let right: SplitCellHalf
         let tooltip: String
+        /// Which halves are dev-mode pages (TASK-186.1).
+        let devMode: DevModeRowMarking
         let isSleeping: Bool
         let isLoading: Bool
         let progress: Double
@@ -2908,6 +2914,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                              title: descriptor.right.title,
                              emphasized: descriptor.right.emphasized,
                              animatedReveal: animatedReveal)
+        cell.updateDevMode(descriptor.devMode)
         cell.updateSleeping(descriptor.isSleeping)
         cell.updateLoading(descriptor.isLoading)
         cell.updateProgress(descriptor.progress)
@@ -2941,6 +2948,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             left: SplitCellHalf(favicon: left.favicon, title: left.title, emphasized: rep === left),
             right: SplitCellHalf(favicon: right.favicon, title: right.title, emphasized: rep === right),
             tooltip: "\(left.title) — \(right.title)",
+            devMode: DevMode.splitRowMarking(left: left.url, right: right.url),
             isSleeping: members.allSatisfy { $0.isSleeping },
             isLoading: members.contains { $0.isLoading },
             progress: members.map(\.sidebarProgress).max() ?? 0,
@@ -2968,6 +2976,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             left: SplitCellHalf(favicon: left.displayFavicon, title: left.displayTitle, emphasized: rep === left),
             right: SplitCellHalf(favicon: right.displayFavicon, title: right.displayTitle, emphasized: rep === right),
             tooltip: "\(left.displayTitle) — \(right.displayTitle)",
+            devMode: DevMode.splitRowMarking(left: left.devModeURL, right: right.devModeURL),
             isSleeping: entries.allSatisfy { !$0.isLive || $0.tab?.isSleeping == true },
             isLoading: entries.contains { $0.tab?.isLoading == true },
             progress: entries.compactMap { $0.tab?.sidebarProgress }.max() ?? 0,
@@ -3033,6 +3042,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.updatePeekFavicon(tab.displayPeekFavicon)
         cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: animatedReveal,
                              departingFavicon: departingFavicon, departingTitle: departingTitle)
+        cell.updateDevMode(DevMode.rowMarking(for: tab.url))
         cell.updateSleeping(tab.isSleeping)
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.sidebarProgress)

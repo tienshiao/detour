@@ -4,7 +4,7 @@ title: 'Dev mode: turn dev mode on or off per site from the address bar popover'
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:19'
-updated_date: '2026-10-24 11:03'
+updated_date: '2026-10-24 17:02'
 labels:
   - dev-mode
   - feature
@@ -44,4 +44,6 @@ Requested by the user 2026-10-24. Dev mode must be toggleable for any site, not 
 2026-10-24 (user): store dev mode in the shared per-site settings table (TASK-187, setting devMode) instead of a table of its own; content blocking moves there too.
 
 From TASK-187's review (2026-10-24): SiteSettingsStore persists every profile's rows, the Private profile's included (content blocking always did: the Private profile row is saved under its fixed id). ExternalAppPermissionStore by contrast keeps Private decisions in memory only. Decide here whether this setting's choice made in a Private window should outlive the session.
+
+Decisions (user, 2026-10-24): Private: a dev-mode choice made in a Private window is kept in memory only (SiteSetting.persistsInPrivate = false), as for picture in picture (TASK-188). Proposed and taken: site key = host plus a non-default port, exact match (no subdomain coverage); stored in the siteSetting table (TASK-187) as a devMode setting with overrides in both directions; popover icon slider.horizontal.3.
 <!-- SECTION:NOTES:END -->

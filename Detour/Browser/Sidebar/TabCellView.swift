@@ -53,8 +53,17 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     let splitTitleLabel = NSTextField(labelWithString: "")
     private let splitCloseButton: HoverButton
     let splitDivider = NSView()
+    /// Dev mode's second line under the title: the page's host (and port when
+    /// not the default). Exposed (internal) for `DevModeTests`.
+    let hostLineLabel = NSTextField(labelWithString: "")
+    /// Dev mode's hazard borders, made on first use: the whole row, or a split
+    /// row's left half; and a split row's right half.
+    private var devModeBorder: HazardBorderView?
+    private var devModeSplitBorder: HazardBorderView?
+    private var devModeMarking: DevModeRowMarking = .none
     private var trackingArea: NSTrackingArea?
     private var titleLeadingConstraint: NSLayoutConstraint!
+    private var titleCenterYConstraint: NSLayoutConstraint!
     private var faviconLeadingConstraint: NSLayoutConstraint!
     private var closeButtonWidthConstraint: NSLayoutConstraint!
     private var closeButtonTrailingConstraint: NSLayoutConstraint!
@@ -129,6 +138,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        hostLineLabel.font = .systemFont(ofSize: Self.hostLineFontSize)
+        hostLineLabel.textColor = .secondaryLabelColor
+        hostLineLabel.lineBreakMode = .byTruncatingTail
+        hostLineLabel.translatesAutoresizingMaskIntoConstraints = false
+        hostLineLabel.isHidden = true
+
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
         closeButton.imagePosition = .imageOnly
@@ -182,6 +197,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         addSubview(sleepBadge)
         addSubview(speakerButton)
         addSubview(titleLabel)
+        addSubview(hostLineLabel)
         addSubview(closeButton)
         addSubview(splitCloseButton)
         addSubview(splitDivider)
@@ -199,6 +215,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         peekFaviconWidthConstraint = peekFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
         titleSingleTrailingConstraint = titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4)
         titleSplitTrailingConstraint = titleLabel.trailingAnchor.constraint(equalTo: splitCloseButton.leadingAnchor, constant: -4)
+        titleCenterYConstraint = titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
 
         NSLayoutConstraint.activate([
             faviconLeadingConstraint,
@@ -217,8 +234,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             speakerButton.heightAnchor.constraint(equalToConstant: 16),
 
             titleLeadingConstraint,
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleCenterYConstraint,
             titleSingleTrailingConstraint,
+
+            // Dev mode's host line hangs under the title and follows its
+            // leading edge (which the speaker button moves) and trailing edge.
+            hostLineLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            hostLineLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            hostLineLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: Self.hostLineSpacing),
 
             closeButtonTrailingConstraint,
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -280,6 +303,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         indentLevel = 0
         onRename = nil
         onCloseLeft = nil
+        updateDevMode(.none)
         if isEditing { endEditing(commit: false) }
         resetSplitRevealState()
         updateLayoutState()
@@ -288,8 +312,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// Full row for a single tab; the hovered half (up to the centered divider,
     /// with a small gap around it) for a split row.
     private var hoverBackgroundFrame: NSRect {
+        rowHighlightRect(splitSide: hasSplit ? hoveredSplitSide : nil)
+    }
+
+    /// The rect the hover background and the dev-mode border share: the whole
+    /// row, or one half of a split row (0 = left, 1 = right).
+    private func rowHighlightRect(splitSide side: Int?) -> NSRect {
         let rowRect = bounds.insetBy(dx: -6, dy: 1)
-        guard hasSplit, let side = hoveredSplitSide else { return rowRect }
+        guard let side else { return rowRect }
         let mid = bounds.midX
         if side == 0 {
             return NSRect(x: rowRect.minX, y: rowRect.minY,
@@ -303,6 +333,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         super.layout()
         guard bounds.width > 12, bounds.height > 2 else { return }
         hoverBackground.frame = hoverBackgroundFrame
+        layoutDevModeBorders()
         // Progress bar spans the full row area regardless of hover
         let rowRect = bounds.insetBy(dx: -6, dy: 1)
         let progressWidth = rowRect.width * max(currentProgress, 0)
@@ -660,6 +691,70 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         super.viewDidChangeEffectiveAppearance()
         effectiveAppearance.performAsCurrentDrawingAppearance {
             updateSplitDividerColor()
+        }
+    }
+
+    // MARK: - Dev mode (TASK-186.1)
+
+    private static let hostLineFontSize: CGFloat = 10
+    /// Labels carry internal leading, so the two lines sit tight with a small
+    /// negative gap.
+    private static let hostLineSpacing: CGFloat = -2
+
+    /// Marks the row as a dev-mode page: a hazard border around the row and
+    /// the host under the title for a single tab; a border around each local
+    /// pane's half, with no host line, for a split row. `.none` clears it. The
+    /// two lines fit the row's existing height — the title moves up by half
+    /// the host line's height — so the list's row layout is unchanged.
+    func updateDevMode(_ marking: DevModeRowMarking) {
+        guard marking != devModeMarking else { return }
+        devModeMarking = marking
+        if case .tab(let hostLabel) = marking {
+            hostLineLabel.stringValue = hostLabel
+            hostLineLabel.isHidden = false
+            titleCenterYConstraint.constant = -ceil(hostLineLabel.intrinsicContentSize.height + Self.hostLineSpacing) / 2
+        } else {
+            hostLineLabel.stringValue = ""
+            hostLineLabel.isHidden = true
+            titleCenterYConstraint.constant = 0
+        }
+        let (showsMain, showsRight): (Bool, Bool) = switch marking {
+        case .none: (false, false)
+        case .tab: (true, false)
+        case .split(let left, let right): (left, right)
+        }
+        if showsMain, devModeBorder == nil { devModeBorder = makeDevModeBorder() }
+        if showsRight, devModeSplitBorder == nil { devModeSplitBorder = makeDevModeBorder() }
+        devModeBorder?.isHidden = !showsMain
+        devModeSplitBorder?.isHidden = !showsRight
+        layoutDevModeBorders()
+    }
+
+    private func makeDevModeBorder() -> HazardBorderView {
+        let border = HazardBorderView()
+        border.isHidden = true
+        // Over the progress bar and hover background, under the row's content.
+        addSubview(border, positioned: .above, relativeTo: progressView)
+        return border
+    }
+
+    private func layoutDevModeBorders() {
+        switch devModeMarking {
+        case .none:
+            break
+        case .tab:
+            devModeBorder?.frame = rowHighlightRect(splitSide: nil)
+        case .split:
+            devModeBorder?.frame = rowHighlightRect(splitSide: 0)
+            devModeSplitBorder?.frame = rowHighlightRect(splitSide: 1)
+        }
+    }
+
+    /// Frames of the hazard borders showing, for `DevModeTests`.
+    var devModeBorderFrames: [NSRect] {
+        [devModeBorder, devModeSplitBorder].compactMap { border in
+            guard let border, !border.isHidden else { return nil }
+            return border.frame
         }
     }
 

@@ -1,10 +1,11 @@
 ---
 id: TASK-186
 title: 'Dev mode for local development URLs: sidebar row and in-page dev toolbar'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-24 09:12'
-updated_date: '2026-10-24 09:19'
+updated_date: '2026-10-24 17:02'
 labels:
   - dev-mode
   - feature
@@ -34,4 +35,6 @@ The parent is done when the subtasks are.
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-24 (user): dev mode is also toggleable per site for any site (not only local URLs), remembered per domain like Arc — TASK-186.5. Effective dev mode = the site's stored override, else the local-development default from TASK-186.1. The toggle lives in the faux address bar's popover, whose icon changes.
+
+Decisions (user, 2026-10-24): automatic dev mode for http(s) on localhost, *.localhost, 127.0.0.0/8, [::1], 0.0.0.0 and *.test; not LAN IPs or .local (any site can be turned on by hand, TASK-186.5). Subtasks committed one at a time in the order 186.1, 186.5, 186.2, 186.4, 186.3.
 <!-- SECTION:NOTES:END -->
