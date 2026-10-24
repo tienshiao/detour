@@ -37,9 +37,6 @@ final class DevToolbarView: NSView {
     var inspectorGroup: DevToolbarInspectorGroup?
 
     private static let buttonSize: CGFloat = 22
-    private static let stripeColor = NSColor(name: nil) { appearance in
-        appearance.isDark ? NSColor.white.withAlphaComponent(0.035) : NSColor.black.withAlphaComponent(0.03)
-    }
     static let backgroundColor = NSColor(name: nil) { appearance in
         appearance.isDark ? NSColor(white: 0.17, alpha: 1) : NSColor(white: 0.975, alpha: 1)
     }
@@ -203,7 +200,7 @@ final class DevToolbarView: NSView {
             path.close()
             x += period
         }
-        Self.stripeColor.setFill()
+        DevModePalette.current.toolbarStripe.setFill()
         path.fill()
 
         // Hairline between the bar and the page.

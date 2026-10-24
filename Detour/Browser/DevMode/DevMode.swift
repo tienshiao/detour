@@ -62,6 +62,40 @@ enum DevModeRowMarking: Equatable {
     case split(left: Bool, right: Bool)
 }
 
+/// What a sidebar row or favourite tile shows for its `DevModeRowMarking`
+/// (TASK-197).
+struct DevModeRowDisplay: Equatable {
+    /// The host line under the title; nil hides it.
+    var hostLabel: String?
+    /// The hazard border around the whole row (a single tab or a tile), or
+    /// around a split row's left half.
+    var showsMainBorder: Bool
+    /// The hazard border around a split row's right half.
+    var showsRightBorder: Bool
+
+    static let hidden = DevModeRowDisplay(hostLabel: nil, showsMainBorder: false, showsRightBorder: false)
+}
+
+extension DevModeRowMarking {
+    /// Like Arc, only the selected row is bordered; an unselected dev-mode tab
+    /// keeps its host line, and an unselected split row (no host line) shows
+    /// nothing. The host line never depends on selection, so it doesn't move
+    /// when the selection does. `isSelected` is the window's own selection:
+    /// a split row is selected when it holds the selected tab, whichever pane
+    /// is focused, and a dormant pinned row never is.
+    func display(isSelected: Bool) -> DevModeRowDisplay {
+        switch self {
+        case .none:
+            return .hidden
+        case .tab(let hostLabel):
+            return DevModeRowDisplay(hostLabel: hostLabel, showsMainBorder: isSelected, showsRightBorder: false)
+        case .split(let left, let right):
+            return DevModeRowDisplay(hostLabel: nil, showsMainBorder: isSelected && left,
+                                     showsRightBorder: isSelected && right)
+        }
+    }
+}
+
 /// The site a dev-mode override is stored under (TASK-186.5): the host plus
 /// a non-default port, the same string as `devModeHostLabel(for:)`, so two
 /// local apps on different ports are separate sites. Nil for a URL that is

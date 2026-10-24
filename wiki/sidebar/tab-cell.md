@@ -66,7 +66,7 @@ mute, rename and collapse.
 | Speaker button | playing audio or muted | Slides the title from 8 to 24 pt. The icon is updated even when the playing/muted union did not change, or muting a playing tab would not swap it |
 | Title | always | Pinned entries show `displayTitle`. There is no tooltip: the sidebar's [tab hover card](../features/tab-hover-card.md) replaced it, and the cell's `accessibilityHelp` keeps the old tooltip text (the tab title, a pinned entry's pinned title, a split row's "left — right") |
 | Host line | the row is in [dev mode](../features/dev-mode.md) (single rows only) | 10 pt `secondaryLabelColor` label under the title, `hostLineLabel`; the title moves up so both lines are centred in the unchanged 36 pt row |
-| Hazard border | the row, or a split half, is in dev mode | Yellow/black dashed `HazardBorderView`, made on first use, framed like the hover background (a split half's border matches its half highlight); over the progress bar, under the content |
+| Hazard border | the row, or a split half, is in dev mode **and the row is the window's selected row** (`isRowSelected`, pushed by `TabRowView.isSelected`) | Orange/black dashed `HazardBorderView`, made on first use and only hidden on deselection, framed like the hover background (a split half's border matches its half highlight); over the progress bar, under the content |
 | Close button | hover only | Glyph says what it will do: xmark closes a normal tab; **minus** makes a live pinned entry dormant; xmark on a dormant entry removes the pin (`updatePinnedMode`) |
 | Peek favicon | the tab has a parked [Peek](../tabs/peek.md) | Trailing chip; never used for split rendering |
 | Split segment | the row is a split | See below |

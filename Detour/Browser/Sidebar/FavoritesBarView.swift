@@ -80,6 +80,14 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
     var isEmpty: Bool { favorites.isEmpty }
 
+    /// Whether `favorite`'s tile shows as the selected tab. A dormant
+    /// favourite has no tab, so it is never selected — comparing its nil tab
+    /// ID with a nil selection would otherwise read as a match.
+    static func isSelected(_ favorite: Favorite, selectedTabID: UUID?) -> Bool {
+        guard let selectedTabID else { return false }
+        return favorite.tab?.id == selectedTabID
+    }
+
     func update(favorites: [Favorite], selectedTabID: UUID? = nil, animated: Bool = true) {
         let oldFavorites = self.favorites
         self.favorites = favorites
@@ -118,7 +126,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
         for (index, fav) in favorites.enumerated() {
             if let existing = oldTilesByID[fav.id] {
                 existing.updateIndex(index)
-                existing.isSelected = fav.tab?.id == selectedTabID
+                existing.isSelected = Self.isSelected(fav, selectedTabID: selectedTabID)
                 existing.refreshFavicon()
                 existing.refreshPeekBadge()
                 existing.refreshDevMode()
@@ -126,7 +134,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
             } else {
                 let tile = FavoriteTileView(favorite: fav, index: index, profileID: profileID)
                 tile.selectionColor = selectionColor
-                tile.isSelected = fav.tab?.id == selectedTabID
+                tile.isSelected = Self.isSelected(fav, selectedTabID: selectedTabID)
                 if index < targetFrames.count {
                     if let origin = animOrigin {
                         // Start where the drag was released
@@ -185,7 +193,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
         for (index, fav) in favorites.enumerated() {
             let tile = FavoriteTileView(favorite: fav, index: index, profileID: profileID)
             tile.selectionColor = selectionColor
-            tile.isSelected = fav.tab?.id == selectedTabID
+            tile.isSelected = Self.isSelected(fav, selectedTabID: selectedTabID)
             addSubview(tile)
             tileViews.append(tile)
         }
@@ -220,7 +228,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
     func updateSelection(selectedTabID: UUID?) {
         self.selectedFavoriteID = selectedTabID
         for tile in tileViews {
-            tile.isSelected = tile.favorite.tab?.id == selectedTabID
+            tile.isSelected = Self.isSelected(tile.favorite, selectedTabID: selectedTabID)
         }
     }
 
@@ -550,7 +558,8 @@ class FavoriteTileView: NSView {
     let peekFaviconImageView = NSImageView()
     private var peekSubscription: AnyCancellable?
     private var faviconSubscriptions = Set<AnyCancellable>()
-    /// Dev mode's hazard border (TASK-186.1): a tile has no title, so no host line.
+    /// Dev mode's hazard border (TASK-186.1), shown only while the tile's tab
+    /// is the selected tab (TASK-197): a tile has no title, so no host line.
     private let devModeBorder = HazardBorderView()
     private var devModeSubscription: AnyCancellable?
     private var trackingArea: NSTrackingArea?
@@ -562,7 +571,12 @@ class FavoriteTileView: NSView {
     private static let peekBadgeIconSize: CGFloat = 10
     private static let peekBadgeInset: CGFloat = 2
 
-    var isSelected = false { didSet { updateBackground() } }
+    var isSelected = false {
+        didSet {
+            updateBackground()
+            if isSelected != oldValue { applyDevMode() }
+        }
+    }
     var selectionColor: NSColor? { didSet { updateBackground() } }
     /// The bar's profile, for dev mode's per-site override.
     var profileID: UUID? { didSet { applyDevMode() } }
@@ -624,7 +638,8 @@ class FavoriteTileView: NSView {
     }
 
     private func applyDevMode() {
-        devModeBorder.isHidden = !DevMode.isActive(for: favorite.devModeURL, profileID: profileID)
+        devModeBorder.isHidden = !DevMode.rowMarking(for: favorite.devModeURL, profileID: profileID)
+            .display(isSelected: isSelected).showsMainBorder
     }
 
     /// Syncs the main favicon with the favourite and rebinds the two sources

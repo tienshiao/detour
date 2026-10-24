@@ -19,6 +19,16 @@ class TabRowView: NSTableRowView {
         // Source list selection is inset ~10pt horizontally, ~1pt vertically, with 6pt corner radius
         return bounds.insetBy(dx: 10, dy: 1)
     }
+
+    /// The table keeps every row view's `isSelected` in step with its
+    /// selection, without reloading rows, so the row's cell follows it here
+    /// (the dev-mode border shows only on the selected row, TASK-197).
+    override var isSelected: Bool {
+        didSet {
+            guard isSelected != oldValue else { return }
+            for case let cell as TabCellView in subviews { cell.isRowSelected = isSelected }
+        }
+    }
 }
 
 /// Told when a tab row's hover changes: the sidebar's hover card (TASK-190)
@@ -61,6 +71,15 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private var devModeBorder: HazardBorderView?
     private var devModeSplitBorder: HazardBorderView?
     private var devModeMarking: DevModeRowMarking = .none
+    /// Whether the row is the window's selected row: only that row shows the
+    /// dev-mode border (TASK-197). Set by the enclosing `TabRowView`, whose
+    /// `isSelected` the table keeps in step with its selection.
+    var isRowSelected = false {
+        didSet {
+            guard isRowSelected != oldValue else { return }
+            applyDevModeBorders()
+        }
+    }
     private var trackingArea: NSTrackingArea?
     private var titleLeadingConstraint: NSLayoutConstraint!
     private var titleCenterYConstraint: NSLayoutConstraint!
@@ -280,6 +299,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// A cell joining a row takes the row's selection (the table may select
+    /// the row view before or after adding the cell); out of a row it is
+    /// unselected.
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        isRowSelected = (superview as? NSTableRowView)?.isSelected ?? false
+    }
 
     override func prepareForReuse() {
         super.prepareForReuse()
@@ -701,15 +728,18 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// negative gap.
     private static let hostLineSpacing: CGFloat = -2
 
-    /// Marks the row as a dev-mode page: a hazard border around the row and
-    /// the host under the title for a single tab; a border around each local
-    /// pane's half, with no host line, for a split row. `.none` clears it. The
-    /// two lines fit the row's existing height — the title moves up by half
-    /// the host line's height — so the list's row layout is unchanged.
+    /// Marks the row as a dev-mode page: the host under the title for a single
+    /// tab and, while the row is selected (`isRowSelected`), a hazard border
+    /// around the row; for a split row, a border around each local pane's
+    /// half while selected, never a host line. `.none` clears it. The two
+    /// lines fit the row's existing height — the title moves up by half the
+    /// host line's height — so the list's row layout is unchanged.
     func updateDevMode(_ marking: DevModeRowMarking) {
         guard marking != devModeMarking else { return }
         devModeMarking = marking
-        if case .tab(let hostLabel) = marking {
+        // Selection never changes the host line (`DevModeRowDisplay`), so
+        // it is set here only, and a selection change touches the borders alone.
+        if let hostLabel = marking.display(isSelected: isRowSelected).hostLabel {
             hostLineLabel.stringValue = hostLabel
             hostLineLabel.isHidden = false
             titleCenterYConstraint.constant = -ceil(hostLineLabel.intrinsicContentSize.height + Self.hostLineSpacing) / 2
@@ -718,11 +748,15 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             hostLineLabel.isHidden = true
             titleCenterYConstraint.constant = 0
         }
-        let (showsMain, showsRight): (Bool, Bool) = switch marking {
-        case .none: (false, false)
-        case .tab: (true, false)
-        case .split(let left, let right): (left, right)
-        }
+        applyDevModeBorders()
+    }
+
+    /// Shows the borders the marking and selection call for, making each on
+    /// first use; hiding is just `isHidden`, so a selection change is cheap.
+    private func applyDevModeBorders() {
+        let display = devModeMarking.display(isSelected: isRowSelected)
+        let showsMain = display.showsMainBorder
+        let showsRight = display.showsRightBorder
         if showsMain, devModeBorder == nil { devModeBorder = makeDevModeBorder() }
         if showsRight, devModeSplitBorder == nil { devModeSplitBorder = makeDevModeBorder() }
         devModeBorder?.isHidden = !showsMain

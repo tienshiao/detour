@@ -1,0 +1,292 @@
+TASK-197 runtime harness (b): the dev-mode hazard border shows only on the
+window's SELECTED row, like Arc (unselected dev rows keep the host line).
+Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task197b-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # Retina on a 1x monitor: the TASK-110 virtual display (docs/task-110/vdisplay.m),
+    #   ./vdisplay &  (a 2x screen until killed); the harness moves window 1
+    #   (760x640) onto the first 2x screen and window 2 beside it.
+    # $SITE: app.html "Dev App", api.html "API Server", split.html "Split Local",
+    #   pin.html "Pinned Dev", dormant.html "Dormant Pin", fav.html "Fav Dev",
+    #   other.html "Other Space Dev" (a <title>, an <h1>, color-scheme light dark).
+    python3 -m http.server 8897 --bind 127.0.0.1 --directory "$SITE" &
+    DETOUR_DATA_DIR=DetourVerify197b DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8897 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher runs `screencapture -x -o -l <windowNumber> $OUT/<name>.png`
+    # for each "SHOOT <name> <windowNumber>" line of $OUT/verify.log (checking
+    # the screen is unlocked first); the harness waits for each PNG. Wait for
+    # "done" (about 60 s), then kill that pid, the server and vdisplay.
+    git apply -R docs/harness/task197b-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify197b
+
+Setup: normal rows Split Local (localhost) | Reference (data:), Remote Docs
+(data:), API Server (127.0.0.1), Dev App (localhost); pinned Pinned Dev
+(live, localhost) and Dormant Pin (dormant, localhost); favourite Fav Dev
+(localhost). Each SHOOT logs every visible row (row view isSelected, the
+cell's isRowSelected, host line text, border sides, title and host-line
+frames) and every favourite tile (isSelected, border).
+
+Steps, in light (L-) then dark (D-):
+  1  selectTab(Dev App)
+  2  API Server via the table's selectRowIndexes (the click path)
+  3  selectTab(Remote Docs)
+  4a selectTab(Reference), the split's NON-dev pane focused
+  4b selectTab(Split Local), the dev pane focused
+  4c selectTab(Dev App): the split unselected
+  5a selectTab(Fav Dev's tab)
+  5b selectTab(Pinned Dev): the favourite unselected
+Then, light: 7a a second space with Other Space Dev selected, 7b back to the
+first space; 6 a second window on the same space selecting API Server while
+window 1 keeps Dev App (light and dark); 8 window 1 closes its selected tab
+(closeCurrentTab).
+
+Results (2026-10-24, macOS 26.7, 2x virtual display, captures 1520x1280 px;
+screen unlocked for every capture; all 25 read, each matching the log):
+  1  Dev App bordered; API Server, Pinned Dev, Dormant Pin: host line only
+  2  border moved to API Server; Dev App host line only
+  3  Remote Docs selected: no border anywhere, all host lines kept
+  4a/4b the split row bordered round its LEFT (dev) half only, with either
+     pane focused; no host line
+  4c the split unmarked; Dev App bordered
+  5a the Fav Dev tile bordered (table selection -1); no row bordered
+  5b Pinned Dev bordered; tile unbordered; Dormant Pin host line only
+  7a Other Space Dev bordered in the second space; 7b back: Dev App bordered
+  6  window 1 borders Dev App, window 2 borders API Server, each its own
+  8  window 1 selected API Server after the close and bordered it
+Every row's host-line frame and title frame were identical across all
+selection changes (e.g. Dev App's host line at y 214.5 in window points in
+every step): selection moves only the border. The border's column sampled
+#FF7600 alternating with #191919 dashes (light) / #0D0D0D (dark): the brand
+orange of DevModePalette.standard.
+Not exercised: Ctrl+Tab and keyboard navigation as such (both end in
+selectTab, the path steps 1, 3-5 drive).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..33c9b3c 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask197bHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task197bHarness.swift b/Detour/App/Task197bHarness.swift
+new file mode 100644
+index 0000000..c1c3a5b
+--- /dev/null
++++ b/Detour/App/Task197bHarness.swift
+@@ -0,0 +1,208 @@
++// TEMP TASK-197b verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask197bHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        // Steps run in order; each waits until every capture requested so far
++        // exists, so a slow watcher cannot shoot a later state.
++        var steps: [(TimeInterval, () -> Void)] = []
++        var requestedShots: [String] = []
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) { steps.append((dt, block)) }
++        func runStep(_ index: Int) {
++            guard index < steps.count else { return }
++            let missing = requestedShots.filter { !FileManager.default.fileExists(atPath: "\(outDir)/\($0).png") }
++            let delay = missing.isEmpty ? steps[index].0 : 0.2
++            let timer = Timer(timeInterval: delay, repeats: false) { _ in
++                if missing.isEmpty { steps[index].1(); runStep(index + 1) } else { runStep(index) }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window, let space = wc.activeSpace, let profile = space.profile else {
++            return log("no window/space")
++        }
++        let store = TabStore.shared
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        func local(_ host: String, _ path: String) -> URL { URL(string: "http://\(host):\(port)/\(path)")! }
++        func dataPage(_ title: String) -> URL {
++            let html = "<meta name=color-scheme content='light dark'><title>\(title)</title><h1>\(title)</h1>"
++            return URL(string: "data:text/html," + html.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!
++        }
++        var tabs: [String: BrowserTab] = [:]
++        var second: BrowserWindowController?
++        var space2: Space?
++
++        func r(_ rect: NSRect) -> String {
++            String(format: "%.1f,%.1f,%.1f,%.1f", rect.minX, rect.minY, rect.width, rect.height)
++        }
++        func title(_ id: UUID?) -> String {
++            guard let id else { return "nil" }
++            return tabs.first { $0.value.id == id }.map { "\($0.key)" } ?? id.uuidString.prefix(8).description
++        }
++        /// Every visible row and tile of `controller`'s sidebar: host line, borders, frames.
++        func state(_ name: String, _ controller: BrowserWindowController, _ label: String) {
++            guard let w = controller.window, let content = w.contentView else { return }
++            let views = allSubviews(content)
++            let table = controller.tabSidebar.tableView
++            log("\(name) \(label) selectedTab=\(title(controller.selectedTabID)) tableSelectedRow=\(table.selectedRow) "
++                + "hazard=\(DevModePalette.current.hazard.usingColorSpace(.sRGB).map { String(format: "%.0f,%.0f,%.0f", $0.redComponent * 255, $0.greenComponent * 255, $0.blueComponent * 255) } ?? "?")")
++            let cells = views.compactMap { $0 as? TabCellView }
++                .filter { $0.window != nil && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty }
++            for cell in cells {
++                let frame = cell.convert(cell.bounds, to: nil)
++                let sides = cell.devModeBorderFrames.map { f -> String in
++                    if f.width > cell.bounds.width * 0.75 { return "row" }
++                    return f.maxX <= cell.bounds.midX ? "left" : "right"
++                }
++                let host = cell.hostLineLabel.isHidden ? "-" : cell.hostLineLabel.stringValue
++                let rowSelected = (cell.superview as? NSTableRowView)?.isSelected ?? false
++                var t = cell.titleLabel.stringValue
++                if !cell.splitTitleLabel.isHidden { t += " | " + cell.splitTitleLabel.stringValue }
++                log("\(name) \(label)   ROW \"\(t)\" rowSelected=\(rowSelected) cellSelected=\(cell.isRowSelected) "
++                    + "host=\(host) borders=\(sides) frame=\(r(frame)) title=\(r(cell.titleLabel.convert(cell.titleLabel.bounds, to: nil))) "
++                    + "hostLine=\(r(cell.hostLineLabel.convert(cell.hostLineLabel.bounds, to: nil)))")
++            }
++            let tiles = views.compactMap { $0 as? FavoriteTileView }
++                .filter { $0.window != nil && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty }
++            for tile in tiles {
++                log("\(name) \(label)   TILE \"\(tile.favorite.title)\" selected=\(tile.isSelected) border=\(tile.showsDevModeBorder) "
++                    + "frame=\(r(tile.convert(tile.bounds, to: nil)))")
++            }
++        }
++        func shoot(_ name: String, _ controller: BrowserWindowController? = nil) {
++            let c = controller ?? wc
++            guard let w = c.window else { return }
++            state(name, c, c === wc ? "w1" : "w2")
++            requestedShots.append(name)
++            log("SHOOT \(name) \(w.windowNumber)")
++        }
++        func clickRow(titled t: String) {
++            let table = wc.tabSidebar.tableView
++            guard let cell = allSubviews(table).compactMap({ $0 as? TabCellView }).first(where: { $0.titleLabel.stringValue == t }) else {
++                return log("no row \(t)")
++            }
++            let row = table.row(for: cell)
++            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
++            log("clicked row \(row) \"\(t)\" (table selection path)")
++        }
++
++        // MARK: Seed (on the 2x screen if there is one)
++        at(0) {
++            NSApp.activate(ignoringOtherApps: true)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            let screen = NSScreen.screens.first { $0.backingScaleFactor >= 2 } ?? window.screen ?? NSScreen.main!
++            let f = screen.visibleFrame
++            window.setFrame(NSRect(x: f.minX + 20, y: f.maxY - 20 - 640, width: 760, height: 640), display: true)
++            tabs["dev"] = store.addTab(in: space, url: local("localhost", "app.html"))
++            tabs["api"] = store.addTab(in: space, url: local("127.0.0.1", "api.html"))
++            tabs["remote"] = store.addTab(in: space, url: dataPage("Remote Docs"))
++            tabs["splitA"] = store.addTab(in: space, url: local("localhost", "split.html"))
++            tabs["splitB"] = store.addTab(in: space, url: dataPage("Reference"))
++            tabs["pin"] = store.addTab(in: space, url: local("localhost", "pin.html"))
++            tabs["dormant"] = store.addTab(in: space, url: local("localhost", "dormant.html"))
++            tabs["fav"] = store.addTab(in: space, url: local("localhost", "fav.html"))
++            log("seeded: screens \(NSScreen.screens.map { "\($0.localizedName) \($0.backingScaleFactor)x" }) window scale \(window.backingScaleFactor) frame \(r(window.frame))")
++        }
++        at(3.5) {
++            store.createSplit(draggedTabID: tabs["splitB"]!.id, targetTabID: tabs["splitA"]!.id, edge: .right, in: space)
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.pinTab(id: tabs["pin"]!.id, in: space)
++            store.pinTab(id: tabs["dormant"]!.id, in: space)
++            store.closePinnedTab(id: tabs["dormant"]!.id, in: space, undoable: false)
++            _ = store.moveTabToFavorites(id: tabs["fav"]!.id, from: space, profileID: profile.id)
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["dev"]!.id)
++            window.makeKeyAndOrderFront(nil)
++            log("arranged: tabs=\(space.tabs.map { $0.title }) pinned=\(space.pinnedEntries.map { "\($0.pinnedTitle) live=\($0.isLive)" }) favorites=\(profile.favorites.map(\.title))")
++        }
++        for (p, appearance) in [("L", NSAppearance.Name.aqua), ("D", .darkAqua)] {
++            at(1.5) {
++                NSApp.appearance = NSAppearance(named: appearance)
++                wc.selectTab(id: tabs["dev"]!.id)
++            }
++            at(1.0) { shoot("\(p)-1-dev-selected") }
++            // The click path: the table's selection changes first, then the window follows.
++            at(0.5) { clickRow(titled: "API Server") }
++            at(1.0) { shoot("\(p)-2-other-dev-selected") }
++            at(0.5) { wc.selectTab(id: tabs["remote"]!.id) }
++            at(1.0) { shoot("\(p)-3-normal-selected") }
++            // The split selected with its NON-dev pane focused, then the dev pane.
++            at(0.5) { wc.selectTab(id: tabs["splitB"]!.id) }
++            at(1.0) { shoot("\(p)-4a-split-selected-remote-pane") }
++            at(0.5) { wc.selectTab(id: tabs["splitA"]!.id) }
++            at(1.0) { shoot("\(p)-4b-split-selected-dev-pane") }
++            at(0.5) { wc.selectTab(id: tabs["dev"]!.id) }
++            at(1.0) { shoot("\(p)-4c-split-unselected") }
++            at(0.5) { wc.selectTab(id: tabs["fav"]!.id) }
++            at(1.0) { shoot("\(p)-5a-fav-selected") }
++            at(0.5) { wc.selectTab(id: tabs["pin"]!.id) }
++            at(1.0) { shoot("\(p)-5b-pinned-selected-fav-unselected") }
++        }
++        // MARK: 7 — space switch and back
++        at(1.0) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            wc.selectTab(id: tabs["dev"]!.id)
++            let s2 = store.addSpace(name: "Second", emoji: "🧪", colorHex: "#8E8E93", profileID: profile.id)
++            space2 = s2
++            tabs["otherDev"] = store.addTab(in: s2, url: local("localhost", "other.html"))
++            tabs["otherRemote"] = store.addTab(in: s2, url: dataPage("Other Remote"))
++        }
++        at(2.5) {
++            wc.setActiveSpace(id: space2!.id)
++            wc.selectTab(id: tabs["otherDev"]!.id)
++        }
++        at(1.5) { shoot("L-7a-space2-dev-selected") }
++        at(0.5) { wc.setActiveSpace(id: space.id) }
++        at(1.5) { shoot("L-7b-back-to-space1") }
++        // MARK: 6 — a second window on the same space, its own selection
++        at(0.5) {
++            wc.selectTab(id: tabs["dev"]!.id)
++            let s = self.createNewWindow(showing: space)
++            second = s
++            let screen = window.screen ?? NSScreen.main!
++            let f = screen.visibleFrame
++            s.window?.setFrame(NSRect(x: f.minX + 800, y: f.maxY - 20 - 640, width: 760, height: 640), display: true)
++            s.selectTab(id: tabs["api"]!.id)
++            window.makeKeyAndOrderFront(nil)
++        }
++        for (p, appearance) in [("L", NSAppearance.Name.aqua), ("D", .darkAqua)] {
++            at(2.0) { NSApp.appearance = NSAppearance(named: appearance) }
++            at(1.0) {
++                shoot("\(p)-6-w1-dev", wc)
++                shoot("\(p)-6-w2-api", second)
++            }
++        }
++        // MARK: 8 — closing the selected tab moves the border to the new selection
++        at(1.0) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            wc.selectTab(id: tabs["dev"]!.id)
++        }
++        at(1.0) {
++            wc.closeCurrentTab(nil)
++            log("closed dev; w1 now \(title(wc.selectedTabID))")
++        }
++        at(1.5) {
++            shoot("L-8-w1-after-close", wc)
++            shoot("L-8-w2-after-close", second)
++        }
++        at(1.0) { log("done") }
++        runStep(0)
++    }
++}
++#endif

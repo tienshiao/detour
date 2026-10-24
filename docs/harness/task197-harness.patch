@@ -1,0 +1,224 @@
+TASK-197 runtime harness: dev mode's "under construction" colours compared
+(the sidebar's hazard border and the dev toolbar's stripes), five palette
+options in light and dark, at 2x. The options live only here; the product has
+DevModePalette.standard plus a DEBUG-only DevModePalette.debugOverride.
+Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task197-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # Retina on a 1x monitor: the TASK-110 virtual display (docs/task-110/vdisplay.m),
+    #   ./vdisplay &  (a 1600x1000 pt @2x screen until killed); the harness
+    #   moves the window (1000x620) onto the first 2x screen.
+    # $SITE/app.html, api.html, split.html: a <title>, an <h1>, a line of
+    # text, <meta name="color-scheme" content="light dark">.
+    python3 -m http.server 8897 --bind 127.0.0.1 --directory "$SITE" &
+    DETOUR_DATA_DIR=DetourVerify197 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8897 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher runs `screencapture -x -o -l <windowNumber> $OUT/<name>.png`
+    # for each "SHOOT <name> <windowNumber>" line of $OUT/verify.log; the
+    # harness waits for each PNG. Wait for "done" (about 50 s), then kill that
+    # pid, the server and vdisplay.
+    git apply -R docs/harness/task197-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify197
+
+Rows (top to bottom): a split (Split Local on localhost | a data: page),
+Remote Docs (data:, a normal row), API Server (127.0.0.1, unselected dev
+row), Dev App (localhost, selected, its toolbar over the page). Each option
+sets debugOverride, switches NSApp.appearance, then calls updateColors() on
+every HazardBorderView (and sets its shape layers' lineWidth, for E) and
+needsDisplay on every DevToolbarView, twice, 1 s apart. Each SHOOT logs a
+GEOM line (window, rows, toolbar and selected border rects in window points)
+that the contact-sheet script crops by: pixel = (x * s, (H - maxY) * s).
+
+Options (sRGB; dash colour unchanged throughout: white 0.1 light, 0.05 dark):
+  A  current: systemYellow (#FFCC00 light, #FFD600 dark); stripes black 3% / white 3.5%
+  B  brand orange #FF7600 both; stripes as A
+  C  lighter orange #FF9500 light (systemOrange), #FF9F0A dark; stripes as A
+  D  B's border; stripes #FF7600 at 10% light, 8% dark
+  E  B's colours on a 2 pt line (1.5 pt otherwise), dashes 4/4
+
+Results (2026-10-24, macOS 26.7, window 1000x620 on the 2x virtual display,
+captures 2000x1240 px; all ten read, labels matching the log). Sampled from
+the captures (sRGB), WCAG contrast of the hazard colour against the light
+sidebar #E1EDFB / selected row #BFDCFB, and the dark sidebar #192634 /
+selected row #153352:
+  A  light 1.27 / 1.07   dark 10.87 / 9.14
+  B  light 2.26 / 1.89   dark  5.73 / 4.82
+  C  light 1.85 / 1.55   dark  7.47 / 6.28
+  D, E as B
+  The near-black dashes: 14.8 / 12.4 light, 1.27 / 1.51 dark (in dark mode
+  the bright dashes carry the border, in light the dark ones do).
+Toolbar stripes, sampled: A light #F1F1F1 on #F9F9F9, dark #323232 on
+#2B2B2B; D light #F9ECE0 (peach), dark #3C3128 (brown).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..84e7ac1 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask197HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task197Harness.swift b/Detour/App/Task197Harness.swift
+new file mode 100644
+index 0000000..9f07246
+--- /dev/null
++++ b/Detour/App/Task197Harness.swift
+@@ -0,0 +1,151 @@
++// TEMP TASK-197 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask197HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        // Steps run in order; each waits until every capture requested so far
++        // exists, so a slow watcher cannot shoot a later state.
++        var steps: [(TimeInterval, () -> Void)] = []
++        var requestedShots: [String] = []
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) { steps.append((dt, block)) }
++        func runStep(_ index: Int) {
++            guard index < steps.count else { return }
++            let missing = requestedShots.filter { !FileManager.default.fileExists(atPath: "\(outDir)/\($0).png") }
++            let delay = missing.isEmpty ? steps[index].0 : 0.2
++            let timer = Timer(timeInterval: delay, repeats: false) { _ in
++                if missing.isEmpty { steps[index].1(); runStep(index + 1) } else { runStep(index) }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window, let space = wc.activeSpace else { return log("no window/space") }
++        let store = TabStore.shared
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        func local(_ host: String, _ path: String) -> URL { URL(string: "http://\(host):\(port)/\(path)")! }
++        func dataPage(_ title: String) -> URL {
++            let html = "<meta name=color-scheme content='light dark'><title>\(title)</title><h1>\(title)</h1>"
++            return URL(string: "data:text/html," + html.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!
++        }
++        var tabs: [String: BrowserTab] = [:]
++
++        // MARK: The options (palette values live here, not in the product)
++        func srgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> NSColor {
++            NSColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: a)
++        }
++        let std = DevModePalette.standard
++        let brand = srgb(255, 118, 0)
++        struct Option { let label: String; let palette: DevModePalette; let lineWidth: CGFloat }
++        let options: [Option] = [
++            Option(label: "A", palette: std, lineWidth: 1.5),
++            Option(label: "B", palette: DevModePalette(hazard: brand, hazardDash: std.hazardDash, toolbarStripe: std.toolbarStripe), lineWidth: 1.5),
++            Option(label: "C", palette: DevModePalette(
++                hazard: DevModePalette.dynamic(light: srgb(255, 149, 0), dark: srgb(255, 159, 10)),
++                hazardDash: std.hazardDash, toolbarStripe: std.toolbarStripe), lineWidth: 1.5),
++            Option(label: "D", palette: DevModePalette(
++                hazard: brand, hazardDash: std.hazardDash,
++                toolbarStripe: DevModePalette.dynamic(light: srgb(255, 118, 0, 0.10), dark: srgb(255, 118, 0, 0.08))), lineWidth: 1.5),
++            Option(label: "E", palette: DevModePalette(hazard: brand, hazardDash: std.hazardDash, toolbarStripe: std.toolbarStripe), lineWidth: 2),
++        ]
++
++        /// Re-resolves every border's and toolbar's colours (and line width).
++        func refresh(_ option: Option) {
++            guard let content = window.contentView else { return }
++            for view in allSubviews(content) {
++                if let border = view as? HazardBorderView {
++                    border.updateColors()
++                    for case let shape as CAShapeLayer in border.layer?.sublayers ?? [] { shape.lineWidth = option.lineWidth }
++                    border.needsDisplay = true
++                } else if let bar = view as? DevToolbarView {
++                    bar.needsDisplay = true
++                } else if view is TabCellView {
++                    view.needsDisplay = true
++                }
++            }
++        }
++
++        func r(_ rect: NSRect) -> String {
++            String(format: "%.1f,%.1f,%.1f,%.1f", rect.minX, rect.minY, rect.width, rect.height)
++        }
++        /// Rects in window coordinates (bottom-left origin, points), for the crop script.
++        func geometry(_ name: String) {
++            guard let content = window.contentView else { return }
++            let views = allSubviews(content)
++            let cells = views.compactMap { $0 as? TabCellView }.filter { $0.window != nil && !$0.isHiddenOrHasHiddenAncestor }
++            var rows = NSRect.null
++            for cell in cells {
++                let frame = cell.convert(cell.bounds, to: nil)
++                rows = rows.union(frame)
++                let borders = cell.devModeBorderFrames.map { cell.convert($0, to: nil) }
++                log("\(name) ROW \"\(cell.titleLabel.stringValue)\" frame=\(r(frame)) borders=\(borders.map(r))")
++            }
++            let bars = views.compactMap { $0 as? DevToolbarView }.filter { !$0.isHiddenOrHasHiddenAncestor }
++            let selectedCell = cells.first { $0.titleLabel.stringValue == "Dev App" }
++            let selectedBorder = selectedCell.flatMap { c in c.devModeBorderFrames.first.map { c.convert($0, to: nil) } } ?? .zero
++            log("GEOM \(name) scale=\(window.backingScaleFactor) window=\(r(window.frame)) rows=\(r(rows)) "
++                + "toolbar=\(bars.first.map { r($0.convert($0.bounds, to: nil)) } ?? "none") selectedBorder=\(r(selectedBorder)) "
++                + "sidebar=\(r(wc.tabSidebar.view.convert(wc.tabSidebar.view.bounds, to: nil)))")
++        }
++        func shoot(_ name: String) {
++            geometry(name)
++            requestedShots.append(name)
++            log("SHOOT \(name) \(window.windowNumber)")
++        }
++
++        // MARK: Seed (on the 2x screen if there is one)
++        at(0) {
++            NSApp.activate(ignoringOtherApps: true)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            let screen = NSScreen.screens.first { $0.backingScaleFactor >= 2 } ?? window.screen ?? NSScreen.main!
++            let f = screen.visibleFrame
++            window.setFrame(NSRect(x: f.minX + 20, y: f.maxY - 20 - 620, width: min(1000, f.width - 40), height: 620), display: true)
++            tabs["dev"] = store.addTab(in: space, url: local("localhost", "app.html"))
++            tabs["api"] = store.addTab(in: space, url: local("127.0.0.1", "api.html"))
++            tabs["remote"] = store.addTab(in: space, url: dataPage("Remote Docs"))
++            tabs["splitA"] = store.addTab(in: space, url: local("localhost", "split.html"))
++            tabs["splitB"] = store.addTab(in: space, url: dataPage("Reference"))
++            log("seeded: screens \(NSScreen.screens.map { "\($0.localizedName) \($0.backingScaleFactor)x" }) window scale \(window.backingScaleFactor) frame \(r(window.frame))")
++        }
++        at(3.0) {
++            store.createSplit(draggedTabID: tabs["splitB"]!.id, targetTabID: tabs["splitA"]!.id, edge: .right, in: space)
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["dev"]!.id)
++            window.makeKeyAndOrderFront(nil)
++            log("arranged: tabs=\(space.tabs.map { "\($0.title)<\($0.url?.absoluteString.prefix(30) ?? "")>" })")
++        }
++        for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
++            for option in options {
++                at(2.0) {
++                    DevModePalette.debugOverride = option.palette
++                    NSApp.appearance = NSAppearance(named: appearance)
++                    refresh(option)
++                }
++                // A second pass after the appearance change has propagated.
++                at(1.0) { refresh(option) }
++                at(1.0) { shoot("\(option.label)-\(appearanceName)") }
++            }
++        }
++        at(1.0) {
++            DevModePalette.debugOverride = nil
++            log("done")
++        }
++        runStep(0)
++    }
++}
++#endif

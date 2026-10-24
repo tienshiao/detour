@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Dev mode
-description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a hazard border and a host line, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working) with its capture buttons (visible area and full page, to the clipboard or Downloads) and its Console, Network and element picker buttons."
+description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a host line and, on the window's selected row only (like Arc), a hazard border, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working) with its capture buttons (visible area and full page, to the clipboard or Downloads) and its Console, Network and element picker buttons."
 tags: [dev-mode, sidebar, tabs, url-rules, site-settings]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T21:45:00Z }
@@ -14,13 +14,13 @@ sources:
     title: HazardBorderView.swift
   - id: tab-cell
     resource: ../../Detour/Browser/Sidebar/TabCellView.swift
-    title: TabCellView.swift (updateDevMode)
+    title: TabCellView.swift (updateDevMode, isRowSelected, TabRowView.isSelected)
   - id: sidebar-vc
     resource: ../../Detour/Browser/Sidebar/TabSidebarViewController.swift
     title: TabSidebarViewController.swift (the row paths that call updateDevMode)
   - id: favorites-bar
     resource: ../../Detour/Browser/Sidebar/FavoritesBarView.swift
-    title: FavoritesBarView.swift (FavoriteTileView.refreshDevMode)
+    title: FavoritesBarView.swift (FavoriteTileView.refreshDevMode, isSelected)
   - id: classifier
     resource: ../../Detour/Browser/CommandPalette/AddressInputClassifier.swift
     title: AddressInputClassifier.swift (typed input, a separate rule)
@@ -120,24 +120,45 @@ sources:
   - id: task-186-5
     resource: backlog:TASK-186.5
     title: "Dev mode: turn dev mode on or off per site from the address bar popover"
+  - id: palette
+    resource: ../../Detour/Browser/DevMode/DevModePalette.swift
+    title: DevModePalette.swift
+  - id: task-197
+    resource: backlog:TASK-197
+    title: "Dev mode: tie the under-construction motif to the Detour branding (orange hazard border)"
+  - id: harness-197
+    resource: ../../docs/harness/task197-harness.patch
+    title: TASK-197 colour comparison harness (options, contrast measurements)
+  - id: harness-197b
+    resource: ../../docs/harness/task197b-harness.patch
+    title: TASK-197 selected-row-only border harness
 ---
 
 A tab whose page is a local development server is in **dev mode**, modelled
-on Arc's.[^task-186] Its sidebar row gets an "under construction" look: a
-yellow and black dashed border around the row and the page's host under the
-title (Arc shows `localhost:4000`).[^arc-row] Local URLs are in dev mode by
+on Arc's.[^task-186] Its sidebar row gets an "under construction" look: the
+page's host under the title (Arc shows `localhost:4000`)[^arc-row] and, while
+it is the window's selected row, an orange and black dashed border around it
+(the app icon's orange).[^task-197] Local URLs are in dev mode by
 default; the site settings popover turns it on for any site or off for a
 local one, per profile.[^task-186-5] Above the page of a dev-mode tab sits
 a striped toolbar with the URL ([below](#the-dev-toolbar)).[^task-186-2]
 
 # What it does
 
-| Where | Marking |
-|---|---|
-| Normal tab row | Hazard border round the row (the hover rect), host line under the title |
-| Pinned row, live or dormant | Same as a normal tab |
-| Split row | Border round each local pane's half only; no host line |
-| Favourite tile | Border only (a tile has no title) |
+| Where | Selected | Not selected |
+|---|---|---|
+| Normal tab row | Hazard border round the row (the hover rect), host line under the title | Host line only |
+| Pinned row, live or dormant | Same as a normal tab (a dormant row is never selected, so host line only) | Host line only |
+| Split row | Border round each local pane's half, whichever pane is focused; no host line | Nothing |
+| Favourite tile | Border (a tile has no title, so no host line) | Nothing |
+
+Only the selected row is bordered, as in Arc, where an unselected dev-mode
+tab shows its two lines (title and host) but no border (the user,
+2026-10-24).[^task-197] A split row has no host line, so unselected it shows
+no marking at all. Selection is per window: each window's sidebar borders
+its own selected row, so two windows on one space can border different
+rows. The border moves with every selection change and space switch; the
+host line does not depend on selection, so nothing else in the row moves.
 
 The row follows the tab's URL. Navigating away from the local URL drops the
 marking; going back (or any navigation to a local URL) restores it. A
@@ -244,8 +265,9 @@ follows too.[^harness-1865]
 ## Drawing
 
 `HazardBorderView` is two `CAShapeLayer`s on the same rounded-rect path: a
-solid `systemYellow` stroke under a dashed near-black one (1.5 pt, 4/4
-dashes), so the dashes alternate yellow and black. The path is rebuilt only
+solid orange stroke under a dashed near-black one (1.5 pt, 4/4 dashes), so
+the dashes alternate orange and black. The colours, and the toolbar's
+stripes, come from `DevModePalette`, defined once.[^palette] The path is rebuilt only
 in `setFrameSize`; implicit animations are off; colours are re-resolved on
 appearance changes and the layers' `contentsScale` follows the window. It
 returns nil from `hitTest`.
@@ -256,6 +278,25 @@ content, and frames them in `layout()` with the same rect as the hover
 background (`rowHighlightRect(splitSide:)`), so a split half's border
 matches its hover highlight. It returns early when the marking has not
 changed, so the frequent row reloads (progress, title) cost a comparison.
+
+**Only on the selected row.** What a marking shows is the pure
+`DevModeRowMarking.display(isSelected:) -> DevModeRowDisplay` (`hostLabel`,
+`showsMainBorder` for the row or a split's left half, `showsRightBorder`);
+`hostLabel` is the same either way, which is what keeps the title and host
+line still when the selection moves.[^rule] The cell learns its selection
+from the table, not from the sidebar controller: `TabRowView` overrides
+`isSelected`, which `NSTableView` keeps in step with its selection for every
+live row view without reloading rows, and pushes it to its `TabCellView`'s
+`isRowSelected`; a cell joining a row reads the row's `isSelected` in
+`viewDidMoveToSuperview` (the table may select the row view before or after
+adding the cell), and a cell out of a row is unselected.[^tab-cell] A
+selection change only flips the borders' `isHidden` (the views are still made
+on first show). The table's row selection already mirrors the window's
+selected tab: `selectTab` selects the pinned or normal row (a split row for
+either pane) and deselects all rows for a favourite's tab, and the selection
+callbacks it suppresses meanwhile do not matter because row views are told
+regardless. A favourite tile has no row: its `isSelected`, set by the bar's
+`updateSelection(selectedTabID:)`, re-applies the same rule.[^favorites-bar]
 
 **Row height is unchanged.** The host line is a 10 pt label hung under the
 title (`topAnchor` = title's bottom − 2); the title's centre-Y constraint
@@ -466,7 +507,7 @@ the event goes straight to the button.[^drag-strip]
 
 # Edge cases
 
-- A split row with both panes local shows two borders, one per half.
+- A selected split row with both panes local shows two borders, one per half.
 - A pinned entry navigated away (live) loses the marking; making it dormant
   restores it from the pinned URL — checked at runtime.[^harness]
 - During a split collapse the survivor's host line appears at once, while
@@ -480,11 +521,15 @@ the event goes straight to the button.[^drag-strip]
 
 # Tests
 
-`DevModeTests` (31 tests): every host form above and its look-alikes, the
+`DevModeTests` (41 tests): every host form above and its look-alikes, the
 schemes, nil and hostless URLs, the label's ports, brackets, case and user
-info, the row and split markings, a sleeping tab following its URL, pinned
-and favourite URL fallbacks, the cell's host line, borders and reuse, split
-halves, and a favourite tile following its tab's navigation.
+info, the row and split markings, the selected-row display rule (single,
+split halves, unmarked, the host line independent of selection), a sleeping
+tab following its URL, pinned and favourite URL fallbacks, the cell's host
+line, borders (selected only, title and host line not moving on selection,
+following its `TabRowView`, joining a selected row) and reuse, split halves
+selected and not, and a favourite tile following its tab's navigation and
+bordered only when selected, also through the bar's selection update.
 
 `DevModeSiteOverrideTests` (15 tests, TASK-186.5): the rule (override true
 on a remote site, false on a local one, nil falling back), the site key
@@ -544,6 +589,19 @@ local pane, and non-local rows, then navigated the local tab away and back
 and the pinned tab away and dormant. All eight captures matched the logged
 cell state.[^harness]
 
+The TASK-197 selected-row [harness](../../docs/harness/task197b-harness.patch)
+logged every row's row-view and cell selection, host line and borders, and
+captured each state at 2x in light and dark: a dev row selected, then
+another through the table's own selection (the click path), with the border
+moving and the first keeping its host line; a normal row selected (no
+border anywhere); the split selected with either pane focused (its local
+half bordered) and unselected (nothing); the favourite tile selected and
+not; the live pinned row selected while the dormant one kept only its host
+line; a space switch and back; two windows on one space each bordering its
+own selection; and closing the selected tab, after which the new selection
+was bordered. The title and host-line frames were identical in every step,
+and the border sampled #FF7600 with near-black dashes.[^harness-197b]
+
 The TASK-186.5 [harness](../../docs/harness/task186-5-harness.patch) used
 `kubernetes.docker.internal` (127.0.0.1 in `/etc/hosts`, not local by the
 rule) as the remote site. It turned dev mode on for it and off for
@@ -560,6 +618,29 @@ captured in light and dark.[^harness-1865]
 - [Favourites](../tabs/favorites.md) and [Pinned tabs and folders](../tabs/pinned-tabs-and-folders.md) — which URL a dormant item reads.
 - [Split tabs](../tabs/split-tabs.md) — why a split row marks halves.
 - [Suggestion pipeline](./suggestion-pipeline.md) — `AddressInputClassifier`, the separate typed-input rule.
+
+
+## Colours: why brand orange
+
+The hazard colour is the app icon's orange plate, rgb(255, 118, 0), in both
+appearances, with near-black dashes; the toolbar keeps faint grey stripes.
+The user chose it from five options captured side by side at 2x in light and
+dark (2026-10-24).[^task-197] Measured WCAG contrast of the bright half
+against the sidebar and the selected row:[^harness-197]
+
+| Option | Light: sidebar / selected | Dark: sidebar / selected |
+|---|---|---|
+| `systemYellow` (the original) | 1.27 / 1.07 | 10.87 / 9.14 |
+| brand orange #FF7600 (chosen) | 2.26 / 1.89 | 5.73 / 4.82 |
+| `systemOrange` #FF9500 | 1.85 / 1.55 | 7.47 / 6.28 |
+
+Rejected: yellow, because on the light-blue sidebar only the black dashes
+showed, so the border read as a dotted black line; `systemOrange`, which
+washed out to amber on the light tint; a 2 pt line, more sign-like but heavy
+around the selected row and loud in dark mode; orange-tinted toolbar stripes,
+pleasant peach in light mode but muddy brown (#3C3128) in dark. In dark mode
+the near-black dashes almost vanish (about 1.3:1) whatever the hazard colour,
+so there the bright half carries the border.
 
 [^task-186]: Dev mode for local development URLs, sidebar row and in-page dev toolbar
 [^arc-row]: Arc's dev-mode sidebar row (reference image)
@@ -590,3 +671,10 @@ captured in light and dark.[^harness-1865]
 [^harness-1863]: TASK-186.3 runtime harness
 [^task-186-4]: Dev mode: toolbar buttons that toggle the Web Inspector's Console and Network tabs
 [^hosting-tests]: DevToolbarHostingTests.swift
+[^palette]: DevModePalette.swift
+[^task-197]: Dev mode: tie the under-construction motif to the Detour branding (orange hazard border)
+[^harness-197]: TASK-197 colour comparison harness (options, contrast measurements)
+[^rule]: DevMode.swift (isLocalDevelopmentURL, devModeHostLabel, DevMode, DevModeRowMarking)
+[^tab-cell]: TabCellView.swift (updateDevMode, isRowSelected, TabRowView.isSelected)
+[^favorites-bar]: FavoritesBarView.swift (FavoriteTileView.refreshDevMode, isSelected)
+[^harness-197b]: TASK-197 selected-row-only border harness

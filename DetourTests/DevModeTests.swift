@@ -268,6 +268,47 @@ final class DevModeTests: XCTestCase {
         XCTAssertEqual(DevMode.splitRowMarking(left: nil, right: nil, profileID: nil), DevModeRowMarking.none)
     }
 
+    // MARK: - Display rule: only the selected row is bordered (TASK-197)
+
+    /// Like Arc: a selected dev-mode tab row gets the border and the host
+    /// line; an unselected one keeps the host line but no border.
+    func testSingleRowIsBorderedOnlyWhenSelected() {
+        let marking = DevModeRowMarking.tab(hostLabel: "localhost:4000")
+        XCTAssertEqual(marking.display(isSelected: true),
+                       DevModeRowDisplay(hostLabel: "localhost:4000", showsMainBorder: true, showsRightBorder: false))
+        XCTAssertEqual(marking.display(isSelected: false),
+                       DevModeRowDisplay(hostLabel: "localhost:4000", showsMainBorder: false, showsRightBorder: false))
+    }
+
+    /// The host line does not depend on selection, so it never moves when the
+    /// selection does.
+    func testHostLineIsTheSameSelectedOrNot() {
+        for marking in [DevModeRowMarking.none, .tab(hostLabel: "app.test"), .split(left: true, right: false)] {
+            XCTAssertEqual(marking.display(isSelected: true).hostLabel, marking.display(isSelected: false).hostLabel,
+                           "\(marking)")
+        }
+    }
+
+    /// A selected split row borders its dev-mode half or halves, whichever
+    /// pane is focused; an unselected one shows nothing (no host line either).
+    func testSplitRowBordersItsDevHalvesOnlyWhenSelected() {
+        XCTAssertEqual(DevModeRowMarking.split(left: true, right: false).display(isSelected: true),
+                       DevModeRowDisplay(hostLabel: nil, showsMainBorder: true, showsRightBorder: false))
+        XCTAssertEqual(DevModeRowMarking.split(left: false, right: true).display(isSelected: true),
+                       DevModeRowDisplay(hostLabel: nil, showsMainBorder: false, showsRightBorder: true))
+        XCTAssertEqual(DevModeRowMarking.split(left: true, right: true).display(isSelected: true),
+                       DevModeRowDisplay(hostLabel: nil, showsMainBorder: true, showsRightBorder: true))
+        for marking in [DevModeRowMarking.split(left: true, right: false), .split(left: false, right: true),
+                        .split(left: true, right: true)] {
+            XCTAssertEqual(marking.display(isSelected: false), .hidden, "\(marking)")
+        }
+    }
+
+    func testUnmarkedRowShowsNothingEitherWay() {
+        XCTAssertEqual(DevModeRowMarking.none.display(isSelected: true), .hidden)
+        XCTAssertEqual(DevModeRowMarking.none.display(isSelected: false), .hidden)
+    }
+
     private func makeSleepingTab(url: String) -> BrowserTab {
         BrowserTab(id: UUID(), title: "Tab", url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: nil, spaceID: UUID())
@@ -308,9 +349,10 @@ final class DevModeTests: XCTestCase {
         return cell
     }
 
-    func testCellShowsHostLineAndBorderForDevModeTab() {
+    func testSelectedCellShowsHostLineAndBorderForDevModeTab() {
         let cell = makeCell()
         cell.updateDevMode(.tab(hostLabel: "localhost:4000"))
+        cell.isRowSelected = true
         cell.layoutSubtreeIfNeeded()
 
         XCTAssertFalse(cell.hostLineLabel.isHidden)
@@ -322,8 +364,71 @@ final class DevModeTests: XCTestCase {
         XCTAssertGreaterThan(cell.titleLabel.frame.minY, cell.hostLineLabel.frame.minY)
     }
 
+    /// An unselected dev-mode row keeps the host line but has no border.
+    func testUnselectedCellShowsHostLineWithoutBorder() {
+        let cell = makeCell()
+        cell.updateDevMode(.tab(hostLabel: "localhost:4000"))
+        cell.layoutSubtreeIfNeeded()
+
+        XCTAssertFalse(cell.hostLineLabel.isHidden)
+        XCTAssertEqual(cell.hostLineLabel.stringValue, "localhost:4000")
+        XCTAssertEqual(cell.devModeBorderFrames, [])
+    }
+
+    /// Selection toggles only the border: the title and host line stay put.
+    func testSelectionMovesOnlyTheBorder() {
+        let cell = makeCell()
+        cell.updateDevMode(.tab(hostLabel: "localhost:4000"))
+        cell.layoutSubtreeIfNeeded()
+        let titleFrame = cell.titleLabel.frame
+        let hostFrame = cell.hostLineLabel.frame
+
+        cell.isRowSelected = true
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.devModeBorderFrames.count, 1)
+        XCTAssertEqual(cell.titleLabel.frame, titleFrame)
+        XCTAssertEqual(cell.hostLineLabel.frame, hostFrame)
+
+        cell.isRowSelected = false
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.devModeBorderFrames, [])
+        XCTAssertFalse(cell.hostLineLabel.isHidden)
+        XCTAssertEqual(cell.titleLabel.frame, titleFrame)
+        XCTAssertEqual(cell.hostLineLabel.frame, hostFrame)
+    }
+
+    /// The table's row selection reaches the cell through its row view, both
+    /// when the selection changes and when the cell joins an already selected row.
+    func testCellFollowsItsRowViewsSelection() {
+        let rowView = TabRowView(frame: NSRect(x: 0, y: 0, width: 240, height: 36))
+        let cell = makeCell()
+        cell.updateDevMode(.tab(hostLabel: "localhost:4000"))
+        rowView.addSubview(cell)
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.devModeBorderFrames, [])
+
+        rowView.isSelected = true
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.devModeBorderFrames.count, 1)
+
+        rowView.isSelected = false
+        XCTAssertEqual(cell.devModeBorderFrames, [])
+
+        let selectedRow = TabRowView(frame: NSRect(x: 0, y: 0, width: 240, height: 36))
+        selectedRow.isSelected = true
+        let joining = makeCell()
+        joining.updateDevMode(.tab(hostLabel: "localhost:4000"))
+        selectedRow.addSubview(joining)
+        joining.layoutSubtreeIfNeeded()
+        XCTAssertEqual(joining.devModeBorderFrames.count, 1)
+
+        joining.removeFromSuperview()
+        XCTAssertEqual(joining.devModeBorderFrames, [], "a cell out of its row is not selected")
+    }
+
     func testCellClearsDevModeWhenTabLeavesLocalURL() {
         let cell = makeCell()
+        cell.isRowSelected = true
         cell.updateDevMode(.tab(hostLabel: "localhost:4000"))
         cell.updateDevMode(.none)
         cell.layoutSubtreeIfNeeded()
@@ -334,6 +439,7 @@ final class DevModeTests: XCTestCase {
 
     func testReusedCellDropsDevMode() {
         let cell = makeCell()
+        cell.isRowSelected = true
         cell.updateDevMode(.tab(hostLabel: "localhost:4000"))
         cell.prepareForReuse()
         cell.layoutSubtreeIfNeeded()
@@ -342,9 +448,10 @@ final class DevModeTests: XCTestCase {
         XCTAssertEqual(cell.devModeBorderFrames, [])
     }
 
-    func testSplitCellBordersOnlyTheLocalHalf() throws {
+    func testSelectedSplitCellBordersOnlyTheLocalHalf() throws {
         let cell = makeCell()
         cell.updateSplitPane(favicon: NSImage(size: NSSize(width: 16, height: 16)), title: "Right")
+        cell.isRowSelected = true
 
         cell.updateDevMode(.split(left: true, right: false))
         cell.layoutSubtreeIfNeeded()
@@ -362,6 +469,18 @@ final class DevModeTests: XCTestCase {
         XCTAssertEqual(cell.devModeBorderFrames.count, 2)
     }
 
+    func testUnselectedSplitCellShowsNoMarking() {
+        let cell = makeCell()
+        cell.updateSplitPane(favicon: NSImage(size: NSSize(width: 16, height: 16)), title: "Right")
+        cell.isRowSelected = true
+        cell.updateDevMode(.split(left: true, right: true))
+        cell.isRowSelected = false
+        cell.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(cell.hostLineLabel.isHidden)
+        XCTAssertEqual(cell.devModeBorderFrames, [])
+    }
+
     // MARK: - Favourite tile
 
     private func spinRunLoop(_ interval: TimeInterval = 0.05) {
@@ -370,15 +489,34 @@ final class DevModeTests: XCTestCase {
 
     func testDormantFavoriteTileUsesItsURL() {
         let local = FavoriteTileView(favorite: Favorite(url: URL(string: "http://localhost:3000/")!, title: "App"), index: 0)
+        local.isSelected = true
         XCTAssertTrue(local.showsDevModeBorder)
         let remote = FavoriteTileView(favorite: Favorite(url: URL(string: "https://example.com/")!, title: "Ex"), index: 0)
+        remote.isSelected = true
         XCTAssertFalse(remote.showsDevModeBorder)
+    }
+
+    /// A dormant favourite has no tab, so it is never the selected tab — not
+    /// even when nothing is selected (nil tab ID against a nil selection).
+    func testDormantFavoriteTileIsNotSelectedWhenNothingIs() {
+        let bar = FavoritesBarView(frame: NSRect(x: 0, y: 0, width: 240, height: 80))
+        bar.update(favorites: [Favorite(url: URL(string: "http://localhost:3000/")!, title: "App")],
+                   selectedTabID: nil, animated: false)
+        let tiles = bar.tileViews
+        XCTAssertEqual(tiles.map(\.isSelected), [false])
+        XCTAssertEqual(tiles.map(\.showsDevModeBorder), [false])
+
+        bar.update(favorites: tiles.map(\.favorite), selectedTabID: nil)
+        XCTAssertEqual(bar.tileViews.map(\.isSelected), [false])
+        bar.updateSelection(selectedTabID: nil)
+        XCTAssertEqual(bar.tileViews.map(\.showsDevModeBorder), [false])
     }
 
     func testLiveFavoriteTileFollowsNavigation() {
         let tab = makeSleepingTab(url: "http://localhost:3000/")
         let favorite = Favorite(url: URL(string: "http://localhost:3000/")!, title: "App", tab: tab)
         let tile = FavoriteTileView(favorite: favorite, index: 0)
+        tile.isSelected = true
         XCTAssertTrue(tile.showsDevModeBorder)
 
         tab.url = URL(string: "https://example.com/")
@@ -388,5 +526,39 @@ final class DevModeTests: XCTestCase {
         tab.url = URL(string: "http://localhost:3000/again")
         spinRunLoop()
         XCTAssertTrue(tile.showsDevModeBorder)
+    }
+
+    /// A dev-mode tile is bordered only while its tab is the selected tab.
+    func testFavoriteTileIsBorderedOnlyWhenSelected() {
+        let tab = makeSleepingTab(url: "http://localhost:3000/")
+        let favorite = Favorite(url: URL(string: "http://localhost:3000/")!, title: "App", tab: tab)
+        let tile = FavoriteTileView(favorite: favorite, index: 0)
+        XCTAssertFalse(tile.showsDevModeBorder)
+
+        tile.isSelected = true
+        XCTAssertTrue(tile.showsDevModeBorder)
+
+        tile.isSelected = false
+        XCTAssertFalse(tile.showsDevModeBorder)
+    }
+
+    /// The bar's selection update moves the border between tiles.
+    func testFavoritesBarSelectionMovesTheTileBorder() {
+        let tabA = makeSleepingTab(url: "http://localhost:3000/")
+        let tabB = makeSleepingTab(url: "http://localhost:4000/")
+        let bar = FavoritesBarView(frame: NSRect(x: 0, y: 0, width: 240, height: 80))
+        bar.update(favorites: [
+            Favorite(url: URL(string: "http://localhost:3000/")!, title: "A", tab: tabA),
+            Favorite(url: URL(string: "http://localhost:4000/")!, title: "B", tab: tabB),
+        ], selectedTabID: tabA.id)
+        let tiles = bar.tileViews
+        XCTAssertEqual(tiles.count, 2)
+        XCTAssertEqual(tiles.map(\.showsDevModeBorder), [true, false])
+
+        bar.updateSelection(selectedTabID: tabB.id)
+        XCTAssertEqual(tiles.map(\.showsDevModeBorder), [false, true])
+
+        bar.updateSelection(selectedTabID: nil)
+        XCTAssertEqual(tiles.map(\.showsDevModeBorder), [false, false])
     }
 }
