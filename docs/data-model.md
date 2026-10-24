@@ -164,16 +164,18 @@ File download records. `DownloadManager` writes a row once a download has finish
 | `createdAt` | DATETIME | NOT NULL | When download started |
 | `completedAt` | DATETIME | | When the download completed. Set once, when it reaches "completed", and rewritten unchanged by every later save; NULL for a failed or cancelled download. Rows written before TASK-143 hold the time of their last save instead |
 
-#### `contentBlockerWhitelist`
+#### `siteSetting`
 
-Per-profile domain exceptions for content blocking.
+Per-site preferences per profile (TASK-187): one row per stored override; a missing row means the setting's default. Read through `SiteSettingsStore`.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `profileID` | TEXT | NOT NULL, FK -> profile (CASCADE) | Profile this exception belongs to |
-| `host` | TEXT | NOT NULL | Domain to whitelist (e.g. "example.com") |
+| `profileID` | TEXT | NOT NULL, FK -> profile (CASCADE) | Profile the override belongs to |
+| `site` | TEXT | NOT NULL | Host, lowercased (e.g. "example.com"); how it matches a page is the setting's rule |
+| `setting` | TEXT | NOT NULL | `SiteSetting.rawValue`: `contentBlocking` (false = blocking off for the site and its subdomains) |
+| `value` | BOOLEAN | NOT NULL | The override |
 
-Unique key: `(profileID, host)`
+Primary key: `(profileID, site, setting)`. Replaced `contentBlockerWhitelist(profileID, host)` in v18.
 
 #### `externalAppPermission`
 
@@ -314,6 +316,7 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 | v15 | index `closedTab(spaceID, id)` (TASK-117) |
 | v16 | closedAt on closedTab, backfilled from archivedAt (TASK-116) |
 | v17 | `source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON` on `extension`; existing installs classified from their on-disk manifest (TASK-113) |
+| v18 | `siteSetting`; every `contentBlockerWhitelist` row copied as `contentBlocking = false` (host lowercased, rows of missing profiles dropped), then `contentBlockerWhitelist` dropped (TASK-187) |
 
 ### Persistence Strategy
 
@@ -346,7 +349,7 @@ Each table has a GRDB record struct:
 | `FavoriteRecord` | `Storage/Models/FavoriteRecord.swift` |
 | `ClosedTabRecord` | `Storage/Models/ClosedTabRecord.swift` |
 | `DownloadRecord` | `Storage/Models/DownloadRecord.swift` |
-| `ContentBlockerWhitelistRecord` | `Storage/Models/ContentBlockerWhitelistRecord.swift` |
+| `SiteSettingRecord` | `Storage/Models/SiteSettingRecord.swift` |
 | `ExternalAppPermissionRecord` | `Storage/Models/ExternalAppPermissionRecord.swift` |
 | `ExtensionRecord` | `Extensions/Storage/Models/ExtensionRecord.swift` |
 | `ExtensionStorageRecord` | `Extensions/Storage/Models/ExtensionStorageRecord.swift` |

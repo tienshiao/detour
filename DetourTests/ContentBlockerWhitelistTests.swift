@@ -63,7 +63,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
     private func makeWhitelist() throws -> (ContentBlockerWhitelist, UUID, AppDatabase) {
         let profileID = UUID()
         let db = try makeDatabase(profileID: profileID)
-        return (ContentBlockerWhitelist(database: db), profileID, db)
+        return (ContentBlockerWhitelist(store: SiteSettingsStore(database: db)), profileID, db)
     }
 
     func testTogglingAHostStoresItAndSurvivesAReload() throws {
@@ -74,8 +74,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         XCTAssertTrue(whitelist.isWhitelisted(host: "example.com", profileID: profileID))
         XCTAssertEqual(whitelist.hostsForProfile(profileID), ["example.com"])
 
-        let reloaded = ContentBlockerWhitelist(database: database)
-        reloaded.loadFromDatabase()
+        let reloaded = ContentBlockerWhitelist(store: SiteSettingsStore(database: database))
         XCTAssertTrue(reloaded.isWhitelisted(host: "example.com", profileID: profileID))
         XCTAssertTrue(reloaded.isWhitelisted(host: "www.example.com", profileID: profileID),
                       "a stored host covers its subdomains after a reload too")
@@ -88,7 +87,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
         XCTAssertFalse(whitelist.isWhitelisted(host: "example.com", profileID: profileID))
         XCTAssertTrue(whitelist.hostsForProfile(profileID).isEmpty)
-        XCTAssertTrue(database.loadContentBlockerWhitelist().isEmpty)
+        XCTAssertTrue(database.loadSiteSettings().isEmpty)
     }
 
     /// Turning the switch back on for a subdomain has to drop the parent entry
@@ -101,7 +100,26 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         XCTAssertFalse(whitelist.isWhitelisted(host: "www.example.com", profileID: profileID))
         XCTAssertFalse(whitelist.isWhitelisted(host: "example.com", profileID: profileID),
                        "the parent entry went with it")
-        XCTAssertTrue(database.loadContentBlockerWhitelist().isEmpty)
+        XCTAssertTrue(database.loadSiteSettings().isEmpty)
+    }
+
+    /// A more specific `contentBlocking = true` row under a whitelisted parent
+    /// means blocking is on for that host, so the switch has to turn it off
+    /// there — not clear the parent and leave blocking on.
+    func testTogglingAHostWithAMoreSpecificBlockingOnOverrideTurnsBlockingOff() throws {
+        let profileID = UUID()
+        let database = try makeDatabase(profileID: profileID)
+        let store = SiteSettingsStore(database: database)
+        let whitelist = ContentBlockerWhitelist(store: store)
+        store.set(.contentBlocking, site: "example.com", to: false, profileID: profileID)
+        store.set(.contentBlocking, site: "www.example.com", to: true, profileID: profileID)
+        XCTAssertFalse(whitelist.isWhitelisted(host: "www.example.com", profileID: profileID))
+
+        whitelist.toggleHost("www.example.com", profileID: profileID)
+
+        XCTAssertTrue(whitelist.isWhitelisted(host: "www.example.com", profileID: profileID))
+        XCTAssertTrue(whitelist.isWhitelisted(host: "example.com", profileID: profileID),
+                      "the parent entry is left alone")
     }
 
     func testTogglingOneHostLeavesUnrelatedEntriesAlone() throws {

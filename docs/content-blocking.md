@@ -165,7 +165,7 @@ lookups have all finished, and when a profile's blocking toggles change in Setti
 
 The whitelist allows users to disable content blocking for specific domains on a per-profile basis.
 
-**Storage**: `contentBlockerWhitelist` table with composite key `(profileID, host)`.
+**Storage**: `contentBlocking = false` rows of the `siteSetting` table, through `SiteSettingsStore` (TASK-187; the `contentBlockerWhitelist` table until migration v18).
 
 **Mechanism** (TASK-69): a per-navigation switch, the way Safari's per-site
 content-blocker toggle works. In `decidePolicyFor(navigationAction, preferences:)`,

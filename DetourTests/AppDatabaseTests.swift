@@ -424,7 +424,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - deleteProfile (TASK-31)
 
-    private let perProfileTables = ["profileExtension", "extensionInstalledEvent", "favorite", "contentBlockerWhitelist",
+    private let perProfileTables = ["profileExtension", "extensionInstalledEvent", "favorite", "siteSetting",
                                     "externalAppPermission"]
     private let extensionKeyedTables = ["extension", "extensionStorage", "extensionPermission"]
 
@@ -452,7 +452,8 @@ final class AppDatabaseTests: XCTestCase {
             db.saveFavorites([FavoriteRecord(id: "fav-\(profileID)", profileID: profileID, url: "https://a.example/",
                                              title: "A", faviconURL: nil, sortOrder: 0)],
                              profileID: profileID)
-            db.saveContentBlockerWhitelistEntry(ContentBlockerWhitelistRecord(profileID: profileID, host: "a.example"))
+            db.saveSiteSetting(SiteSettingRecord(profileID: profileID, site: "a.example",
+                                                 setting: "contentBlocking", value: false))
             db.saveExternalAppPermission(ExternalAppPermissionRecord(profileID: profileID, origin: "https://a.example",
                                                                      scheme: "zoommtg"))
         }

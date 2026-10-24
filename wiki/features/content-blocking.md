@@ -214,8 +214,11 @@ are the selected tab when a later change is posted.
 
 ## The per-site switch
 
-The whitelist is a persisted host set per profile (`contentBlockerWhitelist`
-table, unique on `(profileID, host)`). Enforcement is per **navigation**, the
+The whitelist is a persisted host set per profile: the
+`contentBlocking = false` rows of the [site settings](../architecture/site-settings.md)
+table (`siteSetting`), which replaced the `contentBlockerWhitelist` table in
+migration v18 (TASK-187). `ContentBlockerWhitelist` keeps its API and reads
+and writes `SiteSettingsStore.shared`. Enforcement is per **navigation**, the
 way Safari's per-site content-blocker switch works:
 
 1. Both navigation delegates implement the *preferences* variant,
@@ -313,7 +316,7 @@ EasyPrivacy cannot un-block something EasyList blocks.
 | Compiled lists | WebKit's default `WKContentRuleListStore`, or `<data directory>/ContentRuleLists` for a non-default data directory. One rule list per chunk: `<id>`, `<id>-1`, … |
 | Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount` |
 | Compile metadata | defaults keys `ContentBlocker.<chunk id>.compiledRuleCount` per compiled chunk, and `ContentBlocker.<id>.chunkCount` for a list of more than one chunk |
-| Whitelist | `contentBlockerWhitelist` in the [session database](../architecture/session-database.md); rows go with the profile |
+| Whitelist | `siteSetting` rows (`contentBlocking`) in the [session database](../architecture/session-database.md); rows go with the profile |
 
 # Tests
 

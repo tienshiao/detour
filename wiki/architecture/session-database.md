@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v17, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v18, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
@@ -57,7 +57,7 @@ GRDB `DatabaseQueue`, opened at
 | `favorite` | `id` | Favorites bar tiles, per **profile**. | `tabID` → `tab`, set null. |
 | `closedTab` | `id` autoincrement | Closed and archived tab records. | No FK on `spaceID`; `deleteSpace` removes the rows itself. Index `closedTab_on_spaceID_id`. No row cap. |
 | `download` | `id` | Download records. | |
-| `contentBlockerWhitelist` | (`profileID`, `host`) | Per-site content blocker exceptions. | Cascades from `profile`. |
+| `siteSetting` | (`profileID`, `site`, `setting`) | Per-site overrides ([site settings](./site-settings.md)); content blocking's site list since v18. | Cascades from `profile`. |
 | `externalAppPermission` | (`profileID`, `origin`, `scheme`) | "Always allow" for external URL schemes. | Never written for the Private profile. |
 | `extension` | `id` | Installed extensions: manifest, path, enabled, source, update URL. | |
 | `extensionStorage` | (`extensionID`, `key`) | Dead: left from the pre-WKWebExtension runtime. Only tests call its accessors; `chrome.storage` is WebKit's. | Cascades from `extension`. |
@@ -103,7 +103,7 @@ Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
 
 Profile deletion does **not** rely on cascades. `deleteProfileRows` is the
 one function that deletes a profile row, and it deletes `profileExtension`,
-`extensionInstalledEvent`, `favorite`, `contentBlockerWhitelist` and
+`extensionInstalledEvent`, `favorite`, `siteSetting` and
 `externalAppPermission` rows explicitly, because cascades only run while
 foreign keys are enforced and `extensionInstalledEvent` has no foreign key at
 all (TASK-31, TASK-33). Rows keyed by extension alone are shared by all
@@ -134,6 +134,7 @@ migration.
 | v15 | Index `closedTab(spaceID, id)` (TASK-117). |
 | v16 | `closedTab.closedAt`, back-filled from `archivedAt` (TASK-116). |
 | v17 | `extension.source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON`; existing installs classified by reading their on-disk manifest (TASK-113). |
+| v18 | `siteSetting`; the `contentBlockerWhitelist` rows copied into it as `contentBlocking = false` (lowercased, rows of missing profiles dropped), then that table dropped (TASK-187). |
 
 Patterns worth copying from the existing migrations:
 
@@ -162,7 +163,7 @@ it ran wipes the debug database rather than failing.
 
 | Record | File |
 |---|---|
-| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `ContentBlockerWhitelistRecord`, `ExternalAppPermissionRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
+| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `SiteSettingRecord`, `ExternalAppPermissionRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
 | `ClosedTabRecord`, `ClosedTabSummary` | `ClosedTabRecord.swift` in the same directory. The summary is the same table without the `interactionState` blob. |
 | `ExtensionRecord`, `ExtensionStorageRecord`, `ProfileExtensionRecord`, `ExtensionPermissionRecord`, `ExtensionInstalledEventRecord` | [Detour/Extensions/Storage/Models](../../Detour/Extensions/Storage/Models) |
 

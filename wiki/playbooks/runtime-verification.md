@@ -6,6 +6,9 @@ tags: [playbook, verify, runtime, isolation]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:25:00Z }
 sources:
+  - id: task-187
+    resource: backlog:TASK-187
+    title: Storage - a per-site settings table, with content blocking's site list migrated into it
   - id: verify-skill
     resource: ../../.claude/skills/verify/SKILL.md
     title: The /verify skill
@@ -145,6 +148,17 @@ space.
 
 Extensions: [seeding extensions](./seeding-extensions.md).
 
+**Seed data, not schema.** A Debug build's session migrator erases the
+database when its schema differs from what the migrations produce
+(`eraseDatabaseOnSchemaChange`), so a table re-created by hand with `sqlite3`
+(to fake an older schema for a migration check) wipes the whole profile on
+the next launch: it looks like a fresh profile with a new id, and the rows
+"lost" go with the old profile. To check a migration on a real database,
+build the commit before it into the same `.derived`, launch it once to make
+the database (wait until the `space` row is saved before stopping it), insert
+rows with `sqlite3`, then build the new code and launch on that data
+directory (TASK-187).[^task-187]
+
 ## 5. Observe
 
 | Channel | Good for | Needs |
@@ -216,3 +230,4 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 [^notes-harness]: Session notes on the runtime debug harness
 [^notes-probes]: Session notes on hit-test and resize probes
 [^notes-updates]: Session notes on verifying the extension update UI
+[^task-187]: Storage - a per-site settings table, with content blocking's site list migrated into it

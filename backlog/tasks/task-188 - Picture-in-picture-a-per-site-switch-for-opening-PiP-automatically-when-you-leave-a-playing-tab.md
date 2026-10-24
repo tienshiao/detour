@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:21'
+updated_date: '2026-10-24 11:03'
 labels:
   - media
   - feature
@@ -32,3 +33,9 @@ Add a per-site switch, stored in the per-site settings table (TASK-187, setting 
 - [ ] #3 Stored per profile and site in the per-site settings table; the decision on page-initiated PiP is recorded
 - [ ] #4 The automatic-PiP decision is a pure rule with tests (playing / not playing / closing / site off)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-187's review (2026-10-24): SiteSettingsStore persists every profile's rows, the Private profile's included (content blocking always did: the Private profile row is saved under its fixed id). ExternalAppPermissionStore by contrast keeps Private decisions in memory only. Decide here whether this setting's choice made in a Private window should outlive the session.
+<!-- SECTION:NOTES:END -->

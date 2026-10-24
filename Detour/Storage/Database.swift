@@ -136,7 +136,7 @@ struct AppDatabase {
     /// for profiles missing from the saved set), run inside the caller's write
     /// transaction. For each id that no space references it deletes every row
     /// keyed by the id (TASK-31) — per-profile extension state, the
-    /// `runtime.onInstalled` ledger, favourites, the content blocker whitelist
+    /// `runtime.onInstalled` ledger, favourites, per-site settings (TASK-187)
     /// and remembered external-app permissions — then the profile row.
     ///
     /// `recordingPendingDataRemoval` also records a pending removal of the
@@ -146,7 +146,7 @@ struct AppDatabase {
     /// `saveProfiles` sweep passes false, because its set of live profiles can be
     /// incomplete.
     ///
-    /// `favorite`, `profileExtension`, `contentBlockerWhitelist` and
+    /// `favorite`, `profileExtension`, `siteSetting` and
     /// `externalAppPermission` also cascade
     /// from the profile row, but only while foreign keys are enforced, and
     /// `extensionInstalledEvent` has no foreign key at all, so each is deleted
@@ -167,7 +167,7 @@ struct AppDatabase {
             try ProfileExtensionRecord.filter(Column("profileID") == id).deleteAll(db)
             try ExtensionInstalledEventRecord.filter(Column("profileID") == id).deleteAll(db)
             try FavoriteRecord.filter(Column("profileID") == id).deleteAll(db)
-            try ContentBlockerWhitelistRecord.filter(Column("profileID") == id).deleteAll(db)
+            try SiteSettingRecord.filter(Column("profileID") == id).deleteAll(db)
             try ExternalAppPermissionRecord.filter(Column("profileID") == id).deleteAll(db)
             if try ProfileRecord.filter(Column("id") == id).deleteAll(db) > 0 {
                 if recordingPendingDataRemoval {
@@ -717,25 +717,27 @@ struct AppDatabase {
         }
     }
 
-    // MARK: - Content Blocker Whitelist
+    // MARK: - Site settings (TASK-187)
 
-    func saveContentBlockerWhitelistEntry(_ record: ContentBlockerWhitelistRecord) {
-        performWrite("save whitelist entry") { db in
+    func saveSiteSetting(_ record: SiteSettingRecord) {
+        performWrite("save site setting") { db in
             try record.save(db)
         }
     }
 
-    func deleteContentBlockerWhitelistEntry(profileID: String, host: String) {
-        performWrite("delete whitelist entry") { db in
-            try ContentBlockerWhitelistRecord
-                .filter(Column("profileID") == profileID && Column("host") == host)
+    func deleteSiteSettings(profileID: String, setting: String, sites: Set<String>) {
+        guard !sites.isEmpty else { return }
+        performWrite("delete site settings") { db in
+            try SiteSettingRecord
+                .filter(Column("profileID") == profileID && Column("setting") == setting
+                        && sites.contains(Column("site")))
                 .deleteAll(db)
         }
     }
 
-    func loadContentBlockerWhitelist() -> [ContentBlockerWhitelistRecord] {
-        performRead("load whitelist", default: []) { db in
-            try ContentBlockerWhitelistRecord.fetchAll(db)
+    func loadSiteSettings() -> [SiteSettingRecord] {
+        performRead("load site settings", default: []) { db in
+            try SiteSettingRecord.fetchAll(db)
         }
     }
 
@@ -1282,6 +1284,32 @@ struct AppDatabase {
                 try db.execute(sql: "UPDATE extension SET source = ?, updateURL = ? WHERE id = ?",
                                arguments: [source, updateURL, id])
             }
+        }
+
+        migrator.registerMigration("v18") { db in
+            // TASK-187: per-site settings get one table (`SiteSettingRecord`), and
+            // content blocking's site list moves into it. A missing row is the
+            // setting's default; `setting` is `SiteSetting.rawValue`.
+            try db.create(table: "siteSetting") { t in
+                t.column("profileID", .text).notNull()
+                    .references("profile", onDelete: .cascade)
+                t.column("site", .text).notNull()
+                t.column("setting", .text).notNull()
+                t.column("value", .boolean).notNull()
+                t.primaryKey(["profileID", "site", "setting"])
+            }
+            // Every whitelisted host is "content blocking off" for that site. The
+            // old loader lowercased hosts, so two spellings were one entry; a row
+            // whose profile is gone (written while foreign keys were off) is
+            // dropped rather than failing the migration's foreign key check.
+            // Literals rather than `SiteSetting` so a rename cannot change what
+            // this wrote.
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO siteSetting (profileID, site, setting, value)
+                SELECT profileID, lower(host), 'contentBlocking', 0 FROM contentBlockerWhitelist
+                WHERE host <> '' AND profileID IN (SELECT id FROM profile)
+                """)
+            try db.drop(table: "contentBlockerWhitelist")
         }
 
         return migrator
