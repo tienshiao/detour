@@ -1,11 +1,11 @@
 ---
 id: TASK-186
 title: 'Dev mode for local development URLs: sidebar row and in-page dev toolbar'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-24 09:12'
-updated_date: '2026-10-24 17:02'
+updated_date: '2026-10-24 22:38'
 labels:
   - dev-mode
   - feature
@@ -38,3 +38,9 @@ The parent is done when the subtasks are.
 
 Decisions (user, 2026-10-24): automatic dev mode for http(s) on localhost, *.localhost, 127.0.0.0/8, [::1], 0.0.0.0 and *.test; not LAN IPs or .local (any site can be turned on by hand, TASK-186.5). Subtasks committed one at a time in the order 186.1, 186.5, 186.2, 186.4, 186.3.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Dev mode for local development URLs, built in five subtasks: 186.1 detection (loopback + .test) and the sidebar hazard border with host line (3f0ed9b); 186.5 per-site on/off switch in the site popover (aea315d); 186.2 striped toolbar above the page with URL, site info and copy (d5b61df); 186.4 Console / Network / element-picker inspector buttons (938a27e); 186.3 visible and full-page PNG captures (8b3ca9b). Follow-up: TASK-197 (motif in the brand's orange).
+<!-- SECTION:FINAL_SUMMARY:END -->
