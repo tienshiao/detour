@@ -99,6 +99,10 @@ class BrowserWindowController: NSWindowController {
     private var splitRevealOverlayMemberIDs: [UUID] = []
 
     private let findBar = FindBarView()
+    private var findBarTopConstraint: NSLayoutConstraint?
+    /// The hosted panes' `$url` sinks that keep each pane's dev toolbar
+    /// current (TASK-186.2); rebuilt on every claim, dropped with the content.
+    var devToolbarSubscriptions = Set<AnyCancellable>()
     private let dragHandle = WindowDragView()
     private let linkStatusBar = LinkStatusBar()
     private let emptyStateLabel: NSTextField = {
@@ -148,6 +152,10 @@ class BrowserWindowController: NSWindowController {
     /// from a link or a Peek): the collapsed sidebar's "Opened new tab in
     /// background" toast is wrong for them, and would fire once per pane.
     var suppressesBackgroundTabToast = false
+
+    /// Where Copy URL writes; a test substitutes a private pasteboard so it
+    /// never clobbers the user's clipboard.
+    var urlPasteboard: NSPasteboard = .general
 
     /// Runs `body` with the background-tab toast off; see
     /// `suppressesBackgroundTabToast`.
@@ -352,6 +360,13 @@ class BrowserWindowController: NSWindowController {
             selector: #selector(handleExtensionPinStateDidChange),
             name: ExtensionManager.extensionPinStateDidChangeNotification,
             object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSiteSettingsDidChange(_:)),
+            name: SiteSettingsStore.didChangeNotification,
+            object: SiteSettingsStore.shared
         )
 
         // A window coming back from occluded (app switch, another window covering
@@ -954,10 +969,36 @@ class BrowserWindowController: NSWindowController {
         findBar.isHidden = true
         contentContainerView.addSubview(findBar)
 
+        let top = findBar.topAnchor.constraint(equalTo: contentContainerView.topAnchor, constant: Self.findBarTopInset)
+        findBarTopConstraint = top
         NSLayoutConstraint.activate([
-            findBar.topAnchor.constraint(equalTo: contentContainerView.topAnchor, constant: 12),
+            top,
             findBar.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor, constant: 12),
         ])
+    }
+
+    private static let findBarTopInset: CGFloat = 12
+
+    /// Moves the find bar down by the dev toolbar's height while a hosted
+    /// pane's toolbar (TASK-186.2) lies under the find bar's spot, at the
+    /// content area's top left, so the bar never covers the toolbar's controls.
+    /// Geometric rather than "the focused pane": the find bar sits over the
+    /// left pane of a split whichever pane is focused, and a side-docked
+    /// inspector can move a toolbar out from under it.
+    /// Skipped while the find bar is hidden; `showFindBar` places it.
+    func updateFindBarPlacement() {
+        guard !findBar.isHidden else { return }
+        let bounds = contentContainerView.bounds
+        let size = findBar.fittingSize
+        let spot = NSRect(x: 12, y: bounds.maxY - Self.findBarTopInset - size.height,
+                          width: size.width, height: size.height)
+        let covered = hostedPaneTabs.contains { tab in
+            guard let container = tab.webViewContainer, container.isShowingDevToolbar,
+                  let toolbar = container.devToolbar else { return false }
+            return toolbar.convert(toolbar.bounds, to: contentContainerView).intersects(spot)
+        }
+        let constant = Self.findBarTopInset + (covered ? DevToolbarLayout.height : 0)
+        if findBarTopConstraint?.constant != constant { findBarTopConstraint?.constant = constant }
     }
 
     private var linkStatusBarConstraints: [NSLayoutConstraint] = []
@@ -992,6 +1033,7 @@ class BrowserWindowController: NSWindowController {
     @objc func showFindBar(_ sender: Any?) {
         findBar.alphaValue = 0
         findBar.isHidden = false
+        updateFindBarPlacement()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
             findBar.animator().alphaValue = 1
@@ -1318,6 +1360,7 @@ class BrowserWindowController: NSWindowController {
         for member in members {
             member.loadIfStalled()
         }
+        refreshDevToolbars()
     }
 
     private func wireOwnedWebView(_ webView: WKWebView) {
@@ -1951,6 +1994,12 @@ class BrowserWindowController: NSWindowController {
            let split = members[0].webViewContainer?.superview as? NSSplitView {
             return snapshotWithinSuperview(of: split)
         }
+        // A dev-mode page is pictured with its toolbar, as the handoff
+        // snapshot (of the container) shows it; the bare web view would be
+        // shorter than the content area and sit offset in the stand-in.
+        if let container = tab.webViewContainer, container.isShowingDevToolbar {
+            return snapshotImage(of: container)
+        }
         return tab.webView.flatMap { snapshotImage(of: $0) }
     }
 
@@ -2002,6 +2051,8 @@ class BrowserWindowController: NSWindowController {
         snapshotImageView = nil
         webViewTopConstraint = nil
         linkStatusBar.hide()
+        devToolbarSubscriptions.removeAll()
+        updateFindBarPlacement()
 
         // Clean up the PiP content view after WebKit has captured the animation origin.
         if let pipping = pipContentView {
@@ -2270,9 +2321,15 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func copyCurrentURL(_ sender: Any?) {
-        guard let urlString = displayTab?.url?.absoluteString else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(urlString, forType: .string)
+        copyURL(displayTab?.url)
+    }
+
+    /// Copy URL for the address bar's link button, the menu, and a dev
+    /// toolbar's link button (which copies its own pane's URL).
+    func copyURL(_ url: URL?) {
+        guard let urlString = url?.absoluteString else { return }
+        urlPasteboard.clearContents()
+        urlPasteboard.setString(urlString, forType: .string)
         toastManager.show(message: "URL copied")
     }
 

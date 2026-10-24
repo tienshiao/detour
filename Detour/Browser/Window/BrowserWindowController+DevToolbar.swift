@@ -1,0 +1,99 @@
+import AppKit
+import Combine
+
+/// Dev mode's in-page toolbar (TASK-186.2), per hosted pane. The toolbar lives
+/// in the tab's `WebViewContainerView` (which lays it out); the window decides
+/// whether each pane it hosts shows one and wires its controls to itself, so
+/// whichever window owns the container drives it.
+extension BrowserWindowController {
+
+    /// The tabs whose containers this window has on screen: the selected
+    /// tab, or both panes of its split. Empty while it shows a snapshot.
+    var hostedPaneTabs: [BrowserTab] {
+        guard let tab = selectedTab else { return [] }
+        return splitMembers(of: tab).filter {
+            $0.webViewContainer?.isDescendant(of: contentContainerView) == true
+        }
+    }
+
+    /// Re-decides every hosted pane's toolbar and follows each pane's URL
+    /// from here on. Runs at the end of every claim; the claim that hosts a
+    /// container again replaces the sinks of the one before.
+    func refreshDevToolbars() {
+        devToolbarSubscriptions.removeAll()
+        for tab in hostedPaneTabs {
+            updateDevToolbar(for: tab)
+            tab.$url
+                .dropFirst()
+                .removeDuplicates()
+                .receive(on: RunLoop.main)
+                .sink { [weak self, weak tab] _ in
+                    guard let self, let tab else { return }
+                    self.updateDevToolbar(for: tab)
+                }
+                .store(in: &devToolbarSubscriptions)
+        }
+        updateFindBarPlacement()
+    }
+
+    /// Shows or hides `tab`'s toolbar by `DevMode.isActive` for this window's
+    /// profile, and points its controls at this window. Not for a pane hosted
+    /// elsewhere: that window decides.
+    func updateDevToolbar(for tab: BrowserTab) {
+        guard let container = tab.webViewContainer, container.isDescendant(of: contentContainerView) else { return }
+        let url = tab.url
+        let shown = DevMode.isActive(for: url, profileID: activeSpace?.profile?.id)
+        container.onDevToolbarLayoutChange = { [weak self] in self?.updateFindBarPlacement() }
+        container.updateDevToolbar(shown: shown, url: url)
+        if let toolbar = container.devToolbar {
+            wireDevToolbar(toolbar, to: tab)
+        }
+    }
+
+    /// The per-site switch (TASK-186.5) changes a pane's state with no
+    /// navigation: follow it at once, as the sidebar rows do.
+    @objc func handleSiteSettingsDidChange(_ notification: Notification) {
+        guard notification.userInfo?[SiteSettingsStore.settingKey] as? SiteSetting == .devMode,
+              let profileID = notification.userInfo?[SiteSettingsStore.profileIDKey] as? UUID,
+              profileID == activeSpace?.profile?.id else { return }
+        for tab in hostedPaneTabs {
+            updateDevToolbar(for: tab)
+        }
+    }
+
+    private func wireDevToolbar(_ toolbar: DevToolbarView, to tab: BrowserTab) {
+        toolbar.onURLClick = { [weak self, weak tab] view in
+            guard let self, let tab, self.focusPane(tab) else { return }
+            self.openCommandPaletteInPlace(anchorFrame: self.paletteAnchorFrame(for: view))
+        }
+        toolbar.onInfoClick = { [weak self, weak tab] view in
+            guard let self, let tab, self.focusPane(tab) else { return }
+            self.showSiteSettingsPopover(relativeTo: view, fromAddressBar: false)
+        }
+        toolbar.onCopyClick = { [weak self, weak tab] in
+            self?.copyURL(tab?.url)
+        }
+    }
+
+    /// The palette and the popover act on the focused pane (`displayTab`), so
+    /// a click in the other pane's toolbar focuses that pane first, as a click
+    /// in its page would. False when the pane did not take focus, so the
+    /// caller does not act on the other pane instead.
+    private func focusPane(_ tab: BrowserTab) -> Bool {
+        guard tab.id != selectedTabID else { return true }
+        guard let webView = tab.webView else { return false }
+        window?.makeFirstResponder(webView)
+        return selectedTabID == tab.id
+    }
+
+    /// Where the palette opens for a click on the URL: its top-left at the
+    /// toolbar's top, level with the URL, kept inside the window.
+    private func paletteAnchorFrame(for urlView: NSView) -> NSRect {
+        let frame = urlView.convert(urlView.bounds, to: nil)
+        guard let toolbar = urlView.superview else { return frame }
+        let bar = toolbar.convert(toolbar.bounds, to: nil)
+        let windowWidth = window?.contentView?.bounds.width ?? .greatestFiniteMagnitude
+        let x = max(0, min(frame.minX - 8, windowWidth - CommandPaletteView.width - 8))
+        return NSRect(x: x, y: bar.minY, width: frame.width, height: bar.height)
+    }
+}

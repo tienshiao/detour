@@ -21,6 +21,9 @@ class CommandPaletteTextField: NSTextField {
 }
 
 class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    /// The palette's fixed width.
+    static let width: CGFloat = 500
+
     weak var delegate: CommandPaletteDelegate?
     var tabStore: TabStore?
     var activeSpaceID: UUID?
@@ -175,7 +178,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         NSLayoutConstraint.activate([
             centerXConstraint,
             centerYConstraint,
-            glassContainer.widthAnchor.constraint(equalToConstant: 500),
+            glassContainer.widthAnchor.constraint(equalToConstant: Self.width),
 
             searchIcon.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
             searchIcon.centerYAnchor.constraint(equalTo: textField.centerYAnchor),

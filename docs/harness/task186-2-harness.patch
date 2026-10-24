@@ -1,0 +1,451 @@
+TASK-186.2 runtime harness: dev mode's toolbar above the page, per pane, with
+navigation, the copy and URL controls, the docked Web Inspector on every
+side, the per-site switch, a Peek, the find bar, light and dark, and a second
+window's snapshot. Temporary code, never committed to Detour/. Apply, build,
+run, revert:
+
+    git apply docs/harness/task186-2-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # $SITE/app.html and $SITE/remote.html: a <title>, an <h1>, a coloured top
+    # border and a line printing innerWidth x innerHeight (updated on resize):
+    python3 -m http.server 8862 --bind 127.0.0.1 --directory "$SITE" &
+    DETOUR_DATA_DIR=DetourVerify1862 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8862 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher reads only the new lines of $OUT/verify.log every 0.2 s and
+    # runs `screencapture -x -o -l <windowNumber> $OUT/<name>.png` for each
+    # "SHOOT <name> <windowNumber>" line; the harness waits for each PNG
+    # before its next step. Wait for "done" (about 100 s), then kill that
+    # pid and the server.
+    git apply -R docs/harness/task186-2-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify1862
+
+The local site is localhost:8862; the remote one kubernetes.docker.internal:8862
+(127.0.0.1 in /etc/hosts, not local by the rule). The inspector is driven with
+`webView._inspector` `show` and `attach` (it attaches at the bottom by
+default), then `InspectorFrontendHost.requestSetDockSide('bottom'|'right'|'left')`
+evaluated in the inspector's own web view (the container's other
+WKWebView, a WKInspectorWKWebView). WebKit saves the side in the SHARED
+com.detourbrowser.mac defaults as
+`__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachmentSide`: the run
+docks back to the bottom, and the key (absent before) was deleted afterwards.
+The shell-launched app is not active, so window 2 takes the web view over
+through `windowDidBecomeKey` called directly. The copy step saves and restores
+the general pasteboard.
+
+Results (2026-10-24, second run after the corner fix; all 25 captures read
+and matching the log; container 972x760):
+- Local tab: web view (0,0 972x730), toolbar (0,730 972x30), page
+  innerHeight 730 = container - 30. Remote tab: no toolbar, web view = the
+  container bounds, innerHeight 760.
+- Same tab local -> remote -> local?page=2: toolbar hidden and the web view
+  back to 760, then shown with the label "http://localhost:8862/app.html?page=2".
+- Copy button: pasteboard held the tab's URL; "URL copied" toast shown.
+  A POSTED click on the URL (inside the window's 38 pt drag strip) hit the
+  NSButton and opened the palette anchored, navigating in place.
+- Window resized to 772x640: web view 772x610, toolbar at y 610.
+- Split (local left, remote right focused): toolbar only on the left pane
+  (472x30, innerHeight 710), right pane 740 with none; rounded pane: toolbar
+  top corners, page bottom corners, no notch. Clicking the left pane's URL
+  focused that pane and opened the palette; its info button opened the site
+  settings popover under the button.
+- Inspector: bottom: web view (0,500 972x230), toolbar (0,730 972x30) full
+  width. Right: web view (0,0 320x730), toolbar (0,730 320x30), inspector
+  (320,0 652x694). Left: web view (652,0 320x730), toolbar (652,730 320x30).
+  Docked right, the switch OFF gave web view (0,0 320x760), ON gave 320x730
+  again, in the same turn. Inspector closed: back to 972x730 under the toolbar.
+  (The side-docked inspector stops 66 pt below the top: WebKit intersects
+  it with the window's contentLayoutRect, the title bar; not the toolbar.)
+- Switch OFF without the inspector: toolbar gone in the same turn, web view
+  972x760; back to default removed the override and showed it again.
+- Peek over the dev-mode tab: the Peek's web view is bare (no container, no
+  toolbar); one visible toolbar, the host's, under the overlay.
+- Find bar: shown at 42 pt from the content top (12 + 30), below the toolbar.
+- Dark: toolbar in dark stripes, single and split.
+- Second window on the same tab: its stand-in (972x760) shows the toolbar at
+  the same place as window 1's live view; after window 2 took the web view,
+  window 2 hosted it with the toolbar and window 1's handoff snapshot lined up.
+First run found the page of a re-hosted split pane rounded at the TOP
+(corner mask chosen by `contentsAreFlipped()`, which read unflipped while
+the pane was re-hosted); fixed to decide from `isFlipped`.
+Not driven: window fullscreen, element fullscreen, a person's real mouse
+drag on the toolbar background (moves the window via performDrag).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..b54042d 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1862HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1862Harness.swift b/Detour/App/Task1862Harness.swift
+new file mode 100644
+index 0000000..88ff428
+--- /dev/null
++++ b/Detour/App/Task1862Harness.swift
+@@ -0,0 +1,359 @@
++// TEMP TASK-186.2 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask1862HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        // Steps run in order; each waits until every capture requested so far
++        // exists, so a slow watcher cannot shoot a later state.
++        var steps: [(TimeInterval, () -> Void)] = []
++        var requestedShots: [String] = []
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) { steps.append((dt, block)) }
++        func runStep(_ index: Int) {
++            guard index < steps.count else { return }
++            let missing = requestedShots.filter { !FileManager.default.fileExists(atPath: "\(outDir)/\($0).png") }
++            let delay = missing.isEmpty ? steps[index].0 : 0.2
++            let timer = Timer(timeInterval: delay, repeats: false) { _ in
++                if missing.isEmpty { steps[index].1(); runStep(index + 1) } else { runStep(index) }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window, let space = wc.activeSpace else { return log("no window/space") }
++        let store = TabStore.shared
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        let localURL = URL(string: "http://localhost:\(port)/app.html")!
++        let local2URL = URL(string: "http://localhost:\(port)/app.html?page=2")!
++        // 127.0.0.1 via /etc/hosts, but not local by the rule.
++        let remoteURL = URL(string: "http://kubernetes.docker.internal:\(port)/remote.html")!
++        var tabs: [String: BrowserTab] = [:]
++        var second: BrowserWindowController?
++        let profileID = space.profile!.id
++
++        func r(_ rect: NSRect) -> String {
++            String(format: "(%.0f,%.0f %.0fx%.0f)", rect.minX, rect.minY, rect.width, rect.height)
++        }
++        /// The pane's container, web view, toolbar and any other subview (the inspector).
++        func describe(_ label: String, _ tab: BrowserTab?, _ w: BrowserWindowController = wc) {
++            guard let tab, let container = tab.webViewContainer, let webView = tab.webView else {
++                return log("\(label): no tab/container")
++            }
++            let toolbar = container.devToolbar
++            let others = container.subviews.filter { $0 !== webView && $0 !== toolbar }
++                .map { "\(type(of: $0))\(r($0.frame))\($0.isHidden ? "hidden" : "")" }
++            let host = container.isDescendant(of: w.contentContainerView) ? "hosted" : "NOT hosted"
++            log("\(label): url=\(tab.url?.absoluteString ?? "nil") \(host) container=\(r(container.frame)) bounds=\(r(container.bounds)) "
++                + "webView=\(r(webView.frame)) toolbar=\(toolbar.map { $0.isHidden ? "hidden" : r($0.frame) } ?? "none") "
++                + "label=\"\(toolbar?.urlButton.title ?? "")\" others=\(others) "
++                + "corners(webView)=\(webView.layer?.maskedCorners.rawValue ?? 99) corners(toolbar)=\(toolbar?.layer?.maskedCorners.rawValue ?? 99) "
++                + "radius=\(container.contentCornerRadius) flipped(webViewLayer)=\(webView.layer?.contentsAreFlipped() ?? false)")
++            webView.evaluateJavaScript("[window.innerWidth, window.innerHeight].join('x')") { result, error in
++                log("\(label): page inner=\(result.map { "\($0)" } ?? "err \(String(describing: error))") "
++                    + "expected height=\(Int(container.bounds.height - (container.isShowingDevToolbar ? DevToolbarLayout.height : 0)))")
++            }
++        }
++        func toolbarsIn(_ w: BrowserWindowController) -> String {
++            guard let content = w.window?.contentView else { return "no content" }
++            let bars = allSubviews(content).compactMap { $0 as? DevToolbarView }.filter { !$0.isHiddenOrHasHiddenAncestor }
++            return "\(bars.count) visible toolbar(s): " + bars.map { "\"\($0.urlButton.title)\" in \(r($0.convert($0.bounds, to: nil)))" }.joined(separator: ", ")
++        }
++        func shoot(_ name: String, _ w: NSWindow?) {
++            requestedShots.append(name)
++            log("SHOOT \(name) \(w?.windowNumber ?? -1)")
++        }
++        func popoverWindow() -> NSWindow? {
++            NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
++        }
++        func closePopover() {
++            NSApp.windows.filter { String(describing: type(of: $0)).contains("Popover") }.forEach { $0.close() }
++        }
++        func inspector(of tab: BrowserTab?) -> NSObject? {
++            tab?.webView?.value(forKey: "_inspector") as? NSObject
++        }
++        func inspectorWebView(of tab: BrowserTab?) -> WKWebView? {
++            guard let container = tab?.webViewContainer else { return nil }
++            return container.subviews.first { $0 is WKWebView && $0 !== tab?.webView } as? WKWebView
++        }
++        func dock(_ side: String, _ tab: BrowserTab?) {
++            guard let iw = inspectorWebView(of: tab) else { return log("dock \(side): no inspector web view") }
++            iw.evaluateJavaScript("InspectorFrontendHost.requestSetDockSide('\(side)'); 'ok'") { result, error in
++                log("dock \(side): \(result.map { "\($0)" } ?? "error \(String(describing: error))")")
++            }
++        }
++        func findBarFrame() -> String {
++            guard let content = window.contentView,
++                  let bar = allSubviews(content).first(where: { $0 is FindBarView }) else { return "none" }
++            return "\(bar.isHidden ? "hidden" : "shown") \(r(bar.convert(bar.bounds, to: nil)))"
++        }
++
++        // MARK: Seed
++        at(0) {
++            NSApp.activate(ignoringOtherApps: true)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            window.setFrame(NSRect(x: 80, y: 120, width: 1200, height: 760), display: true)
++            tabs["local"] = store.addTab(in: space, url: localURL)
++            tabs["remote"] = store.addTab(in: space, url: remoteURL)
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["local"]!.id)
++            log("seeded: \(space.tabs.map { $0.url?.absoluteString ?? "nil" })")
++        }
++
++        // MARK: 1 — a local tab: toolbar above the page
++        at(3.0) {
++            describe("1 local", tabs["local"])
++            log("1 \(toolbarsIn(wc))")
++            shoot("1-light-local", window)
++        }
++        // MARK: 2 — a non-local tab: no toolbar
++        at(1.0) { wc.selectTab(id: tabs["remote"]!.id) }
++        at(2.0) {
++            describe("2 remote", tabs["remote"])
++            log("2 \(toolbarsIn(wc))")
++            shoot("2-light-remote", window)
++        }
++        // MARK: 3 — navigate local → remote → local in one tab
++        at(1.0) { wc.selectTab(id: tabs["local"]!.id) }
++        at(1.0) { tabs["local"]!.load(remoteURL) }
++        at(2.5) {
++            describe("3a local tab now remote", tabs["local"])
++            shoot("3a-light-nav-remote", window)
++        }
++        at(1.0) { tabs["local"]!.load(local2URL) }
++        at(2.5) {
++            describe("3b local tab back to local", tabs["local"])
++            shoot("3b-light-nav-local", window)
++        }
++        // MARK: 4 — the copy button (the user's clipboard is put back after)
++        var savedItems: [NSPasteboardItem] = []
++        at(1.0) {
++            let pb = NSPasteboard.general
++            savedItems = (pb.pasteboardItems ?? []).map { item in
++                let copy = NSPasteboardItem()
++                for type in item.types { if let data = item.data(forType: type) { copy.setData(data, forType: type) } }
++                return copy
++            }
++            tabs["local"]!.webViewContainer?.devToolbar?.copyButton.performClick(nil)
++            log("4 copy: pasteboard=\(pb.string(forType: .string) ?? "nil") expected=\(tabs["local"]!.url?.absoluteString ?? "nil")")
++        }
++        at(0.3) { shoot("4-light-copy-toast", window) }
++        at(0.5) {
++            let pb = NSPasteboard.general
++            pb.clearContents()
++            if !savedItems.isEmpty { pb.writeObjects(savedItems) }
++            log("4 clipboard restored (\(savedItems.count) item(s))")
++        }
++        // MARK: 4c — a real (posted) click on the URL under the window's drag strip
++        var eventNumber = 1
++        func postClick(at point: NSPoint) {
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                guard let e = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
++                                                 timestamp: ProcessInfo.processInfo.systemUptime,
++                                                 windowNumber: window.windowNumber, context: nil,
++                                                 eventNumber: eventNumber, clickCount: 1,
++                                                 pressure: type == .leftMouseDown ? 1 : 0) else { continue }
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        at(1.0) {
++            guard let bar = tabs["local"]!.webViewContainer?.devToolbar else { return log("4c no toolbar") }
++            let b = bar.urlButton
++            let p = b.convert(NSPoint(x: min(40, b.bounds.midX), y: b.bounds.midY), to: nil)
++            let hit = window.contentView?.superview?.hitTest(p)
++            log("4c posting click at \(p) hit=\(hit.map { "\(type(of: $0))" } ?? "nil")")
++            postClick(at: p)
++        }
++        at(1.0) {
++            log("4c after posted click: palette=\(wc.commandPaletteView != nil) inPlace=\(wc.commandPaletteNavigatesInPlace) anchored=\(wc.commandPaletteView?.isAnchored ?? false)")
++            shoot("4c-light-posted-url-click-palette", window)
++        }
++        at(0.5) { wc.dismissCommandPalette() }
++        // MARK: 4b — window resize keeps the toolbar at the top
++        at(1.0) { window.setFrame(NSRect(x: 80, y: 120, width: 1000, height: 640), display: true) }
++        at(1.0) {
++            describe("4b resized", tabs["local"])
++            shoot("4b-light-resized", window)
++        }
++        at(0.5) { window.setFrame(NSRect(x: 80, y: 120, width: 1200, height: 760), display: true) }
++        // MARK: 5 — a split: toolbar only on the local pane
++        at(1.0) {
++            let l = store.addTab(in: space, url: localURL)
++            let rt = store.addTab(in: space, url: remoteURL)
++            tabs["splitLocal"] = l; tabs["splitRemote"] = rt
++            store.createSplit(draggedTabID: rt.id, targetTabID: l.id, edge: .right, in: space)
++            wc.selectTab(id: rt.id)
++        }
++        at(3.0) {
++            describe("5 split local (left)", tabs["splitLocal"])
++            describe("5 split remote (right, focused)", tabs["splitRemote"])
++            log("5 \(toolbarsIn(wc)) focused=\(wc.selectedTab?.url?.absoluteString ?? "nil")")
++            shoot("5-light-split", window)
++        }
++        // 5b — the unfocused local pane's URL: focuses it, opens the palette in place
++        at(1.0) {
++            tabs["splitLocal"]!.webViewContainer?.devToolbar?.urlButton.performClick(nil)
++            log("5b URL click: focused=\(wc.selectedTab?.url?.absoluteString ?? "nil") palette=\(wc.commandPaletteView != nil) "
++                + "inPlace=\(wc.commandPaletteNavigatesInPlace) anchored=\(wc.commandPaletteView?.isAnchored ?? false)")
++        }
++        at(1.0) { shoot("5b-light-split-palette", window) }
++        at(0.5) { wc.dismissCommandPalette() }
++        // 5c — the info button opens the site settings popover
++        at(1.0) {
++            tabs["splitLocal"]!.webViewContainer?.devToolbar?.infoButton.performClick(nil)
++            log("5c info click: popover=\(popoverWindow() != nil) "
++                + "frame=\(popoverWindow().map { r($0.frame) } ?? "none") infoButtonOnScreen=\(tabs["splitLocal"]!.webViewContainer?.devToolbar.map { r($0.window!.convertToScreen($0.infoButton.convert($0.infoButton.bounds, to: nil))) } ?? "nil")")
++        }
++        at(1.0) { shoot("5c-light-split-popover", window) }
++        at(0.5) { closePopover() }
++        // MARK: 6 — the docked Web Inspector on the local tab
++        at(1.0) { wc.selectTab(id: tabs["local"]!.id) }
++        at(1.0) {
++            tabs["local"]!.webView?.isInspectable = true
++            guard let insp = inspector(of: tabs["local"]) else { return log("6 no _inspector") }
++            insp.perform(Selector(("show")))
++            log("6 inspector show")
++        }
++        at(3.0) {
++            if let insp = inspector(of: tabs["local"]), insp.responds(to: Selector(("attach"))) {
++                insp.perform(Selector(("attach")))
++            }
++            log("6 inspector attach requested")
++        }
++        at(3.0) {
++            describe("6a inspector (default side)", tabs["local"])
++            shoot("6a-light-inspector-default", window)
++        }
++        at(1.0) { dock("bottom", tabs["local"]) }
++        at(3.0) {
++            describe("6b inspector bottom", tabs["local"])
++            shoot("6b-light-inspector-bottom", window)
++        }
++        at(1.0) { dock("right", tabs["local"]) }
++        at(3.0) {
++            describe("6c inspector right", tabs["local"])
++            shoot("6c-light-inspector-right", window)
++        }
++        at(1.0) { dock("left", tabs["local"]) }
++        at(3.0) {
++            describe("6d inspector left", tabs["local"])
++            shoot("6d-light-inspector-left", window)
++        }
++        // 6e — the switch while docked right: toolbar off, then on again
++        at(1.0) { dock("right", tabs["local"]) }
++        at(2.0) {
++            DevMode.setEnabled(false, for: tabs["local"]!.url, profileID: profileID)
++            describe("6e docked right, dev mode OFF (same turn)", tabs["local"])
++        }
++        at(1.0) {
++            DevMode.setEnabled(true, for: tabs["local"]!.url, profileID: profileID)
++            describe("6f docked right, dev mode ON again (same turn)", tabs["local"])
++        }
++        at(1.0) { shoot("6f-light-inspector-right-toggled", window) }
++        at(1.0) { dock("bottom", tabs["local"]) }
++        at(2.0) {
++            if let insp = inspector(of: tabs["local"]) { insp.perform(Selector(("close"))) }
++            log("6 inspector closed")
++        }
++        at(2.0) {
++            describe("6g inspector closed", tabs["local"])
++            shoot("6g-light-inspector-closed", window)
++        }
++        // MARK: 7 — the per-site switch turns the toolbar off at once
++        at(1.0) {
++            DevMode.setEnabled(false, for: tabs["local"]!.url, profileID: profileID)
++            log("7 switch OFF: active=\(DevMode.isActive(for: tabs["local"]!.url, profileID: profileID))")
++            describe("7 same turn after OFF", tabs["local"])
++        }
++        at(0.5) { shoot("7-light-switch-off", window) }
++        at(1.0) {
++            DevMode.setEnabled(true, for: tabs["local"]!.url, profileID: profileID)
++            log("7 switch back to default: override=\(String(describing: DevMode.override(for: tabs["local"]!.url, profileID: profileID)))")
++            describe("7 same turn after default", tabs["local"])
++        }
++        // MARK: 8 — a Peek over a dev-mode tab
++        at(1.0) { wc.showPeekOverlay(url: localURL) }
++        at(3.0) {
++            let peek = tabs["local"]!.peekTab
++            log("8 peek: superview=\(peek?.webView?.superview.map { "\(type(of: $0))" } ?? "nil") "
++                + "peekContainer=\(peek?.webViewContainer != nil) \(toolbarsIn(wc))")
++            describe("8 host under peek", tabs["local"])
++            shoot("8-light-peek", window)
++        }
++        at(1.0) { wc.closePeekOverlay() }
++        // MARK: 9 — the find bar moves below the toolbar
++        at(1.0) { wc.showFindBar(nil) }
++        at(1.0) {
++            log("9 find bar \(findBarFrame()) \(toolbarsIn(wc))")
++            shoot("9-light-findbar", window)
++        }
++        at(0.5) { wc.dismissFindBar(nil) }
++        // MARK: 10 — dark
++        at(1.0) { NSApp.appearance = NSAppearance(named: .darkAqua) }
++        at(1.5) {
++            describe("10 dark local", tabs["local"])
++            shoot("10-dark-local", window)
++        }
++        at(1.0) { wc.selectTab(id: tabs["splitLocal"]!.id) }
++        at(2.0) {
++            log("10b \(toolbarsIn(wc))")
++            describe("10b dark split local", tabs["splitLocal"])
++            shoot("10b-dark-split", window)
++        }
++        // MARK: 11 — a second window on the same tab shows a snapshot, not offset
++        at(1.0) { wc.selectTab(id: tabs["local"]!.id) }
++        at(1.5) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            second = self.createNewWindow(showing: space)
++            second?.window?.setFrame(NSRect(x: 1300, y: 120, width: 1200, height: 760), display: true)
++            second?.selectTab(id: tabs["local"]!.id)
++            window.makeKeyAndOrderFront(nil)
++        }
++        at(3.0) {
++            log("11 w1 hosts=\(tabs["local"]!.webViewContainer?.isDescendant(of: wc.contentContainerView) ?? false) "
++                + "w2 hosts=\(second.flatMap { s in tabs["local"]!.webViewContainer?.isDescendant(of: s.contentContainerView) } ?? false)")
++            if let s = second, let content = s.window?.contentView {
++                let images = allSubviews(content).compactMap { $0 as? NSImageView }.filter { $0.superview === s.contentContainerView }
++                log("11 w2 snapshot views: \(images.map { "\(r($0.frame)) image=\($0.image.map { "\($0.size)" } ?? "nil")" })")
++            }
++            shoot("11-light-w1-live", window)
++            shoot("11-light-w2-snapshot", second?.window)
++        }
++        // 11b — window 2 takes the web view over; window 1 shows the handoff snapshot
++        at(1.0) {
++            // A shell-launched app is not active, so ordering front does not
++            // make window 2 key: deliver what AppKit tells its delegate.
++            second?.window?.makeKeyAndOrderFront(nil)
++            if let s = second { s.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: s.window)) }
++        }
++        at(2.0) {
++            if let s = second { describe("11b w2 live", tabs["local"], s) }
++            log("11b w2 \(second.map(toolbarsIn) ?? "")")
++            if let content = window.contentView {
++                let images = allSubviews(content).compactMap { $0 as? NSImageView }.filter { $0.superview === wc.contentContainerView }
++                log("11b w1 snapshot views: \(images.map { "\(r($0.frame)) image=\($0.image.map { "\($0.size)" } ?? "nil")" })")
++            }
++            shoot("11b-light-w2-live", second?.window)
++            shoot("11b-light-w1-snapshot", window)
++        }
++        at(1.0) { log("done") }
++        steps[0].0 = 3.0
++        runStep(0)
++    }
++}
++#endif

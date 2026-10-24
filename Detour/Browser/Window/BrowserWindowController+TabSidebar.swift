@@ -46,6 +46,13 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect) {
+        openCommandPaletteInPlace(anchorFrame: anchorFrame)
+    }
+
+    /// The palette prefilled with the page's URL, navigating the tab in place
+    /// (a new tab while a Peek is up): the faux address bar's click and the
+    /// dev toolbar's URL. `anchorFrame` is in window coordinates.
+    func openCommandPaletteInPlace(anchorFrame: NSRect) {
         commandPaletteNavigatesInPlace = displayTab === selectedTab
         showCommandPalette(initialText: displayTab?.url?.absoluteString, anchorFrame: anchorFrame)
     }
@@ -171,6 +178,13 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView) {
+        showSiteSettingsPopover(relativeTo: sourceButton, fromAddressBar: true)
+    }
+
+    /// The site settings popover for `displayTab`, below `sourceButton`: the
+    /// address bar's slider button, or a dev toolbar's info button
+    /// (TASK-186.2), which leaves the address bar's hover buttons alone.
+    func showSiteSettingsPopover(relativeTo sourceButton: NSView, fromAddressBar: Bool) {
         let host = displayTab?.url?.host ?? ""
         let profileID = activeSpace?.profile?.id ?? UUID()
         let isWhitelisted = host.isEmpty ? false : ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
@@ -253,15 +267,16 @@ extension BrowserWindowController: TabSidebarDelegate {
             SettingsWindowController.shared.showExtensionsPane()
         }
 
-        let fauxBar = tabSidebar.fauxAddressBar
-        fauxBar.keepButtonsVisible = true
-
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = vc
-        let closeHandler = FauxAddressBarPopoverDelegate(fauxAddressBar: fauxBar)
-        popover.delegate = closeHandler
-        objc_setAssociatedObject(popover, "popoverDelegate", closeHandler, .OBJC_ASSOCIATION_RETAIN)
+        if fromAddressBar {
+            let fauxBar = tabSidebar.fauxAddressBar
+            fauxBar.keepButtonsVisible = true
+            let closeHandler = FauxAddressBarPopoverDelegate(fauxAddressBar: fauxBar)
+            popover.delegate = closeHandler
+            objc_setAssociatedObject(popover, "popoverDelegate", closeHandler, .OBJC_ASSOCIATION_RETAIN)
+        }
         popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
     }
 

@@ -29,11 +29,125 @@ final class WebViewContainerView: NSView {
         applyContentClipping(subview)
     }
 
+    /// The tab's own web view. The docked Web Inspector is a WKWebView too,
+    /// and a sibling, so the container is told which subview is the page.
+    weak var hostedWebView: NSView? {
+        didSet {
+            guard hostedWebView !== oldValue else { return }
+            NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
+            guard let hostedWebView else { return }
+            hostedWebView.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(webViewFrameDidChange),
+                                                   name: NSView.frameDidChangeNotification, object: hostedWebView)
+            applyDevToolbarLayout()
+            subviews.forEach(applyContentClipping)
+        }
+    }
+
+    /// Dev mode's toolbar above the web view (TASK-186.2), made the first
+    /// time the page needs it, then hidden and shown.
+    private(set) var devToolbar: DevToolbarView?
+
+    var isShowingDevToolbar: Bool {
+        guard let devToolbar else { return false }
+        return !devToolbar.isHidden
+    }
+
+    /// Runs after the toolbar is shown, hidden or moved, so the window can
+    /// keep its find bar clear of it.
+    var onDevToolbarLayoutChange: (() -> Void)?
+
+    /// Shows the dev toolbar, reading `url`, above the web view, or hides it
+    /// and gives the web view its space back. Only the web view's top edge
+    /// moves (`DevToolbarLayout`), so a docked Web Inspector keeps its place.
+    func updateDevToolbar(shown: Bool, url: URL?) {
+        if shown {
+            let toolbar = devToolbar ?? makeDevToolbar()
+            toolbar.url = url
+            guard toolbar.isHidden else { return }
+            toolbar.isHidden = false
+        } else {
+            guard let devToolbar, !devToolbar.isHidden else { return }
+            devToolbar.isHidden = true
+        }
+        applyDevToolbarLayout()
+        subviews.forEach(applyContentClipping)
+        onDevToolbarLayoutChange?()
+    }
+
+    private func makeDevToolbar() -> DevToolbarView {
+        let toolbar = DevToolbarView()
+        toolbar.isHidden = true
+        // No autoresizing: the frame-change sink and `resizeSubviews` frame
+        // it from the web view, and an autoresize after the sink has already
+        // placed it would shift it a second time mid-resize.
+        toolbar.translatesAutoresizingMaskIntoConstraints = true
+        toolbar.autoresizingMask = []
+        addSubview(toolbar)
+        devToolbar = toolbar
+        return toolbar
+    }
+
+    /// Frames the web view and the toolbar for the current state. Hidden, the
+    /// web view's top goes back to the container's top; a container that
+    /// never showed the toolbar is left alone.
+    func applyDevToolbarLayout() {
+        guard let devToolbar, let webView = hostedWebView else { return }
+        let frames = DevToolbarLayout.frames(containerBounds: bounds, webViewFrame: webView.frame,
+                                             showsToolbar: !devToolbar.isHidden)
+        if webView.frame != frames.webView { webView.frame = frames.webView }
+        if let toolbarFrame = frames.toolbar, devToolbar.frame != toolbarFrame { devToolbar.frame = toolbarFrame }
+    }
+
+    /// Autoresizing keeps the web view's margins, which holds the toolbar's
+    /// gap through a resize, except from a zero-sized container (a container
+    /// is made at zero size and framed when hosted). Re-applying the layout
+    /// covers that.
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        if isShowingDevToolbar { applyDevToolbarLayout() }
+    }
+
+    /// WebKit re-frames the web view when the inspector docks, undocks or is
+    /// resized. It keeps the web view's top, so only the toolbar follows: to
+    /// the web view's x and width when the inspector is docked on a side.
+    @objc private func webViewFrameDidChange() {
+        guard let devToolbar, !devToolbar.isHidden, let webView = hostedWebView else { return }
+        let frame = DevToolbarLayout.toolbarFrame(containerBounds: bounds, webViewFrame: webView.frame)
+        guard devToolbar.frame != frame else { return }
+        devToolbar.frame = frame
+        onDevToolbarLayoutChange?()
+    }
+
     private func applyContentClipping(_ view: NSView) {
         view.wantsLayer = true
-        view.layer?.cornerRadius = contentCornerRadius
-        view.layer?.cornerCurve = .continuous
-        view.layer?.masksToBounds = contentCornerRadius > 0
+        guard let layer = view.layer else { return }
+        layer.cornerRadius = contentCornerRadius
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = contentCornerRadius > 0
+        layer.maskedCorners = maskedCorners(for: view)
+    }
+
+    /// While the toolbar shows, it rounds the pane's top corners and the web
+    /// view its bottom ones, so the two read as one card with no notch
+    /// between them. The mask is in the layer's own coordinates, which AppKit
+    /// flips for a view flipped relative to the container (`WKWebView` is):
+    /// there `MaxY` is the bottom. Decided from `isFlipped`, not the layer's
+    /// `contentsAreFlipped()`, which depends on where the layer tree is at the
+    /// moment: a re-hosted split pane read unflipped and rounded the page's
+    /// top corners.
+    private func maskedCorners(for view: NSView) -> CACornerMask {
+        guard isShowingDevToolbar else { return DevToolbarLayout.allCorners }
+        let top: Bool
+        if view === devToolbar {
+            top = true
+        } else if view === hostedWebView {
+            top = false
+        } else {
+            return DevToolbarLayout.allCorners
+        }
+        let flipped = view.isFlipped != isFlipped
+        return top == flipped ? DevToolbarLayout.bottomCorners : DevToolbarLayout.topCorners
     }
 }
 
@@ -69,6 +183,9 @@ class BrowserTab: NSObject {
                 webView.frame = container.bounds
                 container.addSubview(webView)
             }
+            container.hostedWebView = webView
+            // Lays the toolbar out again over a re-wrapped web view.
+            container.applyDevToolbarLayout()
             return
         }
         let container = WebViewContainerView()
@@ -78,6 +195,7 @@ class BrowserTab: NSObject {
         webView.autoresizingMask = [.width, .height]
         webView.frame = container.bounds
         container.addSubview(webView)
+        container.hostedWebView = webView
         webViewContainer = container
     }
 

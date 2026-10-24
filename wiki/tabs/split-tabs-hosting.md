@@ -40,6 +40,9 @@ sources:
   - id: notes
     resource: "Agent session notes, 2026 (not in the repository)"
     title: Runtime debug harness notes (NSSplitView setPosition finding)
+  - id: dev-mode
+    resource: ../features/dev-mode.md
+    title: Dev mode (the dev toolbar inside the container)
   - id: task-185
     resource: backlog:TASK-185
     title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
@@ -98,6 +101,15 @@ exists for the same reason: it clips each subview to the card's corner radius
 in `didAddSubview`, so an inspector that attaches *after* the pane chrome was
 applied is clipped too. The container's own layer must not clip, because
 `masksToBounds` would kill the pane's shadow.
+
+The container can also hold [dev mode's toolbar](../features/dev-mode.md#the-dev-toolbar)
+above the web view, framed the same way (only the web view's top edge moves,
+which WebKit's inspector docking preserves). Each pane decides its own
+toolbar, so a split can show it over one pane only; while it shows, the
+container rounds the toolbar's top corners and the page's bottom ones
+instead of all four on each.[^dev-mode] Code that looks for a pane's web view
+must not take the container's first subview blindly: the inspector and the
+toolbar are siblings, and the container's `hostedWebView` names the page.
 
 ## Tiling and the divider fraction
 
@@ -338,3 +350,4 @@ window.
 [^design]: Split Tabs design document (sections 5, 7, 8, 11, 13)
 [^notes]: Runtime debug harness notes (NSSplitView setPosition finding)
 [^task-185]: Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section
+[^dev-mode]: Dev mode (the dev toolbar inside the container)

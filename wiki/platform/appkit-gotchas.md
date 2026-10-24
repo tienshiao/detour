@@ -7,6 +7,9 @@ status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
+  - id: task-186-2
+    resource: backlog:TASK-186.2
+    title: "Dev mode: an under-construction toolbar above the page with the URL"
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
     title: BrowserWindowController.swift
@@ -133,6 +136,7 @@ Related.
 | …but a drag destination should not do that. A nil-returning `hitTest` could exclude a view from AppKit's (undocumented) drag-destination discovery. | `SplitDropZoneView` | No `hitTest` override there; the view exists only while a drag session is live, so there are no clicks to pass through |
 | A view with `mouseDownCanMoveWindow == true` moves the window from any point no subview claims. A control narrower than its drawn hover shape leaves a rim that drags the window. | Bottom-bar buttons | Make the frame cover what is drawn (28 pt wide for a 27 pt circle) |
 | A table view that is a drag source delays window ordering on **every** mouse-down so a row can be dragged out of a background window. A mouse-down that instead moves the window then drags a background window around underneath the others. | Sidebar list, empty area below the rows | `shouldDelayWindowOrdering(for:)` returns `false` when the point is not on a row (`DraggableTableView`) |
+| `WindowDragView` forwards a click that did not drag by calling `mouseDown` and then a synthesized `mouseUp` on the view under it. An `NSButton` under the strip cannot take that: its `mouseDown` tracks the real event queue for a mouse-up the strip already consumed.[^task-186-2] | Dev mode's toolbar sits inside the content area's top 38 pt | Adopt `WindowDragPassThrough`: the strip's `hitTest` returns nil over such a view, so its controls get the events directly ([dev mode](../features/dev-mode.md#the-dev-toolbar)) |
 | `WindowDragView.mouseDown` runs a nested `trackEvents` loop. Entered from inside a Swift `Task` (events delivered with `window.sendEvent`), AppKit throws from `nextEventMatchingMask` and the app aborts.[^notes-inprocess] | In-process UI automation | Deliver synthetic events with `NSApp.postEvent(_:atStart:)`; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
 | Tracking areas do not reliably send `mouseExited` when scrolling moves a view from under the pointer, and send nothing while a drag session is active.[^commit-b9ef265] | Hover backgrounds stuck on rows after scrolls and drags; a hover-revealed sidebar that stayed open (TASK-169) | Do not let state hang on one exit event: re-derive it from `mouseLocationOutsideOfEventStream` (`recheckHover()` after scrolls, batch updates and drag end; the sidebar's pointer sample, see [visibility and auto-hide](../sidebar/visibility-and-auto-hide.md)) |
 | `mouseMoved` events posted with `NSApp.postEvent` do not produce `mouseEntered` or `mouseExited`, even for an `.activeAlways` tracking area.[^task-169] | Trying to drive hover from a harness | Call the code the tracking area would call; say that the pointer never moved |
@@ -217,3 +221,4 @@ from a probe or a measurement.
 [^notes-hittest]: Hit-test and resize-region probe findings
 [^notes-harness]: Runtime debug harness notes (zero-width split pane root cause)
 [^notes-inprocess]: In-process UI verification notes
+[^task-186-2]: Dev mode: an under-construction toolbar above the page with the URL
