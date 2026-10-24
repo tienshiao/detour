@@ -218,7 +218,9 @@ final class SuggestionProviderTests: XCTestCase {
         let tabs = [
             SuggestionProvider.TabInfo(tabID: tabID, spaceID: UUID(), url: "https://github.com/foo", title: "Foo Repo", favicon: nil),
         ]
-        let local = provider.localSuggestions(for: "github", spaceID: "space1", tabs: tabs, allowAutocomplete: true)
+        // A path in the query: URL-level completion (a bare host prefix
+        // completes to the host instead, see the TASK-182 tests).
+        let local = provider.localSuggestions(for: "github.com/f", spaceID: "space1", tabs: tabs, allowAutocomplete: true)
         let items = local.items
 
         XCTAssertEqual(local.inlineCompletion, "github.com/foo")
@@ -263,7 +265,7 @@ final class SuggestionProviderTests: XCTestCase {
         ]
         // The only prefix match is the current tab, so it must not become the top hit.
         let local = provider.localSuggestions(
-            for: "github", spaceID: "space1", tabs: tabs,
+            for: "github.com/f", spaceID: "space1", tabs: tabs,
             allowAutocomplete: true, currentTabID: tabID)
         let items = local.items
 
@@ -372,5 +374,206 @@ final class SuggestionProviderTests: XCTestCase {
         }
         let capped = Array(merged.prefix(12))
         XCTAssertEqual(capped.count, 12)
+    }
+
+    // MARK: - Host completion (TASK-182)
+
+    private func tab(_ url: String, title: String = "Video") -> SuggestionProvider.TabInfo {
+        SuggestionProvider.TabInfo(tabID: UUID(), spaceID: UUID(), url: url, title: title, favicon: nil)
+    }
+
+    private let videoTabs = [
+        "https://www.youtube.com/watch?v=1",
+        "https://www.youtube.com/watch?v=2",
+        "https://www.youtube.com/watch?v=3",
+    ]
+
+    private func isOpenTab(_ item: SuggestionItem, _ id: UUID) -> Bool {
+        if case .openTab(let tabID, _, _, _, _) = item { return tabID == id }
+        return false
+    }
+
+    /// The reproduction of TASK-182: with only video tabs open, `youtu`
+    /// completed to the first video and nothing offered the site itself.
+    func testHostPrefixCompletesToTheSiteRootNotAnOpenTabsDeepURL() throws {
+        let provider = makeProvider(db: try makeDatabase())
+        let tabs = videoTabs.map { tab($0) }
+
+        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: tabs,
+                                              allowAutocomplete: true)
+
+        XCTAssertEqual(local.inlineCompletion, "youtube.com")
+        XCTAssertEqual(local.items.first,
+                       .historyResult(url: "https://www.youtube.com/", title: "youtube.com", faviconURL: nil))
+        guard local.items.count == 5 else {
+            return XCTFail("expected top hit, verbatim row and three tabs, got \(local.items)")
+        }
+        XCTAssertEqual(local.items[1], .searchInput(text: "youtu"))
+        // The video tabs are still offered, after the verbatim row.
+        XCTAssertTrue(isOpenTab(local.items[2], tabs[0].tabID))
+        XCTAssertTrue(isOpenTab(local.items[3], tabs[1].tabID))
+        XCTAssertTrue(isOpenTab(local.items[4], tabs[2].tabID))
+    }
+
+    func testHostPrefixOffersATabAlreadyAtTheSiteRootAsTheTopHit() throws {
+        let provider = makeProvider(db: try makeDatabase())
+        let root = tab("https://www.youtube.com/", title: "YouTube")
+        let tabs = videoTabs.map { tab($0) } + [root]
+
+        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: tabs,
+                                              allowAutocomplete: true)
+
+        XCTAssertEqual(local.inlineCompletion, "youtube.com")
+        XCTAssertTrue(isOpenTab(local.items[0], root.tabID), "Switch to the tab at the root")
+        XCTAssertEqual(local.items[1], .searchInput(text: "you"))
+        XCTAssertFalse(local.items.dropFirst().contains { isOpenTab($0, root.tabID) },
+                       "the root tab is not listed twice")
+    }
+
+    /// The current tab is never switched to, but its host still completes:
+    /// Cmd+L on a video then `you` goes to the site root in place.
+    func testHostPrefixFromTheCurrentTabCompletesToItsRootWithoutSwitchingToIt() throws {
+        let provider = makeProvider(db: try makeDatabase())
+        let current = tab("https://www.youtube.com/watch?v=1")
+
+        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [current],
+                                              allowAutocomplete: true, currentTabID: current.tabID)
+
+        XCTAssertEqual(local.inlineCompletion, "youtube.com")
+        XCTAssertEqual(local.items.first,
+                       .historyResult(url: "https://www.youtube.com/", title: "youtube.com", faviconURL: nil))
+    }
+
+    /// Hosts are ranked by the frecency of all their pages together: three
+    /// recent video visits beat one typed visit to another site, though that
+    /// one URL outscores each video on its own.
+    func testHistoryHostCompletionRanksHostsBySummedFrecency() throws {
+        let db = try makeDatabase()
+        for url in videoTabs {
+            db.recordVisit(url: url, title: "Video", faviconURL: "https://www.youtube.com/favicon.ico", spaceID: "space1")
+        }
+        db.recordVisit(url: "https://yourstore.com/", title: "Your Store", faviconURL: nil,
+                       spaceID: "space1", typed: true)
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+                                              allowAutocomplete: true)
+
+        XCTAssertEqual(local.inlineCompletion, "youtube.com")
+        XCTAssertEqual(local.items[0],
+                       .historyResult(url: "https://www.youtube.com/", title: "youtube.com",
+                                      faviconURL: "https://www.youtube.com/favicon.ico"),
+                       "the root was never visited: it is built from the host's pages")
+        XCTAssertEqual(local.items[1], .searchInput(text: "you"))
+        XCTAssertEqual(local.items[2],
+                       .historyResult(url: "https://yourstore.com/", title: "Your Store", faviconURL: nil),
+                       "another visited host matching the prefix follows the verbatim row")
+        XCTAssertEqual(local.items.filter { $0 == local.items[2] }.count, 1,
+                       "the other host's root is not repeated in the history rows")
+    }
+
+    func testHistoryHostCompletionLabelsTheRootWithTheSpacesOwnVisit() throws {
+        let db = try makeDatabase()
+        for url in videoTabs {
+            db.recordVisit(url: url, title: "Video", faviconURL: nil, spaceID: "space1")
+        }
+        db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+                                              allowAutocomplete: true)
+
+        XCTAssertEqual(local.items[0],
+                       .historyResult(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil))
+        XCTAssertEqual(local.items.filter {
+            if case .historyResult(let url, _, _) = $0 { return url == "https://www.youtube.com/" }
+            return false
+        }.count, 1, "the root is not repeated in the history rows")
+    }
+
+    func testHistoryHostCompletionIsScopedToTheSpace() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://yourstore.com/", title: "Your Store", faviconURL: nil, spaceID: "other")
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+                                              allowAutocomplete: true)
+
+        XCTAssertNil(local.inlineCompletion)
+        XCTAssertEqual(local.items, [.searchInput(text: "you")])
+    }
+
+    /// With autocomplete off (after a Backspace) there is no top hit, but the
+    /// matching hosts are still offered as rows.
+    func testHostRowsAreOfferedWhenAutocompleteIsDisallowed() throws {
+        let db = try makeDatabase()
+        for url in videoTabs {
+            db.recordVisit(url: url, title: "Video", faviconURL: nil, spaceID: "space1")
+        }
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+                                              allowAutocomplete: false)
+
+        XCTAssertNil(local.inlineCompletion)
+        XCTAssertEqual(local.items[0], .searchInput(text: "you"))
+        XCTAssertEqual(local.items[1],
+                       .historyResult(url: "https://www.youtube.com/", title: "youtube.com", faviconURL: nil))
+    }
+
+    func testAtMostTwoOtherHostsAreOffered() throws {
+        let db = try makeDatabase()
+        // Only deep pages are visited, so every root row is a host row.
+        for host in ["ga.com", "gb.com", "gc.com", "gd.com"] {
+            db.recordVisit(url: "https://\(host)/page", title: host, faviconURL: nil, spaceID: "space1")
+        }
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "g", spaceID: "space1", tabs: [],
+                                              allowAutocomplete: true)
+
+        let hostRows = local.items.filter {
+            if case .historyResult(let url, _, _) = $0 { return url.hasSuffix(".com/") }
+            return false
+        }
+        guard hostRows.count == 3 else {
+            return XCTFail("expected the top hit and two more hosts, got \(local.items)")
+        }
+        XCTAssertEqual(Array(local.items.prefix(4)),
+                       [hostRows[0], .searchInput(text: "g"), hostRows[1], hostRows[2]])
+    }
+
+    /// Only web pages have a site root: an internal page or `about:blank`
+    /// never completes a host prefix.
+    func testNonWebTabsDoNotCompleteAHostPrefix() throws {
+        let tabs = [tab("detour://history", title: "History"), tab("about:blank", title: "")]
+
+        XCTAssertNil(SuggestionProvider.tabTopHit(for: "det", tabs: tabs, currentTabID: nil))
+        XCTAssertNil(SuggestionProvider.tabTopHit(for: "abo", tabs: tabs, currentTabID: nil))
+    }
+
+    func testAQueryWithAPathKeepsURLLevelCompletion() throws {
+        let db = try makeDatabase()
+        db.recordVisit(url: "https://www.youtube.com/watch?v=1", title: "Video", faviconURL: nil, spaceID: "space1")
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "youtube.com/w", spaceID: "space1", tabs: [],
+                                              allowAutocomplete: true)
+
+        XCTAssertEqual(local.inlineCompletion, "youtube.com/watch?v=1")
+    }
+
+    /// The palette's instant (main-thread, no SQLite) pass uses the same rule,
+    /// so the field does not complete to one answer and then another.
+    func testTheInstantPassTopHitIsTheProvidersTabRule() throws {
+        let provider = makeProvider(db: try makeDatabase())
+        let tabs = videoTabs.map { tab($0) }
+
+        let instant = SuggestionProvider.tabTopHit(for: "youtu", tabs: tabs, currentTabID: nil)
+        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: tabs,
+                                              allowAutocomplete: true)
+
+        XCTAssertEqual(instant?.inlineCompletion, local.inlineCompletion)
+        XCTAssertEqual(instant?.item, local.items.first)
     }
 }

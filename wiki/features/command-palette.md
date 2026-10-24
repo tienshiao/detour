@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:13:46Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T08:30:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -33,6 +33,9 @@ sources:
   - id: task-144
     resource: backlog:TASK-144
     title: Cmd+L then Return activates the first recent-history row instead of the pre-filled URL
+  - id: task-181
+    resource: backlog:TASK-181
+    title: Backspace after moving the caret off an inline completion deletes back to the typed prefix
   - id: selection-tests
     resource: ../../DetourTests/PaletteSelectionTests.swift
     title: PaletteSelectionTests.swift
@@ -118,8 +121,8 @@ the pure functions of `PaletteSelection` (`initialRow`, `row(afterMoving:)`,
 |---|---|
 | Up / Down | moves the keyboard selection and puts the row's text in the field, fully selected. With no row selected, Down selects the first row and Up the last. Moving past either end clears the selection and restores what the user typed, or the pre-filled URL (selected again) while the field is unedited |
 | Return | activates the selected row; with none, submits the field's text; with none and a blank field, does nothing. The field has no target/action: Return never leaves this method |
-| Tab | accepts the inline completion (the suffix becomes typed text) |
-| Backspace | with a completion showing, removes only the completion and suppresses autocomplete for the next change |
+| Tab | accepts the inline completion (the suffix becomes typed text). Consumed even with no completion, so focus never leaves the open palette |
+| Backspace | with a completion still selected, removes only the completion and suppresses autocomplete for the next change; otherwise deletes as usual |
 | Escape | prefilled palette (Cmd+L, address bar click): dismiss at once. Otherwise staged: drop the completion, then clear the text, then dismiss |
 
 Which row is selected after a list rebuild depends on what the list is:
@@ -146,7 +149,18 @@ keyboard selection is.
 
 `applyInlineCompletion` appends the completion's suffix to the field and
 selects it, so typing replaces it; it then scrolls back so the typed prefix
-stays visible. `userTypedText` always holds what the user actually typed,
+stays visible. For a host prefix the completion is the host, not a page on
+it (see [suggestion pipeline](./suggestion-pipeline.md)).
+
+A completion is *pending* only while it is exactly the field's selection.
+Moving the caret or the selection off it (Cmd+Right, End, Left, a click)
+accepts it: `acceptInlineCompletionIfDeselected` makes the field's text the
+typed text before every command, since movement keys never reach
+`controlTextDidChange`. Until TASK-181 the completion stayed pending after
+Cmd+Right, so the next Backspace took the "remove the completion" branch
+and reset the field to the typed prefix, instead of deleting the last
+character.[^task-181] Selection ranges are UTF-16 offsets throughout
+(`utf16.count`, not `count`). `userTypedText` always holds what the user actually typed,
 separate from the field's contents. Autocomplete is off for one change after a
 backspace and whenever the text has trailing whitespace (a multi-word search
 is being typed). `setTextFieldQuietly` sets the field without re-entering
@@ -186,8 +200,9 @@ whatever was under it.
   tabs; a normal window's palette lists the tabs of every non-incognito space
   (pinned entries included) and never a Private window's. The rule is
   `PaletteTabScope`, see [suggestion pipeline](./suggestion-pipeline.md).
-- **`currentTabID` is excluded from the top hit**, so Cmd+L on a page does not
-  autocomplete to that same tab.
+- **`currentTabID` is never switched to by the top hit**, so Cmd+L on a page
+  does not autocomplete to that same tab. Its host can still complete: Cmd+L
+  on a video, then `you`, goes to the site root in place.
 - **No selected tab**: only the split-view scrim is added.
 - **Search engine**: `activeSpace?.profile?.searchEngine`, default Google;
   suggestions can be turned off per profile (`searchSuggestionsEnabled`).
@@ -206,6 +221,15 @@ whatever was under it.
   `doCommand(by:)`, the call a key press ends in, and typing as
   `insertText(_:replacementRange:)`; the assertions are on what the delegate
   receives.[^task-144]
+- `PaletteReturnKeyTests` inline-completion cases (TASK-181): Backspace
+  after Cmd+Right and after placing the caret inside the completion, Backspace
+  on the selected completion, and Tab after moving off it keeping focus. The
+  first two and the Tab case fail on the old code.[^task-181]
+- Runtime: the [TASK-181/182 harness](../../docs/harness/task181-182-harness.patch)
+  sends Cmd+Right, Left and Backspace through the field editor's real key
+  bindings in a Debug build. `you` → `youtube.com`, Cmd+Right, Backspace
+  left `youtube.co`; Left then Backspace on `youtube.com/w|atch?v=1` left
+  `youtube.com/atch?v=1`.
 - `AddressInputClassifierTests`, `SuggestionProviderTests` - see
   [suggestion pipeline](./suggestion-pipeline.md).
 - Verified at runtime in a signed build with synthetic keys: Cmd+L and Cmd+T
@@ -224,3 +248,4 @@ whatever was under it.
 
 [^task-78]: After Cmd+L and Return the page does not regain keyboard focus
 [^task-144]: Cmd+L then Return activates the first recent-history row instead of the pre-filled URL
+[^task-181]: Backspace after moving the caret off an inline completion deletes back to the typed prefix

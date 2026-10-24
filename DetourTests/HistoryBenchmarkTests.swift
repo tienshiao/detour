@@ -255,6 +255,25 @@ final class HistoryBenchmarkTests: XCTestCase {
             _ = db.searchVisits(query: "qqzzxnothing", spaceIDs: Self.profileSpaces, limit: 100)
         }
 
+        // Inline completion, also per keystroke (TASK-182): every fixture URL is
+        // on one of 500 `siteN.example` hosts, so `s` ranks all of them. The
+        // fixture's visits date from 1970 and completion only counts the last
+        // 90 days, so they are first moved to end now — order kept, which is
+        // all the measurements after these depend on.
+        try db.dbQueue.write { conn in
+            let latest = try Double.fetchOne(conn, sql: "SELECT MAX(visitTime) FROM historyVisit") ?? 0
+            try conn.execute(sql: "UPDATE historyVisit SET visitTime = visitTime + ?",
+                             arguments: [Date().timeIntervalSince1970 - latest])
+        }
+        measure("\(tag)/palette/url-completion-broad-s") { _ = db.bestURLCompletion(prefix: "s", spaceID: "P1") }
+        measure("\(tag)/palette/host-completion-broad-s") {
+            _ = db.bestHostCompletions(prefix: "s", spaceID: "P1", limit: 3)
+        }
+        measure("\(tag)/palette/url-completion-site13") { _ = db.bestURLCompletion(prefix: "site13", spaceID: "P1") }
+        measure("\(tag)/palette/host-completion-site13") {
+            _ = db.bestHostCompletions(prefix: "site13", spaceID: "P1", limit: 3)
+        }
+
         print("BENCH \(tag)/db-bytes \(fileSize(fixture))")
         // `historyTitle` does not exist before TASK-96, hence the optional read.
         let indexRows: Int? = try? db.dbQueue.read { conn in

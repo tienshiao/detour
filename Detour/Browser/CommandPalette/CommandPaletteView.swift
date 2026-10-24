@@ -429,6 +429,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        acceptInlineCompletionIfDeselected(in: textView)
         if commandSelector == #selector(NSResponder.moveUp(_:)) {
             moveSelection(by: -1)
             return true
@@ -454,7 +455,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             if inlineCompletionSuffix != nil {
                 inlineCompletionSuffix = nil
                 setTextFieldQuietly(userTypedText)
-                textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+                textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.utf16.count, length: 0)
                 suppressNextAutocomplete = true
                 refreshLocalSuggestions(allowAutocomplete: false)
                 return true
@@ -466,13 +467,30 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             if let suffix = inlineCompletionSuffix {
                 userTypedText = userTypedText + suffix
                 inlineCompletionSuffix = nil
-                textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+                textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.utf16.count, length: 0)
                 refreshLocalSuggestions(allowAutocomplete: true)
-                return true
             }
-            return false
+            // Consumed either way: the field is the palette's only control, and
+            // letting Tab through moves keyboard focus out of the open palette.
+            return true
         }
         return false
+    }
+
+    /// An inline completion is pending only while it is exactly the field's
+    /// selection. Once the caret or selection has moved off it (Cmd+Right, End,
+    /// a click), the user has taken the completed text as theirs: it becomes
+    /// typed text, so Backspace, Escape and Tab act on the field as it stands
+    /// rather than dropping the completion (TASK-181). Movement keys never
+    /// reach `controlTextDidChange`, so this is checked before each command.
+    private func acceptInlineCompletionIfDeselected(in textView: NSTextView) {
+        guard let suffix = inlineCompletionSuffix else { return }
+        let fieldLength = (textView.string as NSString).length
+        let suffixLength = (suffix as NSString).length
+        guard textView.selectedRange() != NSRange(location: fieldLength - suffixLength, length: suffixLength)
+        else { return }
+        userTypedText = textView.string
+        inlineCompletionSuffix = nil
     }
 
     private func moveSelection(by delta: Int) {
@@ -499,7 +517,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 // Back to how Cmd+L left it: the whole URL selected.
                 textField.currentEditor()?.selectAll(nil)
             } else {
-                textField.currentEditor()?.selectedRange = NSRange(location: text.count, length: 0)
+                textField.currentEditor()?.selectedRange = NSRange(location: text.utf16.count, length: 0)
             }
         }
     }
@@ -538,21 +556,19 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let tabs = gatherTabInfos()
 
         // --- Instant synchronous pass: open tabs only ---
-        let q = query.lowercased()
-        var topHitTabID: UUID?
+        // The provider's own tab rules, so the background pass agrees with it.
         var instantItems: [SuggestionItem] = []
         var appliedTabCompletion = false
-        if allowAutocomplete,
-           let tab = tabs.first(where: { $0.tabID != currentTabID && $0.displayURL.lowercased().hasPrefix(q) }) {
-            instantItems.append(.openTab(tabID: tab.tabID, spaceID: tab.spaceID, url: tab.url, title: tab.title, favicon: tab.favicon))
-            topHitTabID = tab.tabID
-            applyInlineCompletion(tab.displayURL, for: query)
+        let tabTopHit = allowAutocomplete
+            ? SuggestionProvider.tabTopHit(for: query, tabs: tabs, currentTabID: currentTabID)
+            : nil
+        if let tabTopHit {
+            instantItems.append(tabTopHit.item)
+            applyInlineCompletion(tabTopHit.inlineCompletion, for: query)
             appliedTabCompletion = true
         }
         instantItems.append(.searchInput(text: query))
-        let matchingTabs = Array(tabs.filter {
-            $0.tabID != topHitTabID && ($0.url.lowercased().contains(q) || $0.title.lowercased().contains(q))
-        }.prefix(3))
+        let matchingTabs = SuggestionProvider.matchingTabs(for: query, tabs: tabs, excluding: tabTopHit?.tabID)
         let tabItems: [SuggestionItem] = matchingTabs.map {
             .openTab(tabID: $0.tabID, spaceID: $0.spaceID, url: $0.url, title: $0.title, favicon: $0.favicon)
         }
@@ -623,10 +639,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         setTextFieldQuietly(query + suffix)
 
         if let editor = textField.currentEditor() {
-            editor.selectedRange = NSRange(location: query.count, length: suffix.count)
+            editor.selectedRange = NSRange(location: query.utf16.count, length: suffix.utf16.count)
             // Selecting the suffix auto-scrolls a long completion so its tail is
             // visible; scroll back so the typed prefix stays in view instead.
-            editor.scrollRangeToVisible(NSRange(location: query.count, length: 0))
+            editor.scrollRangeToVisible(NSRange(location: query.utf16.count, length: 0))
         }
     }
 
@@ -641,7 +657,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         if inlineCompletionSuffix != nil {
             inlineCompletionSuffix = nil
             setTextFieldQuietly(userTypedText)
-            textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.count, length: 0)
+            textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.utf16.count, length: 0)
             refreshLocalSuggestions(allowAutocomplete: false)
         } else if !textField.stringValue.isEmpty {
             setTextFieldQuietly("")

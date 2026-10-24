@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-10-24
+* **Ingest**: TASK-181, TASK-182 — the command palette completes a typed host prefix to the site: [Suggestion pipeline](features/suggestion-pipeline.md) gains "Host queries complete to the site" (`isHostQuery`, `tabTopHit`, `bestHostCompletions` with frecency summed per host, root lookup and fallback, host rows, the alternatives set aside), the new row order, the instant pass now sharing the provider's tab rules, and benchmark numbers for both completion queries. It also corrects the claim that the `LIKE` prefix patterns use the index on `url` (they scan). [Command palette](features/command-palette.md) says when a completion counts as accepted (the caret moved off it) and that Tab is always consumed; [History database](architecture/history-database.md) lists `history_display_host`.
+
 ## 2026-10-22
 * **Update**: TASK-179 — publishing a release is scripted. [Release and website](playbooks/release-and-website.md) gains where each artifact goes (DMG on the GitHub pre-release for the website's links; DMG, deltas and `appcast.xml` in the R2 bucket `detour-updates` behind `updates.detourbrowser.com`, which Sparkle reads; the site deployed by `wrangler deploy`, not by a push), `build/` as the release archive and how to rebuild it, the `docs/releases/<version>.md` notes format and the steps of `scripts/publish-release.sh`. The old "upload to GitHub Releases" hint for the appcast was wrong. First used for 0.3.1.
 
