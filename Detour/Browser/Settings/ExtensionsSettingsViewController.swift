@@ -4,7 +4,7 @@ import os
 
 private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extensions")
 
-class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
     private var detailContainer: NSView!
     private var emptyStateView: NSView!
@@ -35,24 +35,24 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         return list[selectedIndex]
     }
 
-    override func loadView() {
-        // Tall enough for the header, description, update section, a pending-
-        // permissions banner, the switches and a usable permissions list; the
-        // window is not resizable, so the pane has to fit at rest (TASK-113).
-        preferredContentSize = NSSize(width: 740, height: 640)
-        let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-        self.view = container
+    override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
 
-        let margin: CGFloat = 20
-        let spacing: CGFloat = 12
+    /// Tall enough to show every extension without scrolling the list.
+    override func idealBodyHeight(fittingHeight: CGFloat) -> CGFloat {
+        guard !listContainer.isHidden else { return fittingHeight }
+        let rows = tableView.allRowsHeight
+        return max(fittingHeight, rows + SettingsMetrics.listBarHeight)
+    }
+
+    // The detail column's internal layout is TASK-189 part 2; part 1 moved the
+    // pane into the shared scroll view, so the window takes the detail
+    // column's natural height and a column taller than the screen scrolls.
+    override func makeBody() -> NSView {
+        let container = NSView()
 
         // Left side: list container
-        listContainer = NSView()
-        listContainer.translatesAutoresizingMaskIntoConstraints = false
-        listContainer.wantsLayer = true
-        listContainer.layer?.borderWidth = 1
-        listContainer.layer?.borderColor = NSColor.separatorColor.cgColor
-        listContainer.layer?.cornerRadius = 4
+        let listContainer = SettingsListContainerView()
+        self.listContainer = listContainer
         container.addSubview(listContainer)
 
         let scrollView = NSScrollView()
@@ -81,7 +81,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         separator.translatesAutoresizingMaskIntoConstraints = false
         listContainer.addSubview(separator)
 
-        let buttonSize: CGFloat = 24
+        let buttonSize = SettingsMetrics.listButtonSize
 
         addButton = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Add")!,
                              target: self, action: #selector(addExtensionClicked))
@@ -134,10 +134,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
         // Layout
         NSLayoutConstraint.activate([
-            listContainer.topAnchor.constraint(equalTo: container.topAnchor, constant: margin),
-            listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            listContainer.widthAnchor.constraint(equalToConstant: 220),
-            listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
+            listContainer.topAnchor.constraint(equalTo: container.topAnchor),
+            listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            listContainer.widthAnchor.constraint(equalToConstant: SettingsMetrics.listWidth),
+            listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
             scrollView.topAnchor.constraint(equalTo: listContainer.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor),
@@ -151,10 +151,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            detailContainer.topAnchor.constraint(equalTo: container.topAnchor, constant: margin),
-            detailContainer.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: margin),
-            detailContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
-            detailContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
+            detailContainer.topAnchor.constraint(equalTo: container.topAnchor),
+            detailContainer.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
+            detailContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            detailContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
             emptyStateView.topAnchor.constraint(equalTo: container.topAnchor),
             emptyStateView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -167,6 +167,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         // "Last checked" and any update a background check installed.
         NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
                                                 name: ExtensionUpdater.didFinishCheckNotification, object: nil)
+        return container
     }
 
     override func viewWillAppear() {
@@ -193,6 +194,9 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             emptyStateView.isHidden = false
             listContainer.isHidden = true
             detailContainer.isHidden = true
+            // A hidden view still takes part in layout: the last extension's
+            // detail column would keep the empty state at its height.
+            detailContainer.subviews.forEach { $0.removeFromSuperview() }
         } else {
             emptyStateView.isHidden = true
             listContainer.isHidden = false
@@ -207,6 +211,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
             updateDetail()
         }
         removeButton.isEnabled = !exts.isEmpty
+        contentHeightDidChange()  // also covers the empty state, which has no detail
     }
 
     private func updateDetail() {
@@ -231,6 +236,10 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
         let nameLabel = NSTextField(labelWithString: resolvedName)
         nameLabel.font = .systemFont(ofSize: 15, weight: .bold)
+        // The window no longer widens for a long name (TASK-189): it truncates.
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        nameLabel.toolTip = resolvedName
 
         let versionLabel = NSTextField(labelWithString: "Version \(ext.manifest.version)")
         versionLabel.font = .systemFont(ofSize: 12)
@@ -267,6 +276,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         // Description
         let descLabel = NSTextField(wrappingLabelWithString: resolvedDesc ?? "No description provided.")
         descLabel.font = .systemFont(ofSize: 12)
+        descLabel.preferredMaxLayoutWidth = SettingsMetrics.detailColumnWidth
         descLabel.textColor = .secondaryLabelColor
 
         // Separator
@@ -319,6 +329,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
 
         let privateNote = NSTextField(wrappingLabelWithString: "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is discarded when Detour quits.")
         privateNote.font = .systemFont(ofSize: 11)
+        privateNote.preferredMaxLayoutWidth = SettingsMetrics.detailColumnWidth
         privateNote.textColor = .secondaryLabelColor
 
         // Permissions section — interactive toggles
@@ -519,7 +530,7 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         detailContainer.addSubview(mainStack)
 
         NSLayoutConstraint.activate([
-            mainStack.topAnchor.constraint(equalTo: detailContainer.topAnchor, constant: 8),
+            mainStack.topAnchor.constraint(equalTo: detailContainer.topAnchor),
             mainStack.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
             mainStack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
             // The note wraps rather than stretching the leading-aligned stack.
@@ -540,8 +551,15 @@ class ExtensionsSettingsViewController: NSViewController, NSTableViewDataSource,
         let permsFloor = scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 96)
         permsFloor.priority = .defaultHigh
         permsFloor.isActive = true
+        // At the pane's natural height the list shows every row: the pane,
+        // not this list, scrolls when the window is shorter (TASK-189).
+        let permsFull = scrollView.heightAnchor.constraint(equalTo: flippedDocView.heightAnchor, constant: 2)
+        permsFull.priority = NSLayoutConstraint.Priority(240)
+        permsFull.isActive = true
         updateSection.setContentCompressionResistancePriority(.required, for: .vertical)
         pendingBanner?.setContentCompressionResistancePriority(.required, for: .vertical)
+        // Another extension's detail column has another natural height.
+        contentHeightDidChange()
     }
 
     // MARK: - Updates (TASK-113)

@@ -12,20 +12,35 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
 
-    private static let fixedWidth: CGFloat = 740
-
-    private var panes: [NSToolbarItem.Identifier: NSViewController] = [:]
+    private var panes: [NSToolbarItem.Identifier: SettingsPaneViewController] = [:]
     private let paneOrder: [NSToolbarItem.Identifier] = [generalID, spacesID, profilesID, extensionsID, contentBlockerID]
 
+    /// Replaces the height of the screen's visible frame in the height rule,
+    /// so a harness can exercise the cap on a tall screen. Nil in the app.
+    var screenUsableHeightOverride: CGFloat?
+
+    /// The fit last applied to the window, which `refit` starts from.
+    private var currentFit: SettingsPaneHeight?
+    /// The content height an animation in flight is heading to. A refit that
+    /// arrives mid-animation (a pane reporting its rows from `viewWillAppear`)
+    /// starts from this, not from the window's intermediate height.
+    private var animationTargetHeight: CGFloat?
+
     private init() {
+        // Resizable in height only (TASK-189): the minimum and maximum content
+        // widths are both the window's width, and each pane sets the heights.
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: SettingsWindowController.fixedWidth, height: 200),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: SettingsMetrics.windowWidth, height: 200),
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: true
         )
         window.title = "Settings"
         window.toolbarStyle = .preference
+        window.collectionBehavior.insert(.fullScreenNone)
+        window.tabbingMode = .disallowed
+        window.contentMinSize = NSSize(width: SettingsMetrics.windowWidth, height: 200)
+        window.contentMaxSize = NSSize(width: SettingsMetrics.windowWidth, height: 200)
         window.center()
 
         super.init(window: window)
@@ -45,6 +60,13 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         let contentBlockerVC = ContentBlockerSettingsViewController()
         panes[Self.contentBlockerID] = contentBlockerVC
 
+        for pane in panes.values {
+            pane.onContentHeightChange = { [weak self, weak pane] in
+                guard let self, let pane, self.window?.contentViewController === pane else { return }
+                self.fitWindow(to: pane, animate: true, refitting: true)
+            }
+        }
+
         let toolbar = NSToolbar(identifier: "SettingsToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
@@ -52,12 +74,29 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         window.toolbar = toolbar
 
         window.contentViewController = generalVC
+
+        // The cap follows the screen the window is on: moving it to a shorter
+        // display, a resolution change or an unplugged display re-fits it.
+        NotificationCenter.default.addObserver(self, selector: #selector(screenDidChange),
+                                               name: NSWindow.didChangeScreenNotification, object: window)
+        NotificationCenter.default.addObserver(self, selector: #selector(screenDidChange),
+                                               name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    @objc private func screenDidChange() {
+        guard let window, window.isVisible,
+              let pane = window.contentViewController as? SettingsPaneViewController else { return }
+        fitWindow(to: pane, animate: true, refitting: true)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func showWindow(_ sender: Any?) {
+        let wasVisible = window?.isVisible ?? false
         super.showWindow(sender)
+        if !wasVisible, let pane = window?.contentViewController as? SettingsPaneViewController {
+            fitWindow(to: pane, animate: false, refitting: false)
+        }
         window?.center()
         window?.makeKeyAndOrderFront(sender)
         NSApp.activate(ignoringOtherApps: true)
@@ -125,21 +164,87 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         switchToPane(vc, identifier: Self.extensionsID)
     }
 
-    private func switchToPane(_ vc: NSViewController, identifier: NSToolbarItem.Identifier) {
+    private func switchToPane(_ vc: SettingsPaneViewController, identifier: NSToolbarItem.Identifier) {
         guard let window else { return }
         window.toolbar?.selectedItemIdentifier = identifier
-
-        let newHeight = vc.preferredContentSize.height
-        let chrome = window.frame.height - window.contentLayoutRect.height
-        let oldFrame = window.frame
-        let newFrame = NSRect(
-            x: oldFrame.origin.x,
-            y: oldFrame.origin.y + oldFrame.height - newHeight - chrome,
-            width: Self.fixedWidth,
-            height: newHeight + chrome
-        )
-
+        guard window.contentViewController !== vc else {
+            // Re-selecting the shown pane keeps a height the user dragged to.
+            fitWindow(to: vc, animate: true, refitting: true)
+            return
+        }
+        // Swap at the current size so the window does not jump to the new
+        // pane's last frame, then animate to the new pane's height.
+        let frame = window.frame
+        vc.view.setFrameSize(window.contentLayoutRect.size)
         window.contentViewController = vc
-        window.setFrame(newFrame, display: true, animate: true)
+        window.setFrame(frame, display: false)
+        fitWindow(to: vc, animate: true, refitting: false)
+    }
+
+    /// Sizes the window to `pane` by the height rule and sets the bounds the
+    /// user can drag it within. The top edge stays put; the window moves up
+    /// only as far as needed to stay on screen.
+    private func fitWindow(to pane: SettingsPaneViewController, animate: Bool, refitting: Bool) {
+        guard let window else { return }
+        window.layoutIfNeeded()
+        let chrome = window.frame.height - window.contentLayoutRect.height
+        let fit = SettingsPaneHeight.fit(natural: pane.naturalContentHeight,
+                                         minimum: pane.minimumContentHeight,
+                                         screenUsableHeight: screenUsableHeightOverride
+                                            ?? Self.screen(of: window)?.visibleFrame.height ?? 800,
+                                         chromeHeight: chrome)
+        let current = animationTargetHeight ?? window.contentLayoutRect.height
+        let height: CGFloat
+        if refitting, let old = currentFit {
+            height = SettingsPaneHeight.refit(current: current, from: old, to: fit)
+        } else {
+            height = fit.initial
+        }
+        currentFit = fit
+        // The new bounds go on after the animation: a max below the current
+        // height (or a min above it) would snap the window there at once.
+        // During it, the bounds only widen to cover where the window is now.
+        let actual = window.contentLayoutRect.height
+        window.contentMinSize = NSSize(width: SettingsMetrics.windowWidth, height: min(fit.minHeight, actual))
+        window.contentMaxSize = NSSize(width: SettingsMetrics.windowWidth, height: max(fit.maxHeight, actual))
+
+        let old = window.frame
+        var frame = NSRect(x: old.minX, y: old.maxY - height - chrome,
+                           width: SettingsMetrics.windowWidth, height: height + chrome)
+        if let visible = Self.screen(of: window)?.visibleFrame {
+            if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
+            if frame.minY < visible.minY { frame.origin.y = min(visible.minY, visible.maxY - frame.height) }
+        }
+        let finish = { [weak self] in
+            // A later fit (another switch mid-animation) owns the bounds.
+            guard let self, self.currentFit == fit, window.contentViewController === pane,
+                  self.animationTargetHeight == nil || self.animationTargetHeight == height else { return }
+            self.animationTargetHeight = nil
+            window.contentMinSize = NSSize(width: SettingsMetrics.windowWidth, height: fit.minHeight)
+            window.contentMaxSize = NSSize(width: SettingsMetrics.windowWidth, height: fit.maxHeight)
+            pane.paneDidFit()
+        }
+        guard frame != old else {
+            animationTargetHeight = nil
+            return finish()
+        }
+        if animate && window.isVisible {
+            animationTargetHeight = height
+            // Asynchronous (the animator proxy), so the switch returns at
+            // once; a refit that lands mid-animation starts from the target.
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = window.animationResizeTime(frame)
+                window.animator().setFrame(frame, display: true)
+            }, completionHandler: finish)
+        } else {
+            animationTargetHeight = nil
+            window.setFrame(frame, display: true)
+            finish()
+        }
+    }
+
+    /// The screen the window is on, else the main screen.
+    private static func screen(of window: NSWindow) -> NSScreen? {
+        window.screen ?? NSScreen.main
     }
 }

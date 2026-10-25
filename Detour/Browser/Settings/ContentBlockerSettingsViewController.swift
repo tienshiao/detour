@@ -1,10 +1,13 @@
 import AppKit
 
-class ContentBlockerSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
     private var updateButton: NSButton!
     private var statusLabel: NSTextField!
     private var totalRulesLabel: NSTextField!
+    /// The table is exactly as tall as its header and rows: no empty striped
+    /// rows below the four lists (TASK-189 defect 16).
+    private var tableHeight: NSLayoutConstraint!
 
     private let manager = ContentBlockerManager.shared
     private let filterLists = ContentBlockerManager.filterLists
@@ -21,24 +24,20 @@ class ContentBlockerSettingsViewController: NSViewController, NSTableViewDataSou
         return formatter
     }()
 
-    override func loadView() {
-        preferredContentSize = NSSize(width: 740, height: 300)
-        let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-        self.view = container
+    override var paneDescription: String? {
+        "Filter lists are downloaded and compiled into WebKit content rules. Lists update automatically every 24 hours."
+    }
 
-        let margin: CGFloat = 20
-        let spacing: CGFloat = 12
-
-        let descLabel = NSTextField(wrappingLabelWithString:
-            "Filter lists are downloaded and compiled into WebKit content rules. Lists update automatically every 24 hours.")
-        descLabel.font = .systemFont(ofSize: 12)
-        descLabel.textColor = .secondaryLabelColor
-        descLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(descLabel)
+    override func makeBody() -> NSView {
+        let container = NSView()
+        let spacing = SettingsMetrics.rowGap
 
         // Table view
+        // Sized to its rows, so it never scrolls itself; a scroll over it
+        // reaches the pane's scroll view.
         let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
+        scrollView.hasVerticalScroller = false
+        scrollView.verticalScrollElasticity = .none
         scrollView.borderType = .bezelBorder
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -82,6 +81,7 @@ class ContentBlockerSettingsViewController: NSViewController, NSTableViewDataSou
 
         scrollView.documentView = tableView
         container.addSubview(scrollView)
+        tableHeight = scrollView.heightAnchor.constraint(equalToConstant: 160)
 
         // Bottom bar
         updateButton = NSButton(title: "Update All Now", target: self, action: #selector(updateAllClicked))
@@ -107,33 +107,47 @@ class ContentBlockerSettingsViewController: NSViewController, NSTableViewDataSou
         container.addSubview(totalRulesLabel)
 
         NSLayoutConstraint.activate([
-            descLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: margin),
-            descLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            descLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            tableHeight,
 
-            scrollView.topAnchor.constraint(equalTo: descLabel.bottomAnchor, constant: spacing),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
-            scrollView.bottomAnchor.constraint(equalTo: updateButton.topAnchor, constant: -spacing),
+            updateButton.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: spacing),
+            updateButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            updateButton.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            bottomHug(updateButton.bottomAnchor, container.bottomAnchor),
 
-            updateButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
-            updateButton.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
+            clearButton.trailingAnchor.constraint(equalTo: updateButton.leadingAnchor, constant: -SettingsMetrics.labelToControl),
+            clearButton.firstBaselineAnchor.constraint(equalTo: updateButton.firstBaselineAnchor),
 
-            clearButton.trailingAnchor.constraint(equalTo: updateButton.leadingAnchor, constant: -8),
-            clearButton.centerYAnchor.constraint(equalTo: updateButton.centerYAnchor),
+            totalRulesLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            totalRulesLabel.firstBaselineAnchor.constraint(equalTo: updateButton.firstBaselineAnchor),
 
-            totalRulesLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            totalRulesLabel.centerYAnchor.constraint(equalTo: updateButton.centerYAnchor),
-
-            statusLabel.leadingAnchor.constraint(equalTo: totalRulesLabel.trailingAnchor, constant: spacing),
-            statusLabel.centerYAnchor.constraint(equalTo: updateButton.centerYAnchor),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: clearButton.leadingAnchor, constant: -spacing),
+            statusLabel.leadingAnchor.constraint(equalTo: totalRulesLabel.trailingAnchor, constant: 12),
+            statusLabel.firstBaselineAnchor.constraint(equalTo: updateButton.firstBaselineAnchor),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: clearButton.leadingAnchor, constant: -12),
         ])
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return container
+    }
+
+    /// Header plus every row plus the bezel's two border points.
+    private func updateTableHeight() {
+        tableView.tile()
+        let header = tableView.headerView?.frame.height ?? 0
+        let rows = tableView.allRowsHeight
+        let height = ceil(header + rows + 2)
+        if tableHeight.constant != height {
+            tableHeight.constant = height
+            contentHeightDidChange()
+        }
     }
 
     override func viewWillAppear() {
         super.viewWillAppear()
         tableView.reloadData()
+        updateTableHeight()
         updateTotalRules()
         updateStatusLabel()
 

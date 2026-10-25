@@ -217,7 +217,12 @@ log("top gap=\(c.maxY - t.maxY) bottom gap=\(bt.minY - c.minY)")
 
 Then grep the app's stderr for `Unable to simultaneously satisfy`. Check
 that the pane fits at rest before judging padding: in a fixed-size window
-an overflowing column squeezes its lowest-priority view to zero first.
+an overflowing column squeezes its lowest-priority view to zero first (the
+Settings window was one until TASK-189; its panes now size to their content
+and scroll as a whole). For a whole window in many states, light and dark, the
+TASK-189 survey harness (`docs/harness/task189-survey-harness.patch`) dumps
+every view's frame, alignment rect and baseline to JSON and derives clips,
+truncations, gaps and baseline offsets from it.
 See [settings](../features/settings.md) and
 [AppKit gotchas](../platform/appkit-gotchas.md).
 

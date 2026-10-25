@@ -1,6 +1,6 @@
 import AppKit
 
-class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
     private var archivePopUp: NSPopUpButton!
     private var sleepPopUp: NSPopUpButton!
@@ -38,29 +38,26 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         return list[selectedIndex]
     }
 
-    override func loadView() {
-        preferredContentSize = NSSize(width: 740, height: 580)
-        let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-        self.view = container
+    override var paneDescription: String? {
+        "Profiles help keep your data separate across Spaces — like history, logins, cookies, and extensions. You can use any Profile across one or more Spaces."
+    }
 
-        let margin: CGFloat = 20
+    override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
+
+    /// Tall enough to show every profile without scrolling the list.
+    override func idealBodyHeight(fittingHeight: CGFloat) -> CGFloat {
+        let rows = tableView.allRowsHeight
+        return max(fittingHeight, rows + SettingsMetrics.listBarHeight)
+    }
+
+    // The grid's internal layout (row spacing, label alignment, sections) is
+    // TASK-189 part 2; part 1 only moved it into the pane's scroll view.
+    override func makeBody() -> NSView {
+        let container = NSView()
         let spacing: CGFloat = 12
 
-        // Description label
-        let descLabel = NSTextField(wrappingLabelWithString:
-            "Profiles help keep your data separate across Spaces — like history, logins, cookies, and extensions. You can use any Profile across one or more Spaces.")
-        descLabel.font = .systemFont(ofSize: 12)
-        descLabel.textColor = .secondaryLabelColor
-        descLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(descLabel)
-
         // Left side: list container (table + segmented control in a bordered box)
-        let listContainer = NSView()
-        listContainer.translatesAutoresizingMaskIntoConstraints = false
-        listContainer.wantsLayer = true
-        listContainer.layer?.borderWidth = 1
-        listContainer.layer?.borderColor = NSColor.separatorColor.cgColor
-        listContainer.layer?.cornerRadius = 4
+        let listContainer = SettingsListContainerView()
         container.addSubview(listContainer)
 
         let scrollView = NSScrollView()
@@ -71,7 +68,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
 
         tableView = NSTableView()
         tableView.headerView = nil
-        tableView.rowHeight = 28
+        tableView.rowHeight = SettingsMetrics.listRowHeight
         tableView.style = .plain
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
@@ -90,7 +87,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         listContainer.addSubview(separator)
 
         // Toolbar buttons (borderless, no background)
-        let buttonSize: CGFloat = 24
+        let buttonSize = SettingsMetrics.listButtonSize
 
         addButton = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Add")!,
                              target: self, action: #selector(addProfileClicked))
@@ -128,6 +125,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         privateNoteLabel.textColor = .secondaryLabelColor
         privateNoteLabel.translatesAutoresizingMaskIntoConstraints = false
         privateNoteLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        privateNoteLabel.preferredMaxLayoutWidth = 260
 
         searchEnginePopUp = NSPopUpButton()
         for engine in SearchEngine.allCases {
@@ -162,6 +160,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         isolationWarningLabel.textColor = .secondaryLabelColor
         isolationWarningLabel.translatesAutoresizingMaskIntoConstraints = false
         isolationWarningLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        isolationWarningLabel.preferredMaxLayoutWidth = 260
 
         perTabIsolationSwitch = NSSwitch()
         perTabIsolationSwitch.target = self
@@ -241,6 +240,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         uaPreviewLabel.isSelectable = true
         uaPreviewLabel.translatesAutoresizingMaskIntoConstraints = false
         uaPreviewLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        uaPreviewLabel.preferredMaxLayoutWidth = 260
 
         // Extension per-profile toggles
         extensionTogglesBox = NSBox()
@@ -304,30 +304,16 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         gridView.row(at: 6).isHidden = true   // isolation warning row
         gridView.row(at: 11).isHidden = true  // custom string row
 
-        // Wrap the grid in a flipped clip view + scroll view so the right pane scrolls
-        let rightScrollView = NSScrollView()
-        rightScrollView.hasVerticalScroller = true
-        rightScrollView.borderType = .noBorder
-        rightScrollView.drawsBackground = false
-        rightScrollView.translatesAutoresizingMaskIntoConstraints = false
-
-        let clipView = FlippedClipView()
-        clipView.drawsBackground = false
-        rightScrollView.contentView = clipView
-        rightScrollView.documentView = gridView
-
-        container.addSubview(rightScrollView)
+        // The grid is part of the pane's body: an overflowing grid scrolls
+        // with the whole pane instead of inside a scroll view of its own.
+        container.addSubview(gridView)
 
         // Layout
         NSLayoutConstraint.activate([
-            descLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: margin),
-            descLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            descLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
-
-            listContainer.topAnchor.constraint(equalTo: descLabel.bottomAnchor, constant: spacing),
-            listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            listContainer.widthAnchor.constraint(equalToConstant: 220),
-            listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
+            listContainer.topAnchor.constraint(equalTo: container.topAnchor),
+            listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            listContainer.widthAnchor.constraint(equalToConstant: SettingsMetrics.listWidth),
+            listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
             scrollView.topAnchor.constraint(equalTo: listContainer.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor),
@@ -341,15 +327,12 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            rightScrollView.topAnchor.constraint(equalTo: listContainer.topAnchor),
-            rightScrollView.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: margin),
-            rightScrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
-            rightScrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
-
-            gridView.topAnchor.constraint(equalTo: clipView.topAnchor, constant: 8),
-            gridView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
-            gridView.trailingAnchor.constraint(lessThanOrEqualTo: clipView.trailingAnchor),
+            gridView.topAnchor.constraint(equalTo: container.topAnchor),
+            gridView.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
+            gridView.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+            gridView.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
         ])
+        return container
     }
 
     override func viewWillAppear() {
@@ -462,6 +445,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         updateExternalAppPermissions()
         updateUAPreview()
         updateExtensionToggles()
+        contentHeightDidChange()
     }
 
     private func updateExternalAppPermissions() {
@@ -506,6 +490,10 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             let resolvedName = ExtensionManager.shared.displayName(for: ext.id)
             let label = NSTextField(labelWithString: resolvedName)
             label.font = .systemFont(ofSize: 12)
+            // The window no longer widens for a long name (TASK-189): it truncates,
+            // rather than squeezing the label column beside it.
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             label.textColor = ext.isEnabled ? .labelColor : .disabledControlTextColor
 
             let row = NSStackView(views: [toggle, label])
@@ -525,6 +513,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
             }
             extensionTogglesStack.addArrangedSubview(row)
         }
+        contentHeightDidChange()
     }
 
     @objc private func extensionToggled(_ sender: NSSwitch) {
@@ -536,6 +525,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
 
     private func updateUAPreview() {
         uaPreviewLabel.stringValue = selectedProfile?.resolvedUserAgent() ?? ""
+        contentHeightDidChange()
     }
 
     private func updateButtonStates() {
@@ -592,6 +582,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         profile.sleepThreshold = threshold
         gridView.row(at: 6).isHidden = !(profile.isPerTabIsolation && threshold != .never)
         TabStore.shared.updateProfile(profile)
+        contentHeightDidChange()
     }
 
     @objc private func perTabIsolationToggled() {
@@ -599,6 +590,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         profile.isPerTabIsolation = (perTabIsolationSwitch.state == .on)
         gridView.row(at: 6).isHidden = !(profile.isPerTabIsolation && profile.sleepThreshold != .never)
         TabStore.shared.updateProfile(profile)
+        contentHeightDidChange()
     }
 
     @objc private func adBlockToggled() {
@@ -646,7 +638,7 @@ class ProfilesSettingsViewController: NSViewController, NSTableViewDataSource, N
         profile.userAgentMode = mode
         gridView.row(at: 11).isHidden = mode != .custom
         TabStore.shared.updateProfile(profile)
-        updateUAPreview()
+        updateUAPreview()  // also reports the height change (row 11)
     }
 
     @objc private func customUserAgentChanged() {

@@ -1,13 +1,11 @@
 import AppKit
 
-class GeneralSettingsViewController: NSViewController {
+class GeneralSettingsViewController: SettingsPaneViewController {
     private var defaultBrowserButton: NSButton!
     private var statusLabel: NSTextField!
 
-    override func loadView() {
-        preferredContentSize = NSSize(width: 740, height: 120)
-        let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-        view = container
+    override func makeBody() -> NSView {
+        let body = NSView()
 
         let sectionLabel = NSTextField(labelWithString: "Default Browser")
         sectionLabel.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -15,29 +13,34 @@ class GeneralSettingsViewController: NSViewController {
         statusLabel = NSTextField(labelWithString: "")
         statusLabel.font = .systemFont(ofSize: 13)
         statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         defaultBrowserButton = NSButton(title: "Set as Default Browser", target: self, action: #selector(setAsDefaultBrowser))
         defaultBrowserButton.bezelStyle = .rounded
 
-        let margin: CGFloat = 20
-        let spacing: CGFloat = 12
-
         let row = NSStackView(views: [defaultBrowserButton, statusLabel])
         row.orientation = .horizontal
-        row.spacing = spacing
+        row.alignment = .firstBaseline
+        row.spacing = SettingsMetrics.labelToControl
 
         let stack = NSStackView(views: [sectionLabel, row])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
+        stack.spacing = SettingsMetrics.rowGap
         stack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
+        body.addSubview(stack)
 
+        // The body ends at the button, so the pane's natural height ends one
+        // margin below it (defect 14).
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: margin),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -margin),
+            stack.topAnchor.constraint(equalTo: body.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: body.trailingAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: body.bottomAnchor),
+            bottomHug(stack.bottomAnchor, body.bottomAnchor),
         ])
+        return body
     }
 
     override func viewWillAppear() {

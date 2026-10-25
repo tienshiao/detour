@@ -1,0 +1,1053 @@
+TASK-189 runtime survey harness: the Settings window, every pane, light and
+dark, in the states that change layout, plus the window-sizing checks added
+in part 1. It measures, it fixes nothing. Temporary code, never committed to
+Detour/. Since part 1 it uses SettingsPaneViewController and
+SettingsWindowController.screenUsableHeightOverride, so it applies on top of
+part 1 or later. The patch also adds the run tools under .task189/ (removed
+again by the revert). Apply, build, run, revert:
+
+    git apply docs/harness/task189-survey-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT=<an empty folder>
+    LOCK_CHECK=<lock probe> .task189/watch.sh "$OUT" &   # shoots each "SHOOT <name> <windowNumber>"
+                                  # line of $OUT/verify.log with screencapture -x -o -l
+    .task189/run.sh "$OUT"        # DETOUR_DATA_DIR=DetourVerify189, prints the pid
+    # wait for "done" in $OUT/verify.log (about 130 s), then kill THAT pid only
+    python3 .task189/analyze.py "$OUT" > "$OUT/analysis.txt"
+    python3 .task189/borders.py "$OUT" > "$OUT/borders.txt"   # list border vs background pixels
+    python3 .task189/sheets.py "$OUT"   # contact sheets in $OUT/sheets
+    git apply -R docs/harness/task189-survey-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify189
+
+Start from a fresh DetourVerify189 (the script adds spaces, profiles and
+extensions). For the real second-screen check, run the TASK-110 virtual display
+(docs/task-110/vdisplay.m, 1600x1000 pt) before launching and kill it after;
+without it the "profiles-on-short-screen" state logs "skipped".
+TASK189_SWITCH_ONLY=1 runs only launch, open Settings and a set of pane
+switches (no captures; run without the watcher), for quick animation checks.
+
+The harness opens Settings 2 s after launch and steps through the states, each
+captured light then dark (NSApp.appearance), waiting for each PNG before the
+next step. For every capture it writes $OUT/<state>-<mode>.json: each visible
+view under the window's content view (class, text, frame, alignment rect and
+first baseline in window coordinates, intrinsic and needed text size,
+line-break mode, hasAmbiguousLayout, scroll document vs clip size, stack
+spacing and order, grid rows with hidden flags), and the pane's natural height,
+minimum, the window's contentMin/MaxSize and the screen override. analyze.py
+derives clips (frame cut by a clip view or the content, from the frames:
+visibleRect is useless because macOS 14+ views do not clip to bounds), text
+that does not fit, overlaps between on-screen leaves, scroll overflow, gaps
+between stack items and grid rows, label-vs-control centre and baseline
+offsets, the grid's top against the list's, grid label-column widths and pane
+margins. Unsatisfiable-constraint logs: `log show --predicate
+'processIdentifier == <pid>'`, grep "Unable to simultaneously".
+States: general; spaces default / long space + long profile name / 19
+spaces; extensions none; profiles normal / Private / custom UA + isolation
+warning / 4 external-app permissions; extensions one (unpacked) / long name +
+long description + 22 permissions + 4 hosts + optional + options page (CRX
+with update URL) / pending-permissions banner / 15 installed; profiles with
+15 extension switches / everything shown / same scrolled to the end / Private
+with extensions; content blocking on / off. Then the sizing checks (part 1):
+pane switches sampled from the window server every 10 ms on a background
+thread (SWITCH lines: distinct heights, top edge kept); posted mouse drags on
+the bottom edge past both bounds and on the left and right edges (DRAG lines);
+spaces-many-dragged (after the drags); a 600 pt screen through
+screenUsableHeightOverride: profiles-capped / profiles-capped-scrolled /
+spaces-capped / extensions-capped; the override removed plus a posted
+didChangeScreenParametersNotification (SCREEN lines); profiles-on-short-screen
+(the window moved onto the virtual display, then back). Extensions are
+installed through ExtensionManager.install(from:options:) from folders the
+harness writes, so the permission rows are recorded as a real install records them.
+
+Known false positives in analyze.py: "VCLIP NSButton ... frame=[48, 25, 24,
+19]" (the list's minus button, alignment rect vs frame) and
+"_NSLayerBasedFillColorView" OUTSIDE-CONTENT / PAST-PARENT (a 0-wide view of
+the system scroll pocket at the top of the pane's scroll view); the
+"BackdropView / NSScrollPocket / NSBanner" OVERLAPs are the table header's
+system views.
+
+Before (survey, 2026-10-24, one run, 38 captures, screen unlocked for all):
+- Window grows past its fixed size: a long extension name widens the window
+  to 1104 (Extensions detail header) and 1008 (Profiles extension switches);
+  the pending-permissions banner makes the Extensions window 48 pt taller
+  (content 688 vs 640) and squeezes the permissions list to its 96 pt floor.
+- Profiles right column overflows the 580 pane: by 68 pt with custom UA +
+  isolation warning, 391 pt with 15 extensions, 467 pt with everything. It
+  scrolls, but with an overlay scroller nothing shows that it does; the grid
+  has 8 pt above it and 0 below it.
+- Grid labels are top-aligned: every label's centre is 4.0 pt above its
+  control's (Spaces and Profiles, all rows).
+- List rows: a long profile name squeezes a Spaces row's space name to 4 pt
+  (gone) and is itself clipped without an ellipsis (ambiguous layout: both
+  labels at compression 750); a long profile name in the Profiles list is
+  clipped without an ellipsis and touches "7 Spaces".
+- Dark mode: the list containers' borders are a CGColor frozen at creation
+  (light separator): 29,30,30 on a 32,33,33 background, invisible; the
+  NSBox separator below them is 54,55,55.
+- Spacing differs per pane (label column 43 vs 124, list rows 28 vs 32, grid
+  inset 8 pt, General's 52 pt bottom gap under 48 pt of content, Extensions
+  with no description and its detail column starting 8 pt lower).
+- No "Unable to simultaneously satisfy" from the Settings window (the 11 in
+  the log are the browser window's sidebar at launch, before Settings opened).
+
+After part 1 (2026-10-24, one run, 50 captures, screen unlocked for all):
+- Window width 740 in every state (was 1104 / 1008); content heights are the
+  natural heights: General 90, Content Blocking 243, Spaces 400 (minimum) /
+  628 (19 spaces), Profiles 572 / 648 / 986 / 1062, Extensions 400 (none) /
+  441 / 710 (pending: whole permissions list, no squeeze) / 1054.
+- Switches animate (10-20 distinct heights, top edge kept); drags clamp to
+  400..628 on Spaces and leave the width at 740; a 600 pt screen caps at 432
+  and the pane scrolls; the virtual 1000 pt screen caps Profiles at 832 and the
+  main screen restores 944; the parameters notification restores 1054.
+- Spaces: labels on their control's baseline (0.0; the colour row centred),
+  grid level with the list (0.0), pop-up 260 wide like the name field, long
+  names both truncate with an ellipsis (space name 89, profile 85, no
+  ambiguity), the selected space stays visible when the list is capped.
+- Dark list borders 54,55,55 on 32,33,33 (was 29,30,30).
+- Still open (part 2): Profiles labels 4 pt high, Profiles list names clipped,
+  Profiles grid row gaps 12, Extensions one/none mostly empty.
+- No "Unable to simultaneously satisfy" from the Settings window (the 11 are
+  the browser window at launch, 2 s before Settings opened).
+
+diff --git a/.task189/analyze.py b/.task189/analyze.py
+new file mode 100644
+index 0000000..c1990be
+--- /dev/null
++++ b/.task189/analyze.py
+@@ -0,0 +1,243 @@
++#!/usr/bin/env python3
++"""TASK-189 survey: read the harness's per-state JSON dumps and list clips,
++truncations, overlaps and gaps (window coordinates, origin bottom-left)."""
++import json, sys, glob, os
++
++CONTAINERS = {"NSView", "NSStackView", "NSGridView", "NSClipView", "FlippedView", "FlippedClipView",
++              "NSTableRowView", "NSTableCellView", "_NSKeyboardFocusClipView", "NSTableBackgroundView",
++              "TintedBannerView", "_NSBoxCustomView"}
++SKIP = {"NSScroller", "_NSScrollViewContentBackgroundView", "NSTableHeaderView", "_NSCornerView",
++        "NSScrollerImpPairView", "_NSSplitViewSpanningAccessoryHostingView"}
++
++
++def r2(r):
++    return {"x": r[0], "y": r[1], "w": r[2], "h": r[3], "maxX": r[0] + r[2], "maxY": r[1] + r[3]}
++
++
++def inter(a, b):
++    w = min(a["maxX"], b["maxX"]) - max(a["x"], b["x"])
++    h = min(a["maxY"], b["maxY"]) - max(a["y"], b["y"])
++    return (w, h) if w > 0 and h > 0 else (0, 0)
++
++
++def label(n):
++    t = n.get("text")
++    t = "" if t is None else (t[:38] + "…" if len(t) > 40 else t)
++    return f'{n["cls"]}#{n["id"]}"{t}"'
++
++
++def analyze(path):
++    d = json.load(open(path))
++    nodes = {n["id"]: n for n in d["nodes"]}
++    for n in nodes.values():
++        n["F"] = r2(n["frame"]); n["V"] = r2(n["visible"]); n["A"] = r2(n.get("align", n["frame"]))
++    children = {}
++    for n in nodes.values():
++        children.setdefault(n["parent"], []).append(n["id"])
++
++    def ancestors(n):
++        out = []
++        p = n["parent"]
++        while p != -1:
++            out.append(nodes[p]); p = nodes[p]["parent"]
++        return out
++
++    def in_skip(n):
++        return any(a["cls"] in SKIP for a in ancestors(n)) or n["cls"] in SKIP
++
++    content = r2(d["contentFrame"])
++    # visibleRect is not usable (macOS 14+ views do not clip by default, so it can
++    # extend past the bounds): clip each frame by its clip-view ancestors and the content.
++    CLIPPERS = ("NSClipView", "FlippedClipView", "_NSKeyboardFocusClipView")
++    def isect(a, b):
++        x, y = max(a["x"], b["x"]), max(a["y"], b["y"])
++        mx, my = min(a["maxX"], b["maxX"]), min(a["maxY"], b["maxY"])
++        return {"x": x, "y": y, "maxX": max(x, mx), "maxY": max(y, my), "w": max(0, mx - x), "h": max(0, my - y)}
++    for n in nodes.values():
++        v = isect(n["F"], content)
++        p = n["parent"]
++        while p != -1:
++            if nodes[p]["cls"] in CLIPPERS:
++                v = isect(v, nodes[p]["F"])
++            p = nodes[p]["parent"]
++        n["V"] = v
++    out = []
++    P = lambda s: out.append(s)
++    P(f'== {d["name"]}  pane={d["pane"]} preferred={d["preferred"]} window={d["windowFrame"]} content={d["contentFrame"]}')
++    if "natural" in d:
++        P(f'  FIT natural={d["natural"]} paneMinimum={d["paneMinimum"]} contentMin={d["contentMinSize"]} contentMax={d["contentMaxSize"]} screenOverride={d["screenOverride"]}')
++    defects = []
++    leaves = [n for n in nodes.values() if n["cls"] not in CONTAINERS and not in_skip(n)
++              and n["cls"] not in ("NSScrollView",) and n["parent"] != -1]
++    # Rows of tables are measured separately; only label text inside table cells is checked for truncation.
++    def in_table(n):
++        return any(a["cls"] == "NSTableView" for a in ancestors(n))
++    def clip_ancestor(n):
++        for a in ancestors(n):
++            if a["cls"] in ("NSClipView", "FlippedClipView", "_NSKeyboardFocusClipView"):
++                return a
++        return None
++
++    # 1. Clipping: visible smaller than frame.
++    for n in leaves:
++        F = n["A"] if n["cls"] in ("NSTextField", "NSButton", "NSPopUpButton", "NSSwitch") else n["F"]
++        V = isect(F, n["V"]) if False else n["V"]
++        # visible part of the alignment rect
++        V = {"w": max(0, min(F["maxX"], n["V"]["maxX"]) - max(F["x"], n["V"]["x"]) if n["V"]["w"] > 0 else 0),
++             "h": max(0, min(F["maxY"], n["V"]["maxY"]) - max(F["y"], n["V"]["y"]) if n["V"]["h"] > 0 else 0)}
++        if n["cls"] == "NSTableView":
++            continue
++        dw, dh = F["w"] - V["w"], F["h"] - V["h"]
++        if dw > 0.5 or dh > 0.5:
++            ca = clip_ancestor(n)
++            if in_table(n) and dw <= 0.5:
++                continue  # a table row scrolled out of view
++            kind = "HCLIP" if dw > 0.5 else "VCLIP"
++            where = "inside scroll view" if ca else "hard (no scroll view)"
++            if ca and kind == "VCLIP":
++                # vertical clip inside a vertically scrolling view: reachable by scrolling
++                sv = nodes[ca["parent"]] if ca["parent"] in nodes else None
++                where = "scrolls (vertical scroll view)" + ("" if sv and sv.get("scrollerShown") else " - scroller NOT shown")
++            defects.append(f'{kind} {label(n)} frame={n["frame"]} visible={[round(v,1) for v in n["visible"]]} cut w={dw:.1f} h={dh:.1f} [{where}]')
++        # outside window content entirely?
++        if F["x"] < content["x"] - 0.5 or F["maxX"] > content["maxX"] + 0.5 or F["y"] < content["y"] - 0.5 or F["maxY"] > content["maxY"] + 0.5:
++            if not clip_ancestor(n):
++                defects.append(f'OUTSIDE-CONTENT {label(n)} frame={n["frame"]}')
++
++    # 1b. A child that extends past its (non-scrolling) parent's frame.
++    for n in nodes.values():
++        if n["parent"] in (-1,) or in_skip(n):
++            continue
++        par = nodes[n["parent"]]
++        if par["cls"] in CLIPPERS or par["cls"] in ("NSScrollView", "NSTableView", "NSTableRowView"):
++            continue
++        F, PF = n["A"], par["F"]
++        over = [F["x"] < PF["x"] - 0.5 and f'left {PF["x"]-F["x"]:.1f}', F["maxX"] > PF["maxX"] + 0.5 and f'right {F["maxX"]-PF["maxX"]:.1f}',
++                F["y"] < PF["y"] - 0.5 and f'bottom {PF["y"]-F["y"]:.1f}', F["maxY"] > PF["maxY"] + 0.5 and f'top {F["maxY"]-PF["maxY"]:.1f}']
++        over = [o for o in over if o]
++        if over and n["cls"] != "_NSBoxSeparatorView":
++            defects.append(f'PAST-PARENT {label(n)} beyond {label(par)}: {", ".join(over)}')
++
++    # 2. Text that does not fit its frame.
++    for n in nodes.values():
++        if n["cls"] != "NSTextField" or in_skip(n) or n.get("editable"):
++            continue
++        F = n["F"]
++        if n.get("wraps"):
++            if n.get("needHeight", 0) > F["h"] + 0.5:
++                defects.append(f'TEXT-VCUT {label(n)} needs h={n["needHeight"]:.1f} has {F["h"]:.1f}')
++        else:
++            nw = n.get("needWidth", 0)
++            if nw > F["w"] + 0.5 and n.get("text"):
++                mode = {0: "wordWrap", 1: "charWrap", 2: "clipping", 3: "truncHead", 4: "truncTail", 5: "truncMiddle"}.get(n.get("lineBreak"), n.get("lineBreak"))
++                defects.append(f'TEXT-TRUNC({mode}) {label(n)} needs w={nw:.1f} has {F["w"]:.1f}{" (table cell)" if in_table(n) else ""}')
++    for n in leaves:
++        if n["cls"] in ("NSPopUpButton", "NSButton") and n["intrinsic"][0] > 0 and n["intrinsic"][0] > n["F"]["w"] + 0.5:
++            defects.append(f'SQUEEZED {label(n)} intrinsic w={n["intrinsic"][0]:.1f} frame w={n["F"]["w"]:.1f}')
++
++    # 3. Overlaps between on-screen leaves (not ancestor/descendant).
++    vis = [n for n in leaves if n["V"]["w"] > 0.5 and n["V"]["h"] > 0.5 and n["cls"] != "NSTableView"]
++    for i, a in enumerate(vis):
++        anc_a = {x["id"] for x in ancestors(a)}
++        for b in vis[i + 1:]:
++            if b["id"] in anc_a or a["id"] in {x["id"] for x in ancestors(b)}:
++                continue
++            w, h = inter(a["V"] if a["cls"] == "NSBox" else r2_align_vis(a), b["V"] if b["cls"] == "NSBox" else r2_align_vis(b))
++            if w > 1 and h > 1:
++                defects.append(f'OVERLAP {label(a)} x {label(b)} by {w:.1f}x{h:.1f}')
++
++    # 4. Scroll views: overflow.
++    for n in nodes.values():
++        if n["cls"] != "NSScrollView" or in_skip(n):
++            continue
++        doc, clip = n.get("docFrame") or [0, 0, 0, 0], n["clipBounds"]
++        ov_h = doc[3] - clip[3]; ov_w = doc[2] - clip[2]
++        inner = [nodes[c]["cls"] for c in children.get(n["id"], [])]
++        desc = f'SCROLL {label(n)} frame={[round(v) for v in n["frame"]]} doc={[round(v) for v in doc]} clip={[round(v) for v in clip]} scroller={n.get("scrollerShown")}'
++        if ov_h > 0.5: desc += f' OVERFLOW-V {ov_h:.0f}'
++        if ov_w > 0.5: desc += f' OVERFLOW-H {ov_w:.0f} (no horizontal scroller)'
++        P("  " + desc)
++
++    # 5. Gaps: vertical stacks and grids.
++    for n in nodes.values():
++        if in_skip(n):
++            continue
++        if n["cls"] == "NSStackView" and n.get("orientation") == "v":
++            arr = [nodes[i] for i in n.get("arranged", [])]
++            if len(arr) < 2:
++                continue
++            gaps = []
++            for a, b in zip(arr, arr[1:]):
++                gaps.append(f'{a["A"]["y"] - b["A"]["maxY"]:.1f}')
++            top = n["F"]["maxY"] - arr[0]["A"]["maxY"]; bot = arr[-1]["A"]["y"] - n["F"]["y"]
++            P(f'  VSTACK #{n["id"]} spacing={n["spacing"]} insets={n["insets"]} n={len(arr)} first="{label(arr[0])}" gaps={gaps} top={top:.1f} bottom={bot:.1f}')
++        if n["cls"] == "NSGridView" and "grid" in n:
++            rows = []
++            for ri, row in enumerate(n["grid"]["rows"]):
++                if row["hidden"]:
++                    continue
++                cells = [nodes[c] for c in row["cells"] if c in nodes]
++                slots = [nodes.get(c) for c in row["cells"]]
++                if not cells:
++                    continue
++                top = max(c["A"]["maxY"] for c in cells); bottom = min(c["A"]["y"] for c in cells)
++                lab = next((c.get("text") for c in cells if c.get("text")), "")
++                rows.append((ri, top, bottom, lab, slots))
++            gaps = [f'{a[2] - b[1]:.1f}' for a, b in zip(rows, rows[1:])]
++            col0 = [cs[0] for _, _, _, _, cs in rows if cs and cs[0] is not None]
++            col0w = max((c["F"]["w"] for c in col0), default=0)
++            col1x = min((cs[1]["A"]["x"] for _, _, _, _, cs in rows if len(cs) > 1 and cs[1] is not None), default=0)
++            col0x = min((c["A"]["x"] for c in col0), default=0)
++            P(f'  GRID #{n["id"]} rowSpacing={n["grid"]["rowSpacing"]} colSpacing={n["grid"]["columnSpacing"]} col0 width={col0w:.1f} col0 x={col0x:.1f} col1 x(window)={col1x:.1f} frame={[round(v) for v in n["frame"]]}')
++            P('    rows: ' + "; ".join(f'r{ri} "{(lab or "")[:18]}" h={t-b:.1f}' for ri, t, b, lab, _ in rows))
++            # Label vs control: centre offset and first-baseline offset (label minus control, + = label higher).
++            offs = []
++            for ri, _, _, lab, cs in rows:
++                if len(cs) > 1 and cs[0] is not None and cs[1] is not None and cs[0].get("text"):
++                    a, b = cs[0], cs[1]
++                    dc = (a["A"]["y"] + a["A"]["h"] / 2) - (b["A"]["y"] + b["A"]["h"] / 2)
++                    db = (a["baseline"] - b["baseline"]) if "baseline" in a and "baseline" in b else None
++                    offs.append(f'r{ri} centre={dc:+.1f} baseline={"n/a" if db is None else f"{db:+.1f}"}')
++            P('    label-vs-control: ' + "; ".join(offs))
++            # Detail column top vs a sibling list container's top.
++            par = nodes.get(n["parent"])
++            if par:
++                for sib in children.get(par["id"], []):
++                    sn = nodes[sib]
++                    if sn["cls"] in ("SettingsListContainerView",) or (sn["cls"] == "NSView" and sn["F"]["w"] == 220):
++                        P(f'    grid top vs list top: {sn["F"]["maxY"] - n["F"]["maxY"]:+.1f} (+ = grid starts lower)')
++            P(f'    gaps: {gaps}')
++
++    # 6. Pane margins from the on-screen leaves.
++    onscreen = [n for n in vis if not in_table(n)]
++    if onscreen:
++        left = min(n["V"]["x"] for n in onscreen) - content["x"]
++        right = content["maxX"] - max(n["V"]["maxX"] for n in onscreen)
++        top = content["maxY"] - max(n["V"]["maxY"] for n in onscreen)
++        bottom = min(n["V"]["y"] for n in onscreen) - content["y"]
++        P(f'  MARGINS (visible leaves) left={left:.1f} right={right:.1f} top={top:.1f} bottom={bottom:.1f}')
++    tops = [nodes[c] for c in children.get(0, [])]
++    P('  TOP-LEVEL: ' + "; ".join(f'{label(t)} {[round(v) for v in t["frame"]]}' for t in tops))
++    amb = [label(n) for n in nodes.values() if n.get("ambiguous")]
++    if amb:
++        defects.append("AMBIGUOUS " + ", ".join(amb[:10]))
++    for x in defects:
++        P("  ! " + x)
++    return "\n".join(out), defects
++
++
++def r2_align_vis(n):
++    # alignment rect, intersected with the visible rect
++    A, V = n["A"], n["V"]
++    x, y = max(A["x"], V["x"]), max(A["y"], V["y"])
++    mx, my = min(A["maxX"], V["maxX"]), min(A["maxY"], V["maxY"])
++    return {"x": x, "y": y, "maxX": mx, "maxY": my, "w": mx - x, "h": my - y}
++
++
++if __name__ == "__main__":
++    d = sys.argv[1]
++    files = sorted(glob.glob(os.path.join(d, "*.json")), key=os.path.getmtime)
++    for f in files:
++        text, _ = analyze(f)
++        print(text)
++        print()
+diff --git a/.task189/borders.py b/.task189/borders.py
+new file mode 100644
+index 0000000..9786802
+--- /dev/null
++++ b/.task189/borders.py
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python3
++"""TASK-189 defect 9: sample each list container's left border pixel against the
++pane background just outside it, in every capture of DIR (light and dark).
++Usage: borders.py DIR"""
++import json, glob, os, subprocess, sys
++
++d = sys.argv[1]
++
++
++def pixel(png, x, y):
++    out = subprocess.check_output(["magick", png, "-format", f"%[fx:int(255*p{{{x},{y}}}.r)],%[fx:int(255*p{{{x},{y}}}.g)],%[fx:int(255*p{{{x},{y}}}.b)]", "info:"])
++    return tuple(int(v) for v in out.decode().split(","))
++
++
++for path in sorted(glob.glob(os.path.join(d, "*.json"))):
++    png = path[:-5] + ".png"
++    if not os.path.exists(png):
++        continue
++    meta = json.load(open(path))
++    win_h = meta["windowFrame"][3]
++    scale = int(subprocess.check_output(["magick", "identify", "-format", "%w", png]).decode()) / meta["windowFrame"][2]
++    for n in meta["nodes"]:
++        f = n["frame"]
++        is_list = n["cls"] == "SettingsListContainerView" or (n["cls"] == "NSView" and abs(f[2] - 220) < 0.5 and f[3] > 100)
++        if not is_list:
++            continue
++        y = int((win_h - (f[1] + f[3] / 2)) * scale)
++        border = pixel(png, int(f[0] * scale), y)
++        outside = pixel(png, int((f[0] - 4) * scale), y)
++        contrast = max(abs(a - b) for a, b in zip(border, outside))
++        print(f'{os.path.basename(path)[:-5]:40s} border={border} outside={outside} max-channel-diff={contrast}')
++        break
+diff --git a/.task189/run.sh b/.task189/run.sh
+new file mode 100755
+index 0000000..957996e
+--- /dev/null
++++ b/.task189/run.sh
+@@ -0,0 +1,9 @@
++#!/bin/bash
++# Usage: run.sh OUTDIR — launches the harness build and prints its pid
++OUT="$1"
++mkdir -p "$OUT"
++cd "$(git rev-parse --show-toplevel)"
++DETOUR_DATA_DIR=DetourVerify189 DETOUR_VERIFY_DIR="$OUT" \
++  .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour > "$OUT/app-stdout.log" 2> "$OUT/app-stderr.log" &
++echo $! > "$OUT/pid"
++echo "pid $!"
+diff --git a/.task189/sheets.py b/.task189/sheets.py
+new file mode 100644
+index 0000000..ed130ed
+--- /dev/null
++++ b/.task189/sheets.py
+@@ -0,0 +1,26 @@
++import subprocess, os, sys
++d = sys.argv[1]
++font = "/System/Library/Fonts/Supplemental/Arial.ttf"
++order = {
++ "general": ["general"],
++ "spaces": ["spaces-default", "spaces-long", "spaces-many", "spaces-many-dragged", "spaces-capped"],
++ "profiles": ["profiles-normal", "profiles-private", "profiles-customUA-warning", "profiles-externalApps-several",
++              "profiles-extensions", "profiles-everything", "profiles-everything-scrolled", "profiles-private-extensions",
++              "profiles-capped", "profiles-capped-scrolled"],
++ "extensions": ["extensions-none", "extensions-one", "extensions-big", "extensions-pending", "extensions-many",
++                "extensions-capped"],
++ "contentblocking": ["contentblocking-on", "contentblocking-off"],
++}
++os.makedirs(f"{d}/sheets", exist_ok=True)
++for pane, states in order.items():
++    args = ["magick", "montage"]
++    for s in states:
++        for m in ("light", "dark"):
++            p = f"{d}/{s}-{m}.png"
++            if os.path.exists(p):
++                w, h = subprocess.check_output(["magick", "identify", "-format", "%w %h", p]).split()
++                args += ["-label", f"{s} ({m}) {int(w)}x{int(h)}", p]
++    args += ["-tile", "2x", "-geometry", "+16+16", "-font", font, "-pointsize", "20", "-background", "#bdbdbd",
++             f"{d}/sheets/{pane}-sheet.png"]
++    subprocess.check_call(args)
++    print(pane, subprocess.check_output(["magick", "identify", "-format", "%wx%h", f"{d}/sheets/{pane}-sheet.png"]).decode())
+diff --git a/.task189/watch.sh b/.task189/watch.sh
+new file mode 100755
+index 0000000..8a62e1d
+--- /dev/null
++++ b/.task189/watch.sh
+@@ -0,0 +1,26 @@
++#!/bin/bash
++# Usage: watch.sh OUTDIR — shoots each "SHOOT <name> <windowNumber>" line of OUTDIR/verify.log
++OUT="$1"; LOG="$OUT/verify.log"
++LOCK=${LOCK_CHECK:-true}   # optional screen-lock probe that prints locked=...
++n=0
++for i in $(seq 1 3000); do
++  if [ -f "$LOG" ]; then
++    total=$(wc -l < "$LOG" | tr -d ' ')
++    if [ "$total" -gt "$n" ]; then
++      sed -n "$((n+1)),${total}p" "$LOG" > "$OUT/.new"
++      n=$total
++      while read -r line; do
++        case "$line" in
++          *"SHOOT "*)
++            rest=${line#*SHOOT }; name=${rest% *}; wn=${rest##* }
++            lk=$($LOCK)
++            screencapture -x -o -l "$wn" "$OUT/$name.png"
++            echo "$name wn=$wn $lk" >> "$OUT/shots.txt" ;;
++          *"] done"*) echo finished; exit 0 ;;
++        esac
++      done < "$OUT/.new"
++    fi
++  fi
++  sleep 0.2
++done
++echo timeout
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..cf4642e 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask189HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task189Harness.swift b/Detour/App/Task189Harness.swift
+new file mode 100644
+index 0000000..630987e
+--- /dev/null
++++ b/Detour/App/Task189Harness.swift
+@@ -0,0 +1,556 @@
++// TEMP TASK-189 Settings layout survey harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask189HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        // Steps run in order; each waits until every capture requested so far
++        // exists, so a slow watcher cannot shoot a later state.
++        var steps: [(TimeInterval, () -> Void)] = []
++        var requestedShots: [String] = []
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) { steps.append((dt, block)) }
++        func runStep(_ index: Int) {
++            guard index < steps.count else { return }
++            let missing = requestedShots.filter { !FileManager.default.fileExists(atPath: "\(outDir)/\($0).png") }
++            let delay = missing.isEmpty ? steps[index].0 : 0.2
++            let timer = Timer(timeInterval: delay, repeats: false) { _ in
++                if missing.isEmpty { steps[index].1(); runStep(index + 1) } else { runStep(index) }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        let settings = SettingsWindowController.shared
++        let store = TabStore.shared
++        func sw() -> NSWindow { settings.window! }
++
++        // MARK: Measurement
++
++        func rect(_ r: NSRect) -> [Double] { [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)] }
++        func text(of view: NSView) -> String? {
++            if let p = view as? NSPopUpButton { return p.titleOfSelectedItem }
++            if let b = view as? NSButton { return b.title.isEmpty ? (b.image?.accessibilityDescription ?? "") : b.title }
++            if let t = view as? NSTextField { return t.stringValue }
++            if let b = view as? NSBox { return b.boxType == .separator ? "<separator>" : "<box>" }
++            return nil
++        }
++        func shouldDescend(_ view: NSView) -> Bool {
++            if view is NSTableView || view is NSScrollView || view is NSClipView { return true }
++            if view is NSControl || view is NSScroller || view is NSTableHeaderView { return false }
++            return true
++        }
++        func dumpPane(_ name: String) {
++            let window = sw()
++            guard let content = window.contentView else { return log("\(name): no content view") }
++            window.layoutIfNeeded()
++            var ids: [ObjectIdentifier: Int] = [:]
++            var nodes: [[String: Any]] = []
++            var queue: [(NSView, Int)] = [(content, -1)]
++            var visited: [NSView] = []
++            while !queue.isEmpty {
++                let (view, parent) = queue.removeFirst()
++                if view.isHidden { continue }
++                let id = nodes.count
++                ids[ObjectIdentifier(view)] = id
++                visited.append(view)
++                var node: [String: Any] = [
++                    "id": id, "parent": parent, "cls": "\(type(of: view))",
++                    "frame": rect(view.convert(view.bounds, to: nil)),
++                    "visible": rect(view.convert(view.visibleRect, to: nil)),
++                    "ambiguous": view.hasAmbiguousLayout,
++                ]
++                if let sv = view.superview {
++                    let align = sv.convert(view.alignmentRect(forFrame: view.frame), to: nil)
++                    node["align"] = rect(align)
++                    // First baseline in window coordinates (alignment-rect top minus the offset).
++                    if view is NSControl {
++                        node["baseline"] = Double(align.maxY - view.firstBaselineOffsetFromTop)
++                    }
++                }
++                let ics = view.intrinsicContentSize
++                node["intrinsic"] = [Double(ics.width), Double(ics.height)]
++                if let t = text(of: view) { node["text"] = t }
++                if let tf = view as? NSTextField {
++                    node["lineBreak"] = tf.lineBreakMode.rawValue
++                    node["wraps"] = tf.cell?.wraps ?? false
++                    node["maxLines"] = tf.maximumNumberOfLines
++                    node["editable"] = tf.isEditable
++                    node["bezeled"] = tf.isBezeled
++                    if let cell = tf.cell {
++                        let need = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: tf.bounds.width, height: 10_000))
++                        node["needHeight"] = Double(need.height)
++                        let one = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: 10_000))
++                        node["needWidth"] = Double(one.width)
++                    }
++                    node["fontSize"] = Double(tf.font?.pointSize ?? 0)
++                }
++                if let c = view as? NSControl { node["controlSize"] = c.controlSize.rawValue; node["enabled"] = c.isEnabled }
++                if let s = view as? NSScrollView {
++                    node["docFrame"] = s.documentView.map { rect($0.frame) } ?? []
++                    node["clipBounds"] = rect(s.contentView.bounds)
++                    node["scrollerShown"] = (s.verticalScroller.map { !$0.isHidden } ?? false) && s.hasVerticalScroller
++                }
++                if let st = view as? NSStackView {
++                    node["orientation"] = st.orientation == .vertical ? "v" : "h"
++                    node["spacing"] = Double(st.spacing)
++                    node["insets"] = [Double(st.edgeInsets.top), Double(st.edgeInsets.left),
++                                      Double(st.edgeInsets.bottom), Double(st.edgeInsets.right)]
++                }
++                if let tv = view as? NSTableView { node["rows"] = tv.numberOfRows; node["rowHeight"] = Double(tv.rowHeight) }
++                nodes.append(node)
++                if shouldDescend(view) {
++                    for sub in view.subviews { queue.append((sub, id)) }
++                }
++            }
++            // Second pass: structure references (grid rows, stack arranged order).
++            for view in visited {
++                guard let id = ids[ObjectIdentifier(view)] else { continue }
++                if let grid = view as? NSGridView {
++                    var rows: [[String: Any]] = []
++                    for r in 0..<grid.numberOfRows {
++                        let row = grid.row(at: r)
++                        var cells: [Int] = []
++                        for c in 0..<grid.numberOfColumns {
++                            if let cv = grid.cell(atColumnIndex: c, rowIndex: r).contentView, let cid = ids[ObjectIdentifier(cv)] {
++                                cells.append(cid)
++                            } else { cells.append(-1) }
++                        }
++                        rows.append(["hidden": row.isHidden, "cells": cells])
++                    }
++                    nodes[id]["grid"] = ["rows": rows, "rowSpacing": Double(grid.rowSpacing),
++                                         "columnSpacing": Double(grid.columnSpacing)]
++                }
++                if let st = view as? NSStackView {
++                    nodes[id]["arranged"] = st.arrangedSubviews.compactMap { ids[ObjectIdentifier($0)] }
++                    nodes[id]["customSpacing"] = st.arrangedSubviews.compactMap { sub -> Double? in
++                        guard ids[ObjectIdentifier(sub)] != nil else { return nil }
++                        return Double(st.customSpacing(after: sub))
++                    }
++                }
++            }
++            let paneVC = window.contentViewController
++            let pane = paneVC as? SettingsPaneViewController
++            let meta: [String: Any] = [
++                "natural": pane.map { Double($0.naturalContentHeight) } ?? -1,
++                "paneMinimum": pane.flatMap { $0.minimumContentHeight.map(Double.init) } ?? -1,
++                "contentMinSize": [Double(window.contentMinSize.width), Double(window.contentMinSize.height)],
++                "contentMaxSize": [Double(window.contentMaxSize.width), Double(window.contentMaxSize.height)],
++                "screenOverride": settings.screenUsableHeightOverride.map(Double.init) ?? -1,
++                "name": name,
++                "pane": paneVC.map { "\(type(of: $0))" } ?? "nil",
++                "preferred": paneVC.map { [Double($0.preferredContentSize.width), Double($0.preferredContentSize.height)] } ?? [],
++                "windowFrame": rect(window.frame),
++                "contentLayoutRect": rect(window.contentLayoutRect),
++                "contentFrame": rect(content.convert(content.bounds, to: nil)),
++                "appearance": NSApp.effectiveAppearance.name.rawValue,
++                "screen": rect(window.screen?.visibleFrame ?? .zero),
++                "nodes": nodes,
++            ]
++            if let data = try? JSONSerialization.data(withJSONObject: meta, options: [.sortedKeys]) {
++                try? data.write(to: URL(fileURLWithPath: "\(outDir)/\(name).json"))
++            }
++            let ambiguous = nodes.filter { ($0["ambiguous"] as? Bool) == true }.map { $0["cls"] as? String ?? "?" }
++            log("MEASURE \(name) pane=\(meta["pane"]!) window=\(rect(window.frame)) content=\(rect(content.bounds)) natural=\(meta["natural"]!) min=\(window.contentMinSize.height) max=\(window.contentMaxSize.height) nodes=\(nodes.count) ambiguous=\(ambiguous)")
++        }
++        func shoot(_ name: String) {
++            requestedShots.append(name)
++            log("SHOOT \(name) \(sw().windowNumber)")
++        }
++
++        // MARK: Driving
++
++        func showPane(_ id: String) {
++            guard let item = sw().toolbar?.items.first(where: { $0.itemIdentifier.rawValue == id }),
++                  let action = item.action else { return log("no toolbar item \(id)") }
++            NSApp.sendAction(action, to: item.target, from: item)
++        }
++        func paneTable() -> NSTableView? {
++            guard let view = sw().contentViewController?.view else { return nil }
++            return allSubviews(view).compactMap { $0 as? NSTableView }.first
++        }
++        let profileList: () -> [Profile] = {
++            store.profiles.filter { !$0.isIncognito || $0.id == TabStore.incognitoProfileID }
++        }
++        func selectProfile(_ id: UUID) {
++            guard let vc = sw().contentViewController as? ProfilesSettingsViewController,
++                  let table = paneTable(),
++                  let i = profileList().firstIndex(where: { $0.id == id }) else { return log("selectProfile failed") }
++            table.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
++            vc.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification, object: table))
++        }
++        func selectExtension(_ extID: String) {
++            guard let vc = sw().contentViewController as? ExtensionsSettingsViewController,
++                  let table = paneTable(),
++                  let i = ExtensionManager.shared.extensions.firstIndex(where: { $0.id == extID }) else { return log("selectExtension failed") }
++            table.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
++            vc.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification, object: table))
++        }
++        /// Measure + capture the current state in light, then dark, then back to light.
++        func both(_ name: String, settle: TimeInterval = 1.2, _ setup: @escaping () -> Void) {
++            at(0.3) { log("STATE \(name)"); setup() }
++            at(settle) { dumpPane("\(name)-light"); shoot("\(name)-light") }
++            at(0.3) { NSApp.appearance = NSAppearance(named: .darkAqua) }
++            at(1.0) { dumpPane("\(name)-dark"); shoot("\(name)-dark") }
++            at(0.3) { NSApp.appearance = NSAppearance(named: .aqua) }
++        }
++
++        // MARK: Extension sources
++
++        func writeExtension(_ folder: String, _ manifest: [String: Any]) -> URL {
++            let dir = URL(fileURLWithPath: "\(outDir)/ext-src/\(folder)")
++            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
++            if let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted]) {
++                try? data.write(to: dir.appendingPathComponent("manifest.json"))
++            }
++            try? Data("<!doctype html><title>opts</title>".utf8).write(to: dir.appendingPathComponent("options.html"))
++            return dir
++        }
++        var extIDs: [String: String] = [:]
++        func install(_ key: String, _ folder: URL, _ configure: (inout ExtensionInstaller.Options) -> Void = { _ in }) {
++            var opts = ExtensionInstaller.Options()
++            configure(&opts)
++            do {
++                let ext = try ExtensionManager.shared.install(from: folder, options: opts)
++                extIDs[key] = ext.id
++                log("installed \(key) id=\(ext.id)")
++            } catch { log("install \(key) failed: \(error)") }
++        }
++        let manyPerms = ["storage", "tabs", "scripting", "alarms", "contextMenus", "cookies", "webNavigation",
++                         "webRequest", "notifications", "downloads", "history", "bookmarks", "nativeMessaging",
++                         "clipboardWrite", "clipboardRead", "declarativeNetRequest", "activeTab", "sidePanel",
++                         "offscreen", "privacy", "management", "idle"]
++        let manyHosts = ["<all_urls>", "https://*.example.com/*", "https://accounts.very-long-subdomain-name.example.org/*",
++                         "http://localhost/*"]
++
++        // MARK: Script
++
++        var longProfile: Profile?
++        var defaultProfile: Profile?
++        at(2.0) {
++            NSApp.activate(ignoringOtherApps: true)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            defaultProfile = store.profiles.first { !$0.isIncognito }
++            log("profiles=\(store.profiles.map { "\($0.name)\($0.isIncognito ? "(incognito)" : "")" }) spaces=\(store.spaces.map(\.name)) exts=\(ExtensionManager.shared.extensions.count)")
++            settings.showWindow(nil)
++        }
++        at(1.0) { showPane("general") }
++
++        // General
++        both("general") { }
++
++        // Spaces
++        both("spaces-default") { showPane("spaces") }
++        both("spaces-long") {
++            let p = store.addProfile(name: "Work profile with a rather long descriptive name for testing")
++            longProfile = p
++            if let s = store.spaces.first(where: { !$0.isIncognito }) {
++                store.updateSpace(id: s.id, name: "A very long space name that keeps going to test truncation and wrapping",
++                                  emoji: s.emoji, colorHex: s.colorHex, profileID: p.id)
++            }
++            showPane("general")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
++                settings.showSpacesPane(selectSpaceID: store.spaces.first(where: { !$0.isIncognito })?.id)
++            }
++        }
++        both("spaces-many", settle: 1.8) {
++            let emojis = ["🍎", "🚀", "📚", "🎵", "🧪", "🌲", "🏠", "💼", "🎨", "⚙️", "🛒", "✈️", "🐙", "🧭", "🎮", "📈", "🔒", "☕️"]
++            for (i, e) in emojis.enumerated() {
++                _ = store.addSpace(name: "Space \(i + 2)\(i % 4 == 0 ? " with a longer name than usual" : "")",
++                                   emoji: e, colorHex: "#3478F6", profileID: (i % 3 == 0 ? longProfile?.id : nil) ?? defaultProfile!.id)
++            }
++            showPane("general")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
++                settings.showSpacesPane(selectSpaceID: store.spaces.filter { !$0.isIncognito }.last?.id)
++            }
++        }
++
++        // Extensions: none
++        both("extensions-none") { showPane("extensions") }
++
++        // Profiles: normal (no extensions, no external apps)
++        both("profiles-normal") {
++            showPane("profiles")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { selectProfile(defaultProfile!.id) }
++        }
++        both("profiles-private") { selectProfile(TabStore.incognitoProfileID) }
++        both("profiles-customUA-warning") {
++            let p = defaultProfile!
++            p.userAgentMode = .custom
++            p.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15 CustomSuffix/1.2.3"
++            p.isPerTabIsolation = true
++            p.sleepThreshold = .oneHour
++            store.updateProfile(p)
++            selectProfile(p.id)
++        }
++        both("profiles-externalApps-several") {
++            let p = defaultProfile!
++            p.userAgentMode = .detour
++            p.isPerTabIsolation = false
++            store.updateProfile(p)
++            for (o, s) in [("https://zoom.us", "zoommtg"), ("https://slack.com", "slack"), ("https://open.spotify.com", "spotify"), ("https://example.com", "mailto")] {
++                ExternalAppPermissionStore.shared.allow(origin: o, scheme: s, profileID: p.id, isPrivateProfile: false)
++            }
++            selectProfile(p.id)
++        }
++
++        // Extensions: one (plain, unpacked from a folder)
++        let simpleDir = writeExtension("simple", [
++            "manifest_version": 3, "name": "Hello Extension", "version": "1.0",
++            "description": "A small extension with no permissions.",
++        ])
++        both("extensions-one", settle: 2.0) {
++            install("simple", simpleDir) { $0.sourcePath = simpleDir }
++            showPane("extensions")
++        }
++        // Extensions: long name, long description, many permissions, options page, CRX with update URL
++        let bigDir = writeExtension("big", [
++            "manifest_version": 3,
++            "name": "Super Long Extension Name That Keeps Going — Password Manager & Form Filler Pro Edition",
++            "version": "12.34.5678",
++            "description": "This extension does a great many things. It fills forms, remembers passwords, blocks trackers, rewrites pages, syncs your bookmarks across every device you own and also keeps a detailed history of everything so that the description wraps over several lines.",
++            "permissions": manyPerms, "host_permissions": manyHosts,
++            "optional_permissions": ["geolocation", "topSites", "sessions", "tabGroups"],
++            "optional_host_permissions": ["https://*.optional-example.net/*", "https://mail.example.com/*"],
++            "options_page": "options.html",
++        ])
++        both("extensions-big", settle: 2.0) {
++            install("big", bigDir) { opts in
++                opts.source = .crx
++                opts.updateURL = URL(string: "http://127.0.0.1:9/update2/crx")
++            }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { selectExtension(extIDs["big"] ?? "") }
++        }
++        // Extensions: pending-permissions banner
++        let pendingDir = writeExtension("pending", [
++            "manifest_version": 3, "name": "Pending Permissions Example", "version": "2.0",
++            "description": "Updated to a version that asks for more.",
++            "permissions": ["storage", "history", "bookmarks", "downloads", "tabs"], "host_permissions": ["<all_urls>"],
++        ])
++        both("extensions-pending", settle: 2.0) {
++            install("pending", pendingDir) { opts in
++                opts.sourcePath = pendingDir
++                opts.enabled = false
++                opts.pendingPermissionApproval = .init(version: "2.0", delta: .init(
++                    permissions: ["history", "bookmarks", "downloads", "tabs"], hostPermissions: ["<all_urls>"]))
++            }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { selectExtension(extIDs["pending"] ?? "") }
++        }
++        // Extensions: many in the list
++        both("extensions-many", settle: 3.0) {
++            let names = ["uBlock Origin Lite", "Dark Reader", "1Password – Password Manager", "Grammarly: AI Writing and Grammar Checker",
++                         "React Developer Tools", "Vimium", "Refined GitHub", "SponsorBlock for YouTube - Skip Sponsorships",
++                         "Bitwarden Password Manager", "Wappalyzer - Technology profiler", "JSON Viewer", "Tab Session Manager"]
++            for (i, n) in names.enumerated() {
++                let d = writeExtension("many\(i)", [
++                    "manifest_version": 3, "name": n, "version": "1.\(i)",
++                    "description": "Seeded extension \(i).", "permissions": ["storage"],
++                ])
++                install("many\(i)", d) { $0.sourcePath = d }
++            }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { selectExtension(extIDs["simple"] ?? "") }
++        }
++
++        // Profiles with extension switches
++        both("profiles-extensions") {
++            showPane("profiles")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { selectProfile(defaultProfile!.id) }
++        }
++        both("profiles-everything") {
++            let p = defaultProfile!
++            p.userAgentMode = .custom
++            p.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15 CustomSuffix/1.2.3"
++            p.isPerTabIsolation = true
++            p.sleepThreshold = .oneHour
++            p.isAdBlockingEnabled = false
++            store.updateProfile(p)
++            selectProfile(p.id)
++        }
++        both("profiles-everything-scrolled") {
++            guard let view = sw().contentViewController?.view else { return }
++            // The pane's scroll view (TASK-189 part 1: the whole pane scrolls), scrolled to the bottom.
++            if let sv = (sw().contentViewController as? SettingsPaneViewController)?.scrollView ?? view.subviews.compactMap({ $0 as? NSScrollView }).first,
++               let doc = sv.documentView {
++                let y = max(0, doc.frame.height - sv.contentView.bounds.height)
++                sv.contentView.scroll(to: NSPoint(x: 0, y: y))
++                sv.reflectScrolledClipView(sv.contentView)
++                log("scrolled grid to y=\(y) doc=\(doc.frame) clip=\(sv.contentView.bounds)")
++            }
++        }
++        both("profiles-private-extensions") { selectProfile(TabStore.incognitoProfileID) }
++
++        // Content blocking
++        both("contentblocking-on", settle: 1.5) {
++            let p = defaultProfile!
++            p.isAdBlockingEnabled = true
++            store.updateProfile(p)
++            ContentBlockerManager.shared.reapplyRuleLists()
++            showPane("contentblocker")
++        }
++        both("contentblocking-off", settle: 1.5) {
++            let p = defaultProfile!
++            p.isAdBlockingEnabled = false
++            store.updateProfile(p)
++            ContentBlockerManager.shared.reapplyRuleLists()
++            showPane("general")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { showPane("contentblocker") }
++        }
++        // MARK: Window sizing checks (TASK-189 part 1)
++
++        func contentHeight() -> Double { Double(sw().contentLayoutRect.height) }
++        /// Logs the window's height (from the window server, on a background
++        /// thread, since an animated setFrame blocks the main thread) every
++        /// 10 ms while `block` runs a pane switch.
++        func sampleSwitch(_ label: String, _ block: @escaping () -> Void) {
++            let windowID = CGWindowID(sw().windowNumber)
++            let lock = NSLock()
++            var samples: [String] = []
++            var running = true
++            let t0 = ProcessInfo.processInfo.systemUptime
++            DispatchQueue.global(qos: .userInteractive).async {
++                while true {
++                    lock.lock(); let go = running; lock.unlock()
++                    if !go { break }
++                    if let info = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
++                       let b = info.first?[kCGWindowBounds as String] as? [String: Any], let h = b["Height"] as? Double,
++                       let y = b["Y"] as? Double {
++                        let line = String(format: "%.0f(top %.0f)@%.0fms", h, y, (ProcessInfo.processInfo.systemUptime - t0) * 1000)
++                        lock.lock(); if samples.last?.hasPrefix(String(format: "%.0f(", h)) != true { samples.append(line) }; lock.unlock()
++                    }
++                    usleep(10_000)
++                }
++            }
++            let before = sw().frame
++            // Who resizes the window during the switch (debugging snaps).
++            let resizeObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: sw(), queue: nil) { _ in
++                let stack = Thread.callStackSymbols.dropFirst(1).prefix(40)
++                    .filter { $0.contains("Detour") && !$0.contains("Task189") }
++                    .map { $0.split(separator: " ").dropFirst(3).prefix(1).joined() }
++                log("RESIZE \(label) h=\(sw().frame.height) via=\(stack.prefix(6).joined(separator: " < "))")
++            }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NotificationCenter.default.removeObserver(resizeObserver) }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
++                block()
++                let after = sw().frame
++                let elapsed = (ProcessInfo.processInfo.systemUptime - t0) * 1000
++                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
++                    lock.lock(); running = false; let list = samples; lock.unlock()
++                    log("SWITCH \(label) before=\(rect(before)) after=\(rect(sw().frame)) atReturn=\(rect(after)) returnedAt=\(Int(elapsed))ms topKept=\(abs(before.maxY - after.maxY) < 0.5) distinctHeights=\(list.count) samples=\(list.joined(separator: " "))")
++                }
++            }
++        }
++        func postMouse(_ type: NSEvent.EventType, _ p: NSPoint) {
++            guard let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                             timestamp: ProcessInfo.processInfo.systemUptime,
++                                             windowNumber: sw().windowNumber, context: nil, eventNumber: 0,
++                                             clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) else { return }
++            NSApp.postEvent(e, atStart: false)
++        }
++        /// Drags from `start` (window coordinates) by (dx, dy) in 10 steps.
++        func drag(_ label: String, from start: NSPoint, dx: CGFloat, dy: CGFloat) {
++            let before = sw().frame
++            postMouse(.leftMouseDown, start)
++            for i in 1...10 {
++                postMouse(.leftMouseDragged, NSPoint(x: start.x + dx * CGFloat(i) / 10, y: start.y + dy * CGFloat(i) / 10))
++            }
++            postMouse(.leftMouseUp, NSPoint(x: start.x + dx, y: start.y + dy))
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
++                let after = sw().frame
++                log("DRAG \(label) by=(\(dx),\(dy)) before=\(rect(before)) after=\(rect(after)) content=\(contentHeight()) min=\(sw().contentMinSize) max=\(sw().contentMaxSize)")
++            }
++        }
++
++        if ProcessInfo.processInfo.environment["TASK189_SWITCH_ONLY"] != nil {
++            steps = Array(steps.prefix(2))  // launch + open Settings only
++        }
++        // Pane switches re-fit and animate, keeping the top edge.
++        at(0.5) { showPane("general") }
++        at(1.0) { sampleSwitch("general->profiles") { showPane("profiles") } }
++        at(1.0) { sampleSwitch("profiles->contentblocker") { showPane("contentblocker") } }
++        at(1.0) { sampleSwitch("contentblocker->spaces") { showPane("spaces") } }
++        if ProcessInfo.processInfo.environment["TASK189_SWITCH_ONLY"] != nil {
++            at(1.0) { sampleSwitch("spaces->general") { showPane("general") } }
++            at(1.0) { sampleSwitch("general->extensions") { showPane("extensions") } }
++            at(1.0) { sampleSwitch("extensions->general") { showPane("general") } }
++            at(1.0) { sampleSwitch("general->contentblocker") { showPane("contentblocker") } }
++            at(1.0) { sampleSwitch("contentblocker->extensions") { showPane("extensions") } }
++            at(1.0) { sampleSwitch("extensions->contentblocker") { showPane("contentblocker") } }
++            at(1.0) { sampleSwitch("contentblocker->general") { showPane("general") } }
++            at(1.5) { log("SWITCHES-DONE") }
++        }
++        at(1.0) { log("FIT spaces natural=\((sw().contentViewController as? SettingsPaneViewController)?.naturalContentHeight ?? -1) content=\(contentHeight()) min=\(sw().contentMinSize) max=\(sw().contentMaxSize)") }
++        // Dragging: the bottom edge in both directions past the bounds, then the right edge.
++        at(0.5) { drag("bottom-down-200", from: NSPoint(x: 370, y: 1), dx: 0, dy: -200) }
++        at(1.2) { drag("bottom-up-500", from: NSPoint(x: 370, y: 1), dx: 0, dy: 500) }
++        at(1.2) { drag("bottom-down-80", from: NSPoint(x: 370, y: 1), dx: 0, dy: -80) }
++        at(1.2) { drag("right-edge+150", from: NSPoint(x: sw().frame.width - 1, y: sw().frame.height / 2), dx: 150, dy: 0) }
++        at(1.2) { drag("left-edge-150", from: NSPoint(x: 1, y: sw().frame.height / 2), dx: -150, dy: 0) }
++        both("spaces-many-dragged") { }
++        // The re-fit on a pane switch drops the dragged height.
++        at(0.5) { showPane("general") }
++        at(1.0) { showPane("spaces") }
++        at(1.0) { log("FIT spaces after switch content=\(contentHeight())") }
++
++        // The screen cap: a 600-point screen leaves 600 - chrome - 80 points; tall panes scroll.
++        both("profiles-capped") {
++            settings.screenUsableHeightOverride = 600
++            showPane("general")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { showPane("profiles") }
++        }
++        both("profiles-capped-scrolled") {
++            guard let sv = (sw().contentViewController as? SettingsPaneViewController)?.scrollView,
++                  let doc = sv.documentView else { return }
++            let y = max(0, doc.frame.height - sv.contentView.bounds.height)
++            sv.contentView.scroll(to: NSPoint(x: 0, y: y))
++            sv.reflectScrolledClipView(sv.contentView)
++            log("scrolled pane to y=\(y) doc=\(doc.frame) clip=\(sv.contentView.bounds)")
++        }
++        both("spaces-capped") { showPane("spaces") }
++        both("extensions-capped") {
++            showPane("extensions")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { selectExtension(extIDs["big"] ?? "") }
++        }
++        // Screen parameters change (resolution, unplugged display): with the
++        // seam back at nil and the notification posted, the capped window grows back.
++        at(0.5) {
++            log("SCREEN before-param-change content=\(contentHeight()) max=\(sw().contentMaxSize.height)")
++            settings.screenUsableHeightOverride = nil
++            NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: NSApp)
++        }
++        at(1.5) { log("SCREEN after-param-change content=\(contentHeight()) max=\(sw().contentMaxSize.height) natural=\((sw().contentViewController as? SettingsPaneViewController)?.naturalContentHeight ?? -1)") }
++
++        // A real second, shorter screen (the TASK-110 virtual display, 1600x1000 pt):
++        // moving the window there re-fits it to that screen's cap, and back again.
++        let homeScreen = NSScreen.main
++        func shortScreen() -> NSScreen? { NSScreen.screens.first { $0.localizedName.contains("Detour Capture") } }
++        both("profiles-on-short-screen", settle: 2.0) {
++            showPane("profiles")
++            guard let screen = shortScreen() else { return log("SCREEN no virtual display; skipped") }
++            log("SCREEN moving to \(screen.localizedName) visible=\(rect(screen.visibleFrame))")
++            sw().setFrameTopLeftPoint(NSPoint(x: screen.visibleFrame.minX + 40, y: screen.visibleFrame.maxY - 20))
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
++                log("SCREEN on-short screen=\(sw().screen?.localizedName ?? "?") window=\(rect(sw().frame)) content=\(contentHeight()) max=\(sw().contentMaxSize.height) visible=\(rect(sw().screen?.visibleFrame ?? .zero))")
++            }
++        }
++        at(0.5) {
++            guard let home = homeScreen, shortScreen() != nil else { return }
++            sw().setFrameTopLeftPoint(NSPoint(x: home.visibleFrame.midX - 370, y: home.visibleFrame.maxY - 60))
++        }
++        at(1.5) { log("SCREEN back-home screen=\(sw().screen?.localizedName ?? "?") window=\(rect(sw().frame)) content=\(contentHeight()) max=\(sw().contentMaxSize.height)") }
++        at(0.5) { showPane("general") }
++        at(0.5) { log("done") }
++        runStep(0)
++    }
++}
++#endif

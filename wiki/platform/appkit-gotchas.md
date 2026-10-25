@@ -4,9 +4,12 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T21:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T02:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
+  - id: task-189
+    resource: backlog:TASK-189
+    title: "Settings: fix the window's spacing and clipping"
   - id: task-186-3
     resource: backlog:TASK-186.3
     title: "Dev mode: capture buttons in the dev toolbar"
@@ -126,6 +129,10 @@ Related.
 | `NSStackView.edgeInsets` on the **cross axis** are hugging-priority constraints only. In a height-constrained column the bottom inset silently collapses while the top survives.[^task-113] | Update banner in the Extensions settings pane: the button sat on the border | Add your own required constraints for insets that must hold; pin the content's bottom to the container. Measure in the running app rather than judging by eye |
 | An `NSBox` with `boxType = .separator` has no intrinsic width. In a horizontal `NSStackView` given only a height, it can be stretched to take the stack's slack and turns into a horizontal line; with one separator in the dev toolbar it happened to stay narrow, with two (TASK-186.3) one stretched to 473 pt and pulled the link button to the URL.[^task-186-3] | Dev toolbar trailing groups | Constrain both dimensions (`addTrailingGroup` gives each separator width 1, height 14); the frame is then about 5 pt wide around a 1 pt alignment rect |
 | `NSBox`'s content view is sized by autoresizing, so the box does not grow to an Auto Layout content's fitting height.[^task-113] | Same banner | A plain layer-backed container (`TintedBannerView`) |
+| A window's content view whose constraints cap its height (content pinned top and bottom with required `==`, nothing that stretches, inside a scroll view's document that must be at least the visible height) gives the window a maximum size: AppKit resizes the window to it the moment the view becomes `contentViewController`'s view, with no animation.[^task-189] | Settings: shrinking onto the Content Blocking pane snapped instead of animating | Pin the last item with `<=` plus a low-priority `==`, or let something in the column stretch |
+| Setting `contentMaxSize` below the window's current content height (or `contentMinSize` above it) resizes the window at once.[^task-189] | Settings window, setting a pane's bounds before animating to its height | Widen the bounds to cover the current height, animate, then set the final bounds in the completion |
+| `fittingSize` does not run the two-pass layout a wrapping `NSTextField` needs, so a wrapping label without `preferredMaxLayoutWidth` measures as one line.[^task-189] | Settings panes' natural heights | Give wrapping labels an explicit `preferredMaxLayoutWidth` where a fitting height is measured |
+| A required width on the window's content view locks the window's width; without it, a label's compression resistance (750) beats the window's size (500) and a long string widens the window.[^task-189] | Settings: a long extension name widened the window to 1104 | Lock the width, and give long labels `.byTruncatingTail` and low compression resistance so they give way first |
 | A button's frame is larger than its height constraint: the constraint applies to the alignment rect. A 24 pt button measured 31 pt tall.[^task-126][^notes-hittest] | The Downloads button's hover circle was derived from the frame | State sizes that must be exact (`HoverButton.fixedHoverSize`); do not derive them from `bounds` |
 | Traffic lights sit inside the sidebar area only if the window has a toolbar. | Window setup | An empty unified `NSToolbar` (`setupToolbar`) |
 | During a fullscreen transition the title-bar container is reparented into an auxiliary window before `styleMask` reports `.fullScreen`. Converting a standard window button's frame then gives a plausible but wrong rect. | Title-bar control alignment in the sidebar | Check `zoomButton.window === window` before converting (`alignTitleBarControls`) |
@@ -227,3 +234,4 @@ from a probe or a measurement.
 [^notes-inprocess]: In-process UI verification notes
 [^task-186-2]: Dev mode: an under-construction toolbar above the page with the URL
 [^task-186-3]: Dev mode: capture buttons in the dev toolbar
+[^task-189]: Settings: fix the window's spacing and clipping

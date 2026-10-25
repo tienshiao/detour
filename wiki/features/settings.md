@@ -1,15 +1,33 @@
 ---
 type: Component
 title: Settings window
-description: "The fixed-size Settings window and its five panes (General, Spaces, Profiles, Extensions, Content Blocking): what each one edits, how changes reach TabStore, and the layout traps of a non-resizable pane."
+description: "The Settings window and its five panes (General, Spaces, Profiles, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container, the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T02:30:00Z }
 sources:
   - id: window
     resource: ../../Detour/Browser/Settings/SettingsWindowController.swift
     title: SettingsWindowController.swift
+  - id: metrics
+    resource: ../../Detour/Browser/Settings/SettingsMetrics.swift
+    title: SettingsMetrics.swift
+  - id: height
+    resource: ../../Detour/Browser/Settings/SettingsPaneHeight.swift
+    title: SettingsPaneHeight.swift (the height rule)
+  - id: container
+    resource: ../../Detour/Browser/Settings/SettingsPaneViewController.swift
+    title: SettingsPaneViewController.swift (pane container, list border)
+  - id: height-tests
+    resource: ../../DetourTests/SettingsPaneHeightTests.swift
+    title: SettingsPaneHeightTests.swift
+  - id: task-189
+    resource: backlog:TASK-189
+    title: "Settings: fix the window's spacing and clipping"
+  - id: survey-harness
+    resource: ../../docs/harness/task189-survey-harness.patch
+    title: TASK-189 survey harness (every pane and state, light and dark, plus the sizing checks)
   - id: general
     resource: ../../Detour/Browser/Settings/GeneralSettingsViewController.swift
     title: GeneralSettingsViewController.swift
@@ -49,20 +67,106 @@ content-blocking switch and the extension list for the current page. See
 
 ## The window
 
-- Style mask `.titled, .closable`: **not resizable**. Width is fixed at 740.
+- Style mask `.titled, .closable, .resizable`, resizable **in height only**:
+  `contentMinSize.width == contentMaxSize.width == 740`, and every pane's
+  root view also holds a required `width == 740`, so no content can widen
+  the window (a long extension name used to stretch it to 1104). Full screen
+  is off (`.fullScreenNone`), tabbing disallowed.[^task-189]
 - The five view controllers are created once in `init` and kept in `panes`;
-  switching swaps `window.contentViewController`.
-- `switchToPane` resizes the window to the pane's `preferredContentSize.height`
-  plus the window chrome, keeping the top edge fixed and animating.
-- `showWindow` re-centres the window and activates the app.
+  switching swaps `window.contentViewController` at the current size, then
+  `fitWindow` animates to the new pane's height with the top edge fixed (moved
+  only as far as needed to stay on the screen).
+- `showWindow` fits the current pane before re-centring and activating.
 
-| Pane | Height | Opened by |
+### The height rule
+
+`SettingsPaneHeight.fit(natural:minimum:screenUsableHeight:chromeHeight:)`
+is a pure function returning content heights `(initial, minHeight, maxHeight)`:
+
+- `cap` = the window's screen's `visibleFrame` height minus the title bar and
+  toolbar minus 80 (`SettingsMetrics.screenMargin`), never below 200.
+- `initial = maxHeight = min(max(natural, minimum ?? natural), cap)` and
+  `minHeight = min(minimum ?? natural, cap)`. The window opens at the pane's
+  natural height; the user drags between the two bounds; past the cap the
+  pane scrolls.
+- List panes (Spaces, Profiles, Extensions) have a minimum of 400
+  (`listPaneMinimumHeight`); General and Content Blocking use their natural
+  height, so they are fixed. A list pane shorter than 400 is fixed at 400.
+- `refit(current:from:to:)` is for a change while the pane is shown: a window
+  still at its old full height follows to the new one; one the user dragged
+  shorter keeps its height, clamped into the new bounds.
+- A pane switch always re-fits (no height is stored per pane). The window also
+  re-fits on `NSWindow.didChangeScreenNotification` and
+  `NSApplication.didChangeScreenParametersNotification`, so moving it to a
+  shorter display, a resolution change or an unplugged display never leaves it
+  taller than its screen.
+- `screenUsableHeightOverride` replaces the screen height in the rule; it is
+  an injection point for a harness, nil in the app.
+
+Tested by `SettingsPaneHeightTests` (20 cases, including short laptop
+screens where the 400 minimum comes down to the cap).
+
+### The pane container
+
+`SettingsPaneViewController` is the base of every pane:
+
+- A fixed **description** at the top (`paneDescription`, wrapped at
+  `740 - 2 * 20`), then an `NSScrollView` (flipped clip view) filling the rest.
+  A pane without a description (Extensions) starts its body 20 pt below the
+  toolbar instead.
+- The scroll view's document holds the pane's **body** (`makeBody()`), inset
+  by 20 on the sides and bottom. The document is pinned to the clip view's
+  width, and is at least as tall as the visible area (a `>=` plus a
+  priority-49 `==`), so a list column stretches to fill a window taller than
+  the body.
+- `naturalContentHeight` = margin + description + 12 + the body's
+  `fittingSize` at the clip view's width + margin. The stretch constraints
+  are switched off while measuring, so the window's current height never
+  feeds back into it. `idealBodyHeight(fittingHeight:)` lets a list pane ask
+  for the height that shows every row (rows + the 29 pt button bar).
+- A pane calls `contentHeightDidChange()` when rows appear or disappear or a
+  list's length changes (Spaces add/delete, Profiles selection and the
+  rows it hides, Extensions rebuilds and selection, Content Blocking's table
+  height); calls in one run-loop turn are coalesced and the window controller
+  refits if the pane is the shown one. Spaces' height does not depend on its
+  selection, so it does not report it.
+- `paneDidFit()` runs after each fit (Spaces scrolls its selection into view there).
+- `SettingsListContainerView` is the bordered box around a master list; it
+  sets its border colour in `updateLayer`, so it follows the appearance.
+
+### SettingsMetrics
+
+| Metric | Value |
+|---|---|
+| Window width | 740 |
+| Pane margins, section gap, list to detail column | 20 |
+| Description to body | 12 |
+| Between rows | 10 |
+| Control to its help text | 4 |
+| Label to control | 8 |
+| Label column (right-aligned) | 124 |
+| Text field width, cap on a detail pop-up | 260 |
+| Master list | 220 wide, 28 pt rows, 24 pt +/- buttons |
+| List pane minimum height | 400 |
+| Screen margin for the cap | 80 |
+
+The detail column starts level with the top of the list. Grid labels sit on
+their control's first baseline (`rowAlignment = .firstBaseline`); a row
+whose control has no text (the colour well) is centred instead.
+
+| Pane | Content height (examples measured 2026-10-24) | Opened by |
 |---|---|---|
-| General | 120 | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
-| Spaces | 400 | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
-| Profiles | 580 | toolbar only |
-| Extensions | 640 | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
-| Content Blocking | 300 | toolbar only |
+| General | 90, fixed | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
+| Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
+| Profiles | 572 (a normal profile) to 1062 (custom UA, warning, 15 extensions) | toolbar only |
+| Extensions | 400 (none) to 1054 (22 permissions) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
+| Content Blocking | 243, fixed | toolbar only |
+
+TASK-189 part 1 moved every pane into the container and rebuilt General,
+Content Blocking and Spaces on the metrics. Profiles and Extensions were
+only moved: their own spacing (12 pt grid rows, labels 4 pt above the
+control, the bordered `NSBox` groups, Extensions' 32 pt rows and inner
+permissions list) is part 2.
 
 ## General
 
@@ -81,6 +185,11 @@ rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
   which cookies and login sessions this space uses") and restores the popup
   on Cancel.
 - Add creates a space named "Space" on the first non-incognito profile.
+- In a row, the space name gives way first and truncates; the profile name
+  keeps its width up to 40% of the row and then truncates too, so both stay
+  readable (the other way round, a long profile name squeezed the space name
+  to nothing). The Profile pop-up is capped at 260 and truncates its title.
+- The list scrolls to the selected space when the pane opens on it.
 - Delete is disabled while only one space remains.
 
 ## Profiles
@@ -143,7 +252,10 @@ result of the last update check and the set of checks still running.
 
 A table of the four filter lists (name, parsed rules, compiled rules, status,
 last fetch), a total of active rules, "Update All Now" and "Clear Cache &
-Redownload". It refreshes on `.contentBlockerStatusDidChange` and
+Redownload". The table is sized to its header and rows (`updateTableHeight`),
+so there are no empty striped rows under the four lists and the pane is
+exactly as tall as its content; the alternative, letting the table fill a
+fixed pane, left 28 pt of empty stripes. It refreshes on `.contentBlockerStatusDidChange` and
 `.contentBlockerRulesDidChange`. Which lists are *enabled* is a per-profile
 setting on the Profiles pane, not here.
 
@@ -154,11 +266,29 @@ setting on the Profiles pane, not here.
   `sleepThresholdChanged`, `perTabIsolationToggled`, `userAgentModeChanged`,
   `updateExtensionToggles`). Inserting a row means renumbering every one of
   them; the `// row N` comments beside the grid literal are the map.
-- **A pane that overflows does not scroll.** The window is fixed-size and each
-  pane states its own height. On the Extensions pane, when the detail column
-  overflows, the permissions scroll view (low compression resistance) is
-  squeezed to zero first. Check that a pane fits at rest before judging its
-  padding.[^layout-notes]
+- **A required equality to the body's bottom caps the window.** If a body's
+  content is pinned to the bottom with `==` and nothing in it can stretch,
+  the scroll area gets a maximum height, and AppKit snaps the window to it the
+  moment the pane is swapped in, with no animation (Content Blocking did this
+  when shrinking onto it). Pin with `<=` plus a low-priority `==`
+  (`bottomHug`), or let something stretch (a list column).[^task-189]
+- **Bounds and animation.** Setting `contentMaxSize` below the window's
+  current height (or `contentMinSize` above it) resizes the window at once.
+  `fitWindow` widens the bounds to cover the current height, animates, and sets
+  the pane's bounds in the completion. A pane's own refit can land
+  mid-animation (Profiles reports from `viewWillAppear`); it must start from
+  the animation's target height, not the window's intermediate one, or the
+  window stops at the 400 minimum.[^task-189]
+- **Measure wrapped text with a wrap width.** `fittingSize` does not do the
+  two-pass layout a wrapping `NSTextField` needs; give a wrapping label in a
+  body `preferredMaxLayoutWidth` (the description, Profiles' notes and
+  user-agent preview, the Extensions description and Private note), or the
+  natural height counts one line.[^task-189]
+- **Text that does not fit must truncate.** With the width locked, a label
+  at compression 750 squeezes its neighbours instead of widening the window:
+  a long extension name in Profiles took 5 pt from the "Search suggestions"
+  label. Long names get `.byTruncatingTail` and low compression
+  resistance.[^task-189]
 - **`NSStackView.edgeInsets` on the cross axis are soft.** They act at hugging
   priority only; in a height-constrained column the bottom inset collapses
   silently while the top one survives. Use your own required constraints for
@@ -172,8 +302,19 @@ setting on the Profiles pane, not here.
   [AppKit gotchas](../platform/appkit-gotchas.md).
 - **Capturing the window**: `cacheDisplay` works in light mode; after forcing
   a dark appearance the window background rendered transparent in
-  captures.[^layout-notes] See
+  captures.[^layout-notes] The TASK-189 harness shoots the window with
+  `screencapture -l <windowNumber>` from a watcher instead. See
   [in-process UI automation](../playbooks/in-process-ui-automation.md).
+- **A list border set as a `CGColor` keeps its appearance.**
+  `NSColor.separatorColor.cgColor` resolved once at creation stayed the light
+  colour and vanished in dark mode (29,30,30 on 32,33,33); resolve it in
+  `updateLayer` (`SettingsListContainerView`): 54,55,55 now.[^task-189]
+- **Driving and measuring the window at runtime.** Posted
+  `leftMouseDown/Dragged/Up` events at the window's bottom edge (y = 1)
+  resize it as a person's drag does, and respect `contentMin/MaxSize`. An
+  animated resize cannot be sampled from a main-thread timer;
+  `CGWindowListCopyWindowInfo` on a background thread sees every
+  frame.[^survey-harness]
 - **A shell-launched instance never becomes the key app**, so anything that
   depends on `NSApp.keyWindow` cannot be driven that way.[^layout-notes]
 - **`TabStore.updateProfile` always posts `UserAgentDidChange`.** Every
@@ -185,8 +326,11 @@ setting on the Profiles pane, not here.
 
 # Tests
 
-The panes have no dedicated UI tests. Their behaviour is tested through the
-model code they call: `TabStoreTests` and the profile and space suites,
+`SettingsPaneHeightTests` covers the height rule (cap, minimum, short
+screens, refit). The panes have no dedicated UI tests; their layout is
+checked at runtime with the TASK-189 survey harness (every pane and state,
+light and dark, frames measured; pane switches, drags, the cap and a real
+second screen). Their behaviour is tested through the model code they call: `TabStoreTests` and the profile and space suites,
 `ExternalAppPermissionTests`, `ContentBlockerWhitelistTests`,
 `ExtensionOptionsPageEntryTests`, and the extension update and permission
 suites.
@@ -202,3 +346,5 @@ suites.
 - [AppKit gotchas](../platform/appkit-gotchas.md) - the stack-view and layout traps in general form.
 
 [^layout-notes]: Settings pane layout lessons
+[^task-189]: TASK-189
+[^survey-harness]: TASK-189 survey harness
