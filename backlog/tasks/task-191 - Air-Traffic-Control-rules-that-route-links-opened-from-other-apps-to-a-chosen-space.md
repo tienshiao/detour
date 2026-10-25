@@ -1,10 +1,10 @@
 ---
 id: TASK-191
 title: 'Air Traffic Control: rules that route links and typed URLs to a chosen space'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-24 09:44'
-updated_date: '2026-10-25 08:46'
+updated_date: '2026-10-25 17:32'
 labels:
   - links
   - spaces
@@ -48,4 +48,6 @@ Decided (user, 2026-10-24): **Private is an Open in target**, reversing "Private
 Name decided 2026-10-24: the Little Arc equivalent is **Quick Detour** (TASK-193).
 
 Decisions (user, 2026-10-25): (1) a routed link whose space shows in no window switches the most recently active normal window to that space (191.2 proposal taken); (2) plain in-page clicks route when they go to another host and match a route; the current tab stays, same-host clicks/redirects/scripts never route (191.4 proposal taken); (3) a space that routes point at CANNOT be deleted: deletion is blocked with a message naming the routes and a way to open the Links pane, until they are changed or removed (replaces 'broken routes'; deleted-space handling in the resolver stays only as a defensive fallback, e.g. a space removed by sync/migration); (4) routes live in their own Links pane in Settings, and a route may match on URL, on source app, or both (app-only routes allowed). Defaults taken from the subtask proposals: Cmd+T routes, Cmd+L (in place) never routes; a route that sends a link elsewhere wins over the pinned/favourite anchor-to-Peek intercept; the Quarantine and Quick Detour targets exist in the model but are hidden in the Links pane until TASK-194 / TASK-193.5 land.
+
+Decisions (user, 2026-10-25, during 191.1): the Default target applies to every origin, not only links from other apps: an unmatched typed URL or cross-host click (after 191.4's click exclusions) goes to the Default (Most Recent Space = stay; Quarantine/Quick Detour Defaults apply to external links only; never out of a Private window). Rejected: Default for external links only. A 'Domain is' pattern with a leading www. means the bare domain and all subdomains (www. dropped only when a dot remains, so www.com is not 'com').
 <!-- SECTION:NOTES:END -->

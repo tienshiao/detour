@@ -1,0 +1,344 @@
+TASK-191.1 runtime harness: a space that Air Traffic Control routes (or the
+Default) target cannot be deleted, from the sidebar, the Settings pane, and
+an undo or redo; routes persist; migration v20. Temporary code, never
+committed to Detour/. Steps:
+
+    SP=<scratch>; mkdir -p $SP/out
+    git apply docs/harness/task191-1-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    APP=.derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour
+    # Phase 1, fresh data dir: seed spaces Routed and Plain and a route
+    # "Domain is work.test" -> Routed; delete Routed through the sidebar's own
+    # deleteSpaceClicked: action, then Settings > Spaces "−" (both blocked, the
+    # alert answered OK by a .common-mode timer); add an app-only route
+    # (com.apple.mail) and the Default to Plain, "−" on Plain (blocked, both
+    # named); remove the work.test route, sidebar delete of Routed again
+    # (confirmation answered Delete: deleted).
+    # Step 4: add space Undoable, route undo.test -> Undoable, Edit > Undo
+    # (refused: alert; the undo stays), remove the route, Undo again (deleted).
+    # Step 5: Redo (Undoable back), delete it, Undo, Default -> Undoable,
+    # Redo (refused: alert; the redo stays), Default back, Redo (deleted).
+    # Then 40 s idle past the GPU reapers' 30 s timers.
+    # DETOUR_VERIFY_APPEARANCE=light|dark pins NSApp.appearance.
+    DETOUR_DATA_DIR=DetourVerify1911 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PHASE=1 $APP &
+    # Phase 2, same data dir: routes and Default read back; sidebar delete of
+    # Plain still blocked.
+    DETOUR_DATA_DIR=DetourVerify1911 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PHASE=2 $APP &
+    # Phase 3: take the DB back to v19 by hand, relaunch, v20 runs.
+    sqlite3 browser.db "DROP TABLE linkRoute; DROP TABLE linkRouteDefault;
+                        DELETE FROM grdb_migrations WHERE identifier='v20';"
+    DETOUR_DATA_DIR=DetourVerify1911 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PHASE=3 $APP &
+    # Each phase logs to $SP/out/verify-<phase>.log; a watcher runs
+    # `screencapture -x -o -l <n>` for each "SHOOT <name> <windowNumber>" line
+    # (the alert's own window) while the alert is up; wait for "done", kill
+    # that pid only.
+    git apply -R docs/harness/task191-1-harness.patch && xcodegen generate
+
+Edit > Undo/Redo: the harness validates the real menu item and performs its
+action. When Detour is in the background (no key window, so the item is
+disabled), it sends the item's action to the window controller instead and
+logs that it did.
+
+Undo grouping: the harness posts no events, so AppKit never closes the
+groupsByEvent group between its steps. Steps 4 and 5 turn event grouping off
+and group each action by hand (`act`), as the unit tests do. Do not end an
+automatic group with endUndoGrouping: NSUndoManager then refuses the next
+registration with an ObjC exception ("must begin a group before registering
+undo"); thrown through the harness's Swift task and caught by AppKit, it
+leaves a stale executor in TLS, and the next MainActor.assumeIsolated (the
+GPU reapers' 30 s timers, RecentTabSwitcher) crashes in
+swift_task_isCurrentExecutor. A first version of steps 4-5 did that; the
+crash was the harness, not the app: without the hand-ended groups, no run
+crashed.
+
+Results, first run (2026-10-25, screen locked): phases 1-3 as below except
+steps 4-5; no window captures (screen locked).
+
+Results, second run (2026-10-25, screen unlocked), light and dark:
+- Phase 1, fresh DB: migrations end v18,v19,v20, both tables exist. Sidebar
+  delete of Routed: alert "“Routed” can’t be deleted" / "Links are routed to
+  this space by: • Domain is work.test / Change or remove these routes before
+  deleting the space.", OK; Routed survives. Settings "−": the same alert,
+  Routed survives. "−" on Plain: "• Links from Mail • The Default route, for
+  links no route matches"; Plain survives. Route removed: "Delete
+  "Routed"?" -> Delete, Routed gone.
+- Step 4: Undo Add Space -> alert "“Undoable” can’t be deleted ... • Domain is
+  undo.test"; Undoable survives; the stacks read undo=Undo Add Space,
+  redo=- (as before). Route removed, Undo -> Undoable deleted, redo=Redo
+  Delete Space. In an earlier run with Detour frontmost, the Undo went
+  through the enabled Edit menu item ("Undo Add Space") with the same result.
+- Step 5: Redo -> Undoable back; deleted, Undo -> back; Default -> Undoable;
+  Redo -> alert "• The Default route, for links no route matches"; Undoable
+  survives; stacks undo=Undo Add Space, redo=Redo Add Space (as before).
+  Default restored, Redo -> Undoable deleted.
+- 40 s idle afterwards: no crash, no NSUndoManager exception in the log.
+- Phase 2 (relaunch): routes=["Links from com.apple.mail -> space:Plain"],
+  default=space:Plain; sidebar delete of Plain blocked again.
+- Phase 3 (v19 DB): v20 applied at launch, spaces [Home, Plain] kept, no
+  routes, Default Most Recent Space.
+- Captures (window number, alert window only, 1x): sidebar-blocked,
+  settings-blocked, settings-blocked-default, sidebar-confirm, undo-blocked,
+  redo-blocked (+ the Settings pane), each in light and dark, under
+  <scratch>/task191-1/out/final-light and final-dark. The redo alert's
+  Redo menu title reads "Redo Add Space" for a redo that deletes the space:
+  the restore closure in deleteSpace names its registration "Add Space"
+  (pre-existing; correct when the restore runs as a redo, wrong as an undo).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..e7adf18 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1911HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1911Harness.swift b/Detour/App/Task1911Harness.swift
+new file mode 100644
+index 0000000..915a202
+--- /dev/null
++++ b/Detour/App/Task1911Harness.swift
+@@ -0,0 +1,238 @@
++// TEMP TASK-191.1 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import GRDB
++
++extension AppDelegate {
++    func runTask1911HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], let phase = env["DETOUR_VERIFY_PHASE"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(phase).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        let store = TabStore.shared
++        let routes = LinkRouteStore.shared
++        // DETOUR_VERIFY_APPEARANCE=dark|light pins the app's appearance for the captures.
++        switch env["DETOUR_VERIFY_APPEARANCE"] {
++        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
++        case "light": NSApp.appearance = NSAppearance(named: .aqua)
++        default: break
++        }
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func spaceNames() -> String { store.nonIncognitoSpaces.map(\.name).joined(separator: ", ") }
++        func migrations() -> String {
++            (try? AppDatabase.shared.dbQueue.read { try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations") })?
++                .suffix(3).joined(separator: ",") ?? "?"
++        }
++        func tables() -> String {
++            let t = (try? AppDatabase.shared.dbQueue.read { d in
++                (try d.tableExists("linkRoute"), try d.tableExists("linkRouteDefault"))
++            }) ?? (false, false)
++            return "linkRoute=\(t.0) linkRouteDefault=\(t.1)"
++        }
++        func describeRoutes() -> String {
++            "routes=\(routes.routes.map { "\(linkRouteSummary($0)) -> \($0.target.storageKind):\($0.target.spaceID.flatMap { id in store.space(withID: id)?.name } ?? "-")" }) default=\(routes.defaultTarget.storageKind):\(routes.defaultTarget.spaceID.flatMap { store.space(withID: $0)?.name } ?? "-")"
++        }
++        /// Arms a `.common`-mode timer that, once a modal alert is up, logs
++        /// its text and a SHOOT line (the watcher captures the window), waits,
++        /// then clicks the button titled `answer`.
++        func answerNextAlert(_ shot: String, clicking answer: String) {
++            var fired = false
++            let timer = Timer(timeInterval: 0.2, repeats: true) { t in
++                guard !fired, let window = NSApp.modalWindow, let content = window.contentView else { return }
++                fired = true
++                t.invalidate()
++                let texts = allSubviews(content).compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty }
++                let buttons = allSubviews(content).compactMap { $0 as? NSButton }.map(\.title).filter { !$0.isEmpty }
++                log("ALERT \(shot): texts=\(texts) buttons=\(buttons)")
++                log("SHOOT \(shot) \(window.windowNumber)")
++                let click = Timer(timeInterval: 3.0, repeats: false) { _ in
++                    let button = allSubviews(content).compactMap { $0 as? NSButton }.first { $0.title == answer }
++                    log("ALERT \(shot): clicking \(answer) found=\(button != nil)")
++                    button?.performClick(nil)
++                }
++                RunLoop.main.add(click, forMode: .common)
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        /// Edit > Undo / Redo as the menu runs them: validate (the title it
++        /// shows), then perform the item's action through the responder chain.
++        func editMenu(_ action: String) -> String {
++            guard let item = NSApp.mainMenu?.items.lazy.compactMap({ $0.submenu })
++                .flatMap({ $0.items }).first(where: { $0.action == NSSelectorFromString(action) }),
++                  let menu = item.menu else { return "no \(action) item" }
++            let context = "active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { String(describing: type(of: $0.windowController ?? $0)) } ?? "nil") groupingLevel=\(store.undoManager.groupingLevel)"
++            menu.update()
++            let title = item.title, enabled = item.isEnabled
++            if enabled {
++                menu.performActionForItem(at: menu.index(of: item))
++                return "menu \(title) enabled=true [\(context)]"
++            }
++            // The app is in the background (the user is working elsewhere):
++            // no key window, so the menu finds no target. Send the item's
++            // action to the window controller, as the menu would.
++            let sent = NSApp.sendAction(NSSelectorFromString(action), to: wc, from: item)
++            return "menu disabled [\(context)]; sent \(action) to the window controller: \(sent), now \(undoState())"
++        }
++        /// One user action as its own undo group. The harness posts no events,
++        /// so AppKit never closes `groupsByEvent` groups between its steps;
++        /// steps 4 and 5 switch event grouping off and group by hand, as the
++        /// unit tests do. (Ending an automatic group by hand leaves
++        /// NSUndoManager refusing the next registration with an ObjC
++        /// exception, which, thrown through this Swift task, leaves a stale
++        /// executor in TLS and crashes the next `MainActor.assumeIsolated`.)
++        func act(_ body: () -> Void) {
++            store.undoManager.beginUndoGrouping()
++            body()
++            store.undoManager.endUndoGrouping()
++        }
++        func undoState() -> String {
++            "undo=\(store.undoManager.canUndo ? store.undoManager.undoMenuItemTitle : "-") redo=\(store.undoManager.canRedo ? store.undoManager.redoMenuItemTitle : "-")"
++        }
++        /// The sidebar's own menu action, as the space button's context menu calls it.
++        func sidebarDelete(_ space: Space) {
++            let index = store.nonIncognitoSpaces.firstIndex { $0 === space } ?? -1
++            let item = NSMenuItem(title: "Delete Space", action: nil, keyEquivalent: "")
++            item.tag = index
++            wc.tabSidebar.perform(NSSelectorFromString("deleteSpaceClicked:"), with: item)
++        }
++        /// Settings > Spaces with `space` selected, then a click on "−".
++        @MainActor func settingsDelete(_ space: Space, shot: String) async {
++            SettingsWindowController.shared.showSpacesPane(selectSpaceID: space.id)
++            await sleep(1.0)
++            guard let window = SettingsWindowController.shared.window, let content = window.contentView else {
++                return log("no Settings window")
++            }
++            log("SHOOT \(shot)-pane \(window.windowNumber)")
++            await sleep(2.0)
++            guard let minus = allSubviews(content).compactMap({ $0 as? NSButton })
++                .first(where: { $0.action == NSSelectorFromString("deleteSpaceClicked") }) else {
++                return log("no minus button")
++            }
++            log("Settings minus enabled=\(minus.isEnabled)")
++            DispatchQueue.main.async { minus.performClick(nil) }
++            await sleep(5.0)
++        }
++
++        Task { @MainActor in
++            log("phase \(phase) start: migrations(last 3)=\(migrations()) \(tables())")
++            log("spaces=[\(spaceNames())] \(describeRoutes())")
++            await sleep(2.0)
++
++            switch phase {
++            case "1":
++                let profileID = store.nonIncognitoSpaces.first!.profileID
++                let routed = store.addSpace(name: "Routed", emoji: "🛫", colorHex: "007AFF", profileID: profileID)
++                let plain = store.addSpace(name: "Plain", emoji: "🛬", colorHex: "34C759", profileID: profileID)
++                let route = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "work.test"),
++                                                 target: .space(routed.id)))!
++                log("seeded: spaces=[\(spaceNames())] \(describeRoutes())")
++                wc.window?.makeKeyAndOrderFront(nil)
++                await sleep(1.0)
++
++                // 1. Sidebar delete of the routed space: blocked.
++                answerNextAlert("sidebar-blocked", clicking: "OK")
++                sidebarDelete(routed)
++                log("STEP1 after sidebar delete: Routed exists=\(store.space(withID: routed.id) != nil) spaces=[\(spaceNames())]")
++                await sleep(1.0)
++
++                // 2. Settings "−" on the routed space: blocked.
++                answerNextAlert("settings-blocked", clicking: "OK")
++                await settingsDelete(routed, shot: "settings")
++                log("STEP2 after Settings minus: Routed exists=\(store.space(withID: routed.id) != nil) spaces=[\(spaceNames())]")
++
++                // 2b. A space routed by a route and the Default: both named.
++                _ = routes.add(LinkRoute(match: nil, sourceApp: "com.apple.mail", target: .space(plain.id)))
++                routes.setDefaultTarget(.space(plain.id))
++                answerNextAlert("settings-blocked-default", clicking: "OK")
++                await settingsDelete(plain, shot: "settings2")
++                log("STEP2b after Settings minus on Plain: Plain exists=\(store.space(withID: plain.id) != nil)")
++                SettingsWindowController.shared.window?.close()
++                await sleep(1.0)
++
++                // 3. Remove the route; the sidebar delete now asks and deletes.
++                routes.removeRoute(id: route.id)
++                log("STEP3 route removed: references(Routed)=\(routes.references(toSpace: routed.id))")
++                wc.window?.makeKeyAndOrderFront(nil)
++                answerNextAlert("sidebar-confirm", clicking: "Delete")
++                sidebarDelete(routed)
++                log("STEP3 after sidebar delete: Routed exists=\(store.space(withID: routed.id) != nil) spaces=[\(spaceNames())]")
++
++                _ = store.saveNow()
++                log("saved: \(describeRoutes())")
++
++                // 4. Undo of Add Space, refused while a route targets the space.
++                wc.window?.makeKeyAndOrderFront(nil)
++                await sleep(1.0)
++                log("STEP4 before: groupingLevel=\(store.undoManager.groupingLevel) \(undoState()); event grouping off, stacks cleared")
++                // The open automatic group goes with groupsByEvent off; clear both stacks.
++                store.undoManager.groupsByEvent = false
++                while store.undoManager.groupingLevel > 0 { store.undoManager.endUndoGrouping() }
++                store.undoManager.removeAllActions()
++                var undoable: Space!
++                act { undoable = store.addSpace(name: "Undoable", emoji: "↩️", colorHex: "FF9500", profileID: profileID) }
++                let undoRoute = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "undo.test"),
++                                                     target: .space(undoable.id)))!
++                log("STEP4 added Undoable + route: \(undoState())")
++                answerNextAlert("undo-blocked", clicking: "OK")
++                log("STEP4 Cmd+Z: \(editMenu("browserUndo:"))")
++                await sleep(5.0)
++                log("STEP4 after refused undo: Undoable exists=\(store.space(withID: undoable.id) != nil) \(undoState())")
++                routes.removeRoute(id: undoRoute.id)
++                log("STEP4 route removed; Cmd+Z: \(editMenu("browserUndo:"))")
++                await sleep(1.0)
++                log("STEP4 after undo: Undoable exists=\(store.space(withID: undoable.id) != nil) spaces=[\(spaceNames())] \(undoState())")
++
++                // 5. Redo of Delete Space, refused while the Default targets the space.
++                log("STEP5 Cmd+Shift+Z (redo, brings Undoable back): \(editMenu("browserRedo:"))")
++                await sleep(1.0)
++                guard let again = store.nonIncognitoSpaces.first(where: { $0.name == "Undoable" }) else {
++                    log("STEP5 Undoable not restored"); break
++                }
++                var result: SpaceDeletionResult = .notDeleted
++                act { result = store.deleteSpace(id: again.id) }
++                log("STEP5 deleted Undoable as the sidebar does: \(result) \(undoState())")
++                log("STEP5 Cmd+Z (undo Delete Space): \(editMenu("browserUndo:"))")
++                await sleep(1.0)
++                let previousDefault = routes.defaultTarget
++                routes.setDefaultTarget(.space(again.id))
++                log("STEP5 Undoable exists=\(store.space(withID: again.id) != nil), Default -> Undoable: \(undoState())")
++                wc.window?.makeKeyAndOrderFront(nil)
++                answerNextAlert("redo-blocked", clicking: "OK")
++                log("STEP5 Cmd+Shift+Z: \(editMenu("browserRedo:"))")
++                await sleep(5.0)
++                log("STEP5 after refused redo: Undoable exists=\(store.space(withID: again.id) != nil) \(undoState())")
++                wc.window?.makeKeyAndOrderFront(nil)
++                routes.setDefaultTarget(previousDefault)
++                log("STEP5 Default restored; Cmd+Shift+Z: \(editMenu("browserRedo:"))")
++                await sleep(1.0)
++                log("STEP5 after redo: Undoable exists=\(store.space(withID: again.id) != nil) spaces=[\(spaceNames())] \(undoState())")
++                store.undoManager.groupsByEvent = true
++                // Past the GPU reapers' first 30 s timer: a stale executor in TLS
++                // (see `act`) would crash the next assumeIsolated here.
++                for i in 1...40 { await sleep(1.0); if i % 10 == 0 { log("alive \(i)") } }
++                _ = store.saveNow()
++            case "2":
++                log("PHASE2 relaunch: spaces=[\(spaceNames())] \(describeRoutes())")
++                if let plain = store.nonIncognitoSpaces.first(where: { $0.name == "Plain" }) {
++                    answerNextAlert("relaunch-blocked", clicking: "OK")
++                    sidebarDelete(plain)
++                    log("PHASE2 after sidebar delete: Plain exists=\(store.space(withID: plain.id) != nil)")
++                }
++            default:
++                log("PHASE\(phase) v19 database upgraded: spaces=[\(spaceNames())] \(describeRoutes())")
++            }
++            await sleep(1.0)
++            log("done")
++        }
++    }
++}
++#endif

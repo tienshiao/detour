@@ -5,7 +5,7 @@ description: The state singleton that owns profiles, spaces and tabs — its obs
 resource: ../../Detour/Browser/TabStore.swift
 tags: [architecture, state, tabs, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T10:20:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -204,6 +204,7 @@ start of `deleteProfile`. Details and the write order are on
 - **A pinned split lives on the entries.** While pinned, `splitGroupID` is on
   the two `PinnedEntry`s; the backing tabs' `splitGroupID` stays nil.
   `splitGroup(containing:in:)` resolves both kinds.
+- **No route into nothing.** `deleteSpace` refuses a space that a link route or the Default targets, before tearing anything down ([link routing](../features/link-routing.md)).
 - **At least one space.** `deleteSpace` refuses the last one. The guard
   counts incognito spaces, so "one" can be a Private window's space.
   `forceRemoveSpace` skips the guard and is for test teardown only.

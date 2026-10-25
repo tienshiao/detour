@@ -673,8 +673,33 @@ extension BrowserWindowController: TabSidebarDelegate {
         return store.favoriteDropTargets(id: favoriteID, profileID: profile.id)
     }
 
+    /// The store refused to delete a space from an undo or redo because routes
+    /// target it (`TabStore.spaceDeletionBlockedNotification`). Every browser
+    /// window observes it; only the frontmost one shows the alert, once the
+    /// undo has returned.
+    @objc func handleSpaceDeletionBlocked(_ notification: Notification) {
+        guard let block = TabStore.spaceDeletionBlock(from: notification),
+              let window,
+              NSApp.orderedWindows.first(where: { $0.windowController is BrowserWindowController }) === window
+        else { return }
+        // From the run loop, not the main dispatch queue: a modal alert run
+        // inside a main-queue block holds that queue, and every main-queue
+        // block and main-actor job with it, until the alert is dismissed.
+        RunLoop.main.perform(inModes: [.default]) {
+            SpaceDeletionBlockedAlert.run(spaceName: block.spaceName, references: block.references)
+        }
+    }
+
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
         guard let space = store.space(withID: spaceID) else { return }
+
+        // Routes first: closing every tab only to be told the space is still
+        // routed to would waste the effort.
+        let references = store.linkRoutes.references(toSpace: spaceID)
+        guard references.isEmpty else {
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, references: references)
+            return
+        }
 
         if !space.tabs.isEmpty || !space.pinnedEntries.isEmpty {
             let alert = NSAlert()
@@ -695,7 +720,14 @@ extension BrowserWindowController: TabSidebarDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let wasActive = (activeSpaceID == spaceID)
-        store.deleteSpace(id: spaceID)
+        switch store.deleteSpace(id: spaceID) {
+        case .deleted: break
+        case .notDeleted: return
+        case .blockedByLinkRoutes(let references):
+            // A route added while the confirmation was up.
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, references: references)
+            return
+        }
 
         if wasActive, let firstSpace = store.spaces.first {
             setActiveSpace(id: firstSpace.id)

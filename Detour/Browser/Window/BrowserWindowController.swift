@@ -386,6 +386,15 @@ class BrowserWindowController: NSWindowController {
             object: SiteSettingsStore.shared
         )
 
+        // An undo of Add Space or a redo of Delete Space that routes refused
+        // (TASK-191.1): the frontmost browser window explains why.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSpaceDeletionBlocked(_:)),
+            name: TabStore.spaceDeletionBlockedNotification,
+            object: store
+        )
+
         // A window coming back from occluded (app switch, another window covering
         // it, Mission Control) shows its panes again without any claim running,
         // and each such hide -> show strands IOSurfaces in the GPU process's pool

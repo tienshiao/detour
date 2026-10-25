@@ -377,6 +377,16 @@ class Space {
     ]
 }
 
+/// What `TabStore.deleteSpace` did.
+enum SpaceDeletionResult: Equatable {
+    case deleted
+    /// Nothing changed: no such space, or it is the last one.
+    case notDeleted
+    /// Nothing changed: Air Traffic Control routes (or the Default) target
+    /// the space, and must be changed or removed first.
+    case blockedByLinkRoutes(LinkRouteReferences)
+}
+
 // MARK: - TabStore
 
 class TabStore {
@@ -384,6 +394,7 @@ class TabStore {
         let store = TabStore()
         store.thumbnailCache = .shared
         store.siteSettings = .shared
+        store.linkRoutes = .shared
         return store
     }()
     static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -405,6 +416,10 @@ class TabStore {
     }
 
     var nonIncognitoSpaces: [Space] { spaces.filter { !$0.isIncognito } }
+
+    /// What Air Traffic Control's resolver needs to know about the spaces: the
+    /// normal ones, the only ones a route may name.
+    var linkRouteContext: LinkRouteContext { LinkRouteContext(spaceIDs: Set(nonIncognitoSpaces.map(\.id))) }
 
     private var observers: [WeakObserver] = []
     private var tabSubscriptions: [UUID: Set<AnyCancellable>] = [:]
@@ -447,6 +462,10 @@ class TabStore {
     /// in-memory site settings go with it (TASK-188). Only the shared store
     /// has one.
     var siteSettings: SiteSettingsStore?
+    /// Air Traffic Control's routes (TASK-191.1). A space they target cannot
+    /// be deleted. The shared store uses `LinkRouteStore.shared`; another
+    /// store gets one over its own database.
+    lazy var linkRoutes: LinkRouteStore = LinkRouteStore(database: appDB)
 
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
          profileDataRemover: ProfileDataRemoval.Remover = .webKit,
@@ -461,6 +480,74 @@ class TabStore {
             storageScope: webKitStorageScope)
         profileDataRemoval.inMemoryProfileIDs = { [weak self] in
             Set(self?.profiles.map(\.id) ?? [])
+        }
+    }
+
+    // MARK: - Blocked space deletion through undo and redo
+
+    /// Posted (object: the store) when the undo of Add Space or the redo of
+    /// Delete Space is refused because Air Traffic Control routes target the
+    /// space. TabStore is not UI: the frontmost browser window turns it into
+    /// `SpaceDeletionBlockedAlert`. A direct `deleteSpace` call posts nothing;
+    /// its caller reads the result.
+    static let spaceDeletionBlockedNotification = Notification.Name("TabStoreSpaceDeletionBlocked")
+
+    /// The refused deletion a `spaceDeletionBlockedNotification` carries.
+    struct SpaceDeletionBlock: Equatable {
+        let spaceID: UUID
+        let spaceName: String
+        let references: LinkRouteReferences
+    }
+
+    private static let spaceDeletionBlockKey = "spaceDeletionBlock"
+
+    static func spaceDeletionBlock(from notification: Notification) -> SpaceDeletionBlock? {
+        notification.userInfo?[spaceDeletionBlockKey] as? SpaceDeletionBlock
+    }
+
+    /// Deletes a space from inside an undo or redo: the undo of Add Space and
+    /// the redo of Delete Space. When routes block the deletion, the user is
+    /// told (`spaceDeletionBlockedNotification`) and the entry, which the undo
+    /// manager has already taken off its stack, is put back, so Cmd+Z (or
+    /// Cmd+Shift+Z) can try again once the routes are changed.
+    private func deleteSpaceFromUndoStack(id: UUID, actionName: String) {
+        guard case .blockedByLinkRoutes(let references) = deleteSpace(id: id),
+              let space = space(withID: id) else { return }
+        reRegisterRunningUndoEntry(actionName: actionName) { [weak self] in
+            self?.deleteSpaceFromUndoStack(id: id, actionName: actionName)
+        }
+        let block = SpaceDeletionBlock(spaceID: id, spaceName: space.name, references: references)
+        NotificationCenter.default.post(name: Self.spaceDeletionBlockedNotification, object: self,
+                                        userInfo: [Self.spaceDeletionBlockKey: block])
+    }
+
+    /// Puts the undo (or redo) entry that is running back on the stack it came
+    /// from, without touching either stack otherwise.
+    ///
+    /// `UndoManager` has no way to do this directly: whatever is registered
+    /// while undoing lands on the redo stack, and while redoing on the undo
+    /// stack. A plain registration once the undo has finished would land on
+    /// the right stack but clear the redo stack. So a one-step bounce goes on
+    /// the opposite stack, and is run from the main queue as soon as this undo
+    /// returns: run as a redo (or undo), its registration of `handler` lands
+    /// back where the entry came from.
+    private func reRegisterRunningUndoEntry(actionName: String, handler: @escaping () -> Void) {
+        let manager = undoManager
+        let isUndoing = manager.isUndoing
+        guard isUndoing || manager.isRedoing else { return }
+        manager.registerUndo(withTarget: self) { store in
+            store.registerUndo(actionName: actionName, handler: handler)
+        }
+        manager.setActionName(actionName)
+        DispatchQueue.main.async { [weak manager] in
+            // An open group would be closed onto the stack first and run
+            // instead of the bounce; leave the stacks alone then.
+            guard let manager, manager.groupingLevel == 0 else { return }
+            if isUndoing {
+                if manager.canRedo { manager.redo() }
+            } else if manager.canUndo {
+                manager.undo()
+            }
         }
     }
 
@@ -1860,16 +1947,29 @@ class TabStore {
         space.profile = profile(withID: profileID)
         spaces.append(space)
         registerUndo(actionName: "Add Space") { [weak self] in
-            self?.deleteSpace(id: space.id)
+            self?.deleteSpaceFromUndoStack(id: space.id, actionName: "Add Space")
         }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
         return space
     }
 
-    func deleteSpace(id: UUID) {
+    /// Deletes a space, with an undo. Refused (nothing changes) for an
+    /// unknown space, the last space, and a space Air Traffic Control routes
+    /// or the Default target (user decision 2026-10-25): the result carries
+    /// those routes so the UI can say why.
+    @discardableResult
+    func deleteSpace(id: UUID) -> SpaceDeletionResult {
         guard spaces.count > 1,
-              let index = spaces.firstIndex(where: { $0.id == id }) else { return }
+              let index = spaces.firstIndex(where: { $0.id == id }) else { return .notDeleted }
+        // The last NORMAL space stays even while a Private window's space makes
+        // `spaces.count` larger: deleting it would leave no space for a normal
+        // window.
+        guard spaces[index].isIncognito || nonIncognitoSpaces.count > 1 else { return .notDeleted }
+        // A route must never point into nothing: the user changes or removes
+        // the routes first (user decision 2026-10-25).
+        let references = linkRoutes.references(toSpace: id)
+        guard references.isEmpty else { return .blockedByLinkRoutes(references) }
         let space = spaces[index]
         // The launch sweep runs on a timer and must not take the history of a
         // space Cmd+Z can still bring back (TASK-87).
@@ -2151,7 +2251,7 @@ class TabStore {
             self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
 
             self.registerUndo(actionName: "Add Space") { [weak self] in
-                self?.deleteSpace(id: id)
+                self?.deleteSpaceFromUndoStack(id: id, actionName: "Add Space")
             }
             self.notifyObservers { $0.tabStoreDidUpdateSpaces() }
             self.scheduleSave()
@@ -2160,6 +2260,7 @@ class TabStore {
         // Data store belongs to profile now — don't remove it here
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
+        return .deleted
     }
 
     func updateSpace(id: UUID, name: String, emoji: String, colorHex: String, profileID: UUID) {

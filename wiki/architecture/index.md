@@ -21,4 +21,4 @@
 
 # References
 
-* [Session database](session-database.md) - The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v19, and the GRDB record types.
+* [Session database](session-database.md) - The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v20, and the GRDB record types.

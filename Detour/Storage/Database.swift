@@ -741,6 +741,49 @@ struct AppDatabase {
         }
     }
 
+    // MARK: - Link routes (TASK-191.1)
+
+    func loadLinkRoutes() -> [LinkRouteRecord] {
+        performRead("load link routes", default: []) { db in
+            try LinkRouteRecord.order(Column("sortOrder")).fetchAll(db)
+        }
+    }
+
+    func saveLinkRoute(_ record: LinkRouteRecord) {
+        performWrite("save link route") { db in
+            try record.save(db)
+        }
+    }
+
+    /// Writes new sort orders for existing routes, in one transaction.
+    func saveLinkRouteOrder(_ orders: [(id: String, sortOrder: Int)]) {
+        guard !orders.isEmpty else { return }
+        performWrite("save link route order") { db in
+            for order in orders {
+                try db.execute(sql: "UPDATE linkRoute SET sortOrder = ? WHERE id = ?",
+                               arguments: [order.sortOrder, order.id])
+            }
+        }
+    }
+
+    func deleteLinkRoute(id: String) {
+        performWrite("delete link route") { db in
+            _ = try LinkRouteRecord.deleteOne(db, key: id)
+        }
+    }
+
+    func loadLinkRouteDefault() -> LinkRouteDefaultRecord? {
+        performRead("load link route default", default: nil) { db in
+            try LinkRouteDefaultRecord.fetchOne(db, key: 1)
+        }
+    }
+
+    func saveLinkRouteDefault(_ record: LinkRouteDefaultRecord) {
+        performWrite("save link route default") { db in
+            try record.save(db)
+        }
+    }
+
     // MARK: - External App Permissions (TASK-84)
 
     func saveExternalAppPermission(_ record: ExternalAppPermissionRecord) {
@@ -1320,6 +1363,31 @@ struct AppDatabase {
             // (as in v10) so this migration cannot change meaning later.
             try db.execute(sql: "DELETE FROM siteSetting WHERE profileID = ? AND setting = 'contentBlocking'",
                            arguments: ["00000000-0000-0000-0000-000000000001"])
+        }
+
+        migrator.registerMigration("v20") { db in
+            // TASK-191.1: Air Traffic Control. Routes are app-wide (spaces are
+            // global). The target is a kind plus a space id for a space target,
+            // as text, so a target a later build adds is a new string this one
+            // skips. No foreign key on targetSpaceID: every session save
+            // deletes and re-inserts the space rows, so a cascade would wipe the
+            // routes and a restriction would refuse the save. Deleting a space
+            // a route targets is refused in TabStore instead.
+            try db.create(table: "linkRoute") { t in
+                t.primaryKey("id", .text)
+                t.column("matchKind", .text)
+                t.column("matchPattern", .text)
+                t.column("sourceApp", .text)
+                t.column("targetKind", .text).notNull()
+                t.column("targetSpaceID", .text)
+                t.column("sortOrder", .integer).notNull()
+            }
+            // The Default target: one row at most; none means Most Recent Space.
+            try db.create(table: "linkRouteDefault") { t in
+                t.primaryKey("id", .integer).check { $0 == 1 }
+                t.column("targetKind", .text).notNull()
+                t.column("targetSpaceID", .text)
+            }
         }
 
         return migrator

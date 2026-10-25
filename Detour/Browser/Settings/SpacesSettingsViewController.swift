@@ -329,7 +329,13 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
 
     @objc private func deleteSpaceClicked() {
         guard let space = selectedSpace, spaces.count > 1 else { return }
-        TabStore.shared.deleteSpace(id: space.id)
+        switch TabStore.shared.deleteSpace(id: space.id) {
+        case .deleted: break
+        case .notDeleted: return
+        case .blockedByLinkRoutes(let references):
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, references: references)
+            return
+        }
         selectedIndex = max(0, selectedIndex - 1)
         tableView.reloadData()
         tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)

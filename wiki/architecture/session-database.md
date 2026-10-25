@@ -1,11 +1,11 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v19, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v20, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:36:35Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T10:20:00Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -37,6 +37,9 @@ sources:
   - id: task-154
     resource: backlog:TASK-154
     title: A session save that fails is handled, not only logged
+  - id: task-191-1
+    resource: backlog:TASK-191.1
+    title: "Air Traffic Control: route model, matching rule and storage"
 ---
 
 `browser.db` is the session database: `AppDatabase.shared`, a struct around a
@@ -67,6 +70,8 @@ GRDB `DatabaseQueue`, opened at
 | `pendingProfileDataRemoval` | `profileID` | Deleted profiles whose on-disk WebKit data is not removed yet. | No FK: the profile row is already gone. |
 | `webKitStorageIdentifier` | `identifier` | WebKit storage identifiers an isolated data directory created. | The default data directory records nothing. |
 | `appState` | `key` | Key-value app state. | Keys in use: `lastActiveSpaceID`, `extensionUpdateLastCheckAt`. |
+| `linkRoute` | `id` | Air Traffic Control routes: URL condition, source app, target kind and space id, order ([link routing](../features/link-routing.md)). | App-wide. **No FK** on `targetSpaceID`: the session save deletes and re-inserts every space row. `TabStore.deleteSpace` refuses a space a route targets instead. |
+| `linkRouteDefault` | `id` (always 1) | The Default target for links no route matches. | `CHECK (id = 1)`; no row means Most Recent Space. |
 
 Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
 [pinned tabs and folders](../tabs/pinned-tabs-and-folders.md),
@@ -136,6 +141,7 @@ migration.
 | v17 | `extension.source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON`; existing installs classified by reading their on-disk manifest (TASK-113). |
 | v18 | `siteSetting`; the `contentBlockerWhitelist` rows copied into it as `contentBlocking = false` (lowercased, rows of missing profiles dropped), then that table dropped (TASK-187). |
 | v19 | The Private profile's `contentBlocking` rows in `siteSetting` deleted: a Private window's switch is kept in memory only (TASK-195). |
+| v20 | `linkRoute` and `linkRouteDefault` (TASK-191.1). Tested against a database migrated to v19. |
 
 Patterns worth copying from the existing migrations:
 
@@ -150,6 +156,9 @@ Patterns worth copying from the existing migrations:
   would have deleted every extension-page pin and favorite.
 - **Seed ledgers.** v9 seeds the installed-event ledger so upgrading does not
   deliver `install` to every extension at the next launch.
+- **No foreign key to `space` from a table that must outlive a save.** The
+  session save rebuilds the space rows, so v20's `linkRoute.targetSpaceID`
+  has none; the invariant lives in `TabStore.deleteSpace` (TASK-191.1).
 - **Fail safe when classifying.** v17 treats a keyed manifest as unpacked: the
   wrong call the other way would replace a developer's folder with the store
   build. See [CRX verification gate](../decisions/crx-verification-gate.md).
@@ -164,7 +173,7 @@ it ran wipes the debug database rather than failing.
 
 | Record | File |
 |---|---|
-| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `SiteSettingRecord`, `ExternalAppPermissionRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
+| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `SiteSettingRecord`, `ExternalAppPermissionRecord`, `LinkRouteRecord`, `LinkRouteDefaultRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
 | `ClosedTabRecord`, `ClosedTabSummary` | `ClosedTabRecord.swift` in the same directory. The summary is the same table without the `interactionState` blob. |
 | `ExtensionRecord`, `ExtensionStorageRecord`, `ProfileExtensionRecord`, `ExtensionPermissionRecord`, `ExtensionInstalledEventRecord` | [Detour/Extensions/Storage/Models](../../Detour/Extensions/Storage/Models) |
 
