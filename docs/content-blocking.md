@@ -34,9 +34,19 @@ On app launch, `ContentBlockerManager.shared.initialize()`:
    `content-blocker-whitelist-<profileUUID>` rule lists earlier builds compiled
 2. For each filter list:
    - Check if a compiled `WKContentRuleList` already exists in WebKit's store
-   - If yes: check if a refresh is needed (24-hour interval)
+   - If yes, and it was compiled from the parser's current output
+     (`ContentBlocker.<id>.rulesFormat` equals `EasyListParser.rulesFormatVersion`):
+     check if a refresh is needed (24-hour interval)
+   - If it exists but from an older format (or none recorded, any build before
+     TASK-199): recompile from the cached text; the old list stays attached
+     until the new one replaces it
    - If no: try loading from cached text file in `~/Library/Application Support/Detour/ContentBlocker/`
-   - If no cache: fetch from upstream URL
+     (read and parsed on a background queue, compiled from the main queue);
+     after a successful compile, check if a refresh is needed. The check runs
+     from the compile's completion, so a refresh never overlaps it
+   - If no cache, or the cached text does not compile: fetch from upstream
+     URL **without** the conditional headers, so an unchanged list cannot
+     answer 304 and leave an old-format list attached
 
 ## Fetch & Compile Pipeline
 
@@ -49,6 +59,11 @@ Fetch (HTTP)
        v
 Parse (EasyListParser)
   +-- Converts AdBlock Plus filter syntax to WebKit content rule JSON
+  +-- Orders the output: element hiding (generic, $generichide exceptions,
+  |   domain-specific, $elemhide exceptions), block rules, network
+  |   exceptions, $document allowlists, $important block rules
+  |   (TASK-199; see "Exception Options")
+  +-- Drops each $badfilter line and the rule it names
   +-- Tracks rule count and skipped rules
        |
        v
@@ -123,21 +138,57 @@ With a cap of 4, `b0 b1 x0 b2 b3 b4 b5 b6` (`x0` an exception) becomes
 | A split list of only exceptions | One chunk of the carried exceptions. It undoes nothing, but the compile does not read as a failure |
 
 Until TASK-155 chunks were slices of the list in order and an exception in a
-later chunk than its block rule did not apply.
+later chunk than its block rule did not apply. Since TASK-199 the parser puts
+every network exception after every block rule of its list, so a list within
+the cap applies an exception wherever it stood in the file too.
+
+### Exception Options
+
+WebKit's `ignore-previous-rules` undoes every earlier action of its rule list
+(block or hide) for a load its trigger matches; there is no cosmetic-only
+exception. The parser maps `@@` options by putting each rule where it reaches
+only what it means to (TASK-199):
+
+| Option | Compiled as |
+|--------|-------------|
+| `$generichide` | `ignore-previous-rules`, `url-filter` `.*`, `if-top-url` with the pattern (or `if-domain` from `domain=` when there is no pattern), right after the generic hiding rules: generic hiding is off on those pages, domain-specific hiding and every block rule still apply |
+| `$elemhide` | The same, after the domain-specific hiding rules: all hiding off, blocking unchanged. Checked before `$generichide`, so a rule with both is an `$elemhide` |
+| `$document` | The plain exception (resource type `document`) among the network exceptions, plus a page-wide one at the very end of the list: the page is allowlisted fully |
+| `$genericblock`, `$specifichide` | Left out (none in the shipped lists): WebKit cannot undo only the generic block rules, or only domain-specific hiding |
+| `$popup`, `$websocket`, `$webrtc`, `$ping`, `$csp` alone | Left out: no block rule of those types is compiled, and the option maps to no resource type, so the exception would undo every block rule for its URLs |
+| `$redirect`, `$rewrite` (with or without `=`), `$csp=` | Left out: they lift rewriting rules, which the parser never compiles |
+| anything else | A network exception, after all the block rules |
+
+Block rules with `$important` go in a section of their own at the very end,
+after the `$document` allowlists, so no exception undoes them. `$badfilter`
+is not compiled: the line and the rule it repeats (the same line without
+`$badfilter`) are both dropped and counted as skipped.
+
+A compiled list from before TASK-199 is recompiled once at launch
+(`rulesFormat`, see "Initialization Flow").
 
 Limits that remain, none exercised by a real list yet:
 
-- **A split list treats exceptions differently from an unsplit one.** In a
-  split list every exception follows every block rule of its chunk, so it
-  applies whatever its position in the list. A list within the cap keeps list
-  order, where an exception only undoes the block rules before it (WebKit's
-  rule, not checked in a web view).
+- **The element-hiding section must fit in the first chunk.** The parser puts
+  it first, and its page-wide `$generichide` / `$elemhide` exceptions are not
+  carried (`chunks(ofCompiledRules:maxRulesPerList:)`): carried behind a
+  chunk's block rules they would undo those too. A section longer than one
+  chunk would leave hiding in chunk 0 that an exception in chunk 1 does not
+  undo. EasyList's is about 24,000 rules; no shipped list reaches the cap.
+- **`$important` is last only within the cap.** A split list appends the
+  carried exceptions to every chunk, after its `$important` rules, so there a
+  network exception can undo one.
+- **A page-wide exception with both a pattern and `domain=`** keeps only the
+  pattern (`if-top-url`; a WebKit trigger takes one page condition), so it
+  covers more pages than the rule names. None of the shipped lists has one.
 - **Exceptions still do not cross lists.** An exception in EasyPrivacy cannot
   un-block something EasyList blocks.
 - **A chunk that cannot be compiled** (even after stripping bad rules) leaves
   the list active with the chunks that did compile; the "Active" count in
   Settings is then lower than "In List". A chunk an earlier compile left under
-  the same identifier stays in use.
+  the same identifier stays in use; after a parser change it is of the old
+  format while the list records the new `rulesFormat`, and is not recompiled
+  until the list text changes.
 
 ## Applying Rules to WebViews
 

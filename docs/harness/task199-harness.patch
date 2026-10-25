@@ -1,0 +1,295 @@
+TASK-199 runtime harness: $generichide / $elemhide exceptions no longer
+unblock the network, and the upgrade recompile of lists compiled by the old
+parser. Temporary code, never committed to Detour/. Needs:
+
+    SP=<scratch>; mkdir -p $SP/www $SP/out $SP/lists
+    # www/page.html: <script>window.__loaded=false</script>
+    #                <script src="/jquery.popunder.js"></script>
+    #                <div class="ad-slot"></div><div class="detour-control"></div>
+    # www/jquery.popunder.js: window.__loaded = true;
+    # EasyList blocks `/jquery.popunder.js` on any host and hides `.ad-slot`
+    # generically (`##.ad-slot`); it has `@@://127.0.0.1$generichide` and
+    # `@@://localhost:$generichide`.
+    # lists/<id>.txt: the four filter list texts (easylist, easyprivacy,
+    # easylist-cookie, urlhaus-filter). The harness's URLProtocol serves the
+    # list URLs from there (no network): ETag "v2" for every list, 304 when
+    # If-None-Match is "v2", and it logs each request's conditional headers.
+    python3 -m http.server 8899 --bind 127.0.0.1 --directory $SP/www &
+    /usr/bin/log stream --style compact --level info --predicate \
+        'subsystem == "com.detourbrowser.mac" AND category == "content-blocker"' > $SP/out/oslog.txt &
+    # Seed ~/Library/Application Support/DetourVerify199 with the list text
+    # (ContentBlocker/*.txt) and with rule lists compiled by the parser
+    # BEFORE the fix (ContentRuleLists/ContentRuleList-<id>, compiled with a
+    # standalone WKContentRuleListStore tool around the old EasyListParser);
+    # in the defaults suite com.detourbrowser.mac.DetourVerify199 (never the
+    # real com.detourbrowser.mac) a fresh ContentBlocker.<id>.lastFetch and
+    # ContentBlocker.<id>.etag = "v2".
+    git apply docs/harness/task199-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    DETOUR_DATA_DIR=DetourVerify199 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PORT=8899 \
+        DETOUR_VERIFY_LISTS=$SP/lists DETOUR_VERIFY_RUN=<name> [DETOUR_VERIFY_WAIT_FORMAT=1] \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for "done" in out/verify-<name>.log, kill that pid
+    git apply -R docs/harness/task199-harness.patch && xcodegen generate
+
+Before ContentBlockerManager.initialize() the harness registers the list
+URLProtocol and starts a main-queue heartbeat (a 100 ms Timer in the common
+modes) that logs every gap over 250 ms and every change of a list's
+rulesFormat key; it also logs each .contentBlockerRulesDidChange. Once the
+window is up it opens http://{127.0.0.1,localhost,lvh.me}:8899/page.html in
+turn and logs window.__loaded, the computed display of .ad-slot and of the
+control element, the tab's blockedCount, then each list's defaults and the
+largest heartbeat gap. Log lines carry the wall clock, to line them up with
+the os_log stream.
+
+Runs (2026-10-24, the build after the code review):
+1. "before": the old compiled lists, with ContentBlocker.<id>.rulesFormat
+   set to 2 by hand so they are reused as they are (the bug as shipped):
+   127.0.0.1 and localhost: script ran, blockedCount 0, .ad-slot shown.
+   lvh.me: script blocked (blockedCount 1), .ad-slot hidden. No fetch.
+2. "upgrade": rulesFormat keys deleted (an install from before TASK-199),
+   easylist-cookie.txt deleted while its saved ETag is "v2" (a conditional
+   fetch would get a 304), urlhaus-filter's ETag set to "v1" and its
+   lastFetch to two days ago, WAIT_FORMAT=1. os_log: "Recompiling <id>:
+   compiled from rules format 0, current 2" for all four lists.
+   - Fallback fetch: "FETCH easylist-cookie If-None-Match=-
+     If-Modified-Since=- -> 200" (no conditional headers), parsed 25,024
+     rules, 2 bad rules stripped by the bisection, compiled 25,022; its
+     rulesFormat read 2 at 7.9 s.
+   - "Compiling <id> from cache" logged from background threads for
+     easylist, easyprivacy and urlhaus-filter; rulesFormat 2 for
+     easyprivacy at 6.2 s, easylist at 12.8 s, urlhaus-filter at 16.0 s.
+   - Refresh order (urlhaus-filter, due a refresh): its cache compile
+     finished (rulesDidChange) at 20:47:47.281, then "FETCH urlhaus-filter
+     If-None-Match="v1" If-Modified-Since=Fri, 23 Oct 2026 ... -> 200" at
+     47.284, "Parsed urlhaus-filter" at 50.278, "Compiled urlhaus-filter
+     successfully" at 53.288: the refresh started after the cache compile
+     and its compile ran after it, never alongside.
+   - Main queue: gaps of 403, 511 and 491 ms during the recompile (plus the
+     first tick, 415 ms, which is launch work: run 3 shows the same first
+     gap with no recompile); nothing longer, no hang. The gaps line up with
+     the compiles starting on main: ContentRuleStore.compileChunk
+     serializes the rules to JSON on the main queue (measured standalone,
+     -O: easylist 270 ms, easyprivacy 180-230 ms), and easylist-cookie's
+     bisection also runs from main. Parsing (1.3-1.8 s per list, -O) is off
+     the main queue.
+   - 127.0.0.1 and localhost: script blocked (blockedCount 1), .ad-slot
+     shown ($generichide keeps generic hiding off). lvh.me: blocked,
+     .ad-slot hidden. The control element is shown everywhere.
+   - Afterwards: rulesFormat 2 for every list; ruleCount/compiled:
+     easylist 78,190, easyprivacy 56,209, easylist-cookie 25,024/25,022,
+     urlhaus-filter 24,676. ContentRuleList-easylist 30,601,691 ->
+     30,368,642 bytes, easyprivacy 24,103,137 -> 23,886,825,
+     easylist-cookie 16,454,333 -> 16,371,648, urlhaus-filter unchanged.
+3. "relaunch": no Recompiling, Compiling or Fetching line and no FETCH (the
+   lists are reused), easylist count 78,190; same results as run 2; the
+   only main-queue gap is the 511 ms first tick at launch.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..cdc2508 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -65,6 +65,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+             if !Self.isRunningUnitTests { TabStore.shared.sweepHistoryOfDeletedSpaces() }
+         }
+ 
++        #if DEBUG
++        startTask199HarnessIfRequested()   // TEMP — DO NOT COMMIT
++        #endif
+         // Initialize content blocker (fetch/compile rule lists)
+         ContentBlockerManager.shared.initialize()
+ 
+@@ -110,6 +113,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask199HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task199Harness.swift b/Detour/App/Task199Harness.swift
+new file mode 100644
+index 0000000..0b1cde3
+--- /dev/null
++++ b/Detour/App/Task199Harness.swift
+@@ -0,0 +1,178 @@
++// TEMP TASK-199 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++/// The harness log: wall clock, seconds since the harness started, line.
++enum Task199Log {
++    static let env = ProcessInfo.processInfo.environment
++    static let start = ProcessInfo.processInfo.systemUptime
++    static let queue = DispatchQueue(label: "task199.log")
++    static var logURL: URL? {
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return nil }
++        return URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(env["DETOUR_VERIFY_RUN"] ?? "run").log")
++    }
++    static let clock: DateFormatter = {
++        let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f
++    }()
++    static func log(_ line: String) {
++        guard let logURL else { return }
++        let stamped = String(format: "%@ [%7.3f] %@\n", clock.string(from: Date()),
++                             ProcessInfo.processInfo.systemUptime - start, line)
++        queue.async {
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++    }
++    static func formats() -> String {
++        let defaults = ContentBlockerStorage.current.defaults
++        return ContentBlockerManager.filterLists.map {
++            "\($0.identifier)=\(defaults.object(forKey: "ContentBlocker.\($0.identifier).rulesFormat").map { "\($0)" } ?? "nil")"
++        }.joined(separator: " ")
++    }
++}
++
++/// Serves the filter list URLs from DETOUR_VERIFY_LISTS (no network): ETag
++/// "v2" for every list, 304 when the request names it, and logs the
++/// conditional headers of every request.
++final class Task199ListProtocol: URLProtocol {
++    static let etag = "\"v2\""
++    static func identifier(for url: URL?) -> String? {
++        ContentBlockerManager.filterLists.first { $0.url == url }?.identifier
++    }
++    override class func canInit(with request: URLRequest) -> Bool { identifier(for: request.url) != nil }
++    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
++    override func startLoading() {
++        let id = Self.identifier(for: request.url) ?? "?"
++        let inm = request.value(forHTTPHeaderField: "If-None-Match")
++        let ims = request.value(forHTTPHeaderField: "If-Modified-Since")
++        let dir = Task199Log.env["DETOUR_VERIFY_LISTS"] ?? ""
++        let body = try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("\(id).txt"))
++        let status = inm == Self.etag ? 304 : (body == nil ? 404 : 200)
++        Task199Log.log("FETCH \(id) If-None-Match=\(inm ?? "-") If-Modified-Since=\(ims ?? "-") -> \(status)")
++        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
++                                       headerFields: ["ETag": Self.etag, "Content-Type": "text/plain"])!
++        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
++        if status == 200, let body { client?.urlProtocol(self, didLoad: body) }
++        client?.urlProtocolDidFinishLoading(self)
++    }
++    override func stopLoading() {}
++}
++
++/// A main-queue heartbeat every 100 ms: logs every gap over 250 ms, and every
++/// change of a list's rulesFormat and of the manager's refreshing set.
++final class Task199Heartbeat {
++    static let shared = Task199Heartbeat()
++    var last = ProcessInfo.processInfo.systemUptime
++    var maxGap: Double = 0
++    var gapCount = 0
++    var lastFormats = ""
++    var lastRefreshing = ""
++    var timer: Timer?
++
++    func start() {
++        last = ProcessInfo.processInfo.systemUptime
++        let timer = Timer(timeInterval: 0.1, repeats: true) { [unowned self] _ in self.tick() }
++        RunLoop.main.add(timer, forMode: .common)
++        self.timer = timer
++    }
++
++    func tick() {
++        let now = ProcessInfo.processInfo.systemUptime
++        let gap = now - last
++        last = now
++        maxGap = max(maxGap, gap)
++        if gap > 0.25 {
++            gapCount += 1
++            Task199Log.log(String(format: "GAP main queue %.0f ms", gap * 1000))
++        }
++        let formats = Task199Log.formats()
++        if formats != lastFormats {
++            lastFormats = formats
++            Task199Log.log("formats now: \(formats)")
++        }
++        let refreshing = ContentBlockerManager.shared.refreshingIdentifiers.sorted().joined(separator: ",")
++        if refreshing != lastRefreshing {
++            lastRefreshing = refreshing
++            Task199Log.log("refreshing now: [\(refreshing)]")
++        }
++    }
++}
++
++extension AppDelegate {
++    /// Before ContentBlockerManager.initialize(): the list URL protocol, the
++    /// heartbeat and the notification log.
++    func startTask199HarnessIfRequested() {
++        guard Task199Log.logURL != nil else { return }
++        URLProtocol.registerClass(Task199ListProtocol.self)
++        Task199Log.log("start run=\(Task199Log.env["DETOUR_VERIFY_RUN"] ?? "run") formats at launch: \(Task199Log.formats())")
++        Task199Heartbeat.shared.start()
++        NotificationCenter.default.addObserver(forName: .contentBlockerRulesDidChange, object: nil, queue: .main) { _ in
++            Task199Log.log("contentBlockerRulesDidChange")
++        }
++    }
++
++    func runTask199HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard Task199Log.logURL != nil, let port = Task199Log.env["DETOUR_VERIFY_PORT"] else { return }
++        let log = Task199Log.log
++        let defaults = ContentBlockerStorage.current.defaults
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        @MainActor func waitLoaded(_ tab: BrowserTab) async {
++            for _ in 0..<60 {
++                await sleep(0.25)
++                if !tab.isLoading, tab.url != nil, tab.webView != nil { break }
++            }
++            await sleep(1.5)
++        }
++        /// window.__loaded (the EasyList-blocked script ran), the computed
++        /// display of `.ad-slot` (EasyList generic hiding) and of
++        /// `.detour-control` (no rule), and the tab's blocked counter.
++        @MainActor func probe(_ tab: BrowserTab) async -> String {
++            guard let webView = tab.webView else { return "no webView" }
++            let js = "JSON.stringify({loaded: window.__loaded, adSlot: getComputedStyle(document.querySelector('.ad-slot')).display, control: getComputedStyle(document.querySelector('.detour-control')).display})"
++            let value = try? await webView.evaluateJavaScript(js)
++            return ((value as? String) ?? "nil") + " blockedCount=\(tab.blockedCount)"
++        }
++        func current() -> Bool {
++            ContentBlockerManager.filterLists.allSatisfy {
++                defaults.object(forKey: "ContentBlocker.\($0.identifier).rulesFormat") as? Int == EasyListParser.rulesFormatVersion
++            }
++        }
++
++        Task { @MainActor in
++            for _ in 0..<120 {
++                if ContentBlockerManager.shared.isCompiled(identifier: "easylist") { break }
++                await sleep(0.5)
++            }
++            log("easylist compiled=\(ContentBlockerManager.shared.isCompiled(identifier: "easylist")) count=\(ContentBlockerManager.shared.compiledRuleCount(for: "easylist") ?? -1)")
++            if Task199Log.env["DETOUR_VERIFY_WAIT_FORMAT"] == "1" {
++                for _ in 0..<480 {
++                    if current() && ContentBlockerManager.shared.refreshingIdentifiers.isEmpty { break }
++                    await sleep(0.25)
++                }
++                log("formats after waiting for the recompile: \(Task199Log.formats())")
++            }
++            await sleep(3.0)
++            guard let space = wc.activeSpace else { return log("no active space") }
++            for host in ["127.0.0.1", "localhost", "lvh.me"] {
++                let url = URL(string: "http://\(host):\(port)/page.html")!
++                let tab = store.addTab(in: space, url: url)
++                wc.selectTab(id: tab.id)
++                await waitLoaded(tab)
++                log("RESULT \(host): \(await probe(tab))")
++            }
++            for list in ContentBlockerManager.filterLists {
++                let id = list.identifier
++                log("LIST \(id): rulesFormat=\(defaults.object(forKey: "ContentBlocker.\(id).rulesFormat").map { "\($0)" } ?? "nil") ruleCount=\(defaults.integer(forKey: "ContentBlocker.\(id).ruleCount")) compiled=\(ContentBlockerManager.shared.compiledRuleCount(for: id) ?? -1) etag=\(defaults.string(forKey: "ContentBlocker.\(id).etag") ?? "nil") lastFetch=\(defaults.object(forKey: "ContentBlocker.\(id).lastFetch").map { "\($0)" } ?? "nil")")
++            }
++            let hb = Task199Heartbeat.shared
++            log(String(format: "heartbeat: max main-queue gap %.0f ms, %d gap(s) over 250 ms", hb.maxGap * 1000, hb.gapCount))
++            log("done")
++        }
++    }
++}
++#endif

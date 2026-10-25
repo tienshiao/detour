@@ -48,6 +48,18 @@ sources:
   - id: task-155
     resource: backlog:TASK-155
     title: In a split filter list an exception in a later chunk than its block rule does not apply
+  - id: task-199
+    resource: backlog:TASK-199
+    title: $generichide / $elemhide exceptions compile to ignore-previous-rules and unblock all loads on those hosts
+  - id: exception-tests
+    resource: ../../DetourTests/ContentBlockerExceptionTests.swift
+    title: ContentBlockerExceptionTests.swift
+  - id: webkit-backend
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/contentextensions/ContentExtensionsBackend.cpp
+    title: WebKit ContentExtensionsBackend.cpp (per-list evaluation, global style sheet gate)
+  - id: webkit-compiler
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/contentextensions/ContentExtensionCompiler.cpp
+    title: WebKit ContentExtensionCompiler.cpp (action merging, conditions)
 ---
 
 # What it does
@@ -79,17 +91,27 @@ Blocking (see [settings](./settings.md)).
 ## Fetch, parse, compile
 
 `ContentBlockerManager.shared.initialize()` runs at launch. For each list it
-asks WebKit's store for an already compiled list; if there is one it only
-checks whether a refresh is due (24 hours since `lastFetch`). Otherwise it
-compiles from the cached text file, and fetches when there is no cache.
+asks WebKit's store for an already compiled list; if there is one **and** it
+was compiled from the parser's current output, it only checks whether a
+refresh is due (24 hours since `lastFetch`). Otherwise it compiles from the
+cached text file, and fetches when there is no cache. A list compiled from an
+older parser output is recompiled even though nothing was fetched: see
+"Recompiling after a parser change".
 
 - **Fetch** is conditional (`If-None-Match` with the stored ETag,
-  `If-Modified-Since`). A 304 only moves the timestamp.
+  `If-Modified-Since`). A 304 only moves the timestamp. The fetch that stands
+  in for a missing or uncompilable cache at launch is not
+  (`fetchAndCompile(list:conditional: false)`): an unchanged list would
+  answer 304 and leave nothing to compile, so a list found in an old format
+  would stay attached as it was.
 - **Parse** (`EasyListParser`) emits `block`, `ignore-previous-rules` (for `@@`
-  exceptions) and `css-display-none` (for `##` element hiding) rules. It skips
+  exceptions) and `css-display-none` (for `##` element hiding) rules, ordered
+  by section, not by file order (see "Exceptions and element hiding"). It skips
   what WebKit cannot express: extended CSS and snippet filters (`#?#`, `#$#`),
   element-hiding exceptions (`#@#`), and blocking rules with `popup`,
-  `websocket`, `webrtc`, `csp`, `rewrite`, `redirect` or `ping` options. ABP
+  `websocket`, `webrtc`, `csp`, `rewrite`, `redirect` or `ping` options. A
+  `$badfilter` line and the rule it names (the same line without the option)
+  are both dropped and counted as skipped. ABP
   regex literals are rewritten: `{n,m}` quantifiers are expanded into repeated
   atoms and `(a|b)` disjunctions into several rules, because WebKit's rule
   regex supports neither.
@@ -166,6 +188,16 @@ list out differently (TASK-155):
 With a cap of 4, `b0 b1 x0 b2 b3 b4 b5 b6` (`x0` an exception) becomes
 `[b0 b1 b2 x0] [b3 b4 b5 x0] [b6 x0]`.
 
+One kind of exception is not carried (TASK-199): a **page-wide** exception
+(`url-filter` `.*`) ahead of the list's first block rule, which is how the
+parser writes `$generichide` and `$elemhide`. In list order it undoes only
+the element hiding before it; behind a chunk's block rules it would undo
+those too, on every page it names. So it keeps its place, and the
+element-hiding section, which the parser puts first, stays together at the
+start of the first chunk. `ContentRuleListChunks.chunks(ofCompiledRules:maxRulesPerList:)`
+is the wrapper `compile` uses; `$document` allowlists are page-wide too, but
+come after the block rules and are carried like any exception.
+
 | Case | Rule |
 |---|---|
 | A list within the cap | One chunk in list order, exactly as before TASK-155. Nothing is moved. |
@@ -181,15 +213,26 @@ exceptions (EasyList as a whole is about 75,700 rules).
 
 What splitting does not solve:
 
-- **A split list is kinder to exceptions than an unsplit one.** In a split
-  list every exception follows every block rule of its chunk, so it applies
-  wherever it stood in the list. A list within the cap keeps list order, and
-  there an exception only undoes the block rules before it. That is WebKit's
-  documented rule; it was not checked in a web view.
+- **The element-hiding section has to fit in the first chunk.** It is not
+  carried, so if it were longer than a chunk the hiding left in chunk 0 would
+  not be undone by a cosmetic exception in chunk 1. EasyList's section is
+  about 24,000 rules, a sixth of the cap; no shipped list reaches the cap at
+  all, so this was left alone in TASK-199's review. (Before TASK-199 an unsplit list
+  kept file order, so a network exception only undid the block rules above
+  it; the parser now puts every network exception after every block rule, in
+  split and unsplit lists alike.)
 - **A chunk that fails to compile** even after bisection leaves the list
   active with the chunks that did compile. The "Active" count is then lower
   than "In List". A chunk an earlier compile left under the same identifier
-  stays in use.
+  stays in use. After a parser change that chunk is from the old format while
+  the list records the new one (`rulesFormat` is written when any chunk
+  compiled), so it is not recompiled until the list text changes. Not
+  handled: it needs a split list and a chunk that fails twice.
+- **`$important` is not absolute in a split list.** The parser puts the
+  `$important` block rules last, after the `$document` allowlists, but a
+  split list still appends the carried exceptions to every chunk, behind
+  them, so a network exception can undo an `$important` rule there. Within
+  the cap (every shipped list) nothing comes after them.
 - **A later chunk left by a build older than TASK-145** has no recorded
   chunk count behind it. The list reads as one chunk, so that chunk is not
   attached, and it is removed only if a later compile reuses its identifier
@@ -269,6 +312,164 @@ lists overlap. `BrowserTab.blockedCount` (`@Published`) resets in `load` and
 on every committed navigation. A page with content blockers disabled produces
 no callbacks at all.
 
+# Exceptions and element hiding
+
+## What WebKit does with an exception
+
+Read from WebKit's source[^webkit-backend][^webkit-compiler] and confirmed
+in a web view by `ContentBlockerExceptionTests`:
+
+- Each rule list is evaluated on its own. For one load, the matching rules'
+  actions are taken in list order, and an `ignore-previous-rules` drops
+  **every** action before it: block, css-display-none, anything. Nothing
+  after it is touched. There is no action that undoes element hiding only.
+- `css-display-none` rules whose trigger is a bare `.*` (no condition, no
+  flags) and that come before the list's first `ignore-previous-rules` are
+  merged into one precompiled style sheet per list. That sheet is added to a
+  document by **any** load of the page that did not see an
+  `ignore-previous-rules` in that list, subresource loads included
+  (`maybeAddContentExtensionSheet`). So an exception that only matches the
+  document load (resource type `document`) does not keep generic hiding off:
+  the page's first unexcepted image adds the sheet back.
+- A rule with a condition (`if-domain`, `unless-domain`, `if-top-url`, ...)
+  is never merged: each is its own action, evaluated on every load, and its
+  condition patterns are compiled per rule. `if-domain` and `unless-domain`
+  are compiled into top-URL patterns; a trigger takes one condition.
+
+## How the parser maps `@@` options (TASK-199)
+
+The parser emits its rules in this order (`EasyListParser.Section`):
+
+1. generic hiding (`##sel`, and `~domain##sel`: no `if-domain`);
+2. `$generichide` exceptions;
+3. domain-specific hiding (`domain##sel`);
+4. `$elemhide` exceptions;
+5. block rules;
+6. network exceptions;
+7. `$document` allowlists;
+8. `$important` block rules, which no exception after them can undo (Adblock
+   Plus: `$important` wins over every exception, `$document` included).
+
+A cosmetic exception is **page-wide**: `ignore-previous-rules` with
+`url-filter` `.*` and a page condition, so it matches every load of the page
+and the shared style sheet is never added there. Placed after the hiding it
+means to undo and before every block rule, it cannot unblock anything. The
+page condition is the rule's pattern applied to the page URL (`if-top-url`),
+which also covers the patterns that are not a domain (`://127.0.0.1`,
+`://192.168.`, `://localhost:`, `||bing.com/search?`,
+`||www.google.*/search?`); a rule with no pattern
+(`@@$generichide,domain=a|b`, which used to be skipped) uses its `domain=`
+list as `if-domain`. A rule with both keeps the pattern and ignores
+`domain=` (WebKit takes one condition), so it covers more pages than it
+names; a known limit left by TASK-199's review, as none of the shipped
+lists has such a rule.
+
+| Option | Result |
+|---|---|
+| `$generichide` | Generic hiding off on the page; domain-specific hiding and all blocking still apply |
+| `$elemhide` | All hiding off; blocking unchanged. Checked before `$generichide`, so a rule with both lands after the domain-specific hiding |
+| `$document` | The old network exception (resource type `document`, the frame load itself) plus a page-wide exception at the end: nothing is blocked or hidden on the page. Before, only the document load was exempt. |
+| `$genericblock`, `$specifichide` | Left out (none in the shipped lists). Undoing only generic blocks, or only domain-specific hiding, needs an order that the other exceptions already use the other way round |
+| only `$popup`, `$websocket`, `$webrtc`, `$ping` or `$csp` | Left out. The parser compiles no block rule of those types and the options map to no resource type, so such an exception used to undo every block rule for its URLs: the shipped lists' 42 `$popup` exceptions included `@@||accounts.google.com^$popup` and `@@||ad.doubleclick.net/ddm/$popup,domain=...` |
+| `$redirect`, `$redirect=`, `$rewrite`, `$rewrite=`, `$csp=` | Left out: they lift a rule that rewrites a load, and the parser compiles none of those (the shared `isRewritingOption`), so the exception would only undo block rules it was never meant to |
+| anything else | A network exception, after every block rule, so it applies wherever it stood in the file |
+| `$badfilter` (any rule) | Not an exception: the line and the rule it repeats without `$badfilter` are both dropped |
+
+Before TASK-199 every `@@` rule was a plain `ignore-previous-rules` for the
+URLs its pattern matched, in file order. EasyList's 169 `$generichide`
+lines (127.0.0.1, localhost, 192.168.*, 10.0.0.*, accounts.google.com,
+github.com, reddit.com, youtube.com, wikipedia.org, the Amazon stores and
+more) therefore switched **network** blocking off for every same-host load on
+those sites, and did not even keep generic hiding off reliably (the style
+sheet came back with the first third-party load). Seen at runtime: a page on
+127.0.0.1 or localhost ran `/jquery.popunder.js`, the same page on `lvh.me`
+did not.[^task-199]
+
+### Options rejected
+
+- **`unless-domain` on every generic hiding rule** (the domains of the
+  `$generichide` lines). It turns the merged, precompiled generic style
+  sheet into 13,600 conditioned rules evaluated on every load, and cannot
+  express the non-domain patterns. Measured on EasyList (2026-10-12 copy):
+  the compiled list grew from 30.6 MB to 76.8 MB and compiled in 14.9 s
+  instead of 3.7 s, with only the `||host^` lines converted.
+- **Dropping the cosmetic exceptions.** Simple and safe for blocking, but
+  generic hiding would then run on GitHub, Google Docs, YouTube and the other
+  sites EasyList lists because it breaks them.
+- **A separate rule list for element hiding.** It works (lists are evaluated
+  independently, so a cosmetic list's exceptions could not reach a network
+  list), but doubles the rule lists per filter list and the chunk, count,
+  look-up and removal bookkeeping in `ContentRuleStore`, for nothing the
+  ordering does not already give.
+- **An exception limited to the document load** (`resource-type`
+  `document`, as some converters do): it does not keep the shared generic
+  style sheet off (see above).
+
+### Size and compile time
+
+`WKContentRuleListStore` compile of the 2026-10-12 lists, before and after.
+Rules and sizes are from the app after the review (the upgrade run); the
+compile times are from a standalone tool before the review (they vary by a
+second or two between runs on a loaded machine):
+
+| List | Rules compiled | Compiled size | Compile |
+|---|---|---|---|
+| `easylist` | 78,234 → 78,190 | 30,601,691 → 30,368,642 B | 3.7 → 3.7–3.9 s |
+| `easyprivacy` | 56,212 → 56,209 | 24,103,137 → 23,886,825 B | 2.4–5.4 → 2.5–4.4 s |
+| `easylist-cookie` | 25,022 → 25,022 (25,024 parsed, 2 stripped as bad) | 16,454,333 → 16,371,648 B | 1.9–2.3 → 1.7–1.8 s |
+| `urlhaus-filter` | 24,676 (no exceptions) | unchanged | unchanged |
+
+Slightly smaller: with the network exceptions after all block rules WebKit
+merges more unconditioned actions.
+
+## Recompiling after a parser change
+
+A compiled rule list in WebKit's store is reused at launch, and a refresh
+only recompiles when the list text changed (an unchanged list answers 304),
+so a parser fix would never reach an existing install. Every successful
+compile records `ContentBlocker.<id>.rulesFormat` =
+`EasyListParser.rulesFormatVersion` (2 since TASK-199); at launch a list
+whose recorded format differs, or is missing (every install before
+TASK-199), is recompiled from the cached text, and the lists found stay
+attached until the new ones replace them
+(`ContentBlockerManager.shouldReuseCompiledList(recordedFormat:)`).
+**Bump `rulesFormatVersion` whenever the parser's output for the same text
+changes.**
+
+How the upgrade runs (`ContentBlockerManager`):
+
+- `loadAndCompileFromCache` reads and parses the cached text on a utility
+  queue (every list is parsed at the launch after a format change), then
+  compiles on main. WebKit compiles off the main thread
+  itself, so the UI stays responsive.
+- No cached text, or a cached text that does not compile: the list is
+  fetched **unconditionally** (no `If-None-Match` / `If-Modified-Since`). With
+  the saved ETag an unchanged list would answer 304 and the old-format list
+  would stay attached.
+- After a successful compile from cache it calls `refreshIfNeeded`, from the
+  compile's completion, so a due refresh starts only once that compile is
+  done and the two never compile the same list at once. (Before TASK-199 a
+  list compiled from cache was not checked for a refresh until the next
+  launch.)
+
+Seen at runtime (after the review, `docs/harness/task199-harness.patch`,
+whose URLProtocol serves the list URLs locally): an old-format store logged
+"Recompiling <id>: compiled from rules format 0, current 2" for all four
+lists and read format 2 for every list after 16 s; a list whose cached text
+was deleted while its saved ETag matched the server was fetched with no
+conditional headers (200) and compiled; a list due a refresh fetched only
+after its cache compile had finished, and compiled after that; the next
+launch reused every list with no compile or fetch.
+
+The main queue still stalls briefly during the recompile: the heartbeat saw
+three gaps of 400–510 ms, no hang. Parsing (1.3–1.8 s per list, measured
+with `-O`) is off the main queue, but `ContentRuleStore.compileChunk`
+serializes the rules to JSON on main before handing them to WebKit
+(easylist about 270 ms, easyprivacy about 200 ms, standalone with `-O`), and
+the bad-rule bisection runs from main as well (`easylist-cookie` has 2 bad
+rules, so it bisects on every compile). Moving the serialization off main
+would remove the rest.
+
 # Why the per-site switch is not a rule list
 
 The first implementation compiled a separate "whitelist" list of
@@ -315,15 +516,18 @@ EasyPrivacy cannot un-block something EasyList blocks.
   all.
 - **A subframe navigation never changes blocking.** `configure` is called only
   for the main frame, and the host that decides is the page's.
-- **`$generichide` / `$elemhide` exceptions unblock the network.** The parser
-  treats them like any `@@` exception, so EasyList's webcompat lines
-  (`@@://127.0.0.1$generichide`, `@@://localhost:$generichide`,
-  `@@://192.168.$generichide`, `@@||accounts.google.com^$generichide`, ...)
-  compile to a plain `ignore-previous-rules` for every load whose URL matches:
-  nothing on those hosts is blocked, although the options only mean "skip
-  generic element hiding". Found during TASK-195's runtime check, not fixed
-  there. A runtime check of blocking therefore cannot use a page on
-  `127.0.0.1` or `localhost`; `lvh.me` (public DNS for 127.0.0.1) works.
+- **An exception reaches everything before it in its list.** WebKit has no
+  cosmetic-only exception, so the parser's section order is what keeps
+  `$generichide` / `$elemhide` away from the block rules (see "Exceptions and
+  element hiding"); a new kind of rule has to go in the right section, and a
+  page-wide exception must never be carried behind block rules. A local
+  fixture on `127.0.0.1` or `localhost` is blocked normally since TASK-199,
+  but generic hiding is off there (EasyList's `$generichide` lines); use
+  `lvh.me` (public DNS for 127.0.0.1) to see generic hiding.
+- **Port 9 (and WebKit's other restricted ports) never reach the content
+  blocker.** A test page loading `http://127.0.0.1:9/x.js` reports no
+  blocked load because WebKit refuses the port first; use an unused high
+  port.
 - The fetch completion handler mutates `refreshingIdentifiers` on
   `URLSession`'s queue while the Settings pane reads it on main.
 
@@ -333,7 +537,7 @@ EasyPrivacy cannot un-block something EasyList blocks.
 |---|---|
 | Raw list text | `<data directory>/ContentBlocker/<identifier>.txt` under Application Support |
 | Compiled lists | WebKit's default `WKContentRuleListStore`, or `<data directory>/ContentRuleLists` for a non-default data directory. One rule list per chunk: `<id>`, `<id>-1`, … |
-| Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount` |
+| Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount`, `.rulesFormat` (parser output format of the last successful compile) |
 | Compile metadata | defaults keys `ContentBlocker.<chunk id>.compiledRuleCount` per compiled chunk, and `ContentBlocker.<id>.chunkCount` for a list of more than one chunk |
 | Whitelist | `siteSetting` rows (`contentBlocking`) in the [session database](../architecture/session-database.md); rows go with the profile; none for the Private profile, whose switch stays in memory |
 
@@ -348,6 +552,17 @@ EasyPrivacy cannot un-block something EasyList blocks.
   view's navigation delegate.
 - `ContentBlockerTests` - storage isolation per data directory, parser cases,
   and compiling each cached real list through WebKit.
+- `ContentBlockerExceptionTests` - the parser's sections and `@@` options
+  through `RuleListEvaluator` (a model of WebKit's per-list evaluation:
+  matching rules in list order, `ignore-previous-rules` dropping what came
+  before): `$generichide` / `$elemhide` / `$document` / `$popup`, non-domain
+  patterns, `domain=` without a pattern, `$important` winning over
+  exceptions, `$badfilter`, `$elemhide` before `$generichide`, redirect and
+  CSP exceptions left out, the real EasyList's generichide hosts; the split layout keeping the element-hiding section in chunk 0; the
+  `rulesFormat` reuse rule; and four real-`WKWebView` pages (127.0.0.1 with
+  `$generichide`, `$elemhide`, `$document`, and an unexcepted host) checking
+  the blocked-load callback and the computed `display` of a generic and a
+  specific hidden element, with a third-party image on the page.
 - `ContentRuleListChunkTests` - the chunk arithmetic, the layout of a split
   list (every chunk ends with the exceptions, no chunk over the cap, a
   repeated exception counted once, exceptions beyond half the cap left out),
@@ -374,3 +589,6 @@ EasyPrivacy cannot un-block something EasyList blocks.
 [^task-69]: The "Block content on this site" switch does not take effect
 [^task-145]: A filter list over 150,000 rules attaches only its first chunk
 [^task-155]: In a split filter list an exception in a later chunk than its block rule does not apply
+[^task-199]: $generichide / $elemhide exceptions compile to ignore-previous-rules and unblock all loads on those hosts
+[^webkit-backend]: WebKit ContentExtensionsBackend.cpp (per-list evaluation, global style sheet gate)
+[^webkit-compiler]: WebKit ContentExtensionCompiler.cpp (action merging, conditions)

@@ -2,34 +2,88 @@ import Foundation
 
 class EasyListParser {
 
+    /// The version of the rule JSON this parser emits for a given list text.
+    /// A list WebKit's store holds from another version is recompiled from its
+    /// cached text at launch (`ContentBlockerManager.shouldReuseCompiledList`),
+    /// so bump this whenever the output changes.
+    ///
+    /// 2 (TASK-199): the output is ordered by `Section`; `$generichide` and
+    /// `$elemhide` exceptions are page-wide and come before the block rules;
+    /// `$document` adds a page-wide allowlist; `$important` block rules come
+    /// last; `$badfilter` rules and the rules they name are left out.
+    static let rulesFormatVersion = 2
+
     struct ParseResult {
         let rules: [[String: Any]]
         let skippedCount: Int
     }
 
-    func parse(text: String) -> ParseResult {
-        var rules: [[String: Any]] = []
-        var skipped = 0
-        let lines = text.components(separatedBy: .newlines)
+    /// Where a rule goes in the output, in this order.
+    ///
+    /// WebKit's `ignore-previous-rules` undoes **every** earlier action of its
+    /// rule list for a load its trigger matches (block, css-display-none,
+    /// anything), and nothing after it. There is no "cosmetic only" exception,
+    /// so the order of the list decides what an exception reaches:
+    ///
+    /// - Element hiding comes first. Generic hiding (no `if-domain`) is
+    ///   followed by the `$generichide` exceptions, then domain-specific
+    ///   hiding, then the `$elemhide` exceptions. A cosmetic exception is
+    ///   page-wide (`url-filter` `.*` plus a page condition, so it covers
+    ///   every load of the page: WebKit adds a list's element hiding from any
+    ///   load it did not cancel, the page's subresources included), and it
+    ///   undoes only the hiding before it.
+    /// - The block rules follow, where no cosmetic exception reaches them.
+    /// - Network exceptions come after all the block rules, so each undoes
+    ///   every block rule it matches, wherever it stood in the file (Adblock
+    ///   Plus semantics; before TASK-199 the file order was kept).
+    /// - `$document` allowlists follow: a page-wide exception that undoes
+    ///   everything before it for the page.
+    /// - `$important` block rules are last, so no exception undoes them.
+    ///
+    /// The generic hiding rules stay ahead of the list's first exception, so
+    /// WebKit still compiles them into its shared per-list style sheet.
+    private enum Section: Int, CaseIterable {
+        case genericHiding
+        case genericHidingExceptions
+        case specificHiding
+        case elementHidingExceptions
+        case blocking
+        case exceptions
+        case documentExceptions
+        case importantBlocking
+    }
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+    func parse(text: String) -> ParseResult {
+        var sections = Array(repeating: [[String: Any]](), count: Section.allCases.count)
+        var skipped = 0
+        let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+        // `$badfilter` disables the rule it repeats (without the option).
+        let disabledRules = Set(lines.compactMap(badFilterTarget))
+
+        for trimmed in lines {
             guard !trimmed.isEmpty,
                   !trimmed.hasPrefix("!"),
                   !trimmed.hasPrefix("[") else { continue }
+
+            if badFilterTarget(trimmed) != nil || disabledRules.contains(trimmed) {
+                skipped += 1
+                continue
+            }
 
             let parsed = parseLine(trimmed)
             if parsed.isEmpty {
                 skipped += 1
             } else {
-                rules.append(contentsOf: parsed)
+                for (section, rule) in parsed {
+                    sections[section.rawValue].append(rule)
+                }
             }
         }
 
-        return ParseResult(rules: rules, skippedCount: skipped)
+        return ParseResult(rules: sections.flatMap { $0 }, skippedCount: skipped)
     }
 
-    private func parseLine(_ line: String) -> [[String: Any]] {
+    private func parseLine(_ line: String) -> [(Section, [String: Any])] {
         // Extended CSS / snippet filters — not supported in Safari
         if line.contains("#?#") || line.contains("#@?#") ||
            line.contains("#$#") || line.contains("#@$#") {
@@ -38,10 +92,9 @@ class EasyListParser {
 
         // Element hiding rules: ##.class, ##[attr], domain##selector
         if let hashRange = line.range(of: "##") {
-            if let rule = parseElementHidingRule(line, separatorRange: hashRange) {
-                return [rule]
-            }
-            return []
+            guard let rule = parseElementHidingRule(line, separatorRange: hashRange) else { return [] }
+            let isGeneric = (rule["trigger"] as? [String: Any])?["if-domain"] == nil
+            return [(isGeneric ? .genericHiding : .specificHiding, rule)]
         }
 
         // Element hiding exception: domain#@#selector
@@ -55,7 +108,20 @@ class EasyListParser {
         }
 
         // URL blocking rules
-        return parseBlockingRules(line)
+        let section: Section = optionTokens(in: line).contains("important") ? .importantBlocking : .blocking
+        return parseBlockingRules(line).map { (section, $0) }
+    }
+
+    /// The rule a `$badfilter` line disables: the line without that option.
+    /// Nil for any other line.
+    private func badFilterTarget(_ line: String) -> String? {
+        guard line.range(of: "badfilter", options: .caseInsensitive) != nil,
+              let dollarIndex = findOptionSeparator(in: line) else { return nil }
+        let options = line[line.index(after: dollarIndex)...].split(separator: ",", omittingEmptySubsequences: false)
+        let kept = options.filter { $0.trimmingCharacters(in: .whitespaces).lowercased() != "badfilter" }
+        guard kept.count < options.count else { return nil }
+        let pattern = String(line[line.startIndex..<dollarIndex])
+        return kept.isEmpty ? pattern : pattern + "$" + kept.joined(separator: ",")
     }
 
     // MARK: - Element Hiding
@@ -92,7 +158,63 @@ class EasyListParser {
 
     // MARK: - Exception Rules
 
-    private func parseExceptionRules(_ line: String) -> [[String: Any]] {
+    /// An `@@` rule. Its options decide what it may undo:
+    ///
+    /// - `$document`: the page is allowlisted. The plain exception (resource
+    ///   type `document`, for the document load itself, also in a frame) plus
+    ///   a page-wide exception at the end of the list.
+    /// - `$generichide`, `$elemhide`: element hiding only, as page-wide
+    ///   exceptions in the element-hiding section; they never reach a block
+    ///   rule.
+    /// - `$genericblock`, `$specifichide`: left out. WebKit cannot undo only
+    ///   the generic block rules, or only the domain-specific hiding, without
+    ///   also undoing what these must leave alone; skipping them over-blocks
+    ///   or over-hides a little instead of unblocking the network. No list
+    ///   Detour ships has one.
+    /// - Only for load types the parser compiles no block rule for (`$popup`,
+    ///   `$websocket`, `$webrtc`, `$ping`, `$csp`): left out. There is
+    ///   nothing for it to undo, and since those options map to no WebKit
+    ///   resource type the exception would otherwise undo every block rule
+    ///   for its URLs (`@@||accounts.google.com^$popup` did, TASK-199).
+    /// - Anything else is a network exception.
+    private func parseExceptionRules(_ line: String) -> [(Section, [String: Any])] {
+        let options = Set(optionTokens(in: line))
+        if options.contains("document") {
+            let pageWide = pageWideException(line).map { [(Section.documentExceptions, $0)] } ?? []
+            return networkExceptionRules(line).map { (.exceptions, $0) } + pageWide
+        }
+        // `$elemhide` covers `$generichide`: checked first when a rule has both.
+        if !options.isDisjoint(with: ["elemhide", "ehide"]) {
+            return pageWideException(line).map { [(.elementHidingExceptions, $0)] } ?? []
+        }
+        if !options.isDisjoint(with: ["generichide", "ghide"]) {
+            return pageWideException(line).map { [(.genericHidingExceptions, $0)] } ?? []
+        }
+        if !options.isDisjoint(with: ["genericblock", "specifichide", "shide"]) {
+            return []
+        }
+        // An exception from a redirect or CSP rule: no such rule is compiled.
+        if options.contains(where: Self.isRewritingOption) {
+            return []
+        }
+        let types = options.filter { mapResourceType($0) != nil || Self.typesWithoutBlockRules.contains($0) }
+        if !types.isEmpty && types.allSatisfy(Self.typesWithoutBlockRules.contains) {
+            return []
+        }
+        return networkExceptionRules(line).map { (.exceptions, $0) }
+    }
+
+    /// Type options `parseBlockingRules` skips every rule for.
+    private static let typesWithoutBlockRules: Set<String> = ["popup", "websocket", "webrtc", "ping", "csp"]
+
+    /// Options that make a rule rewrite a load instead of blocking it;
+    /// `parseBlockingRules` skips every rule with one.
+    private static func isRewritingOption(_ option: String) -> Bool {
+        option == "rewrite" || option == "redirect" ||
+            option.hasPrefix("rewrite=") || option.hasPrefix("redirect=") || option.hasPrefix("csp=")
+    }
+
+    private func networkExceptionRules(_ line: String) -> [[String: Any]] {
         let urlFilters = convertPatternToRegexes(line)
         guard !urlFilters.isEmpty else { return [] }
         return urlFilters.map { urlFilter in
@@ -104,6 +226,47 @@ class EasyListParser {
         }
     }
 
+    /// An exception for whole pages: `ignore-previous-rules` for every load
+    /// (`url-filter` `.*`) of a page the rule names, which undoes, for those
+    /// pages, every rule before it in the list. The pages are the rule's
+    /// pattern applied to the page's URL (`if-top-url`), so a pattern that is
+    /// not a plain domain (`://192.168.`, `://localhost:`,
+    /// `||www.google.*/search?`) works as well; with no pattern they are the
+    /// `domain=` option's domains (`if-domain`). A WebKit trigger takes one
+    /// page condition, so a rule with both keeps the pattern. Nil when the
+    /// rule names no page.
+    private func pageWideException(_ line: String) -> [String: Any]? {
+        let pattern = patternPart(of: line)
+        var trigger: [String: Any] = ["url-filter": ".*"]
+        if pattern.isEmpty || pattern == "*" {
+            let (domainTrigger, _) = buildTrigger(from: line, urlFilter: ".*")
+            guard let domains = domainTrigger["if-domain"] as? [String], !domains.isEmpty else { return nil }
+            trigger["if-domain"] = domains
+        } else {
+            let pageFilters = convertPatternToRegexes(line)
+            guard !pageFilters.isEmpty else { return nil }
+            trigger["if-top-url"] = pageFilters
+        }
+        return [
+            "trigger": trigger,
+            "action": ["type": "ignore-previous-rules"]
+        ]
+    }
+
+    /// The rule's options, trimmed and lower-cased; empty when it has none.
+    private func optionTokens(in line: String) -> [String] {
+        guard let dollarIndex = findOptionSeparator(in: line) else { return [] }
+        return line[line.index(after: dollarIndex)...].split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespaces).lowercased()
+        }
+    }
+
+    /// The rule without its options.
+    private func patternPart(of line: String) -> String {
+        guard let dollarIndex = findOptionSeparator(in: line) else { return line }
+        return String(line[line.startIndex..<dollarIndex])
+    }
+
     // MARK: - Blocking Rules
 
     private func parseBlockingRules(_ line: String) -> [[String: Any]] {
@@ -111,15 +274,8 @@ class EasyListParser {
         guard !urlFilters.isEmpty else { return [] }
 
         // Check options once (same for all expanded filters)
-        let (_, options) = buildTrigger(from: line, urlFilter: urlFilters[0])
-        for opt in options {
-            let lower = opt.lowercased().trimmingCharacters(in: .whitespaces)
-            if lower == "popup" || lower == "websocket" || lower == "webrtc" ||
-               lower == "csp" || lower == "rewrite" || lower == "redirect" ||
-               lower == "ping" ||
-               lower.hasPrefix("redirect=") || lower.hasPrefix("csp=") {
-                return []
-            }
+        if optionTokens(in: line).contains(where: { Self.typesWithoutBlockRules.contains($0) || Self.isRewritingOption($0) }) {
+            return []
         }
 
         return urlFilters.map { urlFilter in
@@ -230,20 +386,13 @@ class EasyListParser {
         "third-party", "script", "image", "stylesheet", "font", "media",
         "xmlhttprequest", "subdocument", "object", "object-subrequest", "other",
         "document", "popup", "ping", "all", "important", "match-case",
-        "elemhide", "generichide", "genericblock", "badfilter",
+        "elemhide", "generichide", "genericblock", "specifichide", "ehide", "ghide", "shide", "badfilter",
         "websocket", "webrtc", "csp", "rewrite", "redirect",
     ]
 
     /// Returns one or more regex strings (multiple when disjunctions are expanded).
     private func convertPatternToRegexes(_ line: String) -> [String] {
-        // Strip options for pattern extraction
-        let pattern: String
-        if let dollarIndex = findOptionSeparator(in: line) {
-            pattern = String(line[line.startIndex..<dollarIndex])
-        } else {
-            pattern = line
-        }
-
+        let pattern = patternPart(of: line)
         guard !pattern.isEmpty else { return [] }
 
         // Handle /regex/ literals — raw regex between delimiters

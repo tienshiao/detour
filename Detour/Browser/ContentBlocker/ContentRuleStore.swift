@@ -119,10 +119,52 @@ enum ContentRuleListChunks {
         return max(exceptionCount - maxCarriedExceptions(maxRulesPerList: maxRulesPerList), 0)
     }
 
+    /// The rule lists the parser's output compiles into: `chunks(of:…)`,
+    /// with every exception carried to the end of each chunk except the
+    /// page-wide ones ahead of the list's first block rule (TASK-199).
+    ///
+    /// Those are the parser's `$generichide` / `$elemhide` exceptions. In list
+    /// order they undo only the element hiding before them; carried behind a
+    /// chunk's block rules they would undo those too, on every page they name.
+    /// So they keep their place, and the element-hiding section, which the
+    /// parser puts first, stays together at the start of the first chunk as
+    /// long as it is shorter than a chunk. A page-wide exception after the
+    /// first block rule (a `$document` allowlist) is carried like any other.
+    static func chunks(ofCompiledRules rules: [[String: Any]], maxRulesPerList: Int) -> [Chunk<[String: Any]>] {
+        let carried = carriedExceptions(rules)
+        return chunks(of: Array(rules.indices), maxRulesPerList: maxRulesPerList) { carried[$0] }
+            .map { Chunk(rules: $0.rules.map { rules[$0] }, countedRuleCount: $0.countedRuleCount) }
+    }
+
+    /// How many of the rules `chunks(ofCompiledRules:…)` carries into every
+    /// chunk of a split list.
+    static func carriedExceptionCount(ofCompiledRules rules: [[String: Any]]) -> Int {
+        carriedExceptions(rules).lazy.filter { $0 }.count
+    }
+
+    private static func carriedExceptions(_ rules: [[String: Any]]) -> [Bool] {
+        let firstBlock = rules.firstIndex { actionType($0) == "block" } ?? rules.endIndex
+        return rules.indices.map { index in
+            isException(rules[index]) && !(index < firstBlock && isPageWideException(rules[index]))
+        }
+    }
+
+    /// Whether a compiled rule is a page-wide exception: it undoes the rules
+    /// before it for every load (`url-filter` `.*`) of the pages its condition
+    /// names (`EasyListParser`'s `$generichide`, `$elemhide` and `$document`
+    /// rules).
+    static func isPageWideException(_ rule: [String: Any]) -> Bool {
+        isException(rule) && (rule["trigger"] as? [String: Any])?["url-filter"] as? String == ".*"
+    }
+
+    private static func actionType(_ rule: [String: Any]) -> String? {
+        (rule["action"] as? [String: Any])?["type"] as? String
+    }
+
     /// Whether a compiled rule is an exception: its action undoes the rules
     /// before it in the same rule list.
     static func isException(_ rule: [String: Any]) -> Bool {
-        (rule["action"] as? [String: Any])?["type"] as? String == "ignore-previous-rules"
+        actionType(rule) == "ignore-previous-rules"
     }
 
     /// How many rule lists `ruleCount` rules compile into; 0 for no rules.
@@ -262,8 +304,7 @@ class ContentRuleStore {
     /// removed from WebKit's store. A chunk that failed keeps whatever an
     /// earlier compile left under its identifier.
     func compile(identifier: String, rules: [[String: Any]], completion: @escaping ([WKContentRuleList]) -> Void) {
-        let chunks = ContentRuleListChunks.chunks(of: rules, maxRulesPerList: maxRulesPerList,
-                                                  isException: ContentRuleListChunks.isException)
+        let chunks = ContentRuleListChunks.chunks(ofCompiledRules: rules, maxRulesPerList: maxRulesPerList)
         guard !chunks.isEmpty else {
             completion([])
             return
@@ -273,7 +314,7 @@ class ContentRuleStore {
         }
         if rules.count > maxRulesPerList {
             let dropped = ContentRuleListChunks.droppedExceptionCount(
-                ruleCount: rules.count, exceptionCount: rules.lazy.filter(ContentRuleListChunks.isException).count,
+                ruleCount: rules.count, exceptionCount: ContentRuleListChunks.carriedExceptionCount(ofCompiledRules: rules),
                 maxRulesPerList: maxRulesPerList)
             if dropped > 0 {
                 log.error("\(identifier, privacy: .public) has more exceptions than a split list can carry: \(dropped) left out")

@@ -61,18 +61,27 @@ class ContentBlockerManager {
         pendingLookups = Self.filterLists.count
         for list in Self.filterLists {
             ruleStore.lookUpList(identifier: list.identifier) { [weak self] existingLists in
-                if !existingLists.isEmpty {
+                guard let self else { return }
+                let recordedFormat = self.defaults.object(forKey: self.rulesFormatKey(list.identifier)) as? Int
+                if !existingLists.isEmpty && Self.shouldReuseCompiledList(recordedFormat: recordedFormat) {
                     // Already compiled, check if refresh needed
-                    self?.refreshIfNeeded(list: list)
-                    self?.lookupCompleted()
+                    self.refreshIfNeeded(list: list)
+                    self.lookupCompleted()
                 } else {
+                    if !existingLists.isEmpty {
+                        // Compiled by an older parser: the found lists stay
+                        // attached until the recompile replaces them.
+                        log.info("Recompiling \(list.identifier, privacy: .public): compiled from rules format \(recordedFormat ?? 0), current \(EasyListParser.rulesFormatVersion)")
+                    }
                     // Try loading from cached text
-                    self?.loadAndCompileFromCache(list: list) {
-                        // If no cache, fetch
-                        self?.fetchAndCompile(list: list)
+                    self.loadAndCompileFromCache(list: list) { [weak self] in
+                        // No usable cache: fetch the list in full. A
+                        // conditional request would answer 304 for an
+                        // unchanged list and leave nothing to compile.
+                        self?.fetchAndCompile(list: list, conditional: false)
                     }
                     // loadAndCompileFromCache/fetchAndCompile call reapplyRuleLists on success
-                    self?.lookupCompleted()
+                    self.lookupCompleted()
                 }
             }
         }
@@ -176,6 +185,25 @@ class ContentBlockerManager {
         log.error("WKWebpagePreferences does not respond to _setContentBlockersEnabled: — the per-site content blocker switch cannot take effect")
     }
 
+    /// Whether a list found compiled in WebKit's store at launch is used as
+    /// it is: only when it was compiled from the parser's current output
+    /// (`EasyListParser.rulesFormatVersion`, recorded by every successful
+    /// compile). Otherwise it is recompiled from the cached list text: a
+    /// refresh alone would not do it, since an unchanged list answers 304 and
+    /// is never compiled again. A list compiled before the format was
+    /// recorded (nil) is from before TASK-199.
+    static func shouldReuseCompiledList(recordedFormat: Int?) -> Bool {
+        recordedFormat == EasyListParser.rulesFormatVersion
+    }
+
+    private func rulesFormatKey(_ identifier: String) -> String {
+        "ContentBlocker.\(identifier).rulesFormat"
+    }
+
+    private func recordRulesFormat(of identifier: String) {
+        defaults.set(EasyListParser.rulesFormatVersion, forKey: rulesFormatKey(identifier))
+    }
+
     func reapplyRuleLists() {
         NotificationCenter.default.post(name: .contentBlockerRulesDidChange, object: self)
     }
@@ -230,6 +258,7 @@ class ContentBlockerManager {
             defaults.removeObject(forKey: "ContentBlocker.\(id).compiledRuleCount")
             defaults.removeObject(forKey: "ContentBlocker.\(id).lastFetch")
             defaults.removeObject(forKey: "ContentBlocker.\(id).etag")
+            defaults.removeObject(forKey: rulesFormatKey(id))
         }
 
         postStatusChange()
@@ -246,38 +275,53 @@ class ContentBlockerManager {
 
     // MARK: - Fetch & Compile
 
+    /// Compiles the list from its cached text, read and parsed off the main
+    /// thread (every list is parsed at the launch after a
+    /// `rulesFormatVersion` change), then checks whether it is due a refresh.
+    /// `onMiss` runs on the main queue when there is no cached text or it did
+    /// not compile.
     private func loadAndCompileFromCache(list: FilterList, onMiss: @escaping () -> Void) {
         let textFile = cacheDir.appendingPathComponent("\(list.identifier).txt")
-        guard let text = try? String(contentsOf: textFile, encoding: .utf8) else {
-            onMiss()
-            return
-        }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            guard let text = try? String(contentsOf: textFile, encoding: .utf8) else {
+                DispatchQueue.main.async(execute: onMiss)
+                return
+            }
 
-        let result = parser.parse(text: text)
-        log.info("Compiling \(list.identifier, privacy: .public) from cache: \(result.rules.count) rules (\(result.skippedCount) skipped)")
-        defaults.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
+            let result = self.parser.parse(text: text)
+            log.info("Compiling \(list.identifier, privacy: .public) from cache: \(result.rules.count) rules (\(result.skippedCount) skipped)")
+            self.defaults.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
 
-        ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
-            if !compiled.isEmpty {
-                self?.postStatusChange()
-                self?.reapplyRuleLists()
-            } else {
-                onMiss()
+            DispatchQueue.main.async {
+                self.ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
+                    if !compiled.isEmpty {
+                        self?.recordRulesFormat(of: list.identifier)
+                        self?.postStatusChange()
+                        self?.reapplyRuleLists()
+                        self?.refreshIfNeeded(list: list)
+                    } else {
+                        onMiss()
+                    }
+                }
             }
         }
     }
 
-    private func fetchAndCompile(list: FilterList) {
+    /// Downloads the list and compiles it when it changed. `conditional`
+    /// sends the saved ETag and fetch date, so an unchanged list answers 304
+    /// and is not compiled again.
+    private func fetchAndCompile(list: FilterList, conditional: Bool = true) {
         var request = URLRequest(url: list.url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
         // Add conditional fetch headers
         let etagKey = "ContentBlocker.\(list.identifier).etag"
         let lastFetchKey = "ContentBlocker.\(list.identifier).lastFetch"
-        if let etag = defaults.string(forKey: etagKey) {
+        if conditional, let etag = defaults.string(forKey: etagKey) {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
         }
-        if let lastFetch = defaults.object(forKey: lastFetchKey) as? Date {
+        if conditional, let lastFetch = defaults.object(forKey: lastFetchKey) as? Date {
             let formatter = DateFormatter()
             formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
             formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -338,6 +382,7 @@ class ContentBlockerManager {
                     self?.refreshingIdentifiers.remove(list.identifier)
                     self?.postStatusChange()
                     if !compiled.isEmpty {
+                        self?.recordRulesFormat(of: list.identifier)
                         log.info("Compiled \(list.identifier, privacy: .public) successfully")
                         self?.reapplyRuleLists()
                     }
