@@ -1,0 +1,386 @@
+TASK-200 runtime harness: main-queue heartbeat during an upgrade recompile of
+all four filter lists and during a mid-session list update, before and after
+moving rule serialisation and the bad-rule search off the main queue.
+Temporary code, never committed to Detour/. It is TASK-199's harness
+(docs/harness/task199-harness.patch, renamed Task199 -> Task200) plus:
+  - the list URLProtocol answers with the ETag in <lists>/<id>.etag when that
+    file exists (else "v2"), so a list can "change upstream";
+  - DETOUR_VERIFY_WAIT_COUNT=<id>=<n>,... waits until those lists' compiled
+    rule counts reach n (an update download compiled mid-session);
+  - "OPEN <host>" is logged before each test tab is created, and the closing
+    heartbeat line lists every gap over 250 ms;
+  - "PARSE START/END <id> (cache|download)" around each parser.parse call in
+    ContentBlockerManager (the one hunk outside Detour/App/), and the app's
+    phys_footprint with its lifetime peak (task_vm_info) after the recompile
+    wait and before "done".
+
+    SP=<scratch>; mkdir -p $SP/www $SP/out $SP/lists
+    # www/: page.html + jquery.popunder.js as in TASK-199's header.
+    # lists/<id>.txt: the four filter list texts (TASK-199's copies).
+    python3 -m http.server 8899 --bind 127.0.0.1 --directory $SP/www &
+    /usr/bin/log stream --style compact --level info --predicate \
+        'subsystem == "com.detourbrowser.mac" AND category == "content-blocker"' > $SP/out/oslog.txt &
+    git apply docs/harness/task200-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    DETOUR_DATA_DIR=DetourVerify200 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PORT=8899 \
+        DETOUR_VERIFY_LISTS=<lists dir> DETOUR_VERIFY_RUN=<name> \
+        [DETOUR_VERIFY_WAIT_FORMAT=1] [DETOUR_VERIFY_WAIT_COUNT=easylist=78191,easylist-cookie=25023] \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for "done" in out/verify-<name>.log, kill that pid
+    git apply -R docs/harness/task200-harness.patch && xcodegen generate
+
+Scenarios (defaults suite com.detourbrowser.mac.DetourVerify200, never the
+real com.detourbrowser.mac; data dir ~/Library/Application Support/DetourVerify200):
+- upgrade: ContentBlocker/<id>.txt = the list texts; ContentRuleLists/ =
+  TASK-199's old-parser compiled lists; every list lastFetch now, etag "v2",
+  NO rulesFormat key (all four recompile from cache at launch); as in
+  TASK-199's run 2, easylist-cookie.txt deleted (unconditional fallback
+  fetch, then its 2-bad-rule search) and urlhaus-filter etag "v1" with
+  lastFetch two days ago (refresh compiles after its cache compile).
+  Run with WAIT_FORMAT=1.
+- relaunch: the same data dir again (lists reused, nothing compiled).
+- update: after the upgrade, a lists dir where easylist.txt and
+  easylist-cookie.txt have one rule more and <id>.etag = "v3"; their
+  lastFetch set two days ago (etag "v2"), so refreshIfNeeded downloads (200)
+  and compiles both mid-session. Run with
+  WAIT_COUNT=easylist=78191,easylist-cookie=25023.
+Check the screen is unlocked before and after each run (a locked screen
+stops the heartbeat). For attribution, `sample <pid> 19 1 -mayDie` started
+2 s after launch (sandbox off; sampling from exec time records nothing).
+
+Results (2026-10-25, Debug build, load average 18-45). "Before" = the
+red-step build (encoding and bad-rule search on main, no compile gate),
+"after" = the TASK-200 build:
+                 before (ms)                  after (ms)
+  upgrade        486, 515, 527 during the     253, at "OPEN 127.0.0.1" (the
+                 recompile; 295 at the first  harness creating the first test
+                 test tab                     tab), nothing during the recompile
+                 (TASK-199: 403, 511, 491)    (other runs: 647 / 387, each at
+                                              the first test tab)
+  update         426 launch tick; 571, 361    433 launch tick only
+                 while the downloads compiled
+  relaunch       -                            449 launch tick only
+- Sample of an after-upgrade run (2-21 s, 13,620 main-thread samples, 12,921
+  idle in mach_msg): content-blocker work on main = 38 samples in
+  -[WKContentRuleListStore compileContentRuleList...] (34 of them WebKit's
+  synchronous parseRuleList, see the wiki), 28 freeing the encoded chunks'
+  rule arrays; no JSONSerialization or EasyListParser frames on main. The
+  gap's busy subtree is TabStore.addTab -> makeWebView / loadRequest ->
+  launchProcess (232 samples).
+- os_log (update): the two downloads parse in parallel on utility threads
+  (before, one after the other on URLSession's delegate queue);
+  easylist-cookie "Fallback: binary search ... Stripped 2 bad rule(s) ...
+  Fallback compile succeeded"; no "Not compiling" (stale) line.
+- Blocking after every run as in TASK-199: 127.0.0.1 and localhost
+  {"loaded":false,"adSlot":"block"} blockedCount=1 ($generichide keeps
+  generic hiding off), lvh.me {"loaded":false,"adSlot":"none"}
+  blockedCount=1; counts easylist 78,190 (78,191 after the update),
+  easyprivacy 56,209, easylist-cookie 25,024/25,022 (25,025/25,023),
+  urlhaus-filter 24,676; rulesFormat 2 everywhere.
+
+Final run (2026-10-25, after the code review: cached-text and download
+parses on ContentBlockerManager.parseQueue, one serial utility queue; load
+average 30-75). Gaps over 250 ms, in ms (the gap logged after "done" is
+vmmap suspending the process, not counted):
+  upgrade   run 1: 287 at "OPEN 127.0.0.1" only; run 2: 488 launch tick,
+            285 at 6.0 s (just after easylist's parse ended, while its
+            chunks compiled: WebKit's synchronous compile work on main, as
+            in the sample above); run 3: 628 launch tick only
+  update    434 launch tick only
+  relaunch  507 launch tick only (nothing parsed or compiled)
+- Parses never overlap: each PARSE START follows the previous PARSE END
+  within 1-3 ms. Upgrade order easylist (cache, 2.4-4.9 s), easyprivacy
+  (cache, 2.3-2.9 s), urlhaus-filter (cache, 3.0-3.7 s), easylist-cookie
+  (download, 0.6 s), urlhaus-filter (download, 3.1 s); update easylist
+  (download, 2.9 s) then easylist-cookie (download, 0.5 s). With parseQueue
+  made concurrent (a one-line local change, reverted) all four upgrade parses
+  started within 15 ms and ran side by side.
+- All four lists at rulesFormat 2 after 14.8 / 17.4 / 18.6 s (serial) vs
+  13.5 s concurrent (lighter load, 22-43) and 12.8 s in the pre-review
+  after-run. The serial queue also delays easylist-cookie's missing-cache
+  fallback fetch: the cache read that finds no text waits its turn behind
+  easylist's and easyprivacy's parses (fetch at 5.0-8.3 s instead of 0.6 s),
+  so its download parse and 2-bad-rule search come last.
+- Peak phys_footprint (task_vm_info, matches vmmap "Physical footprint
+  (peak)"): upgrade 268 / 283 / 280 MB serial vs 361 MB concurrent; update
+  291 MB; relaunch 40 MB.
+- Tickets: no "Not compiling" line in any run; urlhaus-filter's cache
+  compile landed before its refresh compile; every list compiled.
+- Blocking and counts unchanged: 127.0.0.1 and localhost
+  {"loaded":false,"adSlot":"block"} blockedCount=1, lvh.me
+  {"loaded":false,"adSlot":"none"} blockedCount=1; easylist 78,190 (78,191
+  after the update), easyprivacy 56,209, easylist-cookie 25,024/25,022
+  (25,025/25,023), urlhaus-filter 24,676.
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..cd38f88 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -65,6 +65,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+             if !Self.isRunningUnitTests { TabStore.shared.sweepHistoryOfDeletedSpaces() }
+         }
+ 
++        #if DEBUG
++        startTask200HarnessIfRequested()   // TEMP — DO NOT COMMIT
++        #endif
+         // Initialize content blocker (fetch/compile rule lists)
+         ContentBlockerManager.shared.initialize()
+ 
+@@ -110,6 +113,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask200HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task200Harness.swift b/Detour/App/Task200Harness.swift
+new file mode 100644
+index 0000000..d006710
+--- /dev/null
++++ b/Detour/App/Task200Harness.swift
+@@ -0,0 +1,212 @@
++// TEMP TASK-200 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++/// The harness log: wall clock, seconds since the harness started, line.
++enum Task200Log {
++    static let env = ProcessInfo.processInfo.environment
++    static let start = ProcessInfo.processInfo.systemUptime
++    static let queue = DispatchQueue(label: "task200.log")
++    static var logURL: URL? {
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return nil }
++        return URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(env["DETOUR_VERIFY_RUN"] ?? "run").log")
++    }
++    static let clock: DateFormatter = {
++        let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f
++    }()
++    static func log(_ line: String) {
++        guard let logURL else { return }
++        let stamped = String(format: "%@ [%7.3f] %@\n", clock.string(from: Date()),
++                             ProcessInfo.processInfo.systemUptime - start, line)
++        queue.async {
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++    }
++    /// phys_footprint now and its lifetime peak (task_vm_info), in MB.
++    static func footprint() -> String {
++        var info = task_vm_info_data_t()
++        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
++        let kr = withUnsafeMutablePointer(to: &info) {
++            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
++        }
++        guard kr == KERN_SUCCESS else { return "footprint unavailable" }
++        return String(format: "footprint %.0f MB, peak %.0f MB", Double(info.phys_footprint) / 1_048_576, Double(info.ledger_phys_footprint_peak) / 1_048_576)
++    }
++    static func formats() -> String {
++        let defaults = ContentBlockerStorage.current.defaults
++        return ContentBlockerManager.filterLists.map {
++            "\($0.identifier)=\(defaults.object(forKey: "ContentBlocker.\($0.identifier).rulesFormat").map { "\($0)" } ?? "nil")"
++        }.joined(separator: " ")
++    }
++}
++
++/// Serves the filter list URLs from DETOUR_VERIFY_LISTS (no network): ETag
++/// "v2" for every list, or the contents of `<id>.etag` next to the list (an
++/// updated list), 304 when the request names it, and logs the conditional
++/// headers of every request.
++final class Task200ListProtocol: URLProtocol {
++    static func etag(_ id: String) -> String {
++        let dir = Task200Log.env["DETOUR_VERIFY_LISTS"] ?? ""
++        let file = URL(fileURLWithPath: dir).appendingPathComponent("\(id).etag")
++        return (try? String(contentsOf: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "\"v2\""
++    }
++    static func identifier(for url: URL?) -> String? {
++        ContentBlockerManager.filterLists.first { $0.url == url }?.identifier
++    }
++    override class func canInit(with request: URLRequest) -> Bool { identifier(for: request.url) != nil }
++    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
++    override func startLoading() {
++        let id = Self.identifier(for: request.url) ?? "?"
++        let inm = request.value(forHTTPHeaderField: "If-None-Match")
++        let ims = request.value(forHTTPHeaderField: "If-Modified-Since")
++        let dir = Task200Log.env["DETOUR_VERIFY_LISTS"] ?? ""
++        let body = try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("\(id).txt"))
++        let etag = Self.etag(id)
++        let status = inm == etag ? 304 : (body == nil ? 404 : 200)
++        Task200Log.log("FETCH \(id) If-None-Match=\(inm ?? "-") If-Modified-Since=\(ims ?? "-") -> \(status)")
++        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
++                                       headerFields: ["ETag": etag, "Content-Type": "text/plain"])!
++        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
++        if status == 200, let body { client?.urlProtocol(self, didLoad: body) }
++        client?.urlProtocolDidFinishLoading(self)
++    }
++    override func stopLoading() {}
++}
++
++/// A main-queue heartbeat every 100 ms: logs every gap over 250 ms, and every
++/// change of a list's rulesFormat and of the manager's refreshing set.
++final class Task200Heartbeat {
++    static let shared = Task200Heartbeat()
++    var last = ProcessInfo.processInfo.systemUptime
++    var maxGap: Double = 0
++    var gapCount = 0
++    var gaps: [Int] = []
++    var lastFormats = ""
++    var lastRefreshing = ""
++    var timer: Timer?
++
++    func start() {
++        last = ProcessInfo.processInfo.systemUptime
++        let timer = Timer(timeInterval: 0.1, repeats: true) { [unowned self] _ in self.tick() }
++        RunLoop.main.add(timer, forMode: .common)
++        self.timer = timer
++    }
++
++    func tick() {
++        let now = ProcessInfo.processInfo.systemUptime
++        let gap = now - last
++        last = now
++        maxGap = max(maxGap, gap)
++        if gap > 0.25 {
++            gapCount += 1
++            gaps.append(Int(gap * 1000))
++            Task200Log.log(String(format: "GAP main queue %.0f ms", gap * 1000))
++        }
++        let formats = Task200Log.formats()
++        if formats != lastFormats {
++            lastFormats = formats
++            Task200Log.log("formats now: \(formats)")
++        }
++        let refreshing = ContentBlockerManager.shared.refreshingIdentifiers.sorted().joined(separator: ",")
++        if refreshing != lastRefreshing {
++            lastRefreshing = refreshing
++            Task200Log.log("refreshing now: [\(refreshing)]")
++        }
++    }
++}
++
++extension AppDelegate {
++    /// Before ContentBlockerManager.initialize(): the list URL protocol, the
++    /// heartbeat and the notification log.
++    func startTask200HarnessIfRequested() {
++        guard Task200Log.logURL != nil else { return }
++        URLProtocol.registerClass(Task200ListProtocol.self)
++        Task200Log.log("start run=\(Task200Log.env["DETOUR_VERIFY_RUN"] ?? "run") formats at launch: \(Task200Log.formats())")
++        Task200Heartbeat.shared.start()
++        NotificationCenter.default.addObserver(forName: .contentBlockerRulesDidChange, object: nil, queue: .main) { _ in
++            Task200Log.log("contentBlockerRulesDidChange")
++        }
++    }
++
++    func runTask200HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard Task200Log.logURL != nil, let port = Task200Log.env["DETOUR_VERIFY_PORT"] else { return }
++        let log = Task200Log.log
++        let defaults = ContentBlockerStorage.current.defaults
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        @MainActor func waitLoaded(_ tab: BrowserTab) async {
++            for _ in 0..<60 {
++                await sleep(0.25)
++                if !tab.isLoading, tab.url != nil, tab.webView != nil { break }
++            }
++            await sleep(1.5)
++        }
++        /// window.__loaded (the EasyList-blocked script ran), the computed
++        /// display of `.ad-slot` (EasyList generic hiding) and of
++        /// `.detour-control` (no rule), and the tab's blocked counter.
++        @MainActor func probe(_ tab: BrowserTab) async -> String {
++            guard let webView = tab.webView else { return "no webView" }
++            let js = "JSON.stringify({loaded: window.__loaded, adSlot: getComputedStyle(document.querySelector('.ad-slot')).display, control: getComputedStyle(document.querySelector('.detour-control')).display})"
++            let value = try? await webView.evaluateJavaScript(js)
++            return ((value as? String) ?? "nil") + " blockedCount=\(tab.blockedCount)"
++        }
++        func current() -> Bool {
++            ContentBlockerManager.filterLists.allSatisfy {
++                defaults.object(forKey: "ContentBlocker.\($0.identifier).rulesFormat") as? Int == EasyListParser.rulesFormatVersion
++            }
++        }
++
++        Task { @MainActor in
++            for _ in 0..<120 {
++                if ContentBlockerManager.shared.isCompiled(identifier: "easylist") { break }
++                await sleep(0.5)
++            }
++            log("easylist compiled=\(ContentBlockerManager.shared.isCompiled(identifier: "easylist")) count=\(ContentBlockerManager.shared.compiledRuleCount(for: "easylist") ?? -1)")
++            if Task200Log.env["DETOUR_VERIFY_WAIT_FORMAT"] == "1" {
++                for _ in 0..<480 {
++                    if current() && ContentBlockerManager.shared.refreshingIdentifiers.isEmpty { break }
++                    await sleep(0.25)
++                }
++                log("formats after waiting for the recompile: \(Task200Log.formats()); \(Task200Log.footprint())")
++            }
++            // DETOUR_VERIFY_WAIT_COUNT=easylist=78191,easylist-cookie=25023: wait
++            // for an update download's compile to land mid-session.
++            if let spec = Task200Log.env["DETOUR_VERIFY_WAIT_COUNT"] {
++                let wanted = spec.split(separator: ",").compactMap { pair -> (String, Int)? in
++                    let parts = pair.split(separator: "=")
++                    guard parts.count == 2, let n = Int(parts[1]) else { return nil }
++                    return (String(parts[0]), n)
++                }
++                for _ in 0..<480 {
++                    if wanted.allSatisfy({ ContentBlockerManager.shared.compiledRuleCount(for: $0.0) == $0.1 }) { break }
++                    await sleep(0.25)
++                }
++                log("counts after waiting for the update: " + wanted.map { "\($0.0)=\(ContentBlockerManager.shared.compiledRuleCount(for: $0.0) ?? -1)" }.joined(separator: " "))
++            }
++            await sleep(3.0)
++            guard let space = wc.activeSpace else { return log("no active space") }
++            for host in ["127.0.0.1", "localhost", "lvh.me"] {
++                let url = URL(string: "http://\(host):\(port)/page.html")!
++                log("OPEN \(host)")
++                let tab = store.addTab(in: space, url: url)
++                wc.selectTab(id: tab.id)
++                await waitLoaded(tab)
++                log("RESULT \(host): \(await probe(tab))")
++            }
++            for list in ContentBlockerManager.filterLists {
++                let id = list.identifier
++                log("LIST \(id): rulesFormat=\(defaults.object(forKey: "ContentBlocker.\(id).rulesFormat").map { "\($0)" } ?? "nil") ruleCount=\(defaults.integer(forKey: "ContentBlocker.\(id).ruleCount")) compiled=\(ContentBlockerManager.shared.compiledRuleCount(for: id) ?? -1) etag=\(defaults.string(forKey: "ContentBlocker.\(id).etag") ?? "nil") lastFetch=\(defaults.object(forKey: "ContentBlocker.\(id).lastFetch").map { "\($0)" } ?? "nil")")
++            }
++            let hb = Task200Heartbeat.shared
++            log(String(format: "heartbeat: max main-queue gap %.0f ms, %d gap(s) over 250 ms: ", hb.maxGap * 1000, hb.gapCount) + hb.gaps.map(String.init).joined(separator: ", "))
++            log(Task200Log.footprint())
++            log("done")
++        }
++    }
++}
++#endif
+diff --git a/Detour/Browser/ContentBlocker/ContentBlockerManager.swift b/Detour/Browser/ContentBlocker/ContentBlockerManager.swift
+--- a/Detour/Browser/ContentBlocker/ContentBlockerManager.swift
++++ b/Detour/Browser/ContentBlocker/ContentBlockerManager.swift
+@@ -332,7 +332,13 @@
+                 return
+             }
+ 
++            #if DEBUG
++            Task200Log.log("PARSE START \(list.identifier) (cache)")   // TEMP — DO NOT COMMIT
++            #endif
+             let result = self.parser.parse(text: text)
++            #if DEBUG
++            Task200Log.log("PARSE END \(list.identifier) (cache) \(result.rules.count) rules")   // TEMP — DO NOT COMMIT
++            #endif
+             log.info("Compiling \(list.identifier, privacy: .public) from cache: \(result.rules.count) rules (\(result.skippedCount) skipped)")
+ 
+             DispatchQueue.main.async {
+@@ -424,7 +430,13 @@
+                 let ticket = self.compileOrder.takeTicket()
+ 
+                 self.parseQueue.async {
++                    #if DEBUG
++                    Task200Log.log("PARSE START \(list.identifier) (download)")   // TEMP — DO NOT COMMIT
++                    #endif
+                     let result = self.parser.parse(text: text)
++                    #if DEBUG
++                    Task200Log.log("PARSE END \(list.identifier) (download) \(result.rules.count) rules")   // TEMP — DO NOT COMMIT
++                    #endif
+                     log.info("Parsed \(list.identifier, privacy: .public): \(result.rules.count) rules (\(result.skippedCount) skipped)")
+ 
+                     DispatchQueue.main.async {

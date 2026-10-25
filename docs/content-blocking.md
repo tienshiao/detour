@@ -41,7 +41,7 @@ On app launch, `ContentBlockerManager.shared.initialize()`:
      TASK-199): recompile from the cached text; the old list stays attached
      until the new one replaces it
    - If no: try loading from cached text file in `~/Library/Application Support/Detour/ContentBlocker/`
-     (read and parsed on a background queue, compiled from the main queue);
+     (read and parsed on a background queue; see "Threading");
      after a successful compile, check if a refresh is needed. The check runs
      from the compile's completion, so a refresh never overlaps it
    - If no cache, or the cached text does not compile: fetch from upstream
@@ -54,10 +54,11 @@ On app launch, `ContentBlockerManager.shared.initialize()`:
 Fetch (HTTP)
   +-- Conditional: If-None-Match (ETag) / If-Modified-Since
   +-- 304 Not Modified: update timestamp, done
-  +-- 200 OK: cache raw text to disk
+  +-- 200 OK: cache raw text to disk (URLSession's queue); ETag, timestamp
+  |   and rule count recorded on main
        |
        v
-Parse (EasyListParser)
+Parse (EasyListParser, on the manager's serial parse queue, one list at a time)
   +-- Converts AdBlock Plus filter syntax to WebKit content rule JSON
   +-- Orders the output: element hiding (generic, $generichide exceptions,
   |   domain-specific, $elemhide exceptions), block rules, network
@@ -67,8 +68,11 @@ Parse (EasyListParser)
   +-- Tracks rule count and skipped rules
        |
        v
-Compile (ContentRuleStore)
+Compile (ContentRuleStore; one compile per list at a time, in call order)
+  +-- Chunks and encodes the rules to JSON on its serial work queue
   +-- WKContentRuleListStore.compileContentRuleList(forIdentifier:encodedContentRuleList:)
+  |   on main (WebKit requires it); a refused chunk's bad-rule search
+  |   encodes its probes on the work queue too
   +-- More than 150,000 rules: one rule list per chunk (see "Lists Over the Rule Cap")
   +-- Caches every compiled WKContentRuleList in memory
        |
@@ -78,6 +82,32 @@ Apply (reapplyRuleLists)
   +-- Each window re-applies rules to its selected tab's panes
       (only the window that owns that web view)
 ```
+
+## Threading
+
+Only the `WKContentRuleListStore` calls and the bookkeeping run on the main
+queue (TASK-200). WebKit's store is main-thread only: `WK_SWIFT_UI_ACTOR`,
+and every call asserts `RunLoop::isMain()` and completes on main. The public
+compile also parses the JSON on the calling thread to validate CSS
+selectors, then compiles to bytecode on its own work queue, so that parse is
+the part of a compile left on main.
+
+| Step | Queue |
+|------|-------|
+| Read and parse cached text; parse a download | serial parse queue (one list at a time, for peak memory) |
+| Download, write the text to the cache | `URLSession`'s delegate queue |
+| ETag, `lastFetch`, `ruleCount`, `rulesFormat`, `refreshingIdentifiers` | main |
+| Chunking, JSON encoding, the bad-rule search's probes and the cleaned chunk | `ContentRuleStore`'s serial work queue |
+| `WKContentRuleListStore` compile / look up / remove | main |
+| Recording compiled lists and counts, attaching them | main |
+
+Ordering: `ContentRuleStore.compile` runs a list's compiles one at a time in
+call order, so a compile still searching for bad rules cannot record its list
+over a later one. `ContentBlockerManager` gives each compile a ticket
+(`FilterListCompileOrder`) on main when its text is chosen, and drops a
+compile when a compile of newer text for the same list has already started,
+so a cache compile read at launch never replaces a download that arrived
+during it.
 
 ## Lists Over the Rule Cap
 

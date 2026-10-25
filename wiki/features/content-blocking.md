@@ -54,6 +54,15 @@ sources:
   - id: exception-tests
     resource: ../../DetourTests/ContentBlockerExceptionTests.swift
     title: ContentBlockerExceptionTests.swift
+  - id: task-200
+    resource: backlog:TASK-200
+    title: Serialise block-list rules to JSON and search for bad rules off the main thread
+  - id: threading-tests
+    resource: ../../DetourTests/ContentRuleStoreThreadingTests.swift
+    title: ContentRuleStoreThreadingTests.swift
+  - id: webkit-rule-list-store
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp
+    title: WebKit APIContentRuleListStore.cpp (main-thread asserts, JSON parsed on main, work queue per store path)
   - id: webkit-backend
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/contentextensions/ContentExtensionsBackend.cpp
     title: WebKit ContentExtensionsBackend.cpp (per-list evaluation, global style sheet gate)
@@ -115,11 +124,12 @@ older parser output is recompiled even though nothing was fetched: see
   regex literals are rewritten: `{n,m}` quantifiers are expanded into repeated
   atoms and `(a|b)` disjunctions into several rules, because WebKit's rule
   regex supports neither.
-- **Compile** (`ContentRuleStore`) hands the JSON to
-  `WKContentRuleListStore`. On a compile error it bisects the rules
+- **Compile** (`ContentRuleStore`) encodes the rules to JSON and hands it
+  to `WKContentRuleListStore`. On a compile error it bisects the rules
   (`findBadRules`, depth capped at 20, serial) to find and strip the
   individually bad ones, then recompiles. A list over the rule cap is
-  compiled as several rule lists; see the next section.
+  compiled as several rule lists; see the next section. Which queue each
+  step runs on is in "Threading".
 
 Every successful compile posts `.contentBlockerRulesDidChange`
 (`reapplyRuleLists`); status changes post `.contentBlockerStatusDidChange` for
@@ -440,17 +450,15 @@ How the upgrade runs (`ContentBlockerManager`):
 
 - `loadAndCompileFromCache` reads and parses the cached text on a utility
   queue (every list is parsed at the launch after a format change), then
-  compiles on main. WebKit compiles off the main thread
-  itself, so the UI stays responsive.
+  compiles (see "Threading").
 - No cached text, or a cached text that does not compile: the list is
   fetched **unconditionally** (no `If-None-Match` / `If-Modified-Since`). With
   the saved ETag an unchanged list would answer 304 and the old-format list
   would stay attached.
 - After a successful compile from cache it calls `refreshIfNeeded`, from the
   compile's completion, so a due refresh starts only once that compile is
-  done and the two never compile the same list at once. (Before TASK-199 a
-  list compiled from cache was not checked for a refresh until the next
-  launch.)
+  done. (Before TASK-199 a list compiled from cache was not checked for a
+  refresh until the next launch.)
 
 Seen at runtime (after the review, `docs/harness/task199-harness.patch`,
 whose URLProtocol serves the list URLs locally): an old-format store logged
@@ -461,14 +469,63 @@ conditional headers (200) and compiled; a list due a refresh fetched only
 after its cache compile had finished, and compiled after that; the next
 launch reused every list with no compile or fetch.
 
-The main queue still stalls briefly during the recompile: the heartbeat saw
-three gaps of 400–510 ms, no hang. Parsing (1.3–1.8 s per list, measured
-with `-O`) is off the main queue, but `ContentRuleStore.compileChunk`
-serializes the rules to JSON on main before handing them to WebKit
-(easylist about 270 ms, easyprivacy about 200 ms, standalone with `-O`), and
-the bad-rule bisection runs from main as well (`easylist-cookie` has 2 bad
-rules, so it bisects on every compile). Moving the serialization off main
-would remove the rest.
+## Threading
+
+Since TASK-200 the main queue does only what WebKit requires there and the
+bookkeeping:[^task-200]
+
+| Step | Queue |
+|---|---|
+| Read the cached text, parse it (`EasyListParser`, 1.3–1.8 s per list with `-O`) | the manager's serial parse queue (one list at a time; a missing cache file is checked on main first, so its fallback download doesn't wait behind other lists' parses) |
+| Download (`URLSession.shared`), write the text to the cache | `URLSession`'s delegate queue |
+| Parse a download | the same serial parse queue: one list's rules in memory at a time, so Clear Cache & Redownload and the post-upgrade recompile don't hold all four lists' parse results at once (the review's memory finding; parallel parsing was faster but rejected for peak memory) |
+| Record the ETag, `lastFetch`, `ruleCount`, `rulesFormat`, `refreshingIdentifiers`; take and check the compile ticket | main |
+| Split into chunks, encode each chunk to JSON (`ContentRuleStore.encodedRuleList`, about 270 ms for EasyList), slice and encode every bad-rule probe and the cleaned chunk | `ContentRuleStore`'s serial work queue (`com.detourbrowser.content-rule-store`, utility) |
+| `WKContentRuleListStore` compile / look up / remove / list identifiers | main (the calls), WebKit's own work queue (the compile to bytecode, file I/O) |
+| Record the compiled list and counts, attach (`reapplyRuleLists` → each window's user content controllers) | main |
+
+What WebKit requires (`APIContentRuleListStore.cpp`, main as of
+2026-10):[^webkit-rule-list-store] `WKContentRuleListStore` is
+`WK_SWIFT_UI_ACTOR`, and every store call (`compileContentRuleList`,
+`lookupContentRuleList`, `removeContentRuleList`,
+`getAvailableContentRuleListIdentifiers`) starts with
+`ASSERT(RunLoop::isMain())` and completes on the main run loop, so the calls
+stay on main. The public compile also **parses the JSON synchronously on the
+calling (main) thread** (`parseRuleList` with `CSSSelectorsAllowed::Yes`, to
+validate the CSS selectors) before dispatching the bytecode compile to the
+store's work queue; only WebKit's own declarativeNetRequest path parses off
+main. A rule the parse rejects (an invalid selector, or two conditions in one
+trigger) fails synchronously inside the call. That parse is the part of a
+compile left on main; sampled, it was 34 of 13,620 main-thread samples
+across a recompile of all four lists, so it does not stall the UI.
+
+Order is kept in two places:
+
+- **One compile of a list at a time.** `ContentRuleStore.compile` (main
+  only, `dispatchPrecondition`) queues a compile behind the running compile
+  of the same list (`waitingCompiles`) and starts it once that one has
+  completed, bad-rule search included. Without this, a compile still
+  searching for bad rules recorded its list over a later compile that
+  finished first (`easylist-cookie` searches on every compile: 2 bad rules).
+  Different lists compile independently; the work queue is serial, so the
+  chunks of a list reach WebKit in order. (WebKit also fixed parallel
+  compiles of one identifier failing, in 2025-07.)
+- **Older text never replaces newer text.** Parsing is off main, so a
+  cache compile read at launch could be ready after a download that arrived
+  meanwhile and would be queued behind it. `FilterListCompileOrder` gives
+  each compile a ticket on main when its text is chosen (a cache read when
+  it starts, a download after its text is written to the cache), and a
+  compile is dropped ("Not compiling ...: a compile of newer text has
+  started") when a newer ticket of its list already started.
+
+Measured with the main-queue heartbeat (`docs/harness/task200-harness.patch`,
+same scenarios as TASK-199, Debug build, load average 18–45): the upgrade
+recompile of all four lists went from gaps of 486, 515 and 527 ms (TASK-199:
+403, 511, 491) to none over 250 ms; a mid-session update of `easylist` and
+`easylist-cookie` from 571 and 361 ms to none. What remains is the launch
+tick (about 430–450 ms, with or without a compile) and the harness creating
+its first test tab (WebContent launch, 250–650 ms). Rules are still freed on
+main when a compile completes (28 samples per recompile).
 
 # Why the per-site switch is not a rule list
 
@@ -528,8 +585,6 @@ EasyPrivacy cannot un-block something EasyList blocks.
   blocker.** A test page loading `http://127.0.0.1:9/x.js` reports no
   blocked load because WebKit refuses the port first; use an unused high
   port.
-- The fetch completion handler mutates `refreshingIdentifiers` on
-  `URLSession`'s queue while the Settings pane reads it on main.
 
 # Where state lives
 
@@ -563,6 +618,13 @@ EasyPrivacy cannot un-block something EasyList blocks.
   `$generichide`, `$elemhide`, `$document`, and an unexcepted host) checking
   the blocked-load callback and the computed `display` of a generic and a
   specific hidden element, with a third-party image on the page.
+- `ContentRuleStoreThreadingTests` - encoding of every chunk, every bad-rule
+  probe and the cleaned chunk off the main queue (an injected encoder records
+  the thread), the default encoding equal to the JSON given to WebKit before
+  and a compiled store file byte-identical to one compiled from it, a second
+  compile of a list waiting for the first's bad-rule search (the second's
+  list is kept), different lists not waiting for each other, and the
+  `FilterListCompileOrder` tickets.
 - `ContentRuleListChunkTests` - the chunk arithmetic, the layout of a split
   list (every chunk ends with the exceptions, no chunk over the cap, a
   repeated exception counted once, exceptions beyond half the cap left out),
@@ -590,5 +652,7 @@ EasyPrivacy cannot un-block something EasyList blocks.
 [^task-145]: A filter list over 150,000 rules attaches only its first chunk
 [^task-155]: In a split filter list an exception in a later chunk than its block rule does not apply
 [^task-199]: $generichide / $elemhide exceptions compile to ignore-previous-rules and unblock all loads on those hosts
+[^task-200]: Serialise block-list rules to JSON and search for bad rules off the main thread
+[^webkit-rule-list-store]: WebKit APIContentRuleListStore.cpp (main-thread asserts, JSON parsed on main, work queue per store path)
 [^webkit-backend]: WebKit ContentExtensionsBackend.cpp (per-list evaluation, global style sheet gate)
 [^webkit-compiler]: WebKit ContentExtensionCompiler.cpp (action merging, conditions)
