@@ -4,7 +4,7 @@ title: Peek
 description: The overlay that shows a linked page over the current tab; which links open in one, how it is anchored to its host tab, parked, restored and expanded, and how extensions see it.
 tags: [tabs, peek, overlay, navigation, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
 sources:
   - id: anchor
     resource: ../../Detour/Browser/Window/PeekAnchor.swift
@@ -80,8 +80,18 @@ What does **not** peek:
 - Cmd+click (background tab) and Option+click (split) win over Shift and over
   the anchor rule. The order is Cmd, Shift, Option, then the anchor intercept
   ([tab lifecycle](./tab-lifecycle.md)).
-- Any navigation that is not a link activation: redirects and script-driven
-  location changes navigate an anchored tab in place.
+- A link an [Air Traffic Control](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
+  route sends to another space or a Private window: the route wins over the
+  anchor intercept (a cross-host click, a `_blank` link, a tab-style
+  `window.open`). A route that keeps the link where it is, or no route,
+  leaves the intercept as it was (TASK-191.4). Nothing inside a Peek is ever
+  routed.
+- Any navigation that is not a link activation: script-driven location
+  changes and client redirects navigate an anchored tab in place. A **server**
+  redirect is different: WebKit asks again with the click's `.linkActivated`
+  type, so a same-host link that redirects to another host opens the redirect
+  target in a Peek (seen at runtime 2026-10-25, TASK-191.4; this page said
+  redirects stay in place).
 - A popup-style `window.open` (size, position or the `popup` feature, as OAuth
   and payment windows ask for) keeps its own tab, which is a real child of
   the page: it has `window.opener` and can close itself. A window that peeks

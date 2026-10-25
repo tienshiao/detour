@@ -297,14 +297,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                             routes: store.linkRoutes.routes,
                                             defaultTarget: store.linkRoutes.defaultTarget,
                                             context: store.linkRouteContext)
-            // Taken per URL: an earlier one may have opened or switched a window.
-            let windows = browserWindowsByRecency
-            let placement = linkPlacement(for: decision, windows: windows.map {
-                LinkPlacementWindow(id: ObjectIdentifier($0), activeSpaceID: $0.activeSpaceID, isPrivate: $0.isIncognito)
-            })
             log.info("External link from \(sourceApp ?? "no known sender", privacy: .public): \(String(describing: decision), privacy: .public)")
-            place(url, placement, windows: windows)
+            openLink(url, routedTo: decision)
         }
+    }
+
+    /// Opens `url` where `decision` sends it, by the pure `linkPlacement`: a
+    /// link from another app (TASK-191.2), and a typed URL or clicked link a
+    /// route moves out of its window's space (TASK-191.4), which never get here
+    /// with `.stay`. `typed` marks the visit as typed in history, as a URL
+    /// submitted in the palette is when it opens here.
+    func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false) {
+        // Taken per link: an earlier one may have opened or switched a window.
+        let windows = browserWindowsByRecency
+        let placement = linkPlacement(for: decision, windows: windows.map {
+            LinkPlacementWindow(id: ObjectIdentifier($0), activeSpaceID: $0.activeSpaceID, isPrivate: $0.isIncognito)
+        })
+        place(url, placement, windows: windows, typed: typed)
     }
 
     /// Browser windows, the most recently active first: front to back, then
@@ -318,7 +327,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return ordered
     }
 
-    private func place(_ url: URL, _ placement: LinkPlacement<ObjectIdentifier>, windows: [BrowserWindowController]) {
+    private func place(_ url: URL, _ placement: LinkPlacement<ObjectIdentifier>, windows: [BrowserWindowController],
+                       typed: Bool) {
         let store = TabStore.shared
         func window(_ id: ObjectIdentifier) -> BrowserWindowController? {
             windows.first { ObjectIdentifier($0) == id }
@@ -326,17 +336,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch placement {
         case .openInWindow(let id):
             guard let wc = window(id), let space = wc.activeSpace else { return openInMostRecentSpace(url) }
-            openRoutedTab(url, in: space, of: wc)
+            openRoutedTab(url, in: space, of: wc, typed: typed)
         case .switchWindow(let id, let spaceID):
             guard let wc = window(id), let space = store.space(withID: spaceID) else { return openInMostRecentSpace(url) }
             wc.setActiveSpace(id: spaceID, selectTab: false)
-            openRoutedTab(url, in: space, of: wc)
+            openRoutedTab(url, in: space, of: wc, typed: typed)
         case .openInNewWindow(let spaceID):
             guard let space = store.space(withID: spaceID) else { return openInMostRecentSpace(url) }
-            openRoutedTab(url, in: space, of: createNewWindow(showing: space))
+            openRoutedTab(url, in: space, of: createNewWindow(showing: space), typed: typed)
         case .openInPrivateWindow(let id):
             guard let wc = window(id), let space = wc.activeSpace else { return createNewWindowWithURL(url, incognito: true) }
-            openRoutedTab(url, in: space, of: wc)
+            openRoutedTab(url, in: space, of: wc, typed: typed)
         case .openInNewPrivateWindow:
             createNewWindowWithURL(url, incognito: true)
         case .mostRecentSpace:
@@ -345,8 +355,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// A routed link: a tab in `space` of `wc`, selected, and the window in front.
-    private func openRoutedTab(_ url: URL, in space: Space, of wc: BrowserWindowController) {
-        let tab = TabStore.shared.addTab(in: space, url: url)
+    private func openRoutedTab(_ url: URL, in space: Space, of wc: BrowserWindowController, typed: Bool) {
+        let tab = TabStore.shared.addTab(in: space)
+        tab.load(url, typed: typed)
         wc.selectTab(id: tab.id)
         wc.window?.makeKeyAndOrderFront(nil)
     }

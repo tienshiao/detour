@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Link routing (Air Traffic Control)
-description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin, layered after TASK-191.4's click rule), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), and links from other apps: the pure placement rule (the window showing the space, else the most recent normal window switches, else a new window; Private; Most Recent Space as before), reading the sender from the Get URL Apple Event and what macOS reports, and how to deliver test links without reaching the production app."
+description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, and Cmd+L never routing."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T21:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: model
@@ -64,15 +64,40 @@ sources:
   - id: harness-2
     resource: ../../docs/harness/task191-2-harness.patch
     title: TASK-191.2 runtime harness
+  - id: eligibility
+    resource: ../../Detour/Browser/LinkRouting/LinkRoutingEligibility.swift
+    title: LinkRoutingEligibility.swift (linkRoutingEligibility, isSameLinkRoutingHost, inPageLinkOutcome, routedLinkDecision, typedURLIsRoutable)
+  - id: window-routing
+    resource: ../../Detour/Browser/Window/BrowserWindowController+LinkRouting.swift
+    title: BrowserWindowController+LinkRouting.swift (the WebKit signals, routedDecision, routedTypedDecision, openRoutedLink)
+  - id: navigation
+    resource: ../../Detour/Browser/Window/BrowserWindowController+Navigation.swift
+    title: BrowserWindowController+Navigation.swift (decidePolicy)
+  - id: ui-delegate
+    resource: ../../Detour/Browser/Window/BrowserWindowController+WKUIDelegate.swift
+    title: BrowserWindowController+WKUIDelegate.swift (createWebViewWith)
+  - id: eligibility-tests
+    resource: ../../DetourTests/LinkRoutingEligibilityTests.swift
+    title: LinkRoutingEligibilityTests.swift
+  - id: in-page-tests
+    resource: ../../DetourTests/InPageLinkRoutingTests.swift
+    title: InPageLinkRoutingTests.swift
+  - id: task-191-4
+    resource: backlog:TASK-191.4
+    title: "Air Traffic Control: route typed URLs and links clicked inside Detour"
+  - id: harness-4
+    resource: ../../docs/harness/task191-4-harness.patch
+    title: TASK-191.4 runtime harness
 ---
 
 Air Traffic Control, modelled on Arc's, sends a link to a chosen space by
 rule: links opened from other apps, typed URLs and links clicked in a
-page.[^task-191] This page covers the parts that exist so far: the model, the
-pure resolver, storage, the rule that a space routes point at cannot be
-deleted,[^task-191-1] and links from other apps, which are routed
-(TASK-191.2, [below](#links-from-other-apps)).[^task-191-2] Typed URLs and
-clicks are TASK-191.4, and the Settings Links pane is TASK-191.3.
+page.[^task-191] This page covers the model, the pure resolver, storage, the
+rule that a space routes point at cannot be deleted,[^task-191-1] links from
+other apps (TASK-191.2, [below](#links-from-other-apps)),[^task-191-2] and
+typed URLs and clicked links (TASK-191.4,
+[below](#typed-urls-and-links-clicked-in-a-page)).[^task-191-4] The Settings
+Links pane is TASK-191.3.
 
 # Model
 
@@ -101,8 +126,9 @@ the normal spaces that exist (`TabStore.linkRouteContext`). The decision is
 ## Two layers: whether, then where
 
 A link inside Detour is decided in two steps. **Whether** it is routed at
-all is TASK-191.4's pure click rule (and its typed-URL rule: a URL, not a
-search, from a palette mode that routes): same-host plain clicks, redirects,
+all is TASK-191.4's pure click rule, `linkRoutingEligibility` (and its
+typed-URL rule, `typedURLIsRoutable`: a URL, not a search, from the new-tab
+palette; [below](#typed-urls-and-links-clicked-in-a-page)): same-host plain clicks, redirects,
 script navigations, popups that keep their opener, Option- and Shift-clicks
 and links in a Peek never get past it. **Where** a routed link goes is
 `resolveLinkRoute`, which has no exclusions of its own: every `.typed` or
@@ -308,6 +334,199 @@ LaunchServices; nothing was sent then. The recipe is in
 [runtime verification](../playbooks/runtime-verification.md) and the
 harness.[^harness-2]
 
+# Typed URLs and links clicked in a page
+
+TASK-191.4.[^task-191-4] The window's WebKit delegates and the command
+palette describe what happened; the pure `linkRoutingEligibility` and
+`typedURLIsRoutable` (`LinkRoutingEligibility.swift`) decide whether it is
+routed; `resolveLinkRoute` with `.clicked` or `.typed` decides where; and
+`AppDelegate.openLink(_:routedTo:)`, the 191.2 placement code moved out of
+`openExternalURLs` so both paths call it, decides which window. A routed link
+is therefore placed exactly as a link from another app: the window showing
+the space, brought forward, with the tab selected; else the most recent
+normal window (normally the one clicked in) switches to the space; Private
+into the most recent Private window, else a new one. A decision of `.stay`
+(no route, Most Recent Space, a route to the current space, anything out of a
+Private window, Quarantine or Quick Detour) changes nothing: the code from
+before routes runs.
+
+## Entry points
+
+| Where | What is asked | Routed |
+|---|---|---|
+| Command palette submit (`paletteLoadURL`) | `typedURLIsRoutable(url, isSearch:, navigatesInPlace:)` | A URL (per `AddressInputClassifier`, which also covers a history row) submitted in new-tab mode (Cmd+T). A search never; Cmd+L or a click on the address bar never. |
+| `decidePolicy`, Cmd+click branch | the rule, before the background tab | Cmd+click (Cmd+Shift and Cmd+Option too: Cmd wins, as the branch order says) |
+| `decidePolicy`, after the download check, before the anchor intercept | the rule for every navigation that gets that far | A `target=_blank` link (nil `targetFrame`, before WebKit would call `createWebViewWith`), and a plain click to another host |
+| `createWebViewWith`, a page's own request (not the link menu's) | the rule, before the anchor intercept | A tab-style `window.open` |
+
+A routed click is cancelled (the page's tab stays on its page; a routed
+`window.open` returns nil, so the page gets no window) and opened one
+main-queue turn later (`openRoutedLink`), so the policy decision returns
+before windows switch spaces or come forward. A typed URL is opened at once.
+
+## The rule
+
+`linkRoutingEligibility(InPageLinkRequest) -> .routable(kind) | .notRouted(reason)`.
+The request carries the entry (`.navigationAction(isLinkActivation:targetsMainFrame:opensNewWindow:isRedirect:)`,
+`.pageWindowRequest(isLinkActivation:wantsPopup:)`, `.linkMenuAction`), the
+modifiers, the user-gesture signal, whether it is in a Peek, the page URL
+(`webView.url`) and the target. Checked in this order:
+
+| Case | Result | Why |
+|---|---|---|
+| Target not http/https (`mailto:`, `detour://`, `data:`, `about:`, `blob:`, `file:`, app schemes) | not routed (`notWebURL`) | Routes match web pages only; non-web schemes and downloads are decided by the policy before it asks anyway. |
+| Fired by a Peek's page, or while a Peek is presented | `inPeek` | A Peek is a look at a link; its links navigate the Peek (decided 2026-10-25). The overlay is modal, so while it is up a click can only be in it. |
+| The link menu's own actions (Open Link in New Tab / Window / Split View) | `linkMenuAction` | The user picked where it opens. Not in the decided list; kept unrouted (see [decisions](#decisions-taken-here)). |
+| A `_blank` link reaching `createWebViewWith` | `decidedByNavigationPolicy` | WebKit asked the policy first; it was routed (cancelled) or not there. |
+| Popup-style `window.open` (`_wantsPopup`, else explicit x/y/width/height) | `popupWindow` | It must keep its opener (sign-in and payment windows, TASK-168). |
+| Tab-style `window.open` without a gesture | `noUserGesture` | WebKit blocks those anyway (`javaScriptCanOpenWindowsAutomatically` is off). |
+| Tab-style `window.open` | **routed** (`scriptedWindow`) | A new-tab open. |
+| A server redirect (`_isRedirect`) | `redirect` | Never routed: the user clicked the link, not the redirect target. Checked first because WebKit asks the policy again for the redirect with the click's link activation and gesture. |
+| Not a link activation (`.other`, `.formSubmitted`, `.backForward`, `.reload`, `.formResubmitted`) | `notLinkActivation` | Script navigations (`location.href = …`, also inside a click handler), client redirects (`location.replace` on load, meta refresh), forms, history, app loads. |
+| A link activation without a user gesture | `noUserGesture` | A page's own `a.click()` from a timer or a load script. |
+| Cmd | **routed** (`commandClick`) | A new-tab open, whatever the host or frame. |
+| Shift | `shiftClickPeek` | Shift-click Peeks; Shift before Option, as the branches. |
+| Option | `optionClickSplit` | Option-click splits. |
+| `target=_blank` (nil `targetFrame`), any frame | **routed** (`blankTarget`) | A new-tab open, same host included. |
+| Target a subframe | `subframe` | An iframe navigating is not the page leaving. A `target=_top` link in an iframe targets the main frame and counts as a plain click. |
+| Same host as the page | `sameHost` | Decided 2026-10-25: moving within a site stays in the tab. |
+| Plain click to another host | **routed** (`crossHostClick`) | The tab stays on its page; the link opens in the routed destination. |
+
+**Host, not site.** `isSameLinkRoutingHost` compares hosts without case,
+trailing dot or a leading `www.` (dropped only when a dot remains, so
+`www.com` is not `com`); ports are ignored (host, not origin). There is no
+public-suffix list in the codebase, so it cannot compare registrable domains:
+`mail.example.com` is another host than `example.com`, and a click between
+them is routed (a route that matches it decides; with none, nothing moves).
+A page without a host (`about:blank`, a `data:` page) has no host to stay on,
+so a click from it to a web URL is cross-host. The History page's rows are
+plain links on `detour://history`, so a click on one is a cross-host click
+like any other.
+
+Typed: `typedURLIsRoutable` is `!isSearch && !navigatesInPlace && http(s)`.
+`isSearch` is the palette's own classification (a submission
+`AddressInputClassifier` does not read as a URL, or a search suggestion row),
+so a search URL whose host a route names (`google.com`) is still a search.
+
+## Signals from WebKit
+
+Measured 2026-10-25 on macOS 26.7 with a standalone `WKWebView` against a
+loopback fixture server (two hosts: `127.0.0.1` and `localhost`), logging
+every `decidePolicyFor` and `createWebViewWith`:
+
+| Action | `navigationType` | `targetFrame` | `_isUserInitiated` | `_isRedirect` | `_hasOpener` |
+|---|---|---|---|---|---|
+| Real Cmd+click (posted mouse event) | link | main | true | false | false |
+| `a.click()` from `evaluateJavaScript` | link | main | true | false | false |
+| A page's own timer `a.click()` (no gesture) | link | main | **false** | false | false |
+| Timer `location.href = …` | other | main | false | false | false |
+| A click handler's `location.href = …` | other | main | **true** | false | false |
+| A click handler's `setTimeout(() => a.click(), 0)` | link | main | true | false | false |
+| Same-host link, then a 302 to another host | link, then **link again** for the redirect target | main | true, true | false, **true** | false |
+| Same-host link to a page that `location.replace`s on load | link, then other | main | true, false | false | false |
+| `<a target=_blank>` | link (policy), then link (`createWebViewWith`) | nil | true | false | false |
+| `window.open(url)` from a click | other (`createWebViewWith` only) | nil | true | false | true |
+| `window.open(url, 'p', 'popup,…')` | other (`createWebViewWith` only), `_wantsPopup` true | nil | true | false | true |
+| `dispatchEvent(new MouseEvent('click', {metaKey: true}))` | link, modifier flags **0** | main | true | false | false |
+
+So: `navigationType == .linkActivated` separates link clicks from script
+navigations and client redirects; `_isUserInitiated` separates a user's click
+from a page's own `a.click()`; `_isRedirect` is the only thing that separates
+a server redirect (which keeps the click's type and gesture) from the click.
+Both are SPI on `WKNavigationAction`, read by key behind a `responds(to:)`
+guard (`BrowserWindowController+LinkRouting.swift`); without them every
+action counts as a gesture and nothing as a redirect. Anything the app runs
+with `evaluateJavaScript` carries a gesture, which is why the earlier
+spike saw `_isUserInitiated` true for every call (see
+[WKWebView delegate order](../platform/wkwebview-delegate-order.md)), and why
+the unit tests can drive real clicks that way. A synthetic click carries no
+modifiers into the navigation action, so a page cannot fake a Cmd+click.
+
+A click handler's own `a.click()` (directly or a `setTimeout(…, 0)` later)
+inherits the user's gesture and is routed like the click: WebKit reports it
+exactly as a real click.
+
+## The Peek intercept and other branches
+
+- **A route elsewhere wins over the pinned/favourite anchor intercept**
+  (decided 2026-10-25). `inPageLinkOutcome(routed:anchorPeeks:)`: a routed
+  decision → open it there; `nil` or `.stay` → the intercept as before (Peek,
+  or nothing). On an anchored tab a routed cross-host click or `_blank` link
+  or tab-style `window.open` therefore goes to its space instead of a Peek.
+- Policy order is unchanged around it: internal URL, **Cmd+click (route, else
+  background tab)**, Shift (Peek), Option (split), back/forward into an error
+  page, non-web scheme, download, **route, then the anchor intercept**, allow
+  ([tab lifecycle](../tabs/tab-lifecycle.md)).
+- A redirect is never routed, but the anchor intercept still sees it: WebKit
+  reports a server redirect as a link activation, so on a pinned tab or
+  favourite a same-host link that redirects to another host **opens the
+  redirect target in a Peek** (seen at runtime, below). That is how the
+  intercept behaved before this task; [Peek](../tabs/peek.md) said otherwise
+  and was corrected.
+
+## Decisions taken here
+
+Cases the task's decisions did not name, decided while implementing (to
+confirm):
+
+- **The link menu's actions are not routed** (Open Link in New Tab, in New
+  Window, in Split View): the user chose where the link opens. Routing Open
+  Link in New Tab like Cmd+click would be one line in `createWebViewWith`.
+- **Cmd+L (or a click on the address bar) while a Peek is open routes.**
+  `focusAddressBar` and the faux address bar open the palette in new-tab mode
+  then (it shows the Peek's URL but opens a new tab), and the rule keys on the
+  palette's mode, not on the key that opened it.
+- **A routed Cmd+click opens selected, in front**, as a link from another
+  app does, not as a background tab in the other space: a tab that appeared
+  silently in a space not on screen would look like a click that did nothing.
+- **Cmd+click and `_blank` in an iframe route**: they open a new tab whichever
+  frame the link is in; "subframe navigations" are an iframe navigating
+  itself.
+- **`window.open()` then `w.location = …`** (xterm.js's pattern) is not
+  routed: the open has no web URL and the later navigation is the child's,
+  type `.other`.
+
+# Runtime check: typed URLs and clicks
+
+Harness `docs/harness/task191-4-harness.patch`,
+`DETOUR_DATA_DIR=DetourVerify1914`, 2026-10-25, screen unlocked.[^harness-4]
+A loopback fixture page of links reached as `127.0.0.1` (the page),
+`localhost` (routed to Work) and `[::1]` (no route); window B on Work, window
+A on Personal with a pinned tab; real mouse and key events posted with
+`NSApp.postEvent`. Every routing question and placement was logged:
+
+| Case | Logged | Result |
+|---|---|---|
+| Plain same-host click | `notRouted(sameHost)` | navigated in place |
+| Plain click to `localhost` | `routable(crossHostClick)` → Work → `openInWindow(B)` | B in front with the tab selected; A's tab stayed on its page |
+| Cmd+click to `localhost` / same host | `commandClick` → Work / decision none | Work window / background tab in A, as before |
+| `_blank` (routed path) / unrouted | `blankTarget` → Work / none | Work window / a tab in A (its `createWebViewWith` logs `decidedByNavigationPolicy`) |
+| `window.open` tab-style / popup | `scriptedWindow` → Work / `popupWindow` | Work window / a tab in A whose opener received its `postMessage` |
+| Option-click, Shift-click | not asked: their branches run first | a split; a Peek |
+| In a Peek: `_blank`, cross-host click to a Private-routed URL | `inPeek` | a tab in A as before; the Peek navigated |
+| Server redirect to `localhost` | `sameHost`, then `redirect` (`_isRedirect`, still a link activation with a gesture) | the tab followed the redirect |
+| Client redirect, `onclick` `location.href`, page timer `a.click()` | `notLinkActivation`, `notLinkActivation` (gesture true), `noUserGesture` | in place |
+| `onclick` → `a.click()` | `crossHostClick`, gesture true | routed to Work, like the click |
+| Cross host with no route (`[::1]`) | routable, decision none | in place |
+| Pinned tab: to `localhost` / to `[::1]` / same-host link redirecting to `localhost` | Work / none / `redirect` | Work window, no Peek / Peek / **Peek of the redirect target** |
+| Cmd+T `localhost:8714/b?kind=typed` | `TYPED routable` → Work → `openInWindow(B)` | in B |
+| Cmd+L, a search (route `contains "routeme"`) | `navigatesInPlace`, `isSearch`: not routable | in place; a search tab in A |
+| Private route from A, twice | `privateWindow` → `openInNewPrivateWindow`, then `openInPrivateWindow(P)` | a new Private window, then a tab in it |
+| From the Private window: click and typed URL to `localhost` | routable, decision none (normal routes ignored) | in place; a tab in P |
+
+Captures by window number in the session scratchpad (`task191-4/out`).
+Input trap: a plain click posted to a window of an **inactive** app is
+swallowed while a Cmd-click goes through (macOS's click-without-activating),
+so a first run made while the user was in another app routed only the
+Cmd-clicks; the harness now activates Detour and makes the window key before
+each input. Even then the first plain click after a window became key
+occasionally produced no navigation action at all and was re-posted.
+
+**Not verified at runtime:** a favourite's tab (the pinned tab stands in for
+the anchor intercept; both go through `PeekAnchor.anchorURL`), a split pane
+clicking (the eligibility does not look at panes), a link in an iframe
+(subframe, `target=_top`), the History page's links, and real sites.
+
 # Runtime check
 
 Harness `docs/harness/task191-1-harness.patch`,
@@ -366,6 +585,24 @@ lock and have text logs only.
 
 # Tests
 
+`LinkRoutingEligibilityTests` (TASK-191.4: every case of the rule above,
+`www.`, ports, subdomains, hostless pages, the modifier order, redirects with
+each entry, Peek, the precedence over the anchor intercept, `.stay` as no
+route, the typed rule, and both layers with the resolver: Private both ways,
+Quarantine, the Default, a route to the current space).
+`InPageLinkRoutingTests` (real windows against a loopback server reached as
+`127.0.0.1` and `localhost`, clicks made with `evaluateJavaScript`, which
+carries a gesture: a cross-host click opens in the Work window and the tab
+stays, with no Work window the clicking window switches, `_blank` and
+tab-style `window.open` routed (the page gets null), a Private route opens a
+Private window; same-host, a server redirect, a click handler's
+`location.href`, a page timer's `a.click()`, a popup (opener kept), a click in
+a Peek and a click in a Private window not routed; on a pinned tab the route
+wins over the Peek and with no route it peeks; typed: Cmd+T routed, in place
+not, a search not, no route and a route to the current space open here, a
+Private window ignores normal routes, a Private route opens a Private window).
+Cmd+click is not in the unit tests: a script's event carries no modifiers
+into the navigation action, so it is checked at runtime only.
 `LinkPlacementTests` (every placement rule, several windows showing a space,
 recency, Private in front, no windows; the sender's PID from the address,
 Detour itself, no PID or bundle ID), `ExternalLinkRoutingTests` (real
@@ -394,3 +631,5 @@ text).
 [^task-191-2]: Air Traffic Control: send links from other apps to the routed space
 [^harness]: TASK-191.1 runtime harness
 [^harness-2]: TASK-191.2 runtime harness
+[^task-191-4]: Air Traffic Control: route typed URLs and links clicked inside Detour
+[^harness-4]: TASK-191.4 runtime harness

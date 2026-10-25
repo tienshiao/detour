@@ -868,6 +868,8 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let pending: [String: String]
     private let stalled: [String: String]
     private let truncated: [String: String]
+    private let redirects: [String: String]
+    private var port: UInt16 = 0
     private let lock = NSLock()
     private var _requestedPaths: [String] = []
     private var _held: [String: [NWConnection]] = [:]
@@ -896,12 +898,16 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     ///     value goes out as the start of the body, and `release(_:)` closes
     ///     the connection with the rest still owed — a navigation that commits,
     ///     renders what arrived and then *fails* (TASK-178).
+    ///   - redirects: routes answered with a `302 Found` to the value, in
+    ///     which `{port}` stands for the server's port (TASK-191.4).
     init(routes: [String: String], pending: [String: String] = [:],
-         stalled: [String: String] = [:], truncated: [String: String] = [:]) throws {
+         stalled: [String: String] = [:], truncated: [String: String] = [:],
+         redirects: [String: String] = [:]) throws {
         self.routes = routes
         self.pending = pending
         self.stalled = stalled
         self.truncated = truncated
+        self.redirects = redirects
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         params.requiredInterfaceType = .loopback
@@ -915,11 +921,13 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         }
         return try await withCheckedThrowingContinuation { continuation in
             let resumed = LockedFlag()
-            listener.stateUpdateHandler = { [listener] state in
+            listener.stateUpdateHandler = { [listener, weak self] state in
                 switch state {
                 case .ready:
                     guard resumed.claim() else { return }
-                    continuation.resume(returning: listener.port?.rawValue ?? 0)
+                    let port = listener.port?.rawValue ?? 0
+                    if let self { self.lock.lock(); self.port = port; self.lock.unlock() }
+                    continuation.resume(returning: port)
                 case .failed(let error):
                     guard resumed.claim() else { return }
                     continuation.resume(throwing: error)
@@ -1018,6 +1026,16 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             // close in `release(_:)`, so the resource stays in flight until then.
             connection.send(content: Data(Self.head(contentLength: nil).utf8),
                             completion: .contentProcessed { _ in })
+            return
+        }
+
+        if let location = redirects[path] {
+            lock.lock(); let port = self.port; lock.unlock()
+            let head = "HTTP/1.1 302 Found\r\nLocation: \(location.replacingOccurrences(of: "{port}", with: String(port)))\r\n"
+                + "Content-Length: 0\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in
+                connection.cancel()
+            })
             return
         }
 

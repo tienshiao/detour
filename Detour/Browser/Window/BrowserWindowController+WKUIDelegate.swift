@@ -38,13 +38,25 @@ extension BrowserWindowController: WKUIDelegate {
             // user's choice and still open one.
             if url.scheme?.lowercased() == "data" { return nil }
 
-            // A tab-style window.open from a pinned tab or favourite peeks, like
-            // a target=_blank link does in decidePolicy (TASK-85).
+            // A tab-style window.open that a route sends to another space (or
+            // a Private window) opens there, and the page gets no window
+            // (TASK-191.4). A popup keeps its opener and is never routed; a
+            // `_blank` link was routed, or not, by the navigation policy.
+            //
+            // Otherwise a tab-style window.open from a pinned tab or favourite
+            // peeks, like a target=_blank link does in decidePolicy (TASK-85).
+            let wantsPopup = Self.wantsPopup(windowFeatures)
+            let entry = InPageLinkEntry.pageWindowRequest(
+                isLinkActivation: navigationAction.navigationType == .linkActivated, wantsPopup: wantsPopup)
+            let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView, entry: entry))
+            var peekHost: BrowserTab?
             if let host = peekHostTab(firing: webView),
                PeekAnchor.anchorURL(forTabID: host.id, pinnedEntries: space.pinnedEntries,
                                     favorites: space.profile?.favorites ?? []) != nil,
-               PeekAnchor.shouldPeekScriptedWindow(to: url, wantsPopup: Self.wantsPopup(windowFeatures)) {
-                presentPeek(of: url, on: host, firing: webView)
+               PeekAnchor.shouldPeekScriptedWindow(to: url, wantsPopup: wantsPopup) {
+                peekHost = host
+            }
+            if performInPageLinkOutcome(for: url, routed: routed, peekHost: peekHost, firing: webView) {
                 return nil
             }
             // The page's new window is a real WebKit child: a tab whose web

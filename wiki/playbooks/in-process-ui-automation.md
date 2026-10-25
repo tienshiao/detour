@@ -4,7 +4,7 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
 sources:
   - id: task-169
     resource: backlog:TASK-169
@@ -45,6 +45,9 @@ sources:
   - id: notes-capture
     resource: "Agent session notes, 2026-09-23 (not in the repository)"
     title: Session notes on screen capture for UI verification
+  - id: task-191-4
+    resource: backlog:TASK-191.4
+    title: "Air Traffic Control: route typed URLs and links clicked inside Detour"
 ---
 
 Almost every interaction check can be done by the app on itself. What an
@@ -199,6 +202,16 @@ edges ([UI probes](./ui-probes.md)).
   and the mouse-up queued. Not tried in an active application. Make the
   selection with `selectRowIndexes` (it runs the delegate's selection
   handler) and use the posted click for what else the click does.[^task-174]
+- **A posted plain click on a web view of an inactive app is swallowed; a
+  Cmd-click is not.** In the TASK-191.4 run the user was in another app: the
+  posted Cmd-clicks reached the page (macOS delivers a Cmd-click to a
+  background window without activating it) and every plain click produced
+  no navigation action at all. Activate Detour
+  (`NSApp.activate(ignoringOtherApps: true)`) and make the window key before
+  posting, check `NSApp.isActive` and the key window when the event goes
+  out, and log both; even then an occasional first click after the window
+  became key did not land and had to be re-posted, so confirm each click by
+  its effect (the policy log line), not by having posted it.[^task-191-4]
 - **A shell-launched instance is not the key application.** Anything
   enabled by `NSApp.keyWindow` (for example menu items validated against
   the key window) cannot be driven; say so.[^notes-updates]
@@ -244,3 +257,4 @@ above.
 [^notes-capture]: Session notes on screen capture for UI verification
 [^harness-189]: TASK-189 survey harness (the Settings window; an alert answered from the modal run loop)
 [^harness-185]: TASK-185 harness (posted Option-click, the real link menu)
+[^task-191-4]: Air Traffic Control: route typed URLs and links clicked inside Detour

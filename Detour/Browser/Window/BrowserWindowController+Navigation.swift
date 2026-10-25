@@ -41,7 +41,16 @@ extension BrowserWindowController: WKNavigationDelegate {
         }
 
         if navigationAction.navigationType == .linkActivated && navigationAction.modifierFlags.contains(.command) {
-            if let url = navigationAction.request.url, let space = activeSpace {
+            // A route that moves the link to another space (or a Private
+            // window) opens it there instead of in a background tab here
+            // (TASK-191.4).
+            guard let url = navigationAction.request.url else { return .cancel }
+            if let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView,
+                                                                  entry: Self.linkRoutingEntry(for: navigationAction))) {
+                openRoutedLink(url, routed)
+                return .cancel
+            }
+            if let space = activeSpace {
                 _ = store.addTab(in: space, url: url, parentID: selectedTabID)
             }
             return .cancel
@@ -106,23 +115,38 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .download
         }
 
+        // Air Traffic Control (TASK-191.4), then the Peek intercept. A plain
+        // click to another host or a target=_blank link that a route sends to
+        // another space (or a Private window) opens there; the tab stays on
+        // its page. Which navigations may route at all — not redirects,
+        // scripts, same-host clicks, Peek contents, subframes — is the pure
+        // `linkRoutingEligibility`; that a route elsewhere wins over the
+        // intercept is `inPageLinkOutcome`.
+        //
         // Peek mode: intercept cross-host navigation, and every target=_blank
         // link, on pinned tabs and favourites (`PeekAnchor.shouldPeek`). A
         // _blank link reaches this with a nil targetFrame before WebKit would
         // call createWebViewWith; script window.open() never does. The anchored
         // tab is the pane that fired, not the selection: in a pinned split the
         // link can come from the unfocused pane (TASK-48) — see `peekHostTab`.
-        if navigationAction.navigationType == .linkActivated,
-           let space = activeSpace,
-           let tab = peekHostTab(firing: webView),
-           let url = navigationAction.request.url,
-           let anchorURL = PeekAnchor.anchorURL(forTabID: tab.id,
-                                                pinnedEntries: space.pinnedEntries,
-                                                favorites: space.profile?.favorites ?? []),
-           PeekAnchor.shouldPeek(anchorURL: anchorURL, to: url,
-                                 opensNewWindow: navigationAction.targetFrame == nil) {
-            presentPeek(of: url, on: tab, firing: webView)
-            return .cancel
+        // Only a link activation can route or peek: other navigations (subframe
+        // loads, script navigations, reloads) skip the request's lookups.
+        if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
+            let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView,
+                                                               entry: Self.linkRoutingEntry(for: navigationAction)))
+            var peekHost: BrowserTab?
+            if let space = activeSpace,
+               let tab = peekHostTab(firing: webView),
+               let anchorURL = PeekAnchor.anchorURL(forTabID: tab.id,
+                                                    pinnedEntries: space.pinnedEntries,
+                                                    favorites: space.profile?.favorites ?? []),
+               PeekAnchor.shouldPeek(anchorURL: anchorURL, to: url,
+                                     opensNewWindow: navigationAction.targetFrame == nil) {
+                peekHost = tab
+            }
+            if performInPageLinkOutcome(for: url, routed: routed, peekHost: peekHost, firing: webView) {
+                return .cancel
+            }
         }
 
         // Apply Chrome UA spoofing for domains that require it — on the tab that

@@ -3665,6 +3665,18 @@ extension BrowserWindowController: CommandPaletteDelegate {
         // it (TASK-86).
         let internalPage = InternalPage(url: url)
 
+        // Air Traffic Control (TASK-191.4): a URL (not a search) submitted in
+        // new-tab mode that a route sends to another space, or a Private
+        // window, opens there as a link from another app would. Navigating in
+        // place (Cmd+L, the address bar) never routes: the user picked the tab
+        // (with no tab selected, it opens a new one below, and routes as one).
+        if typedURLIsRoutable(url, isSearch: !typed, navigatesInPlace: navigateInPlace && selectedTab != nil),
+           let appDelegate = NSApp.delegate as? AppDelegate,
+           let decision = routedTypedDecision(for: url) {
+            appDelegate.openLink(url, routedTo: decision, typed: typed)
+            return
+        }
+
         if navigateInPlace, let tab = selectedTab {
             ensureOwnsWebView()
             if let internalPage {

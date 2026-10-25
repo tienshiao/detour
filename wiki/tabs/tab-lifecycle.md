@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -78,7 +78,7 @@ extension contexts (the list's `didSet`, see
 
 | Trigger | Store call | Selected afterwards |
 |---|---|---|
-| Submitting the [command palette](../features/command-palette.md) in new-tab mode | `addTab(in:)`, then `tab.load(url, typed:)` | yes |
+| Submitting the [command palette](../features/command-palette.md) in new-tab mode | `addTab(in:)`, then `tab.load(url, typed:)`; a URL a route sends to another space opens there instead ([link routing](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)) | yes |
 | Cmd+click on a link | `addTab(in:url:parentID:)` with the selected tab as parent | no (a toast says so when the sidebar is collapsed) |
 | Context menu "Open Link in New Tab" | sets `contextMenuLinkAction`, replays WebKit's own item, lands in `createWebViewWith` → `addTab(in:url:parentID:)` | no |
 | `window.open` or a `_blank` link in a normal tab | `createWebViewWith` → `addTab(in:openedWith:parentID:)`, with the opener as parent, in the opener's space; the tab's web view is returned to WebKit, which loads the URL | yes, unless the opener is in a space the window is not showing |
@@ -159,15 +159,23 @@ tab ([history recording](../features/history-recording-and-search.md)).
 **Link policy order** (`decidePolicy(for:in:)`). The order is load-bearing:
 
 1. An internal URL: allowed only when the owning tab authorises it, else cancel.
-2. Cmd+click: background tab.
+2. Cmd+click: background tab, unless [Air Traffic Control](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
+   routes it to another space or a Private window (TASK-191.4).
 3. Shift+click: [Peek](./peek.md).
 4. Option+click: [split](./split-tabs-hosting.md). This must precede step 7,
    because WebKit sets `shouldPerformDownload` for Option-clicked links.
 5. Back/forward into an error page: reload the original URL instead.
 6. A non-web scheme: [external app](../features/external-apps.md) confirmation.
 7. `shouldPerformDownload`: download.
-8. The pinned/favourite Peek intercept.
-9. Allow, after applying the per-host user agent to the *navigating* tab.
+8. Air Traffic Control: a `_blank` link or a plain click to another host
+   that a route sends elsewhere opens there and the tab stays
+   (`linkRoutingEligibility`, TASK-191.4). It wins over step 9
+   (`inPageLinkOutcome`).
+9. The pinned/favourite Peek intercept.
+10. Allow, after applying the per-host user agent to the *navigating* tab.
+
+`createWebViewWith` asks the same rule for a tab-style `window.open` before
+its own Peek intercept; a popup-style one is never routed.
 
 ## Closing
 

@@ -1,0 +1,777 @@
+TASK-191.4 runtime harness: typed URLs and links clicked in a page, routed by
+Air Traffic Control. Temporary code, never committed to Detour/. It logs to
+$DETOUR_VERIFY_DIR/verify-<phase>.log every routing question the window asks
+(CLICK: window, space, entry, modifiers, gesture, Peek, page, target,
+eligibility, decision), every palette submission (TYPED / TYPED-DECISION),
+every placement (PLACE) and window/space/tab dumps (STATE). It seeds spaces
+Work and Personal, routes (contains "secret" -> Private window; domainIs
+localhost -> Work; contains "kind=blank-work" -> Work; contains "routeme" ->
+Work; Default Most Recent Space), window B on Work, window A on Personal with
+a pinned tab (anchor 127.0.0.1/a?tag=pin) and the links page, and reads
+commands appended to cmd-<phase>.txt: click/clickpeek <win> <element id>
+[cmd+shift+opt] (real mouse events through NSApp.postEvent, at the element's
+rect read from the page), cmdt/cmdl/type/clear/return/escape <win> (real key
+events), load/newtab/select/front/private/name/eval/dump/wait/capture.
+Input lands only in the key window of the active app: a plain click posted
+to an inactive window is swallowed (a Cmd-click is not, which is why only the
+Cmd-clicks landed in the first run while the user was in another app), so
+every input command first activates Detour and makes its window key, and
+retries until it is.
+
+Fixture: fixture/server.py (below) on 127.0.0.1:8714 and on [::1]:8714
+(python3 -I server.py 8714; python3 -I server.py 8714 v6), sandbox off. The
+page is reached as 127.0.0.1 and as localhost (two hosts for the cross-host
+rule; localhost is routed to Work) and [::1] (a cross host with no route).
+No download links; nothing audible.
+
+    SP=<scratch>; mkdir -p $SP/out
+    git apply docs/harness/task191-4-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    DETOUR_DATA_DIR=DetourVerify1914 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PHASE=1 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    watch-captures.sh &            # screencapture -x -o -l <n> for each CAPTURE line
+    cp cmd-1.txt $SP/out/          # then append the reruns
+    git apply -R docs/harness/task191-4-harness.patch && xcodegen generate
+
+Results (2026-10-25, macOS 26.7, screen unlocked; log and captures in the
+session scratchpad task191-4/out):
+- Plain same-host click: notRouted(sameHost), navigated in place.
+- Plain cross-host click to localhost: routable(crossHostClick) ->
+  openInSpace(Work) -> openInWindow(B); B came forward with the tab selected;
+  A's tab stayed on its page (capture 02-cross-B/A).
+- Cmd+click cross host: routable(commandClick) -> Work window B. Cmd+click
+  same host (no route): routable, decision none -> background tab in A.
+- target=_blank same host, path routed (kind=blank-work): routable(blankTarget)
+  -> Work window (capture R4). _blank unrouted: a new tab here; its
+  createWebViewWith call logs decidedByNavigationPolicy.
+- window.open tab-style to localhost: routable(scriptedWindow) -> Work window.
+  Popup-style: notRouted(popupWindow), a tab here, opener kept (the opener
+  received the popup's postMessage).
+- Option-click: the policy's Option branch runs before routing is asked; a
+  split formed. Shift-click: Peek, routing not asked. In the Peek: a _blank
+  link and a cross-host click to a Private-routed URL both notRouted(inPeek);
+  the _blank opened a tab here as before, the click navigated the Peek.
+- Server redirect (same-host link, 302 to localhost): sameHost, then the
+  redirect asked again as link activation with _isRedirect=true ->
+  notRouted(redirect); the tab ended on the redirect target. Client redirect
+  (location.replace): notLinkActivation. onclick location.href:
+  notLinkActivation with gesture=true. Page timer a.click(): noUserGesture.
+  onclick a.click(): gesture=true, routed to Work (indistinguishable from a
+  click, by design).
+- Cross host with no route ([::1]): routable, decision none, in place.
+- Pinned tab: cross-host click to localhost routed to Work, no Peek
+  (16a); to [::1] (no route): Peek as before (16b); a same-host link that
+  server-redirects to localhost: not routed, and the anchor intercept PEEKED
+  the redirect target (16c) - pre-existing, WebKit reports the redirect as a
+  link activation.
+- Cmd+T "localhost:8714/b?kind=typed": routable, Work -> window B (17).
+  Cmd+L: navigatesInPlace=true, not routable, loaded in A's tab. Search
+  "routeme please": isSearch=true, not routable, a Google tab here (the one
+  request outside the fixture).
+- Private route from A with no Private window: openInNewPrivateWindow (20);
+  again: openInPrivateWindow(P). From P, a cross-host click to localhost
+  (Work route): routable, decision none, navigated in place (22). Typed in P:
+  routable, decision none, a tab in P.
+- Reruns (cmd-1b/1c below): the first plain click after a window became key
+  sometimes did not land (no navigation action at all); re-posting it worked.
+
+--- fixture/server.py ---
+    # TASK-191.4 fixture server: a page of links, a target page, server and client
+    # redirects. Bound to 127.0.0.1; pages reach it as 127.0.0.1 and as localhost
+    # (two hosts for the cross-host rule). Logs every request to stdout.
+    import sys, html
+    from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+    from urllib.parse import urlparse, parse_qs
+
+    PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8714
+
+    LINKS = """<!doctype html><html><head><title>Links {tag}</title>
+    <style>body{{font:15px -apple-system;margin:16px}} a,button{{display:block;margin:6px 0;font-size:15px;padding:4px}}</style></head>
+    <body><h3>Links on {host} ({tag})</h3>
+    <a id="same" href="/b?from={tag}&kind=same">same host /b</a>
+    <a id="cross" href="http://{other}:{port}/b?from={tag}&kind=cross">cross host {other}/b</a>
+    <a id="crosslinks" href="http://{other}:{port}/a?tag=peeked">cross host links page on {other}</a>
+    <a id="v6" href="http://[::1]:{port}/b?from={tag}&kind=v6">cross host [::1]/b (no route)</a>
+    <a id="crosspriv" href="http://{other}:{port}/b?from={tag}&kind=secret">cross host {other}/b secret</a>
+    <a id="blank" target="_blank" href="http://{host}:{port}/b?from={tag}&kind=blank-work">_blank same host, work path</a>
+    <a id="blankplain" target="_blank" href="http://{host}:{port}/b?from={tag}&kind=blank-plain">_blank same host, unrouted</a>
+    <a id="sameWork" href="/b?from={tag}&kind=work">same host, work path (plain)</a>
+    <a id="redir" href="/redir?to=http://{other}:{port}/b%3Ffrom%3D{tag}%26kind%3Dredirect">same host link, server redirect to {other}</a>
+    <a id="clientredir" href="/clientredir?to=http://{other}:{port}/b%3Ffrom%3D{tag}%26kind%3Dclientredirect">same host link, client redirect to {other}</a>
+    <button id="open" onclick="window.open('http://{other}:{port}/b?from={tag}&kind=open-tab')">window.open tab-style</button>
+    <button id="popup" onclick="window.popupRef = window.open('http://{other}:{port}/popup?from={tag}&kind=open-popup', 'p', 'popup,width=420,height=320')">window.open popup-style</button>
+    <button id="scriptnav" onclick="location.href='http://{other}:{port}/b?from={tag}&kind=scriptnav'">onclick location.href</button>
+    <button id="scriptclick" onclick="setTimeout(()=>document.getElementById('cross').click(), 0)">onclick a.click()</button>
+    <div id="received"></div>
+    <script>
+    window.received = [];
+    window.addEventListener('message', e => {{ window.received.push(e.data); document.getElementById('received').textContent = 'popup said: ' + JSON.stringify(e.data); }});
+    const auto = new URLSearchParams(location.search).get('auto');
+    if (auto === 'click') setTimeout(() => document.getElementById('cross').click(), 1200);
+    if (auto === 'nav') setTimeout(() => {{ location.href = 'http://{other}:{port}/b?from={tag}&kind=timernav'; }}, 1200);
+    </script></body></html>"""
+
+    PAGE = """<!doctype html><html><head><title>B {kind} on {host}</title></head>
+    <body style="font:15px -apple-system;margin:16px"><h3>Target B on {host}</h3><p>kind={kind} from={frm}</p>
+    <a id="back" href="http://{host}:{port}/a?tag=b">links page</a></body></html>"""
+
+    POPUP = """<!doctype html><html><head><title>Popup on {host}</title></head><body>
+    <p>popup, opener={{}}</p><script>
+    document.querySelector('p').textContent = 'popup, hasOpener=' + !!window.opener;
+    if (window.opener) window.opener.postMessage({{ fromPopup: true }}, '*');
+    </script></body></html>"""
+
+    CLIENT = """<!doctype html><html><head><title>client redirect</title></head><body>
+    <script>location.replace({to!r});</script></body></html>"""
+
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            sys.stdout.write("REQ %s %s\n" % (self.headers.get('Host'), self.path))
+            sys.stdout.flush()
+
+        def send_page(self, body, code=200):
+            data = body.encode()
+            self.send_response(code)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            u = urlparse(self.path)
+            q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            hosthdr = self.headers.get('Host') or '127.0.0.1'
+            host = hosthdr[:hosthdr.index(']') + 1] if hosthdr.startswith('[') else hosthdr.split(':')[0]
+            other = 'localhost' if host == '127.0.0.1' else '127.0.0.1'
+            if u.path == '/a':
+                self.send_page(LINKS.format(tag=html.escape(q.get('tag', 'a')), host=host, other=other, port=PORT))
+            elif u.path == '/b':
+                self.send_page(PAGE.format(kind=html.escape(q.get('kind', '')), frm=html.escape(q.get('from', '')), host=host, port=PORT))
+            elif u.path == '/popup':
+                self.send_page(POPUP.format(host=host))
+            elif u.path == '/redir':
+                self.send_response(302)
+                self.send_header('Location', q.get('to', '/b'))
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+            elif u.path == '/clientredir':
+                self.send_page(CLIENT.format(to=q.get('to', '/b')))
+            else:
+                self.send_page('not found', 404)
+
+
+    import socket
+    if len(sys.argv) > 2 and sys.argv[2] == 'v6':
+        class V6(ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+        V6(('::1', PORT), H).serve_forever()
+    else:
+        ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
+
+--- watch-captures.sh ---
+    #!/bin/bash
+    # Takes a window capture for every "CAPTURE <label> <windowNumber>" line the harness logs.
+    OUT=/private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/20483124-f109-4f1c-ac33-b193eaf9d147/scratchpad/task191-4/out
+    LOG=$OUT/verify-1.log
+    seen=$(grep -c " CAPTURE " "$LOG" 2>/dev/null || echo 0)
+    while true; do
+      if [ -f "$LOG" ]; then
+        n=$(grep -c " CAPTURE " "$LOG")
+        if [ "$n" -gt "$seen" ]; then
+          grep " CAPTURE " "$LOG" | tail -n +$((seen + 1)) | sed -E "s/.* CAPTURE //" | while read -r label num; do
+            /usr/sbin/screencapture -x -o -l "$num" "$OUT/$label.png" && echo "captured $label ($num)"
+          done
+          seen=$n
+        fi
+        grep -q "STATE ${1:-end}:" "$LOG" && exit 0
+      fi
+      sleep 0.5
+    done
+
+--- cmd-1.txt ---
+    wait 4
+    activate
+    front A
+    wait 1.5
+    dump start
+    # 1 same-host plain click: not routed
+    click A same
+    wait 2
+    dump 1-same
+    load A http://127.0.0.1:8714/a?tag=p
+    wait 2
+    # 2 cross-host plain click to a routed host: Work window B, tab A stays
+    click A cross
+    wait 2.5
+    dump 2-cross
+    capture 02-cross-B B
+    capture 02-cross-A A
+    front A
+    wait 1
+    # 3 Cmd+click cross: Work
+    click A cross cmd
+    wait 2.5
+    dump 3-cmd-cross
+    front A
+    wait 1
+    # 3b Cmd+click same host, no route: background tab here as before
+    click A same cmd
+    wait 2
+    dump 3b-cmd-same
+    # 4 target=_blank same host, routed by contains kind=blank-work: Work
+    click A blank
+    wait 2.5
+    dump 4-blank-routed
+    front A
+    wait 1
+    # 4b target=_blank unrouted: a new tab here, as before
+    click A blankplain
+    wait 2.5
+    dump 4b-blank-plain
+    select A a?tag=p
+    wait 1
+    # 5 window.open tab-style to localhost: Work
+    click A open
+    wait 2.5
+    dump 5-open-tab
+    front A
+    wait 1
+    # 6 window.open popup-style to localhost: not routed, keeps its opener
+    click A popup
+    wait 3
+    dump 6-popup
+    select A a?tag=p
+    wait 1.5
+    eval A JSON.stringify(window.received)
+    wait 1
+    # 7 Option-click: split, not routed
+    newtab A http://127.0.0.1:8714/a?tag=opt
+    wait 2
+    click A cross opt
+    wait 3
+    dump 7-option
+    capture 07-option-split A
+    # 8 Shift-click: Peek, not routed
+    newtab A http://127.0.0.1:8714/a?tag=shift
+    wait 2
+    click A cross shift
+    wait 3
+    dump 8-shift-peek
+    capture 08-shift-peek A
+    # 9 a click inside the Peek: not routed (the Peek navigates)
+    clickpeek A cross
+    wait 3
+    dump 9-in-peek
+    capture 09-in-peek A
+    escape A
+    wait 1.5
+    # 10 server redirect: same-host link, 302 to localhost: lands in this tab
+    newtab A http://127.0.0.1:8714/a?tag=redir
+    wait 2
+    click A redir
+    wait 3
+    dump 10-redirect
+    # 11 client redirect: same-host link, location.replace to localhost
+    load A http://127.0.0.1:8714/a?tag=p
+    wait 2
+    click A clientredir
+    wait 3
+    dump 11-client-redirect
+    # 12 script navigation: onclick location.href to localhost
+    load A http://127.0.0.1:8714/a?tag=p
+    wait 2
+    click A scriptnav
+    wait 3
+    dump 12-script-nav
+    # 13 a page timer's a.click() with no gesture
+    load A http://127.0.0.1:8714/a?tag=p&auto=click
+    wait 4
+    dump 13-timer-click
+    # 14 onclick a.click() inside the user's click: has the gesture, so routed
+    load A http://127.0.0.1:8714/a?tag=p
+    wait 2
+    click A scriptclick
+    wait 2.5
+    dump 14-scriptclick
+    front A
+    wait 1
+    # 15 cross-host plain click to an unrouted host ([::1]): navigates in place
+    load A http://127.0.0.1:8714/a?tag=p
+    wait 2
+    click A v6
+    wait 2.5
+    dump 15-unrouted-cross
+    # 16 pinned tab: a route elsewhere wins over the Peek; no route: Peek as before
+    select A a?tag=pin
+    wait 2
+    click A cross
+    wait 2.5
+    dump 16a-pinned-routed
+    capture 16a-pinned-routed-B B
+    front A
+    wait 1.5
+    click A v6
+    wait 3
+    dump 16b-pinned-peek
+    capture 16b-pinned-peek A
+    escape A
+    wait 1.5
+    # 16c pinned tab: a same-host link that server-redirects to localhost (not routed; does the anchor intercept peek it?)
+    click A redir
+    wait 3
+    dump 16c-pinned-redirect
+    capture 16c-pinned-redirect A
+    escape A
+    wait 1.5
+    # 17 Cmd+T typed URL routed to Work
+    newtab A http://127.0.0.1:8714/a?tag=typed
+    wait 2
+    cmdt A
+    wait 1.5
+    type A localhost:8714/b?kind=typed
+    wait 1
+    return A
+    wait 2.5
+    dump 17-cmdt
+    capture 17-cmdt-B B
+    front A
+    wait 1.5
+    # 18 Cmd+L: navigates in place, never routed
+    cmdl A
+    wait 1.5
+    clear A
+    wait 0.5
+    type A localhost:8714/b?kind=typed-inplace
+    wait 1
+    return A
+    wait 2.5
+    dump 18-cmdl
+    # 19 a search is never routed (route: contains routeme -> Work)
+    cmdt A
+    wait 1.5
+    type A routeme please
+    wait 1
+    return A
+    wait 3
+    dump 19-search
+    # 20 Private route from a normal window: a new Private window
+    newtab A http://127.0.0.1:8714/a?tag=p
+    wait 2
+    click A crosspriv
+    wait 3
+    name P
+    dump 20-private-route-new
+    capture 20-private-route P
+    front A
+    wait 1.5
+    # 21 the same from a normal window with a Private window open: a tab in it
+    click A crosspriv
+    wait 3
+    dump 21-private-route-reuse
+    # 22 from the Private window: a route to Work is ignored (navigates in place)
+    front P
+    wait 1.5
+    newtab P http://127.0.0.1:8714/a?tag=priv
+    wait 2.5
+    click P cross
+    wait 2.5
+    dump 22-private-click
+    capture 22-private-click P
+    # 23 a typed URL in the Private window: not routed out of Private
+    cmdt P
+    wait 1.5
+    type P localhost:8714/b?kind=typed-private
+    wait 1
+    return P
+    wait 2.5
+    dump 23-private-typed
+    dump end
+
+--- cmd-1b.txt (appended) ---
+    # --- rerun of the cases whose click did not land, and a links page in a Peek
+    front A
+    wait 1.5
+    newtab A http://127.0.0.1:8714/a?tag=r1
+    wait 2.5
+    click A same
+    wait 2.5
+    dump R1-same
+    newtab A http://127.0.0.1:8714/a?tag=r4
+    wait 2.5
+    click A blank
+    wait 3
+    dump R4-blank-routed
+    capture R4-blank-routed-B B
+    front A
+    wait 1.5
+    newtab A http://127.0.0.1:8714/a?tag=r9
+    wait 2.5
+    click A crosslinks shift
+    wait 3.5
+    dump R9a-peek-open
+    clickpeek A blank
+    wait 3
+    dump R9b-in-peek-blank
+    clickpeek A crosspriv
+    wait 3
+    dump R9c-in-peek-cross
+    capture R9-in-peek A
+    escape A
+    wait 1.5
+    dump end2
+
+--- cmd-1c.txt (appended) ---
+    # --- a plain cross-host click to a routed URL inside a Peek
+    front A
+    wait 1.5
+    newtab A http://127.0.0.1:8714/a?tag=r9c
+    wait 2.5
+    click A crosslinks shift
+    wait 3.5
+    clickpeek A crosspriv
+    wait 3
+    dump R9c-in-peek-cross
+    capture R9c-in-peek-cross A
+    escape A
+    wait 1.5
+    dump end3
+
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1914HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -312,6 +315,9 @@
+         let placement = linkPlacement(for: decision, windows: windows.map {
+             LinkPlacementWindow(id: ObjectIdentifier($0), activeSpaceID: $0.activeSpaceID, isPrivate: $0.isIncognito)
+         })
++        #if DEBUG
++        Task1914Harness.logPlacement(url, decision, placement, windows: windows)   // TEMP — DO NOT COMMIT
++        #endif
+         place(url, placement, windows: windows)
+     }
+ 
+--- a/Detour/Browser/Window/BrowserWindowController.swift
++++ b/Detour/Browser/Window/BrowserWindowController.swift
+@@ -3669,6 +3669,10 @@
+         // new-tab mode that a route sends to another space, or a Private
+         // window, opens there as a link from another app would. Navigating in
+         // place (Cmd+L, the address bar) never routes: the user picked the tab.
++        #if DEBUG
++        Task1914Harness.logTyped(self, url: url, typed: typed, inPlace: navigateInPlace,   // TEMP — DO NOT COMMIT
++                                 routable: typedURLIsRoutable(url, isSearch: !typed, navigatesInPlace: navigateInPlace))
++        #endif
+         if typedURLIsRoutable(url, isSearch: !typed, navigatesInPlace: navigateInPlace),
+            let appDelegate = NSApp.delegate as? AppDelegate,
+            let decision = routedTypedDecision(for: url) {
+--- a/Detour/Browser/Window/BrowserWindowController+LinkRouting.swift
++++ b/Detour/Browser/Window/BrowserWindowController+LinkRouting.swift
+@@ -46,6 +46,9 @@
+                              defaultTarget: store.linkRoutes.defaultTarget,
+                              context: store.linkRouteContext)
+         }
++        #if DEBUG
++        Task1914Harness.logClick(self, request, eligibility, decision)   // TEMP — DO NOT COMMIT
++        #endif
+         if let decision {
+             log.info("Link routed (\(String(describing: eligibility), privacy: .public)): \(String(describing: decision), privacy: .public)")
+         }
+@@ -61,6 +64,9 @@
+                                         routes: store.linkRoutes.routes,
+                                         defaultTarget: store.linkRoutes.defaultTarget,
+                                         context: store.linkRouteContext)
++        #if DEBUG
++        Task1914Harness.logTypedDecision(self, url: url, decision: decision == .stay ? nil : decision)   // TEMP — DO NOT COMMIT
++        #endif
+         guard decision != .stay else { return nil }
+         log.info("Typed URL routed: \(String(describing: decision), privacy: .public)")
+         return decision
+diff --git a/Detour/App/Task1914Harness.swift b/Detour/App/Task1914Harness.swift
+new file mode 100644
+--- /dev/null
++++ b/Detour/App/Task1914Harness.swift
+@@ -0,0 +1,275 @@
++// TEMP TASK-191.4 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++enum Task1914Harness {
++    static let env = ProcessInfo.processInfo.environment
++    static var outDir: String? { env["DETOUR_VERIFY_DIR"] }
++    static let start = ProcessInfo.processInfo.systemUptime
++    static var labels: [ObjectIdentifier: String] = [:]
++
++    static func log(_ line: String) {
++        guard let outDir else { return }
++        let url = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(env["DETOUR_VERIFY_PHASE"] ?? "x").log")
++        let stamped = String(format: "[%8.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++        let data = Data(stamped.utf8)
++        if let h = try? FileHandle(forWritingTo: url) {
++            h.seekToEndOfFile(); h.write(data); try? h.close()
++        } else { try? data.write(to: url) }
++    }
++
++    static func spaceName(_ id: UUID?) -> String {
++        guard let id else { return "-" }
++        guard let space = TabStore.shared.space(withID: id) else { return "?\(id.uuidString.prefix(4))" }
++        return space.isIncognito ? "Private(\(id.uuidString.prefix(4)))" : space.name
++    }
++
++    static func label(_ wc: BrowserWindowController?) -> String {
++        guard let wc else { return "nil" }
++        let name = labels[ObjectIdentifier(wc)] ?? (wc.isIncognito ? "P?" : "W?")
++        return "\(name)#\(wc.window?.windowNumber ?? 0)"
++    }
++
++    static func describe(_ decision: LinkRouteDecision?) -> String {
++        guard let decision else { return "none (as before)" }
++        if case .openInSpace(let id) = decision { return "openInSpace(\(spaceName(id)))" }
++        return "\(decision)"
++    }
++
++    static func logClick(_ wc: BrowserWindowController, _ request: InPageLinkRequest,
++                         _ eligibility: LinkRoutingEligibility, _ decision: LinkRouteDecision?) {
++        log("CLICK window=\(label(wc)) space=\(spaceName(wc.activeSpaceID)) entry=\(request.entry) mods=\(request.modifiers.rawValue) gesture=\(request.isUserGesture) peek=\(request.isInPeek) page=\(request.pageURL?.absoluteString ?? "nil") target=\(request.targetURL.absoluteString) eligibility=\(eligibility) decision=\(describe(decision))")
++    }
++
++    static func logTyped(_ wc: BrowserWindowController, url: URL, typed: Bool, inPlace: Bool, routable: Bool) {
++        log("TYPED window=\(label(wc)) space=\(spaceName(wc.activeSpaceID)) url=\(url.absoluteString) isSearch=\(!typed) navigatesInPlace=\(inPlace) routable=\(routable)")
++    }
++
++    static func logTypedDecision(_ wc: BrowserWindowController, url: URL, decision: LinkRouteDecision?) {
++        log("TYPED-DECISION window=\(label(wc)) url=\(url.absoluteString) decision=\(describe(decision))")
++    }
++
++    static func logPlacement(_ url: URL, _ decision: LinkRouteDecision, _ placement: LinkPlacement<ObjectIdentifier>,
++                             windows: [BrowserWindowController]) {
++        var p = String(describing: placement)
++        for wc in windows { p = p.replacingOccurrences(of: String(describing: ObjectIdentifier(wc)), with: label(wc)) }
++        for space in TabStore.shared.spaces { p = p.replacingOccurrences(of: space.id.uuidString, with: space.name) }
++        log("PLACE \(url.absoluteString) decision=\(describe(decision)) windows(recent first)=\(windows.map(label)) placement=\(p)")
++    }
++
++    static func dump(_ label: String) {
++        let ordered = NSApp.browserWindowControllersFrontToBack
++        var lines = ["STATE \(label): active=\(NSApp.isActive) key=\(Self.label(NSApp.keyWindow?.windowController as? BrowserWindowController))"]
++        for (i, wc) in ordered.enumerated() {
++            let space = wc.activeSpace
++            let tabs = space?.tabs.compactMap { $0.url?.absoluteString } ?? []
++            let pinned = space?.pinnedEntries.compactMap { $0.tab?.url?.absoluteString } ?? []
++            let peek = wc.peekOverlayView != nil ? " PEEK=\(wc.selectedTab?.peekTab?.url?.absoluteString ?? "?")" : ""
++            let split = wc.selectedTab.flatMap { t in space.flatMap { TabStore.shared.splitGroup(containing: t.id, in: $0) } }
++                .map { " SPLIT=\($0.members.compactMap { $0.url?.absoluteString })" } ?? ""
++            lines.append("  [\(i)] \(Self.label(wc)) space=\(spaceName(wc.activeSpaceID)) selected=\(wc.selectedTab?.url?.absoluteString ?? "-")\(peek)\(split) tabs=\(tabs) pinned=\(pinned)")
++        }
++        log(lines.joined(separator: "\n"))
++    }
++}
++
++extension AppDelegate {
++    func runTask1914HarnessIfRequested(_ launchWC: BrowserWindowController) {
++        guard let outDir = Task1914Harness.outDir, let phase = Task1914Harness.env["DETOUR_VERIFY_PHASE"] else { return }
++        let log = Task1914Harness.log
++        let store = TabStore.shared
++        let routes = store.linkRoutes
++        let base = Task1914Harness.env["DETOUR_VERIFY_BASE"] ?? "http://127.0.0.1:8714"
++        log("phase \(phase) launched pid=\(ProcessInfo.processInfo.processIdentifier) spaces=\(store.nonIncognitoSpaces.map(\.name))")
++
++        func space(named name: String) -> Space? { store.nonIncognitoSpaces.first { $0.name == name } }
++        var windows: [String: BrowserWindowController] = [:]
++        func name(_ wc: BrowserWindowController, _ n: String) {
++            windows[n] = wc
++            Task1914Harness.labels[ObjectIdentifier(wc)] = n
++        }
++
++        let profileID = store.nonIncognitoSpaces.first!.profileID
++        for n in ["Work", "Personal"] where space(named: n) == nil {
++            store.addSpace(name: n, emoji: n == "Work" ? "💼" : "🏠", colorHex: n == "Work" ? "007AFF" : "34C759", profileID: profileID)
++        }
++        for r in routes.routes { routes.removeRoute(id: r.id) }
++        let work = space(named: "Work")!, personal = space(named: "Personal")!
++        routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "secret"), target: .privateWindow))
++        routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "localhost"), target: .space(work.id)))
++        routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "kind=blank-work"), target: .space(work.id)))
++        routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "routeme"), target: .space(work.id)))
++        routes.setDefaultTarget(.mostRecentSpace)
++        log("routes: \(routes.routes.map { "\(linkRouteSummary($0)) -> \($0.target.storageKind):\(Task1914Harness.spaceName($0.target.spaceID))" }) default=\(routes.defaultTarget.storageKind)")
++
++        // Window B on Work (where routed links land), window A on Personal in front.
++        let workWC = createNewWindow(showing: work)
++        workWC.window?.setFrame(NSRect(x: 60, y: 60, width: 1000, height: 720), display: true)
++        name(workWC, "B")
++        launchWC.setActiveSpace(id: personal.id, selectTab: false)
++        launchWC.window?.setFrame(NSRect(x: 140, y: 120, width: 1000, height: 720), display: true)
++        name(launchWC, "A")
++        // The pinned tab (anchor 127.0.0.1/a?tag=pin), then the page of links.
++        let pinTab = store.addTab(in: personal, url: URL(string: base + "/a?tag=pin")!)
++        store.pinTab(id: pinTab.id, in: personal)
++        let tab = store.addTab(in: personal, url: URL(string: base + "/a?tag=p")!)
++        launchWC.selectTab(id: tab.id)
++        launchWC.window?.makeKeyAndOrderFront(nil)
++
++        func wc(_ n: String?) -> BrowserWindowController? {
++            guard let n else { return NSApp.browserWindowControllersFrontToBack.first }
++            return windows[n]
++        }
++        func flags(_ s: String?) -> NSEvent.ModifierFlags {
++            var f: NSEvent.ModifierFlags = []
++            for part in (s ?? "").split(separator: "+") {
++                switch part {
++                case "cmd": f.insert(.command)
++                case "shift": f.insert(.shift)
++                case "opt": f.insert(.option)
++                default: break
++                }
++            }
++            return f
++        }
++        var eventNumber = 1000
++        /// Input only lands in the key window of the active app: a plain click
++        /// on an inactive window is swallowed (a Cmd-click is not).
++        func ensureFront(_ w: BrowserWindowController) {
++            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++            if NSApp.keyWindow !== w.window { w.window?.makeKeyAndOrderFront(nil) }
++        }
++        func post(_ e: NSEvent?) { if let e { NSApp.postEvent(e, atStart: false) } }
++        func click(_ id: String, in webView: WKWebView, of w: BrowserWindowController, mods: NSEvent.ModifierFlags) {
++            let js = "(() => { const e = document.getElementById('\(id)'); if (!e) return null; const b = e.getBoundingClientRect(); return [b.x + Math.min(20, b.width / 2), b.y + b.height / 2]; })()"
++            webView.evaluateJavaScript(js) { result, error in
++                guard let r = result as? [Double], let window = w.window else { log("CMD click \(id): no element (\(String(describing: error)))"); return }
++                let p = webView.convert(NSPoint(x: r[0], y: r[1]), to: nil)
++                ensureFront(w)
++                log("CMD click \(id) mods=\(mods.rawValue) at window point \(p) in \(Task1914Harness.label(w)) active=\(NSApp.isActive) key=\(Task1914Harness.label(NSApp.keyWindow?.windowController as? BrowserWindowController)) front=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil")")
++                for type in [NSEvent.EventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
++                    eventNumber += 1
++                    post(NSEvent.mouseEvent(with: type, location: p, modifierFlags: mods,
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                            context: nil, eventNumber: eventNumber, clickCount: type == .mouseMoved ? 0 : 1,
++                                            pressure: type == .leftMouseDown ? 1 : 0))
++                }
++            }
++        }
++        func key(_ chars: String, mods: NSEvent.ModifierFlags = [], keyCode: UInt16 = 0, in w: BrowserWindowController) {
++            guard let window = w.window else { return }
++            ensureFront(w)
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                post(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods, timestamp: ProcessInfo.processInfo.systemUptime,
++                                      windowNumber: window.windowNumber, context: nil, characters: chars,
++                                      charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode))
++            }
++        }
++
++        // Commands appended to cmd-<phase>.txt, one per line, applied in order.
++        var handled = 0
++        var resumeAt: TimeInterval = 0
++        var retries = 0
++        let cmdURL = URL(fileURLWithPath: outDir).appendingPathComponent("cmd-\(phase).txt")
++        let timer = Timer(timeInterval: 0.3, repeats: true) { _ in
++            guard let text = try? String(contentsOf: cmdURL, encoding: .utf8) else { return }
++            let lines = text.split(separator: "\n").map(String.init)
++            while handled < lines.count {
++                guard ProcessInfo.processInfo.systemUptime >= resumeAt else { return }
++                let line = lines[handled]
++                handled += 1
++                let parts = line.split(separator: " ").map(String.init)
++                guard let cmd = parts.first else { continue }
++                let arg = parts.count > 1 ? parts[1] : nil
++                let arg2 = parts.count > 2 ? parts[2] : nil
++                log("CMD \(line)")
++                if ["click", "clickpeek", "cmdt", "cmdl", "type", "clear", "return", "escape"].contains(cmd),
++                   let w = wc(arg), !NSApp.isActive || NSApp.keyWindow !== w.window {
++                    // Bring Detour and the window forward first, and retry the
++                    // command once that has had time to take effect.
++                    ensureFront(w)
++                    handled -= 1
++                    resumeAt = ProcessInfo.processInfo.systemUptime + 0.8
++                    retries += 1
++                    if retries <= 3 { return }
++                    log("CMD \(cmd): window still not key after 3 tries (active=\(NSApp.isActive)); posting anyway")
++                    handled += 1
++                }
++                retries = 0
++                switch cmd {
++                case "dump": Task1914Harness.dump(parts.dropFirst().joined(separator: " "))
++                case "#": break
++                case "wait": resumeAt = ProcessInfo.processInfo.systemUptime + (Double(arg ?? "1") ?? 1)
++                case "capture":
++                    // capture <label> <window>: the shell watcher takes the picture
++                    if let l = arg, let w = wc(arg2) { log("CAPTURE \(l) \(w.window?.windowNumber ?? 0)") }
++                    resumeAt = ProcessInfo.processInfo.systemUptime + 2.5
++                case "newtab":
++                    // newtab <window> <url>: a selected tab in the window's space
++                    if let w = wc(arg), let space = w.activeSpace, let s = arg2, let u = URL(string: s) {
++                        let t = store.addTab(in: space, url: u)
++                        w.selectTab(id: t.id)
++                    }
++                case "activate": NSApp.activate(ignoringOtherApps: true)
++                case "front":
++                    // front A|B|P
++                    wc(arg)?.window?.makeKeyAndOrderFront(nil)
++                case "load":
++                    // load <window> <url>: the window's selected tab
++                    if let w = wc(arg), let s = arg2, let u = URL(string: s) { w.selectedTab?.load(u) }
++                case "select":
++                    // select <window> <url substring>: select the tab whose URL contains it (normal or pinned)
++                    if let w = wc(arg), let s = arg2, let space = w.activeSpace,
++                       let t = (space.tabs + space.pinnedEntries.compactMap(\.tab)).first(where: { $0.url?.absoluteString.contains(s) == true }) {
++                        w.selectTab(id: t.id)
++                    }
++                case "click", "clickpeek":
++                    // click <window> <element id> [cmd+shift+opt]
++                    if let w = wc(arg), let id = arg2 {
++                        let webView = cmd == "clickpeek" ? w.selectedTab?.peekTab?.webView : w.selectedTab?.webView
++                        if let webView { click(id, in: webView, of: w, mods: flags(parts.count > 3 ? parts[3] : nil)) }
++                        else { log("CMD \(cmd): no web view") }
++                    }
++                case "eval":
++                    // eval <window> <js...>
++                    if let w = wc(arg), let webView = w.selectedTab?.webView {
++                        let js = parts.dropFirst(2).joined(separator: " ")
++                        webView.evaluateJavaScript(js) { r, e in log("EVAL \(js) -> \(String(describing: r)) \(e.map { "error \($0)" } ?? "")") }
++                    }
++                case "cmdt": if let w = wc(arg) { key("t", mods: .command, keyCode: 17, in: w) }
++                case "cmdl": if let w = wc(arg) { key("l", mods: .command, keyCode: 37, in: w) }
++                case "type":
++                    // type <window> <text>: one key event per character
++                    if let w = wc(arg) {
++                        for ch in parts.dropFirst(2).joined(separator: " ") { key(String(ch), in: w) }
++                    }
++                case "clear":
++                    // clear <window>: select all and delete in the palette's field
++                    if let w = wc(arg) { key("a", mods: .command, keyCode: 0, in: w); key("\u{8}", keyCode: 51, in: w) }
++                case "return": if let w = wc(arg) { key("\r", keyCode: 36, in: w) }
++                case "escape": if let w = wc(arg) { key("\u{1b}", keyCode: 53, in: w) }
++                case "private":
++                    let p = BrowserWindowController(incognito: true)
++                    p.showWindow(nil)
++                    self.registerWindowController(p)
++                    do {
++                        name(p, "P")
++                        p.window?.setFrame(NSRect(x: 220, y: 180, width: 1000, height: 720), display: true)
++                        if let space = p.activeSpace, let s = arg, let u = URL(string: s) {
++                            let t = store.addTab(in: space, url: u)
++                            p.selectTab(id: t.id)
++                        }
++                    }
++                case "name":
++                    // name <label>: label the frontmost unnamed browser window (a routed Private window)
++                    if let n = arg, let w = NSApp.browserWindowControllersFrontToBack.first(where: { Task1914Harness.labels[ObjectIdentifier($0)] == nil }) { name(w, n) }
++                default: log("CMD unknown \(line)")
++                }
++            }
++        }
++        RunLoop.main.add(timer, forMode: .common)
++        log("ready")
++    }
++}
++#endif
