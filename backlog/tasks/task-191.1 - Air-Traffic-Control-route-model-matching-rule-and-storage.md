@@ -4,7 +4,7 @@ title: 'Air Traffic Control: route model, matching rule and storage'
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:44'
-updated_date: '2026-10-24 10:18'
+updated_date: '2026-10-25 08:46'
 labels:
   - links
   - storage
@@ -38,4 +38,6 @@ A pure resolver, test-first: `resolveLinkRoute(url:routes:defaultTarget:spaces:m
 2026-10-24 scope change (see TASK-191): the resolver takes the link's origin — external (with the sending app's bundle ID when known), typed, or clicked in a tab of space S — and a route may carry an optional source-app condition (matches only external links from that app). A route whose target is the space the link is already in resolves to 'stay' (no move). Add tests for the origin and source-app cases.
 
 2026-10-24: add the Private window target. Resolver: a route to Private matches from any origin; from a Private window, routes to normal spaces are skipped (no routing out of Private) but a Private route is a no-op 'stay'. Also the Quarantine target (TASK-194), valid only for the external origin. Tests for both.
+
+User 2026-10-25: deleting a space that routes target is blocked (see TASK-191). AC #3 becomes: TabStore refuses to delete such a space, with a pure, tested check (e.g. routesTargeting(spaceID)) the UI uses to explain why; the resolver still skips a missing space defensively.
 <!-- SECTION:NOTES:END -->

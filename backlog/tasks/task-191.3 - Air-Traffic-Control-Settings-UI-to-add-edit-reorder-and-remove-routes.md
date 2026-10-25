@@ -4,7 +4,7 @@ title: 'Air Traffic Control: Settings UI to add, edit, reorder and remove routes
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:44'
-updated_date: '2026-10-24 10:18'
+updated_date: '2026-10-25 08:46'
 labels:
   - links
   - settings
@@ -37,4 +37,6 @@ Third part of TASK-191. A Links pane in Settings (or a section of the Spaces pan
 2026-10-24: each route gets an optional 'From app' condition: an app picker (running apps plus Choose… for any .app; shows icon and name, stores the bundle ID), shown as an extra line under the URL line. A route may also be app-only (any URL from that app) — decide whether the URL part can be left empty.
 
 2026-10-24: the Open in popup lists Private Window (and Quarantine, for routes that can only match links from other apps, and for the Default) after the spaces and Most Recent Space.
+
+User 2026-10-25: own Links pane (not a Spaces section); app-only routes allowed (URL part optional when a From app is set; a route needs at least one condition). Space deletion in the sidebar and in the Spaces pane is blocked while routes target the space: the alert names the routes and offers to open the Links pane. Hide the Quarantine/Quick Detour targets until their tasks land.
 <!-- SECTION:NOTES:END -->

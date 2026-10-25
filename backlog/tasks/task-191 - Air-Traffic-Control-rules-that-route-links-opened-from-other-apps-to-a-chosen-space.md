@@ -4,7 +4,7 @@ title: 'Air Traffic Control: rules that route links and typed URLs to a chosen s
 status: To Do
 assignee: []
 created_date: '2026-10-24 09:44'
-updated_date: '2026-10-24 10:21'
+updated_date: '2026-10-25 08:46'
 labels:
   - links
   - spaces
@@ -46,4 +46,6 @@ Also decided 2026-10-24: the optional **source app** condition is in scope. A ro
 Decided (user, 2026-10-24): **Private is an Open in target**, reversing "Private spaces are never targets" in the description. A Private space exists only while its window is open, so the target is "Private window", not a space: open the link as a tab in the most recent open Private window, else in a new Private window. It applies to all three origins (other apps, typed, in-browser clicks). The boundary rule becomes one-way: routing *into* Private is allowed; routing *out of* a Private window into a normal space never happens (a click or typed URL in a Private window ignores routes that target normal spaces). Distinct from Quarantine (TASK-194), which is a throwaway Quick Detour window for links from other apps only.
 
 Name decided 2026-10-24: the Little Arc equivalent is **Quick Detour** (TASK-193).
+
+Decisions (user, 2026-10-25): (1) a routed link whose space shows in no window switches the most recently active normal window to that space (191.2 proposal taken); (2) plain in-page clicks route when they go to another host and match a route; the current tab stays, same-host clicks/redirects/scripts never route (191.4 proposal taken); (3) a space that routes point at CANNOT be deleted: deletion is blocked with a message naming the routes and a way to open the Links pane, until they are changed or removed (replaces 'broken routes'; deleted-space handling in the resolver stays only as a defensive fallback, e.g. a space removed by sync/migration); (4) routes live in their own Links pane in Settings, and a route may match on URL, on source app, or both (app-only routes allowed). Defaults taken from the subtask proposals: Cmd+T routes, Cmd+L (in place) never routes; a route that sends a link elsewhere wins over the pinned/favourite anchor-to-Peek intercept; the Quarantine and Quick Detour targets exist in the model but are hidden in the Links pane until TASK-194 / TASK-193.5 land.
 <!-- SECTION:NOTES:END -->
