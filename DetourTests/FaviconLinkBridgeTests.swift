@@ -145,6 +145,40 @@ final class FaviconLinkBridgeTests: XCTestCase {
         tab.pageDidReportFaviconLink(foreignIcon, originHost: "FAV.test")
         XCTAssertNotNil(pendingFetches[foreignIcon], "the tab's own origin, in any case, is heard")
     }
+
+    // MARK: - IPv6 literals and ports (TASK-198)
+
+    /// Loading an IPv6-literal URL crashed: the optimistic guess was rebuilt
+    /// from `URL.host`, which has no brackets, and force-unwrapped. The guess
+    /// goes to the page's own origin, brackets and port included.
+    func testAnIPv6PageGuessesItsFaviconAtItsOwnOrigin() async throws {
+        let tab = makeTab(serving: stalledPage())
+        tab.load(URL(string: "stall://[::1]:3000/page")!)
+
+        try await waitForFetch(of: URL(string: "stall://[::1]:3000/favicon.ico")!)
+    }
+
+    /// The bridge's sender check compares `WKSecurityOrigin.host`, which keeps
+    /// the brackets, with the page URL's host, which Foundation strips: an
+    /// IPv6 page's declared icon used to be dropped.
+    func testAnIPv6PagesIconLinkReachesTheTab() async throws {
+        let tab = makeTab(serving: stalledPage(head: "<link rel=\"icon\" href=\"/icon.png\">"))
+        tab.load(URL(string: "stall://[::1]:3000/page")!)
+
+        try await waitForFetch(of: URL(string: "stall://[::1]:3000/icon.png")!)
+        XCTAssertTrue(tab.isLoading, "only the bridge can have reported the link")
+    }
+
+    /// Another port is another server: moving from one local dev server to
+    /// another on the same host guesses the new one's icon.
+    func testAnotherPortOnTheSameHostGuessesThatServersIcon() async throws {
+        let tab = makeTab(serving: stalledPage())
+        tab.load(URL(string: "stall://dev.test:3000/page")!)
+        try await waitForFetch(of: URL(string: "stall://dev.test:3000/favicon.ico")!)
+
+        tab.load(URL(string: "stall://dev.test:5173/page")!)
+        try await waitForFetch(of: URL(string: "stall://dev.test:5173/favicon.ico")!)
+    }
 }
 
 /// Serves `pages` by path as HTML and never answers `/hang*`, so a page that

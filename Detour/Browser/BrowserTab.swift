@@ -453,7 +453,9 @@ class BrowserTab: NSObject {
     private var processTerminationCount = 0
     private var lastProcessTerminationAt: Date?
     private var navigationPending = false
-    private var previousHost: String?
+    /// The `faviconSiteKey` of the page the favicon belongs to: a navigation
+    /// to another key clears the icon and guesses the new site's `/favicon.ico`.
+    private var previousFaviconSite: String?
     private var faviconGeneration: Int = 0
     /// The generation whose page-declared icon (a `<link rel=icon>`) has
     /// landed. The optimistic `/favicon.ico` guess must not overwrite it when
@@ -529,7 +531,7 @@ class BrowserTab: NSObject {
             applyInternalPageIcon(page)
         } else if let faviconURL {
             self.faviconURL = faviconURL
-            self.previousHost = url?.host
+            self.previousFaviconSite = faviconSiteKey(for: url)
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange(_:)), name: .init("UserAgentDidChange"), object: nil)
@@ -540,7 +542,7 @@ class BrowserTab: NSObject {
         self.title = title
         if let faviconURL {
             self.faviconURL = faviconURL
-            self.previousHost = fallbackURL?.host
+            self.previousFaviconSite = faviconSiteKey(for: fallbackURL)
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
         }
         self.url = fallbackURL
@@ -732,24 +734,20 @@ class BrowserTab: NSObject {
         webView.addObserver(self, forKeyPath: "_isPlayingAudio", options: [.new], context: nil)
 
         webView.publisher(for: \.url)
-            .compactMap { url -> (String, String)? in
-                guard let host = url?.host, let scheme = url?.scheme else { return nil }
-                return (host, scheme)
+            .compactMap { url -> (siteKey: String, url: URL)? in
+                guard let url, url.scheme != nil, let siteKey = faviconSiteKey(for: url) else { return nil }
+                return (siteKey, url)
             }
-            .removeDuplicates { $0.0 == $1.0 }
-            .sink { [weak self] host, scheme in
+            .removeDuplicates { $0.siteKey == $1.siteKey }
+            .sink { [weak self] siteKey, url in
                 guard let self, !self.navigationPending else { return }
-                guard scheme != ErrorPage.scheme else { return }
-                guard self.previousHost != host else { return }
-                if self.previousHost != nil {
+                guard url.scheme != ErrorPage.scheme else { return }
+                guard self.previousFaviconSite != siteKey else { return }
+                if self.previousFaviconSite != nil {
                     self.favicon = nil
                     self.faviconURL = nil
                 }
-                self.faviconGeneration += 1
-                let generation = self.faviconGeneration
-                self.previousHost = host
-                let optimisticURL = URL(string: "\(scheme)://\(host)/favicon.ico")!
-                self.downloadFavicon(from: optimisticURL, generation: generation, optimistic: true)
+                self.guessFavicon(for: url, siteKey: siteKey)
             }
             .store(in: &faviconCancellables)
 
@@ -794,6 +792,18 @@ class BrowserTab: NSObject {
         }
     }
 
+    /// Starts a new favicon generation for `siteKey` and guesses the page's
+    /// `/favicon.ico`. The guess is built from the URL's components, never
+    /// `url.host`: that loses an IPv6 literal's brackets, and a string rebuilt
+    /// from it does not parse (TASK-198).
+    private func guessFavicon(for url: URL, siteKey: String) {
+        faviconGeneration += 1
+        previousFaviconSite = siteKey
+        if let optimisticURL = faviconFallbackURL(for: url) {
+            downloadFavicon(from: optimisticURL, generation: faviconGeneration, optimistic: true)
+        }
+    }
+
     /// A `<link rel=icon>` the page's document reported through
     /// `FaviconLinkBridge` — while it is still loading, which for a hidden
     /// background tab can be until it is first shown (TASK-112). Ignored unless
@@ -802,8 +812,7 @@ class BrowserTab: NSObject {
     /// Downloads under the current generation, so a navigation that changes
     /// host after this drops the result like any other stale download.
     func pageDidReportFaviconLink(_ url: URL, originHost: String) {
-        guard let pageURL = webView?.url, let host = pageURL.host,
-              host.caseInsensitiveCompare(originHost) == .orderedSame,
+        guard let pageURL = webView?.url, securityOriginHost(originHost, isHostOf: pageURL),
               pageURL.scheme != ErrorPage.scheme, !InternalPage.isInternal(pageURL),
               url != faviconURL else { return }
         downloadFavicon(from: url, generation: faviconGeneration)
@@ -816,10 +825,11 @@ class BrowserTab: NSObject {
     /// back/forward from a page the user had navigated on to).
     private func applyInternalPageIcon(_ page: InternalPage) {
         // Every `replaceState` of the page's `?q=` reports a new URL.
-        guard previousHost != page.url.host || favicon == nil else { return }
+        let siteKey = faviconSiteKey(for: page.url)
+        guard previousFaviconSite != siteKey || favicon == nil else { return }
         faviconGeneration += 1
         faviconURL = nil
-        previousHost = page.url.host
+        previousFaviconSite = siteKey
         favicon = NSImage(systemSymbolName: page.symbolName, accessibilityDescription: page.title)
     }
 
@@ -991,7 +1001,7 @@ class BrowserTab: NSObject {
         // `setupObservers` from clearing them when the page loads — which matters,
         // because an extension page's icon lives at an extension URL and could
         // not be fetched again.
-        previousHost = url.host
+        previousFaviconSite = faviconSiteKey(for: url)
     }
 
     /// - Parameter supersededByLoad: the caller loads another URL right away,
@@ -1178,21 +1188,14 @@ class BrowserTab: NSObject {
         resetBlockedCount()
         navigationPending = true
         applySpoofedUserAgent(for: url)
-        if url.host != previousHost {
+        let siteKey = faviconSiteKey(for: url)
+        if siteKey != previousFaviconSite {
             favicon = nil
             faviconURL = nil
         }
-        // Optimistic favicon fetch for programmatic navigations
-        if let host = url.host, let scheme = url.scheme, scheme != ErrorPage.scheme, page == nil {
-            if host != previousHost {
-                faviconGeneration += 1
-                let generation = faviconGeneration
-                previousHost = host
-                let optimisticURL = URL(string: "\(scheme)://\(host)/favicon.ico")!
-                downloadFavicon(from: optimisticURL, generation: generation, optimistic: true)
-            } else {
-                previousHost = host
-            }
+        // Optimistic favicon fetch for programmatic navigations.
+        if let siteKey, url.scheme != ErrorPage.scheme, page == nil, siteKey != previousFaviconSite {
+            guessFavicon(for: url, siteKey: siteKey)
         }
         updateTitle()
         issue(.url(url))
@@ -1431,7 +1434,7 @@ class BrowserTab: NSObject {
         favicon = nil
         faviconURL = nil
         faviconGeneration += 1
-        previousHost = nil
+        previousFaviconSite = nil
         webView?.load(URLRequest(url: ErrorPage.url(for: failedURL, error: error)))
     }
 
@@ -1464,7 +1467,8 @@ class BrowserTab: NSObject {
         // `detour://history/` has a host, but "history" is not what the faux
         // address bar should read: an internal page goes by its name (TASK-86).
         if let page = url.flatMap(InternalPage.init(url:)) { return page.title }
-        guard let host = url?.host else { return "" }
+        // An IPv6 literal reads as it is typed, `[::1]`, not `::1` (TASK-198).
+        guard let host = url?.authorityHost else { return "" }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 

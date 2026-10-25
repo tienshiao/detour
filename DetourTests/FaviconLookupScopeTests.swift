@@ -176,6 +176,21 @@ final class FaviconLookupScopeTests: XCTestCase {
                        "https://a.example:8443/icon.png", "hosts compare without case")
     }
 
+    /// An IPv6 literal is matched as it is written in the stored URLs, in
+    /// brackets (TASK-198). `URL.host` strips them, and the same-host range
+    /// built from it (`http://::1…`) matched nothing.
+    func testTheHostFallbackMatchesAnIPv6Host() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "http://[::1]:3000/app", favicon: "http://[::1]:3000/favicon.ico",
+                      space: spaceA, visitTime: 100)
+        try seedVisit(db, url: "http://[::2]:3000/", favicon: "http://[::2]:3000/other.ico",
+                      space: spaceA, visitTime: 200)
+
+        XCTAssertEqual(db.faviconURL(for: "http://[::1]:3000/other", visitedInSpaces: [spaceA]),
+                       "http://[::1]:3000/favicon.ico")
+        XCTAssertEqual(db.faviconURLInAnyProfile(for: "http://[::1]/"), "http://[::1]:3000/favicon.ico")
+    }
+
     /// The unscoped lookup (the History page's own rows) shares the host rule.
     func testTheUnscopedLookupUsesTheSameHostRule() throws {
         let db = try makeDatabase()

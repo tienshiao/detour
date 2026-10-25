@@ -1683,7 +1683,9 @@ struct HistoryDatabase {
                     return url
                 }
                 // Same host: the page of it visited most recently (in scope).
-                guard let host = URL(string: pageURL)?.host?.lowercased(), !host.isEmpty else { return nil }
+                // As the host is written in the stored URLs: an IPv6 literal
+                // in brackets, which `URL.host` drops (TASK-198).
+                guard let host = URL(string: pageURL)?.authorityHost?.lowercased() else { return nil }
                 let sameHost = Self.sameHostPredicate(column: "h.url", host: host)
                 if let inScope {
                     return try String.fetchOne(db, sql: """

@@ -39,18 +39,10 @@ func isLocalDevelopmentURL(_ url: URL?) -> Bool {
 /// not the scheme's default, else the host. IPv6 hosts are bracketed. Empty
 /// when the URL has no host.
 func devModeHostLabel(for url: URL?) -> String {
-    guard let url, let rawHost = url.host, !rawHost.isEmpty else { return "" }
-    var lowered = rawHost.lowercased()
+    guard var host = url?.authorityHost?.lowercased() else { return "" }
     // Show a fully-qualified `localhost.` as the host the rule matched.
-    if lowered.count > 1, lowered.hasSuffix(".") { lowered.removeLast() }
-    let host = lowered.contains(":") ? "[\(lowered)]" : lowered
-    guard let port = url.port else { return host }
-    let defaultPort: Int? = switch url.scheme?.lowercased() {
-    case "http": 80
-    case "https": 443
-    default: nil
-    }
-    return port == defaultPort ? host : "\(host):\(port)"
+    if host.count > 1, host.hasSuffix(".") { host.removeLast() }
+    return url?.nonDefaultPort.map { "\(host):\($0)" } ?? host
 }
 
 /// What a sidebar row draws for dev mode.
