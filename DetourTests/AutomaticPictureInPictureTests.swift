@@ -11,28 +11,40 @@ final class AutomaticPictureInPictureTests: XCTestCase {
     // MARK: - The rule
 
     func testAPlayingTabEntersPiPWhenTheSiteHasNoSetting() {
-        XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, leavesClosingTab: false,
+        XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: false,
                                                             siteOverride: nil))
     }
 
     func testATabThatIsNotPlayingDoesNotEnterPiP() {
-        XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: false, leavesClosingTab: false,
+        XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: false, isMuted: false, leavesClosingTab: false,
                                                              siteOverride: nil))
     }
 
+    /// TASK-192: page mute keeps `_isPlayingAudio` true, where the old script
+    /// mute turned it off. A muted tab still does not go into PiP when left.
+    func testAMutedPlayingTabDoesNotEnterPiP() {
+        XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: true,
+                                                             leavesClosingTab: false, siteOverride: nil))
+    }
+
+    func testAnUnmutedPlayingTabStillEntersPiP() {
+        XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false,
+                                                            leavesClosingTab: false, siteOverride: nil))
+    }
+
     func testAClosingTabDoesNotEnterPiP() {
-        XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, leavesClosingTab: true,
+        XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: true,
                                                              siteOverride: nil),
                        "TASK-79: the close path never starts PiP")
     }
 
     func testASiteWithTheSwitchOffDoesNotEnterPiP() {
-        XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, leavesClosingTab: false,
+        XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: false,
                                                              siteOverride: false))
     }
 
     func testASiteWithTheSwitchExplicitlyOnEntersPiP() {
-        XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, leavesClosingTab: false,
+        XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: false,
                                                             siteOverride: true))
     }
 

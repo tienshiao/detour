@@ -4,7 +4,7 @@ title: Media and picture-in-picture
 description: WebKit media behaviour Detour has to accommodate — picture-in-picture needs the video's view on screen to start and to return, a standalone video URL ends its navigation with error 204, and audio and capture state gate sleeping and GPU process recycling.
 tags: [webkit, media, picture-in-picture, navigation, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T08:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-79
@@ -37,6 +37,12 @@ sources:
   - id: task-188
     resource: backlog:TASK-188
     title: Picture in picture - a per-site switch for opening PiP automatically when you leave a playing tab
+  - id: task-192
+    resource: backlog:TASK-192
+    title: "Media controls: a now-playing bar in the sidebar for media playing in a tab you have left"
+  - id: media-controls
+    resource: ./media-controls.md
+    title: Controlling a page's media from the app
 ---
 
 Two WebKit media behaviours have caused bugs, and both come from the same
@@ -59,6 +65,13 @@ arrange those moments by hand.
   mode and calls `webkitSetPresentationMode('picture-in-picture')`. It walks
   into iframes through `contentDocument`, so a video in a cross-origin
   iframe is not reached.
+- **Knowing a video is in PiP takes a script.** `_isPictureInPictureActive`
+  reads the Touch Bar controls manager and stays NO; `webkitpresentationmodechanged`
+  fires synchronously inside the `webkitSetPresentationMode` call. Detour's
+  `MediaSessionBridge` reports it per frame for the
+  [now-playing bar](../features/now-playing-bar.md), and
+  `enterPictureInPicture()` marks the tab as entering until the report
+  lands — see [controlling a page's media](./media-controls.md).[^task-192]
 - **WebKit needs the video on screen to start the animation.** It captures
   the video's on-screen frame as the animation origin, so the view must stay
   in the window for a moment after PiP is requested.
@@ -86,7 +99,20 @@ treats it like a cancellation.[^task-121]
 ## Audio and capture state
 
 - "Is this tab audible" comes from KVO on the private key `_isPlayingAudio`
-  of the web view, mirrored into `BrowserTab.isPlayingAudio`.
+  of the web view, mirrored into `BrowserTab.isPlayingAudio`. It stays true
+  while a video plays in PiP, and while the page is muted with the private
+  `_setPageMuted:` (the mute the sidebar's speaker button and the
+  now-playing bar use since TASK-192); `element.muted = true` turns it
+  off.[^media-controls] The gates that spare or act on a tab for its sound
+  therefore read `BrowserTab.isAudible` (`isPlayingAudio && !isMuted`) or
+  check `isMuted` as well: stale-tab sleep (which pauses a muted tab's
+  media before releasing its web view) and automatic PiP (below), so a muted
+  tab behaves as it did under the old script mute. The GPU process recycler
+  reads `isAudible` too, as before page mute: a muted tab left looping would
+  otherwise hold the recycler off until the IOSurfaces run out (TASK-104),
+  which costs more than freezing a muted video while the user is idle (a
+  second review argued for `isPlayingAudio`; rejected for that
+  reason).[^task-192]
 - Camera and microphone capture run in WebKit's GPU process, not the page's
   web process.[^task-105] `WKWebView.cameraCaptureState` and
   `microphoneCaptureState` are public; screen-share capture has no public
@@ -122,7 +148,7 @@ background played fine and broke once the tab was selected.[^task-121][^task-122
 
 | Need | What the code does |
 |---|---|
-| Start PiP when switching away from a playing tab | `selectTab` calls `enterPictureInPicture()` on the outgoing tab (and on its playing Peek, before the Peek UI is hidden) when `AutomaticPictureInPicture.shouldEnter` allows it: `isPlayingAudio`, not closing, and the site's `pictureInPicture` switch not off (the site popover's "Picture in picture on tab switch", default on, stored as a [site setting](../architecture/site-settings.md)). The switch governs only this automatic entry; a page's own PiP request still works[^task-188] |
+| Start PiP when switching away from a playing tab | `selectTab` calls `enterPictureInPicture()` on the outgoing tab (and on its playing Peek, before the Peek UI is hidden) when `AutomaticPictureInPicture.shouldEnter` allows it: `isPlayingAudio` and not muted (page mute keeps `isPlayingAudio` true; a muted tab never entered PiP under the old script mute and still does not), not closing, and the site's `pictureInPicture` switch not off (the site popover's "Picture in picture on tab switch", default on, stored as a [site setting](../architecture/site-settings.md)). The switch governs only this automatic entry; a page's own PiP request still works[^task-188] |
 | Keep the video on screen long enough to capture | The outgoing container is remembered in `pipContentView`; `removeContentViews()` leaves it parented and removes it 0.5 s later. For a split, the PiP pane is re-parented as a direct subview at its on-screen frame with its autoresizing mask cleared, so a window resize during the hold cannot move it off the captured frame |
 | Do not rip out a tab re-selected inside that 0.5 s | The delayed cleanup checks whether the view is now the selected tab's container and only drops the stale reference |
 | Do not start PiP for a tab that is being closed | `settlingSelectionForClose { … }` sets `selectionLeavesClosingTab`; `selectTab` skips both PiP entries (tab and Peek) while it is set. Used by `closeTab(at:wasSelected:)`, `closePinnedTab(at:)` and the close-split-group handler |
@@ -165,8 +191,8 @@ arrive and waiting on one would hang the call.[^task-121]
 - `teardown()` and `retarget(to:)` call `pauseAllMediaPlayback` before
   releasing the web view.
 - The [GPU process recycler](./gpu-iosurface-limit.md) will not kill the GPU
-  process while any tab plays audio or captures camera or microphone, since
-  a recycle cuts media off.
+  process while any tab plays audible audio (muted playback does not count)
+  or captures camera or microphone, since a recycle cuts media off.
 
 # Tests and what is not verified
 
@@ -181,6 +207,8 @@ arrive and waiting on one would hang the call.[^task-121]
 
 # Related
 
+- [Now-playing bar](../features/now-playing-bar.md) — no bar for a tab whose video went into PiP when it was left.
+- [Controlling a page's media](./media-controls.md) — pause, resume, page mute and Media Session from the app.
 - [Tab lifecycle](../tabs/tab-lifecycle.md) — the close paths that settle selection before removing a tab.
 - [Peek](../tabs/peek.md) — a playing Peek enters PiP with its host.
 - [Split tabs hosting](../tabs/split-tabs-hosting.md) — how a split pane is dismantled and why the PiP pane is special-cased.
@@ -196,3 +224,5 @@ arrive and waiting on one would hang the call.[^task-121]
 [^task-122]: A background tab whose load fails never shows the error page
 [^task-105]: GPU-process recycle valve
 [^task-188]: Picture in picture - a per-site switch for opening PiP automatically when you leave a playing tab
+[^task-192]: Media controls: a now-playing bar in the sidebar for media playing in a tab you have left
+[^media-controls]: Controlling a page's media from the app

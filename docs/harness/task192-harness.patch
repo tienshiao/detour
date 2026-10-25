@@ -1,0 +1,907 @@
+TASK-192 runtime harness: the now-playing bar. Temporary code, never
+committed to Detour/. Needs two local servers and media fixtures:
+
+    SP=<scratch>/www; SP2=<scratch>/www2; mkdir -p $SP $SP2
+    ffmpeg -f lavfi -i "sine=frequency=330:sample_rate=44100" -t 120 -af volume=0.3 -c:a aac $SP/tone.m4a
+    ffmpeg -f lavfi -i "sine=frequency=520:sample_rate=44100" -t 120 -af volume=0.3 -c:a aac $SP2/tone2.m4a
+    ffmpeg -f lavfi -i testsrc=size=640x360:rate=30 -f lavfi -i sine=frequency=440 -t 120 \
+        -c:v libx264 -pix_fmt yuv420p -c:a aac -af volume=0.3 -shortest $SP/video.mp4
+    ffmpeg -f lavfi -i "color=c=orange:s=256x256" -frames:v 1 $SP/art.png
+    # Pages (every element at volume 0.05, each keeps window.__log):
+    #   ms.html      <audio src=tone.m4a loop>, MediaMetadata {title 'Fixture Track One',
+    #                artist 'Detour Test Band', artwork art.png}, handlers previoustrack /
+    #                nexttrack (log, change the title) and play / pause (log, play/pause)
+    #   plain.html   the same audio, no Media Session
+    #   video.html   <video src=video.mp4 loop>, logs webkitpresentationmodechanged
+    #   iframe.html  <iframe src=http://127.0.0.1:8893/inner.html>; inner.html plays tone2.m4a
+    #   webaudio.html  OscillatorNode -> GainNode(0.05), window.ctx, start() resumes it
+    #   blank.html   any page
+    #   (2026-10-25) ms.html's artwork is art.png?artwork=<track> (a distinct URL per
+    #   track, apart from the favicon art.png); big.png: 1600x1600 noise PNG, 3.7 MB
+    #   (ffmpeg nullsrc + geq random); doc.pdf: a one-page PDF written by hand.
+    # Servers: a SimpleHTTPRequestHandler subclass (server192.py, in the scratchpad)
+    # that logs each request's Cookie header, sets `page192=<port>` on HTML
+    # responses and Cache-Control: max-age=3600 on PNGs:
+    python3 -I server192.py 8892 $SP &
+    python3 -I server192.py 8893 $SP2 &
+    git apply docs/harness/task192-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    rm -r -- ~/Library/Application\ Support/DetourVerify192   # restored tabs from an
+        # earlier run (a focused run leaves its seeded ms.html open) play on the bar
+    DETOUR_DATA_DIR=DetourVerify192 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8892 \
+        [DETOUR_VERIFY_ONLY=longlist] \
+        caffeinate -d -i .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # DETOUR_VERIFY_ONLY=longlist runs only step 12b and step 15 (about 50 s).
+    # A watcher runs `screencapture -x -o -l <windowNumber> $OUT/<name>.png` for each
+    # "SHOOT <name> <windowNumber> <x,y,w,h>" line, falling back to -R with the
+    # rect; parse the fields after "SHOOT", not by column: timestamps under
+    # 100 s are space-padded ("[  13.504]"), which shifted the columns and is
+    # why every capture before step 6 used to fail. (The harness also writes an in-process
+    # render-<name>.png of the sidebar, which draws no glass content); wait for
+    # "done" (about 2 minutes), kill that pid and the servers.
+    git apply -R docs/harness/task192-harness.patch && xcodegen generate
+
+Drives the bar's real buttons with performClick, found by accessibility
+label; hover is the view's own mouseEntered/mouseExited (no real pointer).
+
+Results (2026-10-24/25, macOS 26.7; eight runs, the behaviour identical in
+each; the first ones partly with the screen locked):
+  1. Media Session audio left: bar shows within 0.1 s with title "Fixture
+     Track One", artist, artwork; Next/Previous run the page's handlers
+     (page log "nexttrack", "previoustrack", title follows); Pause calls the
+     page's pause handler (isPlayingAudio false, bar stays with Play past the
+     grace); Play resumes; Mute sets _mediaMutedState 1 with isPlayingAudio
+     still true and element.muted false; Unmute clears it.
+  2. Video left: entered PiP (page log "mode picture-in-picture"), no bar at
+     +0.05, +0.55 and +3 s. PiP left by script while playing (the stand-in
+     for the PiP window's close button, which cannot be driven): bar shows.
+  3. Video at localhost with the site's automatic PiP off: no PiP, bar shows.
+  4. Cross-origin iframe audio: Pause suspends (playbackState suspended,
+     isPlayingAudio false), Play resumes, Mute page-mutes with
+     isPlayingAudio true. Web Audio: Pause -> ctx "interrupted", Play ->
+     "running", Mute page-mutes with the context still running.
+  5. No Media Session: Previous/Next disabled; Pause suspends and the bar
+     stays; Play resumes; selecting the bar-paused tab leaves it paused
+     (playbackState paused, not suspended) and the page's own play() resolves.
+  6. Playing tab in another space: bar shows; its favicon switches the
+     window to that space and selects the tab; the bar hides.
+  7. Hover expands (title, artist, artwork, ×); × hides it; a 0.6 s page
+     pause/resume keeps it dismissed; a 3 s stop then play shows it again.
+  8. Page stops: still shown at +1.0 s, hidden at +2.5 s; closing the
+     playing tab hides it at once.
+  9. Private window shows only its own playing tab; the normal window keeps
+     showing its own (never the Private one).
+ 10. Captures. `screencapture -l` failed ("could not create image from
+     window") for every SHOOT before step 6 in every run, locked or not, so
+     step 10 re-shoots late: compact and expanded, light and dark, and the
+     bar-paused state. The watcher lags 1-2 s behind a SHOOT line; hold each
+     state at least 2.5 s. Final run (out/run8): late-compact-light,
+     late-expanded-light, late-expanded-dark, late-compact-dark,
+     late-expanded-dark-2, late-paused-dark, other-space-light, private-window.
+     Geometry, measured on the PNGs (1x display) with an NSBitmapImageRep
+     tool, against the selected row's highlight, light and dark: both span
+     x 18-217 (200 pt); bar 34 pt high compact, 74 expanded. Top-left corner,
+     first shape pixel per row from the top edge: bar with radius 6 (light)
+     [6,3,2,1,1,1,0], (dark) [3,1,1,0]; with the earlier radius 10 (light)
+     [10,6,4,3,2,2,1,1], (dark) [6,4,3,2,1,1,0]; the row [2,1,0] (its
+     dev-mode dashed border squares the corner; the devMode site switch the
+     harness sets for "127.0.0.1" did not remove it). The light glass edge is
+     softer than the row's fill.
+     Known glass quirk: switching the app to dark while the bar is on screen
+     leaves the glass light (fill 0.44 vs 0.25) until it is resized (the
+     expand/collapse redraws it); re-setting NSGlassEffectView.cornerRadius
+     and a half-point resize on viewDidChangeEffectiveAppearance did not help.
+
+Results 2026-10-25 (after the review fixes; runs 9-18, macOS 26.7):
+ 11. Artwork (server log, 8892). The app's artwork requests carry no Cookie
+     (`cookie=-`), while WebKit's own requests for the same URLs carry the
+     page cookie (`page192=8892`) and the favicon fetch on URLSession.shared
+     carries the cookie the harness put in the shared jar (`sharedjar192=1`).
+     URLCache.shared after the fetches: artwork art.png?artwork=1, =2 and
+     ?burst=19 not cached; favicon art.png cached (the control). The app
+     fetched each artwork URL once, when a bar first needed it. Burst
+     of 20 URL changes 50 ms apart in a hidden tab: WebKit throttles the
+     page's timer to 1 s after the first six, and the app fetched one URL for
+     those six (burst=5 or 6) and then one per settled change (one per
+     second), never two in flight. big.png (3.7 MB): requested once with no
+     cookie, refused by the cap; the bar showed no artwork.
+ 12. Navigation clears the session at the commit: Media Session tab (not
+     selected, on the bar) -> doc.pdf: mediaSession nil at +0.021 / 0.037 /
+     0.067 / 0.140 s (runs 9/11/12/15; the web view's URL changed at
+     +0.010-0.027 s, the commit follows the response), the bar at once shows
+     the tab title "127.0.0.1:8892/doc.pdf", Previous/Next off, Play (quiet,
+     in its grace), then hides. -> blank.html: nil at +0.020-0.254 s, bar
+     shows "Blank" with Next off until the grace ends. ms.html loaded again:
+     its session arrives after its commit and stays (title "Fixture Track
+     One"). goBack to ms.html: the session is back.
+ 13. Muted video tab left: no PiP (page log has no "mode picture-in-picture",
+     pip=false at +3 s, page mute 1, still playing), the bar shows it with
+     Unmute. Unmuted and left again: PiP entered (log "mode
+     picture-in-picture", pip=true), no bar.
+ 14. Two windows: T (video, no Media Session) selected in A, window B on
+     another tab; B's bar shows T. Pause on B's bar: T paused, playbackState
+     2 (paused, not 3 suspended), suspendedByBar=false, heldByBar=true (B's
+     bar keeps it with Play), T's web view still in A. The page's own
+     `v.play()` resolved and currentTime advanced 5.30 -> 6.17 s in 0.8 s;
+     B's bar then shows Pause. Same in runs 9, 11, 12, 14, 15.
+ 15. Long list (space with 30 tabs, the player in another space; window
+     1100x760, list 604 pt high without the bar):
+     - Before the fix (run 10), scrolled to the end, bar appears: the list
+       shrank 604 -> 562 pt (42 = 34 + 2 x 4) while the offset stayed 536 of
+       a new maximum 578: the last row 36 -> 31 -> 19 -> 10 -> 5 -> 4 pt
+       visible over the 0.22 s animation, 4 pt after.
+     - After the fix (run 13, SpacePageView.layout keeps a list at its end):
+       offset 536 -> 548 -> 558 -> 569 -> 576 -> 578 with the maximum at every
+       sample, the last row 36 of 36 pt visible throughout.
+     - Bar hides while at the end: offset follows the maximum back 578 -> 566
+       -> 538 -> 536, last row fully visible (before and after the fix).
+     - Fade shadow: pinned to the list's bottom, window y 82-94 with the bar
+       (bar top at 78; the 4 pt gap is the container), y 40-52 without;
+       alpha 0 at the end, 1 scrolled mid-list (rows hidden below).
+     - Hover expansion: list geometry unchanged (clip 562, offset 578); the
+       last row's lower quarter (y 101) hits the bar while expanded (bar y
+       44-118) and the table again once collapsed.
+     - Drop below the last row (stub NSDraggingInfo through the real
+       validateDrop/acceptDrop, location in the last row's lower quarter,
+       which hits the table with the bar collapsed): validateDrop .move,
+       acceptDrop true, tab 3 moved to index 29 of 30.
+     - Captures: the in-process sidebar renders (run 13
+       render-long-end-bar/-mid-bar/-end-expanded) show the last row fully
+       above the bar and the fade over the clipped row mid-list. Window
+       captures failed: the screen locked during every later attempt (runs
+       15-18; a locked screen also stops layout, so their numbers are void).
+
+
+Results 2026-10-25, final check (runs 19-20, macOS 26.7, screen unlocked
+throughout: the lock poll read locked=absent every 5 s in both runs). The
+code under test: the second review's fixes plus GPUProcessRecycler.isUsingMedia
+reading `isAudible`. Two checks added to the harness: 16 (artwork sessions,
+step 16a in the Private window) and 17 (muted-tab sleep); steps 1 and 17 also
+sample the bar on timers started at the event (the schedule's own timers can
+fire late, so "+0.1" was only 13 ms after the switch in run 19).
+  Every SHOOT was captured by window number (`screencapture -l`) in both
+  runs, early ones included: the column fix holds. Behaviour identical in
+  runs 19 and 20 (logs diffed with timestamps, pointers, ids and window
+  numbers masked: no behavioural difference) and matches runs 9-18:
+  - 1-9: as before. Step 1, timed from the switch (run 20): bar hidden at +0.00 (the
+    update is coalesced to the next run-loop turn), shown at +0.03, +0.06,
+    +0.10 (artwork arrives after the 0.25 s debounce). Next/Previous run the
+    page handlers, Pause -> playbackState 2 heldByBar, Mute -> pageMuted 1
+    with isPlayingAudio true; PiP video no bar at +0.05/+0.55/+3 s, bar
+    after PiP closed; localhost PiP-off video on the bar; iframe and Web
+    Audio suspend (state 3 / ctx interrupted) and resume; other-space
+    favicon switches space and selects; dismiss survives a 0.6 s pause, a
+    3 s stop brings it back; hidden 2.5 s after a stop; Private window shows
+    only its own tab, the normal window only its own.
+  - 11. Server log: the app's artwork requests carry `cookie=-` (artwork=1,
+    =2, burst=5/6/7, big.png, and the Private artwork=1); WebKit's own carry
+    `page192=8892`; the favicon on URLSession.shared carries `sharedjar192=1`
+    and was fetched once. URLCache.shared: artwork=1, =2, burst=19 not
+    cached, favicon cached. Burst: fetches burst=5, 6, 7, one at a time
+    (session artwork burst=7 at +2.5 s). big.png requested once, no cookie,
+    refused: the bar shows no artwork.
+  - 16 (new). The loader's two URLSessions are distinct objects (and neither
+    is URLSession.shared). Each normal fetch (artwork=1, =2, burst=5-7,
+    big.png) was found among the normal session's tasks and not the private
+    one's; the Private window's fetch of art.png?artwork=1 (ms.html?private,
+    left in the Private window) was found in the private session and not the
+    normal one, and went out with `cookie=-`. (The Private WebKit page
+    requests carry `page192=8892` too: the Private store's own cookie, set by
+    its first plain.html response, which went out with no cookie.)
+  - 12. Navigation clears the session at the commit: -> doc.pdf nil at
+    +0.026 / +0.024 s (URL changed at +0.011 / +0.010 s), bar shows
+    "127.0.0.1:8892/doc.pdf" with Previous/Next off and Play; -> blank.html
+    nil at +0.021 s; ms.html again: session "Fixture Track One"; goBack: the
+    session is back.
+  - 13. Muted video left: no PiP (pip=false at +3 s, pageMuted 1, still
+    playing), bar with Unmute; unmuted and left: PiP, no bar.
+  - 14. Two windows: B's Pause -> T playbackState 2, heldByBar true,
+    suspendedByBar false, web view still in A; the page's own play()
+    resolved, currentTime 5.30 -> 6.27 / 5.25 -> 6.23 s in 0.8 s; B's bar
+    then shows Pause.
+  - 17 (new). Muted tab still playing (isPlayingAudio true, isMuted true,
+    isAudible false, pageMuted 1, on the bar with Unmute), slept with plain
+    `sleep()`: pauseAllMediaPlayback was called on its web view while
+    tab.webView was still that view and still in a superview, with
+    _isPlayingAudio true; after sleep() returned the tab was sleeping with no
+    web view; the bar was hiding at once (+0.00 s, alpha 0). The released web
+    view, kept alive by the harness, 0.8 s later: _isPlayingAudio false,
+    playbackState 2 (paused), the audio element paused=true.
+  - 15. Long list as in run 13: offset follows the maximum 540/541 -> 578
+    while the bar shows, last row 36 of 36 pt throughout; mid-list fade alpha
+    1, at the end 0; expanded bar overlays the last row's lower quarter (hit
+    "bar", list unchanged), collapsed hits the table; stub drop below the
+    last row: validateDrop .move, acceptDrop true, tab 3 -> index 29 of 30;
+    hide follows the maximum back to 536.
+  - Captures (out/run19 and out/run20): compact-light, compact-dark,
+    expanded-light, expanded-dark, late-* (compact/expanded, light/dark,
+    paused), private-window, long-end-bar, long-mid-bar, long-end-expanded.
+    Known glass quirk still present: expanded-dark and late-expanded-dark
+    (switched to dark with the bar on screen) keep the light glass, with
+    low-contrast title text, until the next resize; compact-dark after the
+    collapse is dark.
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..7578dc4 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask192HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task192Harness.swift b/Detour/App/Task192Harness.swift
+new file mode 100644
+index 0000000..a0be3b4
+--- /dev/null
++++ b/Detour/App/Task192Harness.swift
+@@ -0,0 +1,665 @@
++// TEMP TASK-192 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask192HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] ?? "8892"
++        let onlyLongList = ProcessInfo.processInfo.environment["DETOUR_VERIFY_ONLY"] == "longlist"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 4.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window else { return log("no window") }
++        window.setFrame(NSRect(x: 80, y: 80, width: 1100, height: 760), display: true)
++        let store = TabStore.shared
++        let bar = wc.tabSidebar.nowPlayingBar
++        func url(_ path: String, host: String = "127.0.0.1") -> URL { URL(string: "http://\(host):\(port)/\(path)")! }
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func barButton(_ label: String, in w: BrowserWindowController = wc) -> NSButton? {
++            allSubviews(w.tabSidebar.nowPlayingBar).compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == label }
++        }
++        func click(_ label: String, in w: BrowserWindowController = wc) {
++            guard let button = barButton(label, in: w) else { return log("CLICK \(label): no such button") }
++            button.performClick(nil)
++            log("CLICK \(label)\(w === wc ? "" : " (window B)")")
++        }
++        func barState(_ w: BrowserWindowController = wc) -> String {
++            let b = w.tabSidebar.nowPlayingBar
++            guard let model = b.model, !b.isHidden else { return "BAR hidden (shown=\(String(describing: w.nowPlaying.shownTabID)))" }
++            guard w.nowPlaying.shownTabID != nil else { return "BAR hiding (alpha=\(b.alphaValue), view not yet hidden)" }
++            let labels = allSubviews(b).compactMap { $0 as? NSButton }.filter { !$0.isHidden }
++                .map { "\($0.accessibilityLabel() ?? "?")\($0.isEnabled ? "" : "(off)")" }
++            return "BAR alpha=\(String(format: "%.2f", b.alphaValue)) shown=\(w.nowPlaying.shownTabID == model.tabID) title=\"\(model.title)\" artist=\(model.artist ?? "-") artwork=\(model.artwork != nil) playing=\(model.isPlaying) muted=\(model.isMuted) prev=\(model.canGoPrevious) next=\(model.canGoNext) expanded=\(b.isExpanded) buttons=\(labels)"
++        }
++        func probe(_ tab: BrowserTab?, _ label: String, element: String = "document.querySelector('audio, video')") {
++            guard let tab, let webView = tab.webView else { return log("PROBE \(label): no web view") }
++            let muted = (webView.value(forKey: "_mediaMutedState") as? NSNumber)?.intValue ?? -1
++            webView.requestMediaPlaybackState { state in
++                webView.evaluateJavaScript("""
++                    (() => { const e = \(element); const parts = [];
++                      if (e) parts.push('paused=' + e.paused + ' muted=' + e.muted + ' t=' + e.currentTime.toFixed(1));
++                      if (window.ctx) parts.push('ctx=' + ctx.state);
++                      if (window.__log) parts.push('log=[' + __log.join(' | ') + ']');
++                      return parts.join(' '); })()
++                    """) { result, _ in
++                    log("PROBE \(label): isPlayingAudio=\(tab.isPlayingAudio) pageMuted=\(muted) playbackState=\(state.rawValue) pip=\(tab.isInPictureInPicture) heldByBar=\(tab.isPausedFromBar) suspendedByBar=\(tab.isMediaSuspendedFromBar) page: \(result ?? "nil")")
++                }
++            }
++        }
++        // A cookie in the app's shared jar: the favicon fetch (URLSession.shared)
++        // sends it; the artwork fetch must not.
++        let jarCookie = HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "sharedjar192", .value: "1"])!
++        func cacheReport(_ artwork: String) -> String {
++            let art = URLCache.shared.cachedResponse(for: URLRequest(url: url(artwork))) != nil
++            let fav = URLCache.shared.cachedResponse(for: URLRequest(url: url("art.png"))) != nil
++            return "URLCache.shared: artwork \(artwork) cached=\(art); favicon art.png cached=\(fav)"
++        }
++        /// Polls every 10 ms until the tab's Media Session report is gone.
++        func watchClear(_ tab: BrowserTab, _ label: String) {
++            let started = ProcessInfo.processInfo.systemUptime
++            var committed: TimeInterval?
++            let timer = Timer(timeInterval: 0.01, repeats: true) { timer in
++                let elapsed = ProcessInfo.processInfo.systemUptime - started
++                if committed == nil, tab.webView?.url?.lastPathComponent != "ms.html" { committed = elapsed }
++                if tab.mediaSession == nil {
++                    timer.invalidate()
++                    log(String(format: "CLEAR \(label): session nil at +%.3f s (web view URL changed at +%.3f s, isLoading=\(tab.isLoading))", elapsed, committed ?? -1))
++                    DispatchQueue.main.async { DispatchQueue.main.async { log("CLEAR \(label) bar: " + barState() + " barTabIsThisTab=\(wc.nowPlaying.shownTabID == tab.id) session now=\(tab.mediaSession?.title ?? "nil")"); dumpPlaying("CLEAR \(label)") } }
++                } else if elapsed > 4 {
++                    timer.invalidate()
++                    log("CLEAR \(label): still set after 4 s: \(String(describing: tab.mediaSession))")
++                }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        func dumpPlaying(_ label: String) {
++            for space in store.spaces {
++                for tab in space.tabs + space.pinnedTabs + (space.profile?.favoriteTabs ?? []) where tab.isPlayingAudio || tab.mediaSession != nil || tab.playbackSession != nil {
++                    log("  TAB[\(label)] space=\(space.name) id=\(tab.id.uuidString.prefix(8)) title=\(tab.title) url=\(tab.url?.absoluteString ?? "-") playing=\(tab.isPlayingAudio) session=\(tab.mediaSession?.title ?? "nil") run=\(tab.playbackSession.map { "\($0.startedAt.timeIntervalSince1970)" } ?? "nil") webView=\(tab.webView != nil)")
++                }
++            }
++            log("  shown=\(wc.nowPlaying.shownTabID?.uuidString.prefix(8) ?? "nil")")
++        }
++        func shoot(_ name: String, _ w: NSWindow? = nil) {
++            let shotWindow = w ?? window
++            let screenH = (shotWindow.screen ?? NSScreen.screens[0]).frame.maxY
++            let f = shotWindow.frame
++            log("SHOOT \(name) \(shotWindow.windowNumber) \(Int(f.minX)),\(Int(screenH - f.maxY)),\(Int(f.width)),\(Int(f.height))")
++            // In-process render of the sidebar too: works while the screen is
++            // locked (screencapture returns black then), but draws no glass.
++            let controller = (w?.windowController as? BrowserWindowController) ?? wc
++            let view = controller.tabSidebar.view
++            view.layoutSubtreeIfNeeded()
++            guard let layer = view.layer else { return log("RENDER \(name): no layer") }
++            let scale = w?.backingScaleFactor ?? window.backingScaleFactor
++            let size = view.bounds.size
++            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
++                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
++                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
++                  let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return }
++            let cg = ctx.cgContext
++            cg.scaleBy(x: scale, y: scale)
++            let background = (view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
++                ? NSColor(white: 0.16, alpha: 1) : NSColor(white: 0.93, alpha: 1)
++            cg.setFillColor(background.cgColor)
++            cg.fill(CGRect(origin: .zero, size: size))
++            if view.isFlipped { cg.translateBy(x: 0, y: size.height); cg.scaleBy(x: 1, y: -1) }
++            layer.render(in: cg)
++            let url = URL(fileURLWithPath: outDir).appendingPathComponent("render-\(name).png")
++            try? rep.representation(using: .png, properties: [:])?.write(to: url)
++            log("RENDER \(name) \(url.lastPathComponent)")
++        }
++        func run(_ tab: BrowserTab?, _ js: String) { tab?.webView?.evaluateJavaScript(js) }
++
++        // 16. Which URLSession each artwork fetch goes through: the loader's two
++        // private fetchers, read by Mirror, and the fetch seam wrapped to look the
++        // new task up in each session.
++        let loader = MediaArtworkLoader.shared
++        func mirrored(_ value: Any, _ label: String) -> Any? { Mirror(reflecting: value).children.first { $0.label == label }?.value }
++        let normalSession = mirrored(loader, "fetcher").flatMap { mirrored($0, "session") } as? URLSession
++        let privateSession = mirrored(loader, "privateFetcher").flatMap { mirrored($0, "session") } as? URLSession
++        func sid(_ s: URLSession?) -> String { s.map { String(format: "%p", unsafeBitCast($0, to: Int.self)) } ?? "nil" }
++        log("ARTWORK sessions: normal=\(sid(normalSession)) private=\(sid(privateSession)) distinct=\(normalSession != nil && privateSession != nil && normalSession !== privateSession) sharedSession=\(sid(URLSession.shared))")
++        let originalFetch = loader.fetch
++        loader.fetch = { fetchURL, isPrivate, completion in
++            let cancel = originalFetch(fetchURL, isPrivate, completion)
++            for (name, session) in [("normal", normalSession), ("private", privateSession)] {
++                session?.getAllTasks { tasks in
++                    let found = tasks.contains { $0.originalRequest?.url == fetchURL }
++                    DispatchQueue.main.async { log("ARTWORK fetch \(fetchURL.query ?? fetchURL.lastPathComponent) isPrivate=\(isPrivate): in \(name) session \(sid(session)) = \(found)") }
++                }
++            }
++            return cancel
++        }
++
++        var blank: BrowserTab!
++        var ms: BrowserTab!
++        var plain: BrowserTab!
++        var video: BrowserTab!
++        var videoOff: BrowserTab!
++        var iframe: BrowserTab!
++        var webAudio: BrowserTab!
++        var otherSpaceTab: BrowserTab!
++        var otherSpace: Space!
++        var homeSpace: Space!
++        func close(_ tab: BrowserTab?) {
++            guard let tab, let space = store.spaces.first(where: { $0.tabs.contains { $0.id == tab.id } }) else { return }
++            store.closeTab(id: tab.id, in: space)
++            log("closed \(tab.title)")
++        }
++
++        at(0) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            guard let space = wc.activeSpace else { return log("no active space") }
++            homeSpace = space
++            HTTPCookieStorage.shared.setCookie(jarCookie)
++            blank = store.addTab(in: space, url: url("blank.html"))
++            ms = store.addTab(in: space, url: url("ms.html"))
++            wc.selectTab(id: blank.id)
++            log("seeded; canMutePage=\(PageMediaControl.canMutePage)")
++        }
++        if !onlyLongList {
++        // 1. Media Session audio, left.
++        at(1.5) { wc.selectTab(id: ms.id); log("STEP 1: selected ms") }
++        at(3.0) { probe(ms, "ms playing"); log(barState()) }
++        at(0.3) {
++            wc.selectTab(id: blank.id); log("left ms")
++            for t in [0.0, 0.03, 0.06, 0.1] {
++                let timer = Timer(timeInterval: t, repeats: false) { _ in log(String(format: "  after leaving +%.2f (timed from the switch): ", t) + barState()) }
++                RunLoop.main.add(timer, forMode: .common)
++            }
++        }
++        at(0.1) { log("+0.1 " + barState()) }
++        at(1.5) { log(barState()); log("ms session: \(String(describing: ms.mediaSession))"); log(cacheReport("art.png?artwork=1")); shoot("compact-light") }
++        at(1.5) { click("Next Track") }
++        at(1.0) { probe(ms, "after next"); log(barState()); log(cacheReport("art.png?artwork=2")) }
++        at(0.5) { click("Previous Track") }
++        at(1.0) { probe(ms, "after previous"); log(barState()) }
++        at(0.5) { click("Pause") }
++        at(1.0) { probe(ms, "after bar pause"); log(barState()) }
++        at(3.0) { log("3 s after pause (past grace): " + barState()); shoot("compact-paused-light") }
++        at(0.5) { click("Play") }
++        at(1.0) { probe(ms, "after bar play"); log(barState()) }
++        at(0.5) { click("Mute") }
++        at(1.0) { probe(ms, "after bar mute"); log(barState()) }
++        at(3.0) { log("3 s muted: " + barState()) }
++        at(0.5) { click("Unmute") }
++        at(1.0) { probe(ms, "after bar unmute"); log(barState()) }
++        // 7. Hover and dismissal.
++        at(0.5) {
++            if let event = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0,
++                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0,
++                                                  trackingNumber: 0, userData: nil) {
++                bar.mouseEntered(with: event)
++            }
++            log("STEP 7: hover (mouseEntered)")
++        }
++        at(1.0) { log(barState()); shoot("expanded-light") }
++        at(1.5) { NSApp.appearance = NSAppearance(named: .darkAqua); log("dark") }
++        at(1.0) { log(barState()); shoot("expanded-dark") }
++        at(1.0) {
++            if let event = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
++                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0,
++                                                  trackingNumber: 0, userData: nil) {
++                bar.mouseExited(with: event)
++            }
++        }
++        at(1.0) { log(barState()); shoot("compact-dark") }
++        at(1.0) { NSApp.appearance = NSAppearance(named: .aqua); bar.setExpanded(true, animated: false) }
++        at(0.5) { click("Dismiss") }
++        at(1.0) { probe(ms, "after dismiss"); log("dismissed: " + barState()) }
++        at(0.2) { run(ms, "document.getElementById('a').pause(); setTimeout(() => document.getElementById('a').play(), 600)"); log("short page pause/resume") }
++        at(2.5) { probe(ms, "after short pause"); log("after short pause (same run, stays dismissed): " + barState()) }
++        at(0.2) { run(ms, "document.getElementById('a').pause()"); log("page paused (long)") }
++        at(3.0) { run(ms, "document.getElementById('a').play()"); log("page plays again") }
++        at(1.0) { log("new run after a long stop: " + barState()) }
++        // 8. Stopping hides after the grace; closing hides at once.
++        at(0.5) { run(ms, "document.getElementById('a').pause()"); log("STEP 8: page stops") }
++        at(1.0) { log("+1.0 after stop: " + barState()) }
++        at(1.5) { log("+2.5 after stop: " + barState()) }
++        at(0.5) { run(ms, "document.getElementById('a').play()"); log("ms plays again") }
++        at(1.5) { log(barState()) }
++        at(0.5) { close(ms) }
++        at(0.1) { log("+0.1 after close: " + barState()) }
++        // 5. No Media Session: previous/next off, play/pause by suspension.
++        at(0.5) { plain = store.addTab(in: homeSpace, url: url("plain.html")); wc.selectTab(id: plain.id); log("STEP 5: plain") }
++        at(3.0) { probe(plain, "plain playing"); wc.selectTab(id: blank.id) }
++        at(1.0) { log(barState()) }
++        at(0.5) { click("Pause") }
++        at(1.0) { probe(plain, "plain after bar pause") }
++        at(3.0) { log("3 s after: " + barState()) }
++        at(0.3) { click("Play") }
++        at(1.0) { probe(plain, "plain after bar play"); log(barState()) }
++        at(0.3) { click("Pause") }
++        at(1.0) { wc.selectTab(id: plain.id); log("selected the bar-paused plain tab") }
++        at(1.0) { probe(plain, "plain selected (suspension lifted)"); log(barState()) }
++        at(0.3) {
++            plain.webView?.callAsyncJavaScript("try { await document.getElementById('a').play(); return 'resolved' } catch (e) { return 'rejected ' + e.name }",
++                                               arguments: [:], in: nil, in: .page) { result in
++                log("page's own play after lifting: \(result)")
++            }
++        }
++        at(1.0) { probe(plain, "plain page play"); wc.selectTab(id: blank.id); close(plain) }
++        // 2. Video: automatic PiP, no bar; PiP closed while playing, bar.
++        at(1.0) { video = store.addTab(in: homeSpace, url: url("video.html")); wc.selectTab(id: video.id); log("STEP 2: video") }
++        at(3.5) { probe(video, "video playing"); wc.selectTab(id: blank.id); log("left video") }
++        at(0.05) { log("+0.05 " + barState()) }
++        at(0.5) { log("+0.55 " + barState()) }
++        at(2.5) { probe(video, "video in PiP"); log("+3 " + barState()) }
++        at(0.5) { run(video, "document.getElementById('v').webkitSetPresentationMode('inline')"); log("PiP closed by script while playing") }
++        at(2.0) { probe(video, "video after PiP closed"); log(barState()) }
++        at(0.5) { close(video) }
++        // 3. Video on a site with automatic PiP off.
++        at(1.0) {
++            let profileID = homeSpace.profile!.id
++            SiteSettingsStore.shared.set(.pictureInPicture, site: "localhost", to: false, profileID: profileID)
++            videoOff = store.addTab(in: homeSpace, url: url("video.html", host: "localhost"))
++            wc.selectTab(id: videoOff.id)
++            log("STEP 3: video at localhost, automatic PiP off")
++        }
++        at(3.5) { probe(videoOff, "videoOff playing"); wc.selectTab(id: blank.id) }
++        at(1.5) { probe(videoOff, "videoOff left"); log(barState()) }
++        at(0.5) { close(videoOff); SiteSettingsStore.shared.resetToDefault(.pictureInPicture, forSite: "localhost", profileID: homeSpace.profile!.id) }
++        // 4a. Cross-origin iframe audio.
++        at(1.0) { iframe = store.addTab(in: homeSpace, url: url("iframe.html")); wc.selectTab(id: iframe.id); log("STEP 4: iframe") }
++        at(3.0) { probe(iframe, "iframe playing", element: "null"); wc.selectTab(id: blank.id) }
++        at(1.0) { log(barState()) }
++        at(0.3) { click("Pause") }
++        at(1.0) { probe(iframe, "iframe after bar pause", element: "null"); log(barState()) }
++        at(0.3) { click("Play") }
++        at(1.0) { probe(iframe, "iframe after bar play", element: "null") }
++        at(0.3) { click("Mute") }
++        at(1.0) { probe(iframe, "iframe after bar mute", element: "null"); log(barState()) }
++        at(0.3) { click("Unmute") }
++        at(0.5) { close(iframe) }
++        // 4b. Web Audio.
++        at(1.0) { webAudio = store.addTab(in: homeSpace, url: url("webaudio.html")); wc.selectTab(id: webAudio.id); log("STEP 4b: Web Audio") }
++        at(2.0) { run(webAudio, "start()") }
++        at(1.5) { probe(webAudio, "webaudio playing", element: "null"); wc.selectTab(id: blank.id) }
++        at(1.0) { log(barState()) }
++        at(0.3) { click("Pause") }
++        at(1.0) { probe(webAudio, "webaudio after bar pause", element: "null"); log(barState()) }
++        at(0.3) { click("Play") }
++        at(1.0) { probe(webAudio, "webaudio after bar play", element: "null") }
++        at(0.3) { click("Mute") }
++        at(1.0) { probe(webAudio, "webaudio after bar mute", element: "null"); log(barState()) }
++        at(0.3) { click("Unmute") }
++        at(0.5) { close(webAudio) }
++        // 6. A playing tab in another space.
++        at(1.0) {
++            otherSpace = store.addSpace(name: "Other", emoji: "🎵", colorHex: "#5B8DEF", profileID: homeSpace.profileID)
++            otherSpaceTab = store.addTab(in: otherSpace, url: url("ms.html"))
++            wc.setActiveSpace(id: otherSpace.id, selectTab: false)
++            wc.selectTab(id: otherSpaceTab.id)
++            log("STEP 6: playing in space Other")
++        }
++        at(3.0) { probe(otherSpaceTab, "other space tab"); wc.setActiveSpace(id: homeSpace.id); log("back to home space, selected=\(String(describing: wc.selectedTab?.title))") }
++        at(1.5) { log(barState()); shoot("other-space-light") }
++        at(0.5) { click("Go to Fixture Track One") }
++        at(1.0) { log("after favicon click: activeSpace=\(wc.activeSpace?.name ?? "-") selected=\(wc.selectedTab?.title ?? "-") isOtherTab=\(wc.selectedTabID == otherSpaceTab.id)"); log(barState()) }
++        at(0.5) { wc.setActiveSpace(id: homeSpace.id); log("home again") }
++        // 9. A Private window never shows the normal window's media, and vice versa.
++        at(1.5) { log("normal window with Other-space tab playing: " + barState()); self.createNewIncognitoWindow(); log("STEP 9: opened a Private window") }
++        at(1.5) {
++            guard let pwc = NSApp.windows.compactMap({ $0.windowController as? BrowserWindowController }).first(where: { $0.isIncognito }),
++                  let pspace = pwc.activeSpace else { return log("no private window") }
++            pwc.window?.setFrame(NSRect(x: 260, y: 120, width: 900, height: 640), display: true)
++            log("private window before: " + barState(pwc))
++            let ptab = store.addTab(in: pspace, url: url("plain.html"))
++            pwc.selectTab(id: ptab.id)
++            log("private: playing plain.html")
++        }
++        at(3.0) {
++            guard let pwc = NSApp.windows.compactMap({ $0.windowController as? BrowserWindowController }).first(where: { $0.isIncognito }),
++                  let pspace = pwc.activeSpace else { return }
++            if let other = pspace.tabs.first(where: { $0.url?.path != "/plain.html" }) {
++                pwc.selectTab(id: other.id)
++            } else {
++                let t = store.addTab(in: pspace, url: url("blank.html")); pwc.selectTab(id: t.id)
++            }
++            log("private: left the playing tab")
++        }
++        at(1.5) {
++            guard let pwc = NSApp.windows.compactMap({ $0.windowController as? BrowserWindowController }).first(where: { $0.isIncognito }) else { return }
++            log("private window: " + barState(pwc))
++            log("normal window: " + barState())
++            shoot("private-window", pwc.window)
++        }
++        // 16a. A Private Media Session tab's artwork: the private session.
++        var privateMS: BrowserTab!
++        at(1.0) {
++            guard let pwc = NSApp.windows.compactMap({ $0.windowController as? BrowserWindowController }).first(where: { $0.isIncognito }),
++                  let pspace = pwc.activeSpace else { return }
++            for t in pspace.tabs where t.url?.path == "/plain.html" { store.closeTab(id: t.id, in: pspace) }
++            privateMS = store.addTab(in: pspace, url: url("ms.html?private"))
++            pwc.selectTab(id: privateMS.id)
++            log("STEP 16a: private ms.html?private selected")
++        }
++        at(3.0) {
++            guard let pwc = NSApp.windows.compactMap({ $0.windowController as? BrowserWindowController }).first(where: { $0.isIncognito }),
++                  let pspace = pwc.activeSpace, let other = pspace.tabs.first(where: { $0.id != privateMS.id }) else { return }
++            pwc.selectTab(id: other.id)
++            log("STEP 16a: left the private ms tab")
++        }
++        at(1.5) {
++            guard let pwc = NSApp.windows.compactMap({ $0.windowController as? BrowserWindowController }).first(where: { $0.isIncognito }) else { return }
++            log("16a private window: " + barState(pwc))
++            log("16a normal window: " + barState())
++        }
++        at(1.5) {
++            NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }.filter(\.isIncognito).forEach { $0.window?.performClose(nil) }
++            log("closed the Private window")
++        }
++        // 10. Captures again late in the run: early `screencapture -l` calls
++        // failed ("could not create image from window") in every run.
++        at(0.5) {
++            // A plain selected row to measure the bar against: no dev-mode border.
++            SiteSettingsStore.shared.set(.devMode, site: "127.0.0.1", to: false, profileID: homeSpace.profile!.id)
++        }
++        at(1.5) { log("STEP 10: late captures, Other-space tab still playing: " + barState()); shoot("late-compact-light") }
++        at(2.5) { bar.setExpanded(true, animated: true) }
++        at(1.0) { log(barState()); shoot("late-expanded-light") }
++        at(2.5) { NSApp.appearance = NSAppearance(named: .darkAqua) }
++        at(1.0) { log(barState()); shoot("late-expanded-dark") }
++        at(3.0) { bar.setExpanded(false, animated: true) }
++        at(1.0) { log(barState()); shoot("late-compact-dark") }
++        at(2.5) { }
++        at(0.5) { bar.setExpanded(true, animated: true) }
++        at(1.0) { log(barState()); shoot("late-expanded-dark-2") }
++        at(3.0) { bar.setExpanded(false, animated: true) }
++        at(0.5) { click("Pause") }
++        at(2.5) { log(barState()); shoot("late-paused-dark") }
++        at(0.5) { NSApp.appearance = NSAppearance(named: .aqua); click("Play") }
++        at(1.0) {
++            SiteSettingsStore.shared.resetToDefault(.devMode, forSite: "127.0.0.1", profileID: homeSpace.profile!.id)
++            wc.selectTab(id: blank.id); close(otherSpaceTab); log("STEP 10 finished")
++        }
++        // 11. Artwork: a burst of URL changes, and an image over the cap.
++        var msArt: BrowserTab!
++        at(1.0) { msArt = store.addTab(in: homeSpace, url: url("ms.html")); wc.selectTab(id: msArt.id); log("STEP 11: artwork burst and cap") }
++        at(3.0) { wc.selectTab(id: blank.id) }
++        at(1.5) { log(barState()) }
++        at(0.3) {
++            run(msArt, "let i = 0; window.__burst = setInterval(() => { navigator.mediaSession.metadata.artwork = [{ src: 'art.png?burst=' + i, sizes: '256x256' }]; if (++i === 20) clearInterval(window.__burst); }, 50)")
++            log("burst: 20 artwork URLs, 50 ms apart")
++        }
++        at(2.5) { log("after burst: " + barState()); log("session artwork: \(msArt.mediaSession?.artworkURL?.absoluteString ?? "-")"); log(cacheReport("art.png?burst=19")) }
++        at(0.3) { run(msArt, "clearInterval(window.__burst); navigator.mediaSession.metadata.artwork = [{ src: 'big.png', sizes: '1024x1024' }]"); log("burst stopped; artwork -> big.png (3.7 MB)") }
++        at(2.0) { log("after big: " + barState()) }
++        // 12. A main-frame navigation clears the Media Session at once.
++        at(0.3) { watchClear(msArt, "pdf"); msArt.load(url("doc.pdf")); log("STEP 12: msArt -> doc.pdf") }
++        at(1.0) { log("+1.0 after pdf: " + barState()); log("msArt session=\(String(describing: msArt.mediaSession)) url=\(msArt.url?.lastPathComponent ?? "-") title=\(msArt.title)") }
++        at(3.0) { msArt.load(url("ms.html")); log("msArt -> ms.html again (id \(msArt.id.uuidString.prefix(8)))") }
++        at(3.0) { log("ms again: " + barState()); log("session title: \(msArt.mediaSession?.title ?? "nil")") }
++        at(0.3) { watchClear(msArt, "blank"); msArt.load(url("blank.html?nav")); log("msArt -> blank.html?nav") }
++        at(1.0) { log("+1.0 after blank: " + barState()) }
++        at(0.5) { msArt.webView?.goBack(); log("goBack to ms.html") }
++        at(2.0) { probe(msArt, "after back"); log("after back: session title=\(msArt.mediaSession?.title ?? "nil") " + barState()) }
++        at(0.5) { close(msArt); dumpPlaying("after closing msArt") }
++        // 13. A muted video tab does not enter PiP when left; an unmuted one does.
++        var vm: BrowserTab!
++        at(1.0) { vm = store.addTab(in: homeSpace, url: url("video.html?muted")); wc.selectTab(id: vm.id); log("STEP 13: video tab") }
++        at(3.5) { vm.setMuted(true); log("muted the video tab (page mute)") }
++        at(0.5) { probe(vm, "vm muted, selected"); wc.selectTab(id: blank.id); log("left the muted video tab") }
++        at(0.5) { log("+0.5 " + barState()) }
++        at(2.5) { probe(vm, "vm muted, left +3"); log("+3 " + barState()) }
++        at(0.5) { wc.selectTab(id: vm.id); vm.setMuted(false); log("back to vm, unmuted") }
++        at(1.5) { probe(vm, "vm unmuted, selected"); wc.selectTab(id: blank.id); log("left the unmuted video tab") }
++        at(0.5) { log("+0.5 " + barState()) }
++        at(2.5) { probe(vm, "vm unmuted, left +3"); log("+3 " + barState()) }
++        at(0.5) { run(vm, "document.getElementById('v').webkitSetPresentationMode('inline')") }
++        at(1.5) { close(vm) }
++        // 14. Two windows: T shown in A, paused from window B's bar.
++        var tabT: BrowserTab!
++        var wcB: BrowserWindowController!
++        var blankB: BrowserTab!
++        at(1.0) { tabT = store.addTab(in: homeSpace, url: url("video.html?twowindows")); wc.selectTab(id: tabT.id); log("STEP 14: T selected in window A") }
++        at(3.5) {
++            wcB = self.createNewWindow(showing: homeSpace)
++            wcB.window?.setFrame(NSRect(x: 320, y: 60, width: 900, height: 640), display: true)
++            blankB = store.addTab(in: homeSpace, url: url("blank.html?b"))
++            wcB.selectTab(id: blankB.id)
++            log("opened window B on blank.html?b")
++        }
++        at(2.0) { probe(tabT, "T playing in A"); log("A: " + barState()); log("B: " + barState(wcB)) }
++        at(0.5) { click("Pause", in: wcB) }
++        at(1.0) {
++            probe(tabT, "T after B's pause")
++            log("A: " + barState()); log("B: " + barState(wcB))
++            log("T's web view is in window A: \(tabT.webView?.window === window), A.selectedTab is T: \(wc.selectedTabID == tabT.id)")
++        }
++        at(0.5) {
++            tabT.webView?.callAsyncJavaScript("const v = document.getElementById('v'); const t0 = v.currentTime; try { await v.play() } catch (e) { return 'rejected ' + e.name } await new Promise(r => setTimeout(r, 800)); return 'resolved, currentTime ' + t0.toFixed(2) + ' -> ' + v.currentTime.toFixed(2)",
++                                              arguments: [:], in: nil, in: .page) { result in
++                log("T: the page's own play: \(result)")
++            }
++        }
++        at(1.5) { probe(tabT, "T after the page's own play"); log("A: " + barState()); log("B: " + barState(wcB)) }
++        at(0.5) { wcB.window?.performClose(nil); log("closed window B") }
++        at(1.0) { close(blankB); wc.selectTab(id: blank.id); close(tabT) }
++        // 17. A muted tab still playing, slept with sleep() (not forced): its
++        // media is paused while the web view is still attached.
++        var sm: BrowserTab!
++        var slept: WKWebView?
++        at(1.0) { sm = store.addTab(in: homeSpace, url: url("plain.html?sleep")); wc.selectTab(id: sm.id); log("STEP 17: muted-tab sleep") }
++        at(3.0) { sm.setMuted(true); wc.selectTab(id: blank.id); log("muted sm and left it") }
++        at(1.0) { probe(sm, "sm muted, left"); log("sm isPlayingAudio=\(sm.isPlayingAudio) isMuted=\(sm.isMuted) isAudible=\(sm.isAudible); " + barState()) }
++        at(0.5) {
++            slept = sm.webView
++            task192PauseHook = { webView in
++                let attached = sm.webView === webView
++                let playing = (webView.value(forKey: "_isPlayingAudio") as? NSNumber)?.boolValue ?? false
++                log("17 pauseAllMediaPlayback on sm's web view: tab.webView still attached=\(attached) superview=\(webView.superview != nil) _isPlayingAudio=\(playing) tab.isPlayingAudio=\(sm.isPlayingAudio) isSleeping=\(sm.isSleeping)")
++            }
++            sm.sleep()
++            task192PauseHook = nil
++            log("17 after sleep(): isSleeping=\(sm.isSleeping) webView nil=\(sm.webView == nil) isPlayingAudio=\(sm.isPlayingAudio); " + barState())
++            for t in [0.0, 0.05, 0.2] {
++                let timer = Timer(timeInterval: t, repeats: false) { _ in log(String(format: "  17 after sleep +%.2f: ", t) + barState()) }
++                RunLoop.main.add(timer, forMode: .common)
++            }
++        }
++        at(0.8) {
++            guard let slept else { return log("17: no retained web view") }
++            let playing = (slept.value(forKey: "_isPlayingAudio") as? NSNumber)?.boolValue ?? false
++            slept.requestMediaPlaybackState { state in
++                slept.evaluateJavaScript("(() => { const e = document.querySelector('audio'); return 'paused=' + e.paused + ' t=' + e.currentTime.toFixed(1) })()") { result, _ in
++                    log("17 released web view +0.8 s: _isPlayingAudio=\(playing) playbackState=\(state.rawValue) page: \(result ?? "nil")")
++                }
++            }
++        }
++        at(0.7) { slept = nil; close(sm) }
++
++        }
++        // 12b (focused runs only). A playing Media Session tab navigated away, back, and closed.
++        if onlyLongList {
++            var nav: BrowserTab!
++            at(0.5) { nav = store.addTab(in: homeSpace, url: url("ms.html?nav")); wc.selectTab(id: nav.id); log("12b: nav tab \(nav.id.uuidString.prefix(8)) selected") }
++            at(3.0) { wc.selectTab(id: blank.id); log("12b: left nav") }
++            at(1.0) { log("12b playing, left: " + barState()); dumpPlaying("12b left") }
++            at(0.3) { watchClear(nav, "12b blank"); nav.load(url("blank.html?nav2")); log("12b: nav -> blank.html?nav2") }
++            at(1.0) { log("12b +1.0: " + barState()); dumpPlaying("12b +1.0") }
++            at(1.5) { log("12b +2.5: " + barState()); dumpPlaying("12b +2.5") }
++            at(0.5) { nav.webView?.goBack(); log("12b: goBack") }
++            at(2.0) { probe(nav, "12b after back"); log("12b after back: " + barState()); dumpPlaying("12b after back") }
++            at(0.5) { close(nav) }
++            at(1.0) { log("12b closed +1: " + barState()); dumpPlaying("12b closed +1") }
++            at(2.5) { log("12b closed +3.5: " + barState()); dumpPlaying("12b closed +3.5") }
++        }
++        // 15. A long list that scrolls, with the bar (the coordinator's follow-up).
++        var longSpace: Space!
++        var player: BrowserTab!
++        var longTabs: [BrowserTab] = []
++        func listState() -> String {
++            let tv = wc.tabSidebar.tableView
++            guard let sv = tv.enclosingScrollView, let page = sv.superview else { return "no scroll view" }
++            let clip = sv.contentView
++            let last = tv.numberOfRows - 1
++            let lastRect = tv.rect(ofRow: last)
++            let visible = clip.documentVisibleRect
++            let lastVisible = lastRect.intersection(visible)
++            var probeRect = clip.bounds
++            probeRect.origin.y = 1e7
++            let maxY = clip.constrainBoundsRect(probeRect).origin.y
++            let shadows = page.subviews.filter { $0 is FadeShadowView }.map { ($0, $0.convert($0.bounds, to: nil)) }
++            let bottom = shadows.min { $0.1.minY < $1.1.minY }
++            let clipWin = clip.convert(clip.bounds, to: nil)
++            let barWin = bar.convert(bar.bounds, to: nil)
++            func r(_ rect: NSRect) -> String { String(format: "y %.1f-%.1f", rect.minY, rect.maxY) }
++            return String(format: "offset=%.1f max=%.1f atEnd=%@ clipH=%.1f lastRowVisibleH=%.1f (of %.0f)", clip.bounds.origin.y, maxY,
++                          abs(clip.bounds.origin.y - maxY) < 0.5 ? "yes" : "NO", clip.bounds.height,
++                          lastVisible.isNull ? 0 : lastVisible.height, lastRect.height)
++                + " | win: list \(r(clipWin)) bottomShadow alpha=\(String(format: "%.2f", bottom?.0.alphaValue ?? -1)) \(bottom.map { r($0.1) } ?? "-") bar(hidden=\(bar.isHidden) alpha=\(String(format: "%.2f", bar.alphaValue))) \(r(barWin))"
++        }
++        func scrollListToEnd() {
++            let tv = wc.tabSidebar.tableView
++            guard let sv = tv.enclosingScrollView else { return }
++            let clip = sv.contentView
++            var probeRect = clip.bounds
++            probeRect.origin.y = 1e7
++            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.constrainBoundsRect(probeRect).origin.y))
++            sv.reflectScrolledClipView(clip)
++        }
++        func sample(_ label: String, _ times: [TimeInterval]) {
++            for t in times {
++                let timer = Timer(timeInterval: t, repeats: false) { _ in log(String(format: "  %@ +%.2f: ", label, t) + listState()) }
++                RunLoop.main.add(timer, forMode: .common)
++            }
++        }
++        func hitReport() -> String {
++            let tv = wc.tabSidebar.tableView
++            guard let frameView = window.contentView?.superview else { return "" }
++            let lastRect = tv.rect(ofRow: tv.numberOfRows - 1)
++            let barWin = bar.convert(bar.bounds, to: nil)
++            let points: [(String, NSPoint)] = [
++                ("lastRow lower quarter", tv.convert(NSPoint(x: lastRect.midX, y: lastRect.maxY - lastRect.height * 0.25), to: nil)),
++                ("bar top +1 inside", NSPoint(x: barWin.midX, y: barWin.maxY - 1)),
++                ("bar top -1 outside", NSPoint(x: barWin.midX, y: barWin.maxY + 1)),
++            ]
++            return points.map { name, p in
++                let hit = frameView.hitTest(p)
++                let owner = hit == nil ? "nil" : hit!.isDescendant(of: bar) ? "bar" : hit!.isDescendant(of: tv) ? "table" : String(describing: type(of: hit!))
++                return " | hit \(name) (y \(String(format: "%.1f", p.y))): \(owner)"
++            }.joined()
++        }
++        at(1.0) {
++            player = store.addTab(in: homeSpace, url: url("plain.html?long"))
++            wc.selectTab(id: player.id)
++            log("STEP 15: long list; the player is in the home space")
++            dumpPlaying("STEP 15 start")
++        }
++        at(3.0) {
++            longSpace = store.addSpace(name: "Long", emoji: "📜", colorHex: "#8B5BEF", profileID: homeSpace.profileID)
++            for i in 0..<30 { longTabs.append(store.addTab(in: longSpace, url: url("blank.html?row=\(i)"))) }
++            wc.setActiveSpace(id: longSpace.id, selectTab: false)
++            wc.selectTab(id: longTabs[0].id)
++            log("space Long with 30 tabs, first selected")
++        }
++        at(2.0) { log("bar while the player plays: " + barState()); run(player, "document.getElementById('a').pause()"); log("player paused: the bar hides after the grace") }
++        at(3.0) { scrollListToEnd() }
++        at(0.5) { log("15.1 scrolled to the end, no bar: " + listState()); log(barState()); shoot("long-end-nobar") }
++        at(2.5) { run(player, "document.getElementById('a').play()"); log("player plays: the bar appears"); sample("show", [0.02, 0.06, 0.1, 0.15, 0.2, 0.3, 0.5]) }
++        at(1.0) { log("15.1 after show: " + listState()); log(barState()); shoot("long-end-bar") }
++        at(2.5) {
++            let tv = wc.tabSidebar.tableView
++            tv.scrollRowToVisible(tv.numberOfRows / 2)
++        }
++        at(0.5) { log("15.2 mid-list with the bar: " + listState()); shoot("long-mid-bar") }
++        at(2.5) { scrollListToEnd() }
++        at(0.5) { log("15.3 at the end, before expanding: " + listState() + hitReport()); bar.setExpanded(true, animated: true) }
++        at(0.6) { log("15.3 expanded: " + listState() + hitReport()); shoot("long-end-expanded") }
++        at(2.5) { bar.setExpanded(false, animated: true) }
++        at(0.6) { log("15.3 collapsed: " + listState() + hitReport()) }
++        at(0.5) {
++            let sidebar: TabSidebarViewController = wc.tabSidebar
++            let tv = sidebar.tableView
++            let moved = longTabs[3]
++            let payload = SidebarDragPayload(kind: .normalTab, itemID: moved.id, spaceID: longSpace.id, sidebarID: sidebar.sidebarID)
++            let pasteboard = NSPasteboard(name: NSPasteboard.Name("task192-drag"))
++            pasteboard.clearContents()
++            let item = NSPasteboardItem()
++            item.setString(payload.pasteboardString!, forType: tabReorderPasteboardType)
++            pasteboard.writeObjects([item])
++            let lastRow = tv.numberOfRows - 1
++            let lastRect = tv.rect(ofRow: lastRow)
++            let location = tv.convert(NSPoint(x: lastRect.midX, y: lastRect.maxY - lastRect.height * 0.25), to: nil)
++            let info = Task192StubDragInfo(pasteboard: pasteboard, location: location, window: window)
++            let hit = window.contentView?.superview?.hitTest(location)
++            let operation = sidebar.tableView(tv, validateDrop: info, proposedRow: lastRow + 1, proposedDropOperation: .above)
++            let accepted = sidebar.tableView(tv, acceptDrop: info, row: lastRow + 1, dropOperation: .above)
++            let index = longSpace.tabs.firstIndex { $0.id == moved.id } ?? -1
++            log("15.4 drop tab 3 below the last row (window y \(String(format: "%.1f", location.y)), hit \(hit.map { $0.isDescendant(of: tv) ? "table" : $0.isDescendant(of: bar) ? "bar" : "\(type(of: $0))" } ?? "nil")): validateDrop=\(operation.rawValue) acceptDrop=\(accepted) -> index \(index) of \(longSpace.tabs.count)")
++        }
++        at(1.5) { log("15.4 after the drop: " + listState()) }
++        at(0.5) { scrollListToEnd() }
++        at(0.5) { log("15.1r at the end, before hiding: " + listState()); run(player, "document.getElementById('a').pause()"); log("player paused: the bar hides after the grace"); sample("hide", [1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.4, 2.8]) }
++        at(3.5) { log("15.1r after hide: " + listState()); shoot("long-end-hidden") }
++        at(1.0) {
++            wc.setActiveSpace(id: homeSpace.id)
++            for tab in longTabs { close(tab) }
++            close(player)
++            log("closed the long list")
++        }
++        at(1.5) {
++            HTTPCookieStorage.shared.deleteCookie(jarCookie)
++            URLCache.shared.removeCachedResponse(for: URLRequest(url: url("art.png")))
++            log("done")
++        }
++    }
++}
++
++/// Step 17: called from `pauseAllMediaPlayback` on any BrowserWebView.
++var task192PauseHook: ((WKWebView) -> Void)?
++
++extension BrowserWebView {
++    override func pauseAllMediaPlayback(completionHandler: (() -> Void)? = nil) {
++        task192PauseHook?(self)
++        super.pauseAllMediaPlayback(completionHandler: completionHandler)
++    }
++}
++
++/// Stands in for a drag session so a drop runs through the sidebar's real
++/// validateDrop / acceptDrop.
++final class Task192StubDragInfo: NSObject, NSDraggingInfo {
++    private let pasteboard: NSPasteboard
++    private let location: NSPoint
++    private weak var window: NSWindow?
++    init(pasteboard: NSPasteboard, location: NSPoint, window: NSWindow) {
++        self.pasteboard = pasteboard
++        self.location = location
++        self.window = window
++    }
++    var draggingDestinationWindow: NSWindow? { window }
++    var draggingSourceOperationMask: NSDragOperation { .move }
++    var draggingLocation: NSPoint { location }
++    var draggedImageLocation: NSPoint { location }
++    var draggedImage: NSImage? { nil }
++    var draggingPasteboard: NSPasteboard { pasteboard }
++    var draggingSource: Any? { nil }
++    var draggingSequenceNumber: Int { 192 }
++    func slideDraggedImage(to screenPoint: NSPoint) {}
++    var draggingFormation: NSDraggingFormation = .default
++    var animatesToDestination = false
++    var numberOfValidItemsForDrop = 1
++    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
++                                classes classArray: [AnyClass],
++                                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
++                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
++    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
++    func resetSpringLoading() {}
++}
++#endif

@@ -237,6 +237,24 @@ final class SleepShowBudgetTests: XCTestCase {
         for tab in tabs { XCTAssertFalse(tab.isSleeping, "audible tabs keep their web view") }
     }
 
+    /// Page mute (TASK-192) keeps `_isPlayingAudio` true; a muted tab is not
+    /// audible, so it sleeps as it did under the old script mute.
+    func testMutedPlayingTabIsSleptByTheBudget() throws {
+        let (store, _, space) = try makeStore()
+        let now = Date()
+
+        let tab = makeNormalTab(store, in: space)
+        spendBudget(tab)
+        deselectedBeyondGrace(tab, now: now)
+        tab.isPlayingAudio = true
+        tab.isMuted = true
+        XCTAssertFalse(tab.isAudible)
+
+        store.sleepStaleTabs(now: now)
+
+        XCTAssertTrue(tab.isSleeping, "a muted tab's silent playback must not pin its web view")
+    }
+
     /// Two windows on one space share a single `lastDeselectedAt`, so the one
     /// that deselects a tab stamps it while the other may still be hosting it.
     /// A parented container means "hosted somewhere" — sleeping would blank that

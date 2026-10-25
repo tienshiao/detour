@@ -164,6 +164,7 @@ class BrowserTab: NSObject {
             if let webView {
                 ExtensionPageHostRegistry.register(webView)
                 FaviconLinkBridge.register(webView, for: self)
+                MediaSessionBridge.register(webView, for: self)
             }
         }
     }
@@ -209,8 +210,42 @@ class BrowserTab: NSObject {
     @Published var url: URL?
     @Published var isLoading: Bool = false
     @Published var isSleeping: Bool = false
-    @Published var isPlayingAudio: Bool = false
-    @Published var isMuted: Bool = false
+    @Published var isPlayingAudio: Bool = false {
+        didSet { if isPlayingAudio != oldValue { updatePlaybackSession() } }
+    }
+    @Published var isMuted: Bool = false {
+        didSet { if isMuted != oldValue { postNowPlayingChange() } }
+    }
+    /// Playing sound the user can hear. Page mute (`PageMediaControl`) keeps
+    /// `_isPlayingAudio` true, where the old script mute turned it off, so the
+    /// gates that spare a tab for its sound — stale-tab sleep, automatic
+    /// picture in picture, the GPU recycler — read this rather than
+    /// `isPlayingAudio`.
+    var isAudible: Bool { isPlayingAudio && !isMuted }
+
+    // MARK: Now playing (TASK-192) — written only by BrowserTab+NowPlaying.swift
+    // and `releaseWebView`.
+
+    /// The current run of audible playback, for the now-playing bar.
+    var playbackSession: MediaPlaybackSession?
+    /// The main frame's Media Session, as `MediaSessionBridge` last reported it.
+    var mediaSession: MediaSessionReport?
+    /// Frames (by their script's token) with a video in picture in picture.
+    var pictureInPictureFrames: Set<String> = []
+    /// `enterPictureInPicture()` asked a video to enter PiP and no frame has
+    /// reported it yet; cleared by the report, by the script finding no video,
+    /// or after `pictureInPictureEntryTimeout`.
+    var isAwaitingPictureInPicture = false
+    var pictureInPictureEntryWorkItem: DispatchWorkItem?
+    /// The bar paused this tab: it stays on the bar while quiet, so the user
+    /// can resume it there.
+    var isPausedFromBar = false
+    /// The bar's pause suspended the page's media (`setAllMediaPlaybackSuspended`)
+    /// rather than calling the page's Media Session handler. A suspended page
+    /// cannot start media itself, so selecting the tab lifts it.
+    var isMediaSuspendedFromBar = false
+    /// The `startedAt` of the run the user dismissed from the bar.
+    var nowPlayingDismissedSessionStart: Date?
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var blockedCount: Int = 0
@@ -474,6 +509,7 @@ class BrowserTab: NSObject {
         }
         InternalPageBridge.install(on: configuration)
         FaviconLinkBridge.install(on: configuration)
+        MediaSessionBridge.install(on: configuration)
         let webView = BrowserWebView(frame: .zero, configuration: configuration)
         webView.isInspectable = true
         return webView
@@ -486,6 +522,7 @@ class BrowserTab: NSObject {
         if let webView {
             ExtensionPageHostRegistry.register(webView)
             FaviconLinkBridge.register(webView, for: self)
+            MediaSessionBridge.register(webView, for: self)
         }
         webView?.navigationDelegate = self
         applyUserAgent()
@@ -500,6 +537,7 @@ class BrowserTab: NSObject {
         super.init()
         ExtensionPageHostRegistry.register(webView)
         FaviconLinkBridge.register(webView, for: self)
+        MediaSessionBridge.register(webView, for: self)
         webView.navigationDelegate = self
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state
@@ -601,6 +639,7 @@ class BrowserTab: NSObject {
 
     func enterPictureInPicture() {
         guard let webView else { return }
+        pictureInPictureEntryWillStart()
         let js = """
         (function search(doc) {
             for (const video of doc.querySelectorAll('video')) {
@@ -616,7 +655,9 @@ class BrowserTab: NSObject {
             return false;
         })(document)
         """
-        webView.evaluateJavaScript(js)
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            self?.pictureInPictureEntryDidFinish(requested: (result as? Bool) == true)
+        }
     }
 
     func exitPictureInPicture() {
@@ -638,10 +679,18 @@ class BrowserTab: NSObject {
         webView.evaluateJavaScript(js)
     }
 
+    /// Mutes or unmutes the tab. The whole page, every frame and Web Audio
+    /// included, through `PageMediaControl` (TASK-192); a WebKit without that
+    /// SPI falls back to setting `muted` on the media elements script can
+    /// reach, which misses cross-origin iframes and Web Audio.
     func toggleMute() {
+        setMuted(!isMuted)
+    }
+
+    func setMuted(_ muted: Bool) {
         guard let webView else { return }
-        isMuted.toggle()
-        let muted = isMuted
+        isMuted = muted
+        if PageMediaControl(webView: webView).setPageAudioMuted(muted) { return }
         let js = """
         (function search(doc) {
             doc.querySelectorAll('video, audio').forEach(el => el.muted = \(muted));
@@ -655,8 +704,12 @@ class BrowserTab: NSObject {
 
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "_isPlayingAudio" {
+            let source = object as? WKWebView
             DispatchQueue.main.async { [weak self] in
-                self?.isPlayingAudio = change?[.newKey] as? Bool ?? false
+                // A change queued before `releaseWebView` removed the observer
+                // must not mark a sleeping (or re-woken) tab audible.
+                guard let self, let source, self.webView === source else { return }
+                self.isPlayingAudio = change?[.newKey] as? Bool ?? false
             }
         } else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
@@ -732,6 +785,8 @@ class BrowserTab: NSObject {
             .store(in: &faviconCancellables)
 
         webView.addObserver(self, forKeyPath: "_isPlayingAudio", options: [.new], context: nil)
+        // Page mute lives on the web view: a woken tab's new one starts unmuted.
+        if isMuted { PageMediaControl(webView: webView).setPageAudioMuted(true) }
 
         webView.publisher(for: \.url)
             .compactMap { url -> (siteKey: String, url: URL)? in
@@ -873,6 +928,9 @@ class BrowserTab: NSObject {
         // the flag true on a tab with no web view (sticky sidebar indicator, and
         // `sleepStaleTabs` would never auto-sleep the tab again).
         isPlayingAudio = false
+        // Sleeping or closing takes the tab off the now-playing bar at once,
+        // without the grace a pause gets.
+        resetNowPlayingState()
         // Scoped to the web view being released: a stale flag would make the
         // *next* web view's cancellation look like a wake (TASK-45).
         awaitingFirstURL = false
@@ -914,8 +972,9 @@ class BrowserTab: NSObject {
     /// first). Used when the tab must release its webView regardless of playback,
     /// e.g. a profile swap rebinding the tab to a different data store.
     func sleep(force: Bool = false) {
-        guard let webView, !isSleeping, force || !isPlayingAudio else { return }
-        if force {
+        guard let webView, !isSleeping, force || !isAudible else { return }
+        // A muted tab still plays: stop it as a forced sleep does.
+        if force || isPlayingAudio {
             webView.pauseAllMediaPlayback(completionHandler: nil)
         }
 
@@ -1519,6 +1578,7 @@ extension BrowserTab: WKNavigationDelegate {
     /// Mirrors `BrowserWindowController`'s `didCommit`: an error page is not a
     /// page the tab is showing.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        nowPlayingDocumentDidCommit()
         if webView.url?.scheme == ErrorPage.scheme { return }
         didCommitNavigation()
     }

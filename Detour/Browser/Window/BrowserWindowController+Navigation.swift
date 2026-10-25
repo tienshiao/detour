@@ -287,8 +287,11 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        let committingTab = tab(owning: webView)
+        // Even an error page: the old page's Media Session is gone (TASK-192).
+        committingTab?.nowPlayingDocumentDidCommit()
         if webView.url?.scheme == ErrorPage.scheme { return }
-        tab(owning: webView)?.didCommitNavigation()
+        committingTab?.didCommitNavigation()
 
         // Native WKWebExtension handles chrome.webNavigation events
     }

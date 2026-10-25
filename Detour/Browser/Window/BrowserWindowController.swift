@@ -44,7 +44,12 @@ class BrowserWindowController: NSWindowController {
     /// cannot hold the sidebar open.
     private let sidebarHoldingPopovers = NSHashTable<NSPopover>.weakObjects()
 
-    var selectedTabID: UUID?
+    var selectedTabID: UUID? {
+        // What this window shows decides what its now-playing bar may show.
+        didSet { if selectedTabID != oldValue { scheduleNowPlayingUpdate() } }
+    }
+    /// The now-playing bar's per-window state (TASK-192).
+    let nowPlaying = NowPlayingWindowState()
     private var activeTabSubscriptions = Set<AnyCancellable>()
     private var snapshotImageView: NSImageView?
     /// Whether this window currently displays the selected tab's live web view.
@@ -312,6 +317,8 @@ class BrowserWindowController: NSWindowController {
             name: .webViewOwnershipChanged,
             object: nil
         )
+        NotificationCenter.default.addObserver(self, selector: #selector(nowPlayingDidChange(_:)),
+                                               name: BrowserTab.nowPlayingDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(popoverDidShow(_:)),
                                                name: NSPopover.didShowNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(popoverDidClose(_:)),
@@ -1179,7 +1186,7 @@ class BrowserWindowController: NSWindowController {
         let siteOverride = activeSpace?.profile.flatMap {
             SiteSettingsStore.shared.override(.pictureInPicture, forSite: host, profileID: $0.id)
         }
-        return AutomaticPictureInPicture.shouldEnter(isPlayingAudio: tab.isPlayingAudio,
+        return AutomaticPictureInPicture.shouldEnter(isPlayingAudio: tab.isPlayingAudio, isMuted: tab.isMuted,
                                                      leavesClosingTab: selectionLeavesClosingTab,
                                                      siteOverride: siteOverride)
     }
@@ -1269,6 +1276,9 @@ class BrowserWindowController: NSWindowController {
 
         tab.exitPictureInPicture()
         tab.peekTab?.exitPictureInPicture()
+        // On screen again: a page the now-playing bar paused gets its media back.
+        // (`selectedTabID`'s didSet schedules this window's bar update.)
+        for member in members { member.nowPlayingTabWasSelected() }
 
         // Restore peek overlay if the incoming tab has one
         restorePeekOverlayIfNeeded()
@@ -1953,6 +1963,8 @@ class BrowserWindowController: NSWindowController {
     /// split formed around the selected tab (context menu) — so the hosted view
     /// (single container vs split view) matches the selected tab's group state.
     func refreshSplitHostingIfNeeded() {
+        // A split made or broken around the selection changes which panes are visible.
+        scheduleNowPlayingUpdate()
         guard let tab = selectedTab, ownsWebView else { return }
         let members = splitMembers(of: tab)
         let hostingSplit = hostedSplitView?.superview === contentContainerView

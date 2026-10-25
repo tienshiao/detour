@@ -145,6 +145,43 @@ class SpacePageView: NSView {
         }
     }
 
+    /// A list scrolled to its end stays at its end when the page's height
+    /// changes: the now-playing bar (TASK-192) shrinks the page by its compact
+    /// height as it appears, frame by frame, and the clip view would otherwise
+    /// keep its top offset and slide the last rows out of view. Anywhere else
+    /// in the list the offset is kept. Growing needs nothing: the clip view
+    /// already clamps to the new end.
+    override func layout() {
+        let wasAtEnd = isScrolledToEnd
+        super.layout()
+        guard wasAtEnd else { return }
+        let clip = scrollView.contentView
+        let end = maxScrollOffset
+        guard abs(clip.bounds.origin.y - end) > 0.5 else { return }
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: end))
+        scrollView.reflectScrolledClipView(clip)
+    }
+
+    /// The largest offset the clip view allows at its current size, content
+    /// insets included.
+    private var maxScrollOffset: CGFloat {
+        let clip = scrollView.contentView
+        var probe = clip.bounds
+        probe.origin.y = 1e7
+        return clip.constrainBoundsRect(probe).origin.y
+    }
+
+    /// At the end of a list long enough to scroll (one that fits is anchored
+    /// at its top, as before).
+    private var isScrolledToEnd: Bool {
+        let clip = scrollView.contentView
+        var probe = clip.bounds
+        probe.origin.y = -1e7
+        let start = clip.constrainBoundsRect(probe).origin.y
+        let end = maxScrollOffset
+        return end - start > 0.5 && clip.bounds.origin.y >= end - 0.5
+    }
+
     func updateFadeShadows() {
         let clipView = scrollView.contentView
         guard let documentView = scrollView.documentView else { return }

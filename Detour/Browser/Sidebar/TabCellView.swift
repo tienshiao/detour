@@ -17,7 +17,7 @@ class TabRowView: NSTableRowView {
     /// The inset rect the source list uses for its selection highlight
     var selectionRect: NSRect {
         // Source list selection is inset ~10pt horizontally, ~1pt vertically, with 6pt corner radius
-        return bounds.insetBy(dx: 10, dy: 1)
+        return bounds.insetBy(dx: UIConstants.sidebarRowHighlightInset, dy: 1)
     }
 
     /// The table keeps every row view's `isSelected` in step with its
@@ -345,7 +345,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// The rect the hover background and the dev-mode border share: the whole
     /// row, or one half of a split row (0 = left, 1 = right).
     private func rowHighlightRect(splitSide side: Int?) -> NSRect {
-        let rowRect = bounds.insetBy(dx: -6, dy: 1)
+        let rowRect = bounds.insetBy(dx: -UIConstants.sidebarRowHighlightOutset, dy: 1)
         guard let side else { return rowRect }
         let mid = bounds.midX
         if side == 0 {

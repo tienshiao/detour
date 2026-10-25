@@ -187,7 +187,12 @@ final class GPUProcessRecycler {
     }
 
     private static func isUsingMedia(_ tab: BrowserTab) -> Bool {
-        if tab.isPlayingAudio { return true }
+        // `isAudible`, as before page mute (TASK-192): the old script mute made
+        // a muted tab inaudible, so muted playback never held the recycler
+        // back. A muted tab left looping would otherwise keep the GPU process
+        // alive until its IOSurfaces run out (TASK-104), which is worse than
+        // freezing a video nobody is listening to while the user is idle.
+        if tab.isAudible { return true }
         guard let webView = tab.webView else { return false }
         return webView.cameraCaptureState != .none || webView.microphoneCaptureState != .none
     }

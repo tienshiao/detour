@@ -77,6 +77,8 @@ protocol TabSidebarDelegate: AnyObject {
     /// a page that held focus left the screen, a rename ended, or a tab list
     /// was clicked.
     func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController)
+    /// A control on the now-playing bar for the tab `tabID` (TASK-192).
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNowPlaying action: NowPlayingBarAction, tabID: UUID)
 }
 
 extension TabSidebarDelegate {
@@ -123,6 +125,7 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int) {}
     func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNowPlaying action: NowPlayingBarAction, tabID: UUID) {}
 }
 
 class TabSidebarViewController: NSViewController {
@@ -233,6 +236,13 @@ class TabSidebarViewController: NSViewController {
     /// (`landDroppedRowIfNeeded`). `itemIDs` identify that row in either section.
     private var pendingDropLanding: (itemIDs: Set<UUID>, proxy: NSImageView, frameInRow: NSRect)?
     private var bottomBar = DraggableBarView()
+    /// Media playing in a tab the user has left (TASK-192). Sits above the
+    /// bottom bar; the tab list's visible area ends above its compact height
+    /// (`pageClipBottomConstraint`), and its hover expansion overlays the list.
+    let nowPlayingBar = NowPlayingBarView()
+    private var pageClipBottomConstraint: NSLayoutConstraint!
+    private var nowPlayingBarIsHiding = false
+    private static let nowPlayingBarGap: CGFloat = 4
     private let spaceClipView = NSView()
     private let spaceStripView = NSView()
     private var spaceButtons: [NSButton] = []
@@ -950,6 +960,16 @@ class TabSidebarViewController: NSViewController {
         container.addSubview(navStack)
         container.addSubview(pageClipView)
         container.addSubview(bottomBar)
+        nowPlayingBar.translatesAutoresizingMaskIntoConstraints = false
+        nowPlayingBar.isHidden = true
+        nowPlayingBar.alphaValue = 0
+        nowPlayingBar.onAction = { [weak self] action, tabID in
+            guard let self else { return }
+            self.delegate?.tabSidebar(self, didRequestNowPlaying: action, tabID: tabID)
+        }
+        container.addSubview(nowPlayingBar)
+
+        pageClipBottomConstraint = pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor)
 
         // Title-bar row: created with the Tahoe defaults, re-derived from the real
         // traffic-light frames on macOS 27+ in alignTitleBarControls(). The toggle
@@ -978,7 +998,14 @@ class TabSidebarViewController: NSViewController {
             pageClipView.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 8),
             pageClipView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             pageClipView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+            pageClipBottomConstraint,
+
+            // Edge to edge with a row's highlight (TabRowView.selectionRect).
+            nowPlayingBar.leadingAnchor.constraint(equalTo: container.leadingAnchor,
+                                                   constant: UIConstants.sidebarRowHighlightInset),
+            nowPlayingBar.trailingAnchor.constraint(equalTo: container.trailingAnchor,
+                                                    constant: -UIConstants.sidebarRowHighlightInset),
+            nowPlayingBar.bottomAnchor.constraint(equalTo: bottomBar.topAnchor, constant: -Self.nowPlayingBarGap),
 
             // Bottom bar: pinned to bottom
             bottomBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -993,6 +1020,55 @@ class TabSidebarViewController: NSViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(siteSettingsDidChange(_:)),
                                                name: SiteSettingsStore.didChangeNotification,
                                                object: SiteSettingsStore.shared)
+    }
+
+    // MARK: - Now playing (TASK-192)
+
+    /// Shows the now-playing bar for `model`, updates it in place, or hides it
+    /// (nil). Appearing and disappearing animate: the bar fades and slides,
+    /// and the tab list's visible area shrinks or grows by the compact bar's
+    /// height at the same time. Rows keep their positions; only how much of
+    /// the list is visible changes.
+    func setNowPlaying(_ model: NowPlayingBarModel?, animated: Bool = true) {
+        let reserved = NowPlayingBarView.compactHeight + Self.nowPlayingBarGap * 2
+        if let model {
+            // Every tab's change re-evaluates every window: redraw only on a change.
+            if nowPlayingBar.model != model { nowPlayingBar.apply(model) }
+            guard nowPlayingBar.isHidden || nowPlayingBarIsHiding else { return }
+            nowPlayingBarIsHiding = false
+            nowPlayingBar.isHidden = false
+            nowPlayingBar.setExpanded(false, animated: false)
+            guard animated, view.window != nil else {
+                nowPlayingBar.alphaValue = 1
+                pageClipBottomConstraint.constant = -reserved
+                return
+            }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                nowPlayingBar.animator().alphaValue = 1
+                pageClipBottomConstraint.animator().constant = -reserved
+            }
+        } else {
+            guard !nowPlayingBar.isHidden, !nowPlayingBarIsHiding else { return }
+            guard animated, view.window != nil else {
+                nowPlayingBar.alphaValue = 0
+                nowPlayingBar.isHidden = true
+                pageClipBottomConstraint.constant = 0
+                return
+            }
+            nowPlayingBarIsHiding = true
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                nowPlayingBar.animator().alphaValue = 0
+                pageClipBottomConstraint.animator().constant = 0
+            }, completionHandler: { [weak self] in
+                guard let self, self.nowPlayingBarIsHiding else { return }
+                self.nowPlayingBarIsHiding = false
+                self.nowPlayingBar.isHidden = true
+            })
+        }
     }
 
     private func updateFadeShadows() {

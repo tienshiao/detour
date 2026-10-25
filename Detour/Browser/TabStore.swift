@@ -4777,7 +4777,7 @@ class TabStore {
         /// one that deselects the tab stamps it while the other still shows it,
         /// and releasing the web view would blank that window's content area.
         func offScreenSince(_ tab: BrowserTab) -> Date? {
-            guard !tab.isPlayingAudio, tab.webViewContainer?.superview == nil else { return nil }
+            guard !tab.isAudible, tab.webViewContainer?.superview == nil else { return nil }
             return tab.lastDeselectedAt
         }
 
