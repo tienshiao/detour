@@ -133,8 +133,27 @@ class ContentBlockerManager {
     /// Call only for main-frame navigations: a subframe's preferences do not
     /// govern the document's blocking.
     func configure(_ preferences: WKWebpagePreferences, forNavigationTo url: URL?, profile: Profile) {
-        guard let host = url?.host, whitelist.isWhitelisted(host: host, profileID: profile.id) else { return }
-        Self.setContentBlockersEnabled(false, on: preferences)
+        Self.configure(preferences, forNavigationTo: url, profileID: profile.id, whitelist: whitelist)
+    }
+
+    /// `configure(_:forNavigationTo:profile:)` against any whitelist, so tests
+    /// run the production decision and SPI call rather than a copy of them.
+    static func configure(_ preferences: WKWebpagePreferences, forNavigationTo url: URL?, profileID: UUID,
+                          whitelist: ContentBlockerWhitelist) {
+        if !contentBlockersEnabled(forNavigationTo: url, profileID: profileID, whitelist: whitelist) {
+            setContentBlockersEnabled(false, on: preferences)
+        }
+    }
+
+    /// Whether a main-frame navigation to `url` in `profileID` keeps its content
+    /// rule lists: false only when the host is whitelisted. Read from the store
+    /// at every navigation, with nothing compiled or cached from it, so a
+    /// dropped Private session (`SiteSettingsStore.discardPrivateSession`) is
+    /// in effect at the next Private window's first load (TASK-195).
+    static func contentBlockersEnabled(forNavigationTo url: URL?, profileID: UUID,
+                                       whitelist: ContentBlockerWhitelist) -> Bool {
+        guard let host = url?.host else { return true }
+        return !whitelist.isWhitelisted(host: host, profileID: profileID)
     }
 
     /// The SPI call itself, guarded so a WebKit that dropped the selector logs

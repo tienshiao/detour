@@ -114,6 +114,7 @@ until quit.[^private-notes]
 | History visits and title corrections | `recordHistoryVisit` returns early; `HistoryTitleUpdatePolicy` refuses. |
 | The History page | `HistoryPageBridge.scope(for:)` returns nil and the page is told `incognito: true`. |
 | `chrome.history.search` from an extension running in Private | `HistoryPageBridge.scope(forProfile:)` returns nil and the extension gets an empty list, never another profile's history ([polyfill layer](../extensions/polyfill-layer.md)). |
+| Per-site switches (content blocking, picture in picture, dev mode) | `SiteSettingsStore` keeps the Private profile's values in memory only and drops them when the last Private space is removed ([site settings](./site-settings.md), TASK-195). |
 | "Always allow" for external apps | `ExternalAppPermissionStore` keeps a Private decision in memory for the session only; the prompt offers no "remember" option. |
 | `runtime.onInstalled` for extensions | Never delivered or recorded for the Private profile. |
 | Auto-archive | `archiveStaleTabs` skips incognito spaces. |

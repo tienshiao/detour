@@ -1312,6 +1312,16 @@ struct AppDatabase {
             try db.drop(table: "contentBlockerWhitelist")
         }
 
+        migrator.registerMigration("v19") { db in
+            // TASK-195: a Private window's content-blocking switch is kept in
+            // memory only, so the rows earlier builds saved for the Private
+            // profile go. Its other settings never wrote rows; other profiles'
+            // rows stay. The literal is TabStore.incognitoProfileID, spelled out
+            // (as in v10) so this migration cannot change meaning later.
+            try db.execute(sql: "DELETE FROM siteSetting WHERE profileID = ? AND setting = 'contentBlocking'",
+                           arguments: ["00000000-0000-0000-0000-000000000001"])
+        }
+
         return migrator
     }
 

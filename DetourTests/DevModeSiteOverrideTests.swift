@@ -175,7 +175,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
         XCTAssertNil(store.override(.devMode, forSite: "example.com", profileID: profileA))
         XCTAssertFalse(DevMode.isActive(for: remote, profileID: profileA, store: store),
                        "another setting's row is not a dev-mode override")
-        XCTAssertTrue(SiteSetting.contentBlocking.persistsInPrivate)
+        XCTAssertFalse(SiteSetting.contentBlocking.persistsInPrivate)
         XCTAssertFalse(SiteSetting.pictureInPicture.persistsInPrivate)
     }
 

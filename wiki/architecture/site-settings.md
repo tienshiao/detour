@@ -1,7 +1,7 @@
 ---
 type: Component
 title: Site settings
-description: "Per-site preferences per profile: the siteSetting table, SiteSettingsStore's cache and change notification, each setting's key and matching rule (host and parents, or dev mode's exact host:port), Private handling, and how content blocking's site list moved into it."
+description: "Per-site preferences per profile: the siteSetting table, SiteSettingsStore's cache and change notification, each setting's key and matching rule (host and parents, or dev mode's exact host:port), Private values kept in memory only (migration v19), and how content blocking's site list moved into it."
 tags: [storage, profiles, content-blocker, site-settings, dev-mode]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:00:00Z }
@@ -14,7 +14,7 @@ sources:
     title: SiteSettingRecord.swift
   - id: database
     resource: ../../Detour/Storage/Database.swift
-    title: Database.swift (migration v18, saveSiteSetting, deleteSiteSettings, loadSiteSettings)
+    title: Database.swift (migrations v18 and v19, saveSiteSetting, deleteSiteSettings, loadSiteSettings)
   - id: whitelist
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerWhitelist.swift
     title: ContentBlockerWhitelist.swift
@@ -36,6 +36,12 @@ sources:
   - id: dev-mode-tests
     resource: ../../DetourTests/DevModeSiteOverrideTests.swift
     title: DevModeSiteOverrideTests.swift
+  - id: task-195
+    resource: backlog:TASK-195
+    title: "Content blocking: keep a Private window's per-site switch in memory only"
+  - id: whitelist-tests
+    resource: ../../DetourTests/ContentBlockerWhitelistTests.swift
+    title: ContentBlockerWhitelistTests.swift
 ---
 
 # Site settings
@@ -60,15 +66,26 @@ needed no migration: the table stores `setting` as text.
 
 Profile deletion removes the rows explicitly in `deleteProfileRows`, like the
 other per-profile tables ([profile data removal](./profile-data-removal.md)).
-Whether the Private profile's values reach the table depends on the setting
-(`SiteSetting.persistsInPrivate`). Content blocking's are written like any
-other profile's (its profile row is saved under its fixed id, as before the
-move); TASK-195 is to stop that. Picture in picture's and dev mode's are kept
-in the cache only, so a site visited in Private is not left on disk, and
-`discardPrivateSession()` drops them when the last Private space is removed
-(`TabStore.removeIncognitoSpace`, through the shared store's `siteSettings`).
-The user chose this on 2026-10-24, matching the external-app permissions,
-which keep Private decisions in memory too.[^task-188][^pip-tests]
+No setting's Private values reach the table: `SiteSetting.persistsInPrivate`
+is false for every case (an exhaustive switch, so a new setting has to
+decide). A switch set in a Private window lives in the store's cache only,
+so a site visited in Private is not left on disk, and
+`discardPrivateSession()` drops the values when the last Private space is
+removed (`TabStore.removeIncognitoSpace`, through the shared store's
+`siteSettings`). The user chose this on 2026-10-24, matching the external-app
+permissions, which keep Private decisions in memory too.[^task-188][^pip-tests]
+Picture in picture and dev mode were memory-only from the start; content
+blocking wrote the Private profile's rows (under its fixed profile id) until
+TASK-195, and migration v19 deletes the rows it left.[^task-195]
+
+Nothing else holds a Private override past that point. Content blocking reads
+the store at every main-frame navigation
+(`ContentBlockerManager.contentBlockersEnabled(forNavigationTo:profileID:whitelist:)`)
+and compiles nothing from the site list, so dropping the cache is the whole
+reset: the next Private window blocks everywhere from its first load, with no
+notification or rule-list rebuild needed. The open Private web views are torn
+down with their spaces before the discard runs. Picture in picture and dev
+mode read the store when they decide, too.[^task-195][^whitelist-tests]
 
 ## SiteSettingsStore
 
@@ -120,8 +137,15 @@ row. Rows whose profile no longer exists (left while foreign keys were off)
 are dropped, so they cannot fail the migration's foreign key check. The
 migration is tested against a database migrated to v17.
 
+Migration v19 deletes the `contentBlocking` rows of the Private profile
+(the literal id `00000000-0000-0000-0000-000000000001`, as v10 spells it).
+Other profiles' rows, and the Private profile's rows of any other setting,
+stay. It is tested against a database migrated to v18.[^task-195]
+
 [^task-187]: Storage - a per-site settings table, with content blocking's site list migrated into it
 [^task-188]: Picture in picture - a per-site switch for opening PiP automatically when you leave a playing tab
 [^pip-tests]: AutomaticPictureInPictureTests.swift
 [^task-186-5]: Dev mode: turn dev mode on or off per site from the address bar popover
 [^dev-mode-tests]: DevModeSiteOverrideTests.swift
+[^task-195]: Content blocking: keep a Private window's per-site switch in memory only
+[^whitelist-tests]: ContentBlockerWhitelistTests.swift

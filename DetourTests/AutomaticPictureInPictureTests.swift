@@ -102,17 +102,20 @@ final class AutomaticPictureInPictureTests: XCTestCase {
                        "other profiles keep theirs")
     }
 
-    /// Content blocking has always saved the Private profile's rows; it keeps
-    /// doing so until it is moved over (follow-up task).
-    func testContentBlockingStillPersistsPrivateRows() throws {
+    /// Content blocking's Private switch is kept in memory too (TASK-195):
+    /// nothing reaches the database and the session's end drops it.
+    func testContentBlockingKeepsPrivateRowsInMemoryToo() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: TabStore.incognitoProfileID)
-        store.discardPrivateSession()
-
-        XCTAssertEqual(db.loadSiteSettings().map(\.site), ["example.com"])
+        XCTAssertTrue(db.loadSiteSettings().isEmpty)
         XCTAssertEqual(store.override(.contentBlocking, forSite: "example.com",
                                       profileID: TabStore.incognitoProfileID), false)
+
+        store.discardPrivateSession()
+
+        XCTAssertNil(store.override(.contentBlocking, forSite: "example.com",
+                                    profileID: TabStore.incognitoProfileID))
     }
 
     func testClosingTheLastPrivateSpaceEndsThePrivateSession() throws {

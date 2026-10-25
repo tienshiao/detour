@@ -16,9 +16,9 @@
 * [BrowserTab](browser-tab.md) - The tab model — an optional WKWebView with published state, sleep and wake, its own navigation delegate while no window owns it, and the flags that keep a restored session intact.
 * [BrowserWindowController](browser-window-controller.md) - The per-window controller — what each of its extension files handles, how it selects a tab and hosts content, and the per-window state it keeps apart from TabStore.
 * [History database](history-database.md) - history.db — one shared row per URL, one row per visit scoped to a space, two FTS5 indexes, the per-space title index and its triggers, and the rules that keep one profile's titles out of another's results.
-* [Site settings](site-settings.md) - Per-site preferences per profile: the siteSetting table, SiteSettingsStore's cache and change notification, each setting's key and matching rule (host and parents, or dev mode's exact host:port), Private handling, and how content blocking's site list moved into it.
+* [Site settings](site-settings.md) - Per-site preferences per profile: the siteSetting table, SiteSettingsStore's cache and change notification, each setting's key and matching rule (host and parents, or dev mode's exact host:port), Private values kept in memory only (migration v19), and how content blocking's site list moved into it.
 * [TabStore](tabstore.md) - The state singleton that owns profiles, spaces and tabs — its observer protocol, mutation families, what triggers a save, and the invariants every mutation keeps.
 
 # References
 
-* [Session database](session-database.md) - The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v18, and the GRDB record types.
+* [Session database](session-database.md) - The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v19, and the GRDB record types.

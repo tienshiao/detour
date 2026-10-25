@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v18, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v19, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
@@ -57,7 +57,7 @@ GRDB `DatabaseQueue`, opened at
 | `favorite` | `id` | Favorites bar tiles, per **profile**. | `tabID` → `tab`, set null. |
 | `closedTab` | `id` autoincrement | Closed and archived tab records. | No FK on `spaceID`; `deleteSpace` removes the rows itself. Index `closedTab_on_spaceID_id`. No row cap. |
 | `download` | `id` | Download records. | |
-| `siteSetting` | (`profileID`, `site`, `setting`) | Per-site overrides ([site settings](./site-settings.md)); content blocking's site list since v18. | Cascades from `profile`. |
+| `siteSetting` | (`profileID`, `site`, `setting`) | Per-site overrides ([site settings](./site-settings.md)); content blocking's site list since v18. | Cascades from `profile`. Never written for the Private profile (v19 deleted the rows it had). |
 | `externalAppPermission` | (`profileID`, `origin`, `scheme`) | "Always allow" for external URL schemes. | Never written for the Private profile. |
 | `extension` | `id` | Installed extensions: manifest, path, enabled, source, update URL. | |
 | `extensionStorage` | (`extensionID`, `key`) | Dead: left from the pre-WKWebExtension runtime. Only tests call its accessors; `chrome.storage` is WebKit's. | Cascades from `extension`. |
@@ -135,6 +135,7 @@ migration.
 | v16 | `closedTab.closedAt`, back-filled from `archivedAt` (TASK-116). |
 | v17 | `extension.source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON`; existing installs classified by reading their on-disk manifest (TASK-113). |
 | v18 | `siteSetting`; the `contentBlockerWhitelist` rows copied into it as `contentBlocking = false` (lowercased, rows of missing profiles dropped), then that table dropped (TASK-187). |
+| v19 | The Private profile's `contentBlocking` rows in `siteSetting` deleted: a Private window's switch is kept in memory only (TASK-195). |
 
 Patterns worth copying from the existing migrations:
 

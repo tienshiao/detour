@@ -170,4 +170,41 @@ final class SiteSettingsStoreTests: XCTestCase {
                       "content blocking reads the moved rows with the same subdomain coverage")
         XCTAssertFalse(whitelist.isWhitelisted(host: "other.test", profileID: profileB))
     }
+
+    // MARK: - Migration v19
+
+    /// v19 deletes the content-blocking rows earlier builds saved for the
+    /// Private profile (TASK-195: a Private window's switch is kept in memory
+    /// only). Other profiles' rows, and the Private profile's rows of other
+    /// settings, stay.
+    func testMigrationV19DeletesThePrivateProfilesContentBlockingRows() throws {
+        let privateID = TabStore.incognitoProfileID
+        let dbQueue = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(dbQueue, upTo: "v18")
+        try dbQueue.write { d in
+            for profile in [profileA, profileB, privateID] {
+                try makeProfile(profile).insert(d)
+            }
+            for (profile, site, setting, value) in [
+                (privateID, "example.com", "contentBlocking", false),
+                (privateID, "other.test", "contentBlocking", true),
+                (privateID, "youtube.com", "pictureInPicture", false),
+                (profileA, "example.com", "contentBlocking", false),
+                (profileB, "example.com", "pictureInPicture", false),
+            ] {
+                try d.execute(sql: "INSERT INTO siteSetting (profileID, site, setting, value) VALUES (?, ?, ?, ?)",
+                              arguments: [profile.uuidString, site, setting, value])
+            }
+        }
+
+        let db = try AppDatabase(dbQueue: dbQueue)
+
+        XCTAssertEqual(Set(db.loadSiteSettings().map { "\($0.profileID) \($0.site) \($0.setting) \($0.value)" }), [
+            "\(privateID.uuidString) youtube.com pictureInPicture false",
+            "\(profileA.uuidString) example.com contentBlocking false",
+            "\(profileB.uuidString) example.com pictureInPicture false",
+        ])
+        XCTAssertNil(SiteSettingsStore(database: db).override(.contentBlocking, forSite: "example.com",
+                                                              profileID: privateID))
+    }
 }

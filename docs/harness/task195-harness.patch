@@ -1,0 +1,253 @@
+TASK-195 runtime harness: a Private window's content-blocking switch is kept
+in memory only. Temporary code, never committed to Detour/. Needs:
+
+    SP=<scratch>; mkdir -p $SP/www $SP/out
+    # www/page.html: <script>window.__loaded=false</script>
+    #                <script src="/jquery.popunder.js"></script>
+    # www/jquery.popunder.js: window.__loaded = true;
+    # EasyList blocks `/jquery.popunder.js` on any host.
+    python3 -m http.server 8895 --bind 127.0.0.1 --directory $SP/www &
+    # A v18 data dir: DetourVerify182's v17 browser.db with v18 applied by hand
+    # in sqlite3 (create siteSetting, copy/drop contentBlockerWhitelist, add the
+    # 'v18' grdb_migrations row), its ContentBlocker and ContentRuleLists dirs
+    # copied, and seeded rows: Private seeded.test contentBlocking 0, Private
+    # youtube.com pictureInPicture 0, Default normal-seeded.test contentBlocking 0.
+    git apply docs/harness/task195-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    DETOUR_DATA_DIR=DetourVerify195 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PORT=8895 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # "SHOOT <name> <windowNumber>": screencapture -x -o -l <windowNumber>;
+    # wait for "done" (about 32 s), kill that pid and the server.
+    git apply -R docs/harness/task195-harness.patch && xcodegen generate
+
+The page is loaded from http://lvh.me:8895 (public DNS for 127.0.0.1), not
+127.0.0.1 or localhost: EasyList's `@@://127.0.0.1$generichide` and
+`@@://localhost:$generichide` compile (EasyListParser) to a plain
+ignore-previous-rules, so nothing on those hosts is ever blocked. Not
+http://[::1] either: an IPv6-literal URL crashes BrowserTab's optimistic
+favicon URL (force unwrap of URL(string: "http://::1/favicon.ico")).
+
+Steps: baseline in the normal window; open a Private window, switch blocking
+off through the site popover (performClick), back on, off again; reload the
+normal window's tab, switch it off there; close the Private window, open a new
+one. Probes read window.__loaded and the tab's blockedCount.
+
+Results (2026-10-24):
+- v18 -> v19 at launch: the Private seeded.test contentBlocking row was gone,
+  the Private pictureInPicture row and the Default profile's row stayed.
+- Baseline, normal window: script blocked (blockedCount 1).
+- Private window before: blocked. Switch off: whitelisted in memory, 0 rows
+  in browser.db, the page reloaded and the script loaded (blockedCount 0).
+  Switch back on: in-memory override empty, reloaded, blocked again. Off again:
+  loads, still 0 rows.
+- Normal window (reloaded) while the Private switch was off: still blocked.
+  Switch off there: 1 row (Default lvh.me contentBlocking false), script loads.
+- Last Private window closed: no Private space, in-memory overrides empty.
+  New Private window: blocked (blockedCount 1), popover switch on.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..460f6c0 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask195HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task195Harness.swift b/Detour/App/Task195Harness.swift
+new file mode 100644
+index 0000000..4b25414
+--- /dev/null
++++ b/Detour/App/Task195Harness.swift
+@@ -0,0 +1,186 @@
++// TEMP TASK-195 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask195HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        // lvh.me (public DNS name for 127.0.0.1), not 127.0.0.1: EasyList's
++        // `@@://127.0.0.1$generichide` (and the localhost ones) compile to a
++        // broad ignore-previous-rules, so nothing on 127.0.0.1 or localhost is
++        // ever blocked. Not [::1] either: an IPv6 literal crashes the
++        // optimistic favicon URL in BrowserTab.
++        let pageURL = URL(string: "http://lvh.me:\(port)/page.html")!
++        let host = pageURL.host!
++        let store = TabStore.shared
++        let privateID = TabStore.incognitoProfileID
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func popoverWindow() -> NSWindow? {
++            NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
++        }
++        func blockingSwitch() -> NSSwitch? {
++            guard let content = popoverWindow()?.contentView else { return nil }
++            return allSubviews(content).compactMap { $0 as? NSSwitch }
++                .first { $0.action == NSSelectorFromString("toggleClicked") }
++        }
++        func closePopover() {
++            NSApp.windows.filter { String(describing: type(of: $0)).contains("Popover") }.forEach { $0.close() }
++        }
++        func dbRows() -> String {
++            "\(AppDatabase.shared.loadSiteSettings().map { "\($0.profileID.prefix(8)) \($0.site) \($0.setting) \($0.value)" })"
++        }
++        func rowsFor(_ site: String) -> Int {
++            AppDatabase.shared.loadSiteSettings().filter { $0.site == site && $0.setting == "contentBlocking" }.count
++        }
++        func whitelisted(_ profileID: UUID) -> Bool {
++            ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
++        }
++        @MainActor func waitLoaded(_ tab: BrowserTab) async {
++            for _ in 0..<60 {
++                await sleep(0.25)
++                if !tab.isLoading, tab.url != nil, tab.webView != nil { break }
++            }
++            await sleep(1.0)
++        }
++        /// (scriptLoaded, loadStamp) from the page: the EasyList rule
++        /// `/jquery.popunder.js` blocks the script when blocking is on.
++        @MainActor func probe(_ tab: BrowserTab) async -> String {
++            guard let webView = tab.webView else { return "no webView" }
++            let value = try? await webView.evaluateJavaScript("JSON.stringify([window.__loaded, window.__loadStamp])")
++            let lists = tab.owningProfile.map { ContentBlockerManager.ruleLists(for: $0, in: ContentBlockerManager.shared.ruleStore).map(\.identifier) } ?? []
++            return ((value as? String) ?? "nil") + " blockedCount=\(tab.blockedCount) lists=\(lists.count)"
++        }
++        func scriptLoaded(_ s: String) -> Bool { s.hasPrefix("[true") }
++        func showPopover(_ w: BrowserWindowController) {
++            w.tabSidebarDidRequestShowSettings(w.tabSidebar, sourceButton: w.tabSidebar.fauxAddressBar)
++        }
++        func privateControllers() -> [BrowserWindowController] {
++            NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
++                .filter { $0.isIncognito && $0.window?.isVisible == true }
++        }
++        @MainActor func openPrivateWindow() async -> (BrowserWindowController, BrowserTab)? {
++            let before = Set(privateControllers().map(ObjectIdentifier.init))
++            createNewIncognitoWindow()
++            await sleep(1.0)
++            guard let pwc = privateControllers().first(where: { !before.contains(ObjectIdentifier($0)) }),
++                  let space = pwc.activeSpace else { log("no Private window"); return nil }
++            // newTab(nil) opened the palette for a new tab; dismiss it.
++            pwc.dismissCommandPalette(restoringFocus: false)
++            let tab = store.addTab(in: space, url: pageURL)
++            pwc.selectTab(id: tab.id)
++            pwc.window?.makeKeyAndOrderFront(nil)
++            log("Private window \(pwc.window?.windowNumber ?? -1) space=\(space.id.uuidString.prefix(8)) profile=\(space.profile?.id.uuidString.prefix(8) ?? "-")")
++            return (pwc, tab)
++        }
++        func shot(_ name: String, _ w: BrowserWindowController) {
++            log("SHOOT \(name) \(w.window?.windowNumber ?? -1)")
++        }
++
++        Task { @MainActor in
++            log("page host=\(host)"); log("start; db rows at launch: \(dbRows())")
++            log("STEP4 seeded Private row gone after launch: Private contentBlocking rows=\(AppDatabase.shared.loadSiteSettings().filter { $0.profileID == privateID.uuidString && $0.setting == "contentBlocking" }.count) override(seeded.test)=\(String(describing: SiteSettingsStore.shared.override(.contentBlocking, forSite: "seeded.test", profileID: privateID)))")
++            for _ in 0..<120 {
++                if ContentBlockerManager.shared.isCompiled(identifier: "easylist") { break }
++                await sleep(0.5)
++            }
++            log("easylist compiled=\(ContentBlockerManager.shared.isCompiled(identifier: "easylist"))")
++            await sleep(2.0)
++
++            // Baseline: a normal window blocks the script.
++            guard let space = wc.activeSpace else { return log("no active space") }
++            let normalTab = store.addTab(in: space, url: pageURL)
++            wc.selectTab(id: normalTab.id)
++            await waitLoaded(normalTab)
++            log("BASELINE normal window \(wc.window?.windowNumber ?? -1) profile=\(space.profile?.id.uuidString.prefix(8) ?? "-"): probe=\(await probe(normalTab))")
++
++            // Step 1: Private window, switch off through the popover.
++            guard let (pwc, ptab) = await openPrivateWindow() else { return }
++            await waitLoaded(ptab)
++            let before = await probe(ptab)
++            log("STEP1 Private before: probe=\(before) whitelisted=\(whitelisted(privateID))")
++            showPopover(pwc)
++            await sleep(1.0)
++            log("STEP1 popover blocking switch on=\(blockingSwitch()?.state == .on)")
++            blockingSwitch()?.performClick(nil)
++            await sleep(0.3)
++            log("STEP1 clicked off: whitelisted=\(whitelisted(privateID)) rows(host)=\(rowsFor(host)) db=\(dbRows())")
++            closePopover()
++            await sleep(0.5)
++            await waitLoaded(ptab)
++            let after = await probe(ptab)
++            log("STEP1 RESULT Private after switch off: probe=\(after) reloaded=\(before != after) scriptLoaded=\(scriptLoaded(after))")
++            shot("private-off", pwc)
++            await sleep(1.5)
++
++            // Step 1b: back on clears the in-memory override, then off again.
++            showPopover(pwc)
++            await sleep(1.0)
++            log("STEP1b popover blocking switch on=\(blockingSwitch()?.state == .on)")
++            blockingSwitch()?.performClick(nil)
++            await sleep(0.3)
++            log("STEP1b clicked on: whitelisted=\(whitelisted(privateID)) inMemory=\(SiteSettingsStore.shared.overrides(.contentBlocking, profileID: privateID)) rows=\(rowsFor(host))")
++            closePopover()
++            await sleep(0.5)
++            await waitLoaded(ptab)
++            log("STEP1b RESULT Private after switch on: probe=\(await probe(ptab))")
++            showPopover(pwc)
++            await sleep(1.0)
++            blockingSwitch()?.performClick(nil)
++            await sleep(0.3)
++            closePopover()
++            await sleep(0.5)
++            await waitLoaded(ptab)
++            log("STEP1c off again: whitelisted=\(whitelisted(privateID)) rows=\(rowsFor(host)) probe=\(await probe(ptab))")
++
++            // Step 2: the normal window is still blocked; turning it off writes one row.
++            wc.window?.makeKeyAndOrderFront(nil)
++            await sleep(1.0)
++            normalTab.reload()
++            await waitLoaded(normalTab)
++            log("STEP2 normal window after Private switch: probe=\(await probe(normalTab)) whitelisted(normal)=\(whitelisted(space.profile!.id))")
++            showPopover(wc)
++            await sleep(1.0)
++            log("STEP2 popover blocking switch on=\(blockingSwitch()?.state == .on)")
++            blockingSwitch()?.performClick(nil)
++            await sleep(0.3)
++            log("STEP2 clicked off: rows(host)=\(rowsFor(host)) db=\(dbRows())")
++            closePopover()
++            await sleep(0.5)
++            await waitLoaded(normalTab)
++            log("STEP2 RESULT normal after switch off: probe=\(await probe(normalTab))")
++            shot("normal-off", wc)
++
++            // Step 3: close the last Private window, open a new one.
++            pwc.window?.makeKeyAndOrderFront(nil)
++            await sleep(0.5)
++            pwc.window?.performClose(nil)
++            await sleep(2.0)
++            log("STEP3 Private window closed: privateSpaces=\(store.spaces.filter(\.isIncognito).count) inMemory=\(SiteSettingsStore.shared.overrides(.contentBlocking, profileID: privateID)) whitelisted=\(whitelisted(privateID))")
++            guard let (pwc2, ptab2) = await openPrivateWindow() else { return }
++            await waitLoaded(ptab2)
++            log("STEP3 RESULT new Private window: probe=\(await probe(ptab2)) whitelisted=\(whitelisted(privateID))")
++            showPopover(pwc2)
++            await sleep(1.0)
++            log("STEP3 new Private popover blocking switch on=\(blockingSwitch()?.state == .on)")
++            closePopover()
++            shot("private2", pwc2)
++            await sleep(1.5)
++            log("final db: \(dbRows())")
++            log("done")
++        }
++    }
++}
++#endif

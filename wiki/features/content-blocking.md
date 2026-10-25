@@ -240,6 +240,16 @@ Because the switch acts at navigation time, toggling it reloads every pane
 this window shows for that host (split members and the Peek), not just the
 display tab.
 
+In a **Private window** the switch is kept in memory only (TASK-195): the
+store writes no row for the Private profile, and the override is dropped when
+the last Private window closes (`SiteSettingsStore.discardPrivateSession`).
+Nothing is compiled or cached from the site list (the decision is
+`ContentBlockerManager.contentBlockersEnabled(forNavigationTo:profileID:whitelist:)`,
+read at each navigation), so the next Private window blocks everywhere with
+no further reset. The toggle and its reload work as in any other profile.
+Migration v19 removed the Private rows earlier builds had written
+([site settings](../architecture/site-settings.md)).
+
 Matching (`ContentBlockerWhitelist.covers`) is case-insensitive: a host is
 covered by an exact entry or by an entry for a parent domain. Turning blocking
 off stores the page's exact host, lowercased. Turning it back on removes
@@ -305,6 +315,15 @@ EasyPrivacy cannot un-block something EasyList blocks.
   all.
 - **A subframe navigation never changes blocking.** `configure` is called only
   for the main frame, and the host that decides is the page's.
+- **`$generichide` / `$elemhide` exceptions unblock the network.** The parser
+  treats them like any `@@` exception, so EasyList's webcompat lines
+  (`@@://127.0.0.1$generichide`, `@@://localhost:$generichide`,
+  `@@://192.168.$generichide`, `@@||accounts.google.com^$generichide`, ...)
+  compile to a plain `ignore-previous-rules` for every load whose URL matches:
+  nothing on those hosts is blocked, although the options only mean "skip
+  generic element hiding". Found during TASK-195's runtime check, not fixed
+  there. A runtime check of blocking therefore cannot use a page on
+  `127.0.0.1` or `localhost`; `lvh.me` (public DNS for 127.0.0.1) works.
 - The fetch completion handler mutates `refreshingIdentifiers` on
   `URLSession`'s queue while the Settings pane reads it on main.
 
@@ -316,12 +335,14 @@ EasyPrivacy cannot un-block something EasyList blocks.
 | Compiled lists | WebKit's default `WKContentRuleListStore`, or `<data directory>/ContentRuleLists` for a non-default data directory. One rule list per chunk: `<id>`, `<id>-1`, … |
 | Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount` |
 | Compile metadata | defaults keys `ContentBlocker.<chunk id>.compiledRuleCount` per compiled chunk, and `ContentBlocker.<id>.chunkCount` for a list of more than one chunk |
-| Whitelist | `siteSetting` rows (`contentBlocking`) in the [session database](../architecture/session-database.md); rows go with the profile |
+| Whitelist | `siteSetting` rows (`contentBlocking`) in the [session database](../architecture/session-database.md); rows go with the profile; none for the Private profile, whose switch stays in memory |
 
 # Tests
 
 - `ContentBlockerWhitelistTests` - `covers` cases, toggle persistence and
-  per-profile scope, and two real-`WKWebView` tests: one `blockedLoad`
+  per-profile scope, the Private switch (nothing on disk, back on clears it,
+  closing the last Private space turns blocking back on while a normal
+  profile's switch stays), and two real-`WKWebView` tests: one `blockedLoad`
   callback with blocking on, none when the navigation's preferences disable
   content blockers; the counter's dedup and reset; an unclaimed tab is its web
   view's navigation delegate.

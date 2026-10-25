@@ -15,12 +15,12 @@ enum SiteSetting: String, CaseIterable {
     /// Whether a value set in the Private profile is written to disk. One that
     /// is not lives in memory until the Private session ends
     /// (`SiteSettingsStore.discardPrivateSession`), so the sites a Private
-    /// window visited are not left in the database. Content blocking has
-    /// always saved them, and does until it is moved over.
+    /// window visited are not left in the database. None does: content
+    /// blocking moved over in TASK-195 (migration v19 deleted the rows it had
+    /// saved). Exhaustive so that a new setting has to decide.
     var persistsInPrivate: Bool {
         switch self {
-        case .contentBlocking: return true
-        case .pictureInPicture, .devMode: return false
+        case .contentBlocking, .pictureInPicture, .devMode: return false
         }
     }
 

@@ -47,16 +47,19 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     // MARK: - Persistence
 
-    /// An in-memory database holding one profile row, so the whitelist's
-    /// foreign key holds without touching the shared test database.
-    private func makeDatabase(profileID: UUID) throws -> AppDatabase {
+    /// An in-memory database holding a row for `profileID` (and for each of
+    /// `otherProfileIDs`), so the whitelist's foreign key holds without
+    /// touching the shared test database.
+    private func makeDatabase(profileID: UUID, alsoSaving otherProfileIDs: [UUID] = []) throws -> AppDatabase {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
-        db.saveProfile(ProfileRecord(
-            id: profileID.uuidString, name: "Test", userAgentMode: 0, customUserAgent: nil,
-            archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0,
-            searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true,
-            isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true,
-            isMalwareFilterEnabled: true))
+        for id in [profileID] + otherProfileIDs {
+            db.saveProfile(ProfileRecord(
+                id: id.uuidString, name: "Test", userAgentMode: 0, customUserAgent: nil,
+                archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0,
+                searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true,
+                isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true,
+                isMalwareFilterEnabled: true))
+        }
         return db
     }
 
@@ -137,6 +140,76 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         XCTAssertFalse(whitelist.isWhitelisted(host: "example.com", profileID: UUID()))
     }
 
+    // MARK: - Private windows (TASK-195)
+
+    /// A database holding a normal profile and the Private profile's row (the
+    /// app saves it under its fixed id), the whitelist and the store under it.
+    private func makePrivateFixture() throws -> (ContentBlockerWhitelist, SiteSettingsStore, UUID, AppDatabase) {
+        let profileID = UUID()
+        let db = try makeDatabase(profileID: profileID, alsoSaving: [TabStore.incognitoProfileID])
+        let store = SiteSettingsStore(database: db)
+        return (ContentBlockerWhitelist(store: store), store, profileID, db)
+    }
+
+    func testAPrivateWindowsSwitchWritesNothingToDisk() throws {
+        let (whitelist, _, _, db) = try makePrivateFixture()
+        let privateID = TabStore.incognitoProfileID
+
+        whitelist.toggleHost("example.com", profileID: privateID)
+
+        XCTAssertTrue(whitelist.isWhitelisted(host: "www.example.com", profileID: privateID),
+                      "the switch takes effect in the Private window")
+        XCTAssertFalse(ContentBlockerManager.contentBlockersEnabled(
+            forNavigationTo: URL(string: "https://example.com/"), profileID: privateID, whitelist: whitelist))
+        XCTAssertTrue(db.loadSiteSettings().isEmpty, "the site a Private window visited is not written to disk")
+        XCTAssertFalse(ContentBlockerWhitelist(store: SiteSettingsStore(database: db))
+            .isWhitelisted(host: "example.com", profileID: privateID), "nothing survives a relaunch")
+    }
+
+    func testTurningAPrivateWindowsSwitchBackOnClearsTheOverride() throws {
+        let (whitelist, store, _, db) = try makePrivateFixture()
+        let privateID = TabStore.incognitoProfileID
+
+        whitelist.toggleHost("example.com", profileID: privateID)
+        whitelist.toggleHost("www.example.com", profileID: privateID)
+
+        XCTAssertFalse(whitelist.isWhitelisted(host: "www.example.com", profileID: privateID))
+        XCTAssertTrue(store.overrides(.contentBlocking, profileID: privateID).isEmpty,
+                      "turning it on removes the covering row rather than storing a true one")
+        XCTAssertTrue(db.loadSiteSettings().isEmpty)
+    }
+
+    /// The navigation decision reads the store live, so ending the Private
+    /// session is all it takes for the next Private window to block again.
+    func testClosingTheLastPrivateWindowTurnsBlockingBackOn() throws {
+        let (whitelist, settings, profileID, db) = try makePrivateFixture()
+        let privateID = TabStore.incognitoProfileID
+        let tabStore = TabStore(appDB: db)
+        tabStore.siteSettings = settings
+        let first = tabStore.addIncognitoSpace()
+        let second = tabStore.addIncognitoSpace()
+        let page = URL(string: "https://www.example.com/")
+        whitelist.toggleHost("example.com", profileID: privateID)
+        whitelist.toggleHost("example.com", profileID: profileID)
+
+        tabStore.removeIncognitoSpace(id: first.id)
+        XCTAssertFalse(ContentBlockerManager.contentBlockersEnabled(forNavigationTo: page, profileID: privateID,
+                                                                    whitelist: whitelist),
+                       "another Private window is still open")
+
+        tabStore.removeIncognitoSpace(id: second.id)
+        let third = tabStore.addIncognitoSpace()
+        XCTAssertEqual(third.profile?.id, privateID)
+        XCTAssertTrue(ContentBlockerManager.contentBlockersEnabled(forNavigationTo: page, profileID: privateID,
+                                                                   whitelist: whitelist),
+                      "a new Private window starts with blocking on everywhere")
+        XCTAssertFalse(ContentBlockerManager.contentBlockersEnabled(forNavigationTo: page, profileID: profileID,
+                                                                    whitelist: whitelist),
+                       "a normal profile's switch is untouched")
+        XCTAssertEqual(db.loadSiteSettings().map(\.profileID), [profileID.uuidString],
+                       "only the normal profile's row is on disk")
+    }
+
     // MARK: - The switch in a real web view
 
     private let blockedImageURL = URL(string: "http://blocked.example/x.png")!
@@ -214,11 +287,11 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         whitelist.toggleHost(pageURL.host!, profileID: profileID)
 
         let delegate = RecordingNavigationDelegate()
-        // What `ContentBlockerManager.configure(_:forNavigationTo:profile:)`
-        // does, against a whitelist that is not the shared singleton's.
+        // The production `configure`, against a whitelist that is not the
+        // shared singleton's.
         delegate.configurePreferences = { preferences, url in
-            guard let host = url?.host, whitelist.isWhitelisted(host: host, profileID: profileID) else { return }
-            ContentBlockerManager.setContentBlockersEnabled(false, on: preferences)
+            ContentBlockerManager.configure(preferences, forNavigationTo: url, profileID: profileID,
+                                            whitelist: whitelist)
         }
         let webView = makeWebView(with: list)
         defer { webView.navigationDelegate = nil }
