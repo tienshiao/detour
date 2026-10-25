@@ -5,7 +5,7 @@ description: "The Settings window and its five panes (General, Spaces, Profiles,
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T02:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T03:00:00Z }
 sources:
   - id: window
     resource: ../../Detour/Browser/Settings/SettingsWindowController.swift
@@ -19,6 +19,12 @@ sources:
   - id: container
     resource: ../../Detour/Browser/Settings/SettingsPaneViewController.swift
     title: SettingsPaneViewController.swift (pane container, list border)
+  - id: profile-layout
+    resource: ../../Detour/Browser/Settings/ProfileSettingsLayout.swift
+    title: ProfileSettingsLayout.swift (the Profiles pane's sections and rows)
+  - id: profile-layout-tests
+    resource: ../../DetourTests/ProfileSettingsLayoutTests.swift
+    title: ProfileSettingsLayoutTests.swift
   - id: height-tests
     resource: ../../DetourTests/SettingsPaneHeightTests.swift
     title: SettingsPaneHeightTests.swift
@@ -131,8 +137,26 @@ screens where the 400 minimum comes down to the cap).
   refits if the pane is the shown one. Spaces' height does not depend on its
   selection, so it does not report it.
 - `paneDidFit()` runs after each fit (Spaces scrolls its selection into view there).
-- `SettingsListContainerView` is the bordered box around a master list; it
-  sets its border colour in `updateLayer`, so it follows the appearance.
+- `SettingsBorderedView` draws a 1 pt separator-coloured rounded border in
+  `updateLayer`, so it follows the appearance. `SettingsListContainerView`
+  (around a master list) and `SettingsGroupBoxView` are its subclasses.
+- `SettingsGroupBoxView` is a bordered group of rows (Profiles' filter lists
+  and extension switches, an extension's permissions): a vertical stack inset
+  10 / 8 by required constraints, every row pinned to the group's width. Its
+  height is its rows' height plus the insets, so it grows and shrinks with
+  them, which an `NSBox` does not; a long name in a row truncates instead of
+  widening it.[^task-189]
+- `SettingsWrappingLabel` is the wrapping label of every body (help text,
+  descriptions, the pending banner, an extension's name): its wrap width
+  (`preferredMaxLayoutWidth`) is its own width, taken in `setFrameSize`, and
+  when that changes it re-measures and calls the enclosing pane's
+  `contentHeightDidChange()` (found through the responder chain). Its
+  `estimatedWidth` (the column's width with overlay scrollers) is used until
+  the first layout, so the first `fittingSize` measurement is already right in
+  the usual case. Its owner gives it a definite width (both edges pinned or a
+  width constraint). The wrap width used to be a constant, the column's width,
+  which with "always show scroll bars" (a clip view 17 pt narrower) would cut
+  the last line.[^task-189]
 
 ### SettingsMetrics
 
@@ -141,32 +165,33 @@ screens where the 400 minimum comes down to the cap).
 | Window width | 740 |
 | Pane margins, section gap, list to detail column | 20 |
 | Description to body | 12 |
+| Section title to its first row | 8 |
 | Between rows | 10 |
 | Control to its help text | 4 |
 | Label to control | 8 |
 | Label column (right-aligned) | 124 |
 | Text field width, cap on a detail pop-up | 260 |
 | Master list | 220 wide, 28 pt rows, 24 pt +/- buttons |
+| Bordered group | insets 10 (sides) and 8 (top, bottom), 6 between rows (4 in a permission list) |
 | List pane minimum height | 400 |
 | Screen margin for the cap | 80 |
 
 The detail column starts level with the top of the list. Grid labels sit on
 their control's first baseline (`rowAlignment = .firstBaseline`); a row
-whose control has no text (the colour well) is centred instead.
+whose control has no text (the colour well, a switch) is centred instead. A
+section title is 12 pt semibold, like System Settings' group headers.
 
 | Pane | Content height (examples measured 2026-10-24) | Opened by |
 |---|---|---|
 | General | 90, fixed | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
-| Profiles | 572 (a normal profile) to 1062 (custom UA, warning, 15 extensions) | toolbar only |
-| Extensions | 400 (none) to 1054 (22 permissions) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
+| Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions) | toolbar only |
+| Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Content Blocking | 243, fixed | toolbar only |
 
 TASK-189 part 1 moved every pane into the container and rebuilt General,
-Content Blocking and Spaces on the metrics. Profiles and Extensions were
-only moved: their own spacing (12 pt grid rows, labels 4 pt above the
-control, the bordered `NSBox` groups, Extensions' 32 pt rows and inner
-permissions list) is part 2.
+Content Blocking and Spaces on the metrics; part 2 rebuilt Profiles (titled
+sections) and Extensions (one column in the pane's scroll view).
 
 ## General
 
@@ -194,27 +219,41 @@ rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
 
 ## Profiles
 
-A list of the profiles plus the built-in Private profile, and a grid of the
-selected profile's settings. Each control writes a property and calls
-`TabStore.shared.updateProfile(profile)`.
+A list of the profiles plus the built-in Private profile, and the selected
+profile's settings in titled sections. Each control writes a property and
+calls `TabStore.shared.updateProfile(profile)`. In the list a long profile
+name truncates with an ellipsis and gives way before "N Spaces".
 
-| Row | Setting | Notes |
+| Section | Rows | Shown |
 |---|---|---|
-| 0 | Name | not editable for Private |
-| 1 | a note shown only for Private | |
-| 2 | Search engine | Google, DuckDuckGo, Bing, Yahoo, Ecosia, Kagi |
-| 3 | Search suggestions | gates the network row of the [suggestion pipeline](./suggestion-pipeline.md) |
-| 4 | Archive tabs after | hidden for Private |
-| 5 | Sleep tabs after | |
-| 6 | a warning shown when per-tab isolation and sleeping are both on | |
-| 7 | Per-tab isolation | each tab gets its own non-persistent data store |
-| 8 | Content blocking | the master switch |
-| 9 | the four filter-list switches | disabled while the master switch is off; each toggle calls `reapplyRuleLists()` |
-| 10 | User agent | Detour, Safari or Custom |
-| 11 | Custom string | shown only for Custom |
-| 12 | a preview of the resulting user agent | |
-| 13 | Extensions | one switch per installed extension; hidden when none are installed |
-| 14 | External apps | saved-permission count and Clear; hidden for Private. See [external apps](./external-apps.md) |
+| (no title) | Name; "This profile is used for Private Windows." | the note only for Private; the name is not editable there |
+| Search | Search engine (Google, DuckDuckGo, Bing, Yahoo, Ecosia, Kagi); Search suggestions | always. Suggestions gate the network row of the [suggestion pipeline](./suggestion-pipeline.md) |
+| Tabs | Archive tabs after; Sleep tabs after; Per-tab isolation (each tab its own non-persistent data store); the warning that sleeping tabs lose session data under isolation | archive hidden for Private; the warning when isolation is on and tabs sleep |
+| Content Blocking | Block content (the master switch); the four filter lists in a bordered group | always; the lists are disabled while blocking is off, each toggle calls `reapplyRuleLists()` |
+| Extensions | one switch per installed extension, in a bordered group | when any extension is installed, Private included |
+| User Agent | Identify as (Detour, Safari, Custom); Custom string; a preview of the resulting user agent | the string only for Custom |
+| External Apps | Saved permissions: the count and Clear | hidden for Private (it never remembers one). See [external apps](./external-apps.md) |
+
+Why this grouping: the untitled first section holds the name, which
+identifies the profile as an account name heads a System Settings pane (a
+"Profile" title would repeat the pane); per-tab isolation sits with the
+tab lifecycle rows because its warning is about sleeping tabs, and the
+warning sits right under it; each other section is one thing a person looks
+for by name. Row labels do not repeat their section's title ("Block content",
+"Identify as", "Saved permissions").
+
+`ProfileSettingsLayout` is the pure rule: which rows a `ProfileSettingsState`
+(Private, isolation, sleeping, custom user agent, any extension installed)
+shows, which sections have a visible row, and the space above each row (0
+for a section's first visible row, 4 for help text, 10 otherwise). The view
+controller keeps each row's `NSGridRow` and each section's view by these
+enum values and applies the rule in `applyRowLayout()` (called on selection,
+on the switches and pop-ups that change visibility, and on extension
+changes), which also reports the height change. Each section is its own
+grid with `rowSpacing = 0`; the spacing is each row's `topPadding`, so a
+hidden row leaves no gap and help text sits 4 pt below its control. Help
+text, the groups and the custom string field take the whole control column
+(the section's width less the 132 pt label column).
 
 A profile cannot be deleted while a space uses it ("Remove or reassign those
 spaces first"), the Private profile cannot be deleted, and the last profile
@@ -236,7 +275,16 @@ Enabled and "Allow in Private" switches, API permissions and site-access
 decisions with their own switches, the install source with "Check for
 Updates" / "Reload" / "Install Now" and the banner for permissions an update
 added, and Uninstall. "Add Extension…" offers loading an unpacked extension
-or opening the Chrome Web Store. The behaviour behind those controls is
+or opening the Chrome Web Store. The list's rows are 28 pt. The detail
+column is one vertical stack in the pane's scroll view, as tall as its
+content: the header (icon; the name, wrapping to two lines and then
+truncated; the version; "Settings…" at the trailing edge), the description,
+the source and update rows, the pending-permissions banner (it makes the
+column taller and squeezes nothing), Enabled, Allow in Private and its note,
+"Permissions", and Uninstall last. The permissions are a bordered group as
+tall as its rows (one permission: 32 pt), or one line of text when the
+extension asks for none; there is no inner scroll view any more (it had a
+96 pt floor and put a one-line list in a 287 pt box). The behaviour behind those controls is
 covered by [extension manager](../extensions/extension-manager.md),
 [permissions](../extensions/permissions.md) and
 [updates](../extensions/updates.md).
@@ -261,11 +309,6 @@ setting on the Profiles pane, not here.
 
 # Gotchas
 
-- **The Profiles grid is addressed by row number.** Rows are hidden and shown
-  with `gridView.row(at: N).isHidden` in several methods (`updateRightPane`,
-  `sleepThresholdChanged`, `perTabIsolationToggled`, `userAgentModeChanged`,
-  `updateExtensionToggles`). Inserting a row means renumbering every one of
-  them; the `// row N` comments beside the grid literal are the map.
 - **A required equality to the body's bottom caps the window.** If a body's
   content is pinned to the bottom with `==` and nothing in it can stretch,
   the scroll area gets a maximum height, and AppKit snaps the window to it the
@@ -280,10 +323,12 @@ setting on the Profiles pane, not here.
   the animation's target height, not the window's intermediate one, or the
   window stops at the 400 minimum.[^task-189]
 - **Measure wrapped text with a wrap width.** `fittingSize` does not do the
-  two-pass layout a wrapping `NSTextField` needs; give a wrapping label in a
-  body `preferredMaxLayoutWidth` (the description, Profiles' notes and
-  user-agent preview, the Extensions description and Private note), or the
-  natural height counts one line.[^task-189]
+  two-pass layout a wrapping `NSTextField` needs: a wrapping label without
+  `preferredMaxLayoutWidth` measures as one line. A constant wrap width
+  goes wrong when the column's width does (legacy scrollers), so bodies use
+  `SettingsWrappingLabel`, which takes its own width at layout and refits
+  the pane when it changes; only the pane description, outside the scroll
+  view, keeps a constant.[^task-189]
 - **Text that does not fit must truncate.** With the width locked, a label
   at compression 750 squeezes its neighbours instead of widening the window:
   a long extension name in Profiles took 5 pt from the "Search suggestions"
@@ -295,8 +340,8 @@ setting on the Profiles pane, not here.
   insets that must hold, pin the content's bottom to the container, and give
   the content required vertical compression resistance.[^layout-notes]
 - **`NSBox` does not grow to an Auto Layout content view's fitting height.**
-  The pending-permissions banner uses a custom view (`TintedBannerView`) for
-  that reason.[^layout-notes]
+  The pending-permissions banner uses a custom view (`TintedBannerView`) and
+  the bordered groups `SettingsGroupBoxView` for that reason.[^layout-notes]
 - **Measure, do not eyeball.** Log `convert(bounds, to: nil)` gaps and search
   the log for "Unable to simultaneously satisfy".[^layout-notes] See
   [AppKit gotchas](../platform/appkit-gotchas.md).
@@ -327,10 +372,12 @@ setting on the Profiles pane, not here.
 # Tests
 
 `SettingsPaneHeightTests` covers the height rule (cap, minimum, short
-screens, refit). The panes have no dedicated UI tests; their layout is
+screens, refit); `ProfileSettingsLayoutTests` the Profiles sections, which
+rows show for a normal and the Private profile, and the row spacing. The panes have no dedicated UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real
-second screen). Their behaviour is tested through the model code they call: `TabStoreTests` and the profile and space suites,
+second screen; uninstalling the only extension through the pane; a run with
+`-AppleShowScrollBars Always`). Their behaviour is tested through the model code they call: `TabStoreTests` and the profile and space suites,
 `ExternalAppPermissionTests`, `ContentBlockerWhitelistTests`,
 `ExtensionOptionsPageEntryTests`, and the extension update and permission
 suites.

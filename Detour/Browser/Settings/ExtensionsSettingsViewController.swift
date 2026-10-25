@@ -44,9 +44,9 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         return max(fittingHeight, rows + SettingsMetrics.listBarHeight)
     }
 
-    // The detail column's internal layout is TASK-189 part 2; part 1 moved the
-    // pane into the shared scroll view, so the window takes the detail
-    // column's natural height and a column taller than the screen scrolls.
+    // The detail column is one stack in the pane's scroll view (TASK-189): the
+    // window takes its natural height, and a column taller than the screen
+    // scrolls with the whole pane. Nothing in it scrolls on its own.
     override func makeBody() -> NSView {
         let container = NSView()
 
@@ -63,7 +63,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
         tableView = NSTableView()
         tableView.headerView = nil
-        tableView.rowHeight = 32
+        tableView.rowHeight = SettingsMetrics.listRowHeight
         tableView.style = .plain
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
@@ -219,65 +219,15 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         detailContainer.subviews.forEach { $0.removeFromSuperview() }
 
         guard let ext = selectedExtension else { return }
-
-        // Icon + name + version header
-        let iconView = NSImageView()
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        iconView.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        if let icon = ext.icon {
-            iconView.image = icon
-        } else {
-            iconView.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
-        }
-
+        let column = SettingsMetrics.detailColumnWidth
         let resolvedName = ExtensionManager.shared.displayName(for: ext.id)
         let resolvedDesc = ExtensionManager.shared.displayDescription(for: ext.id)
 
-        let nameLabel = NSTextField(labelWithString: resolvedName)
-        nameLabel.font = .systemFont(ofSize: 15, weight: .bold)
-        // The window no longer widens for a long name (TASK-189): it truncates.
-        nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        nameLabel.toolTip = resolvedName
-
-        let versionLabel = NSTextField(labelWithString: "Version \(ext.manifest.version)")
-        versionLabel.font = .systemFont(ofSize: 12)
-        versionLabel.textColor = .secondaryLabelColor
-
-        let nameStack = NSStackView(views: [nameLabel, versionLabel])
-        nameStack.orientation = .vertical
-        nameStack.alignment = .leading
-        nameStack.spacing = 2
-
-        var headerViews: [NSView] = [iconView, nameStack]
-
-        // "Settings…" opens the extension's options page (TASK-103). Hidden when
-        // it declares none; disabled when no profile with an open window has
-        // it on (see `ExtensionOptionsPageEntry.resolveProfile`).
-        if ExtensionOptionsPageEntry.hasOptionsPage(ext.manifest) {
-            let spacer = NSView()
-            spacer.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
-            let optionsButton = NSButton(title: "Settings…", target: self, action: #selector(openOptionsClicked))
-            optionsButton.controlSize = .regular
-            optionsButton.setContentHuggingPriority(.required, for: .horizontal)
-            if Self.optionsProfile(for: ext.id) == nil {
-                optionsButton.isEnabled = false
-                optionsButton.toolTip = "Turn the extension on in a profile with an open window to open its settings."
-            }
-            headerViews += [spacer, optionsButton]
-        }
-
-        let headerStack = NSStackView(views: headerViews)
-        headerStack.orientation = .horizontal
-        headerStack.alignment = .centerY
-        headerStack.spacing = 10
+        let header = makeHeader(for: ext, name: resolvedName)
 
         // Description
-        let descLabel = NSTextField(wrappingLabelWithString: resolvedDesc ?? "No description provided.")
-        descLabel.font = .systemFont(ofSize: 12)
-        descLabel.preferredMaxLayoutWidth = SettingsMetrics.detailColumnWidth
-        descLabel.textColor = .secondaryLabelColor
+        let descLabel = SettingsWrappingLabel(wrapping: resolvedDesc ?? "No description provided.",
+                                              estimatedWidth: column, fontSize: 12)
 
         // Separator
         let sep = NSBox()
@@ -300,7 +250,9 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
         let enabledRow = NSStackView(views: [enabledLabel, enabledSwitch])
         enabledRow.orientation = .horizontal
-        enabledRow.spacing = 8
+        enabledRow.alignment = .centerY
+        enabledRow.spacing = SettingsMetrics.labelToControl
+        enabledRow.setHuggingPriority(.required, for: .horizontal)
 
         // Allow in Private (TASK-74). Extensions are off in the built-in Private
         // profile until the user opts in per extension, so this switch shows and
@@ -320,22 +272,157 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
         let privateRow = NSStackView(views: [privateLabel, privateSwitch])
         privateRow.orientation = .horizontal
-        privateRow.spacing = 8
+        privateRow.alignment = .centerY
+        privateRow.spacing = SettingsMetrics.labelToControl
+        privateRow.setHuggingPriority(.required, for: .horizontal)
         if !ext.isEnabled {
             let note = "\(resolvedName) is turned off for all profiles"
             privateSwitch.toolTip = note
             privateLabel.toolTip = note
         }
 
-        let privateNote = NSTextField(wrappingLabelWithString: "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is discarded when Detour quits.")
-        privateNote.font = .systemFont(ofSize: 11)
-        privateNote.preferredMaxLayoutWidth = SettingsMetrics.detailColumnWidth
-        privateNote.textColor = .secondaryLabelColor
+        let privateNote = SettingsWrappingLabel(
+            wrapping: "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is discarded when Detour quits.",
+            estimatedWidth: column)
 
         // Permissions section — interactive toggles
-        let permsHeader = NSTextField(labelWithString: "Permissions")
-        permsHeader.font = .systemFont(ofSize: 13, weight: .medium)
+        let permsHeader = NSTextField.settingsSectionTitle("Permissions")
+        let permissions = makePermissionsList(for: ext)
 
+        // Uninstall button, at the end of the column
+        let uninstallButton = NSButton(title: "Uninstall Extension", target: self, action: #selector(uninstallClicked))
+        uninstallButton.controlSize = .regular
+
+        var views: [NSView] = [header, descLabel, sep, updateSection]
+        if let pendingBanner { views.append(pendingBanner) }
+        views += [enabledRow, privateRow, privateNote, permsHeader, permissions, uninstallButton]
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = SettingsMetrics.rowGap
+        stack.setCustomSpacing(SettingsMetrics.descriptionToBody, after: descLabel)
+        stack.setCustomSpacing(SettingsMetrics.descriptionToBody, after: sep)
+        stack.setCustomSpacing(SettingsMetrics.controlToHelp, after: privateRow)
+        stack.setCustomSpacing(SettingsMetrics.sectionGap, after: privateNote)
+        stack.setCustomSpacing(SettingsMetrics.sectionTitleToRows, after: permsHeader)
+        stack.setCustomSpacing(SettingsMetrics.sectionGap, after: permissions)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        detailContainer.addSubview(stack)
+
+        // Full width: the header (its name wraps, "Settings…" sits at the
+        // trailing edge), wrapping text, the update rows (their labels truncate)
+        // and the permission list.
+        var fullWidth: [NSView] = [header, descLabel, sep, updateSection, privateNote, permissions]
+        if let pendingBanner { fullWidth.append(pendingBanner) }
+        // Nothing in the column is squeezed: it is as tall as its content, and
+        // the pane scrolls when that is taller than the window.
+        for view in views {
+            view.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+        NSLayoutConstraint.activate(fullWidth.map { $0.widthAnchor.constraint(equalTo: stack.widthAnchor) } + [
+            stack.topAnchor.constraint(equalTo: detailContainer.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
+            // `<=`: a required equality would cap the window (see `bottomHug`).
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: detailContainer.bottomAnchor),
+        ])
+        // Another extension's detail column has another natural height.
+        contentHeightDidChange()
+    }
+
+    /// Icon, name (wrapping to two lines, then truncated) and version, and
+    /// "Settings…" at the trailing edge when the extension has an options page.
+    private func makeHeader(for ext: WebExtension, name: String) -> NSView {
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        let iconView = NSImageView()
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.image = ext.icon ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
+        header.addSubview(iconView)
+
+        // "Settings…" opens the extension's options page (TASK-103). Hidden when
+        // it declares none; disabled when no profile with an open window has
+        // it on (see `ExtensionOptionsPageEntry.resolveProfile`).
+        var optionsButton: NSButton?
+        if ExtensionOptionsPageEntry.hasOptionsPage(ext.manifest) {
+            let button = NSButton(title: "Settings…", target: self, action: #selector(openOptionsClicked))
+            button.controlSize = .regular
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+            if Self.optionsProfile(for: ext.id) == nil {
+                button.isEnabled = false
+                button.toolTip = "Turn the extension on in a profile with an open window to open its settings."
+            }
+            header.addSubview(button)
+            optionsButton = button
+        }
+
+        // The window never widens for a long name (TASK-189): it wraps to a
+        // second line, then truncates.
+        let iconSize: CGFloat = 32, gap: CGFloat = 10
+        let estimate = SettingsMetrics.detailColumnWidth - iconSize - gap
+            - (optionsButton.map { $0.intrinsicContentSize.width + gap } ?? 0)
+        let nameLabel = SettingsWrappingLabel(wrapping: name, estimatedWidth: estimate, fontSize: 15,
+                                              weight: .bold, color: .labelColor)
+        nameLabel.maximumNumberOfLines = 2
+        nameLabel.cell?.truncatesLastVisibleLine = true
+        nameLabel.toolTip = name
+
+        let versionLabel = NSTextField(labelWithString: "Version \(ext.manifest.version)")
+        versionLabel.font = .systemFont(ofSize: 12)
+        versionLabel.textColor = .secondaryLabelColor
+        versionLabel.lineBreakMode = .byTruncatingTail
+        versionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let text = NSView()
+        text.translatesAutoresizingMaskIntoConstraints = false
+        text.addSubview(nameLabel)
+        text.addSubview(versionLabel)
+        header.addSubview(text)
+
+        let textTrailing = optionsButton?.leadingAnchor ?? header.trailingAnchor
+        let hug = header.heightAnchor.constraint(equalToConstant: 0)
+        hug.priority = .defaultLow
+        var constraints: [NSLayoutConstraint] = [
+            iconView.widthAnchor.constraint(equalToConstant: iconSize),
+            iconView.heightAnchor.constraint(equalToConstant: iconSize),
+            iconView.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            iconView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            iconView.topAnchor.constraint(greaterThanOrEqualTo: header.topAnchor),
+            iconView.bottomAnchor.constraint(lessThanOrEqualTo: header.bottomAnchor),
+
+            text.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: gap),
+            text.trailingAnchor.constraint(equalTo: textTrailing, constant: optionsButton == nil ? 0 : -gap),
+            text.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            text.topAnchor.constraint(greaterThanOrEqualTo: header.topAnchor),
+            text.bottomAnchor.constraint(lessThanOrEqualTo: header.bottomAnchor),
+
+            nameLabel.topAnchor.constraint(equalTo: text.topAnchor),
+            nameLabel.leadingAnchor.constraint(equalTo: text.leadingAnchor),
+            nameLabel.trailingAnchor.constraint(equalTo: text.trailingAnchor),
+            versionLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2),
+            versionLabel.leadingAnchor.constraint(equalTo: text.leadingAnchor),
+            versionLabel.trailingAnchor.constraint(lessThanOrEqualTo: text.trailingAnchor),
+            versionLabel.bottomAnchor.constraint(equalTo: text.bottomAnchor),
+            hug,
+        ]
+        if let optionsButton {
+            constraints += [
+                optionsButton.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+                optionsButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            ]
+        }
+        NSLayoutConstraint.activate(constraints)
+        return header
+    }
+
+    /// The permission rows in a bordered group as tall as its rows, or one line
+    /// of text when the extension asks for none (TASK-189 defect 15: a one-row
+    /// list sat in a 287 pt box).
+    private func makePermissionsList(for ext: WebExtension) -> NSView {
         // One read, partitioned by type: a `.url` row's key can be the same
         // string as a manifest match pattern, so the sections must not share a
         // dictionary.
@@ -365,61 +452,57 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         // listed here is one the next launch re-applies.
         let savedSubPatterns = ext.savedSubPatternDecisionKeys(in: savedPatterns)
 
-        var permContentViews: [NSView] = []
-
         if requiredPerms.isEmpty && hostPerms.isEmpty && optionalPerms.isEmpty
             && optionalHostPerms.isEmpty && savedSubPatterns.isEmpty && savedURLs.isEmpty {
             let noneLabel = NSTextField(labelWithString: "No special permissions requested.")
             noneLabel.font = .systemFont(ofSize: 12)
             noneLabel.textColor = .secondaryLabelColor
-            permContentViews.append(noneLabel)
-        } else {
-            // Required API permissions
-            for perm in requiredPerms {
-                let row = makePermissionRow(
+            return noneLabel
+        }
+
+        // The group's inner width, for the wrap estimate of its captions.
+        let innerWidth = SettingsMetrics.detailColumnWidth - 2 * SettingsMetrics.groupInsetX
+        func heading(_ text: String) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = .systemFont(ofSize: 11, weight: .medium)
+            label.textColor = .secondaryLabelColor
+            return label
+        }
+        func caption(_ text: String) -> NSTextField {
+            SettingsWrappingLabel(wrapping: text, estimatedWidth: innerWidth, color: .tertiaryLabelColor)
+        }
+
+        var rows: [NSView] = []
+        // Required API permissions
+        for perm in requiredPerms {
+            rows.append(makePermissionRow(
+                extensionID: ext.id, key: perm,
+                type: .apiPermission, isGranted: Self.apiPermissionIsOn(perm, saved: savedAPI[perm]),
+                label: ExtensionPermissionDescriptions.describe(perm)))
+        }
+        // Host permissions
+        for pattern in hostPerms {
+            rows.append(makePermissionRow(
+                extensionID: ext.id, key: pattern,
+                type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
+                label: Self.displayName(forPattern: pattern)))
+        }
+        // Optional permissions: API permissions, then host patterns. An
+        // optional host pattern reads OFF until the user grants it (at a
+        // `permissions.request` prompt or here), and a Deny is reversible.
+        if !optionalPerms.isEmpty || !optionalHostPerms.isEmpty {
+            rows.append(heading("Optional:"))
+            for perm in optionalPerms {
+                rows.append(makePermissionRow(
                     extensionID: ext.id, key: perm,
                     type: .apiPermission, isGranted: Self.apiPermissionIsOn(perm, saved: savedAPI[perm]),
-                    label: ExtensionPermissionDescriptions.describe(perm),
-                    isRequired: true
-                )
-                permContentViews.append(row)
+                    label: ExtensionPermissionDescriptions.describe(perm)))
             }
-            // Host permissions
-            for pattern in hostPerms {
-                let row = makePermissionRow(
+            for pattern in optionalHostPerms {
+                rows.append(makePermissionRow(
                     extensionID: ext.id, key: pattern,
                     type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
-                    label: Self.displayName(forPattern: pattern),
-                    isRequired: true
-                )
-                permContentViews.append(row)
-            }
-            // Optional permissions: API permissions, then host patterns. An
-            // optional host pattern reads OFF until the user grants it (at a
-            // `permissions.request` prompt or here), and a Deny is reversible.
-            if !optionalPerms.isEmpty || !optionalHostPerms.isEmpty {
-                let optHeader = NSTextField(labelWithString: "Optional:")
-                optHeader.font = .systemFont(ofSize: 11, weight: .medium)
-                optHeader.textColor = .secondaryLabelColor
-                permContentViews.append(optHeader)
-                for perm in optionalPerms {
-                    let row = makePermissionRow(
-                        extensionID: ext.id, key: perm,
-                        type: .apiPermission, isGranted: Self.apiPermissionIsOn(perm, saved: savedAPI[perm]),
-                        label: ExtensionPermissionDescriptions.describe(perm),
-                        isRequired: false
-                    )
-                    permContentViews.append(row)
-                }
-                for pattern in optionalHostPerms {
-                    let row = makePermissionRow(
-                        extensionID: ext.id, key: pattern,
-                        type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
-                        label: Self.displayName(forPattern: pattern),
-                        isRequired: false
-                    )
-                    permContentViews.append(row)
-                }
+                    label: Self.displayName(forPattern: pattern)))
             }
         }
 
@@ -428,24 +511,13 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         // site-access rows below, they live outside the manifest lists, so
         // without a row here such a Deny could never be reversed.
         if !savedSubPatterns.isEmpty {
-            let requestedHeader = NSTextField(labelWithString: "Requested sites:")
-            requestedHeader.font = .systemFont(ofSize: 11, weight: .medium)
-            requestedHeader.textColor = .secondaryLabelColor
-            permContentViews.append(requestedHeader)
-
-            let requestedCaption = NSTextField(labelWithString: "Decisions made when the extension asked for access to specific sites.")
-            requestedCaption.font = .systemFont(ofSize: 11)
-            requestedCaption.textColor = .tertiaryLabelColor
-            permContentViews.append(requestedCaption)
-
+            rows.append(heading("Requested sites:"))
+            rows.append(caption("Decisions made when the extension asked for access to specific sites."))
             for pattern in savedSubPatterns {
-                let row = makePermissionRow(
+                rows.append(makePermissionRow(
                     extensionID: ext.id, key: pattern,
                     type: .matchPattern, isGranted: savedPatterns[pattern] == .granted,
-                    label: Self.displayName(forPattern: pattern),
-                    isRequired: false
-                )
-                permContentViews.append(row)
+                    label: Self.displayName(forPattern: pattern)))
             }
         }
 
@@ -453,113 +525,20 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         // while browsing. They live outside the manifest lists, so without a row
         // here a one-click Deny would be permanent and unreversible.
         if !savedURLs.isEmpty {
-            let siteHeader = NSTextField(labelWithString: "Site access:")
-            siteHeader.font = .systemFont(ofSize: 11, weight: .medium)
-            siteHeader.textColor = .secondaryLabelColor
-            permContentViews.append(siteHeader)
-
-            let siteCaption = NSTextField(labelWithString: "Decisions made at site-access prompts while browsing.")
-            siteCaption.font = .systemFont(ofSize: 11)
-            siteCaption.textColor = .tertiaryLabelColor
-            permContentViews.append(siteCaption)
-
+            rows.append(heading("Site access:"))
+            rows.append(caption("Decisions made at site-access prompts while browsing."))
             for record in savedURLs {
-                let row = makePermissionRow(
+                rows.append(makePermissionRow(
                     extensionID: ext.id, key: record.permissionKey,
                     type: .url,
                     isGranted: ExtensionPermissionStatus(rawValue: record.status) == .granted,
-                    label: record.permissionKey,
-                    isRequired: false
-                )
-                permContentViews.append(row)
+                    label: record.permissionKey))
             }
         }
 
-        let permContentStack = NSStackView(views: permContentViews)
-        permContentStack.orientation = .vertical
-        permContentStack.alignment = .leading
-        permContentStack.spacing = 4
-        permContentStack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
-
-        // Use a flipped NSView as the document view so content starts at the top
-        let flippedDocView = FlippedView()
-        flippedDocView.translatesAutoresizingMaskIntoConstraints = false
-        flippedDocView.addSubview(permContentStack)
-        permContentStack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            permContentStack.topAnchor.constraint(equalTo: flippedDocView.topAnchor),
-            permContentStack.leadingAnchor.constraint(equalTo: flippedDocView.leadingAnchor),
-            permContentStack.trailingAnchor.constraint(equalTo: flippedDocView.trailingAnchor),
-            permContentStack.bottomAnchor.constraint(equalTo: flippedDocView.bottomAnchor),
-        ])
-
-        let scrollView = NSScrollView()
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.documentView = flippedDocView
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.borderType = .bezelBorder
-        scrollView.backgroundColor = .controlBackgroundColor
-        scrollView.drawsBackground = true
-
-        scrollView.setContentHuggingPriority(.defaultLow - 1, for: .vertical)
-        scrollView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-
-        let permsStack = NSStackView(views: [permsHeader, scrollView])
-        permsStack.orientation = .vertical
-        permsStack.alignment = .leading
-        permsStack.spacing = 4
-        permsStack.setHuggingPriority(.defaultLow - 1, for: .vertical)
-
-        // Uninstall button
-        let uninstallButton = NSButton(title: "Uninstall Extension", target: self, action: #selector(uninstallClicked))
-        uninstallButton.controlSize = .regular
-        uninstallButton.translatesAutoresizingMaskIntoConstraints = false
-        detailContainer.addSubview(uninstallButton)
-
-        // Main stack (everything above uninstall)
-        var mainViews: [NSView] = [headerStack, descLabel, sep, updateSection]
-        if let pendingBanner { mainViews.append(pendingBanner) }
-        mainViews += [enabledRow, privateRow, privateNote, permsStack]
-        let mainStack = NSStackView(views: mainViews)
-        mainStack.orientation = .vertical
-        mainStack.alignment = .leading
-        mainStack.spacing = 12
-        mainStack.setCustomSpacing(4, after: privateRow)
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
-        detailContainer.addSubview(mainStack)
-
-        NSLayoutConstraint.activate([
-            mainStack.topAnchor.constraint(equalTo: detailContainer.topAnchor),
-            mainStack.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
-            mainStack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
-            // The note wraps rather than stretching the leading-aligned stack.
-            privateNote.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
-            updateSection.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
-            // Full width, so the header's spacer pushes "Settings…" to the trailing edge.
-            headerStack.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
-            scrollView.widthAnchor.constraint(equalTo: detailContainer.widthAnchor),
-            flippedDocView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            uninstallButton.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
-            uninstallButton.bottomAnchor.constraint(equalTo: detailContainer.bottomAnchor),
-            mainStack.bottomAnchor.constraint(equalTo: uninstallButton.topAnchor, constant: -12),
-        ])
-        pendingBanner?.widthAnchor.constraint(equalTo: detailContainer.widthAnchor).isActive = true
-        // When the column is short of room, the permissions list is what gives
-        // (its compression resistance is low), but never below a few rows — the
-        // notice above the switches must keep its size and its insets.
-        let permsFloor = scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 96)
-        permsFloor.priority = .defaultHigh
-        permsFloor.isActive = true
-        // At the pane's natural height the list shows every row: the pane,
-        // not this list, scrolls when the window is shorter (TASK-189).
-        let permsFull = scrollView.heightAnchor.constraint(equalTo: flippedDocView.heightAnchor, constant: 2)
-        permsFull.priority = NSLayoutConstraint.Priority(240)
-        permsFull.isActive = true
-        updateSection.setContentCompressionResistancePriority(.required, for: .vertical)
-        pendingBanner?.setContentCompressionResistancePriority(.required, for: .vertical)
-        // Another extension's detail column has another natural height.
-        contentHeightDidChange()
+        let group = SettingsGroupBoxView(rows: rows)
+        group.stack.spacing = 4
+        return group
     }
 
     // MARK: - Updates (TASK-113)
@@ -641,6 +620,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
+        row.setHuggingPriority(.required, for: .horizontal)
         return row
     }
 
@@ -678,13 +658,20 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         icon.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
-        let title = NSTextField(wrappingLabelWithString: "Version \(pending.version) needs new permissions")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        // The banner's insets (required constraints, below) and the gap
+        // between the icon and the text column.
+        let inset: CGFloat = 14, iconGap: CGFloat = 10
+        // The text column's width: the banner's insets, the icon (about 16 pt
+        // wide; the label re-measures at its real width) and its gap.
+        let textWidth = SettingsMetrics.detailColumnWidth - 2 * inset - 16 - iconGap
+        let title = SettingsWrappingLabel(wrapping: "Version \(pending.version) needs new permissions",
+                                          estimatedWidth: textWidth, fontSize: 13, weight: .semibold,
+                                          color: .labelColor)
 
         // The permission list, with a little air between its lines.
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
-        let details = NSTextField(wrappingLabelWithString: "")
+        let details = SettingsWrappingLabel(wrapping: "", estimatedWidth: textWidth)
         details.attributedStringValue = NSAttributedString(
             string: Self.pendingPermissionsText(pending),
             attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor,
@@ -710,12 +697,16 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         for view in [title, details, buttonRow, icon] as [NSView] {
             view.setContentCompressionResistancePriority(.required, for: .vertical)
         }
-        buttonRow.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
+        // Full width, so the button reaches the trailing edge and the text
+        // wraps at the column's real width.
+        for view in [title, details, buttonRow] {
+            view.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
+        }
 
         let row = NSStackView(views: [icon, textStack])
         row.orientation = .horizontal
         row.alignment = .top
-        row.spacing = 10
+        row.spacing = iconGap
         row.translatesAutoresizingMaskIntoConstraints = false
         // The text column fills the box (gravity areas would size it to its
         // widest line), so the button row can reach the trailing edge.
@@ -733,7 +724,6 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         banner.translatesAutoresizingMaskIntoConstraints = false
         banner.addSubview(row)
         // Insets as required constraints of our own, not the stack's soft ones.
-        let inset: CGFloat = 14
         NSLayoutConstraint.activate([
             row.topAnchor.constraint(equalTo: banner.topAnchor, constant: inset),
             row.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: inset),
@@ -876,7 +866,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
     private func makePermissionRow(
         extensionID: String, key: String, type: ExtensionPermissionType,
-        isGranted: Bool, label: String, isRequired: Bool
+        isGranted: Bool, label: String
     ) -> NSView {
         let toggle = NSSwitch()
         toggle.controlSize = .mini
@@ -886,14 +876,9 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         // Encode extension ID, permission key, and type into the identifier
         toggle.identifier = NSUserInterfaceItemIdentifier("\(extensionID)\t\(key)\t\(type.rawValue)")
 
-        let permLabel = NSTextField(labelWithString: label)
-        permLabel.font = .systemFont(ofSize: 12)
+        let (row, permLabel) = SettingsGroupBoxView.switchRow(toggle, title: label)
         permLabel.textColor = .secondaryLabelColor
-
-        let row = NSStackView(views: [toggle, permLabel])
-        row.orientation = .horizontal
-        row.spacing = 6
-        row.alignment = .centerY
+        permLabel.toolTip = label
         return row
     }
 
@@ -1152,10 +1137,4 @@ private final class TintedBannerView: NSView {
         layer?.backgroundColor = resolved.withAlphaComponent(0.12).cgColor
         layer?.borderColor = resolved.withAlphaComponent(0.6).cgColor
     }
-}
-
-/// An NSView subclass with flipped coordinates so content starts at the top.
-/// Used as an NSScrollView document view for top-aligned content.
-private class FlippedView: NSView {
-    override var isFlipped: Bool { true }
 }

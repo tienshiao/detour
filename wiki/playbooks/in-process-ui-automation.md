@@ -15,6 +15,9 @@ sources:
   - id: task-89
     resource: backlog:TASK-89
     title: Permanent in-process UI automation hook (debug builds only)
+  - id: harness-189
+    resource: ../../docs/harness/task189-survey-harness.patch
+    title: TASK-189 survey harness (the Settings window; an alert answered from the modal run loop)
   - id: harness-185
     resource: ../../docs/harness/task185-harness.patch
     title: TASK-185 harness (posted Option-click, the real link menu)
@@ -93,6 +96,7 @@ and visual checks have to wait; report them as not run, never as passed.
 | A key to whatever has focus | `window.firstResponder?.keyDown(with: event)` | Down arrow: `keyCode` 125, characters `"\u{F701}"`, flags `[.function, .numericPad]`[^notes-keyloop] |
 | A menu item or toolbar action | `NSApp.sendAction(_:to:from:)` | |
 | A native button | `button.performClick(nil)` | |
+| A button whose action runs an `NSAlert` with `runModal()` | before the click, add a one-shot `Timer` in `.common` mode that finds `NSApp.modalWindow`, looks up the alert's button by title and calls `performClick`; then click the button from `DispatchQueue.main.async` | the modal session runs `.common`-mode timers, so the alert is answered and the action carries on along its real path (Settings' Uninstall Extension)[^harness-189] |
 | A native `<select>` | posted click opens its `NSMenu`; posted Down/Up arrows and Return choose | only with the screen unlocked[^notes-inproc] |
 | A modifier-click on a link (Option, Shift, Cmd) | posted down and up with `modifierFlags: .option` (etc.) at the link | reaches `decidePolicy` with those flags, as a person's click does |
 | The page's context menu, and choosing an item | a posted `rightMouseDown`/`Up` on the element; WebKit builds the menu and calls `BrowserWebView.willOpenMenu`, where a temporary hook can read the items and, from a `.common`-mode timer, `menu.performActionForItem(at:)` then `cancelTracking()` | performs WebKit's own items (they need its live menu), so the action takes the real path; only with the screen unlocked[^harness-185] |
@@ -238,4 +242,5 @@ above.
 [^task-174]: A space's tab list takes keyboard focus, so keys go to the list instead of the page after a click
 [^notes-updates]: Session notes on verifying the extension update UI
 [^notes-capture]: Session notes on screen capture for UI verification
+[^harness-189]: TASK-189 survey harness (the Settings window; an alert answered from the modal run loop)
 [^harness-185]: TASK-185 harness (posted Option-click, the real link menu)

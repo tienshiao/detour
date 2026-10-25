@@ -11,11 +11,14 @@ again by the revert). Apply, build, run, revert:
     OUT=<an empty folder>
     LOCK_CHECK=<lock probe> .task189/watch.sh "$OUT" &   # shoots each "SHOOT <name> <windowNumber>"
                                   # line of $OUT/verify.log with screencapture -x -o -l
-    .task189/run.sh "$OUT"        # DETOUR_DATA_DIR=DetourVerify189, prints the pid
+    .task189/run.sh "$OUT" [app args]  # DETOUR_DATA_DIR=DetourVerify189, prints the pid;
+                                  # e.g. -AppleShowScrollBars Always for legacy scrollers
     # wait for "done" in $OUT/verify.log (about 130 s), then kill THAT pid only
     python3 .task189/analyze.py "$OUT" > "$OUT/analysis.txt"
     python3 .task189/borders.py "$OUT" > "$OUT/borders.txt"   # list border vs background pixels
     python3 .task189/sheets.py "$OUT"   # contact sheets in $OUT/sheets
+    python3 .task189/compare.py BEFORE AFTER "$OUT/sheets" profiles extensions
+                                  # before/after sheets, each state side by side
     git apply -R docs/harness/task189-survey-harness.patch && xcodegen generate
     rm -r -- ~/Library/Application\ Support/DetourVerify189
 
@@ -38,14 +41,18 @@ derives clips (frame cut by a clip view or the content, from the frames:
 visibleRect is useless because macOS 14+ views do not clip to bounds), text
 that does not fit, overlaps between on-screen leaves, scroll overflow, gaps
 between stack items and grid rows, label-vs-control centre and baseline
-offsets, the grid's top against the list's, grid label-column widths and pane
+offsets, the grid's top against the list's (and, since part 2, a column
+stack's top against the list's: COLUMN lines), grid label-column widths and pane
 margins. Unsatisfiable-constraint logs: `log show --predicate
 'processIdentifier == <pid>'`, grep "Unable to simultaneously".
 States: general; spaces default / long space + long profile name / 19
-spaces; extensions none; profiles normal / Private / custom UA + isolation
+spaces; extensions none / one tall extension (only-tall) / the same
+uninstalled through the pane's own Uninstall button, its alert answered from
+a timer in the modal run loop (UNINSTALL lines: content height before and
+after); profiles normal / Private / custom UA + isolation
 warning / 4 external-app permissions; extensions one (unpacked) / long name +
 long description + 22 permissions + 4 hosts + optional + options page (CRX
-with update URL) / pending-permissions banner / 15 installed; profiles with
+with update URL) / pending-permissions banner / 15 installed (one-permission extension selected); profiles with
 15 extension switches / everything shown / same scrolled to the end / Private
 with extensions; content blocking on / off. Then the sizing checks (part 1):
 pane switches sampled from the window server every 10 ms on a background
@@ -64,7 +71,9 @@ Known false positives in analyze.py: "VCLIP NSButton ... frame=[48, 25, 24,
 "_NSLayerBasedFillColorView" OUTSIDE-CONTENT / PAST-PARENT (a 0-wide view of
 the system scroll pocket at the top of the pane's scroll view); the
 "BackdropView / NSScrollPocket / NSBanner" OVERLAPs are the table header's
-system views.
+system views; spaces-many-dragged's 2 pt OVERLAP of the list separator with a
+row half scrolled under it. borders.py samples list containers and, since
+part 2, the bordered groups (SettingsGroupBoxView).
 
 Before (survey, 2026-10-24, one run, 38 captures, screen unlocked for all):
 - Window grows past its fixed size: a long extension name widens the window
@@ -109,12 +118,34 @@ After part 1 (2026-10-24, one run, 50 captures, screen unlocked for all):
 - No "Unable to simultaneously satisfy" from the Settings window (the 11 are
   the browser window at launch, 2 s before Settings opened).
 
+After part 2 (2026-10-24, one run plus a legacy-scroller run, 54 captures each,
+the 1000 pt virtual display running, screen unlocked for all):
+- Profiles in titled sections: labels on their control's baseline (0.0, -0.5
+  on pop-ups; was +4.0), switches centred (0.0), rows 10 apart, help text 4 pt
+  below its control (was 12), sections 20 apart, title to rows 8, column level
+  with the list (0.0); bordered groups 8 pt inside at top and bottom (the
+  NSBox had 8 and 0) and as tall as their rows; list names truncate with an
+  ellipsis before "N Spaces". Content heights 709 (normal) / 630 (Private) /
+  775 (custom UA + warning) / 1152 (15 extensions) / 1218 (everything).
+- Extensions: one scroll view (the pane's) plus the list's, no inner
+  permissions scroll view; list rows 28; header name wraps to two lines then
+  truncates; Uninstall last; no permissions = one line of text, one
+  permission = a 32 pt group; the pending banner adds its height (727).
+  Content 400 (none, one) / 489 (many) / 727 / 1092; uninstalling the only
+  extension from 905 brings the window to 400.
+- Legacy scrollers (-AppleShowScrollBars Always): the clip is 723 wide, the
+  wrapping labels take that width (description 447 wide, 4 lines; help 315),
+  and no TEXT-VCUT anywhere.
+- General, Spaces and Content Blocking measure as after part 1.
+- No "Unable to simultaneously satisfy" from the Settings window (the 11 per
+  run are the browser window at launch, 1 s before Settings opened).
+
 diff --git a/.task189/analyze.py b/.task189/analyze.py
 new file mode 100644
-index 0000000..c1990be
+index 0000000..81db5f6
 --- /dev/null
 +++ b/.task189/analyze.py
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,248 @@
 +#!/usr/bin/env python3
 +"""TASK-189 survey: read the harness's per-state JSON dumps and list clips,
 +truncations, overlaps and gaps (window coordinates, origin bottom-left)."""
@@ -122,7 +153,7 @@ index 0000000..c1990be
 +
 +CONTAINERS = {"NSView", "NSStackView", "NSGridView", "NSClipView", "FlippedView", "FlippedClipView",
 +              "NSTableRowView", "NSTableCellView", "_NSKeyboardFocusClipView", "NSTableBackgroundView",
-+              "TintedBannerView", "_NSBoxCustomView"}
++              "TintedBannerView", "_NSBoxCustomView", "SettingsGroupBoxView", "SettingsListContainerView"}
 +SKIP = {"NSScroller", "_NSScrollViewContentBackgroundView", "NSTableHeaderView", "_NSCornerView",
 +        "NSScrollerImpPairView", "_NSSplitViewSpanningAccessoryHostingView"}
 +
@@ -280,6 +311,11 @@ index 0000000..c1990be
 +        if in_skip(n):
 +            continue
 +        if n["cls"] == "NSStackView" and n.get("orientation") == "v":
++            par = nodes.get(n["parent"])
++            if par:
++                for sib in children.get(par["id"], []):
++                    if nodes[sib]["cls"] == "SettingsListContainerView":
++                        P(f'  COLUMN #{n["id"]} top vs list top: {nodes[sib]["F"]["maxY"] - n["F"]["maxY"]:+.1f} (+ = column starts lower)')
 +            arr = [nodes[i] for i in n.get("arranged", [])]
 +            if len(arr) < 2:
 +                continue
@@ -360,10 +396,10 @@ index 0000000..c1990be
 +        print()
 diff --git a/.task189/borders.py b/.task189/borders.py
 new file mode 100644
-index 0000000..9786802
+index 0000000..4e43a7b
 --- /dev/null
 +++ b/.task189/borders.py
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,31 @@
 +#!/usr/bin/env python3
 +"""TASK-189 defect 9: sample each list container's left border pixel against the
 +pane background just outside it, in every capture of DIR (light and dark).
@@ -387,33 +423,69 @@ index 0000000..9786802
 +    scale = int(subprocess.check_output(["magick", "identify", "-format", "%w", png]).decode()) / meta["windowFrame"][2]
 +    for n in meta["nodes"]:
 +        f = n["frame"]
-+        is_list = n["cls"] == "SettingsListContainerView" or (n["cls"] == "NSView" and abs(f[2] - 220) < 0.5 and f[3] > 100)
++        is_list = n["cls"] in ("SettingsListContainerView", "SettingsGroupBoxView") or (n["cls"] == "NSView" and abs(f[2] - 220) < 0.5 and f[3] > 100)
 +        if not is_list:
 +            continue
 +        y = int((win_h - (f[1] + f[3] / 2)) * scale)
 +        border = pixel(png, int(f[0] * scale), y)
 +        outside = pixel(png, int((f[0] - 4) * scale), y)
 +        contrast = max(abs(a - b) for a, b in zip(border, outside))
-+        print(f'{os.path.basename(path)[:-5]:40s} border={border} outside={outside} max-channel-diff={contrast}')
-+        break
++        print(f'{os.path.basename(path)[:-5]:40s} {n["cls"]:26s} border={border} outside={outside} max-channel-diff={contrast}')
+diff --git a/.task189/compare.py b/.task189/compare.py
+new file mode 100755
+index 0000000..3146d12
+--- /dev/null
++++ b/.task189/compare.py
+@@ -0,0 +1,30 @@
++#!/usr/bin/env python3
++"""Before/after contact sheets: each state of a pane from BEFORE beside the
++same state from AFTER, light and dark. Usage: compare.py BEFORE AFTER OUTDIR pane..."""
++import os, subprocess, sys
++
++before, after, out = sys.argv[1:4]
++panes = sys.argv[4:]
++font = "/System/Library/Fonts/Supplemental/Arial.ttf"
++order = {
++ "profiles": ["profiles-normal", "profiles-private", "profiles-customUA-warning", "profiles-externalApps-several",
++              "profiles-extensions", "profiles-everything", "profiles-everything-scrolled", "profiles-private-extensions",
++              "profiles-capped", "profiles-capped-scrolled"],
++ "extensions": ["extensions-none", "extensions-one", "extensions-big", "extensions-pending", "extensions-many",
++                "extensions-capped"],
++}
++os.makedirs(out, exist_ok=True)
++for pane in panes:
++    args = ["magick", "montage"]
++    for s in order[pane]:
++        for m in ("light", "dark"):
++            for tag, d in (("before", before), ("after", after)):
++                p = f"{d}/{s}-{m}.png"
++                if os.path.exists(p):
++                    args += ["-label", f"{s} ({m}) {tag}", p]
++                else:
++                    args += ["-label", f"{s} ({m}) {tag}: none", "xc:#bdbdbd[200x100]"]
++    args += ["-tile", "2x", "-geometry", "+16+16", "-font", font, "-pointsize", "20", "-background", "#bdbdbd",
++             f"{out}/{pane}-before-after.png"]
++    subprocess.check_call(args)
++    print(pane, subprocess.check_output(["magick", "identify", "-format", "%wx%h", f"{out}/{pane}-before-after.png"]).decode())
 diff --git a/.task189/run.sh b/.task189/run.sh
 new file mode 100755
-index 0000000..957996e
+index 0000000..9e053ee
 --- /dev/null
 +++ b/.task189/run.sh
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,10 @@
 +#!/bin/bash
-+# Usage: run.sh OUTDIR — launches the harness build and prints its pid
-+OUT="$1"
++# Usage: run.sh OUTDIR [app arguments…] — launches the harness build and prints its pid.
++# Extra arguments go to the app, e.g. -AppleShowScrollBars Always for legacy scrollers.
++OUT="$1"; shift
 +mkdir -p "$OUT"
 +cd "$(git rev-parse --show-toplevel)"
 +DETOUR_DATA_DIR=DetourVerify189 DETOUR_VERIFY_DIR="$OUT" \
-+  .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour > "$OUT/app-stdout.log" 2> "$OUT/app-stderr.log" &
++  .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour "$@" > "$OUT/app-stdout.log" 2> "$OUT/app-stderr.log" &
 +echo $! > "$OUT/pid"
 +echo "pid $!"
 diff --git a/.task189/sheets.py b/.task189/sheets.py
 new file mode 100644
-index 0000000..ed130ed
+index 0000000..4030b2b
 --- /dev/null
 +++ b/.task189/sheets.py
 @@ -0,0 +1,26 @@
@@ -426,7 +498,7 @@ index 0000000..ed130ed
 + "profiles": ["profiles-normal", "profiles-private", "profiles-customUA-warning", "profiles-externalApps-several",
 +              "profiles-extensions", "profiles-everything", "profiles-everything-scrolled", "profiles-private-extensions",
 +              "profiles-capped", "profiles-capped-scrolled"],
-+ "extensions": ["extensions-none", "extensions-one", "extensions-big", "extensions-pending", "extensions-many",
++ "extensions": ["extensions-none", "extensions-only-tall", "extensions-uninstalled", "extensions-one", "extensions-big", "extensions-pending", "extensions-many",
 +                "extensions-capped"],
 + "contentblocking": ["contentblocking-on", "contentblocking-off"],
 +}
@@ -491,10 +563,10 @@ index 6edb5ad..cf4642e 100644
      func applicationWillTerminate(_ notification: Notification) {
 diff --git a/Detour/App/Task189Harness.swift b/Detour/App/Task189Harness.swift
 new file mode 100644
-index 0000000..630987e
+index 0000000..99b9480
 --- /dev/null
 +++ b/Detour/App/Task189Harness.swift
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,592 @@
 +// TEMP TASK-189 Settings layout survey harness — DO NOT COMMIT
 +#if DEBUG
 +import AppKit
@@ -668,6 +740,8 @@ index 0000000..630987e
 +
 +        // MARK: Driving
 +
++        func contentHeight() -> Double { Double(sw().contentLayoutRect.height) }
++
 +        func showPane(_ id: String) {
 +            guard let item = sw().toolbar?.items.first(where: { $0.itemIdentifier.rawValue == id }),
 +                  let action = item.action else { return log("no toolbar item \(id)") }
@@ -776,6 +850,40 @@ index 0000000..630987e
 +        // Extensions: none
 +        both("extensions-none") { showPane("extensions") }
 +
++        // Extensions: one tall extension, then uninstalled through the pane's own
++        // Uninstall button (its alert answered from a timer in the modal run
++        // loop): the window must come down to the 400 minimum (TASK-189 part 2).
++        let tallDir = writeExtension("tall", [
++            "manifest_version": 3, "name": "Only Extension", "version": "3.0",
++            "description": "The only installed extension, with enough permissions to make the pane taller than its minimum.",
++            "permissions": manyPerms, "host_permissions": manyHosts,
++        ])
++        both("extensions-only-tall", settle: 2.0) {
++            install("tall", tallDir) { $0.sourcePath = tallDir }
++            showPane("general")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { showPane("extensions") }
++        }
++        both("extensions-uninstalled", settle: 2.0) {
++            log("UNINSTALL before content=\(contentHeight()) natural=\((sw().contentViewController as? SettingsPaneViewController)?.naturalContentHeight ?? -1) exts=\(ExtensionManager.shared.extensions.count)")
++            guard let view = sw().contentViewController?.view,
++                  let button = allSubviews(view).compactMap({ $0 as? NSButton }).first(where: { $0.title == "Uninstall Extension" }) else {
++                return log("UNINSTALL no Uninstall button")
++            }
++            let answer = Timer(timeInterval: 0.5, repeats: false) { _ in
++                guard let alert = NSApp.modalWindow,
++                      let confirm = allSubviews(alert.contentView!).compactMap({ $0 as? NSButton }).first(where: { $0.title == "Uninstall" }) else {
++                    return log("UNINSTALL no alert")
++                }
++                log("UNINSTALL answering alert \(alert.title)")
++                confirm.performClick(nil)
++            }
++            RunLoop.main.add(answer, forMode: .common)
++            DispatchQueue.main.async { button.performClick(nil) }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
++                log("UNINSTALL after content=\(contentHeight()) min=\(sw().contentMinSize.height) max=\(sw().contentMaxSize.height) natural=\((sw().contentViewController as? SettingsPaneViewController)?.naturalContentHeight ?? -1) exts=\(ExtensionManager.shared.extensions.count)")
++            }
++        }
++
 +        // Profiles: normal (no extensions, no external apps)
 +        both("profiles-normal") {
 +            showPane("profiles")
@@ -856,7 +964,8 @@ index 0000000..630987e
 +                ])
 +                install("many\(i)", d) { $0.sourcePath = d }
 +            }
-+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { selectExtension(extIDs["simple"] ?? "") }
++            // A one-permission list (TASK-189 part 2: as tall as its row).
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { selectExtension(extIDs["many0"] ?? "") }
 +        }
 +
 +        // Profiles with extension switches
@@ -905,7 +1014,6 @@ index 0000000..630987e
 +        }
 +        // MARK: Window sizing checks (TASK-189 part 1)
 +
-+        func contentHeight() -> Double { Double(sw().contentLayoutRect.height) }
 +        /// Logs the window's height (from the window server, on a background
 +        /// thread, since an animated setFrame blocks the main thread) every
 +        /// 10 ms while `block` runs a pane switch.

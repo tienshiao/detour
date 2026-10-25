@@ -7,8 +7,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     override func makeBody() -> NSView {
         let body = NSView()
 
-        let sectionLabel = NSTextField(labelWithString: "Default Browser")
-        sectionLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        let sectionLabel = NSTextField.settingsSectionTitle("Default Browser")
 
         statusLabel = NSTextField(labelWithString: "")
         statusLabel.font = .systemFont(ofSize: 13)
@@ -27,7 +26,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         let stack = NSStackView(views: [sectionLabel, row])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = SettingsMetrics.rowGap
+        stack.spacing = SettingsMetrics.sectionTitleToRows
         stack.translatesAutoresizingMaskIntoConstraints = false
         body.addSubview(stack)
 

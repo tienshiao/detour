@@ -17,6 +17,14 @@ enum SettingsMetrics {
     static let rowGap: CGFloat = 10
     /// Space from a control to the help text that belongs to it.
     static let controlToHelp: CGFloat = 4
+    /// Space from a section's title to its first row.
+    static let sectionTitleToRows: CGFloat = 8
+    /// Padding inside a bordered group of switches (filter lists, extension
+    /// switches, an extension's permissions): horizontal, vertical.
+    static let groupInsetX: CGFloat = 10
+    static let groupInsetY: CGFloat = 8
+    /// Space between the rows of a bordered group.
+    static let groupRowGap: CGFloat = 6
     /// Space from a row's label to its control.
     static let labelToControl: CGFloat = 8
     /// Width of the right-aligned label column, shared by every pane that has one.

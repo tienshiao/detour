@@ -3,11 +3,11 @@ id: TASK-189
 title: >-
   Settings: fix the window's spacing and clipping (controls cut off, uneven
   gaps)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-24 09:27'
-updated_date: '2026-10-25 02:27'
+updated_date: '2026-10-25 03:05'
 labels:
   - settings
   - ui
@@ -37,9 +37,9 @@ Plan:
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Every pane was captured in the listed states before the change, with each clipping and spacing defect listed in the task
-- [ ] #2 No control is clipped or overlapped in any surveyed state, light or dark; a pane taller than the window scrolls
-- [ ] #3 All panes use shared spacing metrics; the window's height follows the pane's content (decision on resizing recorded)
-- [ ] #4 After captures for every pane and state are attached to the task; the wiki's Settings page is updated
+- [x] #2 No control is clipped or overlapped in any surveyed state, light or dark; a pane taller than the window scrolls
+- [x] #3 All panes use shared spacing metrics; the window's height follows the pane's content (decision on resizing recorded)
+- [x] #4 After captures for every pane and state are attached to the task; the wiki's Settings page is updated
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -81,4 +81,22 @@ TDD: SettingsPaneHeightTests red 13 of 15 failing, green 15/15; 5 small-screen t
 Tests after review: 96/96 (SettingsPaneHeightTests 20, ExtensionOptionsPageEntryTests, ContentBlockerWhitelistTests, ExternalAppPermissionTests, TabStoreTests). No existing tests reference the Settings view controllers.
 
 Runtime (docs/harness/task189-survey-harness.patch, 25 states x light/dark, 50 captures; re-run after the review with the virtual 1000 pt display: analysis identical apart from view ids, path lengths and animation timing samples): opens at natural height; bottom-edge drags clamp to 400-628 on Spaces, side drags leave 740; a pane switch drops a dragged height; switches animate with the top edge kept; a 600 pt screen caps panes at 432 and Profiles/Extensions scroll; moving Settings onto the 1000 pt virtual display caps Profiles at 832 and back restores 944. Sheets: scratchpad task189/part1/after/sheets. Not verified: a real mouse drag, the zoom button (goes to max height), legacy always-show scrollers, the empty-after-uninstall refit at runtime (the survey's 'none' state never had an extension).
+
+Part 2 built (2026-10-24, Opus subagent): pure ProfileSettingsLayout (section/row enums, state, which rows and sections show, space above each row) replaces gridView.row(at: N) addressing; Profiles is one grid per section: (untitled) Name + Private note; Search; Tabs (archive, sleep, per-tab isolation + its warning); Content Blocking ('Block content' + filter-list group); Extensions (switch group; kept in Private when any extension is installed, as its Allow-in-Private opt-in); User Agent ('Identify as', custom string, preview); External Apps ('Saved permissions: None / N [Clear]', hidden in Private). Row labels no longer repeat the section title. New shared views: SettingsBorderedView (border set in updateLayer, follows appearance; SettingsListContainerView subclasses it), SettingsGroupBoxView (self-sizing bordered group replacing both NSBoxes; switchRow helper shared by Profiles and Extensions), SettingsWrappingLabel (wrap width from its own width in setFrameSize, refits the pane when it changes; fixes the legacy-scroller cut), NSTextField.settingsSectionTitle (12 pt semibold). Extensions: one column stack in the pane's scroll view, no inner permissions scroll view (96 pt floor gone), 28 pt rows, truncating header, Uninstall last, a permission-less extension shows one line instead of a box. General's section title now uses the shared title and 8 pt title gap (review follow-up).
+
+Defects after part 2: 3 (banner: no inner scroll, group holds all 6 rows), 4 (natural 775, no clip, help 4 pt below), 5 (natural 1152/1218, groups sized to rows), 6 Profiles (labels 0.0 off their controls, -0.5 on pop-ups), 8 (list name truncates with an ellipsis), 10 (help gap 12 -> 4), 15 (no empty boxes; one permission = a 32 pt group). Width 740 in every state; no hard clips; no overlaps beyond the analyzer's known false positives; no constraint conflicts from Settings; group borders in dark 54 on 32.
+
+TDD: ProfileSettingsLayoutTests red 14 of 15 failing, green 15/15.
+
+/code-review --fix (part 2): no correctness bugs; 4 fixed (Profiles labels truncate instead of clipping at the 124 pt column; one shared switchRow helper, removing a force cast on subview order; the banner's inset/gap declared once; SettingsWrappingLabel takes a weight). Skipped: replacing per-label wrap estimates/refit callbacks with one pane-level width check (redesign), makeSection choosing grid placement by control type (works as verified; data-driven placement would be cleaner). General's 13 pt title fixed by hand afterwards.
+
+Tests after review: 128/128 (SettingsPaneHeightTests 20, ProfileSettingsLayoutTests 15, TabStoreTests 40, ExtensionOptionsPageEntryTests, ContentBlockerWhitelistTests, ExternalAppPermissionStoreTests, ExternalAppLaunchPolicyTests).
+
+Runtime (docs/harness/task189-survey-harness.patch; 27 states x light/dark, 54 captures; final run after the review with the 1000 pt virtual display, analysis identical to the pre-review run except General 90 -> 87 and a 1 pt window origin shift): uninstalling the only extension through the pane's own button shrinks the window 905 -> 400 to the empty state; a full run with -AppleShowScrollBars Always: clip 723 wide, wrapped labels take it, nothing cut; caps 600 pt -> 432, 1000 pt display -> 832, restore 1092. After sheets: scratchpad task189/part2/after/sheets (profiles-before-after.png, extensions-before-after.png), legacy/sheets. Not verified: a real mouse drag; every capture by eye (about four read directly, the rest by measurement).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Settings window: one SettingsMetrics for spacing, every pane in a container sized to its content (capped to its own screen, scrolling beyond, re-fit on pane and screen changes), height-only resizing at a fixed 740 width; Profiles in titled sections with self-sizing groups; Extensions as one scrolling column with no nested scroll view; long names truncate instead of widening the window; labels aligned; list and group borders follow dark mode. All 16 surveyed defects fixed and re-measured in light, dark, short screens and always-on scrollers; 128 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

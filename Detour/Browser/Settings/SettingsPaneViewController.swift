@@ -180,11 +180,11 @@ extension NSTableView {
     }
 }
 
-/// The bordered box around a master list (Spaces, Profiles, Extensions). The
-/// border is drawn in `updateLayer`, so it is resolved again whenever the
-/// appearance changes (a `CGColor` set once keeps the appearance it was
-/// created in and disappeared in dark mode, TASK-189 defect 9).
-final class SettingsListContainerView: NSView {
+/// A rounded view with a 1 pt separator-coloured border. The border is drawn
+/// in `updateLayer`, so it is resolved again whenever the appearance changes
+/// (a `CGColor` set once keeps the appearance it was created in and
+/// disappeared in dark mode, TASK-189 defect 9).
+class SettingsBorderedView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -207,5 +207,114 @@ final class SettingsListContainerView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
+    }
+}
+
+/// The bordered box around a master list (Spaces, Profiles, Extensions).
+final class SettingsListContainerView: SettingsBorderedView {}
+
+/// A bordered group of rows (Profiles' filter lists and extension switches,
+/// an extension's permissions). Its height is its rows' height plus the
+/// insets, all required constraints: unlike an `NSBox`, whose content view is
+/// sized by autoresizing, it grows and shrinks with its content (TASK-189).
+/// Rows fill the group's width, so a long name in a row truncates.
+final class SettingsGroupBoxView: SettingsBorderedView {
+    let stack = NSStackView()
+
+    init(rows: [NSView] = []) {
+        super.init(frame: .zero)
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = SettingsMetrics.groupRowGap
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setHuggingPriority(.required, for: .vertical)
+        addSubview(stack)
+        setRows(rows)
+        let x = SettingsMetrics.groupInsetX, y = SettingsMetrics.groupInsetY
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: y),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: x),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -x),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -y),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Replaces the group's rows.
+    func setRows(_ rows: [NSView]) {
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for row in rows {
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+    }
+
+    /// A switch and its name, for a row of a group. The name truncates
+    /// rather than widening the group.
+    static func switchRow(_ toggle: NSSwitch, title: String) -> (row: NSStackView, label: NSTextField) {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12)
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let row = NSStackView(views: [toggle, label])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.alignment = .centerY
+        return (row, label)
+    }
+}
+
+/// A wrapping label whose wrap width is its own width, taken at layout time
+/// (TASK-189). A wrap width fixed in advance (the column's width) assumes
+/// overlay scrollers: with "always show scroll bars" the column is 15 pt
+/// narrower and the last line was cut. Its owner must give it a definite
+/// width (pin both edges, or a width constraint); `estimatedWidth` is used
+/// until the first layout, so the pane's first natural-height measurement
+/// (`fittingSize`, which does not lay out) is already right in the usual case.
+/// When the width it gets differs, the label re-measures and tells its pane,
+/// which refits the window.
+final class SettingsWrappingLabel: NSTextField {
+    convenience init(wrapping text: String, estimatedWidth: CGFloat, fontSize: CGFloat = 11,
+                     weight: NSFont.Weight = .regular, color: NSColor = .secondaryLabelColor) {
+        self.init(wrappingLabelWithString: text)
+        font = .systemFont(ofSize: fontSize, weight: weight)
+        textColor = color
+        translatesAutoresizingMaskIntoConstraints = false
+        preferredMaxLayoutWidth = estimatedWidth
+        setContentCompressionResistancePriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // A hidden or not yet laid out label has no width to wrap at.
+        guard newSize.width > 1, abs(newSize.width - preferredMaxLayoutWidth) > 0.5 else { return }
+        preferredMaxLayoutWidth = newSize.width
+        invalidateIntrinsicContentSize()
+        enclosingPane?.contentHeightDidChange()
+    }
+
+    private var enclosingPane: SettingsPaneViewController? {
+        var responder: NSResponder? = self
+        while let next = responder {
+            if let pane = next as? SettingsPaneViewController { return pane }
+            responder = next.nextResponder
+        }
+        return nil
+    }
+}
+
+extension NSTextField {
+    /// A section's title in a Settings pane, styled like System Settings'
+    /// group headers.
+    static func settingsSectionTitle(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .labelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
     }
 }
