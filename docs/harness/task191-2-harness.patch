@@ -1,0 +1,333 @@
+TASK-191.2 runtime harness: links from other apps routed by Air Traffic
+Control. Temporary code, never committed to Detour/. It logs, for every
+application(_:open:), the raw sender attributes of the Apple Event being
+handled (spid, addr, from), what NSRunningApplication says about the sender,
+the resolved sender, the route decision, the placement and the windows
+(recent first), and dumps every window's space, selection and tabs on a
+"dump" command. Phase 1 seeds spaces Work, Personal, Other and routes
+(domainIs work.test/personal.test/other.test -> those spaces; contains
+"secret" -> Private window; app-only com.detourbrowser.verify.sender-a ->
+Personal; domainIs mru.test -> Most Recent Space) and opens a window on Work
+and one on Personal in front of the launch window. Commands are appended to
+$DETOUR_VERIFY_DIR/cmd-<phase>.txt: dump <label>, default <space name |
+anything else = Most Recent Space>, activate, restore.
+
+SAFETY: the Debug build has the production bundle ID (com.detourbrowser.mac).
+`open URL`, `open -a <debug path> URL` without -n, or NSWorkspace without a
+new instance can hand the link to the user's running /Applications/Detour.app.
+Safe deliveries used here:
+  1. sendurl (below): a kAEGetURL built with
+     NSAppleEventDescriptor(processIdentifier:) and sent with sendEvent; it
+     refuses unless the PID's executable is .derived/.../Detour.app, and
+     refuses when AEDeterminePermissionToAutomateTarget(GURL, ask: false) is
+     not noErr (never prompts).
+  2. `open -n -a <debug app> --env ... URL...`: a new instance gets the URLs.
+  3. A copy of the Debug app with its own bundle ID
+     (PlistBuddy CFBundleIdentifier com.detourbrowser.verify.debugcopy,
+     re-signed ad hoc with only get-task-allow), then plain `open -a <copy>`
+     and NSWorkspace.open(_:withApplicationAt:) from small LSUIElement apps
+     (LSOpen-a/-b, bundle IDs com.detourbrowser.verify.sender-a/-b): nothing
+     can resolve to production. Unregister it afterwards
+     (lsregister -u <copy>) and delete its defaults domain.
+Production's window list (CGWindowList names) was compared before and after
+each LaunchServices delivery: unchanged.
+
+    SP=<scratch>; mkdir -p $SP/out
+    git apply docs/harness/task191-2-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    APP=.derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour
+    DETOUR_DATA_DIR=DetourVerify1912 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_PHASE=1 $APP &
+    sendurl <pid> https://work.test/1          # one URL per event
+    sendurl <pid> --list <url> <url> ...       # one event, a list direct object
+    git apply -R docs/harness/task191-2-harness.patch && xcodegen generate
+
+Results (2026-10-25):
+- Phase 1 (sendurl, Detour inactive): work.test -> the Work window, brought
+  to the front of Detour's windows; other.test (no window) -> the most recent
+  normal window switched to Other; secret -> a new Private window, then a
+  second secret link (a normal window in front) -> a tab in that Private
+  window; unmatched or mru.test with Detour inactive -> today's path: no key
+  window, so a new window each time; with Detour active -> a tab in the key
+  window's space; Default = Personal -> the Personal window. One GURL whose
+  direct object is a list of four URLs reached application(_:open:) as one
+  call and each URL routed on its own (Work switch, Personal window, Other
+  window, Private window).
+- sendurl's sender: spid = its PID, NSRunningApplication nil -> no sender. The
+  same binary exec'd from inside an .app bundle is also unknown to
+  NSRunningApplication (not launched through LaunchServices).
+- open -n -a <debug> URL1 URL2 URL3: the URLs arrive after
+  applicationDidFinishLaunching, one per call; two carried spid = the `open`
+  process (no bundle ID); the first URL arrived with no current Apple Event
+  (currentAppleEvent nil), so no sender for the link that launches Detour.
+- LSOpen-a -> running copy: spid = LSOpen-a's PID, bundle ID
+  com.detourbrowser.verify.sender-a -> the app-only route (Personal); LSOpen-b
+  -> the Default; LSOpen-a with work.test -> Work (the URL route is first);
+  two URLs from one NSWorkspace.open -> two events, each routed.
+- `open -a <copy> URL` from the shell: spid = `open`, no bundle ID.
+- AEDeterminePermissionToAutomateTarget(GURL) returned noErr for sendurl in
+  two runs and -1744 (would need consent) in one, also for sendurl apps
+  launched by LaunchServices: nothing was sent then.
+
+--- sendurl.swift ---
+    // Sends a kAEGetURL Apple Event to ONE process, by PID, after checking that the
+    // PID is the Debug build under .derived (never /Applications/Detour.app).
+    // usage: sendurl <pid> [--list] <url>...
+    import AppKit
+    
+    let args = Array(CommandLine.arguments.dropFirst())
+    guard args.count >= 2, let pid = pid_t(args[0]) else { print("usage: sendurl <pid> [--list] <url>..."); exit(2) }
+    var urls = Array(args.dropFirst())
+    let asList = urls.first == "--list"
+    if asList { urls.removeFirst() }
+    
+    guard let target = NSRunningApplication(processIdentifier: pid), let exe = target.executableURL?.path else {
+        print("REFUSE: no running application with pid \(pid)"); exit(3)
+    }
+    let allowed = "/Users/tma/Projects/browser/MyBrowser/.derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour"
+    print("target pid=\(pid) exe=\(exe) bundleID=\(target.bundleIdentifier ?? "nil")")
+    guard exe == allowed else { print("REFUSE: target is not the Debug build"); exit(4) }
+    let me = ProcessInfo.processInfo.processIdentifier
+    let mine = NSRunningApplication(processIdentifier: me)
+    print("sender pid=\(me) bundleID=\(mine?.bundleIdentifier ?? "nil") Bundle.main=\(Bundle.main.bundleIdentifier ?? "nil")")
+    
+    let targetDesc = NSAppleEventDescriptor(processIdentifier: pid)
+    // Permission probe first, never asking: a GURL needing consent is not sent.
+    let perm = AEDeterminePermissionToAutomateTarget(targetDesc.aeDesc, AEEventClass(kInternetEventClass), AEEventID(kAEGetURL), false)
+    print("AEDeterminePermissionToAutomateTarget(GURL, ask=false) = \(perm)")
+    guard perm == noErr else { print("REFUSE: sending would need consent (\(perm))"); exit(5) }
+    
+    func send(_ direct: NSAppleEventDescriptor) {
+        let event = NSAppleEventDescriptor(eventClass: AEEventClass(kInternetEventClass), eventID: AEEventID(kAEGetURL),
+                                           targetDescriptor: targetDesc, returnID: AEReturnID(kAutoGenerateReturnID),
+                                           transactionID: AETransactionID(kAnyTransactionID))
+        event.setParam(direct, forKeyword: keyDirectObject)
+        do {
+            _ = try event.sendEvent(options: [.noReply], timeout: 5)
+            print("sent \(direct)")
+        } catch {
+            print("send failed: \(error)")
+        }
+    }
+    if asList {
+        let list = NSAppleEventDescriptor.list()
+        for (i, u) in urls.enumerated() { list.insert(NSAppleEventDescriptor(string: u), at: i + 1) }
+        send(list)
+    } else {
+        for u in urls { send(NSAppleEventDescriptor(string: u)) }
+    }
+
+--- lsopen.swift ---
+    // Opens URLs through LaunchServices in the app at <appPath>, which must NOT be
+    // com.detourbrowser.mac. mode "new" = createsNewApplicationInstance.
+    // usage: lsopen <appPath> <new|running> <outDir> <phase> <url>...
+    import AppKit
+    let a = Array(CommandLine.arguments.dropFirst())
+    let app = URL(fileURLWithPath: a[0]); let mode = a[1]; let outDir = a[2]; let phase = a[3]
+    let urls = a.dropFirst(4).compactMap(URL.init(string:))
+    guard let bid = Bundle(url: app)?.bundleIdentifier, bid != "com.detourbrowser.mac" || mode == "new" else {
+        print("REFUSE: target bundle \(Bundle(url: app)?.bundleIdentifier ?? "nil")"); exit(4)
+    }
+    let cfg = NSWorkspace.OpenConfiguration()
+    cfg.createsNewApplicationInstance = (mode == "new")
+    cfg.activates = false
+    if mode == "new" { cfg.environment = ["DETOUR_DATA_DIR": "DetourVerify1912", "DETOUR_VERIFY_DIR": outDir, "DETOUR_VERIFY_PHASE": phase] }
+    print("lsopen pid=\(ProcessInfo.processInfo.processIdentifier) bundle=\(Bundle.main.bundleIdentifier ?? "nil") target=\(bid) mode=\(mode) urls=\(urls)")
+    NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: cfg) { running, error in
+        print("opened in pid=\(running?.processIdentifier ?? -1) exe=\(running?.executableURL?.path ?? "nil") error=\(String(describing: error))")
+    }
+    RunLoop.main.run(until: Date().addingTimeInterval(6))   // stay alive while the target reads the sender
+    print("exit"); exit(0)
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index ec6760f..e2187e3 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1912HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+@@ -288,7 +291,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+             senderPID: linkSenderPID(of: NSAppleEventManager.shared().currentAppleEvent),
+             ownPID: ProcessInfo.processInfo.processIdentifier,
+             bundleIDForPID: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier })
++        #if DEBUG
++        Task1912Harness.logEvent(urls: urls, resolvedSender: sender)   // TEMP — DO NOT COMMIT
++        #endif
+         openExternalURLs(urls, sourceApp: sender)
++        #if DEBUG
++        Task1912Harness.dump("after open")   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     /// Opens web links from another app where the routes send them, each URL
+@@ -308,6 +317,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+                 LinkPlacementWindow(id: ObjectIdentifier($0), activeSpaceID: $0.activeSpaceID, isPrivate: $0.isIncognito)
+             })
+             log.info("External link from \(sourceApp ?? "no known sender", privacy: .public): \(String(describing: decision), privacy: .public)")
++            #if DEBUG
++            Task1912Harness.logDecision(url, decision, placement, windows: windows)   // TEMP — DO NOT COMMIT
++            #endif
+             place(url, placement, windows: windows)
+         }
+     }
+diff --git a/Detour/App/Task1912Harness.swift b/Detour/App/Task1912Harness.swift
+new file mode 100644
+index 0000000..a48cc5b
+--- /dev/null
++++ b/Detour/App/Task1912Harness.swift
+@@ -0,0 +1,149 @@
++// TEMP TASK-191.2 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++enum Task1912Harness {
++    static let env = ProcessInfo.processInfo.environment
++    static var outDir: String? { env["DETOUR_VERIFY_DIR"] }
++    static let start = ProcessInfo.processInfo.systemUptime
++
++    static func log(_ line: String) {
++        guard let outDir else { return }
++        let url = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(env["DETOUR_VERIFY_PHASE"] ?? "x").log")
++        let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++        let data = Data(stamped.utf8)
++        if let h = try? FileHandle(forWritingTo: url) {
++            h.seekToEndOfFile(); h.write(data); try? h.close()
++        } else { try? data.write(to: url) }
++    }
++
++    static func spaceName(_ id: UUID?) -> String {
++        guard let id else { return "-" }
++        guard let space = TabStore.shared.space(withID: id) else { return "?\(id.uuidString.prefix(4))" }
++        return space.isIncognito ? "Private(\(id.uuidString.prefix(4)))" : space.name
++    }
++
++    /// The raw sender attributes of the Apple Event being handled.
++    static func logEvent(urls: [URL], resolvedSender: String?) {
++        let event = NSAppleEventManager.shared().currentAppleEvent
++        func fourCC(_ v: UInt32) -> String {
++            String(bytes: [24, 16, 8, 0].map { UInt8((v >> $0) & 0xff) }, encoding: .macOSRoman) ?? "\(v)"
++        }
++        var parts = ["OPEN urls=\(urls.map(\.absoluteString))"]
++        if let event {
++            parts.append("event=\(fourCC(event.eventClass))/\(fourCC(event.eventID))")
++            let spid = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))
++            parts.append("spid=\(spid.map { "\(fourCC($0.descriptorType)):\($0.data.count == 4 ? String($0.data.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }) : $0.description)" } ?? "nil")")
++            let addr = event.attributeDescriptor(forKeyword: AEKeyword(keyAddressAttr))
++            parts.append("addr=\(addr.map { "\(fourCC($0.descriptorType)):\($0.description)" } ?? "nil")")
++            let orig = event.attributeDescriptor(forKeyword: AEKeyword(keyOriginalAddressAttr))
++            parts.append("from=\(orig.map { "\(fourCC($0.descriptorType)):\($0.description)" } ?? "nil")")
++            if let pid = linkSenderPID(of: event) {
++                let app = NSRunningApplication(processIdentifier: pid)
++                parts.append("senderPID=\(pid) app.bundleID=\(app?.bundleIdentifier ?? "nil") app.exe=\(app?.executableURL?.path ?? "nil") app.name=\(app?.localizedName ?? "nil")")
++            }
++        } else {
++            parts.append("event=nil")
++        }
++        parts.append("resolvedSender=\(resolvedSender ?? "nil")")
++        parts.append("active=\(NSApp.isActive) key=\((NSApp.keyWindow?.windowController as? BrowserWindowController).map { spaceName($0.activeSpaceID) } ?? "nil") launched=\(didFinishLaunching)")
++        log(parts.joined(separator: " "))
++    }
++
++    static func logDecision(_ url: URL, _ decision: LinkRouteDecision, _ placement: LinkPlacement<ObjectIdentifier>,
++                            windows: [BrowserWindowController]) {
++        let names = windows.map { "#\($0.window?.windowNumber ?? 0):\(spaceName($0.activeSpaceID))" }
++        var p = String(describing: placement)
++        for wc in windows {
++            p = p.replacingOccurrences(of: String(describing: ObjectIdentifier(wc)), with: "#\(wc.window?.windowNumber ?? 0)")
++        }
++        let decisionText: String
++        if case .openInSpace(let id) = decision { decisionText = "openInSpace(\(spaceName(id)))" } else { decisionText = "\(decision)" }
++        for space in TabStore.shared.spaces { p = p.replacingOccurrences(of: space.id.uuidString, with: space.name) }
++        log("ROUTE \(url.absoluteString) decision=\(decisionText) windows(recent first)=\(names) placement=\(p)")
++    }
++
++    static var didFinishLaunching = false
++
++    static func dump(_ label: String) {
++        let ordered = NSApp.browserWindowControllersFrontToBack
++        var lines = ["STATE \(label): active=\(NSApp.isActive) key=#\(NSApp.keyWindow?.windowNumber ?? 0)"]
++        for (i, wc) in ordered.enumerated() {
++            let space = wc.activeSpace
++            let tabs = space?.tabs.compactMap { $0.url?.absoluteString } ?? []
++            lines.append("  [\(i)] #\(wc.window?.windowNumber ?? 0) space=\(spaceName(wc.activeSpaceID)) private=\(wc.isIncognito) selected=\(wc.selectedTab?.url?.absoluteString ?? "-") tabs=\(tabs)")
++        }
++        log(lines.joined(separator: "\n"))
++        log("WINDOWS \(label) \(ordered.compactMap { $0.window?.windowNumber }.map(String.init).joined(separator: " "))")
++    }
++}
++
++extension AppDelegate {
++    func runTask1912HarnessIfRequested(_ wc: BrowserWindowController) {
++        Task1912Harness.didFinishLaunching = true
++        guard let outDir = Task1912Harness.outDir, let phase = Task1912Harness.env["DETOUR_VERIFY_PHASE"] else { return }
++        let log = Task1912Harness.log
++        let store = TabStore.shared
++        let routes = store.linkRoutes
++        log("phase \(phase) launched pid=\(ProcessInfo.processInfo.processIdentifier) spaces=\(store.nonIncognitoSpaces.map(\.name)) routes=\(routes.routes.count) default=\(routes.defaultTarget.storageKind)")
++
++        func space(named name: String) -> Space? { store.nonIncognitoSpaces.first { $0.name == name } }
++
++        if phase == "1" {
++            let profileID = store.nonIncognitoSpaces.first!.profileID
++            for name in ["Work", "Personal", "Other"] where space(named: name) == nil {
++                store.addSpace(name: name, emoji: "🛫", colorHex: name == "Work" ? "007AFF" : name == "Personal" ? "34C759" : "FF9500", profileID: profileID)
++            }
++            for r in routes.routes { routes.removeRoute(id: r.id) }
++            let work = space(named: "Work")!, personal = space(named: "Personal")!, other = space(named: "Other")!
++            routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "work.test"), target: .space(work.id)))
++            routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "personal.test"), target: .space(personal.id)))
++            routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "other.test"), target: .space(other.id)))
++            routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "secret"), target: .privateWindow))
++            routes.add(LinkRoute(match: nil, sourceApp: "com.detourbrowser.verify.sender-a", target: .space(personal.id)))
++            routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "mru.test"), target: .mostRecentSpace))
++            routes.setDefaultTarget(.mostRecentSpace)
++            log("seeded routes: \(routes.routes.map { "\(linkRouteSummary($0)) -> \($0.target.storageKind):\(Task1912Harness.spaceName($0.target.spaceID))" })")
++            // Windows: the launch window on Home (or the first space), one on
++            // Work, one on Personal in front.
++            if let home = store.nonIncognitoSpaces.first(where: { !["Work", "Personal", "Other"].contains($0.name) }) {
++                wc.setActiveSpace(id: home.id, selectTab: false)
++            }
++            let workWC = createNewWindow(showing: work)
++            workWC.window?.setFrameOrigin(NSPoint(x: 80, y: 80))
++            let personalWC = createNewWindow(showing: personal)
++            personalWC.window?.setFrameOrigin(NSPoint(x: 160, y: 40))
++        }
++
++        // Commands appended to cmd.txt, one per line, applied in order.
++        var handled = 0
++        let cmdURL = URL(fileURLWithPath: outDir).appendingPathComponent("cmd-\(phase).txt")
++        var previousFront: NSRunningApplication?
++        let timer = Timer(timeInterval: 0.3, repeats: true) { _ in
++            guard let text = try? String(contentsOf: cmdURL, encoding: .utf8) else { return }
++            let lines = text.split(separator: "\n").map(String.init)
++            while handled < lines.count {
++                let parts = lines[handled].split(separator: " ", maxSplits: 1).map(String.init)
++                handled += 1
++                switch parts.first {
++                case "dump": Task1912Harness.dump(parts.count > 1 ? parts[1] : "")
++                case "default":
++                    let arg = parts.count > 1 ? parts[1] : ""
++                    if let s = space(named: arg) { routes.setDefaultTarget(.space(s.id)) } else { routes.setDefaultTarget(.mostRecentSpace) }
++                    log("CMD default -> \(routes.defaultTarget.storageKind):\(Task1912Harness.spaceName(routes.defaultTarget.spaceID))")
++                case "activate":
++                    previousFront = NSWorkspace.shared.frontmostApplication
++                    NSApp.activate(ignoringOtherApps: true)
++                    log("CMD activate (previous front: \(previousFront?.bundleIdentifier ?? "nil"))")
++                case "restore":
++                    previousFront?.activate()
++                    log("CMD restore -> \(previousFront?.bundleIdentifier ?? "nil")")
++                default: log("CMD unknown \(lines[handled - 1])")
++                }
++            }
++        }
++        RunLoop.main.add(timer, forMode: .common)
++        log("ready")
++    }
++}
++#endif

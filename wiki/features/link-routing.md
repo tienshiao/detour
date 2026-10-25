@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Link routing (Air Traffic Control)
-description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin, layered after TASK-191.4's click rule), storage in migration v20, and why a space a route targets cannot be deleted (also from undo and redo)."
+description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin, layered after TASK-191.4's click rule), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), and links from other apps: the pure placement rule (the window showing the space, else the most recent normal window switches, else a new window; Private; Most Recent Space as before), reading the sender from the Get URL Apple Event and what macOS reports, and how to deliver test links without reaching the production app."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T10:20:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T21:10:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: model
@@ -28,6 +28,21 @@ sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
     title: TabStore.swift (deleteSpace, SpaceDeletionResult, linkRoutes, linkRouteContext)
+  - id: placement
+    resource: ../../Detour/Browser/LinkRouting/LinkPlacement.swift
+    title: LinkPlacement.swift (linkPlacement, LinkPlacementWindow, LinkPlacement)
+  - id: sender
+    resource: ../../Detour/Browser/LinkRouting/LinkSender.swift
+    title: LinkSender.swift (linkSenderPID, linkSenderBundleID)
+  - id: appdelegate
+    resource: ../../Detour/App/AppDelegate.swift
+    title: AppDelegate.swift (application(_:open:), openExternalURLs, place)
+  - id: placement-tests
+    resource: ../../DetourTests/LinkPlacementTests.swift
+    title: LinkPlacementTests.swift
+  - id: routing-tests
+    resource: ../../DetourTests/ExternalLinkRoutingTests.swift
+    title: ExternalLinkRoutingTests.swift
   - id: resolver-tests
     resource: ../../DetourTests/LinkRouteResolverTests.swift
     title: LinkRouteResolverTests.swift
@@ -40,18 +55,24 @@ sources:
   - id: task-191-1
     resource: backlog:TASK-191.1
     title: "Air Traffic Control: route model, matching rule and storage"
+  - id: task-191-2
+    resource: backlog:TASK-191.2
+    title: "Air Traffic Control: send links from other apps to the routed space"
   - id: harness
     resource: ../../docs/harness/task191-1-harness.patch
     title: TASK-191.1 runtime harness
+  - id: harness-2
+    resource: ../../docs/harness/task191-2-harness.patch
+    title: TASK-191.2 runtime harness
 ---
 
 Air Traffic Control, modelled on Arc's, sends a link to a chosen space by
 rule: links opened from other apps, typed URLs and links clicked in a
-page.[^task-191] This page covers the part that exists so far: the model, the
-pure resolver, storage, and the rule that a space routes point at cannot be
-deleted.[^task-191-1] Nothing calls the resolver yet; the entry points are
-TASK-191.2 (links from other apps) and TASK-191.4 (typed URLs and clicks),
-and the Settings Links pane is TASK-191.3.
+page.[^task-191] This page covers the parts that exist so far: the model, the
+pure resolver, storage, the rule that a space routes point at cannot be
+deleted,[^task-191-1] and links from other apps, which are routed
+(TASK-191.2, [below](#links-from-other-apps)).[^task-191-2] Typed URLs and
+clicks are TASK-191.4, and the Settings Links pane is TASK-191.3.
 
 # Model
 
@@ -207,6 +228,86 @@ the Spaces pane would show none of the routes.
 A Private window's space is never a route target, so closing a Private
 window (`removeIncognitoSpace`) does not consult the routes.
 
+# Links from other apps
+
+`AppDelegate.application(_:open:)` reads the sender of the Apple Event being
+handled, then `openExternalURLs(_:sourceApp:)` takes each http/https URL on
+its own: `resolveLinkRoute` with `.external(sourceApp:)`, then the pure
+`linkPlacement(for:windows:)` with a snapshot of the browser windows, most
+recently active first (`NSApp.browserWindowControllersFrontToBack`, then any
+registered window missing from the window list, such as a minimized one).
+The snapshot is taken again for every URL: an earlier URL of the same open
+may have opened or switched a window. The AppKit side (`place`) only carries
+the placement out.[^task-191-2]
+
+| Decision | Placement | Why |
+|---|---|---|
+| A space a normal window shows | `.openInWindow`: a tab there, selected, the window brought forward (`makeKeyAndOrderFront`). Several show it: the most recent of them. | The space is already on screen; the user goes to it. |
+| A space no window shows | `.switchWindow`: the most recent **normal** window switches to it (`setActiveSpace(selectTab: false)`), then as above. No normal window: `.openInNewWindow` (`createNewWindow(showing:)`). | User decision 2026-10-25 (the 191.2 proposal): as a space switch does, rather than a new window per link. A Private window is never switched to a normal space. |
+| Private window | `.openInPrivateWindow`: a tab in the most recent Private window; none open: `.openInNewPrivateWindow` (`createNewWindowWithURL(_:incognito: true)`). | Decided 2026-10-24. |
+| Most Recent Space (and the resolver's fallbacks to it) | `.mostRecentSpace`: exactly the code from before routes, a tab in the key browser window's active space, else `createNewWindowWithURL`. | Kept as it was. With Detour in the background there is no key window, so that is a new window every time (seen at runtime); unchanged on purpose. |
+| Quarantine, Quick Detour | `.mostRecentSpace` | TASK-194 / TASK-193.5 do not exist yet and the Links pane hides them. |
+| `.stay` | `.mostRecentSpace` | The resolver never says stay for an external link; if it did, the link still needs a window. |
+
+A routed placement whose window or space has gone by the time it runs falls
+back to the Most Recent Space path (or a new Private window).
+
+## The sender
+
+`linkSenderPID(of:)` reads `keySenderPIDAttr`, else a `keyAddressAttr` that
+is a process ID; `linkSenderBundleID` names it with
+`NSRunningApplication(processIdentifier:)`, and treats Detour itself, a PID
+of 0 and a process without a bundle ID as no sender. What macOS reported on
+2026-10-25 (macOS 26.7, logged by the harness):
+
+| Sender | `keySenderPIDAttr` | Bundle ID |
+|---|---|---|
+| An app calling `NSWorkspace.open(_:withApplicationAt:)` (LaunchServices) on a running Detour | the calling app's PID (type `'magn'`); `keyAddressAttr` and `keyOriginalAddressAttr` the same PID | the app's (`com.detourbrowser.verify.sender-a`), so its source-app route matched |
+| `open -a <app> URL` from a shell | the `open` process | none: no sender |
+| A tool sending the event itself (`AESendMessage`) | the tool's PID | none, even when the binary sits inside an `.app` bundle but was not launched by LaunchServices: `NSRunningApplication` knows only LaunchServices-launched processes |
+| A sender that has already exited | its PID | none (`NSRunningApplication` returns nil) |
+| The URL that cold-launches Detour (`open -n`, or `NSWorkspace` with a new instance) | no current Apple Event at all (`currentAppleEvent` is nil) for the first URL; later URLs of the same open arrive as their own events, from the opener | none for the first URL |
+
+So a source-app route matches links from running apps that open them
+through LaunchServices (Mail, Slack and the like do), and never the link
+that launches Detour. **Not verified**: Finder (opening a `.webloc` goes to
+the default browser, and scripting Finder at the debug PID would need an
+Automation grant), Mail, Slack and other real apps (not scripted, on
+purpose). The raw-sender `int32Value` trap: a `typeKernelProcessID`
+descriptor reads as 0 through `int32Value` (no numeric coercion), so
+`linkSenderPID` reads its four bytes; `keySenderPIDAttr` cannot be set on an
+event built in process (`setAttribute` ignores it), so only the address path
+is unit-tested.
+
+How links arrive: every URL of an `open -a` with several URLs, or of one
+`NSWorkspace.open` with several, came as its own Get URL event, one URL per
+`application(_:open:)` call. One event whose direct object is a list of
+URLs reaches `application(_:open:)` as a single call with all of them; each
+is still routed on its own. At a cold launch the URLs arrived after
+`applicationDidFinishLaunching` (the session was restored and routes
+applied), not in launch order. Activation: `open -a` activated Detour before the event was handled (a key
+window existed); `NSWorkspace.open` with `activates = false` and a raw Apple
+Event do not, and then the placement only orders the window to the front of
+Detour's own windows. (The default `NSWorkspace.open`, which activates, was
+not observed.)
+
+## Delivering test links safely
+
+The Debug build shares the production bundle ID (`com.detourbrowser.mac`),
+so anything that resolves the app by bundle ID (`open URL`, `open -a <debug
+app> URL` without `-n`, `NSWorkspace.open` to a running instance) can hand
+the link to the user's own `/Applications/Detour.app`. The TASK-191.2 runs
+used only: an Apple Event addressed by PID that refuses any executable but
+the `.derived` build and any send `AEDeterminePermissionToAutomateTarget`
+(ask: false) does not allow; `open -n -a <debug app> --env ...`, which
+always starts a new instance; and a copy of the Debug app with its own
+bundle ID for every LaunchServices delivery to a running instance. The
+permission probe returned `noErr` for the PID-addressed sender in two runs
+and -1744 (would need consent) in another, also for sender apps launched by
+LaunchServices; nothing was sent then. The recipe is in
+[runtime verification](../playbooks/runtime-verification.md) and the
+harness.[^harness-2]
+
 # Runtime check
 
 Harness `docs/harness/task191-1-harness.patch`,
@@ -242,8 +343,37 @@ seconds later, far from the cause. Turning event grouping off and grouping
 each step by hand, as the unit tests do, fixed it; the exception shows in the
 unified log as `_registerUndoObject:: NSUndoManager ... is in invalid state`.
 
+# Runtime check: links from other apps
+
+Harness `docs/harness/task191-2-harness.patch`,
+`DETOUR_DATA_DIR=DetourVerify1912`, 2026-10-25.[^harness-2] With windows on
+Home, Work and Personal (Personal in front) and Detour in the background:
+`work.test` opened in the Work window and brought it to the front of
+Detour's windows; `other.test` switched that (most recent) window to Other;
+a `secret` link opened a new Private window, and a second one, with a normal
+window in front, a tab in it; an unmatched link and a Most Recent Space
+route with Detour inactive opened a new window each (today's path, no key
+window); with Detour active, a tab in the key window's space; with the
+Default set to Personal, the Personal window. A list of four URLs in one
+event went to four places (Work by switching the most recent window, the
+Personal window, an Other window, the Private window). Through
+LaunchServices on a renamed copy: an app-only route matched the app it
+names and not another app, a URL route listed first won over it, and two
+URLs from one open routed separately. `open -n` with three URLs cold-launched
+the build and routed all three after launch. Captures (window number) for
+phase 1; later LaunchServices steps ran into a screen
+lock and have text logs only.
+
 # Tests
 
+`LinkPlacementTests` (every placement rule, several windows showing a space,
+recency, Private in front, no windows; the sender's PID from the address,
+Detour itself, no PID or bundle ID), `ExternalLinkRoutingTests` (real
+windows in the test host driven through `application(_:open:)` and
+`openExternalURLs(_:sourceApp:)`: the routed window comes forward, an
+unshown space switches the most recent normal window, never a Private one,
+Private reuse, source-app routes, the Default, Most Recent Space and
+Quarantine as before, multi-URL opens, non-web URLs ignored).
 `LinkRouteResolverTests` (every rule above, each match kind, `www.`, ports,
 IDN, IP literals, the Default from each origin), `LinkRouteStoreTests` (store
 operations, unknown rows, notifications, migration v20 on a v19 database,
@@ -261,4 +391,6 @@ text).
 
 [^task-191]: Air Traffic Control: rules that route links and typed URLs to a chosen space
 [^task-191-1]: Air Traffic Control: route model, matching rule and storage
+[^task-191-2]: Air Traffic Control: send links from other apps to the routed space
 [^harness]: TASK-191.1 runtime harness
+[^harness-2]: TASK-191.2 runtime harness

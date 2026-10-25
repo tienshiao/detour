@@ -196,7 +196,26 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   blocks `ioreg`, and the system Python has no Quartz module). When the
   session dictionary has no `CGSSessionScreenIsLocked` key at all (such a
   tool prints `locked=absent`), the screen is unlocked: wait while the value
-  is 1, not until it is 0, or the loop never ends.
+  is 1, not until it is 0, or the loop never ends. **Run that probe with
+  the sandbox off**: inside the sandbox it prints `locked=absent` while the
+  screen is locked (TASK-191.2), so a sandboxed watcher reports a false
+  unlock. The screen can also lock in the middle of a run; a capture then
+  fails with "could not create image from window".
+- **Never deliver a URL or file by bundle ID.** The Debug build has the
+  production bundle ID (`com.detourbrowser.mac`), so `open URL`,
+  `open -a <debug app> URL` without `-n`, or `NSWorkspace.open` without a
+  new instance can hand it to the user's running `/Applications/Detour.app`.
+  Safe ways, all used for TASK-191.2 ([link routing](../features/link-routing.md#runtime-check-links-from-other-apps)):
+  a Get URL Apple Event built with `NSAppleEventDescriptor(processIdentifier:)`
+  for the PID you launched, refusing unless that PID's executable is the
+  `.derived` build and unless `AEDeterminePermissionToAutomateTarget(...,
+  askUserIfNeeded: false)` is `noErr` (never prompts); `open -n -a <debug
+  app> --env ... URL` (a new instance gets the URLs); or a copy of the
+  Debug app given its own `CFBundleIdentifier` (PlistBuddy, re-signed ad
+  hoc with only `get-task-allow`), to which plain `open -a` and
+  `NSWorkspace.open(_:withApplicationAt:)` cannot resolve production.
+  Unregister the copy (`lsregister -u`) and delete its defaults domain,
+  WebKit, Caches and HTTPStorages folders afterwards.
 - **Make the harness wait for its captures.** On a saturated machine a
   shell watcher can fall seconds behind a timer-driven harness and shoot a
   later state under an earlier name (TASK-186.5: up to 9 s at load ~1000).

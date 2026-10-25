@@ -220,8 +220,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerWindowController(wc)
     }
 
-    func createNewWindowWithURL(_ url: URL) {
-        let wc = BrowserWindowController(incognito: false)
+    /// A new window with `url` in a tab; a Private one when `incognito` (a
+    /// link routed to Private), which has its own space.
+    func createNewWindowWithURL(_ url: URL, incognito: Bool = false) {
+        let wc = BrowserWindowController(incognito: incognito)
         assignDefaultSpace(to: wc)
         if let space = wc.activeSpace {
             let tab = TabStore.shared.addTab(in: space, url: url)
@@ -269,16 +271,97 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Links opened from another app (Get URL Apple Events). Air Traffic
+    /// Control picks where each goes (TASK-191.2); a route may name the
+    /// sending app, read from the event being handled. LaunchServices sends
+    /// the event from the opening app's process, so its PID names the app; a
+    /// shell's `open` has no bundle ID, and the URL that launches Detour comes
+    /// with no current event at all: both have no sender.
     func application(_ application: NSApplication, open urls: [URL]) {
+        let sender = linkSenderBundleID(
+            senderPID: linkSenderPID(of: NSAppleEventManager.shared().currentAppleEvent),
+            ownPID: ProcessInfo.processInfo.processIdentifier,
+            bundleIDForPID: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier })
+        openExternalURLs(urls, sourceApp: sender)
+    }
+
+    /// Opens web links from another app where the routes send them, each URL
+    /// on its own. `sourceApp` is the sender's bundle ID, nil when unknown.
+    /// The decisions are the pure `resolveLinkRoute` and `linkPlacement`.
+    func openExternalURLs(_ urls: [URL], sourceApp: String?) {
+        let store = TabStore.shared
         for url in urls {
-            guard url.scheme == "http" || url.scheme == "https" else { continue }
-            if let wc = keyBrowserWindowController,
-               let space = wc.activeSpace {
-                let tab = TabStore.shared.addTab(in: space, url: url)
-                wc.selectTab(id: tab.id)
-            } else {
-                createNewWindowWithURL(url)
-            }
+            // Case-insensitive: LaunchServices hands over "HTTPS://…" as typed.
+            guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { continue }
+            let decision = resolveLinkRoute(url: url, origin: .external(sourceApp: sourceApp),
+                                            routes: store.linkRoutes.routes,
+                                            defaultTarget: store.linkRoutes.defaultTarget,
+                                            context: store.linkRouteContext)
+            // Taken per URL: an earlier one may have opened or switched a window.
+            let windows = browserWindowsByRecency
+            let placement = linkPlacement(for: decision, windows: windows.map {
+                LinkPlacementWindow(id: ObjectIdentifier($0), activeSpaceID: $0.activeSpaceID, isPrivate: $0.isIncognito)
+            })
+            log.info("External link from \(sourceApp ?? "no known sender", privacy: .public): \(String(describing: decision), privacy: .public)")
+            place(url, placement, windows: windows)
+        }
+    }
+
+    /// Browser windows, the most recently active first: front to back, then
+    /// any registered window not in the window list (minimized, or the app
+    /// hidden) last.
+    private var browserWindowsByRecency: [BrowserWindowController] {
+        var ordered = NSApp.browserWindowControllersFrontToBack
+        for wc in windowControllers where !ordered.contains(where: { $0 === wc }) {
+            ordered.append(wc)
+        }
+        return ordered
+    }
+
+    private func place(_ url: URL, _ placement: LinkPlacement<ObjectIdentifier>, windows: [BrowserWindowController]) {
+        let store = TabStore.shared
+        func window(_ id: ObjectIdentifier) -> BrowserWindowController? {
+            windows.first { ObjectIdentifier($0) == id }
+        }
+        switch placement {
+        case .openInWindow(let id):
+            guard let wc = window(id), let space = wc.activeSpace else { return openInMostRecentSpace(url) }
+            openRoutedTab(url, in: space, of: wc)
+        case .switchWindow(let id, let spaceID):
+            guard let wc = window(id), let space = store.space(withID: spaceID) else { return openInMostRecentSpace(url) }
+            wc.setActiveSpace(id: spaceID, selectTab: false)
+            openRoutedTab(url, in: space, of: wc)
+        case .openInNewWindow(let spaceID):
+            guard let space = store.space(withID: spaceID) else { return openInMostRecentSpace(url) }
+            openRoutedTab(url, in: space, of: createNewWindow(showing: space))
+        case .openInPrivateWindow(let id):
+            guard let wc = window(id), let space = wc.activeSpace else { return createNewWindowWithURL(url, incognito: true) }
+            openRoutedTab(url, in: space, of: wc)
+        case .openInNewPrivateWindow:
+            createNewWindowWithURL(url, incognito: true)
+        case .mostRecentSpace:
+            openInMostRecentSpace(url)
+        }
+    }
+
+    /// A routed link: a tab in `space` of `wc`, selected, and the window in front.
+    private func openRoutedTab(_ url: URL, in space: Space, of wc: BrowserWindowController) {
+        let tab = TabStore.shared.addTab(in: space, url: url)
+        wc.selectTab(id: tab.id)
+        wc.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// What a link from another app did before routes, kept exactly (the Most
+    /// Recent Space target, TASK-191.2): a tab in the key browser window's
+    /// active space, else a new window. With Detour in the background there is
+    /// no key window, so that is a new window (unchanged from before routes).
+    private func openInMostRecentSpace(_ url: URL) {
+        if let wc = keyBrowserWindowController,
+           let space = wc.activeSpace {
+            let tab = TabStore.shared.addTab(in: space, url: url)
+            wc.selectTab(id: tab.id)
+        } else {
+            createNewWindowWithURL(url)
         }
     }
 
