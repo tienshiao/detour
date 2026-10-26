@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Quick Detour
-description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, Opt-Cmd-N): the panel, the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, and what is not restored."
+description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, and what is not restored."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T04:15:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:45:00Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193
@@ -31,6 +31,24 @@ sources:
   - id: launcher
     resource: ../../Detour/Browser/QuickDetour/QuickDetourLauncher.swift
     title: QuickDetourLauncher.swift (the palette panel)
+  - id: task-193-2
+    resource: backlog:TASK-193.2
+    title: "Quick Detour: a system-wide hotkey that opens it from any app"
+  - id: hotkey
+    resource: ../../Detour/Browser/QuickDetour/QuickDetourHotKey.swift
+    title: QuickDetourHotKey.swift (the wiring, the Carbon registrar)
+  - id: hotkey-model
+    resource: ../../Detour/Browser/QuickDetour/HotKeyShortcut.swift
+    title: HotKeyShortcut.swift (the shortcut, validation, recording)
+  - id: hotkey-registration
+    resource: ../../Detour/Browser/QuickDetour/HotKeyRegistration.swift
+    title: HotKeyRegistration.swift (the state machine, the settings)
+  - id: recorder
+    resource: ../../Detour/Browser/Settings/ShortcutRecorderView.swift
+    title: ShortcutRecorderView.swift
+  - id: harness-2
+    resource: ../../docs/harness/task193-2-harness.patch
+    title: TASK-193.2 runtime harness, its scratch tools and results
   - id: reference
     resource: ../../docs/little-window/arc-little-arc.png
     title: Arc's Little Arc, the visual reference
@@ -46,8 +64,9 @@ sources:
 
 A Quick Detour is a small window with one web view, for looking something
 up without opening a tab in any space (after Arc's Little Arc; the name is
-the user's choice, TASK-193). File > New Quick Detour Window, or Opt-Cmd-N
-while Detour is active, shows the **launcher panel**: the command palette
+the user's choice, TASK-193). File > New Quick Detour Window, or the
+**global hotkey** (Opt-Cmd-N by default, pressed in any app; below), shows
+the **launcher panel**: the command palette
 alone, centred on the screen, like Spotlight, with no web view and no title
 bar. Entering a URL or search, or choosing a suggestion, closes the panel and
 opens the Quick Detour window loading that page. Escape on the empty field,
@@ -75,7 +94,6 @@ Placeholders until their subtasks:
 |---|---|---|
 | Profile pill | shows the profile's name (a person symbol, eyeglasses for Private); no menu | TASK-193.4 |
 | Open in <Space> ⌘O | shown **disabled**, naming the space it will offer: the space the window was opened from if it is the same profile's, else the profile's first; hidden for a Private Quick Detour | TASK-193.3 |
-| Global hotkey | none: Opt-Cmd-N is a menu shortcut, only while Detour is active | TASK-193.2 |
 | Archive on close or quit | none: a closed Quick Detour is gone | TASK-193.5 |
 
 # How it works
@@ -99,21 +117,193 @@ Placeholders until their subtasks:
 - **No open-tab rows.** Switching to an existing tab from the panel would
   bring a browser window forward instead of opening a Quick Detour, so the
   panel's palette gets no `tabStore`.
-- **One panel.** Asking again while it is up brings it forward; for another
-  profile it is rebuilt.
-- **Submit** closes the panel, activates Detour (`NSApp.activate`), then
-  opens `QuickDetourWindowController.open(profile:sourceSpace:url:typed:)`,
-  which makes the window key and loads the page. A typed URL is a typed visit.
+- **One panel.** Choosing the menu item while it is up brings it forward;
+  for another profile it is rebuilt. **Pressing the shortcut** while it is
+  up closes it, as Spotlight's does: the global hotkey, and the menu's key
+  equivalent when the hotkey is off (`newQuickDetourWindow` checks for a
+  key-down as the current event).
+- **Submit** closes the panel, opens
+  `QuickDetourWindowController.open(profile:sourceSpace:url:typed:)`, which
+  makes the window key and loads the page, then activates Detour
+  (`QuickDetourLauncher.defaultOpenWindow`; see
+  [activation](#activating-with-only-the-new-window-forward)). A typed URL
+  is a typed visit.
 - **Escape** follows the palette's own steps: it clears typed text first, and
   closes the panel on an empty field. **Clicking away** closes it through
   `NSWindow.didResignKeyNotification` on the panel.
 
-Learned for TASK-193.2: a borderless panel is never key unless
-`canBecomeKey` says so; with it, `makeKeyAndOrderFront` makes it key and the
-palette's field first responder at once (seen at runtime while Detour was
-active). Typing into it while **another app** stays active, which is what
-`.nonactivatingPanel` is for, was not exercised: the harness posts its
-events into Detour's own queue, which says nothing about the hotkey path.
+A borderless panel is never key unless `canBecomeKey` says so; with it,
+`makeKeyAndOrderFront` makes it key and the palette's field first responder
+at once, also while **another app** is frontmost: the window server gives
+the non-activating panel the key focus, the other app keeps the menu bar
+and stays `NSWorkspace.frontmostApplication`, its window resigns key and
+gets it back when the panel closes, and keys typed go to the palette
+(TASK-193.2, keys posted at the HID event tap).[^harness-2] While the panel is
+key, `NSApp.isActive` is **true** although Detour is not the frontmost app.
+
+## The global hotkey
+
+TASK-193.2. A system-wide shortcut, Opt-Cmd-N by default, shows the
+launcher from any app (and from Detour), on the screen under the pointer.
+
+| Piece | What it does |
+|---|---|
+| `HotKeyShortcut` | The shortcut: virtual key code (layout independent, what is registered), modifiers, and the key's character on the layout it was recorded with. Spelled three ways: Carbon modifiers (`carbonModifiers`), the menu's key equivalent (the character, or AppKit's function-key character for F-keys, arrows, Return and the like), and the label (`displayString`, ⌃⌥⇧⌘ then the key: `⌥⌘N`, `⌃⌥⌘F12`). Stored as `{keyCode, modifiers (Carbon), character}`. |
+| `HotKeyShortcutValidation` | Refuses a shortcut without ⌘, ⌥ or ⌃ (a global Shift or plain key would take a key from typing everywhere), a key with no name, one a Detour menu item uses (the main menu searched with its submenus through `MenuKeyEquivalentMatcher.item(matchingCharacters:modifiers:in:)`, the Quick Detour item itself excepted; the message names the path, "File > New Tab"), one of Detour's shortcuts that no menu carries (Control-Tab and Shift-Control-Tab, the recent-tab switcher's event monitor, which a Carbon hotkey would pre-empt), and an enabled macOS shortcut (`CopySymbolicHotKeys`, the Fn bit ignored). |
+| `HotKeyRecordingOutcome` | What a key press does in the recorder: Escape alone cancels, Delete or Forward Delete alone clears, anything else is validated and recorded or refused. |
+| `HotKeyRegistration` | The state machine: `off`, `noShortcut`, `suspended`, `registered(shortcut)`, `failed(shortcut, error)`. Holds at most one registration; lets go of the old one before registering a new one (a second registration in one process is refused); a refused one keeps the user's choice and holds nothing; `retryIfFailed`; suspended while the recorder records, resuming onto the latest setting. |
+| `QuickDetourHotKeySettings` | `QuickDetourHotKeyEnabled` and `QuickDetourHotKeyShortcut` in `UserDefaultsScope.defaults` (the standard domain in the default data directory, `<bundle id>.<data dir>` elsewhere). A cleared shortcut is an empty dictionary, so it is not mistaken for "never set". |
+| `QuickDetourHotKey` | Wires them: applies the settings on every change (at once: off unregisters, a new shortcut re-registers), retries a refused shortcut when Detour becomes active and when the Links pane appears, sets the File menu item's key equivalent, and posts `stateDidChangeNotification` for Settings. |
+| `CarbonHotKeyRegistrar` | `RegisterEventHotKey` with `kEventHotKeyExclusive` on the application event target, one `kEventHotKeyPressed` handler, the presses checked against its own signature and ids. |
+
+**Why Carbon `RegisterEventHotKey`.** It needs no permission: no
+Accessibility, no Input Monitoring, no prompt. The alternatives that see
+keys pressed in other apps (a `CGEventTap`, `NSEvent.addGlobalMonitorForEvents`)
+need Input Monitoring or Accessibility, and a global monitor cannot consume
+the key, so the frontmost app would get it too. The Carbon calls compile
+without a deprecation warning against the macOS 26 SDK.
+
+**What it can detect: conflicts**, probed on macOS 26.7 with two scratch
+processes registering Ctrl-Opt-Cmd-F12 and a key posted at the HID event
+tap:[^harness-2]
+
+| First registrant | Second | Second's status | Who gets the press |
+|---|---|---|---|
+| plain | plain, another process | `noErr` | **both** |
+| plain | plain, same process | `eventHotKeyExistsErr` (-9878) | the first |
+| exclusive | plain | `noErr` | the exclusive one only |
+| exclusive | exclusive | `eventHotKeyExistsErr` | the first |
+| plain | exclusive | `noErr` | the exclusive one only (it takes the key) |
+
+- So Detour registers exclusively: one press never opens a panel in two
+  apps (a Debug build and the installed app share the shortcut otherwise),
+  and Settings can report a conflict. The report means another app (or
+  another Detour) holds the shortcut **exclusively**. An app holding it
+  without the option is not seen, and loses the key to Detour.
+- Cmd-Tab was refused (-9878: the system holds it exclusively); Cmd-Space
+  and Shift-Cmd-3 were accepted although macOS handles them itself, which
+  is why the recorder checks `CopySymbolicHotKeys` (Spotlight is Cmd-Space,
+  `keyCode 49`, modifiers 256 there).
+- While another app holds a shortcut exclusively, the recorder cannot even
+  record it: that app's hotkey takes the press first.
+- The registration goes with the process: after Detour exited, an
+  exclusive registration of the same shortcut from another process
+  succeeded.
+
+**Toggle.** The hotkey shows the panel, and pressed while it is up closes
+it, as Spotlight's does (decided in TASK-193.2). Escape on the empty field,
+or a click outside it, also closes it; the app that was frontmost stays
+frontmost and its window is key again; no Detour window comes forward.
+
+**Exactly one panel while Detour is frontmost.** The Carbon hotkey consumes
+the key before the menu sees it: with Detour active, one press logged one
+"hotkey pressed" and the panel stayed up (had the menu's key equivalent
+also fired, its toggle would have closed it). With the hotkey off, the same
+keys reach File > New Quick Detour Window, whose key equivalent mirrors the
+configured shortcut; turning the hotkey off keeps that shortcut, cleared
+removes it.[^harness-2]
+
+**Where it registers.** `QuickDetourHotKeyAvailability.decide(isDebugBuild:isTestHost:environment:)`,
+a pure rule, decides whether `start` may register anything in the process:
+
+| Process | Registers |
+|---|---|
+| XCTest host | never, even with the opt-in |
+| Debug build | only with `DETOUR_GLOBAL_HOTKEY=1` (any other value, or none, is no) |
+| Release build | yes, as set in Settings |
+
+Why Debug needs the opt-in (code review, 2026-10-25): a Debug build
+launched from Xcode has no `DETOUR_DATA_DIR`, so it counts as the default
+data directory, starts with the hotkey on, and would register ⌥⌘N
+exclusively at launch; the installed app started later would be refused
+and retry only when activated. Without the opt-in, Settings says "Debug
+builds don't register the global shortcut (DETOUR_GLOBAL_HOTKEY=1 turns it
+on)." on the warning line, and the File menu item still follows the
+setting. Separately, a data directory other than the default starts with
+the hotkey off (`enabledByDefault` is
+`WebKitStorageScope.currentIsDefaultDataDirectory`); a harness sets the
+opt-in and enables a test shortcut. The settings of each data directory
+are their own.
+
+The menu item follows the settings whether or not anything registers: the
+settings observer lives as long as `QuickDetourHotKey`, and `start` only
+adds the registration. (The first build observed them in `start` only, so
+in a Debug run without the opt-in the menu kept ⌥⌘N after the shortcut
+changed; found at runtime.)[^harness-2]
+
+### Activating with only the new window forward
+
+`NSApp.activate()` brings forward the app's key and main windows, not all of
+them (`NSRunningApplication.activate(options:)` without
+`.activateAllWindows`). Submitting from the panel over another app opens
+the Quick Detour window first (key and main) and then calls
+`NSApp.activate()`. Measured with the window server's order (front to back)
+over a scratch app, with a browser window that had been Detour's key and
+main window:[^harness-2]
+
+| Step | `CGWindowList` order |
+|---|---|
+| other app in front | other, browser, browser |
+| hotkey | panel (level 3), other, browser, browser |
+| Return | quick, other, browser, browser (Detour active, the Quick Detour key and main) |
+| Escape or click away instead | other, browser, browser (unchanged) |
+
+The same order came from the cooperative `NSApp.activate()`,
+`NSRunningApplication.current.activate(options: [])` and the deprecated
+`activate(ignoringOtherApps:)` called after opening, and from TASK-193.1's
+activate-then-open: activation is asynchronous, and by the time AppKit
+orders windows the new one is key and main. The request is honoured
+although activation is cooperative since macOS 14: Detour holds the key
+focus (the panel) when Return is pressed in it.
+
+**Trap: do not guard on `NSApp.isActive`.** It is true while the panel is
+key, so a first build's `if !NSApp.isActive { NSApp.activate() }` never
+activated, and the window opened behind the other app (other, quick,
+browser, browser).[^harness-2]
+
+### The Settings control
+
+Settings > Links > **Quick Detour** (TASK-193.5 adds its other entry points
+there): "[✓] Open Quick Detour from any app with [⌃⌥⌘F12]", a warning line
+under the row, and help text saying the launcher opens over the app in
+front and that the same shortcut is File > New Quick Detour Window while
+Detour is in front, also when the hotkey is off.
+
+- `ShortcutRecorderView`: a click starts recording ("Type Shortcut", accent
+  border, the held modifiers shown live) and suspends the registration; the
+  next press with ⌘, ⌥ or ⌃ is recorded (Cmd and Ctrl combinations are
+  taken in `performKeyEquivalent`, before the menus); Escape cancels,
+  Delete clears ("Record Shortcut"); a refused shortcut beeps, shows why on
+  the warning line and keeps recording; a mouse-down anywhere outside it (a
+  local event monitor installed only while recording: another control,
+  empty space, the toolbar, another window), losing focus, the window
+  resigning key or the pane disappearing cancels it (so the hotkey never
+  stays suspended while the user is elsewhere). A click on the checkbox
+  ends recording and then does the checkbox's own action. The new
+  shortcut is saved before recording ends, so the registration resumes
+  straight onto it.
+- The warning line shows, in order: the recorder's refusal while recording;
+  in a process that does not register (a Debug build without the opt-in),
+  why; for an enabled hotkey, "Another app is using ⌃⌥⌘F12. Choose another
+  shortcut, or change it in that app." (`eventHotKeyExistsErr`), "⌃⌥⌘F12
+  could not be set up as a shortcut for every app (error N)." (any other
+  status), or "No shortcut: click the field and type one.". The setting
+  keeps the user's choice in every case.
+- The checkbox and a recorded shortcut take effect at once.
+
+### Known limits
+
+- **A menu shortcut on a shifted character is not seen as a conflict.** The
+  check compares the recorded key's unshifted character with each item's
+  key equivalent, so View > Zoom In ("+" with ⌘, typed as ⇧= on a US
+  layout) does not match a recorded ⇧⌘=. AppKit would match the menu by
+  the typed character; nothing models layouts here.
+- **The default ⌥⌘N is a fixed key code** (`kVK_ANSI_N`). On a layout that
+  puts another letter there (Dvorak's B), the hotkey is the key in the N
+  position while the label and the menu still say N. A recorded shortcut
+  takes its label from the layout it was recorded with, and its menu key
+  equivalent likewise; the menu item then follows the character, the
+  hotkey the key code, which agree only on the layout of the recording.
 
 ## The page is a tab in no space
 
@@ -281,11 +471,22 @@ closes the profile's Quick Detours before it releases the profile.
 | `QuickDetourTests` (28) | the rules (history scope, which profile, palette scope); the tab in no space: creation from the profile's store and controller, adoption, close and its idempotence, observers, several at once, every space-walking lookup, never slept/archived/saved, profile deletion; history: recorded under the scope (real load), Private records nothing, the profile scope, the launch sweep, the page payload, `spaceID` on listed and searched rows; the Private session both ways; Private downloads |
 | `QuickDetourLauncherTests` (11) | the panel (non-activating, borderless, floating, can become key, the palette's profile, history scope and no tabs), no window or tab before submit; submit (URL, search, suggestion) closing it and opening the window; Escape and clicking away opening nothing; one panel; the centring rule; the real window opening on its page |
 | `QuickDetourWindowTests` (15) | opening on its page with no palette, loading in the one web view, the host palette (profile, no tabs, history scope), dismissing it keeping the window, a search from it, navigating in place, back/forward/zoom/find, Cmd+Z not undoing a browser action, Copy Link, Cmd+W, two windows, closing from the store, a page-opened window, the extension window lookups, no leaks |
+| `HotKeyShortcutTests` (27) | the shortcut (default, narrowing, equality), Carbon modifier bits both ways for all 16 combinations, state bits ignored, key equivalents (letters, F-keys, arrows, Space, Return, Forward Delete, a layout's character), the label and key names, the defaults round trip and malformed values; validation (a modifier needed, an unnamed key, Detour's menu items by path including submenus, function-key items and an uppercase key equivalent meaning Shift, the Quick Detour item excepted, Control-Tab, macOS shortcuts with and without the Fn bit, the real main menu), the messages; recording (Escape, Delete, with a modifier, refused) |
+| `HotKeyRegistrationTests` (20) | the state machine against a fake registrar: off, on, idempotent, off unregisters, a change unregisters first, cleared, refused keeps the choice and holds nothing, changing away from a refusal, retry, suspend and resume, `isConflict`; the settings (defaults per data directory, persistence and notification, cleared stays cleared, malformed) |
+| `QuickDetourHotKeyTests` (22) | the wiring with a fake registrar: never started in the test host, the press callback handed to the registrar, settings followed at once, the menu item mirroring the shortcut also when off and cleared, recording, a refusal reported and retried (also on becoming active), the messages; the hotkey toggling the launcher, the menu item not toggling it, the real File item attached; the recorder (records, a Cmd key taken before the menus, refused and still recording, Escape, Delete, stops when its window resigns key, saves before it stops); where it may register (the test host never, Debug only with the opt-in, Release yes, the Settings line); the menu item following the setting where nothing registers; a mouse-down outside the recorder ending it (the pure rule, and a real event through `nextEvent`/`sendEvent` reaching the monitor) |
+| `UserDefaultsScopeTests` | the preferences suite per data directory |
 | `QuickDetourExtensionTests` (8) | real contexts: a `popup` window from an extension page and the worker (promise and callback forms), another profile seeing nothing (also for a context loaded after the window opened), no URL without `tabs`, a content script's `sender.tab`, the toolbar button's `onClicked`, by-id lookups refused after close, a Private Quick Detour as an incognito popup |
 | `InternalPageIntegrationTests` | the History page's "Quick Detour" label |
 
 `QuickDetourTests` was written first: 26 of 28 failed against stubs, two
-(the negative cases) passed. `QuickDetourLauncherTests` too: 10 of 11
+(the negative cases) passed. For TASK-193.2, `HotKeyShortcutTests` (23 of
+26 failed against stubs), `HotKeyRegistrationTests` (17 of 20) and the two
+new `UserDefaultsScopeTests` (2 of 2) were written first; the three that
+passed against stubs were negative cases. `QuickDetourHotKeyTests` came
+after the code, except the review follow-up's: 6 of its 7 availability and
+click-elsewhere tests failed against stubs (the Release case passed), the
+menu-mirror test failed before its fix, and disabling the monitor failed
+the event-loop test. `QuickDetourLauncherTests` too: 10 of 11
 failed against a stub launcher. The window and extension suites came after
 the code; mutation checks (window type `.normal`, `openWindowsFor`
 unfiltered, no `didOpenWindow`) each failed them.
@@ -320,8 +521,25 @@ step and result):[^harness]
   fixture was refused by the gate); deleting a profile the launcher had
   been opened on released the profile, with no "still retained" logged.
 
-Not checked at runtime: the panel taking typing while another app is
-active (TASK-193.2's case), Cmd+click and page-opened windows, a normal
+TASK-193.2, 2026-10-25, macOS 26.7, real input posted at the HID event tap
+from scratch tools (the hotkey, typing, clicks), a scratch app frontmost, the
+test shortcut Ctrl-Opt-Cmd-F12 ([harness](../../docs/harness/task193-2-harness.patch),
+with the tools' sources):[^harness-2] the panel over the other app, key, taking
+typing; Return activating Detour with only the Quick Detour window forward;
+Escape and a click away leaving the other app frontmost and key; the toggle;
+one panel with Detour frontmost; the menu key equivalent with the hotkey
+off; Settings off, on, a new shortcut (the old one then did nothing), a
+refused Cmd-T, a conflict with an exclusive holder reported and retried
+after it exited, cleared; the registration gone after exit. Review
+follow-up (run3.sh): a Debug run without the opt-in registered nothing and
+said so in Settings, with the menu item on the set shortcut; with the
+opt-in, posted clicks on the checkbox, on empty pane space and on the
+General toolbar item each ended recording and the hotkey was registered
+again (the checkbox then turned it off, as clicked). Not checked: a
+key pressed by a person, the default Opt-Cmd-N itself, several displays,
+full-screen apps.
+
+Not checked at runtime (TASK-193.1): Cmd+click and page-opened windows, a normal
 Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 `.crx` installing, 1Password itself.
 
@@ -337,3 +555,4 @@ Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 
 [^webkit-windows]: WebKit, WebExtensionContextAPIWindowsCocoa.mm (windowsGetAll reads the context's own window list)
 [^harness]: TASK-193.1 runtime harness and its results
+[^harness-2]: TASK-193.2 runtime harness, its scratch tools and results

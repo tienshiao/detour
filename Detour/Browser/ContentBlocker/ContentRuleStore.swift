@@ -34,11 +34,10 @@ struct ContentBlockerStorage {
         }
         let ruleListDirectory = dataDirectory.appendingPathComponent("ContentRuleLists", isDirectory: true)
         try? FileManager.default.createDirectory(at: ruleListDirectory, withIntermediateDirectories: true)
-        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.detourbrowser.mac"
         return ContentBlockerStorage(
             ruleListStore: WKContentRuleListStore(url: ruleListDirectory),
             filterListCacheDirectory: cacheDirectory,
-            defaults: UserDefaults(suiteName: "\(bundleIdentifier).\(name)") ?? .standard
+            defaults: UserDefaultsScope.suiteName(dataDirectory: name).flatMap { UserDefaults(suiteName: $0) } ?? .standard
         )
     }
 }

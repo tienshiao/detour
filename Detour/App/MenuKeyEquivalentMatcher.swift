@@ -31,8 +31,18 @@ enum MenuKeyEquivalentMatcher {
     /// Separators, hidden items and items with no action are never a match:
     /// AppKit could not dispatch to them.
     static func item(matching event: NSEvent, in items: [NSMenuItem]) -> NSMenuItem? {
-        guard let characters = event.charactersIgnoringModifiers, !characters.isEmpty else { return nil }
-        let eventModifiers = event.modifierFlags.intersection(significantModifiers)
+        guard let characters = event.charactersIgnoringModifiers else { return nil }
+        return item(matchingCharacters: characters, modifiers: event.modifierFlags, in: items)
+    }
+
+    /// The first item in `items` whose key equivalent is `characters` with
+    /// `modifiers` (narrowed to ``significantModifiers`` here). Also how the
+    /// Quick Detour hotkey's recorder finds a shortcut a menu already uses
+    /// (TASK-193.2).
+    static func item(matchingCharacters characters: String, modifiers: NSEvent.ModifierFlags,
+                     in items: [NSMenuItem]) -> NSMenuItem? {
+        guard !characters.isEmpty else { return nil }
+        let eventModifiers = modifiers.intersection(significantModifiers)
 
         return items.first { item in
             // The dynamic items have no key equivalent at all, so that is the

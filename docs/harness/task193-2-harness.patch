@@ -1,0 +1,1006 @@
+TASK-193.2 runtime harness: the system-wide Quick Detour hotkey. Temporary
+code, never committed to Detour/. Gated on DETOUR_VERIFY_DIR. Unlike the
+earlier harnesses it is a command server: the shell driver writes
+$DETOUR_VERIFY_DIR/cmd-<n> (one command line) and waits for "DONE <n>" in
+verify.log, because the input that matters (the hotkey pressed in another
+app, typing into the panel, clicks) has to come from outside Detour.
+Commands: setup (a second browser window, two fixture pages), hotkey
+<keyCode> <carbonModifiers> <char|->, enable 0|1, variant
+coop|running|ignoring|old|new (how submit activates), state <label> (NSApp
+and launcher state, the registration, the File menu item's key equivalent,
+NSApp.orderedWindows and the CGWindowList front-to-back order of Detour's
+and the scratch app's windows), settings (Links pane, scrolled to Quick
+Detour), rect <accessibility id> (a control's centre in CG coordinates),
+appearance light|dark, activate, closeqd, closesettings, monitor (logs every
+key event Detour receives), invoke, quit (stop() then exit(0)).
+
+    SP=<scratch>; mkdir -p $SP/out
+    git apply docs/harness/task193-2-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # run.sh (sandbox off): fixture server on 127.0.0.1:8932, Detour with
+    # DETOUR_DATA_DIR=DetourVerify1932, the scratch app, the steps below;
+    # kills only the PIDs it launched; ends by registering the test
+    # shortcut exclusively from a scratch process, which succeeds only if
+    # Detour's registration went with it.
+    git apply -R docs/harness/task193-2-harness.patch && xcodegen generate
+
+Scratch tools (swiftc -module-cache-path ./mc, sandbox off; sources below):
+- hk <keyCode> <carbonMods> <options> <seconds> <tag>: registers a Carbon
+  hotkey (options 1 = kEventHotKeyExclusive), logs the status, a second
+  registration in the same process, and every press.
+- input key <code> <c o t s f> | type <text> | click <x> <y> <pid>: posts
+  at the HID event tap (CGPreflightPostEventAccess was true for processes
+  started from the Claude Code terminal; nothing was requested). `click`
+  refuses unless the topmost window under the point (layer < 20) belongs to
+  <pid>, so a click never lands in one of the user's apps.
+- other <log> <w> <h>: "the other app", an unbundled AppKit executable run
+  directly (no LaunchServices registration), a centred window with a text
+  field; logs activation, key-window changes and keys it receives; SIGUSR1
+  activates it.
+
+Test shortcut: Ctrl-Opt-Cmd-F12 (keyCode 111, Carbon 6400), F11 (103) for a
+change. Traps met:
+- A posted F-key only matches a Carbon hotkey with the Fn flag
+  (maskSecondaryFn), as a physical F-key press carries it; without it the
+  hotkey never fired.
+- CGEvent keyboardSetUnicodeString events (virtual key 0) were not inserted
+  into the panel's field while another app was frontmost (the key events
+  reached the panel's field editor and were dropped), although they type
+  into an active app; after one real key press they were inserted. Real
+  virtual key codes (input type, a US layout map) typed at once, 0.3 s
+  after the hotkey. Physical typing sends key codes, so this is a tool trap.
+- Set the flags of every posted key event: one with .maskShift left the
+  event source shifted for the keys after it.
+- `read X Y <<< "$(f)"` runs f in a subshell; a command counter incremented
+  there is lost and the command files get out of step.
+- NSApp.isActive is true while the non-activating panel is key, although
+  the other app keeps the menu bar and stays frontmost (NSWorkspace
+  frontmostApplication); a first build guarded the activation on it and the
+  Quick Detour window opened behind the other app.
+
+Results (2026-10-25 21:56-21:59, screen unlocked, macOS 26.7, light; dark
+captures as named; out/ in the session scratchpad):
+- A, from the other app: the hotkey showed the panel over it (CG order
+  panel@L3, OTHER, browser, browser), the panel key, its field first
+  responder, NSWorkspace frontmost still the other app; typed
+  "127.0.0.1:8932/q.html" arrived in the field; Return opened the Quick
+  Detour window and activated Detour with only that window forward: CG
+  order quick, OTHER, browser, browser (both browser windows stayed behind
+  the other app; one of them had been Detour's key and main window).
+- Activation variants (variants.sh, each twice, from the other app with a
+  browser window last key): cooperative NSApp.activate(), 
+  NSRunningApplication.current.activate(options: []), activate(ignoringOtherApps:)
+  after opening, and TASK-193.1's activate-then-open all gave quick, OTHER,
+  browser, browser with Detour active and the Quick Detour window key and
+  main. Shipped: open, then NSApp.activate(), unguarded.
+- B, Escape on the empty panel: closed, frontmost the other app, its window
+  key again (its log), CG order unchanged.
+- C, a click on the other app's window: closed, same.
+- D, the hotkey twice: open, then closed (toggle).
+- E, Detour frontmost: one press, one panel (Carbon consumed the key: the
+  unified log has one "hotkey pressed" per press and the menu's toggle did
+  not close it). With the hotkey off, the same keys reached the File menu
+  item (key equivalent U+F70F + Ctrl-Opt-Cmd): the panel opened, and the
+  second press closed it.
+- Settings (Links pane > Quick Detour), driven with real clicks and keys:
+  unchecking unregistered at once (state off; the hotkey from the other app
+  then did nothing); checking registered again; clicking the recorder
+  suspended the registration, Ctrl-Opt-Cmd-F11 recorded it, registered it
+  (no intermediate re-registration of F12) and the menu item showed F11;
+  F12 from the other app then did nothing and F11 opened the panel. Cmd-T
+  was refused ("⌘T is the shortcut of File > New Tab.") with the recorder
+  still recording; Escape cancelled it and the registration came back.
+- Conflict: with `hk 111 6400 1` holding Ctrl-Opt-Cmd-F12 exclusively, the
+  recorder could not record it (the holder's hotkey took the press, logged
+  by the holder); setting it through the harness gave state failed(-9878)
+  and the warning "Another app is using ⌃⌥⌘F12. Choose another shortcut, or
+  change it in that app." beside the control, the setting kept; a press went
+  to the holder. After the holder exited and Detour became active again,
+  the retry registered it.
+- Delete in the recorder cleared it: state noShortcut, no menu key
+  equivalent, "No shortcut: click the field and type one."; recording F12
+  again registered it.
+- After the run: an exclusive registration of Ctrl-Opt-Cmd-F12 from a
+  scratch process succeeded, so Detour's registration went with its exit.
+
+Not checked here: a physical key press by a person (every press was posted
+at the HID event tap), the default Opt-Cmd-N itself (left alone because the
+production app may own it later), multiple displays, full-screen apps.
+
+Follow-up after the code review (2026-10-25, run3.sh, screen unlocked).
+Debug builds now register the hotkey only with DETOUR_GLOBAL_HOTKEY=1
+(run.sh and variants.sh set it); the harness gained "winpoint <x> <y>" (a
+point from the Settings window's top-left, in CG coordinates) and a
+RECORDER line in "state" (recording, availability, pane, the line under
+the recorder).
+- Without the opt-in (Debug, DetourVerify1932, setting on, Ctrl-Opt-Cmd-F12):
+  state off, nothing registered (after exit an exclusive scratch
+  registration succeeded), Settings showing "Debug builds don't register
+  the global shortcut (DETOUR_GLOBAL_HOTKEY=1 turns it on)."
+  (out3/N1-debug-no-opt-in-light/dark.png). Found here: the File menu item
+  kept Opt-Cmd-N, because only start() followed the settings; fixed (the
+  settings observer lives for the object's life), after which the item
+  showed Ctrl-Opt-Cmd-F12 and pressing it in Detour opened the panel
+  through the menu.
+- With the opt-in, posted clicks while the recorder was recording: on the
+  checkbox, recording ended and the hotkey was registered again, then the
+  checkbox's own action turned it off (a second click turned it on); on
+  empty space right of the recorder, recording ended and it was registered;
+  on the General toolbar item, recording ended, registered, General shown;
+  the hotkey then opened the panel.
+
+Sources of the scratch tools and the driver (indented):
+
+    ==== run.sh
+    #!/bin/bash
+    # TASK-193.2 runtime driver. Real input through the HID event tap (input tool);
+    # Detour's harness answers commands (cmd-N files) and logs state.
+    set -u
+    S=/private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/20483124-f109-4f1c-ac33-b193eaf9d147/scratchpad/task193-2
+    APP=/Users/tma/Projects/browser/MyBrowser/.derived/Build/Products/Debug/Detour.app
+    V=$S/run; OUT=$S/out
+    mkdir -p "$V" "$OUT"
+    rm -f "$V"/cmd-* "$V"/verify.log "$V"/other.log "$V"/hold.log
+    IN=$S/hk/input
+    N=0
+    LOGF=$V/verify.log
+
+    cmd() {
+      N=$((N+1)); echo "$*" > "$V/cmd-$N"
+      for i in $(seq 1 150); do grep -q "DONE $N\$" "$LOGF" 2>/dev/null && return 0; sleep 0.1; done
+      echo "TIMEOUT cmd $N: $*"; return 1
+    }
+    last_state() { grep "STATE $1 " "$LOGF" | tail -1; }
+    hotkey() { $IN key 111 cotf; }   # Ctrl-Opt-Cmd-F12
+    shoot_window() { screencapture -x -o -l "$2" "$OUT/$1.png"; echo "SHOT $1"; }
+    shoot_rect() { screencapture -x -R "$2" "$OUT/$1.png"; echo "SHOT $1 $2"; }
+    panel_rect() {  # the panel's frame, grown by 40 pt, from the last STATE line named $1
+      last_state "$1" | sed -E 's/.*panelFrameCG=([0-9,-]+).*/\1/' | awk -F, '{printf "%d,%d,%d,%d", $1-40, $2-40, $3+80, $4+80}'
+    }
+    require_panel_key() {
+      if ! last_state "$1" | grep -q "panelKey=true"; then echo "ABORT: panel not key at $1"; finish; exit 1; fi
+    }
+
+    finish() {
+      cmd "enable 0"; sleep 0.3
+      cmd "quit"
+      for i in $(seq 1 50); do kill -0 $DPID 2>/dev/null || break; sleep 0.2; done
+      kill -0 $DPID 2>/dev/null && { echo "Detour $DPID still running; killing"; kill $DPID; }
+      [ -n "${OPID:-}" ] && kill $OPID 2>/dev/null
+      [ -n "${HPID:-}" ] && kill $HPID 2>/dev/null
+      kill $SPID 2>/dev/null
+      # The registration went with the process: an exclusive one now succeeds.
+      $S/hk/hk 111 6400 1 0.5 AFTER | grep "register="
+      echo "finished"
+    }
+
+    # Fixture server
+    ( cd $S/fixture && exec python3 -m http.server 8932 --bind 127.0.0.1 > $V/server.log 2>&1 ) &
+    SPID=$!
+    sleep 1
+
+    DETOUR_GLOBAL_HOTKEY=1 DETOUR_DATA_DIR=DetourVerify1932 DETOUR_VERIFY_DIR=$V DETOUR_VERIFY_FIXTURE=http://127.0.0.1:8932/ \
+      "$APP/Contents/MacOS/Detour" > $V/detour.out 2>&1 &
+    DPID=$!
+    echo "Detour pid $DPID"
+    for i in $(seq 1 100); do grep -q HARNESS "$LOGF" 2>/dev/null && break; sleep 0.2; done
+    sleep 2
+
+    cmd setup; sleep 2
+    cmd "hotkey 111 6400 -"; cmd "enable 1"; sleep 0.3
+    cmd "state registered"
+    cmd activate; sleep 1
+    cmd "state detour-active"
+
+    $S/other/other $V/other.log 1000 700 > /dev/null 2>&1 &
+    OPID=$!
+    sleep 2.5
+    OTHER_CG=$(grep LAUNCHED $V/other.log | sed -E 's/.*cgFrame=([0-9,]+).*/\1/')
+    echo "Other pid $OPID frame $OTHER_CG"
+    # A point on the Other window, near its bottom-left corner (away from the panel).
+    CX=$(echo $OTHER_CG | awk -F, '{print $1+60}'); CY=$(echo $OTHER_CG | awk -F, '{print $2+$4-60}')
+
+    # A: the hotkey from another app, typing, submit.
+    cmd "state A0-other-front"
+    hotkey; sleep 1
+    cmd "state A1-panel-over-other"
+    shoot_rect A1-panel-over-other-light "$(panel_rect A1-panel-over-other)"
+    require_panel_key A1-panel-over-other
+    $IN type "127.0.0.1:8932/q.html"; sleep 0.6
+    cmd "state A2-typed"
+    $IN key 36; sleep 2.5
+    cmd "state A3-after-submit"
+
+    # B: Escape returns focus to the other app.
+    kill -USR1 $OPID; sleep 1.2
+    cmd "state B0-other-again"
+    hotkey; sleep 1
+    cmd "state B1-panel"
+    $IN key 53; sleep 1
+    cmd "state B2-after-escape"
+
+    # C: clicking away.
+    hotkey; sleep 1
+    cmd "state C1-panel"
+    $IN click $CX $CY $OPID; sleep 1
+    cmd "state C2-after-click-away"
+
+    # D: the hotkey toggles.
+    hotkey; sleep 1
+    cmd "state D1-toggle-open"
+    hotkey; sleep 1
+    cmd "state D2-toggle-closed"
+
+    # E: Detour frontmost: one panel; the menu key equivalent when the hotkey is off.
+    cmd activate; sleep 1
+    cmd "state E0-detour-front"
+    hotkey; sleep 1
+    cmd "state E1-hotkey-in-detour"
+    $IN key 53; sleep 0.6
+    cmd "enable 0"; sleep 0.3
+    cmd "state E2-off"
+    hotkey; sleep 1
+    cmd "state E3-menu-key-equivalent"
+    hotkey; sleep 1
+    cmd "state E4-menu-key-equivalent-again"
+    cmd "enable 1"; sleep 0.3
+
+    # F: the TASK-193.1 order (activate, then open), for comparison.
+    cmd closeqd; sleep 0.5
+    cmd "variant old"
+    kill -USR1 $OPID; sleep 1.2
+    cmd "state F0-old-before"
+    hotkey; sleep 1
+    cmd "state F1-old-panel"
+    require_panel_key F1-old-panel
+    $IN type "127.0.0.1:8932/r.html"; sleep 0.6
+    $IN key 36; sleep 2.5
+    cmd "state F2-old-after-submit"
+    cmd "variant new"
+    cmd closeqd; sleep 0.5
+
+    # A again in dark, for the capture.
+    cmd "appearance dark"
+    kill -USR1 $OPID; sleep 1.2
+    hotkey; sleep 1
+    cmd "state A4-panel-over-other-dark"
+    shoot_rect A4-panel-over-other-dark "$(panel_rect A4-panel-over-other-dark)"
+    $IN key 53; sleep 0.6
+    cmd "appearance light"
+
+    echo "PHASE1 DONE"
+    if [ "${PHASE2:-1}" = "1" ]; then
+      . $S/run2.sh
+    fi
+    finish
+
+    ==== run2.sh
+    # TASK-193.2 driver, part 2: Settings (sourced by run.sh).
+    settings_window() { grep "SETTINGS windowNumber" "$LOGF" | tail -1 | sed -E 's/.*windowNumber=([0-9]+).*/\1/'; }
+    # Not in a subshell: cmd counts commands in N.
+    rect_of() { cmd "rect $1"; RX=$(grep "RECT $1 " "$LOGF" | tail -1 | awk '{print $4}'); RY=$(grep "RECT $1 " "$LOGF" | tail -1 | awk '{print $5}'); }
+    click_checkbox() { rect_of quickDetourHotKeyEnabled; $IN click $RX $RY $DPID; }
+    click_recorder() { rect_of quickDetourHotKeyShortcut; $IN click $RX $RY $DPID; }
+    show_settings() { cmd settings; sleep 1.5; }
+
+    show_settings
+    SW=$(settings_window)
+    cmd "state G0-settings"
+    shoot_window G0-settings-light $SW
+    cmd "appearance dark"; sleep 0.8
+    shoot_window G0-settings-dark $SW
+    cmd "appearance light"; sleep 0.5
+
+
+    # Turning it off unregisters at once; the hotkey from the other app does nothing.
+    click_checkbox; sleep 0.8
+    cmd "state G1-unchecked"
+    kill -USR1 $OPID; sleep 1.2
+    hotkey; sleep 1
+    cmd "state G2-off-from-other"
+    show_settings
+    click_checkbox; sleep 0.8
+    cmd "state G3-checked"
+
+    # Changing it re-registers at once: record Ctrl-Opt-Cmd-F11.
+    click_recorder; sleep 0.6
+    cmd "state G4-recording"
+    $IN key 103 cotf; sleep 0.8
+    cmd "state G5-recorded-F11"
+    kill -USR1 $OPID; sleep 1.2
+    hotkey; sleep 1
+    cmd "state G6-old-shortcut-from-other"
+    $IN key 103 cotf; sleep 1
+    cmd "state G7-new-shortcut-from-other"
+    $IN key 53; sleep 0.6
+
+    # A menu shortcut is refused while recording; Escape cancels.
+    show_settings
+    click_recorder; sleep 0.6
+    $IN key 17 c; sleep 0.8
+    cmd "state G8-refused-cmd-t"
+    shoot_window G8-refused-light $SW
+    $IN key 53; sleep 0.6
+    cmd "state G9-cancelled"
+
+    # A conflict: another process holds Ctrl-Opt-Cmd-F12 exclusively.
+    $S/hk/hk 111 6400 1 60 HOLD > $V/hold.log 2>&1 &
+    HPID=$!
+    sleep 1.5
+    # Recording it is not possible while the holder has it (its hotkey takes the
+    # press first), so the setting changes from F11 to F12 through the harness.
+    click_recorder; sleep 0.6
+    hotkey; sleep 1
+    cmd "state H0-recording-held-shortcut"
+    $IN key 53; sleep 0.5
+    cmd "hotkey 111 6400 -"; sleep 0.5
+    cmd "state H1-conflict"
+    shoot_window H1-conflict-light $SW
+    cmd "appearance dark"; sleep 0.8
+    shoot_window H1-conflict-dark $SW
+    cmd "appearance light"; sleep 0.5
+    hotkey; sleep 1   # goes to the holder
+    cmd "state H2-pressed-while-held"
+    kill $HPID; HPID=""; sleep 0.5
+    kill -USR1 $OPID; sleep 1.2
+    show_settings      # Detour becomes active again: the refused shortcut is retried
+    cmd "state H3-after-retry"
+
+    # Delete clears: no shortcut, no menu key equivalent.
+    click_recorder; sleep 0.6
+    $IN key 51; sleep 0.8
+    cmd "state H4-cleared"
+    shoot_window H4-cleared-light $SW
+    click_recorder; sleep 0.6
+    hotkey; sleep 0.8
+    cmd "state H5-rerecorded-F12"
+    cmd closesettings
+    echo "PHASE2 DONE"
+
+    ==== run3.sh
+    #!/bin/bash
+    # TASK-193.2 review follow-up: Debug builds without the opt-in; the recorder ending on a click elsewhere.
+    set -u
+    S=/private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/20483124-f109-4f1c-ac33-b193eaf9d147/scratchpad/task193-2
+    APP=/Users/tma/Projects/browser/MyBrowser/.derived/Build/Products/Debug/Detour.app
+    V=$S/run3; OUT=$S/out3; IN=$S/hk/input
+    mkdir -p "$V" "$OUT"
+    LOGF=$V/verify.log
+    N=0
+    cmd() {
+      N=$((N+1)); echo "$*" > "$V/cmd-$N"
+      for i in $(seq 1 150); do grep -q "DONE $N\$" "$LOGF" 2>/dev/null && return 0; grep -q "EXIT" "$LOGF" 2>/dev/null && [ "$1" = quit ] && return 0; sleep 0.1; done
+      echo "TIMEOUT cmd $N: $*"; return 1
+    }
+    rect_of() { cmd "rect $1"; RX=$(grep "RECT $1 " "$LOGF" | tail -1 | awk '{print $4}'); RY=$(grep "RECT $1 " "$LOGF" | tail -1 | awk '{print $5}'); }
+    winpoint() { cmd "winpoint $1 $2"; PX=$(grep "WINPOINT" "$LOGF" | tail -1 | awk '{print $3}'); PY=$(grep "WINPOINT" "$LOGF" | tail -1 | awk '{print $4}'); }
+    click_checkbox() { rect_of quickDetourHotKeyEnabled; $IN click $RX $RY $DPID; }
+    click_recorder() { rect_of quickDetourHotKeyShortcut; $IN click $RX $RY $DPID; }
+    settings_window() { grep "SETTINGS windowNumber" "$LOGF" | tail -1 | sed -E 's/.*windowNumber=([0-9]+).*/\1/'; }
+    launch() {  # $1: opt-in value or empty
+      rm -f "$V"/cmd-* "$LOGF"; N=0
+      if [ -n "$1" ]; then
+        DETOUR_GLOBAL_HOTKEY=$1 DETOUR_DATA_DIR=DetourVerify1932 DETOUR_VERIFY_DIR=$V "$APP/Contents/MacOS/Detour" > $V/detour-$2.out 2>&1 &
+      else
+        DETOUR_DATA_DIR=DetourVerify1932 DETOUR_VERIFY_DIR=$V "$APP/Contents/MacOS/Detour" > $V/detour-$2.out 2>&1 &
+      fi
+      DPID=$!
+      for i in $(seq 1 100); do grep -q HARNESS "$LOGF" 2>/dev/null && break; sleep 0.2; done
+      sleep 2; echo "Detour $2 pid $DPID"
+    }
+    stop() {
+      cmd "enable 0"; sleep 0.3; cmd quit
+      for i in $(seq 1 50); do kill -0 $DPID 2>/dev/null || break; sleep 0.2; done
+      kill -0 $DPID 2>/dev/null && { echo "killing $DPID"; kill $DPID; }
+      cp "$LOGF" "$V/verify-$1.log"
+    }
+
+    # 1. Debug build without DETOUR_GLOBAL_HOTKEY: nothing registers, Settings says why.
+    launch "" noopt
+    cmd "hotkey 111 6400 -"; cmd "enable 1"; sleep 0.3
+    cmd settings; sleep 1.5
+    cmd "state N1-debug-no-opt-in"
+    SW=$(settings_window)
+    screencapture -x -o -l $SW $OUT/N1-debug-no-opt-in-light.png
+    cmd "appearance dark"; sleep 0.8
+    screencapture -x -o -l $SW $OUT/N1-debug-no-opt-in-dark.png
+    cmd "appearance light"
+    $IN key 111 cotf; sleep 1
+    cmd "state N2-pressed"
+    $IN key 53; sleep 0.5
+    stop noopt
+    $S/hk/hk 111 6400 1 0.5 FREE | grep "register="
+
+    # 2. Opted in: a click elsewhere ends recording and resumes the hotkey.
+    launch 1 optin
+    cmd "hotkey 111 6400 -"; cmd "enable 1"; sleep 0.3
+    cmd settings; sleep 1.5
+    cmd "state R0-registered"
+    click_recorder; sleep 0.6
+    cmd "state R1-recording"
+    click_checkbox; sleep 0.8
+    cmd "state R2-after-checkbox"
+    click_checkbox; sleep 0.8
+    cmd "state R3-checkbox-again"
+    click_recorder; sleep 0.6
+    cmd "state R4-recording"
+    rect_of quickDetourHotKeyShortcut; $IN click $((RX+220)) $RY $DPID; sleep 0.8
+    cmd "state R5-after-empty-space"
+    click_recorder; sleep 0.6
+    cmd "state R6-recording"
+    winpoint 199 55; $IN click $PX $PY $DPID; sleep 1.2
+    cmd "state R7-after-general-toolbar-item"
+    $IN key 111 cotf; sleep 1
+    cmd "state R8-hotkey-works"
+    $IN key 53; sleep 0.5
+    stop optin
+    $S/hk/hk 111 6400 1 0.5 FREE | grep "register="
+    pgrep -fl "Debug/Detour.app" || echo "no debug Detour left"
+
+    ==== variants.sh
+    #!/bin/bash
+    # TASK-193.2 runtime driver. Real input through the HID event tap (input tool);
+    # Detour's harness answers commands (cmd-N files) and logs state.
+    set -u
+    S=/private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/20483124-f109-4f1c-ac33-b193eaf9d147/scratchpad/task193-2
+    APP=/Users/tma/Projects/browser/MyBrowser/.derived/Build/Products/Debug/Detour.app
+    V=$S/run; OUT=$S/out
+    mkdir -p "$V" "$OUT"
+    rm -f "$V"/cmd-* "$V"/verify.log "$V"/other.log "$V"/hold.log
+    IN=$S/hk/input
+    N=0
+    LOGF=$V/verify.log
+
+    cmd() {
+      N=$((N+1)); echo "$*" > "$V/cmd-$N"
+      for i in $(seq 1 150); do grep -q "DONE $N\$" "$LOGF" 2>/dev/null && return 0; sleep 0.1; done
+      echo "TIMEOUT cmd $N: $*"; return 1
+    }
+    last_state() { grep "STATE $1 " "$LOGF" | tail -1; }
+    hotkey() { $IN key 111 cotf; }   # Ctrl-Opt-Cmd-F12
+    shoot_window() { screencapture -x -o -l "$2" "$OUT/$1.png"; echo "SHOT $1"; }
+    shoot_rect() { screencapture -x -R "$2" "$OUT/$1.png"; echo "SHOT $1 $2"; }
+    panel_rect() {  # the panel's frame, grown by 40 pt, from the last STATE line named $1
+      last_state "$1" | sed -E 's/.*panelFrameCG=([0-9,-]+).*/\1/' | awk -F, '{printf "%d,%d,%d,%d", $1-40, $2-40, $3+80, $4+80}'
+    }
+    require_panel_key() {
+      if ! last_state "$1" | grep -q "panelKey=true"; then echo "ABORT: panel not key at $1"; finish; exit 1; fi
+    }
+
+    finish() {
+      cmd "enable 0"; sleep 0.3
+      cmd "quit"
+      for i in $(seq 1 50); do kill -0 $DPID 2>/dev/null || break; sleep 0.2; done
+      kill -0 $DPID 2>/dev/null && { echo "Detour $DPID still running; killing"; kill $DPID; }
+      [ -n "${OPID:-}" ] && kill $OPID 2>/dev/null
+      [ -n "${HPID:-}" ] && kill $HPID 2>/dev/null
+      kill $SPID 2>/dev/null
+      echo "finished"
+    }
+
+    # Fixture server
+    ( cd $S/fixture && exec python3 -m http.server 8932 --bind 127.0.0.1 > $V/server.log 2>&1 ) &
+    SPID=$!
+    sleep 1
+
+    DETOUR_GLOBAL_HOTKEY=1 DETOUR_DATA_DIR=DetourVerify1932 DETOUR_VERIFY_DIR=$V DETOUR_VERIFY_FIXTURE=http://127.0.0.1:8932/ \
+      "$APP/Contents/MacOS/Detour" > $V/detour.out 2>&1 &
+    DPID=$!
+    echo "Detour pid $DPID"
+    for i in $(seq 1 100); do grep -q HARNESS "$LOGF" 2>/dev/null && break; sleep 0.2; done
+    sleep 2
+
+    cmd setup; sleep 2
+    cmd "hotkey 111 6400 -"; cmd "enable 1"; sleep 0.3
+    cmd "state registered"
+    cmd activate; sleep 1
+    cmd "state detour-active"
+
+    $S/other/other $V/other.log 1000 700 > /dev/null 2>&1 &
+    OPID=$!
+    sleep 2.5
+    OTHER_CG=$(grep LAUNCHED $V/other.log | sed -E 's/.*cgFrame=([0-9,]+).*/\1/')
+    echo "Other pid $OPID frame $OTHER_CG"
+    # A point on the Other window, near its bottom-left corner (away from the panel).
+    CX=$(echo $OTHER_CG | awk -F, '{print $1+60}'); CY=$(echo $OTHER_CG | awk -F, '{print $2+$4-60}')
+
+    for VAR in coop running ignoring old coop running ignoring old; do
+      cmd closeqd; sleep 0.5
+      cmd "variant $VAR"
+      cmd activate; sleep 1
+      kill -USR1 $OPID; sleep 1.2
+      cmd "state V-$VAR-before"
+      hotkey; sleep 1
+      cmd "state V-$VAR-panel"
+      require_panel_key V-$VAR-panel
+      $IN type "127.0.0.1:8932/q.html"; sleep 0.5
+      $IN key 36; sleep 2.5
+      cmd "state V-$VAR-after"
+    done
+    finish
+
+    ==== hk/hk.swift
+    import AppKit
+    import Carbon
+
+    // usage: hk <keyCode> <carbonMods> <options> <seconds> <tag>
+    let args = CommandLine.arguments
+    let keyCode = UInt32(args[1])!
+    let mods = UInt32(args[2])!
+    let options = UInt32(args[3])!
+    let seconds = Double(args[4])!
+    let tag = args[5]
+    print("[\(tag)] pid \(getpid()) postEventAccess=\(CGPreflightPostEventAccess()) listenAccess=\(CGPreflightListenEventAccess()) axTrusted=\(AXIsProcessTrusted())")
+    var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+    let st0 = InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+        var hk = EventHotKeyID()
+        GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
+        print("[\(CommandLine.arguments[5])] HOTKEY PRESSED id=\(hk.id) at \(Date())")
+        fflush(stdout)
+        return noErr
+    }, 1, &spec, nil, nil)
+    var ref: EventHotKeyRef?
+    let st = RegisterEventHotKey(keyCode, mods, EventHotKeyID(signature: 0x54455354, id: 1), GetApplicationEventTarget(), OptionBits(options), &ref)
+    print("[\(tag)] install=\(st0) register=\(st) ref=\(String(describing: ref))")
+    // same process, second registration
+    var ref2: EventHotKeyRef?
+    let st2 = RegisterEventHotKey(keyCode, mods, EventHotKeyID(signature: 0x54455354, id: 2), GetApplicationEventTarget(), 0, &ref2)
+    print("[\(tag)] same-process second register=\(st2)")
+    if ref2 != nil { UnregisterEventHotKey(ref2) }
+    fflush(stdout)
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+        if let ref { print("[\(tag)] unregister=\(UnregisterEventHotKey(ref))") }
+        fflush(stdout)
+        exit(0)
+    }
+    app.run()
+
+    ==== hk/input.swift
+    import CoreGraphics
+    import Foundation
+    // TASK-193.2 driver input, posted at the HID event tap (as a physical device would).
+    //   input key <keyCode> <flags c o t s f>
+    //   input text <string>
+    //   input click <x> <y> <expectedOwnerPid>   (CG global coordinates; refuses unless
+    //                                            the topmost window there is that pid's)
+    guard CGPreflightPostEventAccess() else { print("no post access"); exit(2) }
+    let args = CommandLine.arguments
+    let src = CGEventSource(stateID: .hidSystemState)
+    func flags(_ spec: String) -> CGEventFlags {
+        var f: CGEventFlags = []
+        if spec.contains("c") { f.insert(.maskCommand) }
+        if spec.contains("o") { f.insert(.maskAlternate) }
+        if spec.contains("t") { f.insert(.maskControl) }
+        if spec.contains("s") { f.insert(.maskShift) }
+        if spec.contains("f") { f.insert(.maskSecondaryFn) }
+        return f
+    }
+    switch args[1] {
+    case "key":
+        let code = CGKeyCode(args[2])!
+        let f = flags(args.count > 3 ? args[3] : "")
+        let down = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true)!
+        down.flags = f
+        let up = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false)!
+        up.flags = f
+        down.post(tap: .cghidEventTap); usleep(30000); up.post(tap: .cghidEventTap)
+        print("key \(code) \(args.count > 3 ? args[3] : "")")
+    case "text":
+        for scalar in args[2].utf16 {
+            var chars = [scalar]
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)!
+            down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &chars)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)!
+            up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &chars)
+            down.post(tap: .cghidEventTap); usleep(15000); up.post(tap: .cghidEventTap); usleep(25000)
+        }
+        print("text \(args[2])")
+    case "type":
+        // Virtual key codes of a US layout, as a physical keyboard sends them.
+        let codes: [Character: (CGKeyCode, Bool)] = [
+            "a": (0, false), "s": (1, false), "d": (2, false), "f": (3, false), "h": (4, false), "g": (5, false),
+            "z": (6, false), "x": (7, false), "c": (8, false), "v": (9, false), "b": (11, false), "q": (12, false),
+            "w": (13, false), "e": (14, false), "r": (15, false), "y": (16, false), "t": (17, false), "1": (18, false),
+            "2": (19, false), "3": (20, false), "4": (21, false), "6": (22, false), "5": (23, false), "9": (25, false),
+            "7": (26, false), "8": (28, false), "0": (29, false), "o": (31, false), "u": (32, false), "i": (34, false),
+            "p": (35, false), "l": (37, false), "j": (38, false), "k": (40, false), "n": (45, false), "m": (46, false),
+            ".": (47, false), "/": (44, false), ":": (41, true), "-": (27, false), " ": (49, false),
+        ]
+        for ch in args[2] {
+            guard let (code, shift) = codes[ch] else { print("no key for \(ch)"); exit(4) }
+            let down = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true)!
+            let up = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false)!
+            down.flags = shift ? .maskShift : []
+            up.flags = shift ? .maskShift : []
+            down.post(tap: .cghidEventTap); usleep(15000); up.post(tap: .cghidEventTap); usleep(25000)
+        }
+        print("type \(args[2])")
+    case "click":
+        let point = CGPoint(x: Double(args[2])!, y: Double(args[3])!)
+        let expected = Int32(args[4])!
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var top: (Int32, String, Int)? = nil
+        for w in info {
+            let layer = w[kCGWindowLayer as String] as? Int ?? 0
+            guard layer < 20 else { continue }   // skip menu bar, Dock, overlays
+            let alpha = w[kCGWindowAlpha as String] as? Double ?? 1
+            guard alpha > 0 else { continue }
+            guard let b = w[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+            let r = CGRect(x: b["X"]!, y: b["Y"]!, width: b["Width"]!, height: b["Height"]!)
+            if r.contains(point) {
+                top = (w[kCGWindowOwnerPID as String] as? Int32 ?? 0, w[kCGWindowOwnerName as String] as? String ?? "?", layer)
+                break
+            }
+        }
+        guard let top, top.0 == expected else { print("REFUSED click at \(point): top window is \(String(describing: top))"); exit(3) }
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            let e = CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: point, mouseButton: .left)!
+            e.post(tap: .cghidEventTap); usleep(40000)
+        }
+        print("click \(point) on \(top.1)")
+    default: print("?")
+    }
+
+    ==== other/other.swift
+    import AppKit
+    // Scratch "Other App" for TASK-193.2: a window with a text field; logs its
+    // activation, key state and every key it receives. SIGUSR1 activates it.
+    // usage: other <logfile> <w> <h>   (centred on the main screen)
+    let args = CommandLine.arguments
+    let logURL = URL(fileURLWithPath: args[1])
+    FileManager.default.createFile(atPath: logURL.path, contents: nil)
+    let handle = try! FileHandle(forWritingTo: logURL)
+    func log(_ s: String) {
+        let line = String(format: "%.3f ", ProcessInfo.processInfo.systemUptime) + s + "\n"
+        handle.seekToEndOfFile(); handle.write(line.data(using: .utf8)!)
+    }
+    final class Delegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
+        var window: NSWindow!
+        var field: NSTextField!
+        var signalSource: DispatchSourceSignal?
+        func applicationDidFinishLaunching(_ n: Notification) {
+            let a = CommandLine.arguments
+            // <w> <h> centred on the main screen's visible frame.
+            let visible = NSScreen.screens[0].visibleFrame
+            let w = Double(a[2])!, h = Double(a[3])!
+            let rect = NSRect(x: visible.midX - w / 2, y: visible.midY - h / 2, width: w, height: h)
+            window = NSWindow(contentRect: rect, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "Other App (TASK-193.2 scratch)"
+            window.backgroundColor = NSColor(calibratedRed: 0.85, green: 0.93, blue: 0.85, alpha: 1)
+            field = NSTextField(frame: NSRect(x: 20, y: rect.height - 60, width: rect.width - 40, height: 24))
+            field.placeholderString = "Other App field"
+            field.delegate = self
+            window.contentView!.addSubview(field)
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(field)
+            NSApp.activate(ignoringOtherApps: true)
+            for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { n in log("APP \(n.name.rawValue)") }
+            }
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { n in log("WINDOW \(n.name.rawValue)") }
+            }
+            NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { e in
+                log("KEYDOWN keyCode=\(e.keyCode) chars=\(e.charactersIgnoringModifiers ?? "") flags=\(e.modifierFlags.rawValue)")
+                return e
+            }
+            signal(SIGUSR1, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+            src.setEventHandler { [weak self] in
+                log("SIGUSR1 activate")
+                NSApp.activate(ignoringOtherApps: true)
+                self?.window.makeKeyAndOrderFront(nil)
+            }
+            src.resume()
+            signalSource = src
+            let f = window.frame, H = NSScreen.screens[0].frame.height
+            log("LAUNCHED pid=\(getpid()) windowNumber=\(window.windowNumber) active=\(NSApp.isActive) cgFrame=\(Int(f.minX)),\(Int(H - f.maxY)),\(Int(f.width)),\(Int(f.height))")
+            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                log("TICK active=\(NSApp.isActive) key=\(self.window.isKeyWindow) text=\(self.field.stringValue)")
+            }
+        }
+        func controlTextDidChange(_ obj: Notification) { log("TEXT \(field.stringValue)") }
+    }
+    let app = NSApplication.shared
+    app.setActivationPolicy(.regular)
+    let delegate = Delegate()
+    app.delegate = delegate
+    app.run()
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index acf42c0..49f8c0f 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -120,6 +120,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1932HarnessIfRequested()   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1932Harness.swift b/Detour/App/Task1932Harness.swift
+new file mode 100644
+index 0000000..294457b
+--- /dev/null
++++ b/Detour/App/Task1932Harness.swift
+@@ -0,0 +1,274 @@
++// TEMP TASK-193.2 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import Carbon.HIToolbox
++
++/// A command server for the shell driver: the driver writes
++/// `$DETOUR_VERIFY_DIR/cmd-<n>` (one command line), the harness runs it and
++/// logs `DONE <n>` to verify.log. Real input (the hotkey, typing, clicks) is
++/// posted by the driver from outside, through the HID event tap.
++extension AppDelegate {
++    func runTask1932HarnessIfRequested() {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let harness = Task1932Harness(outDir: outDir, fixture: env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8932/",
++                                      appDelegate: self)
++        Task1932Harness.current = harness
++        harness.start()
++    }
++}
++
++final class Task1932Harness {
++    static var current: Task1932Harness?
++    let outDir: String
++    let fixture: String
++    weak var appDelegate: AppDelegate?
++    private var next = 1
++    private var timer: Timer?
++    private let logURL: URL
++    private var hotKeyPresses = 0
++    private var stateObserver: NSObjectProtocol?
++
++    init(outDir: String, fixture: String, appDelegate: AppDelegate) {
++        self.outDir = outDir
++        self.fixture = fixture
++        self.appDelegate = appDelegate
++        logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        FileManager.default.createFile(atPath: logURL.path, contents: nil)
++    }
++
++    func log(_ line: String) {
++        let text = String(format: "%.3f ", ProcessInfo.processInfo.systemUptime) + line + "\n"
++        if let handle = try? FileHandle(forWritingTo: logURL) {
++            handle.seekToEndOfFile()
++            handle.write(text.data(using: .utf8)!)
++            try? handle.close()
++        }
++    }
++
++    func start() {
++        log("HARNESS pid=\(getpid()) dataDir=\(WebKitStorageScope.currentDataDirectoryName) suite=\(UserDefaultsScope.suiteName() ?? "standard")")
++        stateObserver = NotificationCenter.default.addObserver(
++            forName: QuickDetourHotKey.stateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
++            self?.log("HOTKEY-STATE \(QuickDetourHotKey.shared.state)")
++        }
++        // Count the launcher's openings by path: wrap the hotkey's handler.
++        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.poll() }
++    }
++
++    private func poll() {
++        let url = URL(fileURLWithPath: outDir).appendingPathComponent("cmd-\(next)")
++        guard let data = try? Data(contentsOf: url), let line = String(data: data, encoding: .utf8) else { return }
++        let n = next
++        next += 1
++        let words = line.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ").map(String.init)
++        log("CMD \(n) \(words.joined(separator: " "))")
++        run(words)
++        log("DONE \(n)")
++    }
++
++    private func run(_ words: [String]) {
++        guard let command = words.first else { return }
++        let args = Array(words.dropFirst())
++        switch command {
++        case "setup": setup()
++        case "hotkey":
++            // hotkey <keyCode> <carbonModifiers> <character or ->
++            let shortcut = HotKeyShortcut(keyCode: UInt16(args[0])!,
++                                          modifiers: HotKeyShortcut.modifiers(fromCarbon: UInt32(args[1])!),
++                                          character: args[2] == "-" ? "" : args[2])
++            QuickDetourHotKey.shared.settings.shortcut = shortcut
++        case "enable": QuickDetourHotKey.shared.settings.isEnabled = args[0] == "1"
++        case "variant": setVariant(args[0])
++        case "state": logState(args.first ?? "")
++        case "settings": showSettings()
++        case "rect": logRect(identifier: args[0])
++        case "appearance":
++            NSApp.appearance = NSAppearance(named: args[0] == "dark" ? .darkAqua : .aqua)
++        case "activate":
++            NSApp.activate()
++            if let window = NSApp.orderedWindows.first(where: { $0.windowController is BrowserWindowController }) {
++                window.makeKeyAndOrderFront(nil)
++            }
++        case "closeqd":
++            for controller in QuickDetourWindowController.openControllers { controller.window?.performClose(nil) }
++        case "closesettings": SettingsWindowController.shared.window?.orderOut(nil)
++        case "invoke": appDelegate?.quickDetourHotKeyPressed()
++        case "winpoint":
++            // winpoint <x> <y>: a point given from the Settings window's top-left, in CG coordinates.
++            guard let window = SettingsWindowController.shared.window else { break }
++            let height = NSScreen.screens[0].frame.height
++            log("WINPOINT \(Int(window.frame.minX) + Int(args[0])!) \(Int(height - window.frame.maxY) + Int(args[1])!)")
++        case "monitor":
++            _ = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
++                self?.log("EVENT \(event.type.rawValue) keyCode=\(event.keyCode) chars=\(event.characters ?? "") window=\(self?.describe(event.window) ?? "") fr=\(event.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "-")")
++                return event
++            }
++        case "quit":
++            QuickDetourHotKey.shared.stop()
++            log("EXIT")
++            exit(0)
++        default: log("UNKNOWN \(command)")
++        }
++    }
++
++    private func setup() {
++        guard let appDelegate else { return }
++        let main = NSScreen.screens[0].visibleFrame
++        appDelegate.createNewWindowWithURL(URL(string: fixture + "b.html")!)
++        let browsers = NSApp.windows.filter { $0.windowController is BrowserWindowController && $0.isVisible }
++        for (index, window) in browsers.enumerated() {
++            window.setFrame(NSRect(x: main.minX + 40 + CGFloat(index) * 260, y: main.maxY - 700 - CGFloat(index) * 40,
++                                   width: 900, height: 640), display: true)
++        }
++        if let first = browsers.first(where: { ($0.windowController as? BrowserWindowController)?.activeSpace?.tabs.isEmpty == false } ) {
++            log("SETUP first has tabs \(first.windowNumber)")
++        }
++        // The window that had no tab gets the a.html page.
++        for window in browsers {
++            guard let wc = window.windowController as? BrowserWindowController, let space = wc.activeSpace else { continue }
++            if wc.selectedTab == nil {
++                let tab = TabStore.shared.addTab(in: space, url: URL(string: fixture + "a.html")!)
++                wc.selectTab(id: tab.id)
++            }
++        }
++        log("SETUP browsers=\(browsers.map { $0.windowNumber })")
++    }
++
++    /// new: the shipped order (open the window, then activate). old: what
++    /// TASK-193.1 did (activate, then open), for comparison.
++    private func setVariant(_ variant: String) {
++        let launcher = QuickDetourLauncher.shared
++        launcher.openWindow = { profile, space, url, typed in
++            switch variant {
++            case "old":       // TASK-193.1: activate, then open
++                NSApp.activate(ignoringOtherApps: true)
++                QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: url, typed: typed)
++            case "coop":      // open, then the cooperative NSApp.activate()
++                QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: url, typed: typed)
++                NSApp.activate()
++            case "running":   // open, then NSRunningApplication without .activateAllWindows
++                QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: url, typed: typed)
++                NSRunningApplication.current.activate(options: [])
++            case "ignoring":  // open, then activate(ignoringOtherApps:)
++                QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: url, typed: typed)
++                NSApp.activate(ignoringOtherApps: true)
++            default:          // the shipped closure
++                QuickDetourLauncher.defaultOpenWindow(profile, space, url, typed)
++            }
++        }
++        log("VARIANT \(variant)")
++    }
++
++    private func describe(_ window: NSWindow?) -> String {
++        guard let window else { return "nil" }
++        let kind: String
++        switch window.windowController {
++        case is BrowserWindowController: kind = "browser"
++        case is QuickDetourWindowController: kind = "quick"
++        case is SettingsWindowController: kind = "settings"
++        default: kind = window is QuickDetourPalettePanel ? "panel" : String(describing: type(of: window))
++        }
++        return "\(kind)#\(window.windowNumber)"
++    }
++
++    private func paletteText() -> String? {
++        guard let host = QuickDetourLauncher.shared.panel?.contentView else { return nil }
++        func find(_ view: NSView) -> NSTextField? {
++            if let field = view as? CommandPaletteTextField { return field }
++            for sub in view.subviews { if let found = find(sub) { return found } }
++            return nil
++        }
++        return find(host)?.stringValue
++    }
++
++    private func logState(_ label: String) {
++        let front = NSWorkspace.shared.frontmostApplication
++        let launcher = QuickDetourLauncher.shared
++        let panel = launcher.panel
++        let fieldEditorFirst = panel.map { $0.firstResponder is NSTextView } ?? false
++        let hotKey = QuickDetourHotKey.shared
++        let item = appDelegate?.quickDetourMenuItem
++        let keyEquivalent = item.map { $0.keyEquivalent.unicodeScalars.map { String(format: "U+%04X", $0.value) }.joined() } ?? "nil"
++        let mask = item.map { HotKeyShortcut(keyCode: UInt16.max, modifiers: $0.keyEquivalentModifierMask, character: "").displayString } ?? ""
++        log("STATE \(label) active=\(NSApp.isActive) front=\(front?.localizedName ?? "?")/\(front?.processIdentifier ?? 0) "
++            + "launcher=\(launcher.isShowing) panelKey=\(panel?.isKeyWindow ?? false) fieldFirstResponder=\(fieldEditorFirst) "
++            + "text=\(paletteText() ?? "-") hotkey=\(hotKey.state) enabled=\(hotKey.settings.isEnabled) "
++            + "shortcut=\(hotKey.settings.shortcut?.displayString ?? "none") menu=\(keyEquivalent)+\(mask) "
++            + "quickWindows=\(QuickDetourWindowController.openControllers.count) key=\(describe(NSApp.keyWindow)) "
++            + "main=\(describe(NSApp.mainWindow)) panelFrameCG=\(panel.map { Self.cgRect($0.frame) } ?? "-")")
++        let ordered = NSApp.orderedWindows.filter(\.isVisible).map(describe)
++        log("ORDER-APP \(label) \(ordered.joined(separator: " "))")
++        log("RECORDER \(label) recording=\(recorderView()?.isRecording.description ?? "-") availability=\(hotKey.availability) pane=\(SettingsWindowController.shared.window?.contentViewController.map { String(describing: type(of: $0)) } ?? "-") warning=\(warningText() ?? "-")")
++        // Front to back, every on-screen window of Detour or the scratch app.
++        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
++            as? [[String: Any]] ?? []
++        let mine = getpid()
++        var entries: [String] = []
++        for window in info {
++            let pid = window[kCGWindowOwnerPID as String] as? Int32 ?? 0
++            let owner = window[kCGWindowOwnerName as String] as? String ?? "?"
++            let number = window[kCGWindowNumber as String] as? Int ?? 0
++            let layer = window[kCGWindowLayer as String] as? Int ?? 0
++            let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
++            guard pid == mine || owner == "other" else { continue }
++            guard (bounds["Width"] ?? 0) > 50 else { continue }
++            let name = pid == mine ? describe(NSApp.window(withWindowNumber: number)) : "OTHER#\(number)"
++            entries.append("\(name)@L\(layer)")
++        }
++        log("ORDER-CG \(label) \(entries.joined(separator: " "))")
++    }
++
++    static func cgRect(_ rect: NSRect) -> String {
++        let height = NSScreen.screens[0].frame.height
++        return "\(Int(rect.minX)),\(Int(height - rect.maxY)),\(Int(rect.width)),\(Int(rect.height))"
++    }
++
++    private func showSettings() {
++        SettingsWindowController.shared.showLinksPane()
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
++            guard let window = SettingsWindowController.shared.window,
++                  let pane = window.contentViewController as? SettingsPaneViewController else { return }
++            // The section is at the bottom of the pane.
++            if let document = pane.scrollView.documentView {
++                document.scroll(NSPoint(x: 0, y: document.bounds.maxY))
++            }
++            self?.log("SETTINGS windowNumber=\(window.windowNumber) frame=\(window.frame)")
++        }
++    }
++
++    private func recorderView() -> ShortcutRecorderView? {
++        guard let content = SettingsWindowController.shared.window?.contentView else { return nil }
++        func find(_ view: NSView) -> ShortcutRecorderView? {
++            if let recorder = view as? ShortcutRecorderView { return recorder }
++            for sub in view.subviews { if let found = find(sub) { return found } }
++            return nil
++        }
++        return find(content)
++    }
++
++    /// The Quick Detour section's warning line: the visible label just below the recorder.
++    private func warningText() -> String? {
++        guard let recorder = recorderView(), let container = recorder.superview else { return nil }
++        let labels = container.subviews.compactMap { $0 as? SettingsWrappingLabel }
++            .filter { !$0.isHidden && $0.frame.maxY < recorder.frame.minY + 1 && $0.frame.maxY > recorder.frame.minY - 30 }
++        return labels.first?.stringValue
++    }
++
++    private func logRect(identifier: String) {
++        guard let window = SettingsWindowController.shared.window, let content = window.contentView else { return }
++        func find(_ view: NSView) -> NSView? {
++            if view.accessibilityIdentifier() == identifier { return view }
++            for sub in view.subviews { if let found = find(sub) { return found } }
++            return nil
++        }
++        guard let view = find(content) else { return log("RECT \(identifier) none") }
++        let inWindow = view.convert(view.bounds, to: nil)
++        let onScreen = window.convertToScreen(inWindow)
++        let height = NSScreen.screens[0].frame.height
++        // CG global coordinates: top-left origin.
++        let x = Int(onScreen.midX), y = Int(height - onScreen.midY)
++        log("RECT \(identifier) \(x) \(y) window=\(window.windowNumber)")
++    }
++}
++#endif

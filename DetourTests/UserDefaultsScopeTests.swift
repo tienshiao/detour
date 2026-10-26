@@ -55,6 +55,26 @@ final class UserDefaultsScopeTests: XCTestCase {
             WebKitStorageScope.current.isDefaultDataDirectory)
     }
 
+    /// TASK-193.2: Detour's own preferences (the Quick Detour hotkey) follow
+    /// the content blocker's rule: the standard domain in the default data
+    /// directory, a suite of their own anywhere else.
+    func testPreferencesSuiteIsTheStandardDomainOnlyInTheDefaultDataDirectory() {
+        XCTAssertNil(UserDefaultsScope.suiteName(dataDirectory: defaultDetourDataDirectoryName,
+                                                 bundleIdentifier: "com.detourbrowser.mac"))
+        XCTAssertNil(UserDefaultsScope.suiteName(dataDirectory: nil, bundleIdentifier: "com.detourbrowser.mac"))
+        XCTAssertEqual(UserDefaultsScope.suiteName(dataDirectory: "DetourVerify1932",
+                                                   bundleIdentifier: "com.detourbrowser.mac"),
+                       "com.detourbrowser.mac.DetourVerify1932")
+    }
+
+    /// The test host never reads or writes the production domain's preferences.
+    func testTheTestHostsPreferencesAreNotTheStandardDomain() {
+        XCTAssertFalse(WebKitStorageScope.currentIsDefaultDataDirectory)
+        XCTAssertFalse(UserDefaultsScope.defaults === UserDefaults.standard)
+        XCTAssertEqual(UserDefaultsScope.suiteName(),
+                       "\(Bundle.main.bundleIdentifier ?? "com.detourbrowser.mac").\(WebKitStorageScope.currentDataDirectoryName)")
+    }
+
     /// Sparkle must not run in the test host, whatever the data directory.
     func testUpdaterDoesNotStartInTheTestHost() {
         XCTAssertTrue(AppDelegate.isRunningUnitTests, "the test host should be detected as such")

@@ -26,4 +26,21 @@ enum UserDefaultsScope {
         guard let dataDirectory, dataDirectory != defaultDetourDataDirectoryName else { return base }
         return "\(base)-\(dataDirectory)"
     }
+
+    /// The defaults suite Detour's own preferences go in for `dataDirectory`:
+    /// nil (the standard domain, the bundle id's) in the default data
+    /// directory, `<bundle id>.<name>` anywhere else — the rule
+    /// `ContentBlockerStorage` set, so an isolated run or the test host never
+    /// writes the production domain (TASK-193.2's hotkey settings; the content
+    /// blocker's storage uses it too).
+    static func suiteName(
+        dataDirectory: String? = WebKitStorageScope.currentDataDirectoryName,
+        bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.detourbrowser.mac"
+    ) -> String? {
+        guard let dataDirectory, dataDirectory != defaultDetourDataDirectoryName else { return nil }
+        return "\(bundleIdentifier).\(dataDirectory)"
+    }
+
+    /// The defaults of this process's data directory (`suiteName`).
+    static let defaults: UserDefaults = suiteName().flatMap { UserDefaults(suiteName: $0) } ?? .standard
 }

@@ -8,6 +8,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: AppDelegate.startsUpdater, updaterDelegate: nil, userDriverDelegate: nil)
     private var windowControllers: [BrowserWindowController] = []
+    /// File > New Quick Detour Window.
+    private(set) var quickDetourMenuItem: NSMenuItem?
 
     /// Whether this process is the XCTest host (the test runner injects
     /// `XCTest*` variables into the app it launches).
@@ -30,6 +32,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
+
+        // The Quick Detour hotkey (TASK-193.2): the menu item mirrors the
+        // shortcut everywhere; `start` registers the system-wide hotkey only
+        // where `QuickDetourHotKeyAvailability` allows it (never in the test
+        // host; in a Debug build only with DETOUR_GLOBAL_HOTKEY=1).
+        let quickDetourHotKey = QuickDetourHotKey.shared
+        quickDetourHotKey.menuItem = quickDetourMenuItem
+        quickDetourHotKey.start { [weak self] in self?.quickDetourHotKeyPressed() }
 
         if !Self.startsUpdater {
             // Say so once at launch: a run that silently never checks for
@@ -113,6 +123,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        QuickDetourHotKey.shared.stop()
         TabStore.shared.undoManager.removeAllActions()
         TabStore.shared.saveNow()
         // A download that ended inside the manager's 1 s save debounce would
@@ -262,6 +273,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Private profile for a Private window, a Quick Detour's own — else the
     /// first normal profile (`QuickDetour.profileForNewWindow`).
     @objc func newQuickDetourWindow(_ sender: Any?) {
+        // The shortcut pressed while the panel is up closes it, as the global
+        // hotkey does (TASK-193.2); choosing the item shows it.
+        if NSApp.currentEvent?.type == .keyDown, QuickDetourLauncher.shared.isShowing {
+            QuickDetourLauncher.shared.close()
+            return
+        }
+        showQuickDetourLauncher()
+    }
+
+    /// The global hotkey (TASK-193.2), pressed in any app, Detour included:
+    /// shows the launcher over whatever is in front, without activating
+    /// Detour; pressed again while it is up, closes it (as Spotlight's does).
+    func quickDetourHotKeyPressed() {
+        if QuickDetourLauncher.shared.isShowing {
+            QuickDetourLauncher.shared.close()
+        } else {
+            showQuickDetourLauncher()
+        }
+    }
+
+    private func showQuickDetourLauncher() {
         let frontmost = NSApp.orderedWindows.lazy.compactMap { $0.windowController }.first {
             $0 is BrowserWindowController || $0 is QuickDetourWindowController
         }
@@ -465,12 +497,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Window", action: #selector(createNewWindow as () -> Void), keyEquivalent: "n")
         let privateWindowItem = fileMenu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "n")
         privateWindowItem.keyEquivalentModifierMask = [.command, .shift]
-        // Opt-Cmd-N while Detour is active (TASK-193.1); the system-wide
-        // hotkey is TASK-193.2. The File menu is not delegate-driven, so AppKit
-        // matches it natively.
+        // Opt-Cmd-N by default (TASK-193.1), or the shortcut set for the
+        // system-wide hotkey (TASK-193.2). The File menu is not
+        // delegate-driven, so AppKit matches it natively.
         let quickDetourItem = fileMenu.addItem(withTitle: "New \(QuickDetour.displayName) Window",
                                                action: #selector(newQuickDetourWindow(_:)), keyEquivalent: "n")
         quickDetourItem.keyEquivalentModifierMask = [.command, .option]
+        // Its key equivalent follows the hotkey's setting (QuickDetourHotKey).
+        quickDetourMenuItem = quickDetourItem
         fileMenuItem.submenu = fileMenu
 
         // Edit menu

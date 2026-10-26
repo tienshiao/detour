@@ -4,7 +4,7 @@ title: Link routing (Air Traffic Control)
 description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept,, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: model
@@ -620,6 +620,7 @@ section of the Spaces pane), after Arc's sheet in `docs/air-traffic-control/`.
 | Description | What Air Traffic Control does, that routes are tried from the top and the first match decides, and that rows drag. |
 | Routes | A "Routes" title with **New Route** at the trailing edge, then a bordered list: one row per route, three lines (`URL [kind ▾] [pattern] ⊖`, `From app [app ▾]`, `↳ Open in [target ▾]`), a drag handle at the left, and, when the row has a problem, a fourth line: an orange triangle and the whole warning, wrapping, under Open in. No routes: one centred line in the box. |
 | Default | "Open other links in [target ▾]" and a caption: it applies to every link no route matches (from other apps, typed in a new tab, clicked to another site), and Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. |
+| Quick Detour | TASK-193.2: "[✓] Open Quick Detour from any app with [shortcut]", the global hotkey's switch and recorder, a warning line and help text. Described on [Quick Detour](./quick-detour.md#the-settings-control); TASK-193.5 adds a switch per entry point here. |
 
 - **Match kind pop-up**: Domain is, Contains, Is equal to, then **Any URL**
   (`match == nil`). The pattern carries over when the kind changes; Any URL

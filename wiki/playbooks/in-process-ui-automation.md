@@ -4,7 +4,7 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
 sources:
   - id: task-169
     resource: backlog:TASK-169
@@ -239,12 +239,16 @@ edges ([UI probes](./ui-probes.md)).
   [internal pages](../features/internal-pages.md).
 - **External input is unproven even with grants.** Before relying on
   posted `CGEvent`s from outside, test one click whose effect shows in the
-  database.
+  database. For a global hotkey and anything pressed while another app is
+  in front, see [testing a global hotkey](./global-hotkey-testing.md):
+  posted at the HID event tap from scratch tools, it worked (TASK-193.2).
 
 # What still needs a person
 
 - The real system keystroke path, when another app or a system shortcut
-  may take the key first.
+  may take the key first (keys posted at the HID event tap go through the
+  window server's hotkey matching, but a person's key press is still the
+  last word).
 - Content that depends on the person's own accounts and data.
 - Aesthetic judgement.
 
@@ -255,6 +259,7 @@ above.
 # Related
 
 - [Debug harness](./debug-harness.md) — where this code lives.
+- [Testing a global hotkey](./global-hotkey-testing.md) — input from outside the app, at the HID event tap.
 - [UI probes](./ui-probes.md) — measurements rather than interactions.
 - [Runtime verification](./runtime-verification.md) — launch and isolation.
 - [Keyboard focus](../sidebar/keyboard-focus.md) — what the key tests are usually about.

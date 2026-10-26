@@ -5,7 +5,7 @@ description: "AppDelegate and main.swift — launch and termination, window crea
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
 sources:
   - id: app-delegate
     resource: ../../Detour/App/AppDelegate.swift
@@ -113,7 +113,7 @@ the responder chain to the key window's controller, which validates them in
 | Menu | Contents | Dynamic? |
 |---|---|---|
 | App | About, Check for Updates… (only when Sparkle runs), Settings… | No |
-| File | New Tab, Open Location…, Close Tab, Reopen Closed Tab, Pin/Unpin Tab, New Window, New Private Window, New Quick Detour Window (Opt-Cmd-N, `newQuickDetourWindow`, which shows the Quick Detour launcher panel) | No |
+| File | New Tab, Open Location…, Close Tab, Reopen Closed Tab, Pin/Unpin Tab, New Window, New Private Window, New Quick Detour Window (`newQuickDetourWindow`, which shows the Quick Detour launcher panel; its key equivalent is the global hotkey's shortcut, Opt-Cmd-N by default, set by `QuickDetourHotKey`, and pressing it while the panel is up closes it) | No |
 | Edit | Undo/Redo (the **browser** undo manager), Cut/Copy/Copy URL/Paste, Find | No |
 | View | Toggle Sidebar, Reload, zoom | No |
 | Navigate | Back/Forward, Previous/Next Tab, Show All History, Archived Tabs | No |

@@ -41,6 +41,19 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     private var scrollsToHighlightOnFit = false
     private var storeObserver: NSObjectProtocol?
 
+    // The Quick Detour section (TASK-193.2): the global hotkey.
+    private var hotKey: QuickDetourHotKey { .shared }
+    private var hotKeyCheckbox: NSButton!
+    private var hotKeyRecorder: ShortcutRecorderView!
+    private var hotKeyWarningIcon: NSImageView!
+    private var hotKeyWarningLabel: SettingsWrappingLabel!
+    /// The help text sits under the row, or under the warning when one shows.
+    private var hotKeyHelpBelowRow: NSLayoutConstraint!
+    private var hotKeyHelpBelowWarning: NSLayoutConstraint!
+    /// Why the recorder refused the last shortcut typed, while it records.
+    private var hotKeyRefusal: String?
+    private var hotKeyObservers: [NSObjectProtocol] = []
+
     private static let dragType = NSPasteboard.PasteboardType("com.detour.link-route")
     /// The list's height with no routes: one line of text.
     private static let emptyListHeight: CGFloat = 56
@@ -132,6 +145,8 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
         container.addSubview(caption)
 
+        let quickDetourSection = makeQuickDetourSection(in: container)
+
         listHeight = box.heightAnchor.constraint(equalToConstant: Self.emptyListHeight)
         defaultBottomAtPopUp = defaultPopUp.bottomAnchor.constraint(equalTo: defaultRow.bottomAnchor,
                                                                     constant: -LinkRouteHighlightView.insetY)
@@ -184,10 +199,99 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             caption.topAnchor.constraint(equalTo: defaultRow.bottomAnchor, constant: SettingsMetrics.controlToHelp),
             caption.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: LinkRouteHighlightView.insetX),
             caption.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            caption.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
-            bottomHug(caption.bottomAnchor, container.bottomAnchor),
+
+            quickDetourSection.topAnchor.constraint(equalTo: caption.bottomAnchor, constant: SettingsMetrics.sectionGap),
+            quickDetourSection.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            bottomHug(quickDetourSection.bottomAnchor, container.bottomAnchor),
         ])
         return container
+    }
+
+    /// "Quick Detour": [✓] Open Quick Detour from any app with [⌥⌘N], a
+    /// warning line when the shortcut is refused or not registered, and the
+    /// help text; returned as a guide from the title's top to the help's
+    /// bottom. TASK-193.5 adds more entry points here.
+    private func makeQuickDetourSection(in container: NSView) -> NSLayoutGuide {
+        let title = NSTextField.settingsSectionTitle(QuickDetour.displayName)
+        container.addSubview(title)
+
+        hotKeyCheckbox = NSButton(checkboxWithTitle: "Open \(QuickDetour.displayName) from any app with",
+                                  target: self, action: #selector(hotKeyCheckboxChanged))
+        hotKeyCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        hotKeyCheckbox.setAccessibilityIdentifier("quickDetourHotKeyEnabled")
+        container.addSubview(hotKeyCheckbox)
+
+        hotKeyRecorder = ShortcutRecorderView()
+        hotKeyRecorder.setAccessibilityIdentifier("quickDetourHotKeyShortcut")
+        hotKeyRecorder.setAccessibilityLabel("\(QuickDetour.displayName) shortcut")
+        hotKeyRecorder.problem = { shortcut in
+            HotKeyShortcutValidation.problem(for: shortcut, menu: NSApp.mainMenu,
+                                             ownAction: #selector(AppDelegate.newQuickDetourWindow(_:)),
+                                             systemHotKeys: HotKeyShortcutValidation.currentSystemHotKeys())
+        }
+        hotKeyRecorder.onChange = { [weak self] shortcut in
+            self?.hotKey.settings.shortcut = shortcut
+        }
+        hotKeyRecorder.onRecordingChange = { [weak self] recording in
+            self?.hotKey.setRecording(recording)
+        }
+        hotKeyRecorder.onRefuse = { [weak self] message in
+            self?.hotKeyRefusal = message
+            self?.updateHotKeySection()
+        }
+        container.addSubview(hotKeyRecorder)
+
+        hotKeyWarningIcon = LinkRouteCellView.makeWarning().icon
+        hotKeyWarningLabel = SettingsWrappingLabel(wrapping: "", estimatedWidth: SettingsMetrics.windowWidth
+            - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX - LinkRouteCellView.warningIconWidth
+            - LinkRouteCellView.warningIconGap)
+        hotKeyWarningLabel.isHidden = true
+        container.addSubview(hotKeyWarningIcon)
+        container.addSubview(hotKeyWarningLabel)
+
+        let help = SettingsWrappingLabel(
+            wrapping: "The launcher opens over the app in front; Escape or a click elsewhere closes it. The same shortcut is File > New \(QuickDetour.displayName) Window while Detour is in front, also when this is off.",
+            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
+        container.addSubview(help)
+
+        hotKeyHelpBelowRow = help.topAnchor.constraint(equalTo: hotKeyRecorder.bottomAnchor,
+                                                       constant: SettingsMetrics.controlToHelp)
+        hotKeyHelpBelowWarning = help.topAnchor.constraint(equalTo: hotKeyWarningLabel.bottomAnchor,
+                                                           constant: SettingsMetrics.controlToHelp)
+        let rowLeading = container.leadingAnchor
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+
+            hotKeyRecorder.topAnchor.constraint(equalTo: title.bottomAnchor, constant: SettingsMetrics.sectionTitleToRows),
+            hotKeyCheckbox.leadingAnchor.constraint(equalTo: rowLeading, constant: LinkRouteHighlightView.insetX),
+            hotKeyCheckbox.centerYAnchor.constraint(equalTo: hotKeyRecorder.centerYAnchor),
+            hotKeyRecorder.leadingAnchor.constraint(equalTo: hotKeyCheckbox.trailingAnchor,
+                                                    constant: SettingsMetrics.labelToControl),
+            hotKeyRecorder.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+
+            hotKeyWarningIcon.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            hotKeyWarningIcon.centerYAnchor.constraint(equalTo: hotKeyWarningLabel.topAnchor,
+                                                       constant: LinkRouteCellView.warningFirstLineCenter),
+            hotKeyWarningLabel.topAnchor.constraint(equalTo: hotKeyRecorder.bottomAnchor,
+                                                    constant: LinkRouteCellView.lineGap),
+            hotKeyWarningLabel.leadingAnchor.constraint(equalTo: hotKeyWarningIcon.trailingAnchor,
+                                                        constant: LinkRouteCellView.warningIconGap),
+            hotKeyWarningLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            hotKeyHelpBelowRow,
+            help.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            help.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+
+        let section = NSLayoutGuide()
+        container.addLayoutGuide(section)
+        NSLayoutConstraint.activate([
+            section.topAnchor.constraint(equalTo: title.topAnchor),
+            section.bottomAnchor.constraint(equalTo: help.bottomAnchor),
+            section.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            section.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        return section
     }
 
     override func viewDidLoad() {
@@ -200,15 +304,63 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
+        for name in [QuickDetourHotKeySettings.didChangeNotification, QuickDetourHotKey.stateDidChangeNotification] {
+            hotKeyObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateHotKeySection() }
+            })
+        }
+        updateHotKeySection()
     }
 
     deinit {
         if let storeObserver { NotificationCenter.default.removeObserver(storeObserver) }
+        for observer in hotKeyObservers { NotificationCenter.default.removeObserver(observer) }
     }
 
     override func viewWillAppear() {
         super.viewWillAppear()
         refresh()
+        // Another app may have let go of a refused shortcut since.
+        hotKey.retryIfFailed()
+        updateHotKeySection()
+    }
+
+    // MARK: - Quick Detour
+
+    @objc private func hotKeyCheckboxChanged() {
+        hotKey.settings.isEnabled = hotKeyCheckbox.state == .on
+    }
+
+    /// The checkbox and recorder from the settings; the warning line from the
+    /// recorder's refusal, else the registration's state.
+    private func updateHotKeySection() {
+        let settings = hotKey.settings
+        hotKeyCheckbox.state = settings.isEnabled ? .on : .off
+        if !hotKeyRecorder.isRecording {
+            hotKeyRecorder.shortcut = settings.shortcut
+            hotKeyRefusal = nil
+        }
+
+        var message = hotKeyRefusal ?? hotKey.availability.settingsMessage
+        if message == nil, settings.isEnabled {
+            if hotKey.state == .noShortcut {
+                message = "No shortcut: click the field and type one."
+            } else {
+                message = QuickDetourHotKey.message(for: hotKey.state)
+            }
+        }
+        let shown = hotKeyWarningLabel.isHidden ? nil : hotKeyWarningLabel.stringValue
+        LinkRouteCellView.setWarning(message, icon: hotKeyWarningIcon, label: hotKeyWarningLabel)
+        // Off first, so the two are never on together.
+        if message == nil {
+            hotKeyHelpBelowWarning.isActive = false
+            hotKeyHelpBelowRow.isActive = true
+        } else {
+            hotKeyHelpBelowRow.isActive = false
+            hotKeyHelpBelowWarning.isActive = true
+        }
+        if shown != message { contentHeightDidChange() }
     }
 
     /// A warning's line count depends on the row's width, which is the
@@ -222,6 +374,8 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
 
     override func viewDidDisappear() {
         super.viewDidDisappear()
+        // The hotkey is suspended while the recorder records.
+        hotKeyRecorder.endRecording()
         guard highlightedSpaceID != nil else { return }
         highlightedSpaceID = nil
         refresh()

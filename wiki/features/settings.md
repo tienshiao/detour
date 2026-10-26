@@ -5,8 +5,11 @@ description: "The Settings window and its six panes (General, Spaces, Links, Pro
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T03:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
 sources:
+  - id: task-193-2
+    resource: backlog:TASK-193.2
+    title: "Quick Detour: a system-wide hotkey that opens it from any app (the Links pane's Quick Detour section)"
   - id: window
     resource: ../../Detour/Browser/Settings/SettingsWindowController.swift
     title: SettingsWindowController.swift
@@ -188,7 +191,7 @@ section title is 12 pt semibold, like System Settings' group headers.
 |---|---|---|
 | General | 90, fixed | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
-| Links | 400 minimum (no routes); 743 with 5 routes; capped (1242 on a 1410 pt screen) with 21 routes, then scrolls | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
+| Links | 400 minimum (no routes; still 400 with the Quick Detour section and its warning line, window frame 488 tall, seen 2026-10-25); 743 with 5 routes (measured before the Quick Detour section); capped (1242 on a 1410 pt screen) with 21 routes, then scrolls | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Content Blocking | 243, fixed | toolbar only |
@@ -224,7 +227,12 @@ rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
 ## Links
 
 Air Traffic Control's routes and Default, one bordered list of three-line
-rows (URL, From app, Open in) with New Route above and the Default below.
+rows (URL, From app, Open in) with New Route above and the Default below,
+then the **Quick Detour** section (TASK-193.2): "Open Quick Detour from any
+app with" and a shortcut recorder (`ShortcutRecorderView`), a warning line
+when the shortcut is refused or another app holds it, and help text; see
+[Quick Detour](./quick-detour.md#the-settings-control). TASK-193.5 adds the
+other Quick Detour entry points to that section.
 Not a master list with a detail column: every route is edited in place, as
 in Arc's sheet. The list box is as tall as its rows (no inner scrolling; its
 scroll view hands the wheel to the pane's), so the pane grows with the

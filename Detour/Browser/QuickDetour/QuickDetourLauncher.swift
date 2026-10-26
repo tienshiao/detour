@@ -23,9 +23,24 @@ final class QuickDetourLauncher: NSObject {
     private var resignObserver: NSObjectProtocol?
 
     /// What submitting does: opens the window. Replaced by tests.
-    var openWindow: (_ profile: Profile, _ sourceSpace: Space?, _ url: URL, _ typed: Bool) -> Void = { profile, space, url, typed in
-        NSApp.activate(ignoringOtherApps: true)
-        QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: url, typed: typed)
+    var openWindow: (_ profile: Profile, _ sourceSpace: Space?, _ url: URL, _ typed: Bool) -> Void = defaultOpenWindow
+
+    /// Opens the window, then activates Detour, for the panel the global
+    /// hotkey showed over another app (TASK-193.2). Only the Quick Detour
+    /// window comes forward: the other Detour windows stay behind the app
+    /// that was in front (seen on macOS 26.7 with the cooperative `activate()`,
+    /// `NSRunningApplication.activate(options: [])` and the deprecated
+    /// `activate(ignoringOtherApps:)`, before or after opening the window).
+    /// The request is honoured because Detour holds the key focus (the panel)
+    /// when Return is pressed in it.
+    ///
+    /// Not guarded on `NSApp.isActive`: that is already true while the
+    /// non-activating panel is key, although the other app keeps the menu bar
+    /// and stays frontmost, so the guard skipped the activation and the
+    /// window opened behind the other app.
+    static func defaultOpenWindow(_ profile: Profile, _ sourceSpace: Space?, _ url: URL, _ typed: Bool) {
+        QuickDetourWindowController.open(profile: profile, sourceSpace: sourceSpace, url: url, typed: typed)
+        NSApp.activate()
     }
 
     var palette: CommandPaletteView? { panel?.palette }
