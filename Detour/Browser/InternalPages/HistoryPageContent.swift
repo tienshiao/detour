@@ -470,6 +470,19 @@ enum HistoryPageContent {
         color: var(--muted);
     }
 
+    /* A visit made in a Quick Detour window, which belongs to no space
+       (TASK-193.1). */
+    .source {
+        flex: 0 0 auto;
+        font-size: 11px;
+        line-height: 16px;
+        padding: 0 6px;
+        border-radius: 4px;
+        color: var(--muted);
+        background: var(--placeholder);
+        white-space: nowrap;
+    }
+
     .when {
         flex: 0 0 auto;
         font-variant-numeric: tabular-nums;
@@ -946,6 +959,14 @@ extension HistoryPageContent {
         text.appendChild(title);
         text.appendChild(where);
         row.appendChild(text);
+
+        // Filed under no space: the native side marks it (TASK-193.1).
+        if (entry.quickDetour === true) {
+            const source = document.createElement('span');
+            source.className = 'source';
+            source.textContent = 'Quick Detour';
+            row.appendChild(source);
+        }
 
         const when = document.createElement('span');
         when.className = 'when';

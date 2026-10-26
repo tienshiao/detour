@@ -5,7 +5,7 @@ description: The singleton that installs, loads, enables and uninstalls extensio
 resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
 tags: [extensions, lifecycle, profiles, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: extension-manager
     resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
@@ -181,7 +181,7 @@ tabs.
 
 | Callback | What Detour does |
 |---|---|
-| `openWindowsFor`, `focusedWindowFor` | Browser windows whose active space belongs to the controller's profile; the key window only if it does |
+| `openWindowsFor`, `focusedWindowFor` | Browser windows whose active space belongs to the controller's profile, and that profile's [Quick Detour](../features/quick-detour.md) windows (`extensionListedWindows()`); the key window only if it is one of them |
 | `openNewTabUsing`, `openNewWindowUsing` | Create through `TabStore`; an extension URL gets `addExtensionTab` with the context's configuration; `detour://` URLs are refused |
 | `openOptionsPageFor` | Reuses an open options tab ([popup and options UI](./popup-and-options-ui.md)) |
 | `presentActionPopup` | `browser.action.openPopup()` only; a user click presents the popup directly |

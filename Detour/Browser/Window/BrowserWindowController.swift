@@ -121,9 +121,7 @@ class BrowserWindowController: NSWindowController {
     }()
     let toastManager = ToastManager()
     private var webViewTopConstraint: NSLayoutConstraint?
-    private var findMatchCount = 0
-    private var findMatchIndex = 0
-    private var lastFindQuery = ""
+    private lazy var findSession = FindInPageSession(bar: findBar)
 
     private(set) var commandPaletteView: CommandPaletteView?
     var commandPaletteNavigatesInPlace = false
@@ -1101,11 +1099,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func dismissFindBar(_ sender: Any?) {
-        findBar.searchField.stringValue = ""
-        findBar.updateResultLabel("")
-        lastFindQuery = ""
-        findMatchCount = 0
-        findMatchIndex = 0
+        findSession.reset()
         window?.makeFirstResponder(selectedTab?.webView)
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
@@ -1117,68 +1111,7 @@ class BrowserWindowController: NSWindowController {
 
     func performFind(_ text: String, backwards: Bool) {
         guard let webView = selectedTab?.webView else { return }
-
-        let isNewQuery = text != lastFindQuery
-        if isNewQuery {
-            lastFindQuery = text
-            findMatchIndex = 0
-            countMatches(for: text, in: webView)
-        }
-
-        let config = WKFindConfiguration()
-        config.backwards = backwards
-        config.wraps = true
-        webView.find(text, configuration: config) { [weak self] result in
-            guard let self else { return }
-            if result.matchFound {
-                if !isNewQuery {
-                    if backwards {
-                        self.findMatchIndex -= 1
-                        if self.findMatchIndex < 1 { self.findMatchIndex = self.findMatchCount }
-                    } else {
-                        self.findMatchIndex += 1
-                        if self.findMatchIndex > self.findMatchCount { self.findMatchIndex = 1 }
-                    }
-                }
-                self.updateFindLabel()
-            } else {
-                self.findMatchCount = 0
-                self.findMatchIndex = 0
-                self.findBar.updateResultLabel("Not found")
-            }
-        }
-    }
-
-    private func countMatches(for text: String, in webView: WKWebView) {
-        let escaped = text
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-        let js = """
-        (function() {
-            var t = '\(escaped)'.toLowerCase();
-            var body = document.body.innerText.toLowerCase();
-            var count = 0, pos = 0;
-            while ((pos = body.indexOf(t, pos)) !== -1) { count++; pos += t.length; }
-            return count;
-        })()
-        """
-        webView.evaluateJavaScript(js) { [weak self] result, _ in
-            guard let self, self.lastFindQuery == text else { return }
-            self.findMatchCount = (result as? Int) ?? 0
-            if self.findMatchCount > 0 {
-                self.findMatchIndex = 1
-            }
-            self.updateFindLabel()
-        }
-    }
-
-    private func updateFindLabel() {
-        if findMatchCount > 0 {
-            findBar.updateResultLabel("\(findMatchIndex) of \(findMatchCount)")
-        } else {
-            findBar.updateResultLabel("Not found")
-        }
+        findSession.perform(text, backwards: backwards, in: webView)
     }
 
 

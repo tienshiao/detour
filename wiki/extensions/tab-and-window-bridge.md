@@ -4,7 +4,7 @@ title: Tab and window bridge
 description: How Detour's tabs and windows are presented to WebKit's extension runtime — the WKWebExtensionTab and Window conformances, the rule for when a tab is reported open, closed, moved or active, and what a window lists.
 tags: [extensions, tabs, windows, webkit, lifecycle]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: lifecycle
     resource: ../../Detour/Extensions/Runtime/ExtensionTabLifecycle.swift
@@ -63,6 +63,12 @@ sources:
   - id: lifecycle-tests
     resource: ../../DetourTests/ExtensionTabLifecycleTests.swift
     title: ExtensionTabLifecycleTests
+  - id: task-193-1
+    resource: backlog:TASK-193.1
+    title: "Quick Detour: the window, its single tab and the palette that opens it"
+  - id: quick-detour-tests
+    resource: ../../DetourTests/QuickDetourExtensionTests.swift
+    title: QuickDetourExtensionTests
 ---
 
 WebKit's extension runtime keeps its own table of tabs and windows, built
@@ -93,7 +99,7 @@ structural rather than a call each creation path has to remember.
 
 | Rule | Statement | Where |
 |---|---|---|
-| Placement | A tab is reported open the moment it becomes *enumerable*: when it enters `Space.tabs`, `Space.pinnedEntries` / `PinnedEntry.tab`, `Profile.favorites` / `Favorite.tab`, or `BrowserTab.peekTab` while carrying a web view built from a profile's configuration. Each container has a one-line `didSet` calling `didPlace`. | `ExtensionTabLifecycle.didPlace` |
+| Placement | A tab is reported open the moment it becomes *enumerable*: when it enters `Space.tabs`, `Space.pinnedEntries` / `PinnedEntry.tab`, `Profile.favorites` / `Favorite.tab`, `BrowserTab.peekTab` or `TabStore.quickDetourTabs` while carrying a web view built from a profile's configuration. Each container has a one-line `didSet` calling `didPlace`. | `ExtensionTabLifecycle.didPlace` |
 | New web view | `BrowserTab.wake()` re-announces an already-registered tab. WebKit maps a tab to a particular web view, so the new one must be reported or the contexts keep the released view. | `didCreateWebView(for:)` |
 | Close | Only `BrowserTab.teardown()` reports a close: the one point every tab passes through and the last moment its web view exists. Idempotent. | `didClose` |
 | Section move | Moving a live tab between the tab list, pinned section and favourites of one profile is a hand-off. It keeps its registration; only a pinned-flag flip is announced. | `didChangePinned` |
@@ -133,20 +139,32 @@ per-tab subscriptions do not cover a Peek.
 
 ## What a window is
 
-- `openWindowsFor` returns the `BrowserWindowController`s whose **active
-  space** belongs to the controller's profile. A window showing another
-  profile's space is invisible to this profile's contexts.
+Two kinds of window are told to extensions, both `ExtensionListedWindow`s
+(`extensionTabs`, `extensionActiveTab`, `extensionProfileID`):
+`BrowserWindowController` and the [Quick Detour](../features/quick-detour.md)
+window. `extensionListedWindows()` enumerates both in `NSApp.windows` order,
+plus any open Quick Detour AppKit does not list yet; `openWindowsFor`,
+`focusedWindowFor`, `notifyExistingTabs`, the window-focus forwarding and
+`ExtensionTabLifecycle.windowListing` all go through it.
+
+- `openWindowsFor` returns the listed windows whose profile is the
+  controller's: a browser window's **active space's** profile, a Quick
+  Detour's own. A window of another profile is invisible to this profile's
+  contexts.
 - A window lists `extensionWindowTabs`: the active space's pinned tabs, then
   its normal tabs, then the profile's live favourite backing tabs, each
   immediately followed by its Peek when that Peek has a web view. The same
   function backs `tabs(for:)`, the membership test in `window(for:)`, and
   `notifyExistingTabs`, so they cannot disagree.
 - Tabs in a space no window is showing are registered but listed by no window.
-- `BrowserTab.extensionWindow()` resolves in this order: the window whose
+- `BrowserTab.extensionWindow()` resolves in this order: the Quick Detour
+  window whose page the tab is; the window whose
   `selectedTabID` is the tab; the window whose `extensionActiveTab` is the tab
   (a presented Peek belongs to the window presenting it); any window listing
   it; the window on the tab's space.
-- `windowType` is always `.normal`; `isPrivate` is the window's incognito flag.
+- `windowType` is `.normal` for a browser window and `.popup` for a Quick
+  Detour (TASK-193.1), whose one tab is also its active tab; `isPrivate` is
+  the window's incognito flag (a Quick Detour's: its profile's).
 
 ## Active tab
 
@@ -207,10 +225,17 @@ its configuration's controller is the asking context's.
   `WebExtensionWindow::tabs()` returns an empty list unless `activeTab(for:)`
   is non-nil and is in the list. By-id calls and events still work, since the
   flat tab table is fed by `didOpenTab`.[^task-132-21]
-- `didOpenWindow` is sent only while a context loads, and `didCloseWindow`
+- WebKit lists only the windows it was told about: `windows.getAll` reads
+  its own `m_windowOrderVector`, filled by `didOpenWindow`, by
+  `didFocusWindow` and by `openWindowsFor` when a context loads — not by
+  asking the delegate each time.[^task-193-1] For a browser window
+  `didOpenWindow` is sent only while a context loads, and `didCloseWindow`
   never. A window created later is learned about when it becomes key, so
   `windows.onCreated` does not fire for one opened in the background and
-  `windows.onRemoved` may never fire.[^task-132-22]
+  `windows.onRemoved` may never fire.[^task-132-22] A Quick Detour window
+  tells its profile's loaded contexts itself, `didOpenWindow` before its tab
+  is placed and `didCloseWindow` after the tab is closed: a lookup window may
+  never be focused while an extension asks.[^task-193-1]
 - `focusedWindowFor` answers only with the key window, and only if it shows
   the profile. `windows.getCurrent` from a worker was seen failing with
   "Window not found" at every worker start (1Password's sign-in-with setup
@@ -227,6 +252,10 @@ The planned changes to the window model are in the
 - [ExtensionTabLifecycleTests](../../DetourTests/ExtensionTabLifecycleTests.swift) — a recording notifier swapped in for `ExtensionTabLifecycle.notifier`; asserts the tab was already listed when reported, once, for normal, pinned, favourite, peek and wake; the move rules.
 - `ExtensionActiveTabTests` — the pure rule, the tracker, and a real window presenting and closing a Peek.
 - `MoveTabToSpaceTests`, `WKExtensionIntegrationTests`.
+- `QuickDetourExtensionTests` — the Quick Detour window in real contexts: a
+  `popup` window from an extension page and from the worker, isolation from
+  another profile (also for a context that loads after the window opened),
+  a content script's `sender.tab`, the toolbar button, the close.
 - In tests a web view must be registered as a tab (`registerProbeTab` in `ExtensionTestSupport`) before content-script messaging works; that was the real cause of six tests once skipped as "sandbox limits".[^task-20]
 
 # Related
@@ -246,3 +275,4 @@ The planned changes to the window model are in the
 [^task-132-21]: A window with nothing selected reports no tabs to extensions
 [^task-132-22]: Tell WebKit when a browser window opens or closes
 [^task-132-2]: Resolve a WebKit tabId to its BrowserTab in polyfill handlers
+[^task-193-1]: Quick Detour: the window, its single tab and the palette that opens it

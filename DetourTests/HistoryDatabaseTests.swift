@@ -2118,6 +2118,37 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(db.visits(spaceIDs: ["OLD", "OLDER"], limit: 10).count, 2)
     }
 
+    /// TASK-193.1: a Quick Detour scope is kept but is no proof — it is derived
+    /// from a profile id, not restored with the session — so a session that
+    /// came up with a fresh space still sweeps nothing.
+    func testSweepIsNotRecognizedByAKeptScopeAlone() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://a.com", spaceID: "OLD", visitTime: 100)
+        try seedVisit(db, url: "https://quick.com", spaceID: "QUICK", visitTime: 200)
+
+        let result = awaitDeletion {
+            db.deleteVisits(notInSpaceIDs: ["brand-new"], alsoKeeping: ["QUICK"], completion: $0)
+        }
+
+        XCTAssertEqual(result, .empty)
+        XCTAssertEqual(db.visits(spaceIDs: ["OLD", "QUICK"], limit: 10).count, 2)
+    }
+
+    /// A kept scope's visits survive a sweep that does run.
+    func testSweepKeepsTheVisitsOfAKeptScope() throws {
+        let db = try makeDatabase()
+        try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
+        try seedVisit(db, url: "https://quick.com", spaceID: "QUICK", visitTime: 200)
+        try seedVisit(db, url: "https://ghost.com", spaceID: "DELETED", visitTime: 300)
+
+        let result = awaitDeletion {
+            db.deleteVisits(notInSpaceIDs: ["A"], alsoKeeping: ["QUICK"], completion: $0)
+        }
+
+        XCTAssertEqual(result.removedURLs, ["https://ghost.com"])
+        XCTAssertEqual(db.visits(spaceIDs: ["QUICK"], limit: 10).count, 1)
+    }
+
     /// One recognized space is enough to prove the two databases belong together.
     func testSweepRunsWhenAtLeastOneExistingSpaceHasVisits() throws {
         let db = try makeDatabase()

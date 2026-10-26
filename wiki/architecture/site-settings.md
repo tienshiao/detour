@@ -4,7 +4,7 @@ title: Site settings
 description: "Per-site preferences per profile: the siteSetting table, SiteSettingsStore's cache and change notification, each setting's key and matching rule (host and parents, or dev mode's exact host:port), Private values kept in memory only (migration v19), and how content blocking's site list moved into it."
 tags: [storage, profiles, content-blocker, site-settings, dev-mode]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: store
     resource: ../../Detour/Browser/SiteSettings/SiteSettingsStore.swift
@@ -70,9 +70,11 @@ No setting's Private values reach the table: `SiteSetting.persistsInPrivate`
 is false for every case (an exhaustive switch, so a new setting has to
 decide). A switch set in a Private window lives in the store's cache only,
 so a site visited in Private is not left on disk, and
-`discardPrivateSession()` drops the values when the last Private space is
-removed (`TabStore.removeIncognitoSpace`, through the shared store's
-`siteSettings`). The user chose this on 2026-10-24, matching the external-app
+`discardPrivateSession()` drops the values when the last Private page goes:
+the last Private space removed (`TabStore.removeIncognitoSpace`) with no
+Private [Quick Detour](../features/quick-detour.md) open, or the last Private
+Quick Detour closed with no Private space left (`TabStore.hasLivePrivateSession`,
+TASK-193.1), through the shared store's `siteSettings`. The user chose this on 2026-10-24, matching the external-app
 permissions, which keep Private decisions in memory too.[^task-188][^pip-tests]
 Picture in picture and dev mode were memory-only from the start; content
 blocking wrote the Private profile's rows (under its fixed profile id) until

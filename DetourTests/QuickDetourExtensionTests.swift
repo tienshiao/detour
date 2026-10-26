@@ -1,0 +1,417 @@
+import XCTest
+import WebKit
+@testable import Detour
+
+/// How extensions see a Quick Detour (TASK-193.1, decision 4): its page is a
+/// tab in a window of type `popup`, listed to its own profile's contexts only;
+/// content scripts run in it and reach the worker with a `sender.tab`; the
+/// extension button acts on it; closing the window closes the tab.
+///
+/// Real contexts through the production wiring (`Profile.extensionController`
+/// with `ExtensionManager` as its delegate, `loadExtensionContext`), asked
+/// from an extension page and from the service worker. The page loaded in the
+/// Quick Detour comes from a loopback server.
+@MainActor
+final class QuickDetourExtensionTests: XCTestCase {
+
+    private var tempDirs: [URL] = []
+    private var registeredExtensionIDs: [String] = []
+    private var createdProfiles: [Profile] = []
+    private var openWebViews: [WKWebView] = []
+    private var windows: [QuickDetourWindowController] = []
+    private var servers: [LoopbackHTTPServer] = []
+
+    /// Released profiles take their process pool down with them, which WebKit
+    /// traps on inside an IPC dispatch (`ExtensionPrivateStoreTests`): kept for
+    /// the rest of the test process.
+    private static var retainedProfiles: [Profile] = []
+
+    override func tearDown() async throws {
+        for controller in windows { controller.close() }
+        windows.removeAll()
+        for webView in openWebViews {
+            webView.stopLoading()
+            webView.loadHTMLString("", baseURL: nil)
+        }
+        openWebViews.removeAll()
+        for profile in createdProfiles {
+            profile.unloadAllExtensions()
+            TabStore.shared.forceRemoveProfile(id: profile.id)
+            AppDatabase.shared.deleteProfile(id: profile.id.uuidString)
+            Self.retainedProfiles.append(profile)
+        }
+        createdProfiles.removeAll()
+        for id in registeredExtensionIDs {
+            ExtensionManager.shared.extensions.removeAll { $0.id == id }
+        }
+        registeredExtensionIDs.removeAll()
+        for server in servers { server.stop() }
+        servers.removeAll()
+        for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
+        tempDirs.removeAll()
+        try await super.tearDown()
+    }
+
+    // MARK: - Fixtures
+
+    /// The worker: answers the tests' questions with the native APIs, and
+    /// records what the content script and the action button told it.
+    private static let workerJS = """
+    const seen = { hellos: [], clicks: [] };
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (!message) { return false; }
+        if (message.type === 'hello') {
+            seen.hellos.push({ url: sender.tab ? sender.tab.url : null,
+                               tabId: sender.tab ? sender.tab.id : null,
+                               windowId: sender.tab ? sender.tab.windowId : null });
+            sendResponse({ ok: true });
+            return true;
+        }
+        if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+        if (message.type === 'seen') { sendResponse(seen); return true; }
+        if (message.type === 'windows') {
+            chrome.windows.getAll({ populate: true }).then(
+                (value) => sendResponse({ value }),
+                (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            return true;
+        }
+        if (message.type === 'popupTabs') {
+            chrome.tabs.query({ windowType: 'popup' }).then(
+                (value) => sendResponse({ value }),
+                (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            return true;
+        }
+        return false;
+    });
+    chrome.action.onClicked.addListener((tab) => {
+        seen.clicks.push({ url: tab ? tab.url : null, windowId: tab ? tab.windowId : null });
+    });
+    """
+
+    /// Says hello to the worker from every page it runs in: a content script
+    /// that can reach its worker is what a password manager's fill needs.
+    private static let contentJS = """
+    chrome.runtime.sendMessage({ type: 'hello' }, () => {
+        document.documentElement.setAttribute('data-quick-detour-hello',
+            chrome.runtime.lastError ? 'error: ' + chrome.runtime.lastError.message : 'ok');
+    });
+    """
+
+    private func makeExtension(permissions: [String], hostPermissions: [String],
+                               contentScripts: Bool) async throws -> WebExtension {
+        let id = "quick-detour-\(UUID().uuidString.prefix(8))"
+        func json(_ value: Any) throws -> String {
+            String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+        }
+        let contentScriptsJSON = contentScripts
+            ? #", "content_scripts": [{ "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_end" }]"#
+            : ""
+        let ext = try await makeTestExtension(
+            id: id,
+            manifestJSON: """
+            {
+                "manifest_version": 3,
+                "name": "Quick Detour Probe",
+                "version": "1.0.0",
+                "permissions": \(try json(permissions)),
+                "host_permissions": \(try json(hostPermissions)),
+                "background": { "service_worker": "background.js" },
+                "action": { "default_title": "Probe" }\(contentScriptsJSON)
+            }
+            """,
+            files: [
+                "background.js": Self.workerJS,
+                "content.js": Self.contentJS,
+                "test.html": "<html><body>quick detour probe</body></html>",
+            ])
+        tempDirs.append(ext.basePath)
+        ExtensionManager.shared.extensions.append(ext)
+        registeredExtensionIDs.append(id)
+        return ext
+    }
+
+    private func makeProfile(_ name: String) -> Profile {
+        let profile = TabStore.shared.addProfile(name: name)
+        createdProfiles.append(profile)
+        return profile
+    }
+
+    /// The extension loaded into `profile` with what its manifest asks for
+    /// granted (no prompt in a test), an extension page of it open, and its
+    /// worker awake.
+    private func loadPage(_ ext: WebExtension, in profile: Profile) async throws
+        -> (context: WKWebExtensionContext, page: WKWebView) {
+        let context = try loadTestContext(ext, in: profile)
+        let wkExtension = try XCTUnwrap(ext.wkExtension)
+        for permission in wkExtension.requestedPermissions {
+            context.setPermissionStatus(.grantedExplicitly, for: permission)
+        }
+        for pattern in wkExtension.requestedPermissionMatchPatterns {
+            context.setPermissionStatus(.grantedExplicitly, for: pattern)
+        }
+        let config = try XCTUnwrap(context.webViewConfiguration)
+        let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
+        openWebViews.append(page)
+        try await loadAndWait(page, URLRequest(url: context.baseURL.appendingPathComponent("test.html")))
+        context.loadBackgroundContent { _ in }
+        try await waitUntil("the worker of \(profile.name) to wake", timeout: 30) {
+            let ping = try await askWorker(from: page, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+        return (context, page)
+    }
+
+    private func serve() async throws -> URL {
+        let server = try LoopbackHTTPServer(routes: [
+            "/": "<html><head><title>Looked Up</title></head><body>a quick lookup</body></html>",
+        ])
+        servers.append(server)
+        let port = try await server.start()
+        return URL(string: "http://127.0.0.1:\(port)/")!
+    }
+
+    /// A Quick Detour on `profile` with `url` loaded.
+    private func openQuickDetour(on profile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
+        let controller = QuickDetourWindowController(profile: profile, sourceSpace: nil)
+        windows.append(controller)
+        controller.showWindow(nil)
+        controller.load(url, typed: true)
+        let tab = try XCTUnwrap(controller.tab)
+        try await waitUntil("the Quick Detour page to load") {
+            tab.url == url && !tab.isLoading && tab.title == "Looked Up"
+        }
+        return controller
+    }
+
+    private func pageEval(_ js: String, in page: WKWebView) async throws -> [String: Any] {
+        let raw = try await page.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+        let json = try XCTUnwrap(raw as? String, "expected JSON, got \(String(describing: raw))")
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
+    private func pagePromise(_ call: String, in page: WKWebView) async throws -> [String: Any] {
+        try await pageEval(promiseOutcomeJS(call), in: page)
+    }
+
+    private func worker(_ type: String, via page: WKWebView) async throws -> [String: Any] {
+        let answer = try await askWorker(from: page, message: ["type": type])
+        XCTAssertNil(answer["lastError"] as? String, "the page could not reach the worker: \(answer)")
+        return try XCTUnwrap(answer["reply"] as? [String: Any], "the worker must answer \(type): \(answer)")
+    }
+
+    private func popupWindows(in value: Any?) -> [[String: Any]] {
+        ((value as? [[String: Any]]) ?? []).filter { $0["type"] as? String == "popup" }
+    }
+
+    private func tabs(of window: [String: Any]) -> [[String: Any]] {
+        window["tabs"] as? [[String: Any]] ?? []
+    }
+
+    // MARK: - The window and its tab
+
+    /// The page is the one tab of a `popup` window, from an extension page and
+    /// from the worker; the window's id is the tab's `windowId`; the tab is
+    /// active; `windows.get` and `tabs.query({windowType: 'popup'})` agree.
+    func testThePageIsATabOfAPopupWindowFromBothTransports() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let profile = makeProfile("Quick Detour Ext A")
+        let (_, page) = try await loadPage(ext, in: profile)
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+
+        // Extension page.
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        XCTAssertEqual(all["settled"] as? String, "resolved", "\(all)")
+        let popups = popupWindows(in: all["value"])
+        XCTAssertEqual(popups.count, 1, "one popup window: \(all)")
+        let popup = try XCTUnwrap(popups.first)
+        let windowID = try XCTUnwrap(popup["id"] as? Int)
+        XCTAssertEqual(tabs(of: popup).map { $0["url"] as? String }, [url.absoluteString])
+        let tab = try XCTUnwrap(tabs(of: popup).first)
+        XCTAssertEqual(tab["windowId"] as? Int, windowID)
+        XCTAssertEqual(tab["active"] as? Bool, true, "the page is its window's active tab")
+        XCTAssertEqual(popup["incognito"] as? Bool, false)
+
+        let got = try await pagePromise("chrome.windows.get(\(windowID))", in: page)
+        XCTAssertEqual((got["value"] as? [String: Any])?["type"] as? String, "popup", "\(got)")
+
+        let queried = try await pagePromise("chrome.tabs.query({ windowType: 'popup' })", in: page)
+        XCTAssertEqual((queried["value"] as? [[String: Any]])?.map { $0["url"] as? String }, [url.absoluteString])
+
+        // Callback form of windows.get.
+        let callback = try await pageEval(callbackOutcomeJS(call: "return chrome.windows.get(\(windowID), cb);"),
+                                          in: page)
+        XCTAssertEqual(callback["argc"] as? Int, 1, "\(callback)")
+        XCTAssertNil(callback["lastErrorInCallback"] as? String)
+        XCTAssertTrue((callback["arg0"] as? String)?.contains("\"type\":\"popup\"") == true, "\(callback)")
+
+        // Service worker.
+        let workerWindows = try await worker("windows", via: page)
+        let workerPopups = popupWindows(in: workerWindows["value"])
+        XCTAssertEqual(workerPopups.map { $0["id"] as? Int }, [windowID], "\(workerWindows)")
+        let workerTabs = try await worker("popupTabs", via: page)
+        XCTAssertEqual((workerTabs["value"] as? [[String: Any]])?.map { $0["windowId"] as? Int }, [windowID])
+
+        XCTAssertEqual(controller.windowType(for: try XCTUnwrap(profile.extensionContext(for: ext.id))), .popup)
+    }
+
+    /// Another profile's contexts never see the window or its page, even with
+    /// the same extension and every permission.
+    func testAnotherProfilesExtensionDoesNotSeeIt() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let owner = makeProfile("Quick Detour Ext Owner")
+        let other = makeProfile("Quick Detour Ext Other")
+        _ = try await loadPage(ext, in: owner)
+        let (_, otherPage) = try await loadPage(ext, in: other)
+        let url = try await serve()
+        _ = try await openQuickDetour(on: owner, loading: url)
+
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: otherPage)
+        XCTAssertEqual(all["settled"] as? String, "resolved", "\(all)")
+        XCTAssertTrue(popupWindows(in: all["value"]).isEmpty, "\(all)")
+        let queried = try await pagePromise("chrome.tabs.query({})", in: otherPage)
+        let urls = (queried["value"] as? [[String: Any]] ?? []).compactMap { $0["url"] as? String }
+        XCTAssertFalse(urls.contains(url.absoluteString), "\(queried)")
+        let workerWindows = try await worker("windows", via: otherPage)
+        XCTAssertTrue(popupWindows(in: workerWindows["value"]).isEmpty, "\(workerWindows)")
+    }
+
+    /// A context that loads while the window is open is told about it the way
+    /// a loading context is told about every window (`openWindowsFor`,
+    /// `notifyExistingTabs`) — its own profile's only.
+    func testAContextLoadedAfterTheWindowOpensFindsItInItsProfileOnly() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let owner = makeProfile("Quick Detour Ext Late Owner")
+        let other = makeProfile("Quick Detour Ext Late Other")
+        let url = try await serve()
+        _ = try await openQuickDetour(on: owner, loading: url)
+
+        let (ownerContext, ownerPage) = try await loadPage(ext, in: owner)
+        let (otherContext, otherPage) = try await loadPage(ext, in: other)
+        ExtensionManager.shared.didReloadExtensionContext(ownerContext, in: owner)
+        ExtensionManager.shared.didReloadExtensionContext(otherContext, in: other)
+
+        let mine = try await pagePromise("chrome.windows.getAll({ populate: true })", in: ownerPage)
+        let popup = try XCTUnwrap(popupWindows(in: mine["value"]).first, "\(mine)")
+        XCTAssertEqual(tabs(of: popup).map { $0["url"] as? String }, [url.absoluteString])
+        let theirs = try await pagePromise("chrome.windows.getAll({ populate: true })", in: otherPage)
+        XCTAssertTrue(popupWindows(in: theirs["value"]).isEmpty, "\(theirs)")
+        let theirTabs = try await pagePromise("chrome.tabs.query({})", in: otherPage)
+        let urls = (theirTabs["value"] as? [[String: Any]] ?? []).compactMap { $0["url"] as? String }
+        XCTAssertFalse(urls.contains(url.absoluteString), "\(theirTabs)")
+    }
+
+    /// Without `tabs` or a host permission the extension still sees a tab in a
+    /// popup window, but not its URL: the window adds no access of its own.
+    func testWithoutTheTabsPermissionTheURLIsNotReported() async throws {
+        let ext = try await makeExtension(permissions: [], hostPermissions: [], contentScripts: false)
+        let profile = makeProfile("Quick Detour Ext Unprivileged")
+        let (_, page) = try await loadPage(ext, in: profile)
+        let url = try await serve()
+        _ = try await openQuickDetour(on: profile, loading: url)
+
+        let queried = try await pagePromise("chrome.tabs.query({ windowType: 'popup' })", in: page)
+        XCTAssertEqual(queried["settled"] as? String, "resolved", "\(queried)")
+        let found = try XCTUnwrap(queried["value"] as? [[String: Any]])
+        XCTAssertEqual(found.count, 1, "\(queried)")
+        // WebKit blanks what the extension may not read rather than leaving it out.
+        XCTAssertEqual(found.first?["url"] as? String ?? "", "", "no URL without the tabs or a host permission: \(queried)")
+        XCTAssertEqual(found.first?["title"] as? String ?? "", "", "nor its title")
+    }
+
+    /// A content script runs in the page and reaches the worker, which knows
+    /// its tab — what 1Password's fill needs (a page never reported as a tab
+    /// gets "Tab not found", TASK-50).
+    func testAContentScriptReachesTheWorkerWithItsTab() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: true)
+        let profile = makeProfile("Quick Detour Ext Content")
+        let (_, page) = try await loadPage(ext, in: profile)
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let webView = try XCTUnwrap(controller.tab?.webView)
+
+        try await waitUntil("the content script to hear back from the worker", timeout: 15) {
+            let mark = try await webView.callAsyncJavaScript(
+                "return document.documentElement.getAttribute('data-quick-detour-hello');",
+                arguments: [:], contentWorld: .page) as? String
+            return mark != nil
+        }
+        let mark = try await webView.callAsyncJavaScript(
+            "return document.documentElement.getAttribute('data-quick-detour-hello');",
+            arguments: [:], contentWorld: .page) as? String
+        XCTAssertEqual(mark, "ok")
+
+        let seen = try await worker("seen", via: page)
+        let hello = try XCTUnwrap((seen["hellos"] as? [[String: Any]])?.last, "\(seen)")
+        XCTAssertEqual(hello["url"] as? String, url.absoluteString)
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        XCTAssertEqual(hello["windowId"] as? Int, popupWindows(in: all["value"]).first?["id"] as? Int,
+                       "sender.tab is the Quick Detour's tab")
+    }
+
+    /// The window's extension button acts on its page: with no popup, the
+    /// worker's `action.onClicked` gets the Quick Detour's tab.
+    func testTheExtensionButtonActsOnThePage() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let profile = makeProfile("Quick Detour Ext Action")
+        let (_, page) = try await loadPage(ext, in: profile)
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+
+        controller.performExtensionAction(ext.id, anchor: controller.titleBar.extensionsMenuButton)
+
+        try await waitUntil("action.onClicked to reach the worker", timeout: 10) {
+            let seen = try await self.worker("seen", via: page)
+            return !((seen["clicks"] as? [Any]) ?? []).isEmpty
+        }
+        let seen = try await worker("seen", via: page)
+        let click = try XCTUnwrap((seen["clicks"] as? [[String: Any]])?.first)
+        XCTAssertEqual(click["url"] as? String, url.absoluteString)
+    }
+
+    /// Closing the window closes the tab and the window for the contexts: a
+    /// by-id lookup is refused afterwards, promise and callback alike.
+    func testClosingTheWindowClosesTheTab() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let profile = makeProfile("Quick Detour Ext Close")
+        let (_, page) = try await loadPage(ext, in: profile)
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        let popup = try XCTUnwrap(popupWindows(in: all["value"]).first, "\(all)")
+        let tabID = try XCTUnwrap(tabs(of: popup).first?["id"] as? Int)
+        let windowID = try XCTUnwrap(popup["id"] as? Int)
+
+        controller.close()
+
+        XCTAssertTrue(TabStore.shared.quickDetourTabs.isEmpty || !TabStore.shared.quickDetourTabs.contains {
+            $0.id == controller.tabID
+        })
+        let tabLookup = try await pagePromise("chrome.tabs.get(\(tabID))", in: page)
+        XCTAssertEqual(tabLookup["settled"] as? String, "rejected", "\(tabLookup)")
+        let windowLookup = try await pagePromise("chrome.windows.get(\(windowID))", in: page)
+        XCTAssertEqual(windowLookup["settled"] as? String, "rejected", "\(windowLookup)")
+        let callback = try await pageEval(callbackOutcomeJS(call: "return chrome.tabs.get(\(tabID), cb);"), in: page)
+        XCTAssertEqual(callback["argc"] as? Int, 0, "\(callback)")
+        XCTAssertNotNil(callback["lastErrorInCallback"] as? String, "\(callback)")
+        let after = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        XCTAssertTrue(popupWindows(in: after["value"]).isEmpty, "\(after)")
+    }
+
+    /// A Private Quick Detour is a Private popup window, seen by an extension
+    /// allowed in Private.
+    func testAPrivateQuickDetourIsAnIncognitoPopup() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let privateProfile = Profile(name: "Quick Detour Ext Private", isIncognito: true)
+        createdProfiles.append(privateProfile)
+        let (_, page) = try await loadPage(ext, in: privateProfile)
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: privateProfile, loading: url)
+        XCTAssertTrue(controller.tab?.webView?.configuration.websiteDataStore === privateProfile.dataStore)
+
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        let popup = try XCTUnwrap(popupWindows(in: all["value"]).first, "\(all)")
+        XCTAssertEqual(popup["incognito"] as? Bool, true)
+        XCTAssertEqual(tabs(of: popup).first?["incognito"] as? Bool, true)
+    }
+}

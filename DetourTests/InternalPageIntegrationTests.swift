@@ -263,6 +263,40 @@ final class InternalPageIntegrationTests: XCTestCase {
                        "the in-scope visit time, not historyURL.lastVisitTime")
     }
 
+    /// TASK-193.1: a Quick Detour's visits are the profile's, filed under no
+    /// space; the page lists them with the rest and labels them.
+    func testQuickDetourVisitsAreListedWithALabel() async throws {
+        let db = try makeDatabase()
+        HistoryPageBridge.database = db
+        let space = makeSpace("Quick Detour")
+        let profileID = try XCTUnwrap(space.profile?.id)
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://in-a-space.example/", title: "Spaced",
+                      spaceID: space.id, visitTime: now - 120)
+        try seedVisit(db, url: "https://quick.example/", title: "Looked up",
+                      spaceID: QuickDetour.historySpaceID(forProfileID: profileID), visitTime: now - 60)
+        // Another profile's Quick Detour visit stays out.
+        try seedVisit(db, url: "https://elsewhere.example/", title: "Elsewhere",
+                      spaceID: QuickDetour.historySpaceID(forProfileID: UUID()), visitTime: now - 30)
+
+        let tab = makeTab(in: space)
+        tab.loadInternalPage(.history)
+        try await waitForHistoryPage(tab)
+        let webView = try XCTUnwrap(tab.webView)
+
+        let result = try await pageJSON(webView, """
+            return JSON.stringify({
+                titles: Array.from(document.querySelectorAll('.row .title')).map((el) => el.textContent),
+                labels: Array.from(document.querySelectorAll('.row')).map((row) => {
+                    const source = row.querySelector('.source');
+                    return source ? source.textContent : '';
+                }),
+            });
+            """)
+        XCTAssertEqual(result["titles"] as? [String], ["Looked up", "Spaced"])
+        XCTAssertEqual(result["labels"] as? [String], ["Quick Detour", ""])
+    }
+
     // MARK: - Hostile data (AC #7)
 
     func testAHostileTitleIsRenderedAsText() async throws {

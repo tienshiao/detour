@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -77,6 +77,16 @@ once when the user submits.
 
 With a [Peek](../tabs/peek.md) open, Cmd+L shows the Peek's URL but submits
 into a new tab, like Cmd+T.
+
+[Quick Detour](./quick-detour.md) (TASK-193.1) uses the same
+`CommandPaletteView` twice: alone in the launcher panel that Opt-Cmd-N shows
+(submitting opens the Quick Detour window on the page; dismissing opens
+nothing), and over a Quick Detour window's page on Cmd+L or a click on the
+host in its title bar, navigating that page in place. Both hand the palette
+no `tabStore` (no open tab of any window is offered), the Quick Detour's
+profile, and as `activeSpaceID` the space it was asked from when that is
+the same profile's, else the profile's Quick Detour history scope
+(`QuickDetour.paletteHistorySpaceID`).
 
 Cmd+T while a palette is already showing: an anchored palette switches to the
 centred new-tab mode (`switchToCentered`, which clears the field), a centred

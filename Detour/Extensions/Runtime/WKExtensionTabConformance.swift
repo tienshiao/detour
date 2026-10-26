@@ -27,7 +27,9 @@ extension BrowserTab: WKWebExtensionTab {
     /// answers every context with. Also asked directly by a space move, before it
     /// mutates anything, to name the window the tab is leaving
     /// (`ExtensionTabLifecycle.windowShowingTab`).
-    func extensionWindow() -> BrowserWindowController? {
+    func extensionWindow() -> (any ExtensionListedWindow)? {
+        // A Quick Detour's page is in its own window and no other (TASK-193.1).
+        if let quick = QuickDetourWindowController.controller(forTabID: id), quick.tab === self { return quick }
         let controllers = extensionBrowserWindows()
         // The window that currently shows this tab.
         if let wc = controllers.first(where: { $0.selectedTabID == id }) { return wc }
@@ -80,6 +82,13 @@ extension BrowserTab: WKWebExtensionTab {
     }
 
     func activate(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        // A Quick Detour's page is the only tab of its window: activating it
+        // brings the window forward (TASK-193.1).
+        if let quick = QuickDetourWindowController.controller(forTabID: id), quick.tab === self {
+            quick.window?.makeKeyAndOrderFront(nil)
+            completionHandler(nil)
+            return
+        }
         guard let spaceID else {
             completionHandler(nil)
             return
@@ -122,6 +131,15 @@ extension BrowserTab: WKWebExtensionTab {
     func close(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
         defer { completionHandler(nil) }
         let store = TabStore.shared
+        // A Quick Detour's page closes with its window (TASK-193.1).
+        if store.isQuickDetourTab(self) {
+            if let quick = QuickDetourWindowController.controller(forTabID: id), quick.tab === self {
+                quick.close()
+            } else {
+                store.closeQuickDetourTab(self)
+            }
+            return
+        }
         // Favourites and Peeks are listed to extensions (TASK-50) but live outside
         // `space.tabs`, where `closeTab` looks — each closes through its own path.
         if let (profile, favorite) = store.favorite(backedBy: self) {

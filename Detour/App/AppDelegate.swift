@@ -122,7 +122,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let windowCount = windowControllers.count
-        guard windowCount > 0 else { return .terminateNow }
+        guard windowCount > 0 else {
+            // No browser window to ask from, but a Private Quick Detour
+            // (TASK-193.1) may still be downloading: its partial files go as a
+            // Private window's do at quit.
+            DownloadManager.shared.cancelPrivateDownloads(closing: .allWindows)
+            return .terminateNow
+        }
 
         // A Private window's downloads are listed nowhere once it is gone, and
         // nothing of them is kept for the next launch: quitting cancels the
@@ -249,6 +255,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wc.showWindow(nil)
         wc.newTab(nil)
         registerWindowController(wc)
+    }
+
+    /// File > New Quick Detour Window (TASK-193.1): the launcher panel, for a
+    /// Quick Detour on the profile of the frontmost window — a browser window's active space, the
+    /// Private profile for a Private window, a Quick Detour's own — else the
+    /// first normal profile (`QuickDetour.profileForNewWindow`).
+    @objc func newQuickDetourWindow(_ sender: Any?) {
+        let frontmost = NSApp.orderedWindows.lazy.compactMap { $0.windowController }.first {
+            $0 is BrowserWindowController || $0 is QuickDetourWindowController
+        }
+        let sourceSpace = (frontmost as? BrowserWindowController)?.activeSpace
+        let frontmostProfile = sourceSpace?.profile ?? (frontmost as? QuickDetourWindowController)?.profile
+        guard let profile = QuickDetour.profileForNewWindow(frontmostSpaceProfile: frontmostProfile,
+                                                            profiles: TabStore.shared.profiles) else { return }
+        QuickDetourLauncher.shared.show(profile: profile, sourceSpace: sourceSpace)
     }
 
     private var keyBrowserWindowController: BrowserWindowController? {
@@ -444,6 +465,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Window", action: #selector(createNewWindow as () -> Void), keyEquivalent: "n")
         let privateWindowItem = fileMenu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "n")
         privateWindowItem.keyEquivalentModifierMask = [.command, .shift]
+        // Opt-Cmd-N while Detour is active (TASK-193.1); the system-wide
+        // hotkey is TASK-193.2. The File menu is not delegate-driven, so AppKit
+        // matches it natively.
+        let quickDetourItem = fileMenu.addItem(withTitle: "New \(QuickDetour.displayName) Window",
+                                               action: #selector(newQuickDetourWindow(_:)), keyEquivalent: "n")
+        quickDetourItem.keyEquivalentModifierMask = [.command, .option]
         fileMenuItem.submenu = fileMenu
 
         // Edit menu

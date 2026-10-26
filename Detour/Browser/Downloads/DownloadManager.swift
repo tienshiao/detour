@@ -493,7 +493,13 @@ extension DownloadManager: TabStoreObserver {
     /// spaces that still exist covers every path that removes one.
     func tabStoreDidUpdateSpaces() {
         guard let store = observedStore else { return }
-        discardIncognitoDownloads(keeping: Set(store.spaces.lazy.filter(\.isIncognito).map(\.id)))
+        discardIncognitoDownloads(keeping: store.liveIncognitoDownloadScopeIDs)
+    }
+
+    /// A Private Quick Detour's downloads are scoped to its tab (TASK-193.1)
+    /// and go when its window closes, as a Private window's do.
+    func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) {
+        tabStoreDidUpdateSpaces()
     }
 }
 

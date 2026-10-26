@@ -59,6 +59,10 @@ protocol TabStoreObserver: AnyObject {
     /// its records out or put them back. Carries no detail: the Archived Tabs
     /// page (TASK-119) re-reads the listing, coalesced, when it next shows.
     func tabStoreDidUpdateClosedTabRecords()
+
+    /// A Quick Detour's tab left `quickDetourTabs` and was torn down
+    /// (TASK-193.1): its window closes, a Private one's downloads go.
+    func tabStoreDidCloseQuickDetour(_ tab: BrowserTab)
 }
 
 extension TabStoreObserver {
@@ -78,6 +82,7 @@ extension TabStoreObserver {
     func tabStoreDidUpdatePinnedFolders(in space: Space) {}
     func tabStoreDidUpdateClosedTabRecords() {}
     func tabStoreDidAddProfile(_ profile: Profile) {}
+    func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) {}
 }
 
 // MARK: - Space
@@ -164,12 +169,21 @@ class Space {
     /// Returns a fresh WKWebViewConfiguration wired to this space's profile data store.
     /// When per-tab isolation is enabled, each call gets its own non-persistent store.
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
+        if usableProfile == nil { _ = dataStore } // logs the missing profile
+        return Self.makeWebViewConfiguration(for: usableProfile)
+    }
+
+    /// The configuration a web view of `profile` starts with — a space's, or a
+    /// Quick Detour's, which belongs to a profile and no space (TASK-193.1).
+    /// A missing or deleted profile gets a throwaway store and no extension
+    /// controller (TASK-35).
+    static func makeWebViewConfiguration(for profile: Profile?) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
-        let profile = usableProfile
+        let profile = profile.flatMap { $0.isDeleted ? nil : $0 }
         if profile?.isPerTabIsolation == true {
             config.websiteDataStore = .nonPersistent()
         } else {
-            config.websiteDataStore = dataStore
+            config.websiteDataStore = profile?.dataStore ?? .nonPersistent()
         }
 
         // Wire this profile's extension controller so content scripts inject automatically.
@@ -183,7 +197,7 @@ class Space {
         // (TASK-152). With no usable profile it answers nothing.
         config.setURLSchemeHandler(FaviconSchemeHandler(profile: profile), forURLScheme: FaviconSchemeHandler.scheme)
 
-        config.userContentController = makeUserContentController()
+        config.userContentController = makeUserContentController(for: profile)
 
         // Set Detour app name as default; Safari/Custom modes override via
         // webView.customUserAgent in BrowserTab.applyUserAgent()
@@ -198,6 +212,11 @@ class Space {
     /// removes its own message handlers on the controller of the web view it
     /// hosts, so two tabs must never share one.
     func makeUserContentController() -> WKUserContentController {
+        Self.makeUserContentController(for: usableProfile)
+    }
+
+    static func makeUserContentController(for profile: Profile?) -> WKUserContentController {
+        let usableProfile = profile.flatMap { $0.isDeleted ? nil : $0 }
         let controller = WKUserContentController()
 
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
@@ -416,6 +435,14 @@ class TabStore {
     }
 
     var nonIncognitoSpaces: [Space] { spaces.filter { !$0.isIncognito } }
+
+    /// The pages of the open Quick Detour windows (TASK-193.1): tabs in no
+    /// space, each built from its profile's configuration. Entering the list
+    /// is what reports a tab open to the extension contexts, as entering a
+    /// space's list does (TASK-52); see `TabStore+QuickDetour.swift`.
+    var quickDetourTabs: [BrowserTab] = [] {
+        didSet { ExtensionTabLifecycle.didPlace(listed: quickDetourTabs) }
+    }
 
     /// What Air Traffic Control's resolver needs to know about the spaces: the
     /// normal ones, the only ones a route may name.
@@ -671,6 +698,9 @@ class TabStore {
                 tab.teardown()
                 favorite.tab = nil
             }
+            // A Quick Detour window of the profile holds its store too: it
+            // closes (TASK-193.1).
+            closeQuickDetourTabs(of: profile)
             // Extension contexts: background content, offscreen documents,
             // keep-alive ports, native hosts and relayed WebSockets.
             profile.unloadAllExtensions()
@@ -1694,8 +1724,10 @@ class TabStore {
         // legitimate row that URL already has.
         if tab.webView?.url?.scheme == ErrorPage.scheme { return }
 
-        // Never record history for incognito spaces
+        // Never record history for incognito spaces, nor a Private Quick
+        // Detour (TASK-193.1), which has no space to say so.
         if let space = space(withID: spaceID), space.isIncognito { return }
+        if tab.quickDetourProfile?.isIncognito == true { return }
 
         guard let url = tab.url else { return }
         let urlString = url.absoluteString
@@ -1815,7 +1847,7 @@ class TabStore {
             // genuinely different one (TASK-91).
             tab.lastRecordedBackForwardItem = currentItem
         case .record:
-            guard let spaceID = tab.spaceID else { return }
+            guard let spaceID = tab.historySpaceID else { return }
             recordHistoryVisit(tab: tab, spaceID: spaceID)
         }
     }
@@ -1829,6 +1861,7 @@ class TabStore {
         // the tab's current `spaceID`: a favourite or peek tab that belongs to
         // no space never records a visit, so it has nothing to correct either.
         let space = tab.spaceID.flatMap { self.space(withID: $0) }
+        let isIncognito = space?.isIncognito ?? (tab.quickDetourProfile?.isIncognito ?? false)
         guard let correction = HistoryTitleUpdatePolicy.correction(
             title: tab.title,
             webViewTitle: tab.webView?.title,
@@ -1839,8 +1872,8 @@ class TabStore {
             recordedVisitID: tab.lastRecordedVisitID,
             recordedAt: tab.lastRecordedHistoryAt,
             now: now,
-            hasSpace: tab.spaceID != nil,
-            isIncognito: space?.isIncognito ?? false
+            hasSpace: tab.historySpaceID != nil,
+            isIncognito: isIncognito
         ) else { return }
 
         historyDB.updateTitle(visitID: correction.visitID, url: correction.url.absoluteString,
@@ -1898,8 +1931,9 @@ class TabStore {
         guard !result.removedURLs.isEmpty else { return }
         let removed = Set(result.removedURLs)
         let scope = Set(spaceIDs)
-        for space in spaces where scope.contains(space.id.uuidString) {
-            let tabs = space.tabs + space.pinnedEntries.compactMap(\.tab)
+        let quickDetours = quickDetourTabs.filter { $0.historySpaceID.map { scope.contains($0.uuidString) } ?? false }
+        for tabs in spaces.filter({ scope.contains($0.id.uuidString) })
+            .map({ $0.tabs + $0.pinnedEntries.compactMap(\.tab) }) + [quickDetours] {
             for tab in tabs + tabs.compactMap(\.peekTab) {
                 guard let recorded = tab.lastRecordedHistoryURL,
                       removed.contains(recorded.absoluteString),
@@ -1931,7 +1965,14 @@ class TabStore {
     func sweepHistoryOfDeletedSpaces() {
         var existing = Set(spaces.filter { !$0.isIncognito }.map(\.id))
         existing.formUnion(spaceIDsDeletedThisSession)
-        historyDB.deleteVisits(notInSpaceIDs: existing.map(\.uuidString)) { result in
+        // Each live profile's Quick Detour visits (TASK-193.1): filed under a
+        // scope that is no space's, and gone with the profile, like its spaces'.
+        // Kept, but not counted by the sweep's guards: derived from the profile
+        // id, they would otherwise "recognize" a session that failed to restore.
+        let quickDetourScopes = profiles.filter { !$0.isIncognito }
+            .map { QuickDetour.historySpaceIDString(forProfileID: $0.id) }
+        historyDB.deleteVisits(notInSpaceIDs: existing.map(\.uuidString),
+                               alsoKeeping: quickDetourScopes) { result in
             if case .failure(let error) = result {
                 log.error("History sweep failed: \(error.localizedDescription)")
             }
@@ -1949,7 +1990,7 @@ class TabStore {
         observers.removeAll { $0.value === observer || $0.value == nil }
     }
 
-    private func notifyObservers(_ action: (TabStoreObserver) -> Void) {
+    func notifyObservers(_ action: (TabStoreObserver) -> Void) {
         observers.removeAll { $0.value == nil }
         for wrapper in observers {
             if let observer = wrapper.value {
@@ -2455,7 +2496,8 @@ class TabStore {
             }
         }
         // Keep the built-in incognito profile — it persists across sessions
-        if !spaces.contains(where: \.isIncognito) { siteSettings?.discardPrivateSession() }
+        // A Private Quick Detour still uses the session (TASK-193.1).
+        if !hasLivePrivateSession { siteSettings?.discardPrivateSession() }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
     }
 
@@ -2975,7 +3017,7 @@ class TabStore {
     /// half, whose `fromIndex` no extension sees.
     private func extensionMoveIndex(of tab: BrowserTab, leaving source: Space,
                                     shownBy oldWindow: (any WKWebExtensionWindow)?) -> Int {
-        if let wc = oldWindow as? BrowserWindowController,
+        if let wc = oldWindow as? (any ExtensionListedWindow),
            let index = wc.extensionTabs.firstIndex(where: { $0 === tab }) {
             return index
         }
@@ -5001,11 +5043,16 @@ class TabStore {
     /// The tab's `spaceID` is read when a visit is recorded, not captured here,
     /// so a tab rehomed onto another space (`adoptSpace`) keeps its
     /// subscription and records under its current space.
-    private func subscribeToTab(_ tab: BrowserTab) {
+    ///
+    /// `inSession` false: a tab no space lists and the session never saves —
+    /// a Quick Detour's page (TASK-193.1). It records history like any tab,
+    /// but its changes neither schedule a session save nor look for a sidebar
+    /// row to redraw.
+    func subscribeToTab(_ tab: BrowserTab, inSession: Bool = true) {
         var cancellables = Set<AnyCancellable>()
 
         let notify: (BrowserTab) -> Void = { [weak self] tab in
-            guard let self else { return }
+            guard let self, inSession else { return }
             for space in self.spaces {
                 if let index = space.pinnedEntries.firstIndex(where: { $0.tab?.id == tab.id }) {
                     self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(space.pinnedEntries[index], at: index, in: space) }
@@ -5026,7 +5073,7 @@ class TabStore {
                 .sink { [weak self, weak tab] _ in
                     guard let tab else { return }
                     notify(tab)
-                    if save { self?.scheduleSave() }
+                    if save, inSession { self?.scheduleSave() }
                 }
                 .store(in: &cancellables)
         }
@@ -5044,7 +5091,7 @@ class TabStore {
             .sink { [weak self, weak tab] isLoading in
                 guard let self, let tab else { return }
                 notify(tab)
-                if !isLoading, let spaceID = tab.spaceID {
+                if !isLoading, let spaceID = tab.historySpaceID {
                     self.recordHistoryVisit(tab: tab, spaceID: spaceID)
                 }
             }
@@ -5106,6 +5153,11 @@ class TabStore {
             .store(in: &cancellables)
 
         tabSubscriptions[tab.id] = cancellables
+    }
+
+    /// Drops what `subscribeToTab` installed for `tab`.
+    func unsubscribeFromTab(_ tab: BrowserTab) {
+        tabSubscriptions.removeValue(forKey: tab.id)
     }
 }
 

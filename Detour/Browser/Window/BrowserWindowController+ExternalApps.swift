@@ -13,9 +13,20 @@ extension BrowserWindowController {
     /// firing the same request again in a tight loop sees `attachedSheet` and is
     /// dropped instead of queueing prompts.
     func handleExternalAppNavigation(to url: URL, action: WKNavigationAction, in webView: WKWebView) {
+        Self.handleExternalAppNavigation(
+            to: url, action: action, profile: tab(owning: webView)?.owningProfile ?? activeSpace?.profile,
+            window: window, isHosted: window != nil && isHostedInWindow(webView),
+            showToast: { [weak self] in self?.toastManager.show(message: $0) })
+    }
+
+    /// The rule above for any window: a browser window, or a Quick Detour
+    /// window (TASK-193.1), which hosts its one page. `isHosted` says the
+    /// requesting web view is on screen in `window`.
+    static func handleExternalAppNavigation(to url: URL, action: WKNavigationAction, profile: Profile?,
+                                            window: NSWindow?, isHosted: Bool,
+                                            showToast: (String) -> Void) {
         guard let scheme = url.scheme?.lowercased() else { return }
         let appURL = NSWorkspace.shared.urlForApplication(toOpen: url)
-        let profile = tab(owning: webView)?.owningProfile ?? activeSpace?.profile
         let origin = Self.requestingOrigin(of: action)
         let store = ExternalAppPermissionStore.shared
         var isAllowed = false
@@ -26,7 +37,7 @@ extension BrowserWindowController {
         let decision = ExternalAppLaunchPolicy.decide(
             hasHandler: appURL != nil,
             isAllowed: isAllowed,
-            isHostedInWindow: window != nil && isHostedInWindow(webView),
+            isHostedInWindow: isHosted,
             isMainFrameRequest: action.targetFrame?.isMainFrame ?? true,
             isSheetShowing: window?.attachedSheet != nil,
             origin: origin,
@@ -36,7 +47,7 @@ extension BrowserWindowController {
         case .open:
             NSWorkspace.shared.open(url)
         case .reportNoHandler:
-            toastManager.show(message: "No application can open “\(scheme):” links")
+            showToast("No application can open “\(scheme):” links")
         case .ignore:
             break
         case .prompt(let canRemember):

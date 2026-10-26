@@ -4,7 +4,7 @@ title: History recording and search
 description: When a visit is recorded, how its title is stored and corrected, how in-page navigations become visits, and which query serves which consumer under which scope.
 tags: [history, tabs, search, privacy, sqlite]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T04:30:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -45,6 +45,9 @@ sources:
   - id: task-138
     resource: backlog:TASK-138
     title: chrome.history.search returns history from every profile
+  - id: quick-detour
+    resource: ./quick-detour.md
+    title: Quick Detour
 ---
 
 # Summary
@@ -53,7 +56,8 @@ sources:
 in-page navigation; `HistoryDatabase` stores it as one `historyVisit` row
 under a shared `historyURL` row. Three things about that are not obvious from
 the schema: the title is written twice and corrected late, a visit is tied to
-a **space** (never a profile), and every reader has to choose between the
+a **space** (never a profile; a [Quick Detour](./quick-detour.md) visit to a
+per-profile scope that is no space's), and every reader has to choose between the
 visit's own fields and the URL row's cross-profile aggregates. The schema
 itself is on [history database](../architecture/history-database.md).
 
@@ -66,7 +70,7 @@ Two subscriptions in `TabStore.subscribeToTab`, both ending in
 
 | Trigger | Fires when | Why it exists |
 |---|---|---|
-| `tab.$isLoading` going false | a load ends, for a tab that has a `spaceID` | the ordinary case |
+| `tab.$isLoading` going false | a load ends, for a tab that has a `historySpaceID` (its `spaceID`, or a Quick Detour's scope) | the ordinary case |
 | `tab.$url`, debounced by `historySettleDebounce` (1 s) | the URL changed and held still | `history.pushState` and popstate traversals never toggle `isLoading`[^task-88], so a single-page app's page views were otherwise recorded only when an unrelated resource load happened to toggle it |
 
 `recordHistoryVisit` then applies, in order:
@@ -77,14 +81,39 @@ Two subscriptions in `TabStore.subscribeToTab`, both ending in
    still names the page the user asked for, so recording here would file a
    visit for a page that never loaded, titled by the
    [error page](./error-pages.md).
-3. Incognito space - return.
+3. Incognito space, or a Private Quick Detour - return.
 4. Anything but `http`/`https` - return. This is what keeps `detour://`
    [internal pages](./internal-pages.md) and extension pages out.
 5. **30 s dedup** per `"url|spaceID"` in the in-memory `recentHistoryWrites`,
    skipped for typed visits.
 
-A tab with no `spaceID` (a favourite's or a Peek's tab that belongs to no
+A tab with no `historySpaceID` (a favourite's or a Peek's tab that belongs to no
 space) records nothing.
+
+## Quick Detour visits: a scope that is no space
+
+A [Quick Detour](./quick-detour.md) window's page belongs to a profile and no
+space (TASK-193.1). Its visits carry `historyVisit.spaceID =
+QuickDetour.historySpaceID(forProfileID:)`: the profile id XORed with a fixed
+mask, so derived, stable across launches, and never any space's id.
+`BrowserTab.historySpaceID` (`spaceID ?? that scope`) is what the recorder,
+the same-document recorder and the title correction read.
+
+- **Readers.** `HistoryPageBridge.scope(forProfile:)` adds the scope to the
+  profile's space ids, so the History page and `chrome.history.search` find
+  these visits like any other; a space-scoped reader (the palette of a
+  browser window) never sees them, and no space's rows are written.
+- **Sweep.** `sweepHistoryOfDeletedSpaces` keeps each live non-Private
+  profile's scope; a deleted profile's Quick Detour visits are swept with
+  its spaces'. The scopes go in as a keep-list
+  (`deleteVisits(notInSpaceIDs:alsoKeeping:)`): their visits survive, but they
+  **never count as proof** that the space table is intact. They are derived
+  from profile ids, not restored with the session, so a session database that
+  failed to restore still makes the guards refuse the sweep.
+- **Rejected:** making `spaceID` nullable and adding a `profileID` column. A
+  migration of a table whose every query and index (`historyVisit_spaceID_visitTime`,
+  `historyTitle`'s unique key and triggers) is keyed by space id, for one
+  kind of visit, where a sentinel id rides every existing query unchanged.
 
 ## The title is per visit
 
@@ -199,7 +228,8 @@ count, which would silently demote the URL for every other profile.
 # Search: one database, two scopes
 
 The history database has no notion of profiles. A profile's history is the
-visits of the spaces that use it, and callers pass those space IDs in. Every
+visits of the spaces that use it, plus its Quick Detour scope, and callers
+pass those IDs in. Every
 reader is scoped, to one space or to a profile's spaces; the unscoped query
 `chrome.history.search` used to run was removed by TASK-138.
 

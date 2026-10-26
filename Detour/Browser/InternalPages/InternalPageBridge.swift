@@ -91,9 +91,11 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
 
 extension TabStore {
     /// The tab whose web view this is, wherever it lives: a space's tabs, its
-    /// pinned entries, the profile's favourites, or a peek over any of them.
+    /// pinned entries, the profile's favourites, a peek over any of them, or
+    /// a Quick Detour window's page (TASK-193.1), which is in no space.
     func tab(hosting webView: WKWebView) -> BrowserTab? {
         spaces.lazy.compactMap { self.tab(hosting: webView, in: $0) }.first
+            ?? quickDetourTabs.first { $0.webView === webView }
     }
 
     /// The one definition of "a space's tabs" for web view lookups: the

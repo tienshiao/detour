@@ -582,7 +582,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             // and from nothing else — the same scope, by the same rule, as that
             // profile's History page. No scope means no history, never
             // everyone's: the Private profile records none, and a profile that
-            // is deleted, released or used by no space has none to show.
+            // is deleted or released has none to show. The profile's Quick
+            // Detour visits are in its scope (TASK-193.1).
             guard let spaceIDs = HistoryPageBridge.scope(forProfile: profile), !spaceIDs.isEmpty else {
                 replyHandler(["results": [[String: Any]]()], nil)
                 return

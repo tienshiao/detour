@@ -179,11 +179,9 @@ final class GPUProcessRecycler {
     }
 
     /// Every tab that may own a web view: space tabs, pinned entries' and
-    /// favourites' backing tabs, and their peeks.
+    /// favourites' backing tabs, their peeks, and Quick Detour pages.
     private static func liveTabs() -> [BrowserTab] {
-        let store = TabStore.shared
-        let owners = store.spaces.flatMap { $0.tabs + $0.pinnedTabs } + store.profiles.flatMap(\.favoriteTabs)
-        return owners + owners.compactMap(\.peekTab)
+        TabStore.shared.allLiveTabs
     }
 
     private static func isUsingMedia(_ tab: BrowserTab) -> Bool {

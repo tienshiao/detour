@@ -985,6 +985,7 @@ struct HistoryDatabase {
         // not visible to the WHERE clause that filters on it.
         return """
                 SELECT v.id AS visitID, v.urlID AS urlID, v.visitTime AS visitTime,
+                       v.spaceID AS spaceID,
                        \(titleExpression) AS title,
                        h.url AS url, h.faviconURL AS faviconURL,
                        ROW_NUMBER() OVER (
@@ -1022,7 +1023,7 @@ struct HistoryDatabase {
 
         var sql = """
             SELECT v.id AS visitID, h.url AS url, COALESCE(v.title, h.title) AS title,
-                   h.faviconURL AS faviconURL, v.visitTime AS visitTime
+                   h.faviconURL AS faviconURL, v.visitTime AS visitTime, v.spaceID AS spaceID
             FROM historyVisit v
             JOIN historyURL h ON h.id = v.urlID
             WHERE v.spaceID IN (\(placeholders))
@@ -1161,7 +1162,7 @@ struct HistoryDatabase {
                                                 titleExpression: Self.visitTitleExpression, into: &args)
         var sql = """
             SELECT l.visitID AS visitID, l.url AS url, l.title AS title,
-                   l.faviconURL AS faviconURL, l.visitTime AS visitTime
+                   l.faviconURL AS faviconURL, l.visitTime AS visitTime, l.spaceID AS spaceID
             FROM (
             \(matchingVisits)
             ) l
@@ -1871,10 +1872,17 @@ struct HistoryDatabase {
     /// `existingSpaceIDs` is what the caller considers to exist, which is not
     /// only what it currently holds: `TabStore` adds the spaces deleted since
     /// launch, because Undo Delete Space can still bring them back (TASK-87).
-    func deleteVisits(notInSpaceIDs existingSpaceIDs: [String],
+    ///
+    /// `alsoKeeping` names further scopes whose visits survive the sweep but
+    /// that prove nothing about the two files belonging together — a
+    /// profile's Quick Detour scope (TASK-193.1), which is derived from the
+    /// profile id rather than restored with the session. Neither guard counts
+    /// them, so a session that failed to restore still deletes nothing.
+    func deleteVisits(notInSpaceIDs existingSpaceIDs: [String], alsoKeeping extraScopeIDs: [String] = [],
                       completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
         let spaceIDs = Array(Set(existingSpaceIDs))
         guard !spaceIDs.isEmpty else { return completion(.success(.empty)) }
+        let keptIDs = Array(Set(existingSpaceIDs + extraScopeIDs))
 
         dbQueue.asyncWrite({ db -> HistoryDeletionResult in
             let placeholders = self.databaseQuestionMarks(count: spaceIDs.count)
@@ -1888,9 +1896,10 @@ struct HistoryDatabase {
                 return .empty
             }
 
+            let keptPlaceholders = self.databaseQuestionMarks(count: keptIDs.count)
             return try self.staging(db) { db in
-                try self.stageAndDeleteVisits(db, where: "spaceID NOT IN (\(placeholders))",
-                                              arguments: spaceIDs)
+                try self.stageAndDeleteVisits(db, where: "spaceID NOT IN (\(keptPlaceholders))",
+                                              arguments: keptIDs)
             }
         }, completion: { _, result in
             self.complete(result, "sweep history of deleted spaces", completion)

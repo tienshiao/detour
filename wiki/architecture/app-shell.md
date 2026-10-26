@@ -5,7 +5,7 @@ description: "AppDelegate and main.swift — launch and termination, window crea
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:48:46Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: app-delegate
     resource: ../../Detour/App/AppDelegate.swift
@@ -94,6 +94,15 @@ of the file) returns the browser window the user is looking at even when
 Settings is key. Use it for toasts and anything triggered from a non-browser
 window.
 
+Not every window is a browser window: a [Quick Detour](../features/quick-detour.md)
+window is a `QuickDetourWindowController`, kept alive by its own
+`QuickDetourWindowController.openControllers` rather than
+`windowControllers`, and not counted by the quit confirmation. Code that
+casts the key window's controller to `BrowserWindowController` gets nil while
+one is key; the menu actions it implements (Close Tab, Open Location…, Copy
+URL, Reload, zoom, Back/Forward, Find, Web Inspector) reach it through the
+responder chain and the rest are disabled.
+
 ## The menu bar
 
 `setupMainMenu()` builds every menu in code. Items whose action is a
@@ -104,7 +113,7 @@ the responder chain to the key window's controller, which validates them in
 | Menu | Contents | Dynamic? |
 |---|---|---|
 | App | About, Check for Updates… (only when Sparkle runs), Settings… | No |
-| File | New Tab, Open Location…, Close Tab, Reopen Closed Tab, Pin/Unpin Tab, New Window, New Private Window | No |
+| File | New Tab, Open Location…, Close Tab, Reopen Closed Tab, Pin/Unpin Tab, New Window, New Private Window, New Quick Detour Window (Opt-Cmd-N, `newQuickDetourWindow`, which shows the Quick Detour launcher panel) | No |
 | Edit | Undo/Redo (the **browser** undo manager), Cut/Copy/Copy URL/Paste, Find | No |
 | View | Toggle Sidebar, Reload, zoom | No |
 | Navigate | Back/Forward, Previous/Next Tab, Show All History, Archived Tabs | No |

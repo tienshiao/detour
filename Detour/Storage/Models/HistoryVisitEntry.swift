@@ -13,6 +13,9 @@ struct HistoryVisitEntry: Codable, FetchableRecord, Equatable {
     var title: String
     var faviconURL: String?
     var visitTime: Double
+    /// The history scope the visit was filed under: a space's id, or a
+    /// profile's Quick Detour scope (TASK-193.1), which the History page labels.
+    var spaceID: String? = nil
 }
 
 /// Keyset pagination cursor for the History page: "the entries strictly older

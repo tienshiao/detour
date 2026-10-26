@@ -24,6 +24,11 @@ class BrowserWebView: WKWebView {
     /// When editing web content, let WKWebView handle Cmd+Z (text undo).
     /// Otherwise, do browser undo (close tab, move tab, etc.).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // The browser undo stack is the browser windows' (tabs, spaces); a
+        // Quick Detour window has none of its own to undo (TASK-193.1).
+        guard window?.windowController is BrowserWindowController else {
+            return super.performKeyEquivalent(with: event)
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .command, event.charactersIgnoringModifiers == "z" {
             if !isEditingWebContent, TabStore.shared.undoManager.canUndo {
@@ -43,7 +48,11 @@ class BrowserWebView: WKWebView {
     override func otherMouseDown(with event: NSEvent) {
         // Mouse button 3 = back button
         if event.buttonNumber == 3 {
-            (window?.windowController as? BrowserWindowController)?.goBack(nil)
+            // A browser window or a Quick Detour window (TASK-193.1).
+            let goBack = #selector(BrowserWindowController.goBack(_:))
+            if let controller = window?.windowController, controller.responds(to: goBack) {
+                controller.perform(goBack, with: nil)
+            }
             return
         }
         super.otherMouseDown(with: event)
@@ -55,8 +64,11 @@ class BrowserWebView: WKWebView {
         let windowController = window?.windowController as? BrowserWindowController
 
         // --- Standard link menu customization ---
+        // Only a browser window replaces WebKit's link items: a Quick Detour
+        // window keeps Open Link (in place) and Open Link in New Window, which
+        // opens another Quick Detour (TASK-193.1).
         let openInNewWindowID = NSUserInterfaceItemIdentifier("WKMenuItemIdentifierOpenLinkInNewWindow")
-        if let originalItem = menu.items.first(where: { $0.identifier == openInNewWindowID }) {
+        if windowController != nil, let originalItem = menu.items.first(where: { $0.identifier == openInNewWindowID }) {
             let linkIdentifiers: Set<NSUserInterfaceItemIdentifier> = [
                 NSUserInterfaceItemIdentifier("WKMenuItemIdentifierOpenLinkInNewWindow"),
                 NSUserInterfaceItemIdentifier("WKMenuItemIdentifierOpenLink"),
@@ -94,12 +106,16 @@ class BrowserWebView: WKWebView {
         }
 
         // --- Extension context menu items ---
-        appendExtensionMenuItems(to: menu, windowController: windowController)
+        if let windowController {
+            appendExtensionMenuItems(to: menu, tab: windowController.selectedTab,
+                                     profileID: windowController.activeSpace?.profileID)
+        } else if let quick = window?.windowController as? QuickDetourWindowController {
+            appendExtensionMenuItems(to: menu, tab: quick.tab, profileID: quick.profile.id)
+        }
     }
 
-    private func appendExtensionMenuItems(to menu: NSMenu, windowController: BrowserWindowController?) {
-        guard let tab = windowController?.selectedTab,
-              let profileID = windowController?.activeSpace?.profileID,
+    private func appendExtensionMenuItems(to menu: NSMenu, tab: BrowserTab?, profileID: UUID?) {
+        guard let tab, let profileID,
               let profile = TabStore.shared.profiles.first(where: { $0.id == profileID }) else { return }
 
         // Use the native WKWebExtensionContext.menuItems(for:) API — WKWebExtension

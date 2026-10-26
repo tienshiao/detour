@@ -163,7 +163,7 @@ extension BrowserWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         // Intercept CRX extension downloads
-        if isCRXResponse(navigationResponse) {
+        if Self.isCRXResponse(navigationResponse) {
             DispatchQueue.main.async { [weak self] in
                 self?.handleCRXDownload(from: navigationResponse.response.url)
             }
@@ -181,7 +181,10 @@ extension BrowserWindowController: WKNavigationDelegate {
         return .allow
     }
 
-    private func isCRXResponse(_ navigationResponse: WKNavigationResponse) -> Bool {
+    /// Whether a response is an extension package, which is offered for
+    /// install rather than downloaded — in a browser window or a Quick
+    /// Detour (TASK-193.1).
+    static func isCRXResponse(_ navigationResponse: WKNavigationResponse) -> Bool {
         let mime = navigationResponse.response.mimeType?.lowercased() ?? ""
         if mime == "application/x-chrome-extension" { return true }
         if let url = navigationResponse.response.url?.lastPathComponent.lowercased(),
@@ -190,17 +193,26 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func handleCRXDownload(from url: URL?) {
+        Self.downloadAndOfferCRX(from: url, scope: downloadScope) { [weak self] in
+            self?.triggerDownloadAnimation(iconName: "puzzlepiece.extension.fill")
+        }
+    }
+
+    /// Fetches the package at `url` as a listed download of `scope`, then
+    /// runs the install gate and asks the user. Shared by a browser window
+    /// and a Quick Detour window; `didStart` is the window's own feedback.
+    static func downloadAndOfferCRX(from url: URL?, scope: DownloadScope, didStart: () -> Void) {
         guard let url else { return }
 
         let filename = url.lastPathComponent.hasSuffix(".crx") ? url.lastPathComponent : "Extension.crx"
-        let item = DownloadManager.shared.addManualItem(filename: filename, sourceURL: url, scope: downloadScope)
+        let item = DownloadManager.shared.addManualItem(filename: filename, sourceURL: url, scope: scope)
 
-        triggerDownloadAnimation(iconName: "puzzlepiece.extension.fill")
+        didStart()
 
         // Download CRX data via URLSession with Chrome UA
         var request = URLRequest(url: url)
         request.setValue(UserAgentMode.chromeUserAgent, forHTTPHeaderField: "User-Agent")
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 let wasCancelled = item.state == .cancelled
                 DownloadManager.shared.removeDownload(item)
@@ -208,14 +220,14 @@ extension BrowserWindowController: WKNavigationDelegate {
                 // The URL the bytes were served from, after this fetch's own
                 // redirects: it is what the prompt names and what decides
                 // whether this counts as a store install.
-                self?.finishCRXInstall(data: data, error: error, downloadURL: response?.url ?? url)
+                finishCRXInstall(data: data, error: error, downloadURL: response?.url ?? url)
             }
         }
         item.observeURLSessionTask(task)
         task.resume()
     }
 
-    private func finishCRXInstall(data: Data?, error: Error?, downloadURL: URL) {
+    private static func finishCRXInstall(data: Data?, error: Error?, downloadURL: URL) {
         guard let data, error == nil else {
             let alert = NSAlert()
             alert.messageText = "Failed to Download Extension"
@@ -511,13 +523,22 @@ extension BrowserWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        HTTPAuthenticationPrompt.handle(challenge, in: window, completionHandler: completionHandler)
+    }
+}
+
+/// The HTTP Basic/Digest sign-in sheet: a browser window's and a Quick Detour
+/// window's (TASK-193.1). Every other challenge gets WebKit's default.
+enum HTTPAuthenticationPrompt {
+    static func handle(_ challenge: URLAuthenticationChallenge, in window: NSWindow?,
+                       completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let method = challenge.protectionSpace.authenticationMethod
         guard method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest else {
             completionHandler(.performDefaultHandling, nil)
             return
         }
 
-        guard let window = self.window else {
+        guard let window else {
             completionHandler(.performDefaultHandling, nil)
             return
         }

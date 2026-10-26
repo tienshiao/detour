@@ -395,7 +395,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
-              let wc = window.windowController as? BrowserWindowController else { return }
+              let wc = window.windowController as? (any ExtensionListedWindow) else { return }
         for profile in TabStore.shared.profiles {
             profile.extensionController.didFocusWindow(wc)
         }
@@ -404,7 +404,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @objc private func windowDidResignKey(_ notification: Notification) {
         // Defer check: NSApp.keyWindow hasn't updated yet in the same run loop pass
         DispatchQueue.main.async {
-            if NSApp.keyWindow?.windowController is BrowserWindowController { return }
+            if NSApp.keyWindow?.windowController is (any ExtensionListedWindow) { return }
             for profile in TabStore.shared.profiles {
                 profile.extensionController.didFocusWindow(nil)
             }
@@ -1178,8 +1178,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// profile's open windows and tabs.
     private func notifyExistingTabs(for profile: Profile, contexts: [WKWebExtensionContext]? = nil) {
         let contexts = contexts ?? Array(profile.extensionContexts.values)
-        let windowControllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
-            .filter { $0.activeSpace?.profileID == profile.id }
+        let windowControllers = extensionListedWindows().filter { $0.extensionProfileID == profile.id }
 
         for wc in windowControllers {
             for context in contexts {
@@ -1203,9 +1202,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for tab in tabs where !tab.isSleeping {
             ExtensionTabLifecycle.didOpen(tab, in: profile, contexts: contexts)
         }
+        // The Quick Detour windows' pages: in no space, listed by their own
+        // windows (TASK-193.1).
+        for tab in TabStore.shared.quickDetourTabs
+        where tab.quickDetourProfile === profile && tab.webView != nil {
+            ExtensionTabLifecycle.didOpen(tab, in: profile, contexts: contexts)
+        }
 
-        if let focusedWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
-           focusedWC.activeSpace?.profileID == profile.id {
+        if let focusedWC = NSApp.keyWindow?.windowController as? (any ExtensionListedWindow),
+           focusedWC.extensionProfileID == profile.id {
             for context in contexts {
                 context.didFocusWindow(focusedWC)
             }
@@ -1890,18 +1895,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         openWindowsFor extensionContext: WKWebExtensionContext
     ) -> [any WKWebExtensionWindow] {
         // Return windows whose profile matches this controller
+        // Browser windows and Quick Detour windows alike (TASK-193.1).
         let profile = profile(for: controller)
-        return NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
-            .filter { $0.activeSpace?.profileID == profile?.id }
+        return extensionListedWindows().filter { $0.extensionProfileID != nil && $0.extensionProfileID == profile?.id }
     }
 
     func webExtensionController(
         _ controller: WKWebExtensionController,
         focusedWindowFor extensionContext: WKWebExtensionContext
     ) -> (any WKWebExtensionWindow)? {
-        guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController,
+        guard let wc = NSApp.keyWindow?.windowController as? (any ExtensionListedWindow),
               let profile = profile(for: controller),
-              wc.activeSpace?.profileID == profile.id else { return nil }
+              wc.extensionProfileID == profile.id else { return nil }
         return wc
     }
 

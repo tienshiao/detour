@@ -26,8 +26,16 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
     /// Called when the popover closes. Used by ExtensionManager to clean up retention and call completion handlers.
     var onClose: (() -> Void)?
 
-    init(extensionID: String) {
+    /// The profile whose context the button belongs to, and the tab it acts
+    /// on. Nil: the key window's — a Quick Detour window passes its own
+    /// (TASK-193.1), whose profile need not be the last active space's.
+    private let profile: Profile?
+    private let explicitTab: BrowserTab?
+
+    init(extensionID: String, profile: Profile? = nil, tab: BrowserTab? = nil) {
         self.extensionID = extensionID
+        self.profile = profile
+        self.explicitTab = tab
         super.init()
     }
 
@@ -40,7 +48,9 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
 
     /// Show the extension popup for a user-initiated toolbar button click.
     func show(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge = .maxY) {
-        guard let context = ExtensionManager.shared.context(for: extensionID) else { return }
+        let context = profile.map { $0.extensionContext(for: extensionID) }
+            ?? ExtensionManager.shared.context(for: extensionID)
+        guard let context else { return }
 
         self.positioningView = positioningView
         self.positioningRect = positioningRect
@@ -49,7 +59,8 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKScriptMessageHa
         // The page the user is looking at, which is a presented Peek when one
         // is up — so an activeTab grant and the popup's own tab both name the
         // peek, not the host behind it (TASK-51).
-        let tab = (NSApp.keyWindow?.windowController as? BrowserWindowController)?.extensionActiveTab
+        let tab = explicitTab
+            ?? (NSApp.keyWindow?.windowController as? (any ExtensionListedWindow))?.extensionActiveTab
 
         // Record the user gesture so activeTab permission grants work.
         if let tab {

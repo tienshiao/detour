@@ -310,7 +310,22 @@ class BrowserTab: NSObject {
     /// whitelist, TASK-69): its space's, or — for a peek or favourite tab that
     /// lives in no space's list — the one its extension registration named.
     var owningProfile: Profile? {
-        spaceID.flatMap { TabStore.shared.space(withID: $0)?.profile } ?? extensionRegisteredProfile
+        spaceID.flatMap { TabStore.shared.space(withID: $0)?.profile } ?? quickDetourProfile ?? extensionRegisteredProfile
+    }
+    /// The profile of the Quick Detour window this tab is the page of
+    /// (TASK-193.1), set by `TabStore.openQuickDetourTab`; nil for every other
+    /// tab. A Quick Detour tab has no `spaceID`, so this is what names its
+    /// profile for the user agent, a rebuilt web view, and the history scope.
+    /// Weak: `TabStore.profiles` owns profiles, and deleting one closes its
+    /// Quick Detours first.
+    weak var quickDetourProfile: Profile?
+    /// The history scope this tab's visits are filed under (`historyVisit.spaceID`):
+    /// its space, or a Quick Detour's per-profile scope
+    /// (`QuickDetour.historySpaceID(forProfileID:)`). Nil for a tab that records
+    /// nothing because it belongs to no scope — a Peek, a favourite's backing tab
+    /// before it has a space.
+    var historySpaceID: UUID? {
+        spaceID ?? quickDetourProfile.map { QuickDetour.historySpaceID(forProfileID: $0.id) }
     }
     /// Combine sinks installed by `ExtensionTabLifecycle.didOpen` that forward
     /// url/title/loading changes to the registered profile's contexts; cleared by
@@ -611,7 +626,8 @@ class BrowserTab: NSObject {
     /// and a tab that never calls `load` (a window a page opened) is given it
     /// by the store once placed.
     func applyUserAgent() {
-        if let spaceID, let profile = TabStore.shared.space(withID: spaceID)?.profile {
+        // Its space's profile, or a Quick Detour's (TASK-193.1), which has no space.
+        if let profile = spaceID.flatMap({ TabStore.shared.space(withID: $0)?.profile }) ?? quickDetourProfile {
             webView?.customUserAgent = profile.resolvedUserAgent()
         } else {
             // Fallback for tabs not yet assigned to a space
@@ -631,8 +647,9 @@ class BrowserTab: NSObject {
 
     @objc private func userAgentDidChange(_ notification: Notification) {
         if let profileID = notification.userInfo?["profileID"] as? UUID {
-            guard let spaceID, let space = TabStore.shared.space(withID: spaceID),
-                  space.profileID == profileID else { return }
+            let profileIDOfTab = spaceID.flatMap { TabStore.shared.space(withID: $0)?.profileID }
+                ?? quickDetourProfile?.id
+            guard profileIDOfTab == profileID else { return }
         }
         applyUserAgent()
     }
@@ -1151,7 +1168,10 @@ class BrowserTab: NSObject {
            let extensionConfig = profile.extensionContext(for: extensionID)?.webViewConfiguration {
             return extensionConfig
         }
-        return space?.makeWebViewConfiguration() ?? WKWebViewConfiguration()
+        if let space { return space.makeWebViewConfiguration() }
+        // A Quick Detour's page belongs to a profile and no space (TASK-193.1).
+        if let quickDetourProfile { return Space.makeWebViewConfiguration(for: quickDetourProfile) }
+        return WKWebViewConfiguration()
     }
 
     /// Records a web content process termination and returns how many have hit

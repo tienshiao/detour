@@ -29,6 +29,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     var activeSpaceID: UUID?
     var currentTabID: UUID?
     var profile: Profile?
+    /// A tint for the palette's glass, for a palette with no window content
+    /// behind it (the Quick Detour launcher panel, TASK-193.1).
+    var glassTint: NSColor? {
+        get { glassContainer.tintColor }
+        set { glassContainer.tintColor = newValue }
+    }
 
     private let textField = CommandPaletteTextField()
     private let glassContainer = GlassContainerView(cornerRadius: 12)

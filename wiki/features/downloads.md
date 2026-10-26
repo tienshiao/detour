@@ -4,7 +4,7 @@ title: Downloads
 description: "How a navigation becomes a download, what DownloadManager tracks and persists, how a Private window's downloads are kept apart and cancelled when it closes, the sidebar popover and badge, the fly-to-button animation, and the CRX path that reuses the list."
 tags: [downloads, webkit, navigation, persistence, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:48:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/Downloads/DownloadManager.swift
@@ -151,7 +151,12 @@ Every `DownloadItem` carries a `DownloadScope`, fixed when it is created:
 `.normal`, or `.incognito(spaceID:)` for the Private window whose incognito
 space has that id. The window supplies it
 (`BrowserWindowController.downloadScope`) at the three places an item is
-created. Three small functions on the scope hold the rules (TASK-148):
+created. A Private [Quick Detour](./quick-detour.md) has no space: its
+downloads carry its tab's id instead, the store's
+`liveIncognitoDownloadScopeIDs` keeps them listed while the window is open,
+and closing it drops them (`tabStoreDidCloseQuickDetour`). A normal Quick
+Detour's are `.normal` (TASK-193.1). The Quick Detour window has no
+downloads button: it says "Downloading …" in a toast. Three small functions on the scope hold the rules (TASK-148):
 
 | Rule | Function | Result |
 |---|---|---|

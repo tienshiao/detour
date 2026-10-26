@@ -1,0 +1,686 @@
+TASK-193.1 runtime harness: Quick Detour (the launcher panel, the window,
+history, Private, extensions, no restore). Temporary code, never committed
+to Detour/. Gated on DETOUR_VERIFY_DIR; DETOUR_VERIFY_PHASE 1 (light, the
+whole flow, fresh data dir) or 2 (dark, relaunch on phase 1's data);
+or 3 (quit with only a Private Quick Detour downloading). DETOUR_VERIFY_FIXTURE
+is a loopback fixture server on 127.0.0.1:8931: a threaded python
+http.server over index.html "Lookup Fixture", next.html "Next Fixture",
+private.html "Private Fixture", crx.html, plus /slow (20 MB attachment sent
+4 KB every 0.25 s) and /ext.crx (an unsigned CRX3 stub,
+application/x-chrome-extension). Downloads go to $DETOUR_VERIFY_DIR/
+downloads-<phase> (DownloadManager.shared.downloadsDirectory), never
+~/Downloads. Real input: NSApp.postEvent keys
+(Opt-Cmd-N as keyCode 45 with [.command, .option], characters "˜",
+charactersIgnoringModifiers "n"), clicks on the title bar's host and
+extension buttons, Return/Escape/Cmd+[ ] R + - 0 F W. A test extension
+(tabs, storage, <all_urls>, a content script, an action with no popup) is
+installed through ExtensionManager.install(from:) and pinned.
+
+    SP=<scratch>; mkdir -p $SP/out
+    git apply docs/harness/task193-1-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # run.sh <phase> <light|dark>: DETOUR_DATA_DIR=DetourVerify1931,
+    # `screencapture -x -o -l <n>` for each "SHOOT <name> <windowNumber>"
+    # line, `screencapture -x -R x,y,w,h` for each "SHOOTRECT <name> <rect>"
+    # (what is behind the panel too), kill only the launched PID after
+    # "done"; phases 1, 2, 3 in that order on one data dir.
+    git apply -R docs/harness/task193-1-harness.patch && xcodegen generate
+
+Traps met:
+- The app lost key and active state between steps (another app came
+  forward; the screen had just been unlocked), and posted keys went
+  nowhere: the first run typed a mangled URL into the palette and ran a web
+  search. The harness now re-activates and re-keys its target window before
+  every posted key (refocus), which fixed it.
+- Escape in the find field did not dismiss the find bar (the field editor
+  turns it into cancelOperation, which reached a controller with no
+  handler); QuickDetourWindowController.cancelOperation now dismisses it.
+  Not checked in a browser window, which has the same find bar.
+
+Results (2026-10-25 20:36-20:40, screen unlocked, macOS 26.7; light in
+out/light-*, dark in out/dark-*):
+- Opt-Cmd-N (posted key) and File > New Quick Detour Window (menu item
+  performed) both showed the launcher panel: key, the palette field first
+  responder, 560 x 321 centred on the screen of the key window, no Quick
+  Detour window and no tab in the store until submit.
+- Typing then Return closed the panel and opened the window loading the
+  page (900 x 640, level normal, host "127.0.0.1", title "Lookup Fixture",
+  key). Escape on the empty panel closed it, nothing opened; showing it
+  again and clicking the browser window behind it closed it, nothing opened.
+- The host click reopened the palette prefilled with the URL; next.html
+  loaded in place (canGoBack true, still one window). Cmd+[ / Cmd+] went
+  back and forward, Cmd+R reloaded, Cmd++ 1.1, Cmd+- twice 0.9, Cmd+0 1.0,
+  Cmd+F showed the find bar with "second" typed (Escape did not dismiss it
+  in that run; fixed after, see traps). Opt-Cmd-N from a Quick Detour gave
+  a second window (two open, independent); Cmd+W closed it, its tab gone
+  from the store.
+- Extension: windows.getAll listed both Quick Detours as type "popup", each
+  with its one active tab and URL, the browser window as "normal";
+  tabs.query({windowType:'popup'}) the two pages; the content script in
+  the Quick Detour got "ok" back from the worker, whose sender.tab was the
+  page with its popup windowId; a posted click on the pinned button fired
+  action.onClicked with the Quick Detour's tab.
+- History: 3 visits, all under the profile's Quick Detour scope, none in the
+  space's; the History page (Cmd+Y in the browser window) listed all three
+  with the "Quick Detour" label.
+- Private: from a Private window the panel came up for the Private profile;
+  the Private Quick Detour used the Private store, had no Open in button,
+  added no visit (3 before, 3 after); closing the Private window left the
+  Private session live (the Quick Detour still open), closing the Quick
+  Detour ended it.
+- Relaunch (phase 2) after saving with a Quick Detour open: no Quick Detour
+  restored, the store empty; the 3 Quick Detour visits still there.
+
+
+Second pass (2026-10-25 21:00-21:12, after the code review; light in
+out/light-*, dark in out/dark-*, screen unlocked):
+- The panel -> window flow again in both appearances, as above; the find
+  bar now closes on Escape.
+- Dark panel: the launcher's glass reads its brightness from whatever is on
+  screen behind it (the panel is transparent and has no window content of
+  its own). Untinted over a white window in dark mode it is mid grey
+  (dark-08-panel-over-light-area-untinted); with the panel's appearance tint
+  it is dark over both a dark browser window and the white area
+  (dark-07-panel-over-*-tinted). Panel and app effective appearance were
+  darkAqua throughout, so the appearance was right and the material's
+  backdrop was the cause. Window-only (-l) captures of the panel leave the
+  backdrop out and are not a fair picture of glass; the -R ones are.
+- Private Quick Detour with /slow in flight: Cmd+W asked "Close this
+  Private window? 1 download is in progress. Closing this Private window
+  cancels it." [Close Window, Continue Downloading]; Continue Downloading
+  kept the window, its tab and the download; Close Window cancelled it and
+  left downloads-1 empty, the item gone from the list.
+- .crx link in a Quick Detour: intercepted as in a browser window, fetched,
+  refused by the install gate ("Extension Not Installed … malformed CRX3
+  file … From 127.0.0.1, not from the Chrome Web Store."), page unchanged.
+- Quit (phase 3) with every browser window closed and only a Private Quick
+  Detour downloading: no Quit alert, the process exited on its own, and
+  downloads-3 was empty (no partial file). A first attempt left one browser
+  window open (the harness closed the wrong one), so Quit Detour? came up
+  and the run was killed; it left a partial file, which was deleted.
+- Launcher opened on a new profile, Escape, deleteProfile: outcome
+  .removed, the Profile object released, and no "still retained" in the
+  unified log for that run.
+- After relaunch: no Quick Detour restored; the launch sweep (5 s) kept every
+  Quick Detour visit (4 before, 5 after phase 2 recorded one).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1931HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1931Harness.swift b/Detour/App/Task1931Harness.swift
+new file mode 100644
+index 0000000..0695440
+--- /dev/null
++++ b/Detour/App/Task1931Harness.swift
+@@ -0,0 +1,561 @@
++// TEMP TASK-193.1 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import GRDB
++import WebKit
++
++extension AppDelegate {
++    func runTask1931HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let phase = env["DETOUR_VERIFY_PHASE"] ?? "1"
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8931/"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(phase).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        switch env["DETOUR_VERIFY_APPEARANCE"] {
++        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
++        case "light": NSApp.appearance = NSAppearance(named: .aqua)
++        default: break
++        }
++        let store = TabStore.shared
++        let appDelegate = self
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func quick() -> [QuickDetourWindowController] { QuickDetourWindowController.openControllers }
++        func describeQuick() -> String {
++            "quick=\(quick().map { "[\($0.profile.name)\($0.profile.isIncognito ? "/private" : "") url=\($0.tab?.url?.absoluteString ?? "nil") palette=\($0.commandPaletteView != nil) visible=\($0.window?.isVisible ?? false) key=\($0.window?.isKeyWindow ?? false)]" }) storeTabs=\(store.quickDetourTabs.count)"
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(1.0)
++            log("SHOOT \(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        var eventNumber = 9000
++        /// The window the next keys are for; made key again if it lost key.
++        var focus: NSWindow?
++        func mouse(_ type: NSEvent.EventType, at p: NSPoint, in window: NSWindow) {
++            eventNumber += 1
++            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                          context: nil, eventNumber: eventNumber, clickCount: 1,
++                                          pressure: type == .leftMouseDown ? 1 : 0) {
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func click(_ view: NSView) async {
++            guard let w = view.window else { return log("click: no window") }
++            await ensureFront(w)
++            let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++            mouse(.leftMouseDown, at: p, in: w)
++            mouse(.leftMouseUp, at: p, in: w)
++            await sleep(0.8)
++        }
++        func key(_ chars: String, code: UInt16, mods: NSEvent.ModifierFlags = [], ignoring: String? = nil) {
++            guard let w = NSApp.keyWindow else { return log("key: no key window") }
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods,
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                            context: nil, characters: chars, charactersIgnoringModifiers: ignoring ?? chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func refocus() async {
++            if !NSApp.isActive || NSApp.keyWindow == nil || (focus != nil && NSApp.keyWindow !== focus) {
++                log("refocus: active=\(NSApp.isActive) key=\(NSApp.keyWindow?.title ?? "nil") -> \(focus?.title ?? "nil")")
++                await ensureFront(focus)
++            }
++        }
++        func typeText(_ text: String) async {
++            for ch in text {
++                await refocus()
++                key(String(ch), code: 0)
++                await sleep(0.03)
++            }
++            await sleep(0.6)
++        }
++        let launcher = QuickDetourLauncher.shared
++        func describeLauncher() -> String {
++            "panel showing=\(launcher.isShowing) key=\(launcher.panel?.isKeyWindow ?? false) appActive=\(NSApp.isActive) profile=\(launcher.profile?.name ?? "nil") firstResponder=\(String(describing: launcher.panel?.firstResponder.map { type(of: $0) })) frame=\(launcher.panel?.frame ?? .zero) screen=\(launcher.panel?.screen?.visibleFrame ?? .zero)"
++        }
++        func returnKey() async { await refocus(); key("\r", code: 36); await sleep(1.0) }
++        func escapeKey() async { await refocus(); key("\u{1b}", code: 53); await sleep(1.0) }
++        /// Opt-Cmd-N: the launcher panel, which then takes the keys.
++        func optCmdN() async {
++            await refocus()
++            key("˜", code: 45, mods: [.command, .option], ignoring: "n"); await sleep(1.5)
++            if launcher.isShowing { focus = launcher.panel }
++        }
++        /// Type into the panel and press Return; the window it opens takes the keys.
++        func submitInPanel(_ text: String) async -> QuickDetourWindowController? {
++            let before = quick().count
++            await typeText(text)
++            await returnKey()
++            if quick().count > before, let q = quick().last { focus = q.window; return q }
++            log("no window opened from the panel: \(describeLauncher())")
++            return nil
++        }
++        func cmd(_ c: String, code: UInt16, shift: Bool = false) async {
++            await refocus()
++            key(c, code: code, mods: shift ? [.command, .shift] : [.command]); await sleep(1.0)
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func historyRows(_ scope: [String]) -> [String] {
++            HistoryDatabase.shared.visits(spaceIDs: scope, limit: 50).map { "\($0.title) <\($0.url)> [\($0.spaceID ?? "?")]" }
++        }
++        func allHistory() -> [String] {
++            (try? HistoryDatabase.shared.dbQueue.read { db in
++                try Row.fetchAll(db, sql: "SELECT h.url, v.spaceID FROM historyVisit v JOIN historyURL h ON h.id = v.urlID ORDER BY v.id")
++                    .map { "\($0["url"] as String? ?? "?") @\($0["spaceID"] as String? ?? "?")" }
++            }) ?? []
++        }
++
++        // Downloads go to the run's own folder, never ~/Downloads.
++        let downloadsDir = URL(fileURLWithPath: outDir).appendingPathComponent("downloads-\(phase)")
++        try? FileManager.default.createDirectory(at: downloadsDir, withIntermediateDirectories: true)
++        DownloadManager.shared.downloadsDirectory = downloadsDir
++        func describeDownloads() -> String {
++            let items = DownloadManager.shared.items.map { "\($0.filename) \($0.state) scope=\($0.scope)" }
++            let files = (try? FileManager.default.contentsOfDirectory(atPath: downloadsDir.path)) ?? []
++            return "items=\(items) files=\(files)"
++        }
++        /// A screen-region capture, for what is behind a window too
++        /// (top-left origin, as screencapture -R takes it).
++        func shootRect(_ name: String, _ rect: NSRect) async {
++            await sleep(1.0)
++            let top = (NSScreen.screens.first?.frame.maxY ?? 0) - rect.maxY
++            log("SHOOTRECT \(name) \(Int(rect.minX)),\(Int(top)),\(Int(rect.width)),\(Int(rect.height))")
++            await sleep(1.5)
++        }
++        /// Answers the next modal alert from the modal run loop: logs its
++        /// texts, captures it, then clicks the button titled `answer`.
++        func answerNextAlert(_ shot: String, clicking answer: String) {
++            var fired = false
++            func subviews(_ v: NSView) -> [NSView] { v.subviews + v.subviews.flatMap(subviews) }
++            let timer = Timer(timeInterval: 0.2, repeats: true) { t in
++                guard !fired, let window = NSApp.modalWindow, let content = window.contentView else { return }
++                fired = true
++                t.invalidate()
++                let texts = subviews(content).compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty }
++                let buttons = subviews(content).compactMap { $0 as? NSButton }.map(\.title).filter { !$0.isEmpty }
++                log("ALERT \(shot): texts=\(texts) buttons=\(buttons)")
++                log("SHOOT \(shot) \(window.windowNumber)")
++                let click = Timer(timeInterval: 3.0, repeats: false) { _ in
++                    let button = subviews(content).compactMap { $0 as? NSButton }.first { $0.title == answer }
++                    log("ALERT \(shot): clicking \(answer) found=\(button != nil)")
++                    button?.performClick(nil)
++                }
++                RunLoop.main.add(click, forMode: .common)
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            let normalSpace = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let profile = normalSpace.profile!
++            let qdScope = QuickDetour.historySpaceIDString(forProfileID: profile.id)
++            log("phase \(phase) start: spaces=\(store.nonIncognitoSpaces.map(\.name)) profile=\(profile.name) \(describeQuick())")
++            log("restored session tabs=\(store.nonIncognitoSpaces.flatMap { $0.tabs.map { $0.url?.absoluteString ?? "nil" } })")
++            let menuItem = NSApp.mainMenu?.items.compactMap(\.submenu).first { $0.title == "File" }?
++                .items.first { $0.action == #selector(AppDelegate.newQuickDetourWindow(_:)) }
++            log("menu item: title=\(menuItem?.title ?? "nil") key=\(menuItem?.keyEquivalent ?? "") mods=\(menuItem?.keyEquivalentModifierMask.rawValue ?? 0) (cmd+opt=\(NSEvent.ModifierFlags([.command, .option]).rawValue))")
++
++            if phase == "2" {
++                log("RESTORE after relaunch: \(describeQuick()); history Quick Detour rows=\(historyRows([qdScope]).count)")
++                // Dark captures: the panel, a page, find, the History page.
++                focus = wc.window
++                await ensureFront(wc.window)
++                await optCmdN()
++                log("2a Opt-Cmd-N: \(describeLauncher()) windows=\(quick().count)")
++                await shoot("dark-01-panel", launcher.panel)
++                await typeText("lookup")
++                await sleep(1)
++                await shoot("dark-02-panel-typed", launcher.panel)
++                key("a", code: 0, mods: .command); await sleep(0.3)
++                guard let q = await submitInPanel(base + "index.html") else { return log("done") }
++                _ = await waitFor("page") { q.tab?.title == "Lookup Fixture" && q.tab?.isLoading == false }
++                log("2b submitted: \(describeQuick()) panel showing=\(launcher.isShowing)")
++                await shoot("dark-03-page", q.window)
++                await cmd("f", code: 3)
++                await typeText("fixture")
++                await shoot("dark-04-find", q.window)
++                await escapeKey()
++                await click(q.titleBar.hostButton)
++                await shoot("dark-05-host-palette", q.window)
++                await escapeKey()
++                focus = wc.window
++                await ensureFront(wc.window)
++                wc.showHistory(nil)
++                await sleep(3)
++                await shoot("dark-06-history", wc.window)
++
++                // The panel over a dark browser window and over a light area,
++                // with the panel's tint and without it (the cause).
++                let white = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
++                                     styleMask: [.titled], backing: .buffered, defer: false)
++                white.appearance = NSAppearance(named: .aqua)
++                white.backgroundColor = .white
++                white.isReleasedWhenClosed = false
++                for (backdrop, label) in [(wc.window!, "over-dark-window"), (white, "over-light-area")] {
++                    if backdrop === white {
++                        white.setFrame(NSRect(x: wc.window!.frame.midX - 450, y: wc.window!.frame.midY - 280,
++                                              width: 900, height: 560), display: true)
++                        white.orderFront(nil)
++                    } else {
++                        white.orderOut(nil)
++                    }
++                    focus = wc.window
++                    await ensureFront(wc.window)
++                    await optCmdN()
++                    guard let panel = launcher.panel else { log("no panel for \(label)"); continue }
++                    panel.setFrame(QuickDetour.panelFrame(size: panel.frame.size, in: backdrop.frame), display: true)
++                    log("2c \(label): panel appearance=\(panel.effectiveAppearance.name.rawValue) app=\(NSApp.effectiveAppearance.name.rawValue) tint=\(String(describing: launcher.palette?.glassTint))")
++                    await typeText("lookup")
++                    await shootRect("dark-07-panel-\(label)-tinted", panel.frame.insetBy(dx: -40, dy: -40))
++                    launcher.palette?.glassTint = nil
++                    await shootRect("dark-08-panel-\(label)-untinted", panel.frame.insetBy(dx: -40, dy: -40))
++                    launcher.close()
++                    await sleep(0.5)
++                }
++                white.orderOut(nil)
++
++                // The launch sweep ran 5 s after launch: Quick Detour visits kept.
++                _ = await waitFor("the launch sweep") { ProcessInfo.processInfo.systemUptime - start > 9 }
++                log("2d after the launch sweep: Quick Detour rows=\(historyRows([qdScope]).count) all=\(allHistory().count)")
++
++                // Deleting a profile the launcher was opened on: nothing retains it.
++                weak var weakP: Profile?
++                var removal: Task<ProfileDataRemoval.Outcome, Never>?
++                do {
++                    let p = store.addProfile(name: "Launcher Doomed")
++                    weakP = p
++                    focus = wc.window
++                    await ensureFront(wc.window)
++                    launcher.show(profile: p, sourceSpace: nil)
++                    await sleep(1)
++                    focus = launcher.panel
++                    log("2e launcher on \(p.name): \(describeLauncher())")
++                    await escapeKey()
++                    log("2e after Escape: \(describeLauncher()) launcher.profile=\(launcher.profile?.name ?? "nil")")
++                    removal = store.deleteProfile(id: p.id)
++                }
++                let outcome = await removal?.value
++                await sleep(0.5)
++                log("2e deleteProfile outcome=\(String(describing: outcome)) profile released=\(weakP == nil)")
++                _ = store.saveNow()
++                return log("done")
++            }
++
++            if phase == "3" {
++                // Quit with only a Private Quick Detour open, downloading.
++                appDelegate.createNewIncognitoWindow()
++                await sleep(1.5)
++                let privateWC = NSApp.keyWindow?.windowController as? BrowserWindowController
++                focus = privateWC?.window
++                await ensureFront(privateWC?.window)
++                await optCmdN()
++                log("3a panel: \(describeLauncher())")
++                guard let qp = await submitInPanel(base + "slow") else { return log("done") }
++                _ = await waitFor("the download to start") {
++                    DownloadManager.shared.items.contains { $0.state == .downloading }
++                }
++                await sleep(2)
++                log("3b Private Quick Detour private=\(qp.profile.isIncognito) \(describeDownloads())")
++                for window in NSApp.windows where window.windowController is BrowserWindowController {
++                    window.performClose(nil)
++                }
++                await sleep(1.5)
++                let left = NSApp.windows.filter { $0.isVisible && $0.windowController is BrowserWindowController }
++                log("3c windows left: browser=\(left.map(\.title)) quick=\(quick().count) \(describeDownloads())")
++                log("QUITTING")
++                NSApp.terminate(nil)
++                return
++            }
++
++            // Phase 1 (light): the whole flow.
++            // 0. A test extension, installed through the real path.
++            let extDir = URL(fileURLWithPath: outDir).appendingPathComponent("ext-src")
++            try? FileManager.default.createDirectory(at: extDir, withIntermediateDirectories: true)
++            let manifest = """
++            {"manifest_version":3,"name":"QD Probe","version":"1.0.0","permissions":["tabs","storage"],
++             "host_permissions":["<all_urls>"],"background":{"service_worker":"background.js"},
++             "action":{"default_title":"QD Probe"},
++             "content_scripts":[{"matches":["<all_urls>"],"js":["content.js"],"run_at":"document_end"}]}
++            """
++            let worker = """
++            chrome.action.onClicked.addListener((tab) => {
++                chrome.storage.local.set({ clicked: { url: tab.url, windowId: tab.windowId } });
++            });
++            chrome.runtime.onMessage.addListener((m, sender, reply) => {
++                if (m && m.type === 'hello') {
++                    chrome.storage.local.set({ hello: { url: sender.tab && sender.tab.url, windowId: sender.tab && sender.tab.windowId } });
++                    reply({ ok: true }); return true;
++                }
++                return false;
++            });
++            """
++            let content = """
++            chrome.runtime.sendMessage({ type: 'hello' }, () => {
++                document.documentElement.setAttribute('data-qd-hello', chrome.runtime.lastError ? 'error: ' + chrome.runtime.lastError.message : 'ok');
++            });
++            """
++            try? manifest.write(to: extDir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
++            try? worker.write(to: extDir.appendingPathComponent("background.js"), atomically: true, encoding: .utf8)
++            try? content.write(to: extDir.appendingPathComponent("content.js"), atomically: true, encoding: .utf8)
++            try? "<html><body>probe</body></html>".write(to: extDir.appendingPathComponent("page.html"), atomically: true, encoding: .utf8)
++            var extID: String?
++            do {
++                let ext = try ExtensionManager.shared.install(from: extDir)
++                extID = ext.id
++                ExtensionManager.shared.toggleExtensionPinned(ext.id, profileID: profile.id)
++                log("installed extension \(ext.id) pinned=\(ExtensionManager.shared.pinnedExtensions(for: profile.id).map(\.id))")
++            } catch { log("install failed: \(error)") }
++            await sleep(2.0)
++
++            // 1. Opt-Cmd-N while Detour is active: the launcher panel, no window.
++            focus = wc.window
++            await ensureFront(wc.window)
++            let windowsBefore1 = quick().count
++            await optCmdN()
++            log("1 Opt-Cmd-N: \(describeLauncher()) windows \(windowsBefore1) -> \(quick().count) storeTabs=\(store.quickDetourTabs.count)")
++            await shoot("light-01-panel", launcher.panel)
++            await typeText("lookup")
++            await sleep(1)
++            await shoot("light-02-panel-typed", launcher.panel)
++            key("a", code: 0, mods: .command); await sleep(0.3)
++
++            // 2. Return: the panel closes, the window opens on the page.
++            guard let q1 = await submitInPanel(base + "index.html") else { return log("done") }
++            let loaded = await waitFor("page") { q1.tab?.title == "Lookup Fixture" && q1.tab?.isLoading == false }
++            log("2 Return: loaded=\(loaded) panel showing=\(launcher.isShowing) \(describeQuick()) level=\(q1.window?.level.rawValue ?? -1) frame=\(q1.window?.frame ?? .zero) host='\(q1.titleBar.hostButton.title)' window title='\(q1.window?.title ?? "")'")
++            log("2 title bar: pill=\(q1.profile.name) openIn='\(q1.titleBar.openInButton.attributedTitle.string)' enabled=\(q1.titleBar.openInButton.isEnabled) extensions=\(q1.titleBar.extensionStack.arrangedSubviews.count) puzzle hidden=\(q1.titleBar.extensionsMenuButton.isHidden)")
++            await sleep(1.5)
++            await shoot("light-03-page", q1.window)
++
++            // 3. The menu item: the panel again; Escape closes it and nothing opens.
++            //    Then once more, and a click on the browser window (the panel
++            //    resigns key): closed, nothing opens.
++            focus = wc.window
++            await ensureFront(wc.window)
++            if let menuItem, let menu = menuItem.menu {
++                menu.performActionForItem(at: menu.index(of: menuItem))
++            }
++            await sleep(1.5)
++            focus = launcher.panel
++            let before3 = quick().count
++            log("3 menu item: \(describeLauncher())")
++            await escapeKey()
++            log("3 Escape: \(describeLauncher()) windows \(before3) -> \(quick().count) storeTabs=\(store.quickDetourTabs.count)")
++            focus = wc.window
++            await optCmdN()
++            log("3 again: \(describeLauncher())")
++            if let w = wc.window, let content = w.contentView {
++                let p = content.convert(NSPoint(x: content.bounds.maxX - 30, y: content.bounds.minY + 30), to: nil)
++                mouse(.leftMouseDown, at: p, in: w)
++                mouse(.leftMouseUp, at: p, in: w)
++                await sleep(1.2)
++            }
++            log("3 click on the browser window: \(describeLauncher()) windows \(before3) -> \(quick().count)")
++            focus = q1.window
++
++            // 4. Host click reopens the palette in place.
++            await click(q1.titleBar.hostButton)
++            log("4 host click: palette=\(q1.commandPaletteView != nil)")
++            await shoot("light-04-host-palette", q1.window)
++            await typeText(base + "next.html")
++            await returnKey()
++            _ = await waitFor("next") { q1.tab?.title == "Next Fixture" && q1.tab?.isLoading == false }
++            log("4 in place: url=\(q1.tab?.url?.absoluteString ?? "nil") canGoBack=\(q1.tab?.canGoBack ?? false) windows=\(quick().count)")
++
++            // 5. Back / forward / reload / zoom / find.
++            focus = q1.window
++            await ensureFront(q1.window)
++            q1.window?.makeFirstResponder(q1.tab?.webView)
++            await cmd("[", code: 33)
++            _ = await waitFor("back") { q1.tab?.title == "Lookup Fixture" }
++            log("5 Cmd+[: url=\(q1.tab?.url?.lastPathComponent ?? "nil")")
++            await cmd("]", code: 30)
++            _ = await waitFor("forward") { q1.tab?.title == "Next Fixture" }
++            log("5 Cmd+]: url=\(q1.tab?.url?.lastPathComponent ?? "nil")")
++            await cmd("r", code: 15)
++            log("5 Cmd+R: loading=\(q1.tab?.isLoading ?? false)")
++            await sleep(1)
++            await cmd("+", code: 24)
++            log("5 Cmd+'+': zoom=\(q1.tab?.webView?.pageZoom ?? 0)")
++            await cmd("-", code: 27)
++            await cmd("-", code: 27)
++            log("5 Cmd+'-' x2: zoom=\(q1.tab?.webView?.pageZoom ?? 0)")
++            await cmd("0", code: 29)
++            log("5 Cmd+0: zoom=\(q1.tab?.webView?.pageZoom ?? 0)")
++            await cmd("f", code: 3)
++            await typeText("second")
++            await sleep(1)
++            log("5 Cmd+F: find bar visible=\(!q1.findBar.isHidden) field='\(q1.findBar.searchField.stringValue)'")
++            await shoot("light-05-find", q1.window)
++            await escapeKey()
++            log("5 Escape: find bar hidden=\(q1.findBar.isHidden)")
++
++            // 6. Two Quick Detours at once.
++            await optCmdN()
++            log("6 Opt-Cmd-N from a Quick Detour: \(describeLauncher())")
++            let q3 = await submitInPanel(base + "index.html?second")
++            _ = await waitFor("second window") { q3?.tab?.isLoading == false && q3?.tab?.url != nil }
++            log("6 two windows: \(describeQuick())")
++            await shoot("light-06-second-window", q3?.window)
++
++            // 7. Extensions: windows.getAll from an extension page; the content
++            // script's hello; the toolbar button.
++            if let extID, let context = profile.extensionContext(for: extID), let config = context.webViewConfiguration {
++                let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 200), configuration: config)
++                page.load(URLRequest(url: context.baseURL.appendingPathComponent("page.html")))
++                _ = await waitFor("extension page") { !page.isLoading && page.url != nil }
++                await sleep(1)
++                let windowsJS = """
++                    const ws = await chrome.windows.getAll({ populate: true });
++                    return JSON.stringify(ws.map(w => ({ id: w.id, type: w.type, incognito: w.incognito,
++                        tabs: (w.tabs || []).map(t => ({ id: t.id, url: t.url, active: t.active, windowId: t.windowId })) })));
++                    """
++                let windows = try? await page.callAsyncJavaScript(windowsJS, contentWorld: .page)
++                log("7 windows.getAll: \(windows ?? "nil")")
++                let popupTabs = try? await page.callAsyncJavaScript(
++                    "return JSON.stringify((await chrome.tabs.query({ windowType: 'popup' })).map(t => [t.url, t.windowId]));",
++                    contentWorld: .page)
++                log("7 tabs.query({windowType:'popup'}): \(popupTabs ?? "nil")")
++                let hello = try? await q1.tab?.webView?.callAsyncJavaScript(
++                    "return document.documentElement.getAttribute('data-qd-hello');", contentWorld: .page)
++                log("7 content script in Quick Detour: \(hello ?? "nil")")
++                focus = q1.window
++                await ensureFront(q1.window)
++                if let button = q1.titleBar.extensionButton(for: extID) {
++                    await click(button)
++                    log("7 clicked the pinned extension button")
++                } else {
++                    log("7 no pinned button; puzzle hidden=\(q1.titleBar.extensionsMenuButton.isHidden)")
++                    q1.performExtensionAction(extID, anchor: q1.titleBar.extensionsMenuButton)
++                }
++                await sleep(1.5)
++                let stored = try? await page.callAsyncJavaScript(
++                    "return JSON.stringify(await chrome.storage.local.get(null));", contentWorld: .page)
++                log("7 storage after click: \(stored ?? "nil")")
++                await shoot("light-07-extension", q1.window)
++            } else {
++                log("7 no extension context")
++            }
++
++            // 8. History: the Quick Detour visits, labelled, and no space's.
++            log("8 Quick Detour scope rows=\(historyRows([qdScope]))")
++            log("8 space scope rows=\(historyRows([normalSpace.id.uuidString]))")
++            log("8 all visits=\(allHistory())")
++            focus = wc.window
++            await ensureFront(wc.window)
++            wc.showHistory(nil)
++            var labels: Any?
++            for _ in 0..<20 {
++                await sleep(0.5)
++                labels = try? await wc.selectedTab?.webView?.callAsyncJavaScript("""
++                    const rows = Array.from(document.querySelectorAll('.row'));
++                    if (!rows.length) return null;
++                    return JSON.stringify(rows.map(r => [r.querySelector('.title').textContent,
++                        (r.querySelector('.source') || {}).textContent || '']));
++                    """, contentWorld: .page)
++                if labels is String { break }
++            }
++            log("8 History page rows (title, label): \(labels ?? "nil")")
++            await shoot("light-08-history", wc.window)
++
++            // 9. Cmd+W closes a Quick Detour, tearing it down.
++            if let q3, q3 !== q1 {
++                focus = q3.window
++                await ensureFront(q3.window)
++                let tabID = q3.tabID
++                await cmd("w", code: 13)
++                log("9 Cmd+W: closed=\(!(q3.window?.isVisible ?? true)) tab in store=\(store.quickDetourTab(withID: tabID) != nil) \(describeQuick())")
++            }
++
++            // 10. Private: from a Private window, Opt-Cmd-N makes a Private Quick Detour.
++            appDelegate.createNewIncognitoWindow()
++            await sleep(1.5)
++            let privateWC = NSApp.keyWindow?.windowController as? BrowserWindowController
++            focus = privateWC?.window
++            await ensureFront(privateWC?.window)
++            let visitsBefore = allHistory().count
++            await optCmdN()
++            log("10 panel from the Private window: \(describeLauncher())")
++            await shoot("light-09-private-panel", launcher.panel)
++            let qp = await submitInPanel(base + "private.html")
++            log("10 Private Quick Detour: private=\(qp?.profile.isIncognito ?? false) store===privateStore=\(qp?.tab?.webView?.configuration.websiteDataStore === store.ensureIncognitoProfile().dataStore) openIn hidden=\(qp?.titleBar.openInButton.isHidden ?? false)")
++            _ = await waitFor("private page") { qp?.tab?.title == "Private Fixture" && qp?.tab?.isLoading == false }
++            await sleep(2.5)
++            log("10 visits before=\(visitsBefore) after=\(allHistory().count) (a Private Quick Detour records none)")
++            await shoot("light-10-private", qp?.window)
++            privateWC?.window?.performClose(nil)
++            await sleep(1)
++            log("10 Private window closed: hasLivePrivateSession=\(store.hasLivePrivateSession) private page alive=\(qp?.tab?.webView != nil)")
++            // 10b. A download in flight in the Private Quick Detour: Cmd+W asks,
++            // Continue Downloading keeps window and download; then Close Window
++            // cancels it and leaves no partial file.
++            if let qp {
++                focus = qp.window
++                qp.load(URL(string: base + "slow")!, typed: false)
++                _ = await waitFor("the Private download to start") {
++                    DownloadManager.shared.items.contains { $0.state == .downloading }
++                }
++                await sleep(2)
++                log("10b downloading: \(describeDownloads())")
++                answerNextAlert("light-11-private-close-alert", clicking: "Continue Downloading")
++                await cmd("w", code: 13)
++                await sleep(4.5)
++                log("10b after Continue Downloading: window visible=\(qp.window?.isVisible ?? false) tab in store=\(store.quickDetourTab(withID: qp.tabID) != nil) \(describeDownloads())")
++                answerNextAlert("light-12-private-close-alert-2", clicking: "Close Window")
++                await cmd("w", code: 13)
++                await sleep(4.5)
++            }
++            log("10 Private Quick Detour closed: hasLivePrivateSession=\(store.hasLivePrivateSession) \(describeQuick()) \(describeDownloads())")
++
++            // 10c. A .crx link in a Quick Detour is offered for install, as in a
++            // browser window (the fixture's package is not signed: the gate
++            // refuses it, which is the install flow speaking).
++            focus = q1.window
++            await ensureFront(q1.window)
++            q1.load(URL(string: base + "crx.html")!, typed: false)
++            _ = await waitFor("crx page") { q1.tab?.title == "CRX Fixture" && q1.tab?.isLoading == false }
++            answerNextAlert("light-13-crx-alert", clicking: "OK")
++            _ = try? await q1.tab?.webView?.callAsyncJavaScript("document.getElementById('crx').click(); return true;", contentWorld: .page)
++            await sleep(6)
++            log("10c after the .crx link: url=\(q1.tab?.url?.absoluteString ?? "nil") \(describeDownloads())")
++
++            // 11. Leave q1 open and save, for the relaunch check.
++            _ = store.saveNow()
++            log("11 saved with \(describeQuick())")
++            log("done")
++        }
++    }
++}
++#endif
