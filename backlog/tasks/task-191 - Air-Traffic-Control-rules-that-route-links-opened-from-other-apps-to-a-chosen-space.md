@@ -1,10 +1,10 @@
 ---
 id: TASK-191
 title: 'Air Traffic Control: rules that route links and typed URLs to a chosen space'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-24 09:44'
-updated_date: '2026-10-25 17:32'
+updated_date: '2026-10-26 01:08'
 labels:
   - links
   - spaces
@@ -51,3 +51,9 @@ Decisions (user, 2026-10-25): (1) a routed link whose space shows in no window s
 
 Decisions (user, 2026-10-25, during 191.1): the Default target applies to every origin, not only links from other apps: an unmatched typed URL or cross-host click (after 191.4's click exclusions) goes to the Default (Most Recent Space = stay; Quarantine/Quick Detour Defaults apply to external links only; never out of a Private window). Rejected: Default for external links only. A 'Domain is' pattern with a leading www. means the bare domain and all subdomains (www. dropped only when a dot remains, so www.com is not 'com').
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Air Traffic Control is in: routes (URL condition, source app, or both) send links to a chosen space, a Private window, or Most Recent Space, with a Default for everything else. It covers links from other apps (191.2), typed URLs in a new tab and links clicked to another host (191.4), and is edited in Settings > Links (191.3) on a model, store and pure resolver (191.1). Spaces that routes target can't be deleted. Follow-ups: TASK-203 (Redo menu name), TASK-204 (source-app routes for the launching link); Quarantine and Quick Detour targets wait on TASK-194 / TASK-193.
+<!-- SECTION:FINAL_SUMMARY:END -->
