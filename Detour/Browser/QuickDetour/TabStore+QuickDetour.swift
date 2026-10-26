@@ -48,13 +48,61 @@ extension TabStore {
     /// Private window closes.
     func closeQuickDetourTab(_ tab: BrowserTab) {
         guard let index = quickDetourTabs.firstIndex(where: { $0 === tab }) else { return }
-        quickDetourTabs.remove(at: index)
-        unsubscribeFromTab(tab)
-        tab.teardown()
+        takeDownQuickDetourTab(at: index)
         if tab.quickDetourProfile?.isIncognito == true, !hasLivePrivateSession {
             siteSettings?.discardPrivateSession()
         }
         notifyObservers { $0.tabStoreDidCloseQuickDetour(tab) }
+    }
+
+    /// What a close and a profile switch share, in this order: the tab leaves
+    /// the list, loses its subscriptions and is torn down, which reports it
+    /// closed to its profile's extension contexts.
+    private func takeDownQuickDetourTab(at index: Int) {
+        let tab = quickDetourTabs.remove(at: index)
+        unsubscribeFromTab(tab)
+        tab.teardown()
+    }
+
+    // MARK: - The profile pill (TASK-193.4)
+
+    /// Replaces an open Quick Detour's page with a new one on `profile`, for
+    /// the same window (the profile pill): a web view cannot change its data
+    /// store, so the page on another profile is a new `BrowserTab` with id
+    /// `id`, built from that profile's configuration, and the old one is
+    /// closed. The caller loads the address into it.
+    ///
+    /// - For the extension contexts it is a close and an open, never a move:
+    ///   the old tab's close is reported to its profile's contexts (its
+    ///   `teardown`), then `betweenPages` runs — neither page is in
+    ///   `quickDetourTabs` then, so the window lists no tab while it tells the
+    ///   old profile's contexts it closed and the new profile's that it opened
+    ///   — and then the new tab enters the list, which reports it open.
+    /// - History: the new tab is subscribed as a Quick Detour's, so its visits
+    ///   go to the new profile's Quick Detour scope (none for Private); the
+    ///   old one's stay where they were recorded.
+    /// - The Private session ends when the old page was its last user, as on
+    ///   a close (`hasLivePrivateSession`); a page switched into Private is a
+    ///   user of it from here.
+    /// - Observers hear `tabStoreDidReplaceQuickDetour` — never
+    ///   `tabStoreDidCloseQuickDetour`, which would close the window. The
+    ///   download manager drops what was scoped to the old Private page.
+    ///
+    /// Refused (nil, nothing changes) for a tab that is not an open Quick
+    /// Detour's, for its own profile and for a deleted one.
+    @discardableResult
+    func replaceQuickDetourTab(_ tab: BrowserTab, withPageOn profile: Profile, id: UUID = UUID(),
+                               betweenPages: () -> Void = {}) -> BrowserTab? {
+        guard let index = quickDetourTabs.firstIndex(where: { $0 === tab }), let oldProfile = tab.quickDetourProfile,
+              oldProfile !== profile, !profile.isDeleted else { return nil }
+        takeDownQuickDetourTab(at: index)
+        betweenPages()
+        let replacement = openQuickDetourTab(profile: profile, id: id)
+        if oldProfile.isIncognito, !hasLivePrivateSession {
+            siteSettings?.discardPrivateSession()
+        }
+        notifyObservers { $0.tabStoreDidReplaceQuickDetour(tab, with: replacement) }
+        return replacement
     }
 
     // MARK: - Open in (TASK-193.3)
@@ -122,7 +170,14 @@ extension TabStore {
                                profiles: profiles.map(Self.openInSnapshot(of:)), useOrder: spaceUseOrder)
     }
 
-    private static func openInSnapshot(of profile: Profile) -> QuickDetourProfileSnapshot {
+    /// The profile pill's menu for a Quick Detour on `windowProfile`, from
+    /// the store's profiles (`QuickDetour.profileMenu`).
+    func quickDetourProfileMenu(windowProfile: Profile) -> QuickDetourProfileMenu {
+        QuickDetour.profileMenu(windowProfileID: windowProfile.id, profiles: profiles.map(Self.openInSnapshot(of:)))
+    }
+
+    /// A profile as the Quick Detour rules (Open in, the profile pill) see it.
+    static func openInSnapshot(of profile: Profile) -> QuickDetourProfileSnapshot {
         QuickDetourProfileSnapshot(id: profile.id, name: profile.name, isPrivate: profile.isIncognito,
                                    isDeleted: profile.isDeleted)
     }

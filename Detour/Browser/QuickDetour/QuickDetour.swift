@@ -60,8 +60,10 @@ enum QuickDetour {
     /// Private window — else the first profile that is neither Private nor
     /// deleted. Nil only when there is no such profile at all.
     ///
-    /// TASK-193.4 owns the long-term default (a setting, or the last one
-    /// used); this is the rule until then.
+    /// The user's decision in TASK-193.4 (2026-10-26): the frontmost window's
+    /// profile, a Quick Detour's own included (one switched with its profile
+    /// pill opens the next on the profile it switched to); rejected, the
+    /// last profile used in a Quick Detour, and a fixed profile setting.
     static func profileForNewWindow(frontmostSpaceProfile: Profile?, profiles: [Profile]) -> Profile? {
         if let frontmostSpaceProfile, !frontmostSpaceProfile.isDeleted { return frontmostSpaceProfile }
         return profiles.first { !$0.isIncognito && !$0.isDeleted }

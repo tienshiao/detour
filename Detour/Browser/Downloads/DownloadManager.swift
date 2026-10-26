@@ -526,6 +526,13 @@ extension DownloadManager: TabStoreObserver {
         guard space.isIncognito else { return }
         moveIncognitoDownloads(from: tab.id, to: space.id)
     }
+
+    /// A Quick Detour switched profile (TASK-193.4): a Private page's
+    /// downloads go with it, as when its window closes (the window asked
+    /// first about any still running).
+    func tabStoreDidReplaceQuickDetour(_ old: BrowserTab, with new: BrowserTab) {
+        tabStoreDidUpdateSpaces()
+    }
 }
 
 private struct WeakDownloadObserver {

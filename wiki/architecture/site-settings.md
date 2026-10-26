@@ -73,7 +73,8 @@ so a site visited in Private is not left on disk, and
 `discardPrivateSession()` drops the values when the last Private page goes:
 the last Private space removed (`TabStore.removeIncognitoSpace`) with no
 Private [Quick Detour](../features/quick-detour.md) open, or the last Private
-Quick Detour closed with no Private space left (`TabStore.hasLivePrivateSession`,
+Quick Detour closed (or switched out of Private with its profile pill,
+TASK-193.4) with no Private space left (`TabStore.hasLivePrivateSession`,
 TASK-193.1), through the shared store's `siteSettings`. The user chose this on 2026-10-24, matching the external-app
 permissions, which keep Private decisions in memory too.[^task-188][^pip-tests]
 Picture in picture and dev mode were memory-only from the start; content

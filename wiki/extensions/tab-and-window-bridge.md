@@ -69,6 +69,9 @@ sources:
   - id: task-193-1
     resource: backlog:TASK-193.1
     title: "Quick Detour: the window, its single tab and the palette that opens it"
+  - id: task-193-4
+    resource: backlog:TASK-193.4
+    title: "Quick Detour: a profile selector in the title bar"
   - id: quick-detour-tests
     resource: ../../DetourTests/QuickDetourExtensionTests.swift
     title: QuickDetourExtensionTests
@@ -247,7 +250,14 @@ its configuration's controller is the asking context's.
   `windows.onRemoved` may never fire.[^task-132-22] A Quick Detour window
   tells its profile's loaded contexts itself, `didOpenWindow` before its tab
   is placed and `didCloseWindow` after the tab is closed: a lookup window may
-  never be focused while an extension asks.[^task-193-1]
+  never be focused while an extension asks.[^task-193-1] Its profile pill
+  (TASK-193.4) moves the same window object between profiles: the old tab
+  closes, `didCloseWindow` goes to the old profile's contexts, the window's
+  `extensionProfileID` changes, `didOpenWindow` goes to the new profile's,
+  and only then does the new tab enter `quickDetourTabs` — so the window
+  lists no tab at either announcement. `didCloseWindow` makes WebKit forget
+  the window (`forgetWindow`), so reporting the same object open to that
+  context again later gives it a new window id.[^task-193-4]
 - `focusedWindowFor` answers only with the key window, and only if it shows
   the profile. `windows.getCurrent` from a worker was seen failing with
   "Window not found" at every worker start (1Password's sign-in-with setup
@@ -289,3 +299,4 @@ The planned changes to the window model are in the
 [^task-132-2]: Resolve a WebKit tabId to its BrowserTab in polyfill handlers
 [^task-193-1]: Quick Detour: the window, its single tab and the palette that opens it
 [^task-193-3]: Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)
+[^task-193-4]: Quick Detour: a profile selector in the title bar

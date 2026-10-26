@@ -137,6 +137,14 @@ open and dropped, cancelled if still running, when it closes
 (`TabStore.liveIncognitoDownloadScopeIDs`). Tests: `QuickDetourTests` (the
 Private session and download cases).
 
+Its profile pill (TASK-193.4) can switch a Quick Detour **into** Private —
+a new page on the Private store, from then on everything above — or **out**
+of it: the Private page closes (the session ends if it was the last Private
+page) and, with Private downloads still running, the switch first asks
+"Switch to Work?" with Switch Profile (cancels them) and Continue
+Downloading, as closing the window would. Tests:
+`QuickDetourProfileSwitchTests`, `QuickDetourProfileSwitchWindowTests`.
+
 ## Downloads
 
 A download started in a Private window carries

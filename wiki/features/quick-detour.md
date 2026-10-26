@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Quick Detour
-description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order."
+description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T15:30:00Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193
@@ -58,6 +58,15 @@ sources:
   - id: harness-3
     resource: ../../docs/harness/task193-3-harness.patch
     title: TASK-193.3 runtime harness and its results
+  - id: task-193-4
+    resource: backlog:TASK-193.4
+    title: "Quick Detour: a profile selector in the title bar"
+  - id: profile-switch
+    resource: ../../Detour/Browser/QuickDetour/QuickDetourProfileSwitch.swift
+    title: QuickDetourProfileSwitch.swift (the pill's menu, the switch decision)
+  - id: harness-4
+    resource: ../../docs/harness/task193-4-harness.patch
+    title: TASK-193.4 runtime harness and its results
   - id: reference
     resource: ../../docs/little-window/arc-little-arc.png
     title: Arc's Little Arc, the visual reference
@@ -98,13 +107,10 @@ of the profile) and Copy Link, then **Open in <Space> ⌘O** at the right.
 There is no sidebar.
 
 **Open in <Space> ⌘O** moves the page into a tab of a space and closes
-the window ([below](#open-in-space), TASK-193.3). Placeholders until their
-subtasks:
-
-| Control | Now | Owner |
-|---|---|---|
-| Profile pill | shows the profile's name (a person symbol, eyeglasses for Private); no menu | TASK-193.4 |
-| Archive on close or quit | none: a closed Quick Detour is gone | TASK-193.5 |
+the window ([below](#open-in-space), TASK-193.3). The **profile pill** names
+the window's profile and switches it ([below](#the-profile-pill),
+TASK-193.4). Still to come: archiving on close or quit (none yet: a closed
+Quick Detour is gone; TASK-193.5).
 
 # How it works
 
@@ -349,8 +355,15 @@ web view's navigation and UI delegate for its whole life.
 
 `QuickDetour.profileForNewWindow`: the profile of the frontmost window — a
 browser window's active space's, which is the Private profile for a Private
-window, or a Quick Detour's own — else the first profile that is neither
-Private nor deleted. TASK-193.4 decides the long-term default.
+window, or a Quick Detour's own (after a switch with its pill, the profile it
+switched to) — else the first profile that is neither Private nor deleted.
+From another app (the global hotkey) the frontmost window is the last Detour
+window used. The user's decision in TASK-193.4 (2026-10-26); rejected: the
+last profile used in a Quick Detour, and a fixed profile setting.
+
+The launcher panel has **no pill**: it is a Spotlight-like field, and its
+suggestions come from the profile chosen when it opens (above). Another
+profile is one click away in the window once the page is open.
 
 ## Links and windows inside it
 
@@ -595,10 +608,117 @@ Detour's profile, `tabs.onCreated` for the other's.
 | The profile was deleted | its Quick Detours close with it (unchanged); a target space of a deleted profile is never listed |
 | A page-opened Quick Detour (`window.opener`) | the same web view moves, so the opener relationship is kept both ways; a reload in another profile loses it |
 
+## The profile pill
+
+TASK-193.4. The pill at the left of the address capsule shows the window's
+profile: a person symbol (eyeglasses for Private) and the profile's name —
+profiles have no icon, emoji or colour of their own — with a small
+up-and-down chevron saying it is a menu. It follows a rename
+(`TabStore.updateProfile`'s notification). Pressed, it opens its menu at
+once, as a pop-up button does (`QuickDetourProfilePill`: the menu tracks the
+rest of the click, and the pill never drags the window as the title bar
+around it does; accessibility role pop-up button). It shows itself pressed
+(a stronger fill) while its menu is open, reported to the title bar through
+`onHighlightChange`.
+
+### The menu
+
+`QuickDetour.profileMenu`: every live normal profile in the store's order,
+then **Private last, after a separator**; deleted profiles left out; the
+window's own profile checked. With only one profile it lists that one and
+Private. Each other profile's item has a tooltip saying what a switch does:
+"Reload this page in Work: its cookies and sign-ins, without this page's
+back and forward history" — the subtle mark of the reload (decided: a
+tooltip only; a subtitle on every item, as Open in's "Reloads the page",
+would mark every row the same).
+
+### Switching: a new page in the same window
+
+`QuickDetourWindowController.switchProfile(to:)` reloads the page's address
+on the chosen profile in a **new web view**, in the **same window**.
+
+**Why a new `BrowserTab` rather than swapping the web view inside the old
+one.** A web view's data store is fixed when it is made, so another profile
+always means another web view. Replacing the whole tab
+(`TabStore.replaceQuickDetourTab`) makes every consequence the one a close and
+a new Quick Detour already have: the old tab's `teardown` reports its close
+to its own profile's extensions, its history scope and Private-session
+membership go with it, and the new tab is built and subscribed exactly as
+`openQuickDetourTab` builds one. Swapping the web view inside one tab would
+have kept a tab id across two profiles' extension contexts (WebKit maps a
+tab to a web view and a context; `didCreateWebView` re-announces within one
+profile only), and left `quickDetourProfile`, the history subscription and
+the Private bookkeeping to be changed in place. **Why the same window, not a
+new one:** the window keeps its frame, its place among the windows, its
+full-screen or zoomed state and its source space; only the page changes.
+
+| Step | Who | What |
+|---|---|---|
+| 1 | Quick Detour | refused while a sheet is up, for the same profile or a deleted one; leaving Private with Private downloads running asks first (below) |
+| 2 | Quick Detour | `releasePage`: palette, find bar, popovers and link status closed, its subscriptions and delegates on the old web view dropped, the container out of the content view |
+| 3 | `replaceQuickDetourTab` | the old tab out of `quickDetourTabs`, unsubscribed and torn down: `tabs.onRemoved` for the old profile's contexts |
+| 4 | the hook, between the pages | `didCloseWindow` to the old profile's contexts (`windows.onRemoved`; the window lists no tab now), the window takes the new profile, a new tab id and the palette's history scope for it, `didOpenWindow` to the new profile's contexts (`windows.onCreated`, a `popup`) |
+| 5 | `replaceQuickDetourTab` | a new tab on the new profile's configuration enters `quickDetourTabs` (`tabs.onCreated` in that popup); the Private session ends if the old page was its last user; observers hear `tabStoreDidReplaceQuickDetour`, **never** `tabStoreDidCloseQuickDetour` (which would close the window) |
+| 6 | Quick Detour | the pill, the window's appearance (dark for Private), Open in and the extension buttons follow the profile; the new web view is hosted and loads the address (`loadRecordedURL`) |
+
+**The address** is the old tab's `url`: the page's own, also while a load is
+in flight (the URL being loaded) or an error page is showing (the URL that
+failed). An internal page the user had opened (the History page) is reopened
+as one, now on the new profile. The load is not a typed visit.
+
+**What is lost**, decided and acceptable for a quick lookup: the
+back/forward history, text typed into a form, the scroll position, the zoom
+level, and `window.opener` both ways (a page-opened Quick Detour's opener
+stays on the old profile's page, which is gone). A Quick Detour the page had
+opened keeps its own profile.
+
+### Consequences
+
+| | Old profile | New profile |
+|---|---|---|
+| Extensions | `tabs.onRemoved` for the page, then `windows.onRemoved` for the popup; both refused by id afterwards | `windows.onCreated` (`popup`, `incognito` for Private), then `tabs.onCreated` in it; listed by `windows.getAll`; the active tab announced |
+| History | the visits so far stay under its Quick Detour scope | from the switch on, its Quick Detour scope; **nothing** for Private |
+| Open in | — | follows at once: the button and the dropdown are the new profile's (the source space no longer matches unless it is the same profile's, so the button names the new profile's most recently used space; switching back names the source space again); Private: Open in Private Window, no dropdown |
+| Palette | — | suggests from the new profile's Quick Detour scope (the source space only when it is the new profile's) |
+
+A third profile's extensions hear nothing. Switching back is a new popup
+window for the first profile's contexts, not the one they were told closed
+(WebKit forgets a closed window, `forgetWindow`, so the same controller
+reported open again gets a new window id).
+
+### Private
+
+- **Into Private** it is a Private Quick Detour from then on: the profile's
+  non-persistent store, no history, a dark window, Private downloads scoped
+  to the new tab's id, and a user of the Private session
+  (`hasLivePrivateSession`), with the Private site settings' lifetime.
+- **Out of Private**, with Private downloads still running in the window,
+  the switch asks first, as closing it would (`QuickDetour.profileSwitchDecision`):
+  "Switch to Work?" / "1 download is in progress. Leaving Private browsing
+  cancels it." with **Switch Profile** (cancels them, removing the partial
+  files, and switches) and **Continue Downloading** (Escape: nothing
+  changes). Decided over moving them to the new page: a Private download
+  must not be listed, or keep running, under a normal profile. Ended Private
+  downloads go with the old page, unasked. The Private session then ends if
+  this was its last page.
+
+### Edge cases decided
+
+| Case | Decision |
+|---|---|
+| The same profile chosen | nothing |
+| The page is mid-load | the address being loaded reloads on the new profile |
+| A form with typed text | lost with the old page |
+| A sheet is up (alert, file panel, permission or sign-in prompt) | refused, and the pill opens no menu: its completion would outlive its web view |
+| The profile is deleted while its Quick Detour is open | the window closes, as before; after a switch that is the profile switched to (`closeQuickDetourTabs(of:)` matches the new tab) |
+| The chosen profile is deleted, or a sheet is put up, while the question is up | nothing switches and the downloads keep running: they are cancelled only once the switch is certain (found in the code review) |
+| Only one profile | the menu shows it and Private |
+
 ## Teardown
 
 Closing the window (Cmd+W, the close button, an extension's `tabs.remove`,
-the profile deleted, Open in) runs `tearDown()` once:
+the profile deleted, Open in) runs `tearDown()` once — a profile switch
+closes the old page but never the window:
 palette and popovers closed, subscriptions and the weakly held script
 handlers removed, delegates cleared, `closeQuickDetourTab` (out of the list,
 web view released, extension registration closed, Private session checked,
@@ -633,6 +753,9 @@ closes the profile's Quick Detours before it releases the profile.
 | `InternalPageIntegrationTests` | the History page's "Quick Detour" label |
 | `QuickDetourOpenInTests` (30) | Open in's rules: the most recently used space (use order, other profiles, deleted and Private spaces skipped, the first space with none used), the default target (the source space, another profile's or deleted source falling back, Private never, a profile with no space), the menu (grouped by profile with the window's first, sidebar order, reload marks, the default item, headers only for several profiles, Private and deleted profiles left out, no target at all), Private (Private Window, no dropdown); `noteSpaceUsed`; the store's move (the same tab and web view at the new-tab position, observers told of a move not a close, saved with the session, refused for another profile, the Private boundary, a non-Quick-Detour tab and a gone space; Private into a Private space), the extension seam (one move from the popup window, no close; none when the caller announces), the history scope switching at the move (real loads), a Private download moving with the page and a normal one untouched |
 | `QuickDetourOpenInWindowTests` (17) | in real windows: a sheet and a page `alert()` blocking Cmd+O until they end, the button naming the source space and following a deletion, the File menu's ⌘O item, Cmd+O and the button moving the page into the window showing the space (front, selected, same web view hosted with the window's delegates, back list and typed form text kept), the most recent window switching, the dropdown, the palette and find bar closed, the controller released while the web view lives on, another profile's space reloading (its store, the Quick Detour and its web view released), the dropdown's headers, subtitles and ⌘O item, Private into the most recent Private window and into a new one holding only the page, both boundaries refused, a space switch noting its use |
+| `QuickDetourProfileSwitchTests` (23) | the pill's rules: the menu (normal profiles in order, Private last after a separator, the window's own checked, one profile plus Private, deleted left out, no separator without Private), the decision (same profile and a gone or deleted one stay; another or Private switches at once; leaving Private asks with one or more downloads running, never otherwise; a normal page never asks); the store's replacement (a new tab on the other profile's store with the given id, the old torn down, the hook between the pages with neither listed, observers told of a replacement not a close, refusals, deleting the new profile closing it), Private (into it: its store, the session live, its download scope; out of it: the session ending, or kept for a Private window; its downloads dropped), history (visits after the switch under the new profile's scope, real loads; Private records nothing) |
+| `QuickDetourProfileSwitchWindowTests` (17) | in real windows: the pill names the profile; the menu (order, Private last after a separator, the checkmark) and its item switching; the address reloading under the other profile's cookies (a loopback page titled by a cookie the other profile set; the same window, a new tab and web view hosted with the window's delegates, no back history, the old web view released) and back; the same profile a no-op; a sheet refusing; a page mid-load reloading its address; the History page reopened as an internal page; palette and find bar closed; Open in following the profile both ways; into Private (store, dark, Open in Private Window, scope) and out (appearance, scope, Open in); the download question (no keeps everything, yes cancels and drops it; a target deleted, or a sheet put up, while it is asked refuses the switch and keeps the download); the window closing cleanly after a switch |
+| `QuickDetourExtensionTests` (+4) | the pill in real contexts: a close for the old profile (`tabs.onRemoved`, `windows.onRemoved`, both refused by id, promise and callback) and an open for the new (`windows.onCreated` popup, `tabs.onCreated` in it, `windows.getAll` from the page, `tabs.get` from the worker); switching back a new window and tab id; a third profile hearing nothing; into Private an incognito popup |
 | `QuickDetourExtensionTests` (+3) | Open in in real contexts: the same tab id detached from the popup and attached to the browser window (with its position), no remove and no second create, `tabs.get`/`windows.get` from the page and the worker, the popup refused by id (promise and callback); another profile hearing nothing; a reload in another profile removing the tab here and creating one there |
 
 `QuickDetourTests` was written first: 26 of 28 failed against stubs, two
@@ -651,7 +774,15 @@ Open in suites were written first, against stubs returning nothing: 23 of
 `QuickDetourOpenInTests`' 29 failed (one by indexing an empty list, which
 crashed the host; that test no longer subscripts), 14 of
 `QuickDetourOpenInWindowTests`' 15 and 2 of the 3 extension tests; the ones
-that passed were the refusals and the negative cases. The first green run
+that passed were the refusals and the negative cases. For TASK-193.4 the two
+profile-switch suites and the four extension tests were written first,
+against stubs returning nothing (an empty menu, `.stay`, a store replacement
+returning nil, a switch doing nothing): 36 of the 42 failed (20 of 23, 12 of
+15, 4 of 4); the six that passed were the refusals, the no-op and the pill's
+name, which 193.1 already showed. The first green run left two: a store test
+reading a web view's release synchronously (dropped: the window test checks
+it after the run loop turns) and a mid-load test switching before the first
+request had reached the server. The first green run
 of the extension test then caught `newPosition: null` (the move announced
 before the receiving window had a selection), fixed by announcing it after
 selecting (`holdingExtensionActivation`); the deferred-announcement store
@@ -724,6 +855,28 @@ only the page, with a download in flight moving to its scope. Not checked:
 Cmd+O typed by a person, several displays, 1Password across a move, an
 extension's content-script port across a move.
 
+TASK-193.4, 2026-10-26, macOS 26.7, real input posted in the app (a click
+on the pill, Down/Return/Escape in its menu and in the question), light and
+dark ([harness](../../docs/harness/task193-4-harness.patch), which lists
+every step and result):[^harness-4] the pill named Default; its menu listed
+"✓ Default, Second, —, Private" with the reload tooltips; choosing Second
+kept the window and reloaded a cookie-reading page on a new tab and web view
+on Second's store ("Not logged in" where Default's read "Logged in"), the
+old web view released, Open in naming Second's 🎮 Play; Default's Quick
+Detour scope kept the earlier visit and Second's got the next; the extension
+in Default heard `tabs.onRemoved` and `windows.onRemoved`, the one in Second
+`windows.onCreated` (popup) then `tabs.onCreated` in it; back to Default gave
+its extension a new window id. Into Private: the non-persistent store, a
+dark window, Open in Private Window, nothing recorded, an incognito popup
+for the Private profile's extension. Out of Private with a download running:
+the question; Escape kept everything, Return switched, cancelled the download
+and left no partial file, and the Private session ended. The History page
+reopened as the History page on Second. After the code review (phases 3
+and 4, light and dark): the pill pressed while its menu was open, one
+switch, and leaving Private with a download still asking first. Not checked: a person's own click,
+VoiceOver, a page mid-load and a profile deleted or renamed while open (unit
+tests only), several displays.
+
 Not checked at runtime (TASK-193.1): Cmd+click and page-opened windows, a normal
 Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 `.crx` installing, 1Password itself.
@@ -742,3 +895,4 @@ Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 [^harness]: TASK-193.1 runtime harness and its results
 [^harness-2]: TASK-193.2 runtime harness, its scratch tools and results
 [^harness-3]: TASK-193.3 runtime harness and its results
+[^harness-4]: TASK-193.4 runtime harness and its results

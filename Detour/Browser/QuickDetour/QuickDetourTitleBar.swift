@@ -8,9 +8,11 @@ import AppKit
 /// like the address one, whose main part moves the page (TASK-193.3, Cmd+O)
 /// and whose chevron lists the spaces to move it to.
 ///
-/// Placeholder until its subtask: the pill shows the profile and has no menu
-/// (TASK-193.4).
+/// The pill names the window's profile; a click opens its menu of profiles,
+/// which switches the page to another (TASK-193.4).
 final class QuickDetourTitleBar: NSView {
+    /// The profile pill was pressed: its menu, anchored on the pill.
+    var onProfileClick: ((NSView) -> Void)?
     var onHostClick: (() -> Void)?
     var onCopyLink: (() -> Void)?
     /// Open in's main part was clicked: the default target.
@@ -26,9 +28,10 @@ final class QuickDetourTitleBar: NSView {
     static let leadingInset: CGFloat = 78
 
     private let capsule = NSView()
-    private let pill = NSView()
+    let pill = QuickDetourProfilePill()
     private let pillIcon = NSImageView()
     private let pillLabel = NSTextField(labelWithString: "")
+    private let pillChevron = NSImageView()
     let hostButton = NSButton(title: "", target: nil, action: nil)
     private let lockIcon = NSImageView()
     let extensionStack = NSStackView()
@@ -63,7 +66,12 @@ final class QuickDetourTitleBar: NSView {
         pill.wantsLayer = true
         pill.layer?.cornerRadius = 10
         pill.translatesAutoresizingMaskIntoConstraints = false
-        pill.toolTip = "Profile"
+        pill.toolTip = "Profile: choose another to reload this page in it"
+        pill.onPress = { [weak self] in
+            guard let self else { return }
+            self.onProfileClick?(self.pill)
+        }
+        pill.onHighlightChange = { [weak self] in self?.updateColors() }
         capsule.addSubview(pill)
         pillIcon.translatesAutoresizingMaskIntoConstraints = false
         pillIcon.contentTintColor = .secondaryLabelColor
@@ -72,6 +80,11 @@ final class QuickDetourTitleBar: NSView {
         pillLabel.textColor = .labelColor
         pillLabel.translatesAutoresizingMaskIntoConstraints = false
         pill.addSubview(pillLabel)
+        pillChevron.translatesAutoresizingMaskIntoConstraints = false
+        pillChevron.contentTintColor = .tertiaryLabelColor
+        pillChevron.image = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 7, weight: .semibold))
+        pill.addSubview(pillChevron)
 
         hostButton.isBordered = false
         hostButton.bezelStyle = .inline
@@ -155,8 +168,10 @@ final class QuickDetourTitleBar: NSView {
             pillIcon.widthAnchor.constraint(equalToConstant: 12),
             pillIcon.heightAnchor.constraint(equalToConstant: 12),
             pillLabel.leadingAnchor.constraint(equalTo: pillIcon.trailingAnchor, constant: 4),
-            pillLabel.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -8),
             pillLabel.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+            pillChevron.leadingAnchor.constraint(equalTo: pillLabel.trailingAnchor, constant: 3),
+            pillChevron.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -7),
+            pillChevron.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
 
             hostCentred,
             hostButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
@@ -212,12 +227,20 @@ final class QuickDetourTitleBar: NSView {
 
     // MARK: - Content
 
+    /// The name the pill shows.
+    var profileName: String { pillLabel.stringValue }
+
     /// The profile pill: its name, and a symbol saying whether it is Private.
     func setProfile(name: String, isPrivate: Bool) {
         pillLabel.stringValue = name
-        pillIcon.image = NSImage(systemSymbolName: isPrivate ? "eyeglasses" : "person.crop.circle",
-                                 accessibilityDescription: nil)
+        pillIcon.image = Self.profileSymbol(isPrivate: isPrivate)
         pill.setAccessibilityLabel("Profile: \(name)")
+    }
+
+    /// The symbol for a profile, in the pill and in its menu: profiles have
+    /// no icon or colour of their own.
+    static func profileSymbol(isPrivate: Bool) -> NSImage? {
+        NSImage(systemSymbolName: isPrivate ? "eyeglasses" : "person.crop.circle", accessibilityDescription: nil)
     }
 
     /// The page's host, or the prompt when nothing is loaded.
@@ -306,7 +329,8 @@ final class QuickDetourTitleBar: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             capsule.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
-            pill.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+            pill.layer?.backgroundColor = NSColor.labelColor
+                .withAlphaComponent(pill.isHighlighted ? 0.16 : 0.08).cgColor
             openInControl.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
             openInDivider.layer?.backgroundColor = NSColor.separatorColor.cgColor
         }
@@ -323,5 +347,35 @@ final class QuickDetourTitleBar: NSView {
     @objc private func extensionClicked(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
         onExtensionClick?(id, sender)
+    }
+}
+
+/// The profile pill: pressed, it opens its menu at once, as a pop-up button
+/// does (the menu tracks the rest of the click), and it never drags the
+/// window the way the title bar around it does.
+final class QuickDetourProfilePill: NSView {
+    var onPress: (() -> Void)?
+    /// The pressed look changed: the title bar repaints the pill.
+    var onHighlightChange: (() -> Void)?
+
+    private(set) var isHighlighted = false {
+        didSet { onHighlightChange?() }
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        isHighlighted = true
+        // The menu's tracking loop runs inside this call.
+        onPress?()
+        isHighlighted = false
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .popUpButton }
+    override func accessibilityPerformPress() -> Bool {
+        onPress?()
+        return true
     }
 }

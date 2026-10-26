@@ -154,7 +154,9 @@ space has that id. The window supplies it
 created. A Private [Quick Detour](./quick-detour.md) has no space: its
 downloads carry its tab's id instead, the store's
 `liveIncognitoDownloadScopeIDs` keeps them listed while the window is open,
-and closing it drops them (`tabStoreDidCloseQuickDetour`). A normal Quick
+and closing it drops them (`tabStoreDidCloseQuickDetour`); so does switching
+it to another profile with its pill (`tabStoreDidReplaceQuickDetour`, after
+asking about any still running, TASK-193.4). A normal Quick
 Detour's are `.normal` (TASK-193.1). The Quick Detour window has no
 downloads button: it says "Downloading …" in a toast. Three small functions on the scope hold the rules (TASK-148):
 

@@ -68,6 +68,12 @@ protocol TabStoreObserver: AnyObject {
     /// (Open in, TASK-193.3): the same tab, the same web view. Sent after
     /// `tabStoreDidInsertTab`. A Private one's downloads move with it.
     func tabStoreDidMoveQuickDetour(_ tab: BrowserTab, into space: Space)
+
+    /// A Quick Detour's tab was replaced by a new one on another profile (the
+    /// profile pill, TASK-193.4): `old` left `quickDetourTabs` and was torn
+    /// down, `new` took its place in the same window. Never sent as a close,
+    /// so the window stays; a Private one's downloads go with `old`.
+    func tabStoreDidReplaceQuickDetour(_ old: BrowserTab, with new: BrowserTab)
 }
 
 extension TabStoreObserver {
@@ -89,6 +95,7 @@ extension TabStoreObserver {
     func tabStoreDidAddProfile(_ profile: Profile) {}
     func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) {}
     func tabStoreDidMoveQuickDetour(_ tab: BrowserTab, into space: Space) {}
+    func tabStoreDidReplaceQuickDetour(_ old: BrowserTab, with new: BrowserTab) {}
 }
 
 // MARK: - Space

@@ -51,11 +51,14 @@ final class QuickDetourWindowController: NSWindowController {
 
     // MARK: - State
 
-    let tabID: UUID
-    let profile: Profile
+    /// The window's page. A new one, with a new id, when the profile pill
+    /// switches profile (TASK-193.4).
+    private(set) var tabID: UUID
+    /// The page's profile; the pill switches it (`switchProfile(to:)`).
+    private(set) var profile: Profile
     /// The space whose history the palette suggests from
-    /// (`QuickDetour.paletteHistorySpaceID`).
-    let paletteHistorySpaceID: UUID
+    /// (`QuickDetour.paletteHistorySpaceID`), for the current profile.
+    private(set) var paletteHistorySpaceID: UUID
     /// The space of the browser window it was opened from — what Open in
     /// names while it is still there and the same profile's (TASK-193.3).
     let sourceSpaceID: UUID?
@@ -142,6 +145,10 @@ final class QuickDetourWindowController: NSWindowController {
                                                name: ExtensionManager.extensionPinStateDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(extensionActionDidChange(_:)),
                                                name: ExtensionManager.extensionActionDidChangeNotification, object: nil)
+        // `TabStore.updateProfile`'s only signal: a profile's settings (its
+        // name among them) were saved.
+        NotificationCenter.default.addObserver(self, selector: #selector(profileDidChange(_:)),
+                                               name: .init("UserAgentDidChange"), object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -169,6 +176,7 @@ final class QuickDetourWindowController: NSWindowController {
         contentView.wantsLayer = true
 
         titleBar.setProfile(name: profile.name, isPrivate: profile.isIncognito)
+        titleBar.onProfileClick = { [weak self] anchor in self?.showProfileMenu(from: anchor) }
         titleBar.onOpenIn = { [weak self] in self?.openInDefaultSpace(nil) }
         titleBar.onOpenInMenu = { [weak self] anchor in self?.showOpenInMenu(from: anchor) }
         updateOpenIn()
@@ -669,6 +677,151 @@ final class QuickDetourWindowController: NSWindowController {
     @objc private func openInMenuItemChosen(_ sender: NSMenuItem) {
         guard let spaceID = sender.representedObject as? UUID else { return }
         open(in: .space(spaceID))
+    }
+
+    // MARK: - The profile pill (TASK-193.4)
+
+    /// The question asked before leaving Private would cancel Private
+    /// downloads; a test answers it.
+    static var runProfileSwitchAlert: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+        BrowserWindowController.runPrivateDownloadCloseAlert
+
+    /// The pill's menu model, from the store's profiles as they are now.
+    var profileMenu: QuickDetourProfileMenu {
+        store.quickDetourProfileMenu(windowProfile: profile)
+    }
+
+    /// The pill's menu: the profiles, Private last after a separator, the
+    /// window's own checked (`QuickDetour.profileMenu`). Another profile's
+    /// item says in its tooltip what a switch loses.
+    func makeProfileMenu() -> NSMenu {
+        let model = profileMenu
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for (index, item) in model.items.enumerated() {
+            if index == model.separatorIndex { menu.addItem(.separator()) }
+            let menuItem = NSMenuItem(title: item.name, action: #selector(profileMenuItemChosen(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = item.profileID
+            menuItem.state = item.isChecked ? .on : .off
+            menuItem.image = QuickDetourTitleBar.profileSymbol(isPrivate: item.isPrivate)
+            if !item.isChecked {
+                menuItem.toolTip = "Reload this page in \(item.name): its cookies and sign-ins, without this page's "
+                    + "back and forward history"
+            }
+            menu.addItem(menuItem)
+        }
+        return menu
+    }
+
+    private func showProfileMenu(from anchor: NSView) {
+        guard window?.attachedSheet == nil else { return }
+        let menu = makeProfileMenu()
+        guard !menu.items.isEmpty else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.minY - 4), in: anchor)
+    }
+
+    @objc private func profileMenuItemChosen(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID, let target = store.profile(withID: id) else { return }
+        switchProfile(to: target)
+    }
+
+    /// The profile pill (TASK-193.4): reloads the page's address on `target`,
+    /// in a new web view on that profile's data store, in this same window.
+    /// Returns whether it switched.
+    ///
+    /// Why a new page rather than a new data store: a web view's data store
+    /// is fixed when it is made, so the page on another profile is another
+    /// web view, and with it another `BrowserTab`
+    /// (`TabStore.replaceQuickDetourTab`): the old one is closed, which is
+    /// what its profile's extensions, history and Private session must see,
+    /// and the new one opened, as on a new Quick Detour. The window stays,
+    /// with its frame, its place among the windows and its source space.
+    ///
+    /// - The address is `tab.url`: the page's own, also mid-load or behind an
+    ///   error page; an internal page is reopened as one. The back/forward
+    ///   history, form text, scroll position and `window.opener` are lost.
+    /// - Extensions: the old profile's contexts hear the tab and then the
+    ///   popup window close; the new profile's hear a popup window open and
+    ///   then the tab.
+    /// - Private: leaving it asks first when Private downloads are still
+    ///   running (`QuickDetour.profileSwitchDecision`); a yes cancels them,
+    ///   as closing the window would. Into Private the window turns dark and
+    ///   Open in names a Private window.
+    ///
+    /// Refused, leaving everything as it was, for the same profile or a
+    /// deleted one, without a page, or while a sheet is up: a script dialog,
+    /// file panel or permission prompt whose completion WebKit is waiting on
+    /// would be left with its web view gone.
+    @discardableResult
+    func switchProfile(to target: Profile) -> Bool {
+        guard !isTornDown, window?.attachedSheet == nil, let page = tab else { return false }
+        let manager = DownloadManager.shared
+        let closing = PrivateDownloadClosePolicy.Closing.window(downloadScope)
+        let inFlight = profile.isIncognito ? manager.privateDownloadsInFlight(closing: closing).count : 0
+        switch QuickDetour.profileSwitchDecision(from: TabStore.openInSnapshot(of: profile),
+                                                 to: TabStore.openInSnapshot(of: target),
+                                                 privateDownloadsInFlight: inFlight) {
+        case .stay:
+            return false
+        case .switchProfile:
+            break
+        case .confirm(let prompt):
+            guard Self.runProfileSwitchAlert(prompt) else { return false }
+            // The question ran a modal session: the page or the profile can
+            // have gone meanwhile, and the page can have put up a sheet (WebKit
+            // keeps delivering its messages while the alert runs).
+            guard !isTornDown, tab === page, !target.isDeleted, window?.attachedSheet == nil else { return false }
+            manager.cancelPrivateDownloads(closing: closing)
+        }
+
+        let address = page.url
+        let oldProfile = profile
+        releasePage(page)
+        let newTabID = UUID()
+        let replacement = store.replaceQuickDetourTab(page, withPageOn: target, id: newTabID) { [self] in
+            // Neither page is listed now: the old profile's contexts are told
+            // the window closed (its tab is already reported closed), then the
+            // window takes the new profile and its contexts are told it
+            // opened, before the new tab enters the list and is reported in it.
+            for context in oldProfile.extensionContexts.values {
+                context.didCloseWindow(self)
+            }
+            profile = target
+            tabID = newTabID
+            paletteHistorySpaceID = QuickDetour.paletteHistorySpaceID(
+                profile: target, sourceSpace: sourceSpaceID.flatMap { store.space(withID: $0) })
+            for context in target.extensionContexts.values {
+                context.didOpenWindow(self)
+            }
+        }
+        guard let replacement else {
+            host(page)
+            bind(page)
+            restoreWebContentFocus()
+            return false
+        }
+        applyProfile()
+        host(replacement)
+        bind(replacement)
+        if let address { replacement.loadRecordedURL(address) }
+        announceExtensionActiveTabIfChanged()
+        restoreWebContentFocus()
+        return true
+    }
+
+    /// What follows the profile: the pill, the window's appearance (dark for
+    /// Private, as a Private window is), Open in and the extension buttons.
+    private func applyProfile() {
+        titleBar.setProfile(name: profile.name, isPrivate: profile.isIncognito)
+        window?.appearance = profile.isIncognito ? NSAppearance(named: .darkAqua) : nil
+        updateOpenIn()
+        updateExtensionButtons()
+    }
+
+    @objc private func profileDidChange(_ notification: Notification) {
+        guard notification.userInfo?["profileID"] as? UUID == profile.id else { return }
+        titleBar.setProfile(name: profile.name, isPrivate: profile.isIncognito)
     }
 
     // MARK: - Teardown
