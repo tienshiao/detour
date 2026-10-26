@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:11'
-updated_date: '2026-10-24 10:21'
+updated_date: '2026-10-26 18:12'
 labels:
   - window
   - links
@@ -34,3 +34,13 @@ Fifth part of TASK-193.
 - [ ] #2 Links from other apps can be sent to quick windows (via a setting or an Air Traffic Control target, as decided)
 - [ ] #3 Idle quick windows auto-close into the archive after the configured time; the timing rule is a pure function with an injected clock and tests
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decisions (user, 2026-10-26):
+1. Links from other apps reach Quick Detour through Air Traffic Control: 'Quick Detour' becomes a visible Open in target in Settings > Links, for routes and the Default (external links only, as the resolver already rules). No separate switch.
+2. Opt-Cmd-click on a sidebar tab opens a copy: the tab's current URL in a new Quick Detour; the tab stays in the sidebar.
+3. Closed and auto-closed Quick Detour windows go to the sidebar archive page (all spaces), labelled Quick Detour (and 'auto-closed' when idle-closed); restoring reopens a Quick Detour window on that profile. Quitting archives open ones (TASK-193.1 decision).
+4. Idle auto-close default 6 hours, configurable in the Quick Detour settings section: Never, 1 h, 6 h, 12 h, 1 day.
+<!-- SECTION:NOTES:END -->
