@@ -4,7 +4,7 @@ title: 'Command palette: scope suggestions to the palette''s profile'
 status: To Do
 assignee: []
 created_date: '2026-10-26 07:08'
-updated_date: '2026-10-26 07:11'
+updated_date: '2026-10-26 18:34'
 labels:
   - command-palette
   - profiles
@@ -38,4 +38,6 @@ Change: every row the palette shows comes from the palette's profile only: open 
 
 <!-- SECTION:NOTES:BEGIN -->
 Decision (user, 2026-10-26): history in the palette widens from the active space to the whole profile, like the History page (including the profile's Quick Detour visits). This replaces the TASK-94 space-scoped decision; update wiki/features/suggestion-pipeline.md and the history own-title matching page accordingly (row titles then come from the profile's own visits, never another profile's).
+
+Queued (user, 2026-10-26): after TASK-202 (order: 193.5, 194, 201, 202, 209).
 <!-- SECTION:NOTES:END -->
