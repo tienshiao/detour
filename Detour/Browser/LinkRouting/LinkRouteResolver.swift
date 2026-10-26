@@ -55,6 +55,10 @@ struct LinkRouteContext: Equatable {
     /// The normal (non-Private) spaces that exist. A route to any other id (a
     /// deleted space, or a Private window's space) is skipped.
     var spaceIDs: Set<UUID>
+    /// The Private windows' spaces. The resolver does not need them (they are
+    /// not in `spaceIDs`); validation does, to tell a Private space from a
+    /// deleted one (TASK-191.3).
+    var privateSpaceIDs: Set<UUID> = []
 }
 
 /// Where a link should open.
@@ -193,7 +197,7 @@ func linkRouteDomain(fromPattern pattern: String) -> String? {
 
 /// Routes match web pages only: an internal `detour://` page, a file or a
 /// `data:` URL is never sent to another space.
-private func isRoutableURL(_ url: URL) -> Bool {
+func isRoutableURL(_ url: URL) -> Bool {
     guard let scheme = url.scheme?.lowercased() else { return false }
     return scheme == "http" || scheme == "https"
 }

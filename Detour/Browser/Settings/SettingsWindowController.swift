@@ -8,12 +8,13 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     private static let generalID = NSToolbarItem.Identifier("general")
     private static let spacesID = NSToolbarItem.Identifier("spaces")
+    private static let linksID = NSToolbarItem.Identifier("links")
     private static let profilesID = NSToolbarItem.Identifier("profiles")
     private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
 
     private var panes: [NSToolbarItem.Identifier: SettingsPaneViewController] = [:]
-    private let paneOrder: [NSToolbarItem.Identifier] = [generalID, spacesID, profilesID, extensionsID, contentBlockerID]
+    private let paneOrder: [NSToolbarItem.Identifier] = [generalID, spacesID, linksID, profilesID, extensionsID, contentBlockerID]
 
     /// Replaces the height of the screen's visible frame in the height rule,
     /// so a harness can exercise the cap on a tall screen. Nil in the app.
@@ -50,6 +51,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
         let spacesVC = SpacesSettingsViewController()
         panes[Self.spacesID] = spacesVC
+
+        let linksVC = LinksSettingsViewController()
+        panes[Self.linksID] = linksVC
 
         let profilesVC = ProfilesSettingsViewController()
         panes[Self.profilesID] = profilesVC
@@ -113,6 +117,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         case Self.spacesID:
             item.label = "Spaces"
             item.image = NSImage(systemSymbolName: "square.on.square", accessibilityDescription: "Spaces")
+        case Self.linksID:
+            item.label = "Links"
+            item.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Links")
         case Self.profilesID:
             item.label = "Profiles"
             item.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: "Profiles")
@@ -155,6 +162,16 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             vc.selectSpace(id: spaceID)
         }
         switchToPane(vc, identifier: Self.spacesID)
+    }
+
+    /// Shows the Links pane (Air Traffic Control, TASK-191.3). With a space,
+    /// the routes and the Default that target it are highlighted and the
+    /// first is scrolled into view: the blocked-deletion alert opens it so.
+    func showLinksPane(highlightingSpaceID spaceID: UUID? = nil) {
+        showWindow(nil)
+        guard let vc = panes[Self.linksID] as? LinksSettingsViewController else { return }
+        vc.highlightRoutes(targetingSpaceID: spaceID)
+        switchToPane(vc, identifier: Self.linksID)
     }
 
     /// Programmatically show the Extensions pane.

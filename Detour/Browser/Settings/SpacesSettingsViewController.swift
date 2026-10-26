@@ -333,7 +333,7 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         case .deleted: break
         case .notDeleted: return
         case .blockedByLinkRoutes(let references):
-            SpaceDeletionBlockedAlert.run(spaceName: space.name, references: references)
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, spaceID: space.id, references: references)
             return
         }
         selectedIndex = max(0, selectedIndex - 1)

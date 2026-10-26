@@ -212,6 +212,19 @@ edges ([UI probes](./ui-probes.md)).
   out, and log both; even then an occasional first click after the window
   became key did not land and had to be re-posted, so confirm each click by
   its effect (the policy log line), not by having posted it.[^task-191-4]
+- **A posted drag starts a real drag session that cannot be aimed.** Posted
+  `leftMouseDown` and `leftMouseDragged` events on an `NSTableView` row begin
+  a drag session, but the session tracks the real pointer, not the posted
+  events: in the TASK-191.3 run it outlived the posted mouse-up, swallowed
+  the next posted click, dropped wherever the pointer happened to be, and
+  pop-up menus no longer opened for posted clicks afterwards. Drive drops
+  with a stub `NSDraggingInfo` ([debug harness](./debug-harness.md)), and
+  put any posted-drag probe last in a run.
+- **A pop-up's item, through its real menu**: a posted mouse-down alone
+  opens an `NSPopUpButton`'s menu; on `NSMenu.didBeginTrackingNotification`
+  schedule a `.common`-mode timer that calls `menu.performActionForItem(at:)`
+  then `cancelTracking()`. The pop-up selects the item and sends its action
+  (TASK-191.3, every pop-up of the Links pane).
 - **A shell-launched instance is not the key application.** Anything
   enabled by `NSApp.keyWindow` (for example menu items validated against
   the key window) cannot be driven; say so.[^notes-updates]

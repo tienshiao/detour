@@ -419,7 +419,10 @@ class TabStore {
 
     /// What Air Traffic Control's resolver needs to know about the spaces: the
     /// normal ones, the only ones a route may name.
-    var linkRouteContext: LinkRouteContext { LinkRouteContext(spaceIDs: Set(nonIncognitoSpaces.map(\.id))) }
+    var linkRouteContext: LinkRouteContext {
+        LinkRouteContext(spaceIDs: Set(nonIncognitoSpaces.map(\.id)),
+                         privateSpaceIDs: Set(spaces.filter(\.isIncognito).map(\.id)))
+    }
 
     private var observers: [WeakObserver] = []
     private var tabSubscriptions: [UUID: Set<AnyCancellable>] = [:]
@@ -464,8 +467,24 @@ class TabStore {
     var siteSettings: SiteSettingsStore?
     /// Air Traffic Control's routes (TASK-191.1). A space they target cannot
     /// be deleted. The shared store uses `LinkRouteStore.shared`; another
-    /// store gets one over its own database.
-    lazy var linkRoutes: LinkRouteStore = LinkRouteStore(database: appDB)
+    /// store gets one over its own database, created on first use. Either
+    /// way the route store checks targets against this store's spaces
+    /// (TASK-191.3).
+    var linkRoutes: LinkRouteStore {
+        get {
+            if let linkRouteStore { return linkRouteStore }
+            let created = LinkRouteStore(database: appDB)
+            adoptLinkRoutes(created)
+            return created
+        }
+        set { adoptLinkRoutes(newValue) }
+    }
+    private var linkRouteStore: LinkRouteStore?
+
+    private func adoptLinkRoutes(_ routes: LinkRouteStore) {
+        routes.spaceContext = { [weak self] in self?.linkRouteContext }
+        linkRouteStore = routes
+    }
 
     init(appDB: AppDatabase = .shared, historyDB: HistoryDatabase = .shared,
          profileDataRemover: ProfileDataRemoval.Remover = .webKit,

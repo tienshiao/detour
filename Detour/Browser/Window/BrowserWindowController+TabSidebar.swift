@@ -686,7 +686,8 @@ extension BrowserWindowController: TabSidebarDelegate {
         // inside a main-queue block holds that queue, and every main-queue
         // block and main-actor job with it, until the alert is dismissed.
         RunLoop.main.perform(inModes: [.default]) {
-            SpaceDeletionBlockedAlert.run(spaceName: block.spaceName, references: block.references)
+            SpaceDeletionBlockedAlert.run(spaceName: block.spaceName, spaceID: block.spaceID,
+                                          references: block.references)
         }
     }
 
@@ -697,7 +698,7 @@ extension BrowserWindowController: TabSidebarDelegate {
         // routed to would waste the effort.
         let references = store.linkRoutes.references(toSpace: spaceID)
         guard references.isEmpty else {
-            SpaceDeletionBlockedAlert.run(spaceName: space.name, references: references)
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, spaceID: space.id, references: references)
             return
         }
 
@@ -725,7 +726,7 @@ extension BrowserWindowController: TabSidebarDelegate {
         case .notDeleted: return
         case .blockedByLinkRoutes(let references):
             // A route added while the confirmation was up.
-            SpaceDeletionBlockedAlert.run(spaceName: space.name, references: references)
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, spaceID: space.id, references: references)
             return
         }
 

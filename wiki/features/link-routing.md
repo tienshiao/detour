@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Link routing (Air Traffic Control)
-description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, and Cmd+L never routing."
+description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept,, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
@@ -88,6 +88,24 @@ sources:
   - id: harness-4
     resource: ../../docs/harness/task191-4-harness.patch
     title: TASK-191.4 runtime harness
+  - id: validation
+    resource: ../../Detour/Browser/LinkRouting/LinkRouteValidation.swift
+    title: LinkRouteValidation.swift (LinkRouteProblem, linkRouteProblems, linkRoutePatternIsValid, linkRouteTargetProblem)
+  - id: editor
+    resource: ../../Detour/Browser/Settings/LinkRouteEditor.swift
+    title: LinkRouteEditor.swift (the pane's rules and rows)
+  - id: pane
+    resource: ../../Detour/Browser/Settings/LinksSettingsViewController.swift
+    title: LinksSettingsViewController.swift (the Links pane)
+  - id: editor-tests
+    resource: ../../DetourTests/LinkRouteEditorTests.swift
+    title: LinkRouteEditorTests.swift
+  - id: task-191-3
+    resource: backlog:TASK-191.3
+    title: "Air Traffic Control: Settings UI to add, edit, reorder and remove routes"
+  - id: harness-3
+    resource: ../../docs/harness/task191-3-harness.patch
+    title: TASK-191.3 runtime harness
 ---
 
 Air Traffic Control, modelled on Arc's, sends a link to a chosen space by
@@ -97,7 +115,7 @@ rule that a space routes point at cannot be deleted,[^task-191-1] links from
 other apps (TASK-191.2, [below](#links-from-other-apps)),[^task-191-2] and
 typed URLs and clicked links (TASK-191.4,
 [below](#typed-urls-and-links-clicked-in-a-page)).[^task-191-4] The Settings
-Links pane is TASK-191.3.
+Links pane is TASK-191.3 ([below](#the-links-pane)).[^task-191-3]
 
 # Model
 
@@ -109,7 +127,8 @@ Links pane is TASK-191.3.
 
 - A route needs at least one condition (`hasCondition`): a non-empty pattern
   or a source app. App-only routes are allowed (user, 2026-10-25). The store
-  refuses a route with neither, and the resolver ignores one.
+  refuses a route with neither (and, since TASK-191.3, any route with a
+  problem: [validation](#validation)), and the resolver ignores one.
 - With both conditions, both must hold.
 - One **Default** target, `.mostRecentSpace` unless set.
 - Routes are app-wide, not per profile: spaces are global.
@@ -212,10 +231,14 @@ Migration **v20** of the [session database](../architecture/session-database.md)
   save. The test `testRoutesSurviveASessionSave` pins this.
 - `LinkRouteStore` (`.shared` over `AppDatabase.shared`; `TabStore.shared.linkRoutes`
   is the same instance, other `TabStore`s get one over their own database)
-  loads once and writes through: `add` (appends, refuses a route without a
-  condition, trims the bundle ID), `update` (keeps the place), `moveRoute(id:to:)`
-  (renumbers 0…n−1 in one transaction), `removeRoute`, `setDefaultTarget`.
-  Each change posts `LinkRouteStore.didChangeNotification`.
+  loads once and writes through: `add` (appends, refuses a route with any
+  [problem](#validation), trims the bundle ID), `update` (keeps the place,
+  refuses a problem), `moveRoute(id:to:)` (renumbers 0…n−1 in one
+  transaction), `removeRoute`, `setDefaultTarget` (refuses a missing or
+  Private space). Each change posts `LinkRouteStore.didChangeNotification`;
+  a refused one posts nothing. The resolver's callers read
+  `linkRoutes.routes` and `defaultTarget` for every link, so a change applies
+  to the next link without a restart.
 
 # A space routes target cannot be deleted
 
@@ -244,12 +267,15 @@ came from, and neither stack is otherwise changed. It skips the bounce if an
 undo group is open by then. Before this, a refused undo or redo did nothing,
 showed nothing, and was gone (review finding, 2026-10-25).
 
-`SpaceDeletionBlockedAlert` is a plain `NSAlert` with OK: "“Work” can’t be
-deleted", then one line per route (`linkRouteSummary`: "Domain is …",
-"URL contains “…”", "URL is …", "Links from Mail", with the app's name looked
-up from the bundle ID) and "The Default route" when it applies. It has **no
-button to the Links pane yet**: the pane is TASK-191.3, and a button opening
-the Spaces pane would show none of the routes.
+`SpaceDeletionBlockedAlert` is an `NSAlert`: "“Work” can’t be deleted", then
+one line per route (`linkRouteSummary`: "Domain is …", "URL contains “…”",
+"URL is …", "Links from Mail", with the app's name looked up from the bundle
+ID) and "The Default route" when it applies. Buttons: **OK** (the default)
+and **Open Links Settings…** (TASK-191.3), which opens Settings on the Links
+pane with the routes and the Default that target the space highlighted
+(`SettingsWindowController.showLinksPane(highlightingSpaceID:)`). The same
+`run(spaceName:spaceID:references:)` serves the sidebar, the Spaces pane and
+the undo/redo refusal (`SpaceDeletionBlock` carries the space id).
 
 A Private window's space is never a route target, so closing a Private
 window (`removeIncognitoSpace`) does not consult the routes.
@@ -583,8 +609,200 @@ the build and routed all three after launch. Captures (window number) for
 phase 1; later LaunchServices steps ran into a screen
 lock and have text logs only.
 
+# The Links pane
+
+TASK-191.3.[^task-191-3] Settings has its own **Links** pane (toolbar item
+`arrow.triangle.branch`, after Spaces; user decision 2026-10-25: not a
+section of the Spaces pane), after Arc's sheet in `docs/air-traffic-control/`.
+
+| Part | What it shows |
+|---|---|
+| Description | What Air Traffic Control does, that routes are tried from the top and the first match decides, and that rows drag. |
+| Routes | A "Routes" title with **New Route** at the trailing edge, then a bordered list: one row per route, three lines (`URL [kind ▾] [pattern] ⊖`, `From app [app ▾]`, `↳ Open in [target ▾]`), a drag handle at the left, and, when the row has a problem, a fourth line: an orange triangle and the whole warning, wrapping, under Open in. No routes: one centred line in the box. |
+| Default | "Open other links in [target ▾]" and a caption: it applies to every link no route matches (from other apps, typed in a new tab, clicked to another site), and Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. |
+
+- **Match kind pop-up**: Domain is, Contains, Is equal to, then **Any URL**
+  (`match == nil`). The pattern carries over when the kind changes; Any URL
+  hides the field. Placeholders: `example.com`, `text in the address`,
+  `https://example.com/page`.
+- **From app pop-up**: **Any App** (no source condition), the regular apps
+  running now (icon and name; Detour itself left out; rebuilt as the menu
+  opens), the route's own app first when it is not running (name and icon
+  from where it is installed, else the bundle ID), then **Choose…**: an
+  `NSOpenPanel` sheet on `/Applications` for any `.app`, whose bundle ID is
+  stored (an app without one beeps and changes nothing).
+- **Target pop-up** (`linkRouteTargetMenu`): the normal spaces in order
+  (emoji and name), Most Recent Space, Private Window. Quarantine and Quick
+  Detour are hidden until TASK-194 / TASK-193.5, but a route (or Default)
+  that already holds one shows it rather than changing it silently. A space
+  that is not offered (deleted, or a Private window's) is listed first as
+  "Space deleted" (or "Private space") with the warning image.
+- Fixed widths (kind 120, the pop-ups 220) so the controls line up from row to
+  row; a long name truncates.
+- **Drag to reorder**: an NSTableView drag of the route's id
+  (`com.detour.link-route`); `linkRouteMoveIndex` turns the drop row into the
+  store index. Saved routes move among themselves only: a drop below the
+  drafts is retargeted to the end of the saved routes, and a draft has no
+  handle and does not drag.
+- **⊖** removes at once, as in Arc (no confirmation).
+- **Live**: the pane observes `LinkRouteStore.didChangeNotification` and
+  `TabStoreObserver.tabStoreDidUpdateSpaces` (a space added, renamed,
+  re-emojied, reordered or deleted elsewhere) and refreshes: rows whose order
+  did not change are reconfigured in place, so a field being edited keeps its
+  editor; otherwise the table reloads.
+- **Warnings get their own line, and rows their own height.** A first
+  version put the warning beside the target pop-up on one truncating line
+  (the full text in a tooltip); "Enter a full address starting with
+  https://. Not saved: links follow the saved route." was cut off. Now the
+  warning is a line under Open in, from the controls' column to the row's
+  edge (552 pt at the default width), wrapping, and the row grows by that
+  line (`tableView(_:heightOfRow:)` = the measured base height plus
+  `LinkRouteCellView.warningLineHeight`; 104 → 124 pt for one line).
+  Chosen over keeping one line and shortening the messages (the "not saved"
+  half is what tells the user links still follow the saved route) and over
+  a fixed fourth line on every row (empty space on most). Heights are noted
+  after every refresh without animation, re-measured when the table's width
+  changes (legacy scroll bars), and the list box is the sum of the rows.
+  While typing, a warning that appears gets its line at once, but one that
+  goes keeps its (empty) line until the field is committed, so the window
+  does not resize with every keystroke. The Default's warning wraps under
+  its pop-up the same way. Drag and the drop gap work with the variable
+  heights (NSTableView handles them).
+- **The list never takes focus** (`acceptsFirstResponder` false): its rows
+  are not selectable, and with it in the key loop Tab out of a pattern field
+  went to the table.
+- **Edits are committed before anything else acts** (`commitPendingEdit`,
+  from the code review): a click on New Route, a pop-up, ⊖ or a drop first
+  ends the field editor, so a pattern typed without Return is saved (or kept
+  on its draft) rather than lost to a reload.
+- **Height**: a list pane (400 minimum); the list box is as tall as its rows,
+  so the pane grows with the routes up to the screen cap and then scrolls
+  (the list's own scroll view passes the wheel to the pane's). See
+  [Settings window](./settings.md).
+
+## The two "no condition" choices and incomplete routes
+
+- **App-only routes (user decision): "Any URL" in the match kind pop-up.**
+  Chosen over an empty pattern field meaning "any URL" (which reads as an
+  unfinished field and would make an emptied field silently widen a route)
+  and over a separate checkbox. Symmetrically, **Any App** is the From app
+  pop-up's "no condition", so the From app line is always shown: the
+  condition is discoverable without an "add condition" button, and rows
+  differ in height only by a warning line. Rejected: a From app line
+  shown only when set (needs a separate add/remove control).
+- **Nothing incomplete is saved; drafts stay on their rows, marked.** New
+  Route adds a draft (Domain is, empty, Most Recent Space) after the saved
+  routes, with the cursor in its field and the warning "Enter a domain, such
+  as example.com. Not saved yet." The store takes it the moment it is
+  complete (on Return, Tab or a click elsewhere, or a pop-up change). An edit
+  the store refuses on a saved route (an emptied pattern, Any URL plus Any
+  App) stays on the row with "… Not saved: links follow the saved route.",
+  and the store keeps routing by the saved version until the row is valid
+  again. Chosen over refusing the edit outright (reverting what the user
+  typed). Drafts and refused edits live in `LinkRouteEditor` for the app's
+  session; a refused edit goes when its route is removed anywhere. While
+  typing, the warning follows the text (`problems(previewing:)`) without
+  saving.
+
+## Validation
+
+In the store, test-first (`linkRouteProblems`, pure, in
+`LinkRouteValidation.swift`; `LinkRouteStore.problems(for:)` applies it with
+the current spaces):
+
+| Problem | When |
+|---|---|
+| `noCondition` | Any URL and Any App (`match == nil`, no source app). |
+| `emptyPattern` | A URL condition with an empty or blank pattern, **even with an app**: the URL part of an app-only route is `nil`, never an empty match. |
+| `invalidPattern` | Domain is: whitespace inside, or `linkRouteDomain` finds no host (`*.`, `https://`). Is equal to: not an `http(s)` URL with a host (`example.com`, `ftp://…`, `https:///path`). Contains: any non-blank text is valid. |
+| `missingSpace` | A `.space` target not among the normal spaces. |
+| `privateSpace` | A `.space` target that is a Private window's space: Private Window is its own target. |
+
+- `add` refuses any problem; `update` refuses a condition problem, and a
+  target problem only when the update **changes** the target, so a route
+  whose space went some other way stays editable (its pattern can change)
+  and is repaired by picking a space; `setDefaultTarget` refuses a missing or
+  Private space; `defaultTargetProblem` reports a broken Default.
+- The spaces come from `LinkRouteStore.spaceContext`, which the owning
+  `TabStore` sets (`linkRouteContext`, now with `privateSpaceIDs`); a store
+  on its own (tests) does not check spaces.
+- The pane never decides validity itself: each row shows the store's
+  problems, and `linkRouteProblemMessage` words the first one.
+
+## Broken routes
+
+Deletion is blocked while routes target a space ([above](#a-space-routes-target-cannot-be-deleted)),
+so a broken route only comes from a space removed some other way. Its row
+keeps its pattern and app, shows "Space deleted" in the target pop-up and
+"Its space was deleted. Choose where these links open."; it stays editable
+and removable, and the resolver skips it. A broken Default shows the same
+warning beside its pop-up.
+
+## Opened from the blocked-deletion alert
+
+**Open Links Settings…** calls `showLinksPane(highlightingSpaceID:)`: the
+rows whose target is that space, and the Default row if it targets it, are
+tinted with the accent colour (0.14 alpha), and the first is scrolled into
+view once the window has its height (`paneDidFit`). A row is tinted by its
+**saved** route's target, which is what blocks the deletion: a row showing a
+refused edit to another space is still tinted, and a draft never is. The
+highlight clears when the pane is left.
+
+## Runtime check: the Links pane
+
+Harness `docs/harness/task191-3-harness.patch`,
+`DETOUR_DATA_DIR=DetourVerify1913`, 2026-10-25, screen unlocked, light and
+dark.[^harness-3] Seeded: a URL-only, an app-only (Mail), a URL-and-app
+(Safari), a Private Window route, a broken route (its space never existed)
+and a Default. Driven with posted clicks and keys (pop-ups through their real
+menus), each step logging the store and the resolver's decision from the
+live store: New Route put the cursor in a marked draft; typing a domain and
+Return saved it, and the next decision for that host changed (Most Recent
+Space, then Work after the target pop-up); a pattern edit applied to the next
+link, and a link delivered through `openExternalURLs` opened in Work; an
+invalid kind change was refused and marked while the saved route kept
+routing; Finder as From app matched only links from Finder; ⊖ and the
+Default pop-up applied at once; renaming a space elsewhere updated every
+pop-up; Choose… showed the open panel on `/Applications`; the alert's Open
+Links Settings… from the sidebar, the Spaces pane and an Undo Add Space each
+opened the pane with the right rows (and the Default) tinted; the empty
+state is one line in a 400 pt pane; 20 routes reach the cap (1242 on a
+1410 pt screen) and the pane scrolls to the last.
+
+**Reorder at runtime: a posted drag cannot be aimed.** Posted mouse-down and
+drag events on a handle start a real drag session, but the session follows
+the real pointer: in a first run it outlived the posted mouse-up, swallowed
+the next posted click and then dropped wherever the pointer was (it did move
+a route through `acceptDrop`, so the real path works), and later pop-ups no
+longer opened. The reorder was checked through a stub `NSDraggingInfo`
+handed to `validateDrop`/`acceptDrop`, and the unit tests cover the index
+rule. **Not verified at runtime:** a person's drag with the gap animation,
+choosing an app in the open panel (shown and cancelled only), and a real
+link from Mail or Safari through a source-app route (TASK-191.2 covers the
+sender).
+
+Second pass the same evening, after the code review's fixes and the warning
+moved to its own line (captures `task191-3/out/light2` and `dark2`): every
+warning shown whole (the label measured against its row: fits in each
+case, including a broken Default); a pattern typed into a draft without
+Return was saved by the next New Route click, and one typed before an Open
+in change was saved with that target; Tab out of a completed draft left one
+row with the cursor still in its field; a saved route emptied and pointed at
+another space (both refused) still blocked deleting its saved space, and
+Open Links Settings… tinted that row.
+
 # Tests
 
+`LinkRouteEditorTests` (TASK-191.3: the target menu with hidden Quarantine and
+Quick Detour and an unavailable space, the drag destination, the warnings,
+drafts saved once complete, an app-only draft, a refused edit kept on its
+row while the store keeps the saved route, previews, a broken saved route
+repaired from the pop-up, removing, moving saved routes with drafts last,
+rows following changes made elsewhere). `LinkRouteStoreTests` also covers
+validation (patterns per kind, the problem list, add/update/Default
+refusals, a broken route edited and repaired, refused changes posting
+nothing, a `TabStore` checking targets against its spaces) and the alert's
+two buttons.
 `LinkRoutingEligibilityTests` (TASK-191.4: every case of the rule above,
 `www.`, ports, subdomains, hostless pages, the modifier order, redirects with
 each entry, Peek, the precedence over the anchor intercept, `.stay` as no
@@ -633,3 +851,5 @@ text).
 [^harness-2]: TASK-191.2 runtime harness
 [^task-191-4]: Air Traffic Control: route typed URLs and links clicked inside Detour
 [^harness-4]: TASK-191.4 runtime harness
+[^task-191-3]: Air Traffic Control: Settings UI to add, edit, reorder and remove routes
+[^harness-3]: TASK-191.3 runtime harness

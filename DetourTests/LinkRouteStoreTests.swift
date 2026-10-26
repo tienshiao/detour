@@ -164,6 +164,173 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(db.loadLinkRoutes().count, 4, "the rows stay for the build that wrote them")
     }
 
+    // MARK: - Validation (TASK-191.3)
+
+    func testPatternsAreCheckedForTheirKind() {
+        func valid(_ kind: LinkRouteMatchKind, _ pattern: String) -> Bool {
+            linkRoutePatternIsValid(LinkRouteMatch(kind: kind, pattern: pattern))
+        }
+        // Domain is: anything that names a host, as the resolver reads it.
+        for pattern in ["example.com", " Example.COM ", "*.example.com", "www.example.com", "localhost",
+                        "localhost:3000", "https://example.com/path", "münchen.de", "10.0.0.1", "::1", "[::1]"] {
+            XCTAssertTrue(valid(.domainIs, pattern), pattern)
+        }
+        for pattern in ["", "   ", "*.", ".", "https://", "exa mple.com", "example.com/a b", "a\tb"] {
+            XCTAssertFalse(valid(.domainIs, pattern), pattern)
+        }
+        // Is equal to: a full http(s) address with a host.
+        for pattern in ["https://example.com", "http://example.com/a?b#c", " https://x.test/ "] {
+            XCTAssertTrue(valid(.isEqualTo, pattern), pattern)
+        }
+        for pattern in ["", "example.com", "ftp://example.com/", "https://", "mailto:a@b.test", "https:///path"] {
+            XCTAssertFalse(valid(.isEqualTo, pattern), pattern)
+        }
+        // Contains: any text.
+        XCTAssertTrue(valid(.contains, "meet"))
+        XCTAssertTrue(valid(.contains, "a b"))
+        XCTAssertFalse(valid(.contains, ""))
+        XCTAssertFalse(valid(.contains, "  \n"))
+    }
+
+    func testProblemsNameEachThingWrongWithARoute() {
+        let context = LinkRouteContext(spaceIDs: [work], privateSpaceIDs: [personal])
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "a.test", to: .space(work)), context: context), [])
+        XCTAssertEqual(linkRouteProblems(route(nil, app: "com.apple.mail", to: .privateWindow), context: context), [],
+                       "an app-only route is complete")
+        XCTAssertEqual(linkRouteProblems(route(nil, to: .space(work)), context: context), [.noCondition])
+        XCTAssertEqual(linkRouteProblems(route(nil, app: "  ", to: .space(work)), context: context), [.noCondition])
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "", to: .space(work)), context: context), [.emptyPattern])
+        XCTAssertEqual(linkRouteProblems(route(.contains, " ", app: "com.apple.mail", to: .space(work)), context: context),
+                       [.emptyPattern], "with an app, an empty pattern is still an unfinished URL condition: Any URL is nil")
+        XCTAssertEqual(linkRouteProblems(route(.isEqualTo, "example.com", to: .space(work)), context: context),
+                       [.invalidPattern])
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "a.test", to: .space(UUID())), context: context), [.missingSpace])
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "a.test", to: .space(personal)), context: context), [.privateSpace])
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "", to: .space(UUID())), context: context),
+                       [.emptyPattern, .missingSpace], "conditions first, then the target")
+        for target: LinkRouteTarget in [.mostRecentSpace, .privateWindow, .quarantine, .quickDetour] {
+            XCTAssertNil(linkRouteTargetProblem(target, context: context))
+        }
+        XCTAssertNil(linkRouteTargetProblem(.space(UUID()), context: nil), "no context: spaces are not checked")
+    }
+
+    func testAddRefusesAnEmptyOrInvalidPattern() throws {
+        let db = try makeDatabase()
+        let store = LinkRouteStore(database: db)
+        XCTAssertNil(store.add(route(.domainIs, "", app: "com.apple.mail", to: .space(work))))
+        XCTAssertNil(store.add(route(.domainIs, "exa mple.com", to: .space(work))))
+        XCTAssertNil(store.add(route(.isEqualTo, "example.com", to: .space(work))))
+        XCTAssertEqual(store.routes, [])
+        XCTAssertEqual(db.loadLinkRoutes(), [])
+        XCTAssertEqual(store.problems(for: route(.isEqualTo, "example.com", to: .space(work))), [.invalidPattern])
+    }
+
+    private func storeWithSpaces(normal: Set<UUID>, private privateIDs: Set<UUID> = []) throws -> (LinkRouteStore, AppDatabase) {
+        let db = try makeDatabase()
+        let store = LinkRouteStore(database: db)
+        store.spaceContext = { LinkRouteContext(spaceIDs: normal, privateSpaceIDs: privateIDs) }
+        return (store, db)
+    }
+
+    func testAddRefusesAMissingOrPrivateSpace() throws {
+        let privateSpace = UUID()
+        let (store, db) = try storeWithSpaces(normal: [work], private: [privateSpace])
+        XCTAssertNil(store.add(route(.domainIs, "a.test", to: .space(personal))))
+        XCTAssertNil(store.add(route(.domainIs, "a.test", to: .space(privateSpace))))
+        XCTAssertEqual(store.problems(for: route(.domainIs, "a.test", to: .space(personal))), [.missingSpace])
+        XCTAssertEqual(store.problems(for: route(.domainIs, "a.test", to: .space(privateSpace))), [.privateSpace])
+        XCTAssertNotNil(store.add(route(.domainIs, "a.test", to: .space(work))))
+        XCTAssertNotNil(store.add(route(.domainIs, "b.test", to: .privateWindow)), "Private Window is its own target")
+        XCTAssertEqual(db.loadLinkRoutes().count, 2)
+    }
+
+    func testUpdateRefusesAnInvalidEditAndKeepsTheSavedRoute() throws {
+        let (store, db) = try storeWithSpaces(normal: [work, personal])
+        let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
+        for bad in [route(.domainIs, "", to: .space(work)), route(.isEqualTo, "a.test", to: .space(work)),
+                    route(nil, to: .space(work)), route(.domainIs, "a.test", to: .space(UUID()))] {
+            var edit = bad
+            edit.id = a.id
+            XCTAssertFalse(store.update(edit))
+        }
+        XCTAssertEqual(store.routes, [a])
+        XCTAssertEqual(LinkRouteStore(database: db).routes, [a])
+    }
+
+    /// A route whose space went some other way (sync, migration) stays
+    /// editable: an edit that leaves its target alone is saved, and so is one
+    /// that points it at a space that exists.
+    func testABrokenRouteCanBeEditedAndRepaired() throws {
+        let gone = UUID()
+        let db = try makeDatabase()
+        let broken = try XCTUnwrap(LinkRouteStore(database: db).add(route(.domainIs, "a.test", to: .space(gone))))
+        let store = LinkRouteStore(database: db)
+        store.spaceContext = { LinkRouteContext(spaceIDs: [self.work]) }
+        XCTAssertEqual(store.problems(for: broken), [.missingSpace])
+
+        var renamed = broken
+        renamed.match = LinkRouteMatch(kind: .contains, pattern: "b.test")
+        XCTAssertTrue(store.update(renamed), "the target did not change")
+        XCTAssertEqual(store.routes.first?.match?.pattern, "b.test")
+
+        var elsewhere = renamed
+        elsewhere.target = .space(personal)
+        XCTAssertFalse(store.update(elsewhere), "a new target must exist")
+        var repaired = renamed
+        repaired.target = .space(work)
+        XCTAssertTrue(store.update(repaired))
+        XCTAssertEqual(store.routes.map { store.problems(for: $0) }, [[]])
+    }
+
+    func testTheDefaultRefusesAMissingOrPrivateSpace() throws {
+        let privateSpace = UUID()
+        let (store, db) = try storeWithSpaces(normal: [work], private: [privateSpace])
+        XCTAssertFalse(store.setDefaultTarget(.space(personal)))
+        XCTAssertFalse(store.setDefaultTarget(.space(privateSpace)))
+        XCTAssertEqual(store.defaultTarget, .mostRecentSpace)
+        XCTAssertNil(db.loadLinkRouteDefault())
+        XCTAssertTrue(store.setDefaultTarget(.space(work)))
+        XCTAssertTrue(store.setDefaultTarget(.privateWindow))
+        XCTAssertEqual(LinkRouteStore(database: db).defaultTarget, .privateWindow)
+    }
+
+    func testTheDefaultReportsAMissingSpace() throws {
+        let gone = UUID()
+        let db = try makeDatabase()
+        LinkRouteStore(database: db).setDefaultTarget(.space(gone))
+        let store = LinkRouteStore(database: db)
+        store.spaceContext = { LinkRouteContext(spaceIDs: [self.work]) }
+        XCTAssertEqual(store.defaultTarget, .space(gone), "loaded as stored")
+        XCTAssertEqual(store.defaultTargetProblem, .missingSpace)
+        store.setDefaultTarget(.mostRecentSpace)
+        XCTAssertNil(store.defaultTargetProblem)
+    }
+
+    func testRefusedChangesPostNoNotification() throws {
+        let (store, _) = try storeWithSpaces(normal: [work])
+        let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
+        var count = 0
+        let token = NotificationCenter.default.addObserver(forName: LinkRouteStore.didChangeNotification,
+                                                           object: store, queue: nil) { _ in count += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+        _ = store.add(route(.domainIs, "", to: .space(work)))
+        var bad = a
+        bad.target = .space(personal)
+        store.update(bad)
+        store.setDefaultTarget(.space(personal))
+        XCTAssertEqual(count, 0)
+    }
+
+    func testATabStoreChecksTargetsAgainstItsSpaces() throws {
+        let (store, a, _) = try makeTabStore()
+        let privateSpace = store.addIncognitoSpace()
+        XCTAssertNil(store.linkRoutes.add(route(.domainIs, "x.test", to: .space(UUID()))))
+        XCTAssertNil(store.linkRoutes.add(route(.domainIs, "x.test", to: .space(privateSpace.id))))
+        XCTAssertNotNil(store.linkRoutes.add(route(.domainIs, "x.test", to: .space(a.id))))
+        XCTAssertEqual(store.linkRouteContext.privateSpaceIDs, [privateSpace.id])
+        XCTAssertFalse(store.linkRoutes.setDefaultTarget(.space(privateSpace.id)))
+    }
+
     // MARK: - What targets a space
 
     func testReferencesNameTheRoutesAndTheDefaultTargetingASpace() throws {
@@ -248,9 +415,13 @@ final class LinkRouteStoreTests: XCTestCase {
     func testClosingAPrivateWindowsSpaceIsUnaffectedByRoutes() throws {
         let (store, _, _) = try makeTabStore()
         let privateSpace = store.addIncognitoSpace()
-        // Not reachable from the UI; even a stray route naming it does not
-        // keep a Private window's space alive.
-        _ = store.linkRoutes.add(route(.domainIs, "a.test", to: .space(privateSpace.id)))
+        // Not reachable from the UI (the store refuses it, so the check is
+        // lifted to plant one); even a stray route naming it does not keep a
+        // Private window's space alive.
+        let checks = store.linkRoutes.spaceContext
+        store.linkRoutes.spaceContext = nil
+        _ = try XCTUnwrap(store.linkRoutes.add(route(.domainIs, "a.test", to: .space(privateSpace.id))))
+        store.linkRoutes.spaceContext = checks
         store.removeIncognitoSpace(id: privateSpace.id)
         XCTAssertNil(store.space(withID: privateSpace.id))
     }
@@ -404,6 +575,15 @@ final class LinkRouteStoreTests: XCTestCase {
 
             Change or remove these routes before deleting the space.
             """)
+    }
+
+    /// TASK-191.3: OK stays the default; the second button opens the Links pane.
+    func testTheBlockedAlertOffersToOpenTheLinksPane() {
+        let alert = SpaceDeletionBlockedAlert.makeAlert(
+            spaceName: "Work", references: LinkRouteReferences(routes: [route(.domainIs, "a.test", to: .space(work))],
+                                                               isDefaultTarget: false))
+        XCTAssertEqual(alert.buttons.map(\.title), ["OK", "Open Links Settings…"])
+        XCTAssertEqual(alert.messageText, "“Work” can’t be deleted")
     }
 
     func testTheSharedTabStoreUsesTheSharedRouteStore() {

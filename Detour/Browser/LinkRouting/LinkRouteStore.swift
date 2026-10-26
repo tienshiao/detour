@@ -14,8 +14,13 @@ final class LinkRouteStore {
 
     /// The routes in the order they are tried.
     private(set) var routes: [LinkRoute] = []
-    /// Where a link from another app that no route matches opens.
+    /// Where a link that no route matches opens (from every origin).
     private(set) var defaultTarget: LinkRouteTarget = .defaultTarget
+
+    /// The spaces a route may target, read at each change (TASK-191.3). The
+    /// `TabStore` that owns the store sets it; nil (a store on its own, as in
+    /// tests) leaves space targets unchecked.
+    var spaceContext: (() -> LinkRouteContext?)?
 
     init(database: AppDatabase) {
         self.database = database
@@ -28,11 +33,24 @@ final class LinkRouteStore {
         }
     }
 
+    /// Everything that keeps `route` from being saved, or that breaks a saved
+    /// one (a space that has gone): `linkRouteProblems` against the current
+    /// spaces. Empty when the route is fine.
+    func problems(for route: LinkRoute) -> [LinkRouteProblem] {
+        linkRouteProblems(route, context: spaceContext?())
+    }
+
+    /// What is wrong with the Default: a space that has gone, or nil.
+    var defaultTargetProblem: LinkRouteProblem? {
+        linkRouteTargetProblem(defaultTarget, context: spaceContext?())
+    }
+
     /// Appends a route (it is tried last). Returns the stored route, with its
-    /// sort order, or nil when it has no condition.
+    /// sort order, or nil when it has any problem (`problems(for:)`): no
+    /// condition, an empty or invalid pattern, a missing or Private space.
     @discardableResult
     func add(_ route: LinkRoute) -> LinkRoute? {
-        guard route.hasCondition else { return nil }
+        guard problems(for: route).isEmpty else { return nil }
         var route = route
         route.sourceApp = route.normalizedSourceApp
         route.sortOrder = (routes.map(\.sortOrder).max() ?? -1) + 1
@@ -43,11 +61,19 @@ final class LinkRouteStore {
     }
 
     /// Replaces the route with `route.id`'s condition and target; its place in
-    /// the order is kept. False when there is no such route or the update
-    /// leaves it without a condition.
+    /// the order is kept. False when there is no such route, or the update
+    /// leaves a problem with its conditions, or gives it a target that is
+    /// missing or Private. A target the update leaves alone is not checked: a
+    /// route whose space went some other way stays editable.
     @discardableResult
     func update(_ route: LinkRoute) -> Bool {
-        guard route.hasCondition, let index = routes.firstIndex(where: { $0.id == route.id }) else { return false }
+        guard let index = routes.firstIndex(where: { $0.id == route.id }) else { return false }
+        let context = spaceContext?()
+        var problems = linkRouteProblems(route, context: context)
+        if route.target == routes[index].target {
+            problems.removeAll { $0 == .missingSpace || $0 == .privateSpace }
+        }
+        guard problems.isEmpty else { return false }
         var route = route
         route.sourceApp = route.normalizedSourceApp
         route.sortOrder = routes[index].sortOrder
@@ -74,11 +100,16 @@ final class LinkRouteStore {
         postChange()
     }
 
-    func setDefaultTarget(_ target: LinkRouteTarget) {
+    /// Sets the Default. False, and nothing changes, for a space that is
+    /// missing or Private.
+    @discardableResult
+    func setDefaultTarget(_ target: LinkRouteTarget) -> Bool {
+        guard linkRouteTargetProblem(target, context: spaceContext?()) == nil else { return false }
         defaultTarget = target
         database.saveLinkRouteDefault(LinkRouteDefaultRecord(targetKind: target.storageKind,
                                                              targetSpaceID: target.spaceID?.uuidString))
         postChange()
+        return true
     }
 
     /// What targets `spaceID`; a space with any cannot be deleted.

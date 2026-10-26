@@ -31,20 +31,32 @@ func spaceDeletionBlockedMessage(spaceName: String, references: LinkRouteReferen
     return ("“\(spaceName)” can’t be deleted", detail)
 }
 
-/// Explains a refused space deletion. A minimal alert until the Links pane
-/// (TASK-191.3) exists; that task adds a button opening it.
+/// Explains a refused space deletion, and offers to open Settings on the
+/// Links pane with the routes that target the space highlighted (TASK-191.3).
 enum SpaceDeletionBlockedAlert {
-    static func run(spaceName: String, references: LinkRouteReferences) {
+    static let openLinksSettingsTitle = "Open Links Settings…"
+
+    /// The alert, not yet run: OK (the default) and Open Links Settings….
+    static func makeAlert(spaceName: String, references: LinkRouteReferences) -> NSAlert {
         let message = spaceDeletionBlockedMessage(spaceName: spaceName, references: references,
                                                   appName: installedAppName(bundleID:))
         let alert = NSAlert()
         alert.messageText = message.title
         alert.informativeText = message.detail
         alert.addButton(withTitle: "OK")
-        alert.runModal()
+        alert.addButton(withTitle: openLinksSettingsTitle)
+        return alert
     }
 
-    private static func installedAppName(bundleID: String) -> String? {
+    /// Runs the alert; Open Links Settings… shows the Links pane with the
+    /// routes (and the Default) that target `spaceID` highlighted.
+    static func run(spaceName: String, spaceID: UUID, references: LinkRouteReferences) {
+        let alert = makeAlert(spaceName: spaceName, references: references)
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        SettingsWindowController.shared.showLinksPane(highlightingSpaceID: spaceID)
+    }
+
+    static func installedAppName(bundleID: String) -> String? {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
         let name = FileManager.default.displayName(atPath: url.path)
         return name.hasSuffix(".app") ? String(name.dropLast(4)) : name

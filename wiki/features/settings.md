@@ -1,7 +1,7 @@
 ---
 type: Component
 title: Settings window
-description: "The Settings window and its five panes (General, Spaces, Profiles, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container, the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
+description: "The Settings window and its six panes (General, Spaces, Links, Profiles, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container, the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
@@ -40,6 +40,9 @@ sources:
   - id: spaces
     resource: ../../Detour/Browser/Settings/SpacesSettingsViewController.swift
     title: SpacesSettingsViewController.swift
+  - id: links
+    resource: ../../Detour/Browser/Settings/LinksSettingsViewController.swift
+    title: LinksSettingsViewController.swift (Air Traffic Control routes, TASK-191.3)
   - id: profiles
     resource: ../../Detour/Browser/Settings/ProfilesSettingsViewController.swift
     title: ProfilesSettingsViewController.swift
@@ -57,7 +60,7 @@ sources:
 # Role
 
 `SettingsWindowController.shared` is one window with a preference-style
-toolbar and five panes. It holds no settings of its own: each pane reads and
+toolbar and six panes. It holds no settings of its own: each pane reads and
 writes model objects directly (`TabStore`, `Profile`, `ExtensionManager`,
 `ContentBlockerManager`, `ExternalAppPermissionStore`), and persistence
 happens in those owners. The only app-wide setting, the default browser, is
@@ -78,7 +81,7 @@ content-blocking switch and the extension list for the current page. See
   root view also holds a required `width == 740`, so no content can widen
   the window (a long extension name used to stretch it to 1104). Full screen
   is off (`.fullScreenNone`), tabbing disallowed.[^task-189]
-- The five view controllers are created once in `init` and kept in `panes`;
+- The six view controllers are created once in `init` and kept in `panes`;
   switching swaps `window.contentViewController` at the current size, then
   `fitWindow` animates to the new pane's height with the top edge fixed (moved
   only as far as needed to stay on the screen).
@@ -95,7 +98,7 @@ is a pure function returning content heights `(initial, minHeight, maxHeight)`:
   `minHeight = min(minimum ?? natural, cap)`. The window opens at the pane's
   natural height; the user drags between the two bounds; past the cap the
   pane scrolls.
-- List panes (Spaces, Profiles, Extensions) have a minimum of 400
+- List panes (Spaces, Links, Profiles, Extensions) have a minimum of 400
   (`listPaneMinimumHeight`); General and Content Blocking use their natural
   height, so they are fixed. A list pane shorter than 400 is fixed at 400.
 - `refit(current:from:to:)` is for a change while the pane is shown: a window
@@ -185,6 +188,7 @@ section title is 12 pt semibold, like System Settings' group headers.
 |---|---|---|
 | General | 90, fixed | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
+| Links | 400 minimum (no routes); 743 with 5 routes; capped (1242 on a 1410 pt screen) with 21 routes, then scrolls | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Content Blocking | 243, fixed | toolbar only |
@@ -216,6 +220,17 @@ rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
   to nothing). The Profile pop-up is capped at 260 and truncates its title.
 - The list scrolls to the selected space when the pane opens on it.
 - Delete is disabled while only one space remains.
+
+## Links
+
+Air Traffic Control's routes and Default, one bordered list of three-line
+rows (URL, From app, Open in) with New Route above and the Default below.
+Not a master list with a detail column: every route is edited in place, as
+in Arc's sheet. The list box is as tall as its rows (no inner scrolling; its
+scroll view hands the wheel to the pane's), so the pane grows with the
+routes to the cap and then scrolls. The behaviour, the validation (in
+`LinkRouteStore`) and the choices made are on
+[link routing](./link-routing.md#the-links-pane).
 
 ## Profiles
 
@@ -372,7 +387,8 @@ setting on the Profiles pane, not here.
 # Tests
 
 `SettingsPaneHeightTests` covers the height rule (cap, minimum, short
-screens, refit); `ProfileSettingsLayoutTests` the Profiles sections, which
+screens, refit); `LinkRouteEditorTests` the Links pane's rules (target
+menus, drag destination, warnings, drafts); `ProfileSettingsLayoutTests` the Profiles sections, which
 rows show for a normal and the Private profile, and the row spacing. The panes have no dedicated UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real

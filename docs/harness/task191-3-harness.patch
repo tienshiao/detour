@@ -1,0 +1,655 @@
+TASK-191.3 runtime harness: Settings > Links (Air Traffic Control routes).
+Temporary code, never committed to Detour/. It seeds spaces Work, Personal
+and Side Project and routes of every kind (URL-only "Domain is work.test" ->
+Work, app-only Mail -> Personal, "Contains docs" from Safari -> Work,
+"Contains secret" -> Private Window, a broken "Domain is old.test" to a space
+that does not exist, added with the store's space check off), the Default
+-> Side Project, opens Settings > Links and drives it with real input
+(NSApp.postEvent clicks and keys, Detour activated and the Settings window
+key first; a pop-up is opened by a posted mouse-down and its item performed
+from a .common-mode timer while the menu tracks, then the menu cancelled).
+Every step logs the store, the rows as shown and the resolver's decision for
+sample links, from the live store (the same call the entry points make).
+Steps: New Route (click), Any URL on the draft, back to Domain is, type
+news.test + Return, Open in -> Work, edit the first pattern (click, Cmd+A,
+type, Return) and deliver https://corp.test/next through
+openExternalURLs, match kind Is equal to (refused) / Domain is / Contains,
+From app Finder / Any App, reorder (stub NSDraggingInfo through the table's
+data source), remove (⊖), Default -> Personal, rename Work elsewhere,
+Choose… (the NSOpenPanel sheet captured, cancelled), the blocked-deletion
+alert from the sidebar, the Spaces pane "−" and an Undo Add Space, each
+answered "Open Links Settings…", a broken Default (step L0), the empty
+state, 20+ routes (cap + scroll), then a posted drag (step N). Steps R1-R4
+(after the code review): type into a draft and click New Route without
+Return; type into a draft and change its Open in pop-up; type and Tab out;
+empty a saved route's pattern and move it to another space (both refused)
+before the sidebar delete of its saved space. describeRows logs each
+warning label's frame against its row and whether the row is highlighted
+(read with Mirror from the row view).
+
+    SP=<scratch>; mkdir -p $SP/out
+    git apply docs/harness/task191-3-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # run.sh <light|dark>: fresh DetourVerify1913 data dir, launch with
+    # DETOUR_DATA_DIR=DetourVerify1913 DETOUR_VERIFY_DIR=$SP/out/<ap>
+    # DETOUR_VERIFY_APPEARANCE=<ap>, `screencapture -x -o -l <n>` for each
+    # "SHOOT <name> <windowNumber>" line, kill only that PID after "done".
+    git apply -R docs/harness/task191-3-harness.patch && xcodegen generate
+
+Traps met:
+- A posted mouse-down + drags on a row's handle STARTS a real drag session,
+  but the session follows the real pointer: in the first run it stayed open
+  after the posted mouse-up, swallowed the next posted click (a ⊖) and then
+  dropped at wherever the pointer was (moving a route), and later pop-up
+  clicks no longer opened their menus; the undo-path alert never showed in
+  that run either. The reorder is therefore driven through a stub
+  NSDraggingInfo (validateDrop + acceptDrop), and the posted drag runs last
+  (step N), where it moved nothing.
+- With the screen locked every posted click and menu fails silently (the
+  harness falls back to selectItem + sendAction and logs it); runs made
+  locked were discarded.
+
+Results (2026-10-25, screen unlocked, light and dark, macOS 26.7): all
+pop-up changes went through their real menus; New Route put the cursor in
+the draft's field; the draft showed "Enter a domain … Not saved yet.", with
+Any URL "Choose a URL condition or an app. Not saved yet.", and saved on
+Return (news.test -> Most Recent Space, then Work: the next decision for
+news.test changed from mostRecentSpace to openInSpace(Work)); the pattern
+edit took effect for the next link (corp.test -> Work, work.test -> the
+Default) and openExternalURLs opened corp.test/next in Work; Is equal to
+"secret" was refused and marked "Not saved: links follow the saved route"
+while secret.example still went to the Private window; Finder as From app
+matched only links from com.apple.finder; the stub drop moved news.test to
+the top; ⊖ removed the Private route (secret.example then went to the
+Default); the Default to Personal sent unmatched external and typed links
+there; renaming Work to "Work Stuff" 🛠️ updated every pop-up; Choose…
+opened an NSOpenPanel on /Applications; all three alerts read OK / Open
+Links Settings… and opened the Links pane with the routes (and the Default
+row) targeting the space tinted; empty state one line; 20 routes: content
+1242 (the cap on a 1410 pt screen), the pane scrolls to the last route.
+
+Second pass (2026-10-25 18:00, after the review fixes and the warning moved
+to its own wrapping line; captures in out/light2 and out/dark2): every
+warning shown whole (label 552 pt wide, rows with a warning 124 pt instead
+of 104, fits=true for the refused "Is equal to" edit, the broken route and
+the refused corp.test edit; the broken Default wraps under its pop-up).
+R1: draft1.test was saved by the New Route click and the cursor went to the
+new draft. R2: draft2.test was saved with Open in -> Personal. R3: Tab out
+of a completed draft left one row (saved once) with the cursor still in
+that field (after the list stopped taking focus; before that Tab moved
+focus to the table). R4: the store kept corp.test -> Work Stuff while the
+row showed an empty pattern and Personal; deleting Work Stuff was blocked,
+the alert named corp.test, and Open Links Settings… highlighted that row.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index fd4e895..c26f7c5 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1913HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1913Harness.swift b/Detour/App/Task1913Harness.swift
+new file mode 100644
+index 0000000..2382261
+--- /dev/null
++++ b/Detour/App/Task1913Harness.swift
+@@ -0,0 +1,552 @@
++// TEMP TASK-191.3 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++/// A drop without a drag session, for when posted events cannot drive one.
++final class Task1913DragInfo: NSObject, NSDraggingInfo {
++    let pasteboard: NSPasteboard
++    let location: NSPoint
++    weak var window: NSWindow?
++    init(string: String, type: NSPasteboard.PasteboardType, location: NSPoint, window: NSWindow?) {
++        pasteboard = NSPasteboard(name: NSPasteboard.Name("task1913-\(UUID().uuidString)"))
++        pasteboard.clearContents()
++        let item = NSPasteboardItem()
++        item.setString(string, forType: type)
++        pasteboard.writeObjects([item])
++        self.location = location
++        self.window = window
++    }
++    var draggingDestinationWindow: NSWindow? { window }
++    var draggingSourceOperationMask: NSDragOperation { .move }
++    var draggingLocation: NSPoint { location }
++    var draggedImageLocation: NSPoint { location }
++    var draggedImage: NSImage? { nil }
++    var draggingPasteboard: NSPasteboard { pasteboard }
++    var draggingSource: Any? { nil }
++    var draggingSequenceNumber: Int { 1 }
++    func slideDraggedImage(to screenPoint: NSPoint) {}
++    var draggingFormation: NSDraggingFormation = .default
++    var animatesToDestination = false
++    var numberOfValidItemsForDrop = 1
++    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
++                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
++                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
++    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
++    func resetSpringLoading() {}
++}
++
++extension AppDelegate {
++    func runTask1913HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let phase = env["DETOUR_VERIFY_PHASE"] ?? "1"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(phase).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        switch env["DETOUR_VERIFY_APPEARANCE"] {
++        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
++        case "light": NSApp.appearance = NSAppearance(named: .aqua)
++        default: break
++        }
++        let store = TabStore.shared
++        let routes = LinkRouteStore.shared
++        let delegate = self
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func settings() -> NSWindow? { SettingsWindowController.shared.window }
++        func paneName() -> String {
++            settings()?.contentViewController.map { String(describing: type(of: $0)) } ?? "nil"
++        }
++        func linksTable() -> NSTableView? {
++            guard let content = settings()?.contentView,
++                  settings()?.contentViewController is LinksSettingsViewController else { return nil }
++            return allSubviews(content).compactMap { $0 as? NSTableView }.first
++        }
++        func cells() -> [LinkRouteCellView] {
++            guard let table = linksTable() else { return [] }
++            return (0..<table.numberOfRows).compactMap { table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? LinkRouteCellView }
++        }
++        func button(_ title: String) -> NSButton? {
++            guard let content = settings()?.contentView else { return nil }
++            return allSubviews(content).compactMap { $0 as? NSButton }.first { $0.title == title }
++        }
++        func defaultPopUp() -> NSPopUpButton? {
++            guard let content = settings()?.contentView else { return nil }
++            return allSubviews(content).compactMap { $0 as? NSPopUpButton }.first { $0.action == NSSelectorFromString("defaultTargetChanged") }
++        }
++        func spaceName(_ target: LinkRouteTarget) -> String {
++            switch target {
++            case .space(let id): return store.space(withID: id).map { "space:\($0.name)" } ?? "space:<gone>"
++            default: return target.storageKind
++            }
++        }
++        func describeRoutes() -> String {
++            "routes=\(routes.routes.map { "\(linkRouteSummary($0)) -> \(spaceName($0.target))" }) default=\(spaceName(routes.defaultTarget))"
++        }
++        func describeRows() -> String {
++            cells().enumerated().map { i, c in
++                let pattern = c.patternField.isHidden ? "" : " [\(c.patternField.stringValue)]"
++                let fits = c.warningLabel.frame.maxY <= c.bounds.height + 0.5 && c.warningLabel.frame.height + 0.5 >= c.warningLabel.intrinsicContentSize.height
++                let warn = c.warningLabel.isHidden ? "" : " ⚠︎ \(c.warningLabel.stringValue) [label \(Int(c.warningLabel.frame.width))x\(Int(c.warningLabel.frame.height)) in row h=\(Int(c.bounds.height)) fits=\(fits)]"
++                var lit = false
++                if let table = linksTable(), let rv = table.rowView(atRow: i, makeIfNecessary: false) {
++                    lit = Mirror(reflecting: rv).children.first { $0.label == "isTargetHighlighted" }?.value as? Bool ?? false
++                }
++                return "#\(i) \(c.matchPopUp.titleOfSelectedItem ?? "?")\(pattern) | app=\(c.appPopUp.titleOfSelectedItem ?? "?") | open in=\(c.targetPopUp.titleOfSelectedItem ?? "?")\(warn)\(c.handle.isHidden ? " (draft)" : "")\(lit ? " (highlighted)" : "")"
++            }.joined(separator: "\n    ")
++        }
++        func logState(_ label: String) {
++            log("STATE \(label): pane=\(paneName()) \(describeRoutes())\n    \(describeRows())\n    default popup=\(defaultPopUp()?.titleOfSelectedItem ?? "?")")
++        }
++        /// The decision the entry points ask for, from the live store: the
++        /// same call `openExternalURLs` and the window make for every link.
++        func decide(_ url: String, _ origin: LinkOrigin = .external(sourceApp: nil)) -> String {
++            let d = resolveLinkRoute(url: URL(string: url)!, origin: origin, routes: routes.routes,
++                                     defaultTarget: routes.defaultTarget, context: store.linkRouteContext)
++            let text: String
++            if case .openInSpace(let id) = d { text = "openInSpace(\(store.space(withID: id)?.name ?? "?"))" } else { text = "\(d)" }
++            return "\(url) from \(origin) -> \(text)"
++        }
++        func shoot(_ name: String) async {
++            guard let w = settings() else { return log("no Settings window for \(name)") }
++            await sleep(0.8)
++            log("SHOOT \(name) \(w.windowNumber)")
++            await sleep(1.5)
++        }
++        func ensureFront() async {
++            for _ in 0..<5 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if NSApp.keyWindow !== settings() { settings()?.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && NSApp.keyWindow === settings() { return }
++                await sleep(0.6)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        var eventNumber = 5000
++        func mouse(_ type: NSEvent.EventType, at p: NSPoint, in window: NSWindow, mods: NSEvent.ModifierFlags = []) {
++            eventNumber += 1
++            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: mods,
++                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                          context: nil, eventNumber: eventNumber, clickCount: 1,
++                                          pressure: type == .leftMouseDown || type == .leftMouseDragged ? 1 : 0) {
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func center(_ view: NSView) -> NSPoint {
++            view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++        }
++        func click(_ view: NSView, downOnly: Bool = false) async {
++            await ensureFront()
++            guard let w = view.window else { return log("click: view has no window") }
++            let p = center(view)
++            mouse(.leftMouseDown, at: p, in: w)
++            if !downOnly { mouse(.leftMouseUp, at: p, in: w) }
++            await sleep(0.6)
++        }
++        func key(_ chars: String, code: UInt16 = 0, mods: NSEvent.ModifierFlags = []) {
++            guard let w = NSApp.keyWindow else { return }
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods,
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                            context: nil, characters: chars, charactersIgnoringModifiers: chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func typeText(_ text: String) async {
++            await ensureFront()
++            for ch in text { key(String(ch)) }
++            await sleep(0.5)
++        }
++        func returnKey() async { key("\r", code: 36); await sleep(0.6) }
++        func selectAll() async { key("a", code: 0, mods: .command); await sleep(0.3) }
++        /// A real click opens the pop-up's menu; while it tracks, a
++        /// `.common`-mode timer performs the item titled `title` (the pop-up
++        /// selects it and sends its action) and closes the menu.
++        func choose(_ popUp: NSPopUpButton, _ title: String) async {
++            guard let menu = popUp.menu else { return log("choose: no menu") }
++            var opened = false
++            let token = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: menu, queue: nil) { _ in
++                opened = true
++                let t = Timer(timeInterval: 0.5, repeats: false) { _ in
++                    let index = menu.indexOfItem(withTitle: title)
++                    log("CHOOSE menu open (\(menu.items.map(\.title).filter { !$0.isEmpty })); performing '\(title)' at \(index)")
++                    if index >= 0 { menu.performActionForItem(at: index) }
++                    menu.cancelTracking()
++                }
++                RunLoop.main.add(t, forMode: .common)
++            }
++            await click(popUp, downOnly: true)
++            await sleep(1.2)
++            NotificationCenter.default.removeObserver(token)
++            if !opened {
++                log("CHOOSE '\(title)': the menu did not open; selecting it and sending the action instead")
++                popUp.selectItem(withTitle: title)
++                _ = popUp.sendAction(popUp.action, to: popUp.target)
++            }
++            await sleep(0.4)
++        }
++        func answerNextAlert(_ shot: String, clicking answer: String) {
++            var fired = false
++            let timer = Timer(timeInterval: 0.2, repeats: true) { t in
++                guard !fired, let window = NSApp.modalWindow, let content = window.contentView else { return }
++                fired = true
++                t.invalidate()
++                let texts = allSubviews(content).compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty }
++                let buttons = allSubviews(content).compactMap { $0 as? NSButton }.map(\.title).filter { !$0.isEmpty }
++                log("ALERT \(shot): texts=\(texts) buttons=\(buttons)")
++                log("SHOOT \(shot) \(window.windowNumber)")
++                let click = Timer(timeInterval: 3.0, repeats: false) { _ in
++                    let button = allSubviews(content).compactMap { $0 as? NSButton }.first { $0.title == answer }
++                    log("ALERT \(shot): clicking \(answer) found=\(button != nil)")
++                    button?.performClick(nil)
++                }
++                RunLoop.main.add(click, forMode: .common)
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        func sidebarDelete(_ space: Space) {
++            let index = store.nonIncognitoSpaces.firstIndex { $0 === space } ?? -1
++            let item = NSMenuItem(title: "Delete Space", action: nil, keyEquivalent: "")
++            item.tag = index
++            wc.tabSidebar.perform(NSSelectorFromString("deleteSpaceClicked:"), with: item)
++        }
++
++        Task { @MainActor in
++            log("start: spaces=[\(store.nonIncognitoSpaces.map(\.name).joined(separator: ", "))] \(describeRoutes())")
++            await sleep(2.0)
++
++            // Seed: spaces, and every kind of route.
++            let profileID = store.nonIncognitoSpaces.first!.profileID
++            let work = store.addSpace(name: "Work", emoji: "💼", colorHex: "007AFF", profileID: profileID)
++            let personal = store.addSpace(name: "Personal", emoji: "🏡", colorHex: "34C759", profileID: profileID)
++            let side = store.addSpace(name: "Side Project", emoji: "🧪", colorHex: "FF9500", profileID: profileID)
++            _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "work.test"), target: .space(work.id)))
++            _ = routes.add(LinkRoute(match: nil, sourceApp: "com.apple.mail", target: .space(personal.id)))
++            _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "docs"), sourceApp: "com.apple.Safari",
++                                     target: .space(work.id)))
++            _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "secret"), target: .privateWindow))
++            // A broken route: its space is gone (as after a sync or migration).
++            let context = routes.spaceContext
++            routes.spaceContext = nil
++            _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "old.test"), target: .space(UUID())))
++            routes.spaceContext = context
++            log("default -> Side Project: \(routes.setDefaultTarget(.space(side.id)))")
++            log("seeded: \(describeRoutes())")
++            for url in ["https://work.test/a", "https://docs.example/x", "https://secret.example/", "https://old.test/", "https://other.test/"] {
++                log("DECIDE \(decide(url))")
++            }
++            log("DECIDE \(decide("https://mail-link.example/", .external(sourceApp: "com.apple.mail")))")
++            log("DECIDE \(decide("https://docs.example/x", .external(sourceApp: "com.apple.Safari")))")
++
++            SettingsWindowController.shared.showLinksPane()
++            await sleep(1.5)
++            await ensureFront()
++            if let w = settings() { log("Settings content height=\(w.contentLayoutRect.height) min=\(w.contentMinSize.height) max=\(w.contentMaxSize.height)") }
++            logState("01-seeded")
++            await shoot("01-seeded")
++
++            // A. New Route, by a real click on the button.
++            if let b = button("New Route") { await click(b) } else { log("no New Route button") }
++            logState("A new route")
++            let fr = NSApp.keyWindow?.firstResponder
++            log("A first responder=\(String(describing: fr.map { type(of: $0) })) is last pattern field's editor=\((fr as? NSText)?.delegate === cells().last?.patternField)")
++            await shoot("02-new-draft")
++            // A2. Any URL on the draft: neither condition, marked, not saved.
++            if let c = cells().last { await choose(c.matchPopUp, "Any URL") }
++            logState("A2 draft with Any URL")
++            await shoot("03-draft-no-condition")
++            if let c = cells().last { await choose(c.matchPopUp, "Domain is") }
++            // A3. Type a pattern into the field and press Return: saved.
++            if let c = cells().last { await click(c.patternField) }
++            await typeText("news.test")
++            logState("A3 typed, not committed")
++            await returnKey()
++            logState("A3 after Return")
++            log("DECIDE \(decide("https://news.test/today"))")
++
++            // B. Open in: the new route to Work, through its pop-up.
++            if let c = cells().last { await choose(c.targetPopUp, "💼 Work") }
++            logState("B target -> Work")
++            log("DECIDE \(decide("https://news.test/today"))")
++
++            // C. Edit the first route's pattern: click, select all, type, Return.
++            if let c = cells().first { await click(c.patternField) }
++            await selectAll()
++            await typeText("corp.test")
++            await returnKey()
++            logState("C pattern work.test -> corp.test")
++            log("DECIDE \(decide("https://corp.test/x"))")
++            log("DECIDE \(decide("https://work.test/x"))")
++            // The real entry point for a link from another app, right after the edit.
++            let before = Set(store.spaces.flatMap { $0.tabs.map(\.id) })
++            delegate.openExternalURLs([URL(string: "https://corp.test/next")!], sourceApp: nil)
++            await sleep(1.5)
++            let opened = store.spaces.flatMap { s in s.tabs.filter { !before.contains($0.id) }.map { "\(s.name): \($0.url?.absoluteString ?? "?")" } }
++            log("C openExternalURLs(corp.test/next) opened: \(opened)")
++            await ensureFront()
++
++            // D. Match kind: the Private route ("Contains secret") to "Is equal to"
++            // is refused ("secret" is no address) and stays marked; back to Contains.
++            if let index = routes.routes.firstIndex(where: { $0.match?.pattern == "secret" }) {
++                await choose(cells()[index].matchPopUp, "Is equal to")
++                logState("D kind -> Is equal to (refused)")
++                await shoot("04-refused-edit")
++                log("DECIDE \(decide("https://secret.example/"))")
++                await choose(cells()[index].matchPopUp, "Domain is")
++                logState("D kind -> Domain is")
++                log("DECIDE \(decide("https://secret/"))  \(decide("https://secret.example/"))")
++                await choose(cells()[index].matchPopUp, "Contains")
++                logState("D kind -> Contains")
++            }
++
++            // E. From app on the first route: a running app, then Any App.
++            if let c = cells().first {
++                await choose(c.appPopUp, "Finder")
++                logState("E app -> Finder")
++                log("DECIDE \(decide("https://corp.test/y", .external(sourceApp: "com.apple.finder")))  \(decide("https://corp.test/y"))")
++                await choose(c.appPopUp, "Any App")
++                logState("E app -> Any App")
++            }
++
++            // F. Drag the last saved route (news.test) above the first.
++            if let table = linksTable(), let w = settings() {
++                let saved = routes.routes.count
++                let fromRow = saved - 1
++                if let c = table.view(atColumn: 0, row: fromRow, makeIfNecessary: true) as? LinkRouteCellView {
++                    await ensureFront()
++                    let startPoint = center(c.handle)
++                    let target = table.convert(NSPoint(x: 30, y: table.rect(ofRow: 0).minY + 4), to: nil)
++                    log("F drop from row \(fromRow) (handle at \(startPoint)) above row 0 (\(target)); order before: \(routes.routes.map { $0.match?.pattern ?? $0.sourceApp ?? "?" })")
++                    var order: [String] = []
++                    if let vc = settings()?.contentViewController as? LinksSettingsViewController {
++                        let id = routes.routes[fromRow].id
++                        let info = Task1913DragInfo(string: id.uuidString, type: NSPasteboard.PasteboardType("com.detour.link-route"),
++                                                    location: target, window: w)
++                        let op = vc.tableView(table, validateDrop: info, proposedRow: 0, proposedDropOperation: .above)
++                        let ok = vc.tableView(table, acceptDrop: info, row: 0, dropOperation: .above)
++                        order = routes.routes.map { $0.match?.pattern ?? $0.sourceApp ?? "?" }
++                        log("F stub drop through the table's data source: validate=\(op.rawValue) accept=\(ok) order=\(order)")
++                        // Below the drafts: retargeted to the end of the saved routes.
++                        let probe = Task1913DragInfo(string: routes.routes[0].id.uuidString, type: NSPasteboard.PasteboardType("com.detour.link-route"),
++                                                     location: target, window: w)
++                        _ = vc.tableView(table, validateDrop: probe, proposedRow: table.numberOfRows + 3, proposedDropOperation: .on)
++                    }
++                    logState("F reordered")
++                    log("DECIDE \(decide("https://news.test/a"))")
++                }
++            }
++
++            // G. Remove: ⊖ on the Private route.
++            if let index = routes.routes.firstIndex(where: { $0.target == .privateWindow }) {
++                await click(cells()[index].removeButton)
++                logState("G removed the Private route")
++                log("DECIDE \(decide("https://secret.example/"))")
++            }
++
++            // H. The Default, through its pop-up.
++            if let p = defaultPopUp() {
++                await choose(p, "🏡 Personal")
++                logState("H default -> Personal")
++                log("DECIDE \(decide("https://other.test/"))")
++                log("DECIDE \(decide("https://other.test/", .typed(fromSpace: work.id, isPrivateWindow: false)))")
++            }
++            await shoot("05-edited")
++
++            // I. A space renamed and re-emojied elsewhere: the pop-ups follow.
++            store.updateSpace(id: work.id, name: "Work Stuff", emoji: "🛠️", colorHex: work.colorHex, profileID: work.profileID)
++            await sleep(0.5)
++            logState("I Work renamed")
++            await shoot("06-renamed")
++
++            // J. Choose… opens the open panel on /Applications (cancelled).
++            if let c = cells().first {
++                await choose(c.appPopUp, "Choose…")
++                await sleep(2.0)
++                if let sheet = settings()?.attachedSheet {
++                    log("J sheet \(type(of: sheet)) directory=\((sheet as? NSOpenPanel)?.directoryURL?.path ?? "?")")
++                    log("SHOOT 07-choose-panel \(sheet.windowNumber)")
++                    await sleep(1.5)
++                    await shoot("07-choose-panel-window")
++                    settings()?.endSheet(sheet, returnCode: .cancel)
++                    await sleep(0.8)
++                } else {
++                    log("J no sheet")
++                }
++                logState("J after Cancel")
++            }
++
++            // R. The review's changes, with real input.
++            func firstResponderDescription() -> String {
++                let fr = NSApp.keyWindow?.firstResponder
++                if let text = fr as? NSTextView, text.isFieldEditor, let field = text.delegate as? NSTextField {
++                    let index = cells().firstIndex { $0.patternField === field }
++                    return "field editor of pattern field row \(index.map(String.init) ?? "?") ('\(field.stringValue)')"
++                }
++                return String(describing: fr.map { type(of: $0) })
++            }
++            // R1. Type into a new draft, no Return, then New Route: the pattern is saved.
++            await ensureFront()
++            if let b = button("New Route") { await click(b) }
++            await typeText("draft1.test")
++            if let b = button("New Route") { await click(b) }
++            await sleep(0.5)
++            logState("R1 typed draft1.test, then New Route")
++            log("R1 saved draft1.test=\(routes.routes.contains { $0.match?.pattern == "draft1.test" }) rows=\(linksTable()?.numberOfRows ?? -1) focus=\(firstResponderDescription())")
++            // R2. Type into that new draft, then change its Open in pop-up.
++            await typeText("draft2.test")
++            if let c = cells().last { await choose(c.targetPopUp, "🏡 Personal") }
++            logState("R2 typed draft2.test, then Open in -> Personal")
++            log("R2 saved=\(routes.routes.first { $0.match?.pattern == "draft2.test" }.map { spaceName($0.target) } ?? "no")")
++            // R3. New Route, type, Tab out: one row, focus kept.
++            if let b = button("New Route") { await click(b) }
++            let rowsBefore = linksTable()?.numberOfRows ?? -1
++            await typeText("draft3.test")
++            key("\t", code: 48)
++            await sleep(0.8)
++            logState("R3 typed draft3.test, then Tab")
++            log("R3 rows before typing=\(rowsBefore) after Tab=\(linksTable()?.numberOfRows ?? -1) saved=\(routes.routes.filter { $0.match?.pattern == "draft3.test" }.count) focus=\(firstResponderDescription())")
++            await shoot("07b-drafts-committed")
++            // R4. A refused edit on corp.test (saved target Work Stuff): pattern
++            // emptied and Open in -> Personal, both refused; the row shows Personal.
++            if let index = routes.routes.firstIndex(where: { $0.match?.pattern == "corp.test" }) {
++                await click(cells()[index].patternField)
++                await selectAll()
++                key("\u{7F}", code: 51)
++                await returnKey()
++                await choose(cells()[index].targetPopUp, "🏡 Personal")
++                logState("R4 corp.test emptied and moved to Personal (refused)")
++                log("R4 saved: \(routes.routes[index].match?.pattern ?? "?") -> \(spaceName(routes.routes[index].target))")
++                await shoot("07c-refused-edit-elsewhere")
++            }
++
++            // K. The blocked deletion alert, from the sidebar: Open Links Settings….
++            settings()?.close()
++            wc.window?.makeKeyAndOrderFront(nil)
++            await sleep(1.0)
++            answerNextAlert("08-alert-sidebar", clicking: SpaceDeletionBlockedAlert.openLinksSettingsTitle)
++            sidebarDelete(work)
++            await sleep(1.5)
++            log("K Work exists=\(store.space(withID: work.id) != nil); Settings visible=\(settings()?.isVisible ?? false) pane=\(paneName())")
++            logState("K highlighted (routes to Work Stuff)")
++            await shoot("09-highlighted-from-sidebar")
++
++            // K2. From the Spaces pane's "−", on Personal (the Default): Open Links Settings….
++            SettingsWindowController.shared.showSpacesPane(selectSpaceID: personal.id)
++            await sleep(1.5)
++            if let content = settings()?.contentView,
++               let minus = allSubviews(content).compactMap({ $0 as? NSButton })
++                .first(where: { $0.action == NSSelectorFromString("deleteSpaceClicked") }) {
++                answerNextAlert("10-alert-spaces-pane", clicking: SpaceDeletionBlockedAlert.openLinksSettingsTitle)
++                DispatchQueue.main.async { minus.performClick(nil) }
++                await sleep(5.0)
++                log("K2 Personal exists=\(store.space(withID: personal.id) != nil); pane=\(paneName())")
++                logState("K2 highlighted (Personal)")
++                await shoot("11-highlighted-from-spaces-pane")
++            }
++
++            // K3. The undo path: Undo Add Space of a routed space posts the
++            // notification; the frontmost browser window shows the same alert.
++            settings()?.close()
++            wc.window?.makeKeyAndOrderFront(nil)
++            await sleep(0.8)
++            store.undoManager.groupsByEvent = false
++            while store.undoManager.groupingLevel > 0 { store.undoManager.endUndoGrouping() }
++            store.undoManager.removeAllActions()
++            store.undoManager.beginUndoGrouping()
++            let undoable = store.addSpace(name: "Undoable", emoji: "↩️", colorHex: "FF9500", profileID: profileID)
++            store.undoManager.endUndoGrouping()
++            let undoRoute = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "undo.test"), target: .space(undoable.id)))
++            answerNextAlert("12-alert-undo", clicking: SpaceDeletionBlockedAlert.openLinksSettingsTitle)
++            let blockToken = NotificationCenter.default.addObserver(forName: TabStore.spaceDeletionBlockedNotification, object: store, queue: nil) { n in
++                log("K3 notification posted: \(String(describing: TabStore.spaceDeletionBlock(from: n)?.spaceName)); ordered browser windows=\(NSApp.orderedWindows.filter { $0.windowController is BrowserWindowController }.map(\.windowNumber)) wc=\(wc.window?.windowNumber ?? -1)")
++            }
++            log("K3 before undo: canUndo=\(store.undoManager.canUndo) title=\(store.undoManager.undoMenuItemTitle) groupingLevel=\(store.undoManager.groupingLevel)")
++            store.undoManager.undo()
++            NotificationCenter.default.removeObserver(blockToken)
++            RunLoop.main.perform(inModes: [.default]) { log("K3 a default-mode run-loop block queued after the undo ran") }
++            for i in 1...4 {
++                await sleep(0.5)
++                log("K3 +\(Double(i) * 0.5)s modalWindow=\(String(describing: NSApp.modalWindow.map { type(of: $0) })) active=\(NSApp.isActive) mode=\(RunLoop.main.currentMode?.rawValue ?? "nil")")
++            }
++            await sleep(5.0)
++            log("K3 Undoable exists=\(store.space(withID: undoable.id) != nil) pane=\(paneName()) undo=\(store.undoManager.canUndo)")
++            logState("K3 highlighted (Undoable)")
++            await shoot("13-highlighted-from-undo")
++            if let undoRoute { routes.removeRoute(id: undoRoute.id) }
++            store.undoManager.removeAllActions()
++            store.undoManager.groupsByEvent = true
++
++            // L0. A broken Default (its space gone some other way): the warning wraps under its pop-up.
++            let ctx2 = routes.spaceContext
++            routes.spaceContext = nil
++            let keptDefault = routes.defaultTarget
++            routes.setDefaultTarget(.space(UUID()))
++            routes.spaceContext = ctx2
++            SettingsWindowController.shared.showLinksPane()
++            await sleep(1.0)
++            logState("L0 broken Default")
++            await shoot("13b-broken-default")
++            routes.setDefaultTarget(keptDefault)
++
++            // L. Empty state: every route removed (elsewhere; the pane follows).
++            SettingsWindowController.shared.showLinksPane()
++            await sleep(1.0)
++            let saved = routes.routes
++            for r in saved { routes.removeRoute(id: r.id) }
++            await sleep(1.0)
++            logState("L empty")
++            await shoot("14-empty")
++
++            // M. Many routes: the pane grows to the cap, then scrolls.
++            for i in 1...16 {
++                _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: i % 3 == 0 ? .contains : .domainIs, pattern: "site\(i).test"),
++                                         sourceApp: i % 5 == 0 ? "com.apple.mail" : nil,
++                                         target: i % 2 == 0 ? .space(work.id) : .space(side.id)))
++            }
++            for r in saved { _ = routes.add(r) }
++            await sleep(1.5)
++            if let w = settings() {
++                log("M many: routes=\(routes.routes.count) content height=\(w.contentLayoutRect.height) max=\(w.contentMaxSize.height) screen=\(w.screen?.visibleFrame.height ?? 0)")
++            }
++            await shoot("15-many-top")
++            if let vc = settings()?.contentViewController as? LinksSettingsViewController, let doc = vc.scrollView.documentView {
++                let clip = vc.scrollView.contentView
++                clip.scroll(to: NSPoint(x: 0, y: doc.bounds.height - clip.bounds.height))
++                vc.scrollView.reflectScrolledClipView(clip)
++                await sleep(0.5)
++                log("M scrolled to y=\(vc.scrollView.contentView.bounds.minY) of \(doc.bounds.height)")
++            }
++            await shoot("16-many-bottom")
++            // N. A posted drag: does it start a real drag session, and where
++            // does it land? (The session follows the real pointer.)
++            if let table = linksTable(), let w = settings(), let c = cells().first {
++                await ensureFront()
++                let startPoint = center(c.handle)
++                let target = NSPoint(x: startPoint.x, y: startPoint.y - 250)
++                let before = routes.routes.map(\.id)
++                mouse(.leftMouseDown, at: startPoint, in: w)
++                for i in 1...12 {
++                    mouse(.leftMouseDragged, at: NSPoint(x: startPoint.x, y: startPoint.y + (target.y - startPoint.y) * CGFloat(i) / 12), in: w)
++                }
++                mouse(.leftMouseUp, at: target, in: w)
++                await sleep(2.0)
++                mouse(.leftMouseUp, at: target, in: w)
++                await sleep(2.0)
++                let after = routes.routes.map(\.id)
++                log("N posted drag: order changed=\(before != after); first route now at index \(after.firstIndex(of: before[0]) ?? -1); rows=\(table.numberOfRows)")
++            }
++            _ = store.saveNow()
++            log("done")
++        }
++    }
++}
++#endif
