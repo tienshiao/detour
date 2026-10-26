@@ -208,6 +208,9 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         let typed = try await webView.evaluateJavaScript("document.getElementById('q').value") as? String
         XCTAssertEqual(typed, "typed text", "form state survives")
         XCTAssertFalse(store.isQuickDetourTab(page))
+        XCTAssertTrue(AppDatabase.shared.closedTabSummaries(
+            spaceID: QuickDetour.historySpaceIDString(forProfileID: profile.id)).isEmpty,
+                      "moved, not closed: nothing goes to the archive (TASK-193.5)")
     }
 
     func testTheButtonDoesWhatCmdODoes() throws {
@@ -319,6 +322,9 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertEqual(funWindow.selectedTabID, opened.id)
         XCTAssertTrue(frontBrowserWindow() === funWindow)
         XCTAssertFalse(build.tabs.contains { $0.id == pageID })
+        XCTAssertTrue(AppDatabase.shared.closedTabSummaries(
+            spaceID: QuickDetour.historySpaceIDString(forProfileID: profile.id)).isEmpty,
+                      "moved, not closed: nothing goes to the archive (TASK-193.5)")
         for _ in 0..<40 where weakController != nil || weakOldWebView != nil { spin() }
         XCTAssertNil(weakController)
         XCTAssertNil(weakOldWebView, "the Quick Detour's web view is released")

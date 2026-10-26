@@ -100,6 +100,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start periodic tab archival
         TabStore.shared.startArchiveTimer()
 
+        // Close Quick Detours left unused into the archive (TASK-193.5). Not in
+        // the test host, whose tests drive the monitor on their own clock.
+        if !Self.isRunningUnitTests { QuickDetourIdleMonitor.shared.start() }
+
         // Recycle WebKit's GPU process before it runs out of IOSurfaces (TASK-105)
         GPUProcessRecycler.shared.start()
 
@@ -124,6 +128,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         QuickDetourHotKey.shared.stop()
+        QuickDetourIdleMonitor.shared.stop()
+        // Open Quick Detours go to the archive at quit (TASK-193.1's decision,
+        // TASK-193.5); nothing restores them as windows.
+        TabStore.shared.archiveOpenQuickDetours()
         TabStore.shared.undoManager.removeAllActions()
         TabStore.shared.saveNow()
         // A download that ended inside the manager's 1 s save debounce would
@@ -361,6 +369,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// with `.stay`. `typed` marks the visit as typed in history, as a URL
     /// submitted in the palette is when it opens here.
     func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false) {
+        // Not a tab in a space, so not the placement's windows (TASK-193.5).
+        // The resolver sends only links from other apps here.
+        if decision == .quickDetour {
+            openInQuickDetour(url, typed: typed)
+            return
+        }
         let placed = placeTab(routedTo: decision) { space in
             let tab = TabStore.shared.addTab(in: space)
             tab.load(url, typed: typed)
@@ -436,6 +450,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return placeInNewPrivateWindow(makeTab, didSelect: didSelect)
         case .mostRecentSpace:
             return nil
+        case .openInQuickDetour:
+            // Not a tab in a space: `openLink` opens the Quick Detour itself.
+            return nil
         }
     }
 
@@ -475,6 +492,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerWindowController(wc)
         wc.window?.makeKeyAndOrderFront(nil)
         return wc
+    }
+
+    /// A link Air Traffic Control sends to Quick Detour (TASK-193.5): a new
+    /// Quick Detour window on the frontmost Detour window's profile — never
+    /// Private (`QuickDetour.profileForRoutedLink`) — whose Open in names the
+    /// most recent normal window's space when it is that profile's. In front
+    /// of Detour's windows, as a placed tab's window is.
+    private func openInQuickDetour(_ url: URL, typed: Bool) {
+        let store = TabStore.shared
+        var windowProfiles: [Profile] = NSApp.orderedWindows.compactMap { window in
+            switch window.windowController {
+            case let browser as BrowserWindowController: return browser.activeSpace?.profile
+            case let quick as QuickDetourWindowController: return quick.profile
+            default: return nil
+            }
+        }
+        // Windows not in the window list (minimized, the app hidden) last.
+        windowProfiles += browserWindowsByRecency.compactMap { $0.activeSpace?.profile }
+        guard let profile = QuickDetour.profileForRoutedLink(windowProfiles: windowProfiles,
+                                                             profiles: store.profiles) else { return }
+        let sourceSpace = browserWindowsByRecency.lazy
+            .compactMap { $0.isIncognito ? nil : $0.activeSpace }
+            .first { $0.profileID == profile.id }
+        log.info("Link routed to Quick Detour on profile \(profile.id.uuidString, privacy: .public)")
+        QuickDetourWindowController.open(profile: profile, sourceSpace: sourceSpace, url: url, typed: typed)
     }
 
     /// What a link from another app did before routes, kept exactly (the Most

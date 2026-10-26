@@ -194,4 +194,38 @@ final class ArchiveListLayoutTests: XCTestCase {
         XCTAssertEqual(archiveDisplayURL("about:blank"), "about:blank")
         XCTAssertEqual(archiveDisplayURL(nil), "")
     }
+
+    // MARK: - Quick Detour entries (TASK-193.5)
+
+    private func quickDetour(_ id: Int64, scope: UUID, autoClosed: Bool) -> ArchiveEntry {
+        var entry = ArchiveEntry(id: id, spaceID: scope, title: "Lookup", url: "https://www.example.com/a",
+                                 faviconURL: nil, closedAt: now, isRestorable: true)
+        entry.kind = .quickDetour(profileID: UUID(), autoClosed: autoClosed)
+        return entry
+    }
+
+    func testAQuickDetoursSubtitleSaysSo() {
+        XCTAssertEqual(archiveEntrySubtitle(quickDetour(1, scope: UUID(), autoClosed: false)),
+                       "Quick Detour · example.com/a")
+        XCTAssertEqual(archiveEntrySubtitle(quickDetour(1, scope: UUID(), autoClosed: true)),
+                       "Quick Detour · auto-closed · example.com/a")
+        XCTAssertEqual(archiveEntrySubtitle(entry(2, closedAt: now)), "example.com", "a tab's is its address alone")
+    }
+
+    func testClearingEverythingCoversTheQuickDetourScopes() {
+        let scope = UUID()
+        let entries = [entry(1, closedAt: now), quickDetour(2, scope: scope, autoClosed: true),
+                       quickDetour(3, scope: scope, autoClosed: false)]
+        XCTAssertEqual(archiveClearScope(spaceFilter: nil, spaceIDs: [spaceA, spaceB], entries: entries),
+                       [spaceA, spaceB, scope], "each scope once")
+        XCTAssertEqual(archiveClearScope(spaceFilter: spaceB, spaceIDs: [spaceA, spaceB], entries: entries), [spaceB],
+                       "a space filter leaves Quick Detours out, as the list does")
+    }
+
+    func testASpaceFilterHidesQuickDetours() {
+        let scope = UUID()
+        let entries = [entry(1, closedAt: now), quickDetour(2, scope: scope, autoClosed: false)]
+        XCTAssertEqual(entryIDs(rows(entries, filter: spaceA)), [1])
+        XCTAssertEqual(entryIDs(rows(entries, filter: nil)), [2, 1])
+    }
 }

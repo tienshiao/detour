@@ -12,7 +12,7 @@
 
 # Features
 
-* [Closed tabs and the Archived Tabs page](closed-tabs-and-archive.md) - What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, and how archived records differ from plain closes.
+* [Closed tabs and the Archived Tabs page](closed-tabs-and-archive.md) - What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, how archived records differ from plain closes, and closed Quick Detours filed under their profile's scope (TASK-193.5).
 * [Favourites](favorites.md) - Per-profile tiles above the tab list, each with an optional backing tab that lives on the profile rather than in any space; how they are selected, moved, parked, peeked and kept visible to extensions.
 * [Peek](peek.md) - The overlay that shows a linked page over the current tab; which links open in one, how it is anchored to its host tab, parked, restored and expanded, and how extensions see it.
 * [Tab switching by keyboard](tab-switching.md) - Cmd+Option+Up/Down steps through a space's sidebar rows in order; Control+Tab switches between recently used tabs with a preview overlay. Both treat a split as one item.

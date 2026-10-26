@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -45,6 +45,9 @@ sources:
   - id: task-119
     resource: backlog:TASK-119
     title: Archived Tabs page; close undos skip consumed records
+  - id: task-193-5
+    resource: backlog:TASK-193.5
+    title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
   - id: task-185
     resource: backlog:TASK-185
     title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
@@ -80,6 +83,7 @@ extension contexts (the list's `didSet`, see
 |---|---|---|
 | Submitting the [command palette](../features/command-palette.md) in new-tab mode | `addTab(in:)`, then `tab.load(url, typed:)`; a URL a route sends to another space opens there instead ([link routing](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)) | yes |
 | Cmd+click on a link | `addTab(in:url:parentID:)` with the selected tab as parent | no (a toast says so when the sidebar is collapsed) |
+| Opt-Cmd-click on a link, or on a sidebar tab | no tab: a new [Quick Detour](../features/quick-detour.md#other-entry-points) window (a sidebar tab's address copied; the tab untouched) | — |
 | Context menu "Open Link in New Tab" | sets `contextMenuLinkAction`, replays WebKit's own item, lands in `createWebViewWith` → `addTab(in:url:parentID:)` | no |
 | `window.open` or a `_blank` link in a normal tab | `createWebViewWith` → `addTab(in:openedWith:parentID:)`, with the opener as parent, in the opener's space; the tab's web view is returned to WebKit, which loads the URL | yes, unless the opener is in a space the window is not showing |
 | Option+click on a link, or "Open Link in Split View" | `addTabInSplit(with:url:in:)`, or from a favourite or lone pinned tab `addSplitInNormalSection(copying:rightPane:in:)`, which adds two tabs ([split](./split-tabs.md#opening-a-split-from-a-tab))[^task-185] | yes (the right pane) |
@@ -159,20 +163,35 @@ tab ([history recording](../features/history-recording-and-search.md)).
 **Link policy order** (`decidePolicy(for:in:)`). The order is load-bearing:
 
 1. An internal URL: allowed only when the owning tab authorises it, else cancel.
-2. Cmd+click: background tab, unless [Air Traffic Control](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
+2. Opt-Cmd-click to a web URL (TASK-193.5): a new [Quick Detour](../features/quick-detour.md#opt-cmd-click-on-a-link)
+   on the page's profile, never routed. With Settings' switch off, or to a
+   non-web URL, Opt-Cmd falls to step 3 as before.
+3. Cmd+click: background tab, unless [Air Traffic Control](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
    routes it to another space or a Private window (TASK-191.4).
-3. Shift+click: [Peek](./peek.md).
-4. Option+click: [split](./split-tabs-hosting.md). This must precede step 7,
+4. Shift+click: [Peek](./peek.md).
+5. Option+click: [split](./split-tabs-hosting.md). This must precede step 8,
    because WebKit sets `shouldPerformDownload` for Option-clicked links.
-5. Back/forward into an error page: reload the original URL instead.
-6. A non-web scheme: [external app](../features/external-apps.md) confirmation.
-7. `shouldPerformDownload`: download.
-8. Air Traffic Control: a `_blank` link or a plain click to another host
+6. Back/forward into an error page: reload the original URL instead.
+7. A non-web scheme: [external app](../features/external-apps.md) confirmation.
+8. `shouldPerformDownload`: download.
+9. Air Traffic Control: a `_blank` link or a plain click to another host
    that a route sends elsewhere opens there and the tab stays
-   (`linkRoutingEligibility`, TASK-191.4). It wins over step 9
+   (`linkRoutingEligibility`, TASK-191.4). It wins over step 10
    (`inPageLinkOutcome`).
-9. The pinned/favourite Peek intercept.
-10. Allow, after applying the per-host user agent to the *navigating* tab.
+10. The pinned/favourite Peek intercept.
+11. Allow, after applying the per-host user agent to the *navigating* tab.
+
+The modifier branches (steps 2 to 5) are the pure
+`inPageLinkClickBranch(_:target:quickDetourClickEnabled:)`, which the
+routing rule reads too:
+
+| Modifiers on a link | Before TASK-193.5 | Since |
+|---|---|---|
+| Opt-Cmd (with or without Shift) | Cmd: background tab or route | Quick Detour (web URLs, switch on) |
+| Opt-Cmd, switch off or a non-web URL | Cmd | Cmd |
+| Cmd, Cmd-Shift | background tab or route | unchanged |
+| Shift, Shift-Option | Peek | unchanged |
+| Option | split | unchanged |
 
 `createWebViewWith` asks the same rule for a tab-style `window.open` before
 its own Peek intercept; a popup-style one is never routed.

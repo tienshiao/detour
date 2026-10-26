@@ -5,8 +5,11 @@ description: "The Settings window and its six panes (General, Spaces, Links, Pro
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
 sources:
+  - id: task-193-5
+    resource: backlog:TASK-193.5
+    title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive (the Links pane's Quick Detour section)"
   - id: task-193-2
     resource: backlog:TASK-193.2
     title: "Quick Detour: a system-wide hotkey that opens it from any app (the Links pane's Quick Detour section)"
@@ -231,8 +234,13 @@ rows (URL, From app, Open in) with New Route above and the Default below,
 then the **Quick Detour** section (TASK-193.2): "Open Quick Detour from any
 app with" and a shortcut recorder (`ShortcutRecorderView`), a warning line
 when the shortcut is refused or another app holds it, and help text; see
-[Quick Detour](./quick-detour.md#the-settings-control). TASK-193.5 adds the
-other Quick Detour entry points to that section.
+[Quick Detour](./quick-detour.md#the-settings-control). TASK-193.5 added to
+that section the Opt-Cmd-click switch ("Open links and sidebar tabs in Quick
+Detour with ⌥⌘-click"), the idle auto-close pop-up ("Close Quick Detour
+windows not used for [Never, 1 hour, 6 hours, 12 hours, 1 day]", 6 hours by
+default) with its help, and a caption pointing links from other apps to
+the routes and the Default, where Quick Detour is now an Open in target; see
+[Quick Detour](./quick-detour.md#the-settings-section).
 Not a master list with a detail column: every route is edited in place, as
 in Arc's sheet. The list box is as tall as its rows (no inner scrolling; its
 scroll view hands the wheel to the pane's), so the pane grows with the

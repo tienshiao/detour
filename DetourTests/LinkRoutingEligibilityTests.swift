@@ -15,12 +15,13 @@ final class LinkRoutingEligibilityTests: XCTestCase {
     private func click(_ target: String, from page: String? = "https://example.com/start",
                        modifiers: LinkClickModifiers = [], gesture: Bool = true,
                        mainFrame: Bool = true, newWindow: Bool = false, redirect: Bool = false,
-                       linkActivation: Bool = true, inPeek: Bool = false) -> LinkRoutingEligibility {
+                       linkActivation: Bool = true, inPeek: Bool = false,
+                       quickDetourClick: Bool = true) -> LinkRoutingEligibility {
         linkRoutingEligibility(InPageLinkRequest(
             entry: .navigationAction(isLinkActivation: linkActivation, targetsMainFrame: mainFrame && !newWindow,
                                      opensNewWindow: newWindow, isRedirect: redirect),
             modifiers: modifiers, isUserGesture: gesture, isInPeek: inPeek,
-            pageURL: page.map(url), targetURL: url(target)))
+            pageURL: page.map(url), targetURL: url(target), quickDetourClickEnabled: quickDetourClick))
     }
 
     /// A page's own new window in `createWebViewWith`.
@@ -39,9 +40,54 @@ final class LinkRoutingEligibilityTests: XCTestCase {
                        "a new tab, so the same host routes too")
     }
 
-    func testCommandWinsOverShiftAndOptionAsTheDelegateOrderDoes() {
+    func testCommandWinsOverShiftAsTheDelegateOrderDoes() {
         XCTAssertEqual(click("https://other.test/", modifiers: [.command, .shift]), .routable(.commandClick))
-        XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option]), .routable(.commandClick))
+    }
+
+    // MARK: - Opt-Cmd-click: Quick Detour (TASK-193.5)
+
+    func testOptionCommandIsTheQuickDetourClickAndIsNeverRouted() {
+        // The user chose Quick Detour: Air Traffic Control does not move it.
+        XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option]), .notRouted(.quickDetourClick))
+        XCTAssertEqual(click("https://example.com/b", modifiers: [.command, .option]), .notRouted(.quickDetourClick))
+        XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option, .shift]),
+                       .notRouted(.quickDetourClick), "Shift does not matter once Cmd and Option are held")
+        XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option], mainFrame: false),
+                       .notRouted(.quickDetourClick), "in any frame")
+        XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option], newWindow: true),
+                       .notRouted(.quickDetourClick), "a target=_blank link too")
+    }
+
+    func testWithTheSettingOffOptionCommandIsACommandClickAsBefore() {
+        XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option], quickDetourClick: false),
+                       .routable(.commandClick))
+    }
+
+    func testOptionCommandToANonWebURLIsNotRoutedAndNotAQuickDetour() {
+        XCTAssertEqual(click("mailto:a@example.com", modifiers: [.command, .option]), .notRouted(.notWebURL))
+    }
+
+    func testTheModifierBranchesInTheirOrder() {
+        let web = url("https://other.test/")
+        func branch(_ modifiers: LinkClickModifiers, _ target: URL? = nil, on: Bool = true) -> InPageLinkClickBranch {
+            inPageLinkClickBranch(modifiers, target: target ?? web, quickDetourClickEnabled: on)
+        }
+        XCTAssertEqual(branch([.command, .option]), .quickDetour)
+        XCTAssertEqual(branch([.command, .option, .shift]), .quickDetour)
+        XCTAssertEqual(branch([.command, .option], on: false), .backgroundTab, "off: Cmd wins over Option as before")
+        XCTAssertEqual(branch([.command, .option], url("mailto:a@example.com")), .backgroundTab,
+                       "a non-web link keeps the Cmd branch (its own handling)")
+        XCTAssertEqual(branch([.command, .option], url("http://example.com/")), .quickDetour)
+        XCTAssertEqual(branch(.command), .backgroundTab)
+        XCTAssertEqual(branch([.command, .shift]), .backgroundTab)
+        XCTAssertEqual(branch(.shift), .peek)
+        XCTAssertEqual(branch([.shift, .option]), .peek, "Shift before Option")
+        XCTAssertEqual(branch(.option), .split)
+        XCTAssertEqual(branch([]), .none)
+    }
+
+    func testOptionCommandInAPeekIsNotRouted() {
+        XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option], inPeek: true), .notRouted(.inPeek))
     }
 
     func testABlankTargetLinkRoutesWhateverTheHost() {

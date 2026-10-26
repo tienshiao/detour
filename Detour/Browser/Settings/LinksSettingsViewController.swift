@@ -53,6 +53,10 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     /// Why the recorder refused the last shortcut typed, while it records.
     private var hotKeyRefusal: String?
     private var hotKeyObservers: [NSObjectProtocol] = []
+    // Its other entry points and the idle auto-close (TASK-193.5).
+    private var quickDetourSettings: QuickDetourSettings { .shared }
+    private var optionCommandCheckbox: NSButton!
+    private var idleTimeoutPopUp: NSPopUpButton!
 
     private static let dragType = NSPasteboard.PasteboardType("com.detour.link-route")
     /// The list's height with no routes: one line of text.
@@ -209,8 +213,10 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
 
     /// "Quick Detour": [✓] Open Quick Detour from any app with [⌥⌘N], a
     /// warning line when the shortcut is refused or not registered, and the
-    /// help text; returned as a guide from the title's top to the help's
-    /// bottom. TASK-193.5 adds more entry points here.
+    /// help text; then (TASK-193.5) a switch for Opt-Cmd-click, the idle
+    /// auto-close pop-up with its help, and a caption saying links from other
+    /// apps are routed by Open in above (no switch of their own). Returned as
+    /// a guide from the title's top to the caption's bottom.
     private func makeQuickDetourSection(in container: NSView) -> NSLayoutGuide {
         let title = NSTextField.settingsSectionTitle(QuickDetour.displayName)
         container.addSubview(title)
@@ -283,11 +289,73 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             help.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
 
+        // Opt-Cmd-click on a link or a sidebar tab.
+        optionCommandCheckbox = NSButton(checkboxWithTitle: "Open links and sidebar tabs in \(QuickDetour.displayName) with ⌥⌘-click",
+                                         target: self, action: #selector(optionCommandCheckboxChanged))
+        optionCommandCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        optionCommandCheckbox.setAccessibilityIdentifier("quickDetourOptionCommandClick")
+        container.addSubview(optionCommandCheckbox)
+        let optionCommandHelp = SettingsWrappingLabel(
+            wrapping: "A sidebar tab opens as a copy; the tab stays where it is.",
+            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
+        container.addSubview(optionCommandHelp)
+
+        // The idle auto-close.
+        let idleLabel = NSTextField(labelWithString: "Close \(QuickDetour.displayName) windows not used for")
+        idleLabel.font = .systemFont(ofSize: 13)
+        idleLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(idleLabel)
+        idleTimeoutPopUp = NSPopUpButton()
+        idleTimeoutPopUp.translatesAutoresizingMaskIntoConstraints = false
+        idleTimeoutPopUp.setAccessibilityIdentifier("quickDetourIdleTimeout")
+        idleTimeoutPopUp.setAccessibilityLabel("Close \(QuickDetour.displayName) windows not used for")
+        for timeout in QuickDetourIdleTimeout.allCases {
+            idleTimeoutPopUp.addItem(withTitle: timeout.title)
+            idleTimeoutPopUp.lastItem?.representedObject = timeout.rawValue
+        }
+        idleTimeoutPopUp.target = self
+        idleTimeoutPopUp.action = #selector(idleTimeoutChanged)
+        container.addSubview(idleTimeoutPopUp)
+        let idleHelp = SettingsWrappingLabel(
+            wrapping: "They go to the archive, marked auto-closed, and reopen from there. The window in front, one playing sound and Private ones stay open.",
+            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
+        container.addSubview(idleHelp)
+
+        // Links from other apps: routed, so no switch here.
+        let linksCaption = SettingsWrappingLabel(
+            wrapping: "To open links from other apps in \(QuickDetour.displayName), choose \(QuickDetour.displayName) as a route's Open in, or as the Default, above.",
+            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
+        container.addSubview(linksCaption)
+
+        NSLayoutConstraint.activate([
+            optionCommandCheckbox.topAnchor.constraint(equalTo: help.bottomAnchor, constant: SettingsMetrics.rowGap),
+            optionCommandCheckbox.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            optionCommandCheckbox.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+            optionCommandHelp.topAnchor.constraint(equalTo: optionCommandCheckbox.bottomAnchor,
+                                                   constant: SettingsMetrics.controlToHelp),
+            optionCommandHelp.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            optionCommandHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            idleTimeoutPopUp.topAnchor.constraint(equalTo: optionCommandHelp.bottomAnchor, constant: SettingsMetrics.rowGap),
+            idleLabel.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            idleLabel.firstBaselineAnchor.constraint(equalTo: idleTimeoutPopUp.firstBaselineAnchor),
+            idleTimeoutPopUp.leadingAnchor.constraint(equalTo: idleLabel.trailingAnchor,
+                                                      constant: SettingsMetrics.labelToControl),
+            idleTimeoutPopUp.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+            idleHelp.topAnchor.constraint(equalTo: idleTimeoutPopUp.bottomAnchor, constant: SettingsMetrics.controlToHelp),
+            idleHelp.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            idleHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            linksCaption.topAnchor.constraint(equalTo: idleHelp.bottomAnchor, constant: SettingsMetrics.rowGap),
+            linksCaption.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            linksCaption.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+
         let section = NSLayoutGuide()
         container.addLayoutGuide(section)
         NSLayoutConstraint.activate([
             section.topAnchor.constraint(equalTo: title.topAnchor),
-            section.bottomAnchor.constraint(equalTo: help.bottomAnchor),
+            section.bottomAnchor.constraint(equalTo: linksCaption.bottomAnchor),
             section.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             section.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
@@ -304,7 +372,8 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
-        for name in [QuickDetourHotKeySettings.didChangeNotification, QuickDetourHotKey.stateDidChangeNotification] {
+        for name in [QuickDetourHotKeySettings.didChangeNotification, QuickDetourHotKey.stateDidChangeNotification,
+                     QuickDetourSettings.didChangeNotification] {
             hotKeyObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateHotKeySection() }
@@ -332,9 +401,23 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         hotKey.settings.isEnabled = hotKeyCheckbox.state == .on
     }
 
+    @objc private func optionCommandCheckboxChanged() {
+        quickDetourSettings.isOptionCommandClickEnabled = optionCommandCheckbox.state == .on
+    }
+
+    @objc private func idleTimeoutChanged() {
+        guard let raw = idleTimeoutPopUp.selectedItem?.representedObject as? String,
+              let timeout = QuickDetourIdleTimeout(rawValue: raw) else { return }
+        quickDetourSettings.idleTimeout = timeout
+    }
+
     /// The checkbox and recorder from the settings; the warning line from the
     /// recorder's refusal, else the registration's state.
     private func updateHotKeySection() {
+        optionCommandCheckbox.state = quickDetourSettings.isOptionCommandClickEnabled ? .on : .off
+        if let index = QuickDetourIdleTimeout.allCases.firstIndex(of: quickDetourSettings.idleTimeout) {
+            idleTimeoutPopUp.selectItem(at: index)
+        }
         let settings = hotKey.settings
         hotKeyCheckbox.state = settings.isEnabled ? .on : .off
         if !hotKeyRecorder.isRecording {

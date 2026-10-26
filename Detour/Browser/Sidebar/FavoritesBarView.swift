@@ -9,10 +9,14 @@ protocol FavoritesBarDelegate: AnyObject {
     func favoritesBar(_ bar: FavoritesBarView, didRemoveFavoriteAt index: Int)
     /// The pointer entered or left `tile` (the sidebar's hover card, TASK-190).
     func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool)
+    /// Opt-Cmd-click on a tile (TASK-193.5): true when a Quick Detour copy
+    /// was opened, so the click does nothing else.
+    func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool
 }
 
 extension FavoritesBarDelegate {
     func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool) {}
+    func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool { false }
 }
 
 class FavoritesBarView: NSView, NSDraggingSource {
@@ -802,6 +806,12 @@ class FavoriteTileView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if QuickDetour.isQuickDetourClick(event.modifierFlags,
+                                          enabled: QuickDetourSettings.shared.isOptionCommandClickEnabled),
+           let bar = superview as? FavoritesBarView,
+           bar.delegate?.favoritesBar(bar, didQuickDetourClickFavoriteAt: index) == true {
+            return
+        }
         if event.clickCount == 2 {
             if let bar = superview as? FavoritesBarView {
                 bar.delegate?.favoritesBar(bar, didDoubleClickFavoriteAt: index)

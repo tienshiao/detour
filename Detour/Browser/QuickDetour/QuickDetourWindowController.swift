@@ -49,7 +49,68 @@ final class QuickDetourWindowController: NSWindowController {
         return controller
     }
 
+    /// Reopens archived Quick Detour `recordID` (the Archived Tabs page,
+    /// TASK-193.5): a new window on the record's profile, its page rebuilt
+    /// from the record (its address, title and favicon, and its back/forward
+    /// list), the record consumed. Nil, changing nothing, for a record that
+    /// is not a restorable Quick Detour.
+    @discardableResult
+    static func restore(recordID: Int64, sourceSpace: Space? = nil, store: TabStore = .shared) -> QuickDetourWindowController? {
+        guard let page = store.takeQuickDetourArchiveRecord(id: recordID) else { return nil }
+        let space = sourceSpace.flatMap { $0.profileID == page.profile.id ? $0 : nil }
+        let controller = QuickDetourWindowController(profile: page.profile, sourceSpace: space, restoring: page)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.restoreWebContentFocus()
+        return controller
+    }
+
     // MARK: - State
+
+    /// What closing the window does with its page (TASK-193.5): archived as
+    /// closed unless the idle monitor closes it (auto-closed) or a test says
+    /// otherwise.
+    var closeDisposition: QuickDetourCloseDisposition = .archive(autoClosed: false)
+
+    /// When the window was last used (`QuickDetourIdleState.lastUsedAt`), on
+    /// the idle monitor's clock.
+    private(set) var lastUsedAt: Date = QuickDetourIdleMonitor.shared.now()
+
+    /// Notes a use now: the idle time starts again. What counts as use
+    /// (TASK-193.5): opening (or restoring) the window, the window becoming
+    /// or ceasing to be key, a key press, click or scroll in it, and its page
+    /// starting or stopping sound. Navigation alone does not — a page can
+    /// navigate itself; one the user starts follows input in the window.
+    func noteUse() {
+        lastUsedAt = QuickDetourIdleMonitor.shared.now()
+    }
+
+    /// What the idle rule needs to know about this window now.
+    var idleState: QuickDetourIdleState {
+        QuickDetourIdleState(lastUsedAt: lastUsedAt, isFrontmost: isFrontmost,
+                             isAudible: tab?.isAudible == true, isPrivate: profile.isIncognito,
+                             hasSheet: window?.attachedSheet != nil)
+    }
+
+    /// The key window, or the front one of Detour's own browser and Quick
+    /// Detour windows (Detour may be in the background with it on screen).
+    private var isFrontmost: Bool {
+        guard let window, window.isVisible, !window.isMiniaturized else { return false }
+        if window.isKeyWindow { return true }
+        let front = NSApp.orderedWindows.first {
+            $0.isVisible && !$0.isMiniaturized
+                && ($0.windowController is BrowserWindowController || $0.windowController is QuickDetourWindowController)
+        }
+        return front === window
+    }
+
+    /// The idle monitor's close: archived as auto-closed. Never while a sheet
+    /// is up, whose completion WebKit is waiting on (the rule says so too).
+    func autoClose() {
+        guard window?.attachedSheet == nil else { return }
+        closeDisposition = .archive(autoClosed: true)
+        window?.close()
+    }
 
     /// The window's page. A new one, with a new id, when the profile pill
     /// switches profile (TASK-193.4).
@@ -90,13 +151,16 @@ final class QuickDetourWindowController: NSWindowController {
     /// - Parameters:
     ///   - configuration: a window a Quick Detour page opened
     ///     (`createWebViewWith`) — the page keeps its opener.
-    init(profile: Profile, sourceSpace: Space?, openedWith configuration: WKWebViewConfiguration? = nil) {
+    ///   - restoring: a closed Quick Detour from the archive (TASK-193.5): its
+    ///     page comes back with its address, title, favicon and back/forward list.
+    init(profile: Profile, sourceSpace: Space?, openedWith configuration: WKWebViewConfiguration? = nil,
+         restoring archived: QuickDetourArchivedPage? = nil) {
         self.tabID = UUID()
         self.profile = profile
         self.paletteHistorySpaceID = QuickDetour.paletteHistorySpaceID(profile: profile, sourceSpace: sourceSpace)
         self.sourceSpaceID = sourceSpace?.id
 
-        let window = NSWindow(
+        let window = QuickDetourWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultContentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -112,6 +176,8 @@ final class QuickDetourWindowController: NSWindowController {
         }
         super.init(window: window)
         window.delegate = self
+        // A key press, click or scroll in the window is a use (TASK-193.5).
+        window.onUserInput = { [weak self] in self?.noteUse() }
         Self.cascade(window)
 
         // An empty compact toolbar centres the traffic lights in a bar as tall
@@ -134,7 +200,7 @@ final class QuickDetourWindowController: NSWindowController {
         for context in profile.extensionContexts.values {
             context.didOpenWindow(self)
         }
-        let tab = store.openQuickDetourTab(profile: profile, id: tabID, openedWith: configuration)
+        let tab = store.openQuickDetourTab(profile: profile, id: tabID, openedWith: configuration, restoring: archived)
         host(tab)
         bind(tab)
         announceExtensionActiveTabIfChanged()
@@ -249,6 +315,14 @@ final class QuickDetourWindowController: NSWindowController {
 
     /// Follows the page into the title bar and the window title.
     private func bind(_ tab: BrowserTab) {
+        // Sound starting or stopping is a use; while it plays the window is in
+        // use (`idleState.isAudible`).
+        tab.$isPlayingAudio
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.noteUse() }
+            .store(in: &tabSubscriptions)
         tab.$url
             .receive(on: RunLoop.main)
             .sink { [weak self] url in
@@ -595,6 +669,8 @@ final class QuickDetourWindowController: NSWindowController {
                 ?? store.addTab(in: space, url: url)
         })
         guard receiving != nil else { return }
+        // The page lives on in the space: not a close for the archive.
+        closeDisposition = .discard
         window?.close()
     }
 
@@ -837,7 +913,7 @@ final class QuickDetourWindowController: NSWindowController {
         letGo(of: tab)
         store.removeObserver(self)
         let closing = tab
-        if let closing { store.closeQuickDetourTab(closing) }
+        if let closing { store.closeQuickDetourTab(closing, disposition: closeDisposition) }
         // The window is gone for the contexts that knew it (WebKit is told
         // about a window only by focus or a context load; telling it of the
         // close is harmless for one it never heard of).
@@ -870,6 +946,7 @@ extension QuickDetourWindowController: NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        noteUse()
         announceExtensionActiveTabIfChanged()
         // Another space may have been used since (the most recent one).
         updateOpenIn()
@@ -879,6 +956,8 @@ extension QuickDetourWindowController: NSWindowDelegate {
     /// key (`validateMenuItem`); once it is not, the item is disabled and
     /// goes back to its general title.
     func windowDidResignKey(_ notification: Notification) {
+        // Key until now: in use until now.
+        noteUse()
         Self.resetOpenInMenuItemTitle()
     }
 
@@ -996,5 +1075,22 @@ extension QuickDetourWindowController: NSMenuItemValidation {
             return tab?.url != nil
         default: return true
         }
+    }
+}
+
+/// The Quick Detour window: tells its controller of the user's input, which
+/// the idle auto-close counts as use (TASK-193.5). A scroll reaches a window
+/// that is not key, so it counts there too.
+final class QuickDetourWindow: NSWindow {
+    var onUserInput: (() -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .magnify, .swipe:
+            onUserInput?()
+        default:
+            break
+        }
+        super.sendEvent(event)
     }
 }

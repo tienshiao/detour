@@ -40,6 +40,9 @@ struct InPageLinkRequest: Equatable {
     /// The page the link is on (the main frame's document).
     var pageURL: URL?
     var targetURL: URL
+    /// Settings > Links: Opt-Cmd-click opens a Quick Detour (TASK-193.5).
+    /// Off, Opt-Cmd is a Cmd+click as before.
+    var quickDetourClickEnabled: Bool = true
 }
 
 /// How a routable link would open if no route moved it.
@@ -67,6 +70,8 @@ enum LinkRoutingExclusion: String, Equatable {
     case notLinkActivation
     /// A link activation with no user gesture: a script's `a.click()`.
     case noUserGesture
+    /// Opt-Cmd-click: a Quick Detour, which the user chose (TASK-193.5).
+    case quickDetourClick
     case shiftClickPeek
     case optionClickSplit
     case popupWindow
@@ -92,13 +97,15 @@ enum LinkRoutingEligibility: Equatable {
 /// - A plain click that would navigate in place routes only to another host
 ///   (a leading `www.` is the same host): the tab stays where it is.
 /// - Never: redirects, script navigations and clicks without a user gesture,
-///   same-host clicks, a popup `window.open` (it keeps its opener), Shift
-///   (Peek) and Option (split) clicks, anything in a Peek, subframe
-///   navigations, non-web URLs, the link menu's own actions.
+///   same-host clicks, a popup `window.open` (it keeps its opener), Opt-Cmd
+///   (Quick Detour, TASK-193.5), Shift (Peek) and Option (split) clicks,
+///   anything in a Peek, subframe navigations, non-web URLs, the link menu's
+///   own actions.
 ///
-/// The modifier order is the navigation policy's: Cmd, then Shift, then
-/// Option. Downloads and non-web schemes are decided by the policy before it
-/// asks, and a non-web target is refused here as well.
+/// The modifier order is the navigation policy's (`inPageLinkClickBranch`):
+/// Opt-Cmd, then Cmd, then Shift, then Option. Downloads and non-web schemes
+/// are decided by the policy before it asks, and a non-web target is refused
+/// here as well.
 func linkRoutingEligibility(_ request: InPageLinkRequest) -> LinkRoutingEligibility {
     guard isWebURL(request.targetURL) else { return .notRouted(.notWebURL) }
     guard !request.isInPeek else { return .notRouted(.inPeek) }
@@ -117,14 +124,50 @@ func linkRoutingEligibility(_ request: InPageLinkRequest) -> LinkRoutingEligibil
         if isRedirect { return .notRouted(.redirect) }
         guard isLinkActivation else { return .notRouted(.notLinkActivation) }
         guard request.isUserGesture else { return .notRouted(.noUserGesture) }
-        if request.modifiers.contains(.command) { return .routable(.commandClick) }
-        if request.modifiers.contains(.shift) { return .notRouted(.shiftClickPeek) }
-        if request.modifiers.contains(.option) { return .notRouted(.optionClickSplit) }
+        switch inPageLinkClickBranch(request.modifiers, target: request.targetURL,
+                                     quickDetourClickEnabled: request.quickDetourClickEnabled) {
+        case .quickDetour: return .notRouted(.quickDetourClick)
+        case .backgroundTab: return .routable(.commandClick)
+        case .peek: return .notRouted(.shiftClickPeek)
+        case .split: return .notRouted(.optionClickSplit)
+        case .none: break
+        }
         if opensNewWindow { return .routable(.blankTarget) }
         guard targetsMainFrame else { return .notRouted(.subframe) }
         if isSameLinkRoutingHost(request.pageURL?.host, request.targetURL.host) { return .notRouted(.sameHost) }
         return .routable(.crossHostClick)
     }
+}
+
+/// What a link activation's modifiers make it, in the order the browser
+/// window's navigation policy asks them (wiki/tabs/tab-lifecycle.md).
+enum InPageLinkClickBranch: Equatable {
+    /// Opt-Cmd, to a web page, with the setting on: a Quick Detour on the
+    /// page's profile (TASK-193.5).
+    case quickDetour
+    /// Cmd (Opt-Cmd with the setting off or to a non-web URL, Cmd+Shift): a
+    /// background tab, or where a route sends it.
+    case backgroundTab
+    /// Shift: a Peek.
+    case peek
+    /// Option: a split.
+    case split
+    /// No modifier that picks a branch.
+    case none
+}
+
+/// The modifier precedence of a link activation (TASK-193.5): Opt-Cmd
+/// (Quick Detour), then Cmd (background tab), Shift (Peek), Option (split).
+/// Opt-Cmd is the one combination that no longer means Cmd; Cmd still wins
+/// over Shift, and over Option when Quick Detour is off or the target is not
+/// a web page (an `http`/`https` URL).
+func inPageLinkClickBranch(_ modifiers: LinkClickModifiers, target: URL,
+                           quickDetourClickEnabled: Bool) -> InPageLinkClickBranch {
+    if quickDetourClickEnabled, modifiers.isSuperset(of: [.command, .option]), isWebURL(target) { return .quickDetour }
+    if modifiers.contains(.command) { return .backgroundTab }
+    if modifiers.contains(.shift) { return .peek }
+    if modifiers.contains(.option) { return .split }
+    return .none
 }
 
 /// Whether two hosts are the same for the cross-host click rule: without

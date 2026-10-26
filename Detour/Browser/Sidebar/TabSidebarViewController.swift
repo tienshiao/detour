@@ -79,9 +79,13 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController)
     /// A control on the now-playing bar for the tab `tabID` (TASK-192).
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNowPlaying action: NowPlayingBarAction, tabID: UUID)
+    /// Opt-Cmd-click on a tab, pinned entry or favourite (TASK-193.5): a new
+    /// Quick Detour on `url`, the sidebar's profile; the tab is left alone.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestQuickDetourCopyOf url: URL)
 }
 
 extension TabSidebarDelegate {
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestQuickDetourCopyOf url: URL) {}
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {}
     func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView) {}
     func tabSidebarDidRequestShowExtensionPopup(_ sidebar: TabSidebarViewController, extensionID: String, sourceButton: NSView) {}
@@ -1166,6 +1170,12 @@ class TabSidebarViewController: NSViewController {
             page.tableView.onReleaseKeyboardFocus = { [weak self] in
                 guard let self else { return }
                 self.delegate?.tabSidebarDidReleaseKeyboardFocus(self)
+            }
+            page.tableView.onQuickDetourClick = { [weak self, weak table = page.tableView] row, point in
+                guard let self, let table, table === self.tableView,
+                      let url = self.quickDetourCopyURL(forRow: row, at: point) else { return false }
+                self.delegate?.tabSidebar(self, didRequestQuickDetourCopyOf: url)
+                return true
             }
 
             // Update favorites from profile
@@ -3688,6 +3698,50 @@ extension TabSidebarViewController: FavoritesBarDelegate {
 
     func favoritesBar(_ bar: FavoritesBarView, didClickFavoriteAt index: Int) {
         delegate?.tabSidebar(self, didClickFavoriteAt: index)
+    }
+
+    /// Opt-Cmd-click on a favourite (TASK-193.5): a Quick Detour copy of where
+    /// its tab is, or of its saved address while it is dormant.
+    func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool {
+        let favorites = activeSpaceID.flatMap { TabStore.shared.space(withID: $0) }?.profile?.favorites ?? []
+        guard index >= 0, index < favorites.count else { return false }
+        let favorite = favorites[index]
+        guard let url = QuickDetour.sidebarCopyURL(liveURL: favorite.tab?.url, storedURL: favorite.url) else { return false }
+        delegate?.tabSidebar(self, didRequestQuickDetourCopyOf: url)
+        return true
+    }
+
+    /// The address an Opt-Cmd-click on table row `row` copies into a Quick
+    /// Detour (TASK-193.5): a normal tab's page (a sleeping tab's stored
+    /// address), a pinned entry's page or its saved address while dormant; in
+    /// a split row, the pane clicked. Nil for every other row (a folder, New
+    /// Tab), whose click then does what it always did.
+    func quickDetourCopyURL(forRow row: Int, at point: NSPoint) -> URL? {
+        let rowRect = tableView.rect(ofRow: row)
+        let pane = QuickDetour.splitRowPane(forX: point.x - rowRect.minX, rowWidth: rowRect.width)
+        func pick<T>(_ members: [T]) -> T? { pane == .left ? members.first : members.last }
+        func copy(_ entry: PinnedEntry) -> URL? {
+            QuickDetour.sidebarCopyURL(liveURL: entry.tab?.url, storedURL: entry.pinnedURL)
+        }
+        switch sidebarRow(for: row) {
+        case .normalTab(let index):
+            guard index < tabItems.count else { return nil }
+            switch tabItems[index] {
+            case .single(let tab):
+                return QuickDetour.sidebarCopyURL(liveURL: tab.url, storedURL: nil)
+            case .split(_, let members):
+                return pick(members).flatMap { QuickDetour.sidebarCopyURL(liveURL: $0.url, storedURL: nil) }
+            }
+        case .pinnedItem(let index):
+            guard index < flattenedPinnedItems.count else { return nil }
+            switch flattenedPinnedItems[index] {
+            case .entry(let entry, _): return copy(entry)
+            case .split(_, let entries, _): return pick(entries).flatMap(copy)
+            case .folder: return nil
+            }
+        default:
+            return nil
+        }
     }
 
     func favoritesBar(_ bar: FavoritesBarView, didDoubleClickFavoriteAt index: Int) {

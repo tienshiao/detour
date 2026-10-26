@@ -1,0 +1,575 @@
+TASK-193.5 runtime harness: Quick Detour's other entry points and its
+archive — links from other apps through Air Traffic Control's Quick Detour
+target, Opt-Cmd-click on a page link (any frame, a Private page's) and on a
+sidebar tab (a copy), the Settings switch, closing into the archive and
+restoring from it, a Private Quick Detour not archived, quitting archiving
+the open ones, the idle auto-close. Temporary code, never committed to
+Detour/. Gated on DETOUR_VERIFY_DIR; DETOUR_VERIFY_PHASE 1 (light, fresh
+data dir, ends by quitting through the Quit Detour? alert), 2 (light,
+relaunch on 1's data with DETOUR_QUICK_DETOUR_IDLE_SECONDS=15: the quit
+archive, the idle close), 3 (dark, relaunch: the archive page, the Links
+pane, a restore). DETOUR_VERIFY_FIXTURE is a loopback server on
+127.0.0.1:8935 (python http.server, ThreadingMixIn): links.html (#routed to
+http://localhost:8935/b.html, #same to a.html, an iframe with
+#framelink to c.html), a.html, b.html, c.html, ext.html. Nothing downloads.
+
+Links from other apps are delivered by calling
+AppDelegate.openExternalURLs(_:sourceApp:) directly in the process (no
+LaunchServices, no Apple Event: the production app shares the bundle ID);
+the sender's bundle ID is passed as the argument (TASK-191.2 covers reading
+it from a real Get URL event). Real input: NSApp.postEvent mouse events with
+[.command, .option] (or .command) at a link's centre (from
+getBoundingClientRect, through the web view's coordinates) and at a sidebar
+row; a posted click on the Settings checkbox and on an archive row; Return
+on the Quit alert from a timer; a scroll handed to a background Quick
+Detour window's sendEvent. Before every activation and every posted input
+the harness waits until the HID idle time is at least 12 s, and a step that
+sees human input is aborted and retried. Captures are of Detour's own
+windows only (screencapture -l <window number>).
+
+    SP=<scratch>/task193-5; mkdir -p $SP/out
+    python3 -I $SP/server/fixture.py $SP/fixture &   # port 8935
+    git apply docs/harness/task193-5-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # run.sh <phase> <light|dark> [idleSeconds]: DETOUR_DATA_DIR=DetourVerify1935,
+    # screencapture -x -o -l <n> per "SHOOT <name> <n>", kill only the
+    # launched PID after "done" (phase 1 exits by itself).
+    run.sh 1 light; run.sh 2 light 15; run.sh 3 dark
+    git apply -R docs/harness/task193-5-harness.patch && xcodegen generate
+
+Results (2026-10-26, macOS 26.7, screen unlocked, no human input seen;
+captures out/light-0[1-8]-*, out/dark-09..11-*, logs out/verify-1..3.log):
+- Routes: Contains "from=route" → Quick Detour; Any URL from
+  com.example.chat → Quick Detour; Domain is localhost → 💼 Work.
+  openExternalURLs(ext.html?from=route, no sender) opened a Quick Detour on
+  Default (the front window's profile), Open in naming 🏠 Home, no tab in any
+  space; from=chat with sourceApp com.example.chat → a Quick Detour;
+  from=mail with com.apple.mail → a tab in Home (Most Recent Space, no
+  Quick Detour); with the Default set to Quick Detour an unmatched link → a
+  Quick Detour. The Default pop-up listed Home, Work, Most Recent Space,
+  Private Window, Quick Detour.
+- Opt-Cmd-click on #routed (localhost, which the route sends to Work): a
+  Quick Detour on Default with b.html; Work got no tab, the window stayed on
+  Home. The same link Cmd-clicked: routed to Work (a tab there, the window
+  switched). Opt-Cmd on the iframe's link: a Quick Detour with c.html.
+- Opt-Cmd-click on the sidebar row of the unselected a.html tab: a Quick
+  Detour with a.html (another tab object), the selection unchanged, the tab
+  still in Home on a.html.
+- Settings > Links (out/light-04-links-pane, out/dark-10-links-pane): the
+  Quick Detour section shows the hotkey row, "[✓] Open links and sidebar
+  tabs in Quick Detour with ⌥⌘-click", "Close Quick Detour windows not used
+  for [6 hours]" (Never, 1 hour, 6 hours, 12 hours, 1 day) and the caption
+  pointing to the routes and the Default. A posted click on the checkbox
+  turned the setting off: Opt-Cmd on #same then opened a background tab in
+  Home (Cmd's branch) and no Quick Detour, and Opt-Cmd on the sidebar row
+  opened none; a second click turned it on again.
+- Every Quick Detour closed with performClose was archived as
+  "Quick Detour · <address>" (out/light-05-archive-page). A posted click on
+  the newest entry (a.html) opened a Quick Detour on Default with a.html and
+  its title, the record consumed, the sidebar off the archive page.
+- In a Private window, Opt-Cmd on #same: a Private Quick Detour
+  (non-persistent store, dark). Closing it wrote no record (5 → 5).
+- Quit with the restored Quick Detour, another (c.html?open=at-quit) and a
+  Private one open: the Quit Detour? alert, Return, will-terminate. After
+  the relaunch (phase 2) the archive held a.html and c.html?open=at-quit as
+  "Quick Detour" (closed), not the Private one.
+- Idle (phase 2, override 15 s, check every 3.75 s): A, a Private one and
+  B (front) opened; a scroll handed to A at +8 s moved its lastUsedAt to +8 s;
+  A closed at +23.3 s (15.1 s after the scroll), archived as "Quick Detour ·
+  auto-closed · …"; B (frontmost) and the Private one were still open at
+  +36 s (out/light-08-archive-auto-closed).
+- Phase 3 (dark): the archive page with the auto-closed and closed entries
+  (out/dark-09-archive-page); a posted click on the auto-closed entry
+  reopened it on Default (out/dark-11-restored-dark).
+Not checked: a person's own Opt-Cmd click or keys, a real app sending a
+link (the Get URL path is TASK-191.2's), Opt-Cmd in a Peek and on a pinned
+entry or favourite (unit tests only), a split row's panes (unit tests
+only), sleep and wake (the wake check is only wired), audio keeping one
+open (the rule's unit tests only), several displays.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 915860d..4262300 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1935HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1935Harness.swift b/Detour/App/Task1935Harness.swift
+new file mode 100644
+index 0000000..7982474
+--- /dev/null
++++ b/Detour/App/Task1935Harness.swift
+@@ -0,0 +1,466 @@
++// TEMP TASK-193.5 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import GRDB
++import WebKit
++
++extension AppDelegate {
++    func runTask1935HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let phase = env["DETOUR_VERIFY_PHASE"] ?? "1"
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8935/"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(phase).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        switch ap {
++        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
++        default: NSApp.appearance = NSAppearance(named: .aqua)
++        }
++        let store = TabStore.shared
++        let appDelegate = self
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func quick() -> [QuickDetourWindowController] { QuickDetourWindowController.openControllers }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(1.0)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        var eventNumber = 9000
++        var stepAborted = false
++        func mouse(_ type: NSEvent.EventType, at p: NSPoint, in window: NSWindow, flags: NSEvent.ModifierFlags = []) {
++            if humanIdle() < 1 { log("ABORT human input before a click: not posted"); stepAborted = true; return }
++            eventNumber += 1
++            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: flags,
++                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                          context: nil, eventNumber: eventNumber, clickCount: 1,
++                                          pressure: type == .leftMouseDown ? 1 : 0) {
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func click(at p: NSPoint, in w: NSWindow, flags: NSEvent.ModifierFlags = []) async {
++            mouse(.leftMouseDown, at: p, in: w, flags: flags)
++            await sleep(0.08)
++            mouse(.leftMouseUp, at: p, in: w, flags: flags)
++            await sleep(0.8)
++        }
++        func click(_ view: NSView, flags: NSEvent.ModifierFlags = []) async {
++            guard let w = view.window else { return log("click: no window") }
++            await click(at: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil), in: w, flags: flags)
++        }
++        func scroll(in window: NSWindow) {
++            if humanIdle() < 1 { log("ABORT human input before a scroll: not posted"); stepAborted = true; return }
++            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -40, wheel2: 0, wheel3: 0),
++                  let e = NSEvent(cgEvent: cg) else { return log("no scroll event") }
++            // NSEvent(cgEvent:) has no window: hand it to the window directly,
++            // as AppKit would for a scroll over it.
++            window.sendEvent(e)
++        }
++        func key(_ chars: String, code: UInt16, mods: NSEvent.ModifierFlags = [], window: NSWindow? = nil) {
++            if humanIdle() < 1 { log("ABORT human input while posting a key: not posted"); stepAborted = true; return }
++            guard let w = window ?? NSApp.keyWindow else { return log("key: no key window") }
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods,
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                            context: nil, characters: chars, charactersIgnoringModifiers: chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func step(_ name: String, _ body: () async -> Bool) async -> Bool {
++            for attempt in 1...3 {
++                await awaitIdle()
++                stepAborted = false
++                let ok = await body()
++                if !stepAborted { return ok }
++                log("\(name): aborted (attempt \(attempt)), retrying when idle")
++                await sleep(1)
++            }
++            log("\(name): gave up"); return false
++        }
++        func describe(_ q: QuickDetourWindowController) -> String {
++            "QD profile=\(q.profile.name) private=\(q.profile.isIncognito) url=\(q.tab?.url?.absoluteString ?? "nil") title='\(q.tab?.title ?? "nil")' source=\(q.sourceSpaceID.flatMap { store.space(withID: $0)?.name } ?? "nil") appearance=\(q.window?.appearance?.name.rawValue ?? "app") key=\(q.window?.isKeyWindow ?? false)"
++        }
++        func tabsIn(_ space: Space) -> [String] { space.tabs.map { "\($0.title)<\($0.url?.lastPathComponent ?? "nil")\($0.url?.query.map { "?" + $0 } ?? "")>" } }
++        func archiveSummary() -> [String] {
++            store.archiveEntries().map { e in
++                let kind: String
++                switch e.kind {
++                case .tab: kind = "tab(\(store.space(withID: e.spaceID)?.name ?? "?"))"
++                case .quickDetour(let pid, let auto): kind = "quickDetour(\(store.profile(withID: pid)?.name ?? "?"), autoClosed=\(auto))"
++                }
++                return "#\(e.id) \(kind) '\(e.title)' subtitle='\(archiveEntrySubtitle(e))'"
++            }
++        }
++        func linkPoint(_ webView: WKWebView, _ id: String, inFrame: Bool = false) async -> NSPoint? {
++            let source = inFrame
++                ? "const f = document.getElementById('frame').getBoundingClientRect(); const r = document.getElementById('frame').contentDocument.getElementById(id).getBoundingClientRect(); return [f.left + r.left + r.width / 2, f.top + r.top + r.height / 2];"
++                : "const r = document.getElementById(id).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2];"
++            guard let value = try? await webView.callAsyncJavaScript(source, arguments: ["id": id], contentWorld: .page),
++                  let pair = value as? [NSNumber], pair.count == 2 else { log("no rect for #\(id)"); return nil }
++            let x = CGFloat(truncating: pair[0]), y = CGFloat(truncating: pair[1])
++            return webView.convert(NSPoint(x: x, y: webView.isFlipped ? y : webView.bounds.height - y), to: nil)
++        }
++        /// An Opt-Cmd (or other) click on a link; waits for a new Quick Detour.
++        func clickLink(_ webView: WKWebView, _ id: String, inFrame: Bool = false,
++                       flags: NSEvent.ModifierFlags) async -> QuickDetourWindowController? {
++            guard let window = webView.window else { log("link: no window"); return nil }
++            for attempt in 1...2 {
++                await ensureFront(window)
++                guard let p = await linkPoint(webView, id, inFrame: inFrame) else { return nil }
++                let before = Set(quick().map(ObjectIdentifier.init))
++                await click(at: p, in: window, flags: flags)
++                if stepAborted { return nil }
++                if await waitFor("a Quick Detour from #\(id)", timeout: 4, { quick().contains { !before.contains(ObjectIdentifier($0)) } }) {
++                    return quick().first { !before.contains(ObjectIdentifier($0)) }
++                }
++                log("no Quick Detour from #\(id) (attempt \(attempt))")
++                if flags != [.command, .option] { return nil }
++            }
++            return nil
++        }
++        func findView<T: NSView>(_ type: T.Type, in root: NSView?, where cond: (T) -> Bool = { _ in true }) -> T? {
++            guard let root else { return nil }
++            if let match = root as? T, cond(match) { return match }
++            for sub in root.subviews { if let found = findView(type, in: sub, where: cond) { return found } }
++            return nil
++        }
++        func settingsWindow() -> NSWindow? { SettingsWindowController.shared.window }
++        func settingsControl<T: NSView>(_ type: T.Type, id: String) -> T? {
++            findView(type, in: settingsWindow()?.contentView) { $0.accessibilityIdentifier() == id }
++        }
++        func showLinksPane() async {
++            SettingsWindowController.shared.showLinksPane(highlightingSpaceID: nil)
++            await sleep(1.5)
++        }
++        func logLinksPane(_ tag: String) {
++            let checkbox = settingsControl(NSButton.self, id: "quickDetourOptionCommandClick")
++            let idle = settingsControl(NSPopUpButton.self, id: "quickDetourIdleTimeout")
++            let defaultPop = findView(NSPopUpButton.self, in: settingsWindow()?.contentView) { $0.accessibilityLabel() == "Open other links in" }
++            log("\(tag) links pane: optCmd checkbox='\(checkbox?.title ?? "nil")' state=\(checkbox?.state == .on) idle=\(idle?.itemTitles ?? []) selected='\(idle?.titleOfSelectedItem ?? "nil")' defaultPopUp=\(defaultPop?.itemTitles ?? []) setting optCmd=\(QuickDetourSettings.shared.isOptionCommandClickEnabled) idle=\(QuickDetourSettings.shared.idleTimeout.rawValue)")
++        }
++        func archivePage(_ wc: BrowserWindowController) -> ArchivePageView? { findView(ArchivePageView.self, in: wc.window?.contentView) }
++        func showArchive(_ wc: BrowserWindowController) async {
++            await ensureFront(wc.window)
++            wc.tabSidebar.showArchivePage(animated: false)
++            await sleep(1.5)
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("phase \(phase) \(ap) start: spaces=\(store.spaces.map { "\($0.emoji) \($0.name)@\($0.profile?.name ?? "?")" }) profiles=\(store.profiles.map(\.name)) idleOverride=\(QuickDetourIdleMonitor.overrideSeconds.map { "\($0)" } ?? "none") checkEvery=\(QuickDetour.idleCheckInterval(overrideSeconds: QuickDetourIdleMonitor.overrideSeconds))")
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let defaultProfile = home.profile!
++            let work = store.nonIncognitoSpaces.first { $0.name == "Work" }
++                ?? store.addSpace(name: "Work", emoji: "💼", colorHex: "FF9500", profileID: defaultProfile.id)
++            let routes = store.linkRoutes
++            if routes.routes.isEmpty {
++                _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "from=route"), target: .quickDetour))
++                _ = routes.add(LinkRoute(match: nil, sourceApp: "com.example.chat", target: .quickDetour))
++                _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "localhost"), target: .space(work.id)))
++            }
++            log("routes: \(routes.routes.map { "\($0.match.map { "\($0.kind) \($0.pattern)" } ?? "any URL") app=\($0.sourceApp ?? "any") -> \($0.target)" }) default=\(routes.defaultTarget)")
++            log("archive at launch: \(archiveSummary())")
++
++            if phase == "1" {
++                // Pages: links.html selected in Home, a.html unselected below it.
++                let linksTab = store.addTab(in: home, url: URL(string: base + "links.html")!)
++                let aTab = store.addTab(in: home, url: URL(string: base + "a.html")!)
++                wc.selectTab(id: linksTab.id)
++                _ = await waitFor("links.html") { linksTab.title == "Links Fixture" && !linksTab.isLoading }
++                _ = await waitFor("a.html") { aTab.title == "Page A" && !aTab.isLoading }
++                log("fixture: home=\(tabsIn(home)) work=\(tabsIn(work))")
++
++                _ = await step("S1 links from other apps (openExternalURLs called directly)") {
++                    let before = quick().count
++                    appDelegate.openExternalURLs([URL(string: base + "ext.html?from=route")!], sourceApp: nil)
++                    await sleep(1.5)
++                    log("S1 URL route -> new QDs=\(quick().count - before) \(quick().last.map(describe) ?? "none") home=\(tabsIn(home).count) work=\(tabsIn(work).count)")
++                    appDelegate.openExternalURLs([URL(string: base + "ext.html?from=chat")!], sourceApp: "com.example.chat")
++                    await sleep(1.5)
++                    log("S1 from-app route (com.example.chat) -> new QDs=\(quick().count - before) \(quick().last.map(describe) ?? "none")")
++                    let homeBefore = home.tabs.count
++                    appDelegate.openExternalURLs([URL(string: base + "ext.html?from=mail")!], sourceApp: "com.apple.mail")
++                    await sleep(1.5)
++                    log("S1 another app (com.apple.mail) -> new QDs=\(quick().count - before) homeTabs \(homeBefore)->\(home.tabs.count) (Most Recent Space)")
++                    _ = routes.setDefaultTarget(.quickDetour)
++                    appDelegate.openExternalURLs([URL(string: base + "ext.html?from=default")!], sourceApp: nil)
++                    await sleep(1.5)
++                    log("S1 Default=Quick Detour -> new QDs=\(quick().count - before) \(quick().last.map(describe) ?? "none")")
++                    _ = routes.setDefaultTarget(.mostRecentSpace)
++                    await shoot("01-routed-quick-detour", quick().last?.window)
++                    for q in quick() { q.window?.performClose(nil) }
++                    await sleep(1.0)
++                    if let mail = home.tabs.first(where: { $0.url?.query == "from=mail" }) {
++                        store.closeTab(id: mail.id, in: home, undoable: false, registersUndo: false)
++                    }
++                    log("S1 closed them: open QDs=\(quick().count) archive=\(archiveSummary())")
++                    return true
++                }
++
++                _ = await step("S2 Opt-Cmd-click on a page link") {
++                    guard let webView = linksTab.webView else { log("S2 no web view"); return false }
++                    let workBefore = work.tabs.count
++                    guard let q = await clickLink(webView, "routed", flags: [.command, .option]) else { return false }
++                    log("S2 Opt-Cmd #routed (a route sends localhost to Work): \(describe(q)) workTabs \(workBefore)->\(work.tabs.count) homeSelected=\(wc.selectedTab?.title ?? "nil") activeSpace=\(wc.activeSpace?.name ?? "nil")")
++                    await shoot("02-opt-cmd-quick-detour", q.window)
++                    q.window?.performClose(nil)
++                    await sleep(0.8)
++                    // The same link Cmd-clicked is routed to Work: routing is live.
++                    await ensureFront(wc.window)
++                    if let p = await linkPoint(webView, "routed") {
++                        let qBefore = quick().count
++                        await click(at: p, in: wc.window!, flags: .command)
++                        _ = await waitFor("Cmd-click routed to Work", timeout: 4) { work.tabs.count > workBefore }
++                        log("S2 Cmd #routed: workTabs \(workBefore)->\(work.tabs.count) newQDs=\(quick().count - qBefore) activeSpace=\(wc.activeSpace?.name ?? "nil")")
++                    }
++                    if wc.activeSpaceID != home.id { wc.setActiveSpace(id: home.id, selectTab: false); wc.selectTab(id: linksTab.id) }
++                    await sleep(1.0)
++                    if let qf = await clickLink(webView, "framelink", inFrame: true, flags: [.command, .option]) {
++                        log("S2 Opt-Cmd in an iframe: \(describe(qf))")
++                        qf.window?.performClose(nil)
++                    }
++                    return true
++                }
++
++                _ = await step("S3 Opt-Cmd-click on a sidebar tab") {
++                    await ensureFront(wc.window)
++                    let sidebar = wc.tabSidebar
++                    guard let item = sidebar.tabItems.firstIndex(where: { $0.tabs.contains { $0 === aTab } }) else { log("S3 no row"); return false }
++                    let row = rowForNormalTab(at: item, pinnedItemCount: sidebar.flattenedPinnedItems.count)
++                    let table = sidebar.tableView
++                    let rect = table.rect(ofRow: row)
++                    let p = table.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
++                    let selectedBefore = wc.selectedTabID
++                    let before = Set(quick().map(ObjectIdentifier.init))
++                    await click(at: p, in: wc.window!, flags: [.command, .option])
++                    _ = await waitFor("sidebar copy", timeout: 4) { quick().contains { !before.contains(ObjectIdentifier($0)) } }
++                    let q = quick().first { !before.contains(ObjectIdentifier($0)) }
++                    log("S3 sidebar copy: \(q.map(describe) ?? "NONE") selectedUnchanged=\(wc.selectedTabID == selectedBefore) aTabStill=\(home.tabs.contains { $0 === aTab }) aTabURL=\(aTab.url?.lastPathComponent ?? "nil") copyIsSameTab=\(q?.tab === aTab)")
++                    await shoot("03-sidebar-copy", q?.window)
++                    return true
++                }
++
++                _ = await step("S4 the Settings switches") {
++                    await showLinksPane()
++                    logLinksPane("S4 before")
++                    await shoot("04-links-pane", settingsWindow())
++                    guard let checkbox = settingsControl(NSButton.self, id: "quickDetourOptionCommandClick") else { log("S4 no checkbox"); return false }
++                    await ensureFront(settingsWindow())
++                    await click(checkbox)
++                    logLinksPane("S4 after one click")
++                    settingsWindow()?.close()
++                    await sleep(0.5)
++                    guard let webView = linksTab.webView else { return false }
++                    let homeBefore = home.tabs.count
++                    let qBefore = quick().count
++                    await ensureFront(wc.window)
++                    if let p = await linkPoint(webView, "same") {
++                        await click(at: p, in: wc.window!, flags: [.command, .option])
++                        await sleep(2.0)
++                    }
++                    log("S4 off: Opt-Cmd #same -> newQDs=\(quick().count - qBefore) homeTabs \(homeBefore)->\(home.tabs.count) (a background tab, as Cmd)")
++                    let sidebar = wc.tabSidebar
++                    if let item = sidebar.tabItems.firstIndex(where: { $0.tabs.contains { $0 === aTab } }) {
++                        let row = rowForNormalTab(at: item, pinnedItemCount: sidebar.flattenedPinnedItems.count)
++                        let rect = sidebar.tableView.rect(ofRow: row)
++                        await click(at: sidebar.tableView.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil), in: wc.window!,
++                                    flags: [.command, .option])
++                        await sleep(1.5)
++                    }
++                    log("S4 off: Opt-Cmd sidebar -> newQDs=\(quick().count - qBefore)")
++                    if let extra = home.tabs.last, extra.url?.lastPathComponent == "a.html", extra !== aTab {
++                        store.closeTab(id: extra.id, in: home, undoable: false, registersUndo: false)
++                    }
++                    await showLinksPane()
++                    if let checkbox = settingsControl(NSButton.self, id: "quickDetourOptionCommandClick") {
++                        await ensureFront(settingsWindow())
++                        await click(checkbox)
++                    }
++                    logLinksPane("S4 back on")
++                    settingsWindow()?.close()
++                    wc.selectTab(id: linksTab.id)
++                    return true
++                }
++
++                _ = await step("S5 closing archives; restoring reopens") {
++                    guard let copy = quick().last else { log("S5 no Quick Detour"); return false }
++                    copy.window?.performClose(nil)
++                    await sleep(1.0)
++                    log("S5 closed the copy: archive=\(archiveSummary())")
++                    await showArchive(wc)
++                    guard let page = archivePage(wc) else { log("S5 no archive page"); return false }
++                    log("S5 archive page rows=\(page.rows.count) entries=\(page.entries.count)")
++                    await shoot("05-archive-page", wc.window)
++                    guard let target = page.entries.first(where: { if case .quickDetour = $0.kind { return true }; return false }),
++                          let row = page.rows.firstIndex(where: { if case .entry(let e) = $0 { return e.id == target.id }; return false })
++                    else { log("S5 no Quick Detour entry"); return false }
++                    let rect = page.tableView.rect(ofRow: row)
++                    let before = Set(quick().map(ObjectIdentifier.init))
++                    await ensureFront(wc.window)
++                    await click(at: page.tableView.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil), in: wc.window!)
++                    _ = await waitFor("restored Quick Detour", timeout: 5) { quick().contains { !before.contains(ObjectIdentifier($0)) } }
++                    let q = quick().first { !before.contains(ObjectIdentifier($0)) }
++                    log("S5 restored #\(target.id) '\(target.title)': \(q.map(describe) ?? "NONE") recordGone=\(AppDatabase.shared.closedTabSummary(id: target.id) == nil) archivePageShowing=\(wc.tabSidebar.isShowingArchivePage)")
++                    if let q { _ = await waitFor("restored page loads") { q.tab?.isLoading == false }; log("S5 restored loaded: \(describe(q)) canGoBack=\(q.tab?.canGoBack ?? false)") }
++                    await shoot("06-restored", q?.window)
++                    return true
++                }
++
++                var privateWC: BrowserWindowController?
++                _ = await step("S6 a Private page's Opt-Cmd-click; a Private Quick Detour is not archived") {
++                    appDelegate.createNewIncognitoWindow()
++                    await sleep(1.5)
++                    guard let pwc = NSApp.browserWindowControllersFrontToBack.first(where: \.isIncognito), let space = pwc.activeSpace else { log("S6 no Private window"); return false }
++                    privateWC = pwc
++                    let tab = space.tabs.first ?? store.addTab(in: space)
++                    tab.load(URL(string: base + "links.html")!)
++                    pwc.selectTab(id: tab.id)
++                    _ = await waitFor("links.html in Private") { tab.title == "Links Fixture" && !tab.isLoading }
++                    guard let webView = tab.webView, let q = await clickLink(webView, "same", flags: [.command, .option]) else { return false }
++                    _ = await waitFor("Private QD load") { q.tab?.isLoading == false }
++                    log("S6 Private Opt-Cmd: \(describe(q)) persistentStore=\(q.tab?.webView?.configuration.websiteDataStore.isPersistent ?? true)")
++                    await shoot("07-private-quick-detour", q.window)
++                    let recordsBefore = AppDatabase.shared.closedTabSummaries().count
++                    q.window?.performClose(nil)
++                    await sleep(1.0)
++                    log("S6 Private QD closed: records \(recordsBefore)->\(AppDatabase.shared.closedTabSummaries().count) archive=\(archiveSummary().count)")
++                    return true
++                }
++
++                _ = await step("S7 quit archives the open Quick Detours") {
++                    // Open: the restored one, one more normal, one Private.
++                    QuickDetourWindowController.open(profile: defaultProfile, sourceSpace: home, url: URL(string: base + "c.html?open=at-quit")!)
++                    let privateProfile = store.ensureIncognitoProfile()
++                    QuickDetourWindowController.open(profile: privateProfile, sourceSpace: nil, url: URL(string: base + "c.html?private=at-quit")!)
++                    await sleep(2.0)
++                    log("S7 open before quit: \(quick().map(describe)) records=\(AppDatabase.shared.closedTabSummaries().count)")
++                    _ = privateWC
++                    // Quit Detour?: Return on the alert, posted from a timer while it runs modally.
++                    let t = Timer(timeInterval: 2.0, repeats: false) { _ in
++                        log("S7 quit alert modal=\(NSApp.modalWindow != nil)")
++                        key("\r", code: 36, window: NSApp.modalWindow)
++                    }
++                    RunLoop.main.add(t, forMode: .common)
++                    NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
++                        log("S7 will terminate")
++                    }
++                    log("S7 terminating")
++                    await ensureFront(wc.window)
++                    NSApp.terminate(nil)
++                    return true
++                }
++                return
++            }
++
++            if phase == "2" {
++                // Relaunch on phase 1's data, the idle override set.
++                _ = await step("S8 the quit archive after the relaunch") {
++                    let quitOnes = store.archiveEntries().filter { $0.url?.contains("at-quit") == true }
++                    log("S8 at-quit entries: \(quitOnes.map { "\($0.url ?? "") \($0.kind)" }) open QDs=\(quick().count)")
++                    return true
++                }
++                _ = await step("S9 idle auto-close") {
++                    await ensureFront(wc.window)
++                    let a = QuickDetourWindowController.open(profile: defaultProfile, sourceSpace: home, url: URL(string: base + "b.html?idle=A")!)
++                    let p = QuickDetourWindowController.open(profile: store.ensureIncognitoProfile(), sourceSpace: nil, url: URL(string: base + "b.html?idle=private")!)
++                    let b = QuickDetourWindowController.open(profile: defaultProfile, sourceSpace: home, url: URL(string: base + "b.html?idle=B-front")!)
++                    let t0 = Date()
++                    weak var weakA = a
++                    log("S9 opened A, Private, B (front): A.frontmost=\(a.idleState.isFrontmost) B.frontmost=\(b.idleState.isFrontmost) interval=\(QuickDetourIdleMonitor.shared.interval ?? -1)")
++                    await sleep(8)
++                    if let aw = weakA?.window { scroll(in: aw) }
++                    let scrolledAt = Date()
++                    log("S9 scrolled in A at +\(Int(scrolledAt.timeIntervalSince(t0))) s: A.lastUsedAt=+\(Int((weakA?.lastUsedAt ?? t0).timeIntervalSince(t0))) s")
++                    var closedAt: Date?
++                    for _ in 0..<160 {
++                        if closedAt == nil, !quick().contains(where: { $0 === weakA }) { closedAt = Date() }
++                        if closedAt != nil { break }
++                        await sleep(0.25)
++                    }
++                    log("S9 A closed at +\(closedAt.map { String(format: "%.1f", $0.timeIntervalSince(t0)) } ?? "never") s (+\(closedAt.map { String(format: "%.1f", $0.timeIntervalSince(scrolledAt)) } ?? "-") s after the scroll)")
++                    await sleep(12)
++                    log("S9 after +\(Int(Date().timeIntervalSince(t0))) s: B open=\(quick().contains { $0 === b }) (front) Private open=\(quick().contains { $0 === p })")
++                    log("S9 archive: \(archiveSummary().filter { $0.contains("idle=") })")
++                    for q in quick() { q.closeDisposition = .discard; q.window?.close() }
++                    await showArchive(wc)
++                    await shoot("08-archive-auto-closed", wc.window)
++                    return true
++                }
++                log("done")
++                return
++            }
++
++            if phase == "3" {
++                // Dark, relaunch: the archive page's entries and the Links pane.
++                _ = await step("S10 dark captures and a restore") {
++                    await showArchive(wc)
++                    guard let page = archivePage(wc) else { log("S10 no archive page"); return false }
++                    log("S10 archive entries: \(archiveSummary())")
++                    await shoot("09-archive-page", wc.window)
++                    await showLinksPane()
++                    logLinksPane("S10")
++                    await shoot("10-links-pane", settingsWindow())
++                    settingsWindow()?.close()
++                    await showArchive(wc)
++                    guard let target = page.entries.first(where: { if case .quickDetour(_, true) = $0.kind { return true }; return false }),
++                          let row = page.rows.firstIndex(where: { if case .entry(let e) = $0 { return e.id == target.id }; return false })
++                    else { log("S10 no auto-closed entry"); return true }
++                    let rect = page.tableView.rect(ofRow: row)
++                    let before = Set(quick().map(ObjectIdentifier.init))
++                    await ensureFront(wc.window)
++                    await click(at: page.tableView.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil), in: wc.window!)
++                    _ = await waitFor("restored", timeout: 5) { quick().contains { !before.contains(ObjectIdentifier($0)) } }
++                    let q = quick().first { !before.contains(ObjectIdentifier($0)) }
++                    log("S10 restored auto-closed #\(target.id): \(q.map(describe) ?? "NONE")")
++                    if let q { _ = await waitFor("load") { q.tab?.isLoading == false } }
++                    await shoot("11-restored-dark", q?.window)
++                    for q in quick() { q.closeDisposition = .discard; q.window?.close() }
++                    return true
++                }
++                log("done")
++            }
++        }
++    }
++}
++#endif

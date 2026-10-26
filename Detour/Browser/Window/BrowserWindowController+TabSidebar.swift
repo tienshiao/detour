@@ -604,6 +604,16 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.reorderFavorite(from: sourceIndex, to: destinationIndex, profileID: profile.id)
     }
 
+    /// Opt-Cmd-click on a sidebar tab (TASK-193.5): a copy of it in a new
+    /// Quick Detour on this window's space's profile (the Private profile in a
+    /// Private window); the tab itself is not selected or changed. An internal
+    /// page the tab shows (the History page) opens as one.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestQuickDetourCopyOf url: URL) {
+        guard let space = activeSpace, let profile = space.profile else { return }
+        QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: url,
+                                         typed: InternalPage(url: url) != nil)
+    }
+
     func tabSidebar(_ sidebar: TabSidebarViewController, didClickFavoriteAt index: Int) {
         guard let fav = activeFavorite(at: index) else { return }
         selectTab(id: fav.tab!.id)

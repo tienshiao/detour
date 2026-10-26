@@ -29,7 +29,22 @@ extension BrowserWindowController {
                                  isUserGesture: Self.isUserGesture(navigationAction),
                                  isInPeek: isPeekWebView(webView),
                                  pageURL: webView.url,
-                                 targetURL: url)
+                                 targetURL: url,
+                                 quickDetourClickEnabled: QuickDetourSettings.shared.isOptionCommandClickEnabled)
+    }
+
+    /// Opt-Cmd-click on a link (TASK-193.5): a new Quick Detour on the profile
+    /// of the page that fired it (a Peek's and a favourite's tab are the
+    /// window's space's), one main-queue turn later so the policy decision
+    /// returns first. Its Open in names this window's space when it is the
+    /// same profile's.
+    func openQuickDetour(_ url: URL, firing webView: WKWebView) {
+        guard let profile = tab(owning: webView)?.owningProfile ?? activeSpace?.profile else { return }
+        let sourceSpace = activeSpace
+        log.info("Opt-Cmd-click: Quick Detour")
+        DispatchQueue.main.async {
+            QuickDetourWindowController.open(profile: profile, sourceSpace: sourceSpace, url: url)
+        }
     }
 
     /// Where a link leaving a page in this window is routed; nil when it is
@@ -99,7 +114,7 @@ extension BrowserWindowController {
         return store.tab(hostingPeek: tab) != nil
     }
 
-    private static func linkClickModifiers(_ flags: NSEvent.ModifierFlags) -> LinkClickModifiers {
+    static func linkClickModifiers(_ flags: NSEvent.ModifierFlags) -> LinkClickModifiers {
         var modifiers: LinkClickModifiers = []
         if flags.contains(.command) { modifiers.insert(.command) }
         if flags.contains(.shift) { modifiers.insert(.shift) }
@@ -114,7 +129,7 @@ extension BrowserWindowController {
     /// the app runs with `evaluateJavaScript`. Without the SPI every action
     /// counts as a gesture, so routing keeps working and the other exclusions
     /// still hold.
-    private static func isUserGesture(_ navigationAction: WKNavigationAction) -> Bool {
+    static func isUserGesture(_ navigationAction: WKNavigationAction) -> Bool {
         let key = "_isUserInitiated"
         guard navigationAction.responds(to: NSSelectorFromString(key)) else { return true }
         return (navigationAction.value(forKey: key) as? Bool) ?? true

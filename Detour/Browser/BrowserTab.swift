@@ -592,6 +592,16 @@ class BrowserTab: NSObject {
 
     convenience init(id: UUID, title: String, archivedInteractionState: Data?, fallbackURL: URL?, faviconURL: URL? = nil, configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
         self.init(id: id, configuration: configuration)
+        restoreArchivedPage(title: title, interactionState: archivedInteractionState, fallbackURL: fallbackURL,
+                            faviconURL: faviconURL)
+    }
+
+    /// Brings a closed page back into this tab's new web view: its title and
+    /// favicon until the page reports its own, and its back/forward list, else
+    /// its address. A reopened closed tab, and a Quick Detour restored from
+    /// the archive (TASK-193.5), whose tab knows its profile only once built.
+    func restoreArchivedPage(title: String, interactionState archivedInteractionState: Data?, fallbackURL: URL?,
+                             faviconURL: URL?) {
         self.title = title
         if let faviconURL {
             self.faviconURL = faviconURL

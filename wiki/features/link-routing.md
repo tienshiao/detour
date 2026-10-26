@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Link routing (Air Traffic Control)
-description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept,, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
+description: "Air Traffic Control's model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept,, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: model
@@ -109,6 +109,9 @@ sources:
   - id: harness-3
     resource: ../../docs/harness/task191-3-harness.patch
     title: TASK-191.3 runtime harness
+  - id: task-193-5
+    resource: backlog:TASK-193.5
+    title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
 ---
 
 Air Traffic Control, modelled on Arc's, sends a link to a chosen space by
@@ -151,8 +154,8 @@ A link inside Detour is decided in two steps. **Whether** it is routed at
 all is TASK-191.4's pure click rule, `linkRoutingEligibility` (and its
 typed-URL rule, `typedURLIsRoutable`: a URL, not a search, from the new-tab
 palette; [below](#typed-urls-and-links-clicked-in-a-page)): same-host plain clicks, redirects,
-script navigations, popups that keep their opener, Option- and Shift-clicks
-and links in a Peek never get past it. **Where** a routed link goes is
+script navigations, popups that keep their opener, Opt-Cmd- (Quick Detour,
+TASK-193.5), Option- and Shift-clicks and links in a Peek never get past it. **Where** a routed link goes is
 `resolveLinkRoute`, which has no exclusions of its own: every `.typed` or
 `.clicked` origin it is handed gets the routes and then the Default. The
 contract is written where a caller meets it: the doc comments on
@@ -172,7 +175,7 @@ on the case states the precondition.
 | From a Private window, routes to a space or to Most Recent Space (and Quick Detour) are skipped. | Nothing routes out of Private. |
 | A route to the space the link is already in is `.stay`, and stops the search. | First match wins; it already is where the route sends it. |
 | `.mostRecentSpace` is `.mostRecentSpace` for an external link and `.stay` for a typed URL or click. | A typed URL or click is in the key window, whose space is the most recent one. |
-| `.quarantine` and `.quickDetour` apply to external links only; elsewhere they are skipped. | Quarantine is defined for links from other apps (TASK-194). Quick Detour is held to the same until TASK-193.5 decides; widening it is one line. |
+| `.quarantine` and `.quickDetour` apply to external links only; elsewhere they are skipped. | Quarantine is defined for links from other apps (TASK-194). Quick Detour likewise, decided in TASK-193.5 (2026-10-26): links from other apps reach Quick Detour through this target; inside Detour, Opt-Cmd-click opens one. Widening it is one line. |
 | A route to a space not in the context is skipped. | Deletion is blocked (below), but a space removed some other way must not route into nothing. A Private window's space is never in the context, so no route can name one. |
 | No route: the **Default applies from every origin**, with the same rules as a route's target (below). | User decision 2026-10-25. |
 | Default = a normal space: a typed URL or click from another normal space opens there; from that space it is `.stay`. | As a route to that space. |
@@ -301,7 +304,8 @@ the placement out.[^task-191-2]
 | A space no window shows | `.switchWindow`: the most recent **normal** window switches to it (`setActiveSpace(selectTab: false)`), then as above. No normal window: `.openInNewWindow` (`createNewWindow(showing:)`). | User decision 2026-10-25 (the 191.2 proposal): as a space switch does, rather than a new window per link. A Private window is never switched to a normal space. |
 | Private window | `.openInPrivateWindow`: a tab in the most recent Private window; none open: `.openInNewPrivateWindow` (`createNewWindowWithURL(_:incognito: true)`). | Decided 2026-10-24. |
 | Most Recent Space (and the resolver's fallbacks to it) | `.mostRecentSpace`: exactly the code from before routes, a tab in the key browser window's active space, else `createNewWindowWithURL`. | Kept as it was. With Detour in the background there is no key window, so that is a new window every time (seen at runtime); unchanged on purpose. |
-| Quarantine, Quick Detour | `.mostRecentSpace` | TASK-194 / TASK-193.5 do not exist yet and the Links pane hides them. |
+| Quick Detour | `.openInQuickDetour`: `AppDelegate.openLink` opens a new Quick Detour window with the link (no tab in any space), on `QuickDetour.profileForRoutedLink` — the frontmost Detour window's profile, but never Private (a Private window in front is passed over for the next window's; none: the first normal profile) — its Open in naming the most recent normal window's space of that profile. | TASK-193.5. Never Private: only a Private Window (or Quarantine) target takes a link from another app into Private; see [Quick Detour](./quick-detour.md#links-from-other-apps-air-traffic-controls-quick-detour-target). The Most Recent Space fallback TASK-191.2 left for it is gone. |
+| Quarantine | `.mostRecentSpace` | TASK-194 does not exist yet and the Links pane hides it. |
 | `.stay` | `.mostRecentSpace` | The resolver never says stay for an external link; if it did, the link still needs a window. |
 
 A routed placement whose window or space has gone by the time it runs falls
@@ -395,7 +399,8 @@ before routes runs.
 | Where | What is asked | Routed |
 |---|---|---|
 | Command palette submit (`paletteLoadURL`) | `typedURLIsRoutable(url, isSearch:, navigatesInPlace:)` | A URL (per `AddressInputClassifier`, which also covers a history row) submitted in new-tab mode (Cmd+T). A search never; Cmd+L or a click on the address bar never. |
-| `decidePolicy`, Cmd+click branch | the rule, before the background tab | Cmd+click (Cmd+Shift and Cmd+Option too: Cmd wins, as the branch order says) |
+| `decidePolicy`, Opt-Cmd branch (TASK-193.5) | not asked: the branch opens a Quick Detour; the rule says `quickDetourClick` | never |
+| `decidePolicy`, Cmd+click branch | the rule, before the background tab | Cmd+click (Cmd+Shift too; Cmd+Option only with the Quick Detour click off in Settings, or to a non-web URL) |
 | `decidePolicy`, after the download check, before the anchor intercept | the rule for every navigation that gets that far | A `target=_blank` link (nil `targetFrame`, before WebKit would call `createWebViewWith`), and a plain click to another host |
 | `createWebViewWith`, a page's own request (not the link menu's) | the rule, before the anchor intercept | A tab-style `window.open` |
 
@@ -424,6 +429,7 @@ modifiers, the user-gesture signal, whether it is in a Peek, the page URL
 | A server redirect (`_isRedirect`) | `redirect` | Never routed: the user clicked the link, not the redirect target. Checked first because WebKit asks the policy again for the redirect with the click's link activation and gesture. |
 | Not a link activation (`.other`, `.formSubmitted`, `.backForward`, `.reload`, `.formResubmitted`) | `notLinkActivation` | Script navigations (`location.href = …`, also inside a click handler), client redirects (`location.replace` on load, meta refresh), forms, history, app loads. |
 | A link activation without a user gesture | `noUserGesture` | A page's own `a.click()` from a timer or a load script. |
+| Opt-Cmd (Shift or not), to a web URL, with Settings' switch on (`quickDetourClickEnabled`) | `quickDetourClick` | TASK-193.5: a Quick Detour, which the user chose. |
 | Cmd | **routed** (`commandClick`) | A new-tab open, whatever the host or frame. |
 | Shift | `shiftClickPeek` | Shift-click Peeks; Shift before Option, as the branches. |
 | Option | `optionClickSplit` | Option-click splits. |
@@ -493,8 +499,9 @@ exactly as a real click.
   decision → open it there; `nil` or `.stay` → the intercept as before (Peek,
   or nothing). On an anchored tab a routed cross-host click or `_blank` link
   or tab-style `window.open` therefore goes to its space instead of a Peek.
-- Policy order is unchanged around it: internal URL, **Cmd+click (route, else
-  background tab)**, Shift (Peek), Option (split), back/forward into an error
+- Policy order is unchanged around it: internal URL, Opt-Cmd (Quick Detour,
+  TASK-193.5), **Cmd+click (route, else background tab)**, Shift (Peek),
+  Option (split), back/forward into an error
   page, non-web scheme, download, **route, then the anchor intercept**, allow
   ([tab lifecycle](../tabs/tab-lifecycle.md)).
 - A redirect is never routed, but the anchor intercept still sees it: WebKit
@@ -634,7 +641,7 @@ section of the Spaces pane), after Arc's sheet in `docs/air-traffic-control/`.
 | Description | What Air Traffic Control does, that routes are tried from the top and the first match decides, and that rows drag. |
 | Routes | A "Routes" title with **New Route** at the trailing edge, then a bordered list: one row per route, three lines (`URL [kind ▾] [pattern] ⊖`, `From app [app ▾]`, `↳ Open in [target ▾]`), a drag handle at the left, and, when the row has a problem, a fourth line: an orange triangle and the whole warning, wrapping, under Open in. No routes: one centred line in the box. |
 | Default | "Open other links in [target ▾]" and a caption: it applies to every link no route matches (from other apps, typed in a new tab, clicked to another site), and Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. |
-| Quick Detour | TASK-193.2: "[✓] Open Quick Detour from any app with [shortcut]", the global hotkey's switch and recorder, a warning line and help text. Described on [Quick Detour](./quick-detour.md#the-settings-control); TASK-193.5 adds a switch per entry point here. |
+| Quick Detour | TASK-193.2: "[✓] Open Quick Detour from any app with [shortcut]", the global hotkey's switch and recorder, a warning line and help text; TASK-193.5: the Opt-Cmd-click switch, the idle auto-close pop-up, and a caption saying links from other apps go by Open in above (no switch). Described on [Quick Detour](./quick-detour.md#the-settings-section). |
 
 - **Match kind pop-up**: Domain is, Contains, Is equal to, then **Any URL**
   (`match == nil`). The pattern carries over when the kind changes; Any URL
@@ -647,9 +654,10 @@ section of the Spaces pane), after Arc's sheet in `docs/air-traffic-control/`.
   `NSOpenPanel` sheet on `/Applications` for any `.app`, whose bundle ID is
   stored (an app without one beeps and changes nothing).
 - **Target pop-up** (`linkRouteTargetMenu`): the normal spaces in order
-  (emoji and name), Most Recent Space, Private Window. Quarantine and Quick
-  Detour are hidden until TASK-194 / TASK-193.5, but a route (or Default)
-  that already holds one shows it rather than changing it silently. A space
+  (emoji and name), Most Recent Space, Private Window, Quick Detour
+  (TASK-193.5; links from other apps only, as the resolver rules).
+  Quarantine is hidden until TASK-194, but a route (or Default) that
+  already holds it shows it rather than changing it silently. A space
   that is not offered (deleted, or a Private window's) is listed first as
   "Space deleted" (or "Private space") with the warning image.
 - Fixed widths (kind 120, the pop-ups 220) so the controls line up from row to
@@ -808,8 +816,8 @@ Open Links Settings… tinted that row.
 
 # Tests
 
-`LinkRouteEditorTests` (TASK-191.3: the target menu with hidden Quarantine and
-Quick Detour and an unavailable space, the drag destination, the warnings,
+`LinkRouteEditorTests` (TASK-191.3: the target menu with hidden Quarantine,
+Quick Detour offered (TASK-193.5) and an unavailable space, the drag destination, the warnings,
 drafts saved once complete, an app-only draft, a refused edit kept on its
 row while the store keeps the saved route, previews, a broken saved route
 repaired from the pop-up, removing, moving saved routes with drafts last,

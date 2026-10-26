@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Quick Detour
-description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following."
+description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through Air Traffic Control's Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T15:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193
@@ -67,6 +67,18 @@ sources:
   - id: harness-4
     resource: ../../docs/harness/task193-4-harness.patch
     title: TASK-193.4 runtime harness and its results
+  - id: task-193-5
+    resource: backlog:TASK-193.5
+    title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
+  - id: entry-points
+    resource: ../../Detour/Browser/QuickDetour/QuickDetourEntryPoints.swift
+    title: QuickDetourEntryPoints.swift (the settings, the Opt-Cmd click, the routed link's profile, the idle rule)
+  - id: idle-monitor
+    resource: ../../Detour/Browser/QuickDetour/QuickDetourIdleMonitor.swift
+    title: QuickDetourIdleMonitor.swift
+  - id: harness-5
+    resource: ../../docs/harness/task193-5-harness.patch
+    title: TASK-193.5 runtime harness and its results
   - id: reference
     resource: ../../docs/little-window/arc-little-arc.png
     title: Arc's Little Arc, the visual reference
@@ -109,8 +121,13 @@ There is no sidebar.
 **Open in <Space> ⌘O** moves the page into a tab of a space and closes
 the window ([below](#open-in-space), TASK-193.3). The **profile pill** names
 the window's profile and switches it ([below](#the-profile-pill),
-TASK-193.4). Still to come: archiving on close or quit (none yet: a closed
-Quick Detour is gone; TASK-193.5).
+TASK-193.4). TASK-193.5 added the other ways in — **Opt-Cmd-click** on a
+link or a sidebar tab, and **links from other apps** through Air Traffic
+Control ([below](#other-entry-points)) — and the **archive**: a closed
+Quick Detour goes to the sidebar's Archived Tabs page, labelled "Quick
+Detour", and so does every open one at quit and one left unused for the
+configured time, "auto-closed" ([below](#the-archive),
+[idle auto-close](#idle-auto-close)).
 
 # How it works
 
@@ -279,11 +296,12 @@ browser, browser).[^harness-2]
 
 ### The Settings control
 
-Settings > Links > **Quick Detour** (TASK-193.5 adds its other entry points
-there): "[✓] Open Quick Detour from any app with [⌃⌥⌘F12]", a warning line
-under the row, and help text saying the launcher opens over the app in
-front and that the same shortcut is File > New Quick Detour Window while
-Detour is in front, also when the hotkey is off.
+Settings > Links > **Quick Detour**: "[✓] Open Quick Detour from any app
+with [⌃⌥⌘F12]", a warning line under the row, and help text saying the
+launcher opens over the app in front and that the same shortcut is File >
+New Quick Detour Window while Detour is in front, also when the hotkey is
+off. TASK-193.5 added the rest of the section
+([below](#the-settings-section)).
 
 - `ShortcutRecorderView`: a click starts recording ("Type Shortcut", accent
   border, the held modifiers shown live) and suspends the registration; the
@@ -340,7 +358,7 @@ What "no space" means for each query that walks spaces:
 | `tab(hosting:in:)`, `Space.displayableTab`, `tab(hostingPeek:)`, `favorite(backedBy:)`, `isPinned` | not found: it is in no space, not a Peek, not a favourite, not pinned |
 | `BrowserWindowController.tab(owning:)` | not found; a browser window never delegates for it |
 | Session save (`makeSessionSnapshot`) | never saved, so **never restored** at launch |
-| `sleepStaleTabs`, `archiveStaleTabs` | never slept or archived: it lives as long as its window |
+| `sleepStaleTabs`, `archiveStaleTabs` | never slept or swept: it lives as long as its window, and goes to the archive when that closes ([below](#the-archive)) |
 | `allLiveTabs` (the GPU process recycler's media check) | included: its audio or capture holds the recycle back |
 | Now-playing bar (`nowPlayingTabs`) | not listed: no browser window can switch to it |
 | Palette open-tab suggestions (`gatherTabInfos`) | never offered, and neither the launcher panel nor the window's palette offers any |
@@ -417,7 +435,8 @@ Detour scope; they only read there.
 
 Decision 2: open Quick Detour windows are not restored. The session save
 holds spaces only, so nothing was needed beyond keeping the tab out of every
-space. Archiving them on close and quit is TASK-193.5.
+space. Quitting archives them instead (TASK-193.5,
+[below](#the-archive)): they come back from the Archived Tabs page.
 
 ## Private
 
@@ -714,15 +733,229 @@ reported open again gets a new window id).
 | The chosen profile is deleted, or a sheet is put up, while the question is up | nothing switches and the downloads keep running: they are cancelled only once the switch is certain (found in the code review) |
 | Only one profile | the menu shows it and Private |
 
+## Other entry points
+
+TASK-193.5, the user's decisions of 2026-10-26.
+
+### Opt-Cmd-click on a link
+
+Opt-Cmd-click on a link in a browser window's page opens it in a **new
+Quick Detour on the page's profile** (`tab(owning:)?.owningProfile`, else
+the window's space's): a Private page's in a Private Quick Detour. Any
+frame (an iframe's link too), a `target=_blank` link too (the policy sees it
+first), and inside a Peek (the Peek's page is the window's space's
+profile). Its Open in names the window's space. It is a branch of the
+navigation policy before Cmd's, since Opt-Cmd contains Cmd:
+
+| Modifiers | Before 193.5 | Now |
+|---|---|---|
+| Opt-Cmd | Cmd: a background tab (or where a route sends it) | **Quick Detour**, never routed |
+| Opt-Cmd-Shift | Cmd | Quick Detour (Shift does not matter once Cmd and Option are held) |
+| Opt-Cmd, setting off, or to a non-web URL (`mailto:`) | Cmd | Cmd, as before |
+| Cmd, Cmd-Shift | background tab / route | unchanged |
+| Shift, Shift-Option | Peek | unchanged |
+| Option | split | unchanged |
+
+`inPageLinkClickBranch(_:target:quickDetourClickEnabled:)` is that table,
+pure; the policy and the routing rule (`linkRoutingEligibility`, which now
+answers `.notRouted(.quickDetourClick)`) both read it, so Air Traffic
+Control never moves an Opt-Cmd-click: the user chose where it opens.
+Synthetic clicks carry no modifiers, so a page cannot fake one (as for
+Cmd+click). **Inside a Quick Detour** Cmd+click already opened another
+Quick Detour on the same profile; Opt-Cmd is a Cmd+click there, so it does
+the same. **Not added**: a link-menu item ("Open Link in Quick Detour"), and
+Opt-Cmd on a script's `window.open` (not a link; WebKit's policy never sees
+it).
+
+### Opt-Cmd-click on a sidebar tab: a copy
+
+Opt-Cmd-click on a tab in the sidebar opens **a copy**: the tab's address in
+a new Quick Detour on the sidebar's profile (the active space's; the
+Private profile in a Private window). The tab is not selected, moved, woken
+or changed (decision 2). `DraggableTableView.mouseDown` takes the click
+before the table's own handling (`onQuickDetourClick`, row and point), so
+the selection never moves; the sidebar resolves the row
+(`TabSidebarViewController.quickDetourCopyURL(forRow:at:)`):
+
+| Row | Address copied |
+|---|---|
+| A normal tab, live | where it is now (`tab.url`) |
+| A sleeping tab | its stored address (a sleeping tab's `url`), without waking it |
+| A split row | the pane clicked: the left or right half of the row (`QuickDetour.splitRowPane`) |
+| A pinned entry | its tab's address while live, else the saved `pinnedURL` |
+| A pinned split | the pane clicked, as above |
+| A favourite tile (`FavoriteTileView.mouseDown`) | its tab's address while live, else the favourite's URL; a dormant tile stays dormant |
+| A folder, New Tab, the separator | nothing: the click does what it always did |
+
+An internal page (the History page) opens as one (armed, as typed). The
+rule is `QuickDetour.sidebarCopyURL(liveURL:storedURL:)`; with the setting
+off the click is the table's (and the tile's) own.
+
+### Links from other apps: Air Traffic Control's Quick Detour target
+
+No switch of its own (decision 1): **Quick Detour** is a visible Open in
+target in Settings > Links, for routes and the Default
+([link routing](./link-routing.md#links-from-other-apps)). The resolver
+keeps it to links from other apps: a typed URL or a clicked link whose
+route or Default names Quick Detour stays where it is (unchanged since
+TASK-191.1). `linkPlacement` answers `.openInQuickDetour` whatever windows
+are open, and `AppDelegate.openLink` opens a new Quick Detour with the link
+instead of a tab (the Most Recent Space fallback TASK-191.2 left for it is
+gone). "Links from Slack open in Quick Detour" is an app-only route (Any
+URL, From app Slack, Open in Quick Detour).
+
+**Which profile** (decided here): `QuickDetour.profileForRoutedLink` — the
+profile of the frontmost Detour window (a browser window's active space's,
+a Quick Detour's own; front to back, then windows not in the window list),
+as the launcher's rule (TASK-193.4) — **but never Private**: a Private
+window in front is passed over for the next window's profile, else the
+first normal profile. A link from another app enters Private only through
+a Private Window target (or Quarantine, TASK-194, whose whole point is a
+Private Quick Detour); a Quick Detour route that sometimes opened Private
+would overlap it by accident of which window was in front. Its Open in
+names the most recent normal window's space when it is the same profile's.
+The window is ordered front of Detour's windows, as a placed tab's window
+is; Detour is not activated by the placement itself (the sender's
+`NSWorkspace.open` does that).
+
+## The archive
+
+Decisions 3 and 4 of 2026-10-26: a Quick Detour closed by hand, at quit or
+by the idle timer goes to the sidebar's Archived Tabs page (all spaces),
+labelled; restoring one reopens a Quick Detour window on that profile.
+
+### Storage: a closed-tab row under the profile's Quick Detour scope
+
+A closed Quick Detour is a `closedTab` row like a closed tab's
+([closed tabs and the archive](../tabs/closed-tabs-and-archive.md)), with
+`spaceID` = the profile's Quick Detour scope
+(`QuickDetour.historySpaceID(forProfileID:)`, the id its visits are filed
+under). **No migration.** Every existing query is keyed by a space id and
+no space has that id, so each stays correct unchanged: Reopen Closed Tab
+(the active space's records) never offers one, a space's deletion and its
+undo never touch them, the session save (no foreign key on `closedTab`)
+keeps them. Only the archive page's listing, its "has records" check and
+Clear needed to know the scopes. `archivedAt` marks the idle timer's
+close, as it marks the archive sweep's for a tab; a close by hand or at
+quit is a plain close (`archivedAt` nil). `tabID`, `url`, `title`,
+`faviconURL`, `interactionState` (the back/forward list) and `extensionID`
+are captured as for a tab; `sortOrder` is 0. Rejected: a `kind` or
+`profileID` column (a migration, and every closed-tab query would have had
+to learn to skip the new rows); filing under a space of the profile (it
+would be reopened by Cmd+Shift+T there and deleted with that space).
+
+| When | Record |
+|---|---|
+| Closed by hand (Cmd+W, the close button), or by an extension's `tabs.remove` | a plain close: "Quick Detour" |
+| Auto-closed by the idle timer | `archivedAt` set: "Quick Detour · auto-closed" |
+| Quitting (`applicationWillTerminate` → `TabStore.archiveOpenQuickDetours`) | a plain close for every open one; their windows stay until the app exits, and `quickDetourTabIDsArchivedAtQuit` keeps a later close from writing a second |
+| Moved by Open in (same profile: handed over; another profile: reloaded there) | nothing: the page lives on in the space |
+| Replaced by the profile pill | nothing: a switch, not a close |
+| Its profile deleted | nothing, and its archived ones are deleted with the profile (`deleteProfile`) |
+| A Private Quick Detour | never, whatever closes it, as Private tabs never write a record |
+| A page with no address | nothing |
+
+`TabStore.closeQuickDetourTab(_:disposition:)` takes
+`QuickDetourCloseDisposition` (`.archive(autoClosed:)`, the default, or
+`.discard`), and writes the record before the teardown releases the web
+view the back/forward list is read from. The window passes its
+`closeDisposition` from `tearDown`.
+
+### The archive page
+
+`archiveEntries()` lists, beside the spaces' records, those under the Quick
+Detour scope of a live normal profile, as `ArchiveEntry.kind =
+.quickDetour(profileID:autoClosed:)` (a scope of a profile no longer there
+is not listed). The row's second line is `archiveEntrySubtitle`: "Quick
+Detour · example.com/page", or "Quick Detour · auto-closed · …". No space
+badge. A space filter hides them (they are no space's); with no filter
+Clear Archive… and Navigate > Clear Archived Tabs… cover them
+(`archiveClearScope`, `TabStore.quickDetourArchiveScopeIDs`). Retention is
+the archive's: none — they stay until deleted or cleared.
+
+### Restoring
+
+A click (Return, the context menu) on a Quick Detour entry calls
+`BrowserWindowController.restoreArchivedTab`, which sees
+`isQuickDetourArchiveRecord` and calls `QuickDetourWindowController.restore(recordID:sourceSpace:)`:
+`TabStore.takeQuickDetourArchiveRecord` consumes the record and returns
+its page (`QuickDetourArchivedPage`), and a new window opens on that
+profile, its tab built by `openQuickDetourTab(profile:restoring:)` —
+`BrowserTab.restoreArchivedPage`, the closed-tab rebuild factored out:
+the back/forward list (else the address), the archived title (until the
+page reports its own) and favicon. Its Open in names the restoring
+window's space when it is the same profile's. The sidebar leaves the
+archive page. An extension's page comes back on its live origin without
+its back/forward list; a disabled extension's is not restorable (listed
+dimmed); an uninstalled one's record is purged — the closed-tab rules.
+
+## Idle auto-close
+
+A Quick Detour not used for the configured time closes into the archive as
+auto-closed. Settings > Links > Quick Detour: Never, 1 hour, **6 hours**
+(the default, as Arc's), 12 hours, 1 day.
+
+**The rule** is pure, `QuickDetour.shouldAutoClose(_:now:interval:)` over
+`QuickDetourIdleState`: it closes once `now - lastUsedAt >= interval`, on
+the wall clock, and **never** while the window is frontmost (the key
+window, or the front one of Detour's browser and Quick Detour windows,
+visible and not minimized — Detour may be in the background with it on
+screen), while its page plays sound (`BrowserTab.isAudible`: playing and
+not muted), while a sheet is up (a page's dialog or a file panel, whose
+completion would outlive the window), or when it is **Private** (decided
+here: nothing would be archived, so the timer would simply lose it). A
+clock set back never closes one.
+
+**What counts as use** (`QuickDetourWindowController.noteUse`): opening or
+restoring the window; becoming key, and ceasing to be key (key until then);
+a key press, a mouse-down (any button), a scroll, a magnify or swipe in it
+(`QuickDetourWindow.sendEvent` — a scroll reaches a window that is not
+key, so reading one beside another app counts); and its page starting or
+stopping sound. **Navigation alone does not**: a page can reload or
+navigate itself, and one the user starts follows input in the window.
+
+**Timing** (`QuickDetourIdleMonitor`): a repeating check every 60 s (10 %
+tolerance, `.common` mode) and one on `NSWorkspace.didWakeNotification`,
+each asking the rule about every open window, rather than one long timer
+per window: a timer does not fire while the Mac sleeps, and the rule is on
+the wall clock, so **time asleep counts as time unused** — a Mac asleep
+overnight closes the Quick Detours left behind on wake (except the
+frontmost). Not started in the XCTest host, whose tests drive `check()` on
+an injected clock (`now`) and settings. **Debug override**:
+`DETOUR_QUICK_DETOUR_IDLE_SECONDS=<n>` replaces the interval of any setting
+but Never and checks every n/4 seconds (at least 1, at most 60); read in
+Debug builds only.
+
+## The Settings section
+
+Settings > Links > Quick Detour, after the hotkey row and its help:
+
+- **[✓] Open links and sidebar tabs in Quick Detour with ⌥⌘-click**
+  (`QuickDetourOptionCommandClickEnabled`, on by default), with "A sidebar
+  tab opens as a copy; the tab stays where it is." Off, Opt-Cmd is a
+  Cmd+click again, on links and in the sidebar.
+- **Close Quick Detour windows not used for [6 hours ▾]**
+  (`QuickDetourIdleTimeout`, the raw value; anything unreadable is 6
+  hours), with "They go to the archive, marked auto-closed, and reopen from
+  there. The window in front, one playing sound and Private ones stay
+  open."
+- A caption: "To open links from other apps in Quick Detour, choose Quick
+  Detour as a route's Open in, or as the Default, above." — no switch.
+
+`QuickDetourSettings` keeps them in `UserDefaultsScope.defaults` beside the
+hotkey's and posts `didChangeNotification`; both take effect at the next
+click or check.
+
 ## Teardown
 
 Closing the window (Cmd+W, the close button, an extension's `tabs.remove`,
-the profile deleted, Open in) runs `tearDown()` once — a profile switch
-closes the old page but never the window:
+the profile deleted, Open in, the idle timer) runs `tearDown()` once — a
+profile switch closes the old page but never the window:
 palette and popovers closed, subscriptions and the weakly held script
 handlers removed, delegates cleared, `closeQuickDetourTab` (out of the list,
 web view released, extension registration closed, Private session checked,
-observers told), `didCloseWindow` to the contexts, and the controller
+observers told; archived first unless `closeDisposition` says otherwise),
+`didCloseWindow` to the contexts, and the controller
 leaves `openControllers`, which was all that held it. `deleteProfile`
 closes the profile's Quick Detours before it releases the profile.
 
@@ -757,6 +990,11 @@ closes the profile's Quick Detours before it releases the profile.
 | `QuickDetourProfileSwitchWindowTests` (17) | in real windows: the pill names the profile; the menu (order, Private last after a separator, the checkmark) and its item switching; the address reloading under the other profile's cookies (a loopback page titled by a cookie the other profile set; the same window, a new tab and web view hosted with the window's delegates, no back history, the old web view released) and back; the same profile a no-op; a sheet refusing; a page mid-load reloading its address; the History page reopened as an internal page; palette and find bar closed; Open in following the profile both ways; into Private (store, dark, Open in Private Window, scope) and out (appearance, scope, Open in); the download question (no keeps everything, yes cancels and drops it; a target deleted, or a sheet put up, while it is asked refuses the switch and keeps the download); the window closing cleanly after a switch |
 | `QuickDetourExtensionTests` (+4) | the pill in real contexts: a close for the old profile (`tabs.onRemoved`, `windows.onRemoved`, both refused by id, promise and callback) and an open for the new (`windows.onCreated` popup, `tabs.onCreated` in it, `windows.getAll` from the page, `tabs.get` from the worker); switching back a new window and tab id; a third profile hearing nothing; into Private an incognito popup |
 | `QuickDetourExtensionTests` (+3) | Open in in real contexts: the same tab id detached from the popup and attached to the browser window (with its position), no remove and no second create, `tabs.get`/`windows.get` from the page and the worker, the popup refused by id (promise and callback); another profile hearing nothing; a reload in another profile removing the tab here and creating one there |
+| `QuickDetourEntryPointsTests` (21) | TASK-193.5's pure rules: the settings (defaults, persistence and notification, an unreadable timeout), the timeouts and titles, the Opt-Cmd click, a split row's pane, a sidebar tab's copy, the routed link's profile (the front window's, never Private, none open, deleted), the idle rule (the interval, Never, frontmost, sound, Private, a sheet, time asleep, a clock set back), the Debug override and the check interval, the archive label |
+| `QuickDetourArchiveTests` (17) | the store: a close archived under the scope (plain or auto-closed), Private never, no address, discard, the back/forward list captured; quit archiving each normal one once; the listing (labelled kinds, alone, a gone profile's not listed), Reopen Closed Tab never taking one, surviving a session save; taking a record (consumed, a space's refused), a restored tab (profile, address, title, store); Clear covering the scopes; profile deletion deleting only its own |
+| `QuickDetourArchiveWindowTests` (11) | in real windows: Cmd+W archiving, Private not, a profile switch not; a restore reopening on the profile and only once, a space's record refused; the monitor on an injected clock: the unused one closing as auto-closed while the frontmost stays, Never, the setting read at each check, a key press and key changes counting as use, a sheet, Private |
+| `QuickDetourSidebarCopyTests` (6) | Opt-Cmd mouse-downs handed to the sidebar's table: a normal tab copied and left unselected, a sleeping tab's stored address without waking it, each pane of a split row, a pinned entry, a dormant favourite (not woken) |
+| `ExternalLinkRoutingTests` (+4), `LinkRoutingEligibilityTests` (+5), `LinkPlacementTests`, `LinkRouteEditorTests`, `ArchiveListLayoutTests` (+3), `QuickDetourOpenInWindowTests` (2 assertions) | a Quick Detour route, a from-app route and the Default opening a Quick Detour on the front window's profile (never Private); the Opt-Cmd branch and its exclusion from routing; `.openInQuickDetour`; the target offered; the subtitle and the clear scope; Open in (both kinds) archiving nothing |
 
 `QuickDetourTests` was written first: 26 of 28 failed against stubs, two
 (the negative cases) passed. For TASK-193.2, `HotKeyShortcutTests` (23 of
@@ -786,7 +1024,19 @@ request had reached the server. The first green run
 of the extension test then caught `newPosition: null` (the move announced
 before the receiving window had a selection), fixed by announcing it after
 selecting (`holdingExtensionActivation`); the deferred-announcement store
-test came with that fix.
+test came with that fix. For TASK-193.5, 68 new or changed tests were
+written first against stubs returning empty values (no rule, an empty
+store, `.none` branches): 44 failed (15 of 21 entry-point rules, 12 of 17
+store archive tests, 5 of 11 window tests, 4 of 4 external-link tests, 3 of
+4 editor, 2 of 6 eligibility, 2 of 3 layout, 1 of 2 placement); the 24 that
+passed were negative cases (Never, Private, a sheet, a clock set back, a
+space's record, discard). The first green run left two: a restored tab
+showing its address as its title (the load's placeholder; the archived
+title is now set after it) and a sheet test whose other window lost
+frontmost to the sheet (the test, not the rule). The Open in tests' new
+assertion then failed for the cross-profile reload (archived as a close)
+until `reopen` discards. `QuickDetourSidebarCopyTests` came after the code
+(UI hand-off; the rule under it is pure and tested first).
 
 # Runtime check
 
@@ -877,6 +1127,27 @@ switch, and leaving Private with a download still asking first. Not checked: a p
 VoiceOver, a page mid-load and a profile deleted or renamed while open (unit
 tests only), several displays.
 
+TASK-193.5, 2026-10-26, macOS 26.7, real input posted in the app, light and
+dark ([harness](../../docs/harness/task193-5-harness.patch), which lists
+every step and result):[^harness-5] links from other apps were delivered by
+calling `openExternalURLs(_:sourceApp:)` in the process (no LaunchServices,
+no Apple Event). A Contains route, an app-only route (from
+`com.example.chat`) and the Default each opened a Quick Detour on the front
+window's profile with no tab in any space; another app's link took the Most
+Recent Space path. Opt-Cmd-click on a link that a route sends to Work opened
+a Quick Detour and left Work alone, while the same link Cmd-clicked was
+routed there; Opt-Cmd in an iframe and in a Private window's page (a
+Private, dark Quick Detour) worked; Opt-Cmd on an unselected sidebar tab
+opened a copy and left the selection. The Settings checkbox turned
+Opt-Cmd off (a background tab, as Cmd, and nothing from the sidebar) and on.
+Closed ones were listed as "Quick Detour · …"; clicking one reopened it, the
+record consumed; a Private one wrote nothing; quitting through the Quit
+alert archived the two normal ones and not the Private one, listed after the
+relaunch. With a 15 s override, a scroll in a background Quick Detour
+restarted its time and it closed 15.1 s later as "auto-closed", while the
+frontmost and a Private one stayed. Not checked: a person's own clicks, a
+real app's link, sleep and wake, sound keeping one open, several displays.
+
 Not checked at runtime (TASK-193.1): Cmd+click and page-opened windows, a normal
 Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 `.crx` installing, 1Password itself.
@@ -890,9 +1161,12 @@ Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 - [Tab and window bridge](../extensions/tab-and-window-bridge.md) — `ExtensionListedWindow` and the placement rule.
 - [Command palette](./command-palette.md) — the palette the window opens with.
 - [App shell](../architecture/app-shell.md) — the menu item, and that not every window is a browser window.
+- [Closed tabs and the archive](../tabs/closed-tabs-and-archive.md) — the records closed Quick Detours share.
+- [Link routing](./link-routing.md) — the Quick Detour target, and Opt-Cmd's place in the click rule.
 
 [^webkit-windows]: WebKit, WebExtensionContextAPIWindowsCocoa.mm (windowsGetAll reads the context's own window list)
 [^harness]: TASK-193.1 runtime harness and its results
 [^harness-2]: TASK-193.2 runtime harness, its scratch tools and results
 [^harness-3]: TASK-193.3 runtime harness and its results
 [^harness-4]: TASK-193.4 runtime harness and its results
+[^harness-5]: TASK-193.5 runtime harness and its results

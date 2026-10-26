@@ -17,6 +17,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
     private var routes: LinkRouteStore { TabStore.shared.linkRoutes }
 
     private var windowsBefore: Set<ObjectIdentifier> = []
+    private var quickDetoursBefore: Set<ObjectIdentifier> = []
     private var createdSpaceIDs: [UUID] = []
     private var addedRouteIDs: [UUID] = []
     private var previousDefault: LinkRouteTarget = .mostRecentSpace
@@ -32,6 +33,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         try super.setUpWithError()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         windowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
+        quickDetoursBefore = Set(QuickDetourWindowController.openControllers.map(ObjectIdentifier.init))
         previousDefault = routes.defaultTarget
         previousLastActiveSpaceID = store.lastActiveSpaceID
         previousExtensionLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
@@ -50,9 +52,15 @@ final class ExternalLinkRoutingTests: XCTestCase {
         route(nil, app: "com.tinyspeck.slackmacgap", to: .space(personal.id))
         route(.domainIs, "mail-only.test", app: "com.apple.mail", to: .space(work.id))
         route(.domainIs, "later.test", to: .quarantine)
+        route(.domainIs, "quick.test", to: .quickDetour)
+        route(nil, app: "com.example.chat", to: .quickDetour)
     }
 
     override func tearDown() {
+        for controller in newQuickDetours() {
+            controller.closeDisposition = .discard
+            controller.close()
+        }
         for wc in browserWindows() where !windowsBefore.contains(ObjectIdentifier(wc)) {
             // Windows the code under test opened still autosave the sidebar
             // geometry other windows restore from.
@@ -114,6 +122,14 @@ final class ExternalLinkRoutingTests: XCTestCase {
     }
 
     private func url(_ s: String) -> URL { URL(string: s)! }
+
+    private func newQuickDetours() -> [QuickDetourWindowController] {
+        QuickDetourWindowController.openControllers.filter { !quickDetoursBefore.contains(ObjectIdentifier($0)) }
+    }
+
+    private func tabAnywhere(_ url: URL) -> BrowserTab? {
+        store.spaces.lazy.flatMap(\.tabs).first { $0.url == url }
+    }
 
     private func tab(_ url: URL, in space: Space) -> BrowserTab? {
         space.tabs.first { $0.url == url }
@@ -279,6 +295,65 @@ final class ExternalLinkRoutingTests: XCTestCase {
         let expectation = todaysBehaviour()
         appDelegate.application(NSApp, open: [link])
         try expectation.verify(link, in: self)
+    }
+
+    // MARK: - Quick Detour (TASK-193.5)
+
+    func testAQuickDetourRouteOpensAQuickDetourOnTheFrontWindowsProfile() throws {
+        let workWindow = makeWindow(showing: work)
+        let link = url("https://app.quick.test/lookup")
+
+        appDelegate.application(NSApp, open: [link])
+
+        let quick = try XCTUnwrap(newQuickDetours().first, "a new Quick Detour window")
+        XCTAssertEqual(newQuickDetours().count, 1)
+        XCTAssertEqual(quick.tab?.url, link)
+        XCTAssertTrue(quick.profile === work.profile, "the front window's profile")
+        XCTAssertEqual(quick.sourceSpaceID, work.id, "Open in names the space in front")
+        XCTAssertNil(tabAnywhere(link), "no tab in any space: not the Most Recent Space fallback")
+        XCTAssertTrue(newBrowserWindows().allSatisfy { $0 === workWindow })
+    }
+
+    func testLinksFromOneAppOpenInQuickDetour() throws {
+        // "Links from Slack open in Quick Detour": an app-only route.
+        makeWindow(showing: work)
+        let link = url("https://anything.test/from-chat")
+
+        appDelegate.openExternalURLs([link], sourceApp: "com.example.chat")
+        let quick = try XCTUnwrap(newQuickDetours().first)
+        XCTAssertEqual(quick.tab?.url, link)
+
+        let other = url("https://anything.test/from-mail")
+        let expectation = todaysBehaviour()
+        appDelegate.openExternalURLs([other], sourceApp: "com.apple.mail")
+        try expectation.verify(other, in: self)
+        XCTAssertEqual(newQuickDetours().count, 1, "another app's link follows the Default")
+    }
+
+    func testAQuickDetourDefaultTakesUnmatchedLinks() throws {
+        makeWindow(showing: work)
+        XCTAssertTrue(routes.setDefaultTarget(.quickDetour))
+        let link = url("https://unrouted.test/default")
+
+        appDelegate.application(NSApp, open: [link])
+
+        XCTAssertEqual(newQuickDetours().first?.tab?.url, link)
+        XCTAssertNil(tabAnywhere(link))
+    }
+
+    func testWithAPrivateWindowInFrontTheQuickDetourIsNotPrivate() throws {
+        makeWindow(showing: work)
+        let privateWindow = BrowserWindowController(incognito: true)
+        privateWindow.sidebarSplitView.autosaveName = nil
+        privateWindow.showWindow(nil)
+        appDelegate.registerWindowController(privateWindow)
+        XCTAssertTrue(frontBrowserWindow() === privateWindow)
+
+        appDelegate.application(NSApp, open: [url("https://quick.test/private-front")])
+
+        let quick = try XCTUnwrap(newQuickDetours().first)
+        XCTAssertFalse(quick.profile.isIncognito, "only a Private route takes a link from another app into Private")
+        XCTAssertTrue(quick.profile === work.profile)
     }
 
     /// What a link from another app did before routes: a tab in the key

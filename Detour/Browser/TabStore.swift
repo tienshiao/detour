@@ -456,6 +456,10 @@ class TabStore {
     var quickDetourTabs: [BrowserTab] = [] {
         didSet { ExtensionTabLifecycle.didPlace(listed: quickDetourTabs) }
     }
+    /// The open Quick Detour pages already written to the archive at quit
+    /// (`archiveOpenQuickDetours`), so a window AppKit closes afterwards writes
+    /// no second record (TASK-193.5).
+    var quickDetourTabIDsArchivedAtQuit: Set<UUID> = []
 
     /// What Air Traffic Control's resolver needs to know about the spaces: the
     /// normal ones, the only ones a route may name.
@@ -697,6 +701,10 @@ class TabStore {
         // removal — is unrecoverable.
         let deleted = appDB.deleteProfile(id: id.uuidString)
         guard deleted else { return nil }
+        // Its closed Quick Detours go with it (TASK-193.5): a space's records go
+        // with the space, and the profile has none left by now.
+        appDB.deleteClosedTabs(spaceID: QuickDetour.historySpaceIDString(forProfileID: id))
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
 
         // Undo actions can bring back what referenced this profile: Delete
         // Space and Edit Space rebuild or re-home a space onto a captured
@@ -745,6 +753,8 @@ class TabStore {
     /// Use only in test tearDown to ensure clean state between tests.
     func forceRemoveProfile(id: UUID) {
         profiles.removeAll { $0.id == id }
+        // The closed Quick Detours a test's windows archived (TASK-193.5).
+        appDB.deleteClosedTabs(spaceID: QuickDetour.historySpaceIDString(forProfileID: id))
     }
 
     // MARK: - Session Persistence
@@ -4802,8 +4812,10 @@ class TabStore {
     // MARK: - Archived Tabs (TASK-119)
 
     /// Every closed-tab record of every current non-incognito space — plain
-    /// closes and archived records alike — as the Archived Tabs page lists them,
-    /// newest first. Records of spaces that no longer exist are left out.
+    /// closes and archived records alike — and every closed Quick Detour of a
+    /// live normal profile (TASK-193.5), as the Archived Tabs page lists them,
+    /// newest first. Records of spaces (or profiles) that no longer exist are
+    /// left out.
     ///
     /// Extension pages are classified with one shared availability: a disabled
     /// extension's page is listed but not restorable (the record is kept for
@@ -4812,14 +4824,23 @@ class TabStore {
     /// omits it, and a notification would only make the page reload the list.
     func archiveEntries() -> [ArchiveEntry] {
         let spacesByID = Dictionary(uniqueKeysWithValues: nonIncognitoSpaces.map { ($0.id.uuidString, $0) })
-        guard !spacesByID.isEmpty else { return [] }
+        // Closed Quick Detours of the live normal profiles (TASK-193.5).
+        let quickDetourProfiles = quickDetourArchiveProfilesByScope
+        guard !spacesByID.isEmpty || !quickDetourProfiles.isEmpty else { return [] }
         let availability = ExtensionAvailability(appDB: appDB)
         var entries: [ArchiveEntry] = []
         var purged: [Int64] = []
         for summary in appDB.closedTabSummaries() {
-            guard let space = spacesByID[summary.spaceID] else { continue }
+            let space = spacesByID[summary.spaceID]
+            // The dictionary built once above, not per record.
+            let quickDetourProfile = space == nil ? quickDetourProfiles[summary.spaceID.uppercased()] : nil
+            guard let entrySpaceID = space?.id
+                    ?? quickDetourProfile.map({ QuickDetour.historySpaceID(forProfileID: $0.id) }) else { continue }
+            let page = space.map { closedTabPage(summary, in: $0, availability: availability) }
+                ?? classifyCapturedPage(url: summary.url.flatMap { URL(string: $0) }, extensionID: summary.extensionID,
+                                        in: quickDetourProfile, availability: availability)
             let isRestorable: Bool
-            switch closedTabPage(summary, in: space, availability: availability) {
+            switch page {
             case .unavailable:
                 purged.append(summary.id)
                 continue
@@ -4828,14 +4849,18 @@ class TabStore {
             case .notExtensionPage, .restorable:
                 isRestorable = true
             }
+            let kind: ArchiveEntryKind = quickDetourProfile.map {
+                .quickDetour(profileID: $0.id, autoClosed: summary.archivedAt != nil)
+            } ?? .tab
             entries.append(ArchiveEntry(
                 id: summary.id,
-                spaceID: space.id,
+                spaceID: entrySpaceID,
                 title: summary.title,
                 url: summary.url,
                 faviconURL: summary.faviconURL.flatMap { URL(string: $0) },
                 closedAt: summary.closedAt.map { Date(timeIntervalSince1970: $0) },
-                isRestorable: isRestorable
+                isRestorable: isRestorable,
+                kind: kind
             ))
         }
         if !purged.isEmpty {
@@ -4848,6 +4873,7 @@ class TabStore {
     /// validation for Clear Archived Tabs, so blob-free and unclassified.
     func hasClosedTabRecords() -> Bool {
         let spaceIDs = Set(nonIncognitoSpaces.map(\.id.uuidString))
+            .union(quickDetourArchiveProfilesByScope.keys)
         guard !spaceIDs.isEmpty else { return false }
         return appDB.closedTabSummaries().contains { spaceIDs.contains($0.spaceID) }
     }
@@ -4889,6 +4915,113 @@ class TabStore {
         guard !spaceIDs.isEmpty else { return }
         appDB.deleteClosedTabs(spaceIDs: spaceIDs.map(\.uuidString))
         notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+    }
+
+    // MARK: - Archived Quick Detours (TASK-193.5)
+
+    /// A closed Quick Detour is a `closedTab` row like a closed tab's, filed
+    /// under its profile's Quick Detour scope (`QuickDetour.historySpaceID`,
+    /// the id its visits are filed under) in place of a space: no space has
+    /// that id, so every query keyed by space — Reopen Closed Tab, a space's
+    /// deletion and its undo — leaves it alone, and no migration was needed.
+    /// `archivedAt` marks the idle timer's close, as it marks the archive
+    /// sweep's for a tab; a close by hand, or at quit, is a plain close.
+
+    /// The live normal profiles, whose closed Quick Detours the archive keeps.
+    private var quickDetourArchiveProfiles: [Profile] {
+        profiles.filter { !$0.isIncognito && !$0.isDeleted }
+    }
+
+    /// The Quick Detour scopes of the live normal profiles, as stored.
+    private var quickDetourArchiveProfilesByScope: [String: Profile] {
+        Dictionary(quickDetourArchiveProfiles
+            .map { (QuickDetour.historySpaceIDString(forProfileID: $0.id), $0) }) { first, _ in first }
+    }
+
+    /// Writes an open Quick Detour's page to the archive: a closed-tab record
+    /// filed under its profile's Quick Detour scope. False, writing nothing,
+    /// for a Private page, a deleted profile, a page with no address, or one
+    /// already archived at quit.
+    @discardableResult
+    func archiveQuickDetourTab(_ tab: BrowserTab, autoClosed: Bool, at date: Date = Date()) -> Bool {
+        guard let profile = tab.quickDetourProfile, !profile.isIncognito, !profile.isDeleted,
+              let url = tab.url, !quickDetourTabIDsArchivedAtQuit.contains(tab.id) else { return false }
+        let stamp = date.timeIntervalSince1970
+        appDB.pushClosedTab(ClosedTabRecord(
+            id: nil,
+            tabID: tab.id.uuidString,
+            spaceID: QuickDetour.historySpaceIDString(forProfileID: profile.id),
+            url: url.absoluteString,
+            title: tab.title,
+            faviconURL: tab.faviconURL?.absoluteString,
+            interactionState: tab.currentInteractionStateData(),
+            sortOrder: 0,
+            archivedAt: autoClosed ? stamp : nil,
+            closedAt: stamp,
+            extensionID: profile.extensionID(forPageURL: url)))
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+        return true
+    }
+
+    /// Quitting (TASK-193.1's decision): every open Quick Detour that is not
+    /// Private goes to the archive, closed by hand; their windows are not
+    /// closed, and a later close of one writes nothing more.
+    func archiveOpenQuickDetours() {
+        for tab in quickDetourTabs where archiveQuickDetourTab(tab, autoClosed: false) {
+            quickDetourTabIDsArchivedAtQuit.insert(tab.id)
+        }
+    }
+
+    /// The Quick Detour scopes of the live normal profiles: what Clear
+    /// Archived Tabs… covers besides the spaces.
+    var quickDetourArchiveScopeIDs: [UUID] {
+        quickDetourArchiveProfiles.map { QuickDetour.historySpaceID(forProfileID: $0.id) }
+    }
+
+    /// The live normal profile whose Quick Detour scope a record is filed under.
+    private func quickDetourArchiveProfile(of summary: ClosedTabSummary) -> Profile? {
+        quickDetourArchiveProfilesByScope[summary.spaceID.uppercased()]
+    }
+
+    /// Whether closed-tab record `id` is an archived Quick Detour of a live
+    /// profile.
+    func isQuickDetourArchiveRecord(id: Int64) -> Bool {
+        guard let summary = appDB.closedTabSummary(id: id) else { return false }
+        return quickDetourArchiveProfile(of: summary) != nil
+    }
+
+    /// Takes archived Quick Detour `id` out of the archive for a window to
+    /// reopen. Nil, changing nothing, for a record that is not one of a live
+    /// normal profile, or a disabled extension's page; an uninstalled
+    /// extension's record is deleted and nil returned.
+    func takeQuickDetourArchiveRecord(id: Int64) -> QuickDetourArchivedPage? {
+        guard let summary = appDB.closedTabSummary(id: id),
+              let profile = quickDetourArchiveProfile(of: summary) else { return nil }
+        let url = summary.url.flatMap { URL(string: $0) }
+        let page = classifyCapturedPage(url: url, extensionID: summary.extensionID, in: profile)
+        switch page {
+        case .unavailable:
+            appDB.deleteClosedTab(id: id)
+            notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+            return nil
+        case .disabled:
+            return nil
+        case .notExtensionPage, .restorable:
+            break
+        }
+        guard let record = appDB.closedTab(id: id) else { return nil }
+        appDB.deleteClosedTab(id: id)
+        notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+        let faviconURL = record.faviconURL.flatMap { URL(string: $0) }
+        if case .restorable(let extensionID, let originHost) = page, let url {
+            // Its back/forward list is on the extension's old origin.
+            return QuickDetourArchivedPage(
+                profile: profile,
+                url: liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: profile),
+                title: record.title, faviconURL: faviconURL, interactionState: nil)
+        }
+        return QuickDetourArchivedPage(profile: profile, url: url, title: record.title, faviconURL: faviconURL,
+                                       interactionState: record.interactionState)
     }
 
     // MARK: - Tab Archiving

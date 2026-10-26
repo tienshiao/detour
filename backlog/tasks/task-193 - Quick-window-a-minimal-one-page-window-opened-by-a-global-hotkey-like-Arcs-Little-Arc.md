@@ -1,10 +1,10 @@
 ---
 id: TASK-193
 title: 'Quick Detour: a minimal one-page window opened by a global hotkey'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 10:10'
-updated_date: '2026-10-24 10:21'
+updated_date: '2026-10-26 19:11'
 labels:
   - window
   - feature
@@ -39,3 +39,9 @@ Name, 2026-10-24: "a quick detour" and "a short detour" are the most common Engl
 
 Name decided (user, 2026-10-24): **Quick Detour**. "Little Detour", "quick window" and "Little/Quick Detour" elsewhere in these tasks all mean Quick Detour.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Quick Detour is in: a Spotlight-style launcher (Opt-Cmd-N in-app and system-wide) opens a single-page window outside every space; Open in moves the page into a space (intact within a profile, reload across profiles, Private into a Private window); the profile pill switches profiles; Opt-Cmd-click on links and sidebar tabs and Air Traffic Control routes open Quick Detours; closed and idle windows go to the archive. Subtasks 193.1-193.5.
+<!-- SECTION:FINAL_SUMMARY:END -->

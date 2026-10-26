@@ -3,7 +3,8 @@ import WebKit
 
 /// The store's half of Quick Detour (TASK-193.1). A Quick Detour's page is a
 /// `BrowserTab` in `quickDetourTabs` and in no space: never saved with the
-/// session, never slept or archived, never offered by a space's palette,
+/// session, never slept or swept by the archive timer (it is archived when
+/// its window closes, TASK-193.5), never offered by a space's palette,
 /// sidebar or now-playing bar. What it does take part in is listed on each
 /// query below and in `wiki/features/quick-detour.md`.
 extension TabStore {
@@ -19,7 +20,8 @@ extension TabStore {
     /// `quickDetourTabs`, which a Quick Detour window lists.
     @discardableResult
     func openQuickDetourTab(profile: Profile, id: UUID = UUID(), adopting webView: WKWebView? = nil,
-                            openedWith configuration: WKWebViewConfiguration? = nil) -> BrowserTab {
+                            openedWith configuration: WKWebViewConfiguration? = nil,
+                            restoring archived: QuickDetourArchivedPage? = nil) -> BrowserTab {
         let tab: BrowserTab
         if let webView {
             tab = BrowserTab(id: id, webView: webView)
@@ -34,6 +36,15 @@ extension TabStore {
         }
         tab.quickDetourProfile = profile
         tab.applyUserAgent()
+        if let archived {
+            // From the archive (TASK-193.5): after the profile is known, so the
+            // first request carries its user agent.
+            tab.restoreArchivedPage(title: archived.title, interactionState: archived.interactionState,
+                                    fallbackURL: archived.url, faviconURL: archived.faviconURL)
+            // The archived title, rather than the address a load shows, until
+            // the page reports its own.
+            if !archived.title.isEmpty { tab.title = archived.title }
+        }
         subscribeToTab(tab, inSession: false)
         // Last: entering the list reports the tab open to the extension
         // contexts, whose `window(for:)` must already resolve its window.
@@ -46,8 +57,20 @@ extension TabStore {
     /// (`teardown`). Idempotent. When it was the last Private page of the
     /// session the Private session's in-memory state goes, as when the last
     /// Private window closes.
-    func closeQuickDetourTab(_ tab: BrowserTab) {
+    ///
+    /// `disposition` (TASK-193.5): archived (the default — closed by hand, by
+    /// an extension's `tabs.remove`, or `autoClosed` by the idle timer) onto
+    /// the Archived Tabs page, before it is torn down; a Private page never
+    /// is, nor one already archived at quit; `.discard` for a profile being
+    /// deleted.
+    func closeQuickDetourTab(_ tab: BrowserTab, disposition: QuickDetourCloseDisposition = .archive(autoClosed: false)) {
         guard let index = quickDetourTabs.firstIndex(where: { $0 === tab }) else { return }
+        // Before the teardown, which releases the web view the record's
+        // back/forward list is read from.
+        if case .archive(let autoClosed) = disposition {
+            archiveQuickDetourTab(tab, autoClosed: autoClosed)
+        }
+        quickDetourTabIDsArchivedAtQuit.remove(tab.id)
         takeDownQuickDetourTab(at: index)
         if tab.quickDetourProfile?.isIncognito == true, !hasLivePrivateSession {
             siteSettings?.discardPrivateSession()
@@ -190,7 +213,7 @@ extension TabStore {
     /// Closes every Quick Detour of `profile` — a profile being deleted.
     func closeQuickDetourTabs(of profile: Profile) {
         for tab in quickDetourTabs where tab.quickDetourProfile === profile {
-            closeQuickDetourTab(tab)
+            closeQuickDetourTab(tab, disposition: .discard)
         }
     }
 

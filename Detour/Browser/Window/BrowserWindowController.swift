@@ -2428,7 +2428,8 @@ class BrowserWindowController: NSWindowController {
         guard !isIncognito else { return }
         let count = store.archiveEntries().count
         guard count > 0 else { return }
-        confirmClearArchive(spaceIDs: store.nonIncognitoSpaces.map(\.id), count: count)
+        // Closed Quick Detours too (TASK-193.5), filed under their profiles' scopes.
+        confirmClearArchive(spaceIDs: store.nonIncognitoSpaces.map(\.id) + store.quickDetourArchiveScopeIDs, count: count)
     }
 
     /// Restores a closed-tab record from the Archived Tabs page into its own
@@ -2437,6 +2438,17 @@ class BrowserWindowController: NSWindowController {
     /// page; otherwise it is dismissed here. A record that cannot come back (a
     /// disabled extension's page) beeps.
     func restoreArchivedTab(recordID: Int64) {
+        // A closed Quick Detour reopens as a Quick Detour window on its profile
+        // (TASK-193.5); the sidebar leaves the archive page behind it.
+        if store.isQuickDetourArchiveRecord(id: recordID) {
+            guard QuickDetourWindowController.restore(recordID: recordID, sourceSpace: activeSpace, store: store) != nil
+            else {
+                NSSound.beep()
+                return
+            }
+            tabSidebar.dismissArchivePage(animated: true)
+            return
+        }
         guard let tab = store.restoreClosedTab(recordID: recordID) else {
             NSSound.beep()
             return

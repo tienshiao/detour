@@ -40,6 +40,21 @@ extension BrowserWindowController: WKNavigationDelegate {
             return allowed ? .allow : .cancel
         }
 
+        // Opt-Cmd-click (TASK-193.5): a Quick Detour on the page's profile — a
+        // Private page's is Private — in any frame, a `target=_blank` link
+        // too, and inside a Peek. Before Cmd, which it contains; never routed
+        // (the user chose where it opens). Off in Settings, it is a Cmd+click.
+        // Only for a real click: a script's synthetic Opt-Cmd `click()` must
+        // not open windows in front (it falls through to the Cmd branch).
+        if navigationAction.navigationType == .linkActivated, Self.isUserGesture(navigationAction),
+           let url = navigationAction.request.url,
+           inPageLinkClickBranch(Self.linkClickModifiers(navigationAction.modifierFlags), target: url,
+                                 quickDetourClickEnabled: QuickDetourSettings.shared.isOptionCommandClickEnabled)
+            == .quickDetour {
+            openQuickDetour(url, firing: webView)
+            return .cancel
+        }
+
         if navigationAction.navigationType == .linkActivated && navigationAction.modifierFlags.contains(.command) {
             // A route that moves the link to another space (or a Private
             // window) opens it there instead of in a background tab here

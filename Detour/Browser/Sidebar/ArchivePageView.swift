@@ -388,7 +388,8 @@ final class ArchivePageView: NSView {
     @objc private func filterMenuClear(_ sender: NSMenuItem) {
         let scope = entriesInFilterScope
         guard !scope.isEmpty else { return }
-        let spaceIDs = spaceFilter.map { [$0] } ?? spaces.map(\.id)
+        // With no filter, closed Quick Detours too (TASK-193.5).
+        let spaceIDs = archiveClearScope(spaceFilter: spaceFilter, spaceIDs: spaces.map(\.id), entries: entries)
         onClear?(spaceIDs, scope.count)
     }
 
@@ -635,7 +636,8 @@ final class ArchiveEntryCellView: NSTableCellView {
 
     func configure(entry: ArchiveEntry, spaceBadge: String?) {
         titleLabel.stringValue = entry.title.isEmpty ? archiveDisplayURL(entry.url) : entry.title
-        urlLabel.stringValue = archiveDisplayURL(entry.url)
+        // "Quick Detour · …" (and "auto-closed") for a closed Quick Detour (TASK-193.5).
+        urlLabel.stringValue = archiveEntrySubtitle(entry)
         badgeLabel.stringValue = spaceBadge ?? ""
         badgeWidthConstraint.constant = spaceBadge == nil ? 0 : 18
         alphaValue = entry.isRestorable ? 1 : ArchivePageView.disabledEntryAlpha
