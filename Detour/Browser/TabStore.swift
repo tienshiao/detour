@@ -63,6 +63,11 @@ protocol TabStoreObserver: AnyObject {
     /// A Quick Detour's tab left `quickDetourTabs` and was torn down
     /// (TASK-193.1): its window closes, a Private one's downloads go.
     func tabStoreDidCloseQuickDetour(_ tab: BrowserTab)
+
+    /// A Quick Detour's tab left `quickDetourTabs` for `space.tabs`, alive
+    /// (Open in, TASK-193.3): the same tab, the same web view. Sent after
+    /// `tabStoreDidInsertTab`. A Private one's downloads move with it.
+    func tabStoreDidMoveQuickDetour(_ tab: BrowserTab, into space: Space)
 }
 
 extension TabStoreObserver {
@@ -83,6 +88,7 @@ extension TabStoreObserver {
     func tabStoreDidUpdateClosedTabRecords() {}
     func tabStoreDidAddProfile(_ profile: Profile) {}
     func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) {}
+    func tabStoreDidMoveQuickDetour(_ tab: BrowserTab, into space: Space) {}
 }
 
 // MARK: - Space
@@ -461,6 +467,14 @@ class TabStore {
     /// Used only for persistence — the space that was last active when saving.
     /// Each window tracks its own active space independently.
     var lastActiveSpaceID: UUID?
+
+    /// The normal spaces in the order they were last used, most recent first
+    /// (TASK-193.3): a space is used when a browser window switches to it or
+    /// a window showing it becomes key (`noteSpaceUsed`). In memory only,
+    /// seeded at launch with the restored last active space. What
+    /// `QuickDetour.mostRecentlyUsedSpace` reads for "a profile's most
+    /// recently used space"; deleted spaces are skipped there, not pruned.
+    private(set) var spaceUseOrder: [UUID] = []
 
     /// In-memory dedup cache for history: "url|spaceID" -> timestamp
     private var recentHistoryWrites: [String: TimeInterval] = [:]
@@ -1298,6 +1312,7 @@ class TabStore {
 
         let activeID = session.lastActiveSpaceID.flatMap { UUID(uuidString: $0) } ?? self.spaces.first!.id
         self.lastActiveSpaceID = activeID
+        self.noteSpaceUsed(activeID)
         self.notifyObservers { $0.tabStoreDidUpdateSpaces() }
 
         let activeSpace = self.space(withID: activeID)
@@ -2432,6 +2447,15 @@ class TabStore {
         scheduleSave()
     }
 
+    /// Records that a browser window just used the space `id` — switched to
+    /// it, or came to the front showing it — for `spaceUseOrder`. Private and
+    /// unknown spaces are not recorded: Open in never names them.
+    func noteSpaceUsed(_ id: UUID) {
+        guard let space = space(withID: id), !space.isIncognito, spaceUseOrder.first != id else { return }
+        spaceUseOrder.removeAll { $0 == id }
+        spaceUseOrder.insert(id, at: 0)
+    }
+
     func ensureDefaultSpace() {
         guard spaces.isEmpty else { return }
         let profile = ensureDefaultProfile()
@@ -2439,6 +2463,7 @@ class TabStore {
         space.profile = profile
         spaces.append(space)
         lastActiveSpaceID = space.id
+        noteSpaceUsed(space.id)
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
     }
 
@@ -2518,8 +2543,11 @@ class TabStore {
         )
     }
 
+    /// Puts `tab` into `space.tabs` at the new-tab position for `parentID`
+    /// (`newTabInsertionIndex`), subscribed and announced. Also how a Quick
+    /// Detour's page enters a space (TASK-193.3).
     @discardableResult
-    private func insertTab(_ tab: BrowserTab, in space: Space, parentID: UUID?) -> Int {
+    func insertTab(_ tab: BrowserTab, in space: Space, parentID: UUID?) -> Int {
         tab.spaceID = space.id
         tab.parentID = parentID
 

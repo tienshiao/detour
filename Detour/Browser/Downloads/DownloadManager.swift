@@ -65,8 +65,11 @@ class DownloadItem: NSObject {
 
     let id: UUID
     let createdAt: Date
-    /// Fixed at creation: the window the download started in (TASK-148).
-    let scope: DownloadScope
+    /// The window the download started in (TASK-148). Fixed at creation,
+    /// except that a Private Quick Detour's downloads move with its page into
+    /// the Private window Open in hands it to (TASK-193.3,
+    /// `DownloadManager.moveIncognitoDownloads`).
+    fileprivate(set) var scope: DownloadScope
     /// When the download finished. Set once, by `markCompleted(at:)`, and
     /// carried through every later save and a relaunch (TASK-143). Nil for a
     /// download that is in flight, failed or was cancelled.
@@ -362,6 +365,20 @@ class DownloadManager: NSObject {
         }
     }
 
+    /// Rescopes the Private downloads of `from` (a Private Quick Detour's
+    /// tab id) to `to` (the Private window's space its page moved into,
+    /// TASK-193.3): listed and badged there from now on, asked about and
+    /// cancelled when that window closes, as its own downloads are. In-flight
+    /// ones keep running.
+    func moveIncognitoDownloads(from: UUID, to: UUID) {
+        let moving = items.filter { $0.scope == .incognito(spaceID: from) }
+        for item in moving {
+            notifyObservers { $0.downloadManagerDidRemoveItem(item) }
+            item.scope = .incognito(spaceID: to)
+            notifyObservers { $0.downloadManagerDidAddItem(item) }
+        }
+    }
+
     /// The in-flight downloads `closing` would cancel: what a window asks
     /// about before it closes, and the quit confirmation names.
     func privateDownloadsInFlight(closing: PrivateDownloadClosePolicy.Closing) -> [DownloadItem] {
@@ -500,6 +517,14 @@ extension DownloadManager: TabStoreObserver {
     /// and go when its window closes, as a Private window's do.
     func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) {
         tabStoreDidUpdateSpaces()
+    }
+
+    /// A Private Quick Detour's page moved into a Private window's space
+    /// (TASK-193.3): its downloads go with it. A normal one's are `.normal`,
+    /// listed in every normal window already.
+    func tabStoreDidMoveQuickDetour(_ tab: BrowserTab, into space: Space) {
+        guard space.isIncognito else { return }
+        moveIncognitoDownloads(from: tab.id, to: space.id)
     }
 }
 

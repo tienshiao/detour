@@ -230,7 +230,27 @@ class BrowserWindowController: NSWindowController {
     /// changed (TASK-51). Every path that can change it funnels through here;
     /// the tracker drops the repeats.
     func announceExtensionActiveTabIfChanged() {
+        guard !holdsExtensionActivation else { return }
         extensionActiveTabTracker.announce(extensionActiveTab, in: activeSpace?.profile)
+    }
+
+    /// Set only inside `holdingExtensionActivation`.
+    private var holdsExtensionActivation = false
+
+    /// Runs `body` with this window's activation announcements held, then
+    /// makes the one `body` led to. Quick Detour's Open in (TASK-193.3) selects
+    /// the page it hands over and announces its move inside, so the contexts
+    /// hear `tabs.onDetached` / `onAttached` before `tabs.onActivated`, as
+    /// for a tab dragged between windows — and the move is announced while
+    /// the window has the tab selected, which WebKit needs to list it at all
+    /// (a window with nothing selected reports no tabs, so the attach would
+    /// carry no position).
+    func holdingExtensionActivation(_ body: () -> Void) {
+        let wasHeld = holdsExtensionActivation
+        holdsExtensionActivation = true
+        body()
+        holdsExtensionActivation = wasHeld
+        announceExtensionActiveTabIfChanged()
     }
 
     /// Autosave names of the window frame and of the sidebar split view. Scoped
@@ -526,6 +546,7 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.activeSpaceID = id
         if !isIncognito {
             store.lastActiveSpaceID = id
+            store.noteSpaceUsed(id)
         }
 
         tabSidebar.resetState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders, tabs: space.tabs)
@@ -3434,6 +3455,9 @@ extension BrowserWindowController: NSWindowDelegate {
         // Update extension manager's active space for chrome.tabs.query({currentWindow: true})
         if let spaceID = activeSpaceID {
             ExtensionManager.shared.lastActiveSpaceID = spaceID
+            // Open in's "most recently used space" (TASK-193.3); Private
+            // spaces are not recorded.
+            store.noteSpaceUsed(spaceID)
         }
 
         if let tab = selectedTab {

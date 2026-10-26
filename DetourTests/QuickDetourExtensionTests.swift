@@ -20,6 +20,8 @@ final class QuickDetourExtensionTests: XCTestCase {
     private var openWebViews: [WKWebView] = []
     private var windows: [QuickDetourWindowController] = []
     private var servers: [LoopbackHTTPServer] = []
+    private var browserWindows: [BrowserWindowController] = []
+    private var createdSpaceIDs: [UUID] = []
 
     /// Released profiles take their process pool down with them, which WebKit
     /// traps on inside an IPC dispatch (`ExtensionPrivateStoreTests`): kept for
@@ -29,6 +31,16 @@ final class QuickDetourExtensionTests: XCTestCase {
     override func tearDown() async throws {
         for controller in windows { controller.close() }
         windows.removeAll()
+        for wc in browserWindows {
+            wc.sidebarSplitView.autosaveName = nil
+            wc.window?.close()
+        }
+        browserWindows.removeAll()
+        for id in createdSpaceIDs {
+            TabStore.shared.space(withID: id)?.tabs.forEach { $0.teardown() }
+            TabStore.shared.forceRemoveSpace(id: id)
+        }
+        createdSpaceIDs.removeAll()
         for webView in openWebViews {
             webView.stopLoading()
             webView.loadHTMLString("", baseURL: nil)
@@ -85,6 +97,32 @@ final class QuickDetourExtensionTests: XCTestCase {
     });
     chrome.action.onClicked.addListener((tab) => {
         seen.clicks.push({ url: tab ? tab.url : null, windowId: tab ? tab.windowId : null });
+    });
+    // What Open in (TASK-193.3) tells the worker.
+    const events = { created: [], removed: [], detached: [], attached: [], windowsRemoved: [] };
+    chrome.tabs.onCreated.addListener((tab) => {
+        events.created.push({ id: tab.id, windowId: tab.windowId, url: tab.url || tab.pendingUrl || null });
+    });
+    chrome.tabs.onRemoved.addListener((tabId, info) => {
+        events.removed.push({ tabId, windowId: info.windowId, isWindowClosing: info.isWindowClosing });
+    });
+    chrome.tabs.onDetached.addListener((tabId, info) => {
+        events.detached.push({ tabId, oldWindowId: info.oldWindowId, oldPosition: info.oldPosition });
+    });
+    chrome.tabs.onAttached.addListener((tabId, info) => {
+        events.attached.push({ tabId, newWindowId: info.newWindowId, newPosition: info.newPosition });
+    });
+    chrome.windows.onRemoved.addListener((windowId) => { events.windowsRemoved.push(windowId); });
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (!message) { return false; }
+        if (message.type === 'events') { sendResponse(events); return true; }
+        if (message.type === 'getTab') {
+            chrome.tabs.get(message.tabId).then(
+                (value) => sendResponse({ value }),
+                (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            return true;
+        }
+        return false;
     });
     """
 
@@ -413,5 +451,154 @@ final class QuickDetourExtensionTests: XCTestCase {
         let popup = try XCTUnwrap(popupWindows(in: all["value"]).first, "\(all)")
         XCTAssertEqual(popup["incognito"] as? Bool, true)
         XCTAssertEqual(tabs(of: popup).first?["incognito"] as? Bool, true)
+    }
+
+    // MARK: - Open in (TASK-193.3)
+
+    /// A normal window on a new space of `profile`, in front, registered with
+    /// the app delegate as placement expects.
+    private func browserWindow(showingANewSpaceOf profile: Profile, named name: String) -> (BrowserWindowController, Space) {
+        let space = TabStore.shared.addSpace(name: name, emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
+        createdSpaceIDs.append(space.id)
+        let wc = BrowserWindowController(incognito: false)
+        wc.sidebarSplitView.autosaveName = nil
+        wc.setActiveSpace(id: space.id, selectTab: false)
+        wc.showWindow(nil)
+        wc.window?.makeKeyAndOrderFront(nil)
+        (NSApp.delegate as? AppDelegate)?.registerWindowController(wc)
+        browserWindows.append(wc)
+        return (wc, space)
+    }
+
+    private func popupAndTab(via page: WKWebView) async throws -> (windowID: Int, tabID: Int) {
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        let popup = try XCTUnwrap(popupWindows(in: all["value"]).first, "\(all)")
+        return (try XCTUnwrap(popup["id"] as? Int), try XCTUnwrap(tabs(of: popup).first?["id"] as? Int))
+    }
+
+    /// Within one profile the page moves as the same tab: the worker hears
+    /// `tabs.onDetached` from the popup and `tabs.onAttached` to the browser
+    /// window, then `windows.onRemoved` for the popup — no `tabs.onRemoved`
+    /// and no `tabs.onCreated` for it. The tab id stays and now names the
+    /// browser window, from an extension page and from the worker.
+    func testMovingThePageIsADetachAndAttachUnderTheSameTabID() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let profile = makeProfile("Quick Detour Ext Move")
+        let (_, page) = try await loadPage(ext, in: profile)
+        let url = try await serve()
+        let (window, space) = browserWindow(showingANewSpaceOf: profile, named: "Move Target")
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let (popupID, tabID) = try await popupAndTab(via: page)
+
+        controller.open(in: .space(space.id))
+        XCTAssertEqual(window.selectedTabID, controller.tabID, "moved")
+
+        try await waitUntil("the worker to hear the move and the window close", timeout: 10) {
+            let events = try await self.worker("events", via: page)
+            return !((events["attached"] as? [Any]) ?? []).isEmpty
+                && ((events["windowsRemoved"] as? [Int]) ?? []).contains(popupID)
+        }
+        let events = try await worker("events", via: page)
+        let detached = try XCTUnwrap(events["detached"] as? [[String: Any]])
+        XCTAssertEqual(detached.map { $0["tabId"] as? Int }, [tabID])
+        XCTAssertEqual(detached.first?["oldWindowId"] as? Int, popupID)
+        XCTAssertEqual(detached.first?["oldPosition"] as? Int, 0)
+        let attached = try XCTUnwrap(events["attached"] as? [[String: Any]])
+        XCTAssertEqual(attached.map { $0["tabId"] as? Int }, [tabID])
+        let newWindowID = try XCTUnwrap(attached.first?["newWindowId"] as? Int)
+        XCTAssertNotEqual(newWindowID, popupID)
+        XCTAssertFalse(((events["removed"] as? [[String: Any]]) ?? []).contains { $0["tabId"] as? Int == tabID },
+                       "never removed: \(events)")
+        let created = ((events["created"] as? [[String: Any]]) ?? []).filter { $0["id"] as? Int == tabID }
+        XCTAssertEqual(created.map { $0["windowId"] as? Int }, [popupID],
+                       "created once, in the popup, and never again: \(events)")
+        XCTAssertEqual(attached.first?["newPosition"] as? Int, 0,
+                       "announced once the window has it selected, so WebKit lists it: \(events)")
+
+        // The same id, in the browser window, from both transports.
+        let got = try await pagePromise("chrome.tabs.get(\(tabID))", in: page)
+        XCTAssertEqual(got["settled"] as? String, "resolved", "\(got)")
+        let tab = try XCTUnwrap(got["value"] as? [String: Any])
+        XCTAssertEqual(tab["windowId"] as? Int, newWindowID)
+        XCTAssertEqual(tab["url"] as? String, url.absoluteString)
+        let fromWorker = try await askWorker(from: page, message: ["type": "getTab", "tabId": tabID])
+        let workerTab = try XCTUnwrap((fromWorker["reply"] as? [String: Any])?["value"] as? [String: Any],
+                                      "\(fromWorker)")
+        XCTAssertEqual(workerTab["windowId"] as? Int, newWindowID)
+        let normal = try await pagePromise("chrome.windows.get(\(newWindowID))", in: page)
+        XCTAssertEqual((normal["value"] as? [String: Any])?["type"] as? String, "normal", "\(normal)")
+
+        // The popup is gone: refused by id, promise and callback alike.
+        let popupLookup = try await pagePromise("chrome.windows.get(\(popupID))", in: page)
+        XCTAssertEqual(popupLookup["settled"] as? String, "rejected", "\(popupLookup)")
+        let callback = try await pageEval(callbackOutcomeJS(call: "return chrome.windows.get(\(popupID), cb);"),
+                                          in: page)
+        XCTAssertNotNil(callback["lastErrorInCallback"] as? String, "\(callback)")
+        let after = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        XCTAssertTrue(popupWindows(in: after["value"]).isEmpty, "\(after)")
+    }
+
+    /// Another profile's extension hears nothing of a move within this one.
+    func testAnotherProfilesExtensionHearsNothingOfTheMove() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let owner = makeProfile("Quick Detour Ext Move Owner")
+        let other = makeProfile("Quick Detour Ext Move Other")
+        _ = try await loadPage(ext, in: owner)
+        let (_, otherPage) = try await loadPage(ext, in: other)
+        let url = try await serve()
+        let (_, space) = browserWindow(showingANewSpaceOf: owner, named: "Move Target Owner")
+        let controller = try await openQuickDetour(on: owner, loading: url)
+
+        controller.open(in: .space(space.id))
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let events = try await worker("events", via: otherPage)
+        for key in ["created", "removed", "detached", "attached", "windowsRemoved"] {
+            XCTAssertTrue(((events[key] as? [Any]) ?? []).isEmpty, "\(key): \(events)")
+        }
+    }
+
+    /// Into another profile's space the address reloads: the Quick Detour's
+    /// tab is removed (and its window) for its own profile's extension, and
+    /// the new tab is created for the other profile's, on the same URL.
+    func testReloadingInAnotherProfileIsARemoveThereAndACreateHere() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let source = makeProfile("Quick Detour Ext Reload Source")
+        let target = makeProfile("Quick Detour Ext Reload Target")
+        let (_, sourcePage) = try await loadPage(ext, in: source)
+        let (_, targetPage) = try await loadPage(ext, in: target)
+        let url = try await serve()
+        let (window, space) = browserWindow(showingANewSpaceOf: target, named: "Reload Target")
+        let controller = try await openQuickDetour(on: source, loading: url)
+        let (popupID, tabID) = try await popupAndTab(via: sourcePage)
+
+        controller.open(in: .space(space.id))
+        let opened = try XCTUnwrap(space.tabs.first)
+        XCTAssertEqual(window.selectedTabID, opened.id)
+
+        try await waitUntil("the source's worker to hear the close", timeout: 10) {
+            let events = try await self.worker("events", via: sourcePage)
+            return ((events["windowsRemoved"] as? [Int]) ?? []).contains(popupID)
+        }
+        let sourceEvents = try await worker("events", via: sourcePage)
+        XCTAssertTrue(((sourceEvents["removed"] as? [[String: Any]]) ?? []).contains { $0["tabId"] as? Int == tabID },
+                      "\(sourceEvents)")
+        XCTAssertTrue(((sourceEvents["attached"] as? [Any]) ?? []).isEmpty, "nothing moved: \(sourceEvents)")
+
+        // The new tab is created for the target profile's extension, and is
+        // on the address (by id: the window it is in was opened after the
+        // context loaded, which WebKit's window-scoped queries do not list).
+        try await waitUntil("the target's worker to hear the new tab", timeout: 10) {
+            let events = try await self.worker("events", via: targetPage)
+            return !((events["created"] as? [Any]) ?? []).isEmpty
+        }
+        let targetEvents = try await worker("events", via: targetPage)
+        let createdID = try XCTUnwrap(((targetEvents["created"] as? [[String: Any]]) ?? []).last?["id"] as? Int)
+        XCTAssertNotEqual(createdID, tabID)
+        try await waitUntil("the new tab on the address", timeout: 10) {
+            let got = try await self.pagePromise("chrome.tabs.get(\(createdID))", in: targetPage)
+            return (got["value"] as? [String: Any])?["url"] as? String == url.absoluteString
+        }
+        XCTAssertFalse(((targetEvents["created"] as? [Any]) ?? []).isEmpty, "\(targetEvents)")
     }
 }

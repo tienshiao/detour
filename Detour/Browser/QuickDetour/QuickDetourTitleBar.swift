@@ -4,13 +4,19 @@ import AppKit
 /// Arc (docs/little-window/arc-little-arc.png): past the traffic lights an
 /// address capsule holding the profile pill, the page's host in the centre
 /// (click: the palette, navigating in place), the extension buttons and the
-/// copy-link button; then Open in <Space> at the trailing edge.
+/// copy-link button; then Open in <Space> at the trailing edge: a capsule
+/// like the address one, whose main part moves the page (TASK-193.3, Cmd+O)
+/// and whose chevron lists the spaces to move it to.
 ///
-/// Placeholders until their subtasks: the pill shows the profile and has no
-/// menu (TASK-193.4); Open in <Space> is shown disabled (TASK-193.3).
+/// Placeholder until its subtask: the pill shows the profile and has no menu
+/// (TASK-193.4).
 final class QuickDetourTitleBar: NSView {
     var onHostClick: (() -> Void)?
     var onCopyLink: (() -> Void)?
+    /// Open in's main part was clicked: the default target.
+    var onOpenIn: (() -> Void)?
+    /// Open in's chevron was clicked: the dropdown, anchored on the capsule.
+    var onOpenInMenu: ((NSView) -> Void)?
     /// An extension's button was clicked: its id and the button to anchor on.
     var onExtensionClick: ((String, NSView) -> Void)?
     /// The extensions button (all of the profile's extensions) was clicked.
@@ -28,7 +34,11 @@ final class QuickDetourTitleBar: NSView {
     let extensionStack = NSStackView()
     let extensionsMenuButton = HoverButton()
     let copyButton = HoverButton()
+    /// Open in's capsule: `openInButton`, a divider, `openInMenuButton`.
+    let openInControl = NSView()
     let openInButton = NSButton(title: "", target: nil, action: nil)
+    let openInMenuButton = HoverButton()
+    private let openInDivider = NSView()
     private let separator = NSBox()
 
     override init(frame frameRect: NSRect) {
@@ -94,15 +104,33 @@ final class QuickDetourTitleBar: NSView {
         configureIconButton(copyButton, symbol: "link", label: "Copy Link", action: #selector(copyClicked))
         capsule.addSubview(copyButton)
 
-        openInButton.bezelStyle = .push
-        openInButton.controlSize = .small
+        openInControl.wantsLayer = true
+        openInControl.layer?.cornerRadius = 8
+        openInControl.translatesAutoresizingMaskIntoConstraints = false
+        openInControl.setContentHuggingPriority(.required, for: .horizontal)
+        openInControl.setContentCompressionResistancePriority(.required, for: .horizontal)
+        addSubview(openInControl)
+
+        openInButton.isBordered = false
+        openInButton.bezelStyle = .inline
         openInButton.font = .systemFont(ofSize: 12)
-        openInButton.isEnabled = false
+        openInButton.target = self
+        openInButton.action = #selector(openInClicked)
         openInButton.translatesAutoresizingMaskIntoConstraints = false
         openInButton.setContentHuggingPriority(.required, for: .horizontal)
         openInButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        openInButton.toolTip = "Moving the page into a space is not available yet"
-        addSubview(openInButton)
+        openInControl.addSubview(openInButton)
+
+        openInDivider.wantsLayer = true
+        openInDivider.translatesAutoresizingMaskIntoConstraints = false
+        openInControl.addSubview(openInDivider)
+
+        configureIconButton(openInMenuButton, symbol: "chevron.down", label: "Open in Another Space",
+                            action: #selector(openInMenuClicked))
+        openInMenuButton.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Open in Another Space")?
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        openInMenuButton.fixedHoverSize = 20
+        openInControl.addSubview(openInMenuButton)
 
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
@@ -115,7 +143,7 @@ final class QuickDetourTitleBar: NSView {
 
         NSLayoutConstraint.activate([
             capsule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.leadingInset),
-            capsule.trailingAnchor.constraint(equalTo: openInButton.leadingAnchor, constant: -8),
+            capsule.trailingAnchor.constraint(equalTo: openInControl.leadingAnchor, constant: -8),
             capsule.centerYAnchor.constraint(equalTo: centerYAnchor),
             capsule.heightAnchor.constraint(equalToConstant: 28),
 
@@ -144,13 +172,23 @@ final class QuickDetourTitleBar: NSView {
             extensionStack.trailingAnchor.constraint(equalTo: extensionsMenuButton.leadingAnchor, constant: -2),
             extensionStack.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
 
-            openInButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            openInButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            openInControl.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            openInControl.centerYAnchor.constraint(equalTo: centerYAnchor),
+            openInControl.heightAnchor.constraint(equalToConstant: 28),
+            openInButton.leadingAnchor.constraint(equalTo: openInControl.leadingAnchor, constant: 10),
+            openInButton.centerYAnchor.constraint(equalTo: openInControl.centerYAnchor),
+            openInDivider.leadingAnchor.constraint(equalTo: openInButton.trailingAnchor, constant: 8),
+            openInDivider.centerYAnchor.constraint(equalTo: openInControl.centerYAnchor),
+            openInDivider.widthAnchor.constraint(equalToConstant: 1),
+            openInDivider.heightAnchor.constraint(equalToConstant: 16),
+            openInMenuButton.leadingAnchor.constraint(equalTo: openInDivider.trailingAnchor, constant: 2),
+            openInMenuButton.centerYAnchor.constraint(equalTo: openInControl.centerYAnchor),
 
             separator.leadingAnchor.constraint(equalTo: leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        openInMenuButtonTrailing.isActive = true
         updateColors()
     }
 
@@ -191,22 +229,45 @@ final class QuickDetourTitleBar: NSView {
         copyButton.isEnabled = !text.isEmpty
     }
 
-    /// The Open in button's space, or nil to hide it (a Private Quick Detour
-    /// has no space to open in).
-    func setOpenInSpace(name: String?) {
-        guard let name else {
-            openInButton.isHidden = true
+    /// The Open in capsule: what its main part names after "Open in" (a
+    /// space's emoji and name, or "Private Window"), whether that reloads the
+    /// page (another profile's space), and whether there is a dropdown (none
+    /// for a Private Quick Detour). A nil destination hides it: there is no
+    /// normal space to open in.
+    func setOpenIn(destination: String?, reloads: Bool, hasDropdown: Bool) {
+        guard let destination else {
+            openInControl.isHidden = true
             return
         }
-        openInButton.isHidden = false
+        openInControl.isHidden = false
         let title = NSMutableAttributedString(string: "Open in ", attributes: [
             .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor])
-        title.append(NSAttributedString(string: name, attributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor]))
+        title.append(NSAttributedString(string: destination, attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor]))
         title.append(NSAttributedString(string: "  ⌘O", attributes: [
             .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
         openInButton.attributedTitle = title
+        openInButton.toolTip = reloads
+            ? "Open this address in \(destination) (another profile: the page reloads there)"
+            : "Move this page into a new tab in \(destination)"
+        openInButton.setAccessibilityLabel("Open in \(destination)")
+        openInMenuButton.isHidden = !hasDropdown
+        openInDivider.isHidden = !hasDropdown
+        // Without the chevron the capsule closes after the title. The one
+        // going inactive goes first, so the two never conflict.
+        if hasDropdown {
+            openInButtonTrailing.isActive = false
+            openInMenuButtonTrailing.isActive = true
+        } else {
+            openInMenuButtonTrailing.isActive = false
+            openInButtonTrailing.isActive = true
+        }
     }
+
+    private lazy var openInButtonTrailing = openInButton.trailingAnchor.constraint(
+        equalTo: openInControl.trailingAnchor, constant: -10)
+    private lazy var openInMenuButtonTrailing = openInMenuButton.trailingAnchor.constraint(
+        equalTo: openInControl.trailingAnchor, constant: -3)
 
     /// The pinned extensions' buttons, in order.
     func setExtensions(_ items: [(id: String, image: NSImage)]) {
@@ -246,6 +307,8 @@ final class QuickDetourTitleBar: NSView {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             capsule.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
             pill.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+            openInControl.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+            openInDivider.layer?.backgroundColor = NSColor.separatorColor.cgColor
         }
     }
 
@@ -254,6 +317,8 @@ final class QuickDetourTitleBar: NSView {
     @objc private func hostClicked() { onHostClick?() }
     @objc private func copyClicked() { onCopyLink?() }
     @objc private func extensionsMenuClicked() { onExtensionsMenuClick?(extensionsMenuButton) }
+    @objc private func openInClicked() { onOpenIn?() }
+    @objc private func openInMenuClicked() { onOpenInMenu?(openInControl) }
 
     @objc private func extensionClicked(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }

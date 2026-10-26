@@ -225,6 +225,21 @@ edges ([UI probes](./ui-probes.md)).
   schedule a `.common`-mode timer that calls `menu.performActionForItem(at:)`
   then `cancelTracking()`. The pop-up selects the item and sends its action
   (TASK-191.3, every pop-up of the Links pane).
+- **A popped-up `NSMenu` takes posted keys.** Its tracking loop reads the
+  app's event queue, so Down arrows and Return posted from `.common`-mode
+  timers (scheduled before the posted click that opens it) choose an item
+  as a person would; Escape closes it. Section headers are skipped by the
+  arrows (TASK-193.3, the Quick Detour's Open in dropdown).
+- **Wait for the person to be idle.** When someone is using the machine,
+  each activation takes the focus from them and their keystrokes land in
+  Detour (TASK-193.3: stray text in a page's field, a letter before a typed
+  URL that turned it into a search). Gate every activation and refocus on
+  `CGEventSource.secondsSinceLastEventType(.combinedSessionState,
+  eventType: CGEventType(rawValue: ~0)!)` (HID input only; `NSApp.postEvent`
+  events do not count), e.g. 12 s, and log human input seen while posting.
+  A region capture (`screencapture -R`) shows whatever is in front: one
+  taken after the person brought their own window forward showed it, and
+  had to be deleted.
 - **A shell-launched instance is not the key application.** Anything
   enabled by `NSApp.keyWindow` (for example menu items validated against
   the key window) cannot be driven; say so.[^notes-updates]

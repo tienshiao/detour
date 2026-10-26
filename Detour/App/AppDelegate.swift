@@ -361,12 +361,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// with `.stay`. `typed` marks the visit as typed in history, as a URL
     /// submitted in the palette is when it opens here.
     func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false) {
-        // Taken per link: an earlier one may have opened or switched a window.
+        let placed = placeTab(routedTo: decision) { space in
+            let tab = TabStore.shared.addTab(in: space)
+            tab.load(url, typed: typed)
+            return tab
+        }
+        // Never the most recent (normal) space for a link routed to Private.
+        if placed == nil, decision != .privateWindow { openInMostRecentSpace(url) }
+    }
+
+    /// Puts a tab where `decision` sends it, by the pure `linkPlacement`, and
+    /// returns the window it is selected in, now in front: a link from
+    /// another app or a routed link (`openLink`), and Quick Detour's Open in
+    /// (TASK-193.3), whose `makeTab` hands over the Quick Detour's own page
+    /// instead of opening a URL. `makeTab` gets the receiving space once its
+    /// window shows it — switched, or opened for it — so a handed-over tab is
+    /// listed by a window the moment it arrives.
+    ///
+    /// `didSelect` runs once the window has selected the tab, before the
+    /// window tells the extension contexts it is active
+    /// (`holdingExtensionActivation`): where a handed-over tab's move is
+    /// announced.
+    ///
+    /// Nil when nothing was placed: Most Recent Space (the caller's own
+    /// fallback), a window or space gone since the snapshot, or `makeTab`
+    /// declining. A Private placement whose window has gone opens a new
+    /// Private window instead, as a link always did.
+    @discardableResult
+    func placeTab(routedTo decision: LinkRouteDecision, makeTab: (Space) -> BrowserTab?,
+                  didSelect: ((BrowserWindowController, BrowserTab) -> Void)? = nil) -> BrowserWindowController? {
+        // Taken per placement: an earlier one may have opened or switched a window.
         let windows = browserWindowsByRecency
         let placement = linkPlacement(for: decision, windows: windows.map {
             LinkPlacementWindow(id: ObjectIdentifier($0), activeSpaceID: $0.activeSpaceID, isPrivate: $0.isIncognito)
         })
-        place(url, placement, windows: windows, typed: typed)
+        return place(placement, windows: windows, makeTab: makeTab, didSelect: didSelect)
     }
 
     /// Browser windows, the most recently active first: front to back, then
@@ -380,39 +409,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return ordered
     }
 
-    private func place(_ url: URL, _ placement: LinkPlacement<ObjectIdentifier>, windows: [BrowserWindowController],
-                       typed: Bool) {
+    private func place(_ placement: LinkPlacement<ObjectIdentifier>, windows: [BrowserWindowController],
+                       makeTab: (Space) -> BrowserTab?,
+                       didSelect: ((BrowserWindowController, BrowserTab) -> Void)?) -> BrowserWindowController? {
         let store = TabStore.shared
         func window(_ id: ObjectIdentifier) -> BrowserWindowController? {
             windows.first { ObjectIdentifier($0) == id }
         }
         switch placement {
         case .openInWindow(let id):
-            guard let wc = window(id), let space = wc.activeSpace else { return openInMostRecentSpace(url) }
-            openRoutedTab(url, in: space, of: wc, typed: typed)
+            guard let wc = window(id), let space = wc.activeSpace else { return nil }
+            return present(in: space, of: wc, makeTab: makeTab, didSelect: didSelect)
         case .switchWindow(let id, let spaceID):
-            guard let wc = window(id), let space = store.space(withID: spaceID) else { return openInMostRecentSpace(url) }
+            guard let wc = window(id), let space = store.space(withID: spaceID) else { return nil }
             wc.setActiveSpace(id: spaceID, selectTab: false)
-            openRoutedTab(url, in: space, of: wc, typed: typed)
+            return present(in: space, of: wc, makeTab: makeTab, didSelect: didSelect)
         case .openInNewWindow(let spaceID):
-            guard let space = store.space(withID: spaceID) else { return openInMostRecentSpace(url) }
-            openRoutedTab(url, in: space, of: createNewWindow(showing: space), typed: typed)
+            guard let space = store.space(withID: spaceID) else { return nil }
+            return present(in: space, of: createNewWindow(showing: space), makeTab: makeTab, didSelect: didSelect)
         case .openInPrivateWindow(let id):
-            guard let wc = window(id), let space = wc.activeSpace else { return createNewWindowWithURL(url, incognito: true) }
-            openRoutedTab(url, in: space, of: wc, typed: typed)
+            guard let wc = window(id), let space = wc.activeSpace else {
+                return placeInNewPrivateWindow(makeTab, didSelect: didSelect)
+            }
+            return present(in: space, of: wc, makeTab: makeTab, didSelect: didSelect)
         case .openInNewPrivateWindow:
-            createNewWindowWithURL(url, incognito: true)
+            return placeInNewPrivateWindow(makeTab, didSelect: didSelect)
         case .mostRecentSpace:
-            openInMostRecentSpace(url)
+            return nil
         }
     }
 
-    /// A routed link: a tab in `space` of `wc`, selected, and the window in front.
-    private func openRoutedTab(_ url: URL, in space: Space, of wc: BrowserWindowController, typed: Bool) {
-        let tab = TabStore.shared.addTab(in: space)
-        tab.load(url, typed: typed)
-        wc.selectTab(id: tab.id)
+    /// A placed tab: made in `space` of `wc`, selected, and the window in
+    /// front. Not a background tab, so a collapsed sidebar does not say one
+    /// opened.
+    private func present(in space: Space, of wc: BrowserWindowController, makeTab: (Space) -> BrowserTab?,
+                         didSelect: ((BrowserWindowController, BrowserTab) -> Void)?) -> BrowserWindowController? {
+        guard let tab = wc.withoutBackgroundTabToast({ makeTab(space) }) else { return nil }
+        select(tab, in: wc, didSelect: didSelect)
         wc.window?.makeKeyAndOrderFront(nil)
+        return wc
+    }
+
+    private func select(_ tab: BrowserTab, in wc: BrowserWindowController,
+                        didSelect: ((BrowserWindowController, BrowserTab) -> Void)?) {
+        guard let didSelect else { return wc.selectTab(id: tab.id) }
+        wc.holdingExtensionActivation {
+            wc.selectTab(id: tab.id)
+            didSelect(wc, tab)
+        }
+    }
+
+    /// A new Private window holding only the placed tab — no empty tab of its
+    /// own, as New Private Window would add. When `makeTab` declines, the
+    /// window is never shown and its space goes again.
+    private func placeInNewPrivateWindow(_ makeTab: (Space) -> BrowserTab?,
+                                         didSelect: ((BrowserWindowController, BrowserTab) -> Void)?)
+        -> BrowserWindowController? {
+        let wc = BrowserWindowController(incognito: true)
+        guard let space = wc.activeSpace, let tab = wc.withoutBackgroundTabToast({ makeTab(space) }) else {
+            if let spaceID = wc.activeSpaceID { TabStore.shared.removeIncognitoSpace(id: spaceID) }
+            return nil
+        }
+        select(tab, in: wc, didSelect: didSelect)
+        wc.showWindow(nil)
+        registerWindowController(wc)
+        wc.window?.makeKeyAndOrderFront(nil)
+        return wc
     }
 
     /// What a link from another app did before routes, kept exactly (the Most
@@ -505,6 +567,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         quickDetourItem.keyEquivalentModifierMask = [.command, .option]
         // Its key equivalent follows the hotkey's setting (QuickDetourHotKey).
         quickDetourMenuItem = quickDetourItem
+        // Cmd+O (TASK-193.3): enabled only while a Quick Detour is key, whose
+        // controller answers it and names its target in the title.
+        fileMenu.addItem(withTitle: QuickDetourWindowController.openInMenuItemTitle,
+                         action: #selector(QuickDetourWindowController.openInDefaultSpace(_:)), keyEquivalent: "o")
         fileMenuItem.submenu = fileMenu
 
         // Edit menu

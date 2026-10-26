@@ -63,6 +63,9 @@ sources:
   - id: lifecycle-tests
     resource: ../../DetourTests/ExtensionTabLifecycleTests.swift
     title: ExtensionTabLifecycleTests
+  - id: task-193-3
+    resource: backlog:TASK-193.3
+    title: "Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)"
   - id: task-193-1
     resource: backlog:TASK-193.1
     title: "Quick Detour: the window, its single tab and the palette that opens it"
@@ -208,7 +211,16 @@ its configuration's controller is the asking context's.
   except through `teardown()`. A detach is not a teardown and stays silent.
 - `didChangePinned` and `didMove` are called only after the tab is in its
   destination container, because handling them resolves the tab's window and
-  index.
+  index. For the attach to carry a position the receiving window must also
+  have a tab selected: WebKit's `WebExtensionWindow::tabs()` is empty without
+  an active tab, so `tab.index()` is not found and `tabs.onAttached` arrives
+  with `newPosition: null` (seen in a real context, TASK-193.3). Quick
+  Detour's Open in therefore selects the moved page first and announces the
+  move inside `BrowserWindowController.holdingExtensionActivation`, which
+  holds the window's `didActivate` until after it: `onDetached`,
+  `onAttached` (with its position), then `onActivated`, as for a tab dragged
+  between windows. The tab keeps its id; the Quick Detour window then closes
+  listing no tab, so `didCloseWindow` fires only `windows.onRemoved`.[^task-193-3]
 - A move resolves the old window and index *before* mutating anything.
 
 # Gotchas
@@ -276,3 +288,4 @@ The planned changes to the window model are in the
 [^task-132-22]: Tell WebKit when a browser window opens or closes
 [^task-132-2]: Resolve a WebKit tabId to its BrowserTab in polyfill handlers
 [^task-193-1]: Quick Detour: the window, its single tab and the palette that opens it
+[^task-193-3]: Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)

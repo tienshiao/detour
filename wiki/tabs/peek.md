@@ -208,7 +208,10 @@ switcher uses it to draw the Peek on the host's card
   (`addTab(in:webView:parentID:)`), animates its constraints out to the content
   area, then selects the tab. It closes the old Peek object for the extension
   contexts first: two open tabs sharing one web view would leave WebKit mapping
-  the page to the dead one.
+  the page to the dead one. A Quick Detour's Open in (TASK-193.3) is the same
+  hand-over without the second object: the Quick Detour's own `BrowserTab`
+  moves into the space, so its id, and its registration, stay
+  ([Quick Detour](../features/quick-detour.md#open-in-space)).
 - **Open in Split View** (`openPeekInSplitView`, the third button) hands the
   same web view to the right pane of a split, so the Peek's back list and page
   state survive. The hand-off runs in the same order as expanding (close the

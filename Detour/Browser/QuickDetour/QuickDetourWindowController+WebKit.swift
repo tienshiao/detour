@@ -31,11 +31,14 @@ extension QuickDetourWindowController: WKNavigationDelegate {
         }
 
         // Cmd+click: another Quick Detour on the same profile, as a browser
-        // window's opens a background tab.
+        // window's opens a background tab. It names the same space in Open in
+        // as this one (TASK-193.3).
         if action.navigationType == .linkActivated, action.modifierFlags.contains(.command),
            let url = action.request.url {
-            DispatchQueue.main.async { [profile] in
-                QuickDetourWindowController.open(profile: profile, url: url)
+            DispatchQueue.main.async { [profile, store, sourceSpaceID] in
+                QuickDetourWindowController.open(profile: profile,
+                                                 sourceSpace: sourceSpaceID.flatMap { store.space(withID: $0) },
+                                                 url: url)
             }
             return .cancel
         }
@@ -170,7 +173,9 @@ extension QuickDetourWindowController: WKUIDelegate {
         guard let url = navigationAction.request.url, !InternalPage.isInternal(url) else { return nil }
         // A page may not open a `data:` URL in a window of its own (TASK-159).
         if url.scheme?.lowercased() == "data" { return nil }
-        let child = QuickDetourWindowController(profile: profile, sourceSpace: nil, openedWith: configuration)
+        let child = QuickDetourWindowController(profile: profile,
+                                                sourceSpace: sourceSpaceID.flatMap { store.space(withID: $0) },
+                                                openedWith: configuration)
         child.showWindow(nil)
         return child.tab?.webView
     }

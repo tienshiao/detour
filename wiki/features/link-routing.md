@@ -28,6 +28,9 @@ sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
     title: TabStore.swift (deleteSpace, SpaceDeletionResult, linkRoutes, linkRouteContext)
+  - id: task-193-3
+    resource: backlog:TASK-193.3
+    title: "Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)"
   - id: placement
     resource: ../../Detour/Browser/LinkRouting/LinkPlacement.swift
     title: LinkPlacement.swift (linkPlacement, LinkPlacementWindow, LinkPlacement)
@@ -303,6 +306,17 @@ the placement out.[^task-191-2]
 
 A routed placement whose window or space has gone by the time it runs falls
 back to the Most Recent Space path (or a new Private window).
+
+The carrying-out is `AppDelegate.placeTab(routedTo:makeTab:didSelect:)`
+since TASK-193.3: the same rule, with the tab made by a closure that gets the
+receiving space once its window shows it (switched, or opened for it).
+`openLink` passes one that opens the URL; Quick Detour's Open in passes one
+that hands its own page over (`TabStore.moveQuickDetourTab`), and a
+`didSelect` that announces the move to the extension contexts before the
+window announces the tab active. A new Private window made for a placement
+holds only the placed tab (no empty tab of its own). The placed tab never
+shows the collapsed sidebar's "Opened new tab in background" toast, since it
+is selected at once.[^task-193-3]
 
 ## The sender
 
@@ -854,3 +868,4 @@ text).
 [^harness-4]: TASK-191.4 runtime harness
 [^task-191-3]: Air Traffic Control: Settings UI to add, edit, reorder and remove routes
 [^harness-3]: TASK-191.3 runtime harness
+[^task-193-3]: Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)

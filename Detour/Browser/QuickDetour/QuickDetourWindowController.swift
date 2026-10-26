@@ -31,6 +31,9 @@ final class QuickDetourWindowController: NSWindowController {
     /// The default size: about Arc's, smaller than a browser window, large
     /// enough for a page laid out for a desktop.
     static let defaultContentSize = NSSize(width: 900, height: 640)
+    /// File > Open Quick Detour in Space (Cmd+O) while no Quick Detour is in
+    /// front; one that is names its target there.
+    static let openInMenuItemTitle = "Open \(QuickDetour.displayName) in Space"
     static let minimumSize = NSSize(width: 480, height: 320)
 
     /// Opens a Quick Detour on `profile` loading `url`, in front and key.
@@ -53,8 +56,9 @@ final class QuickDetourWindowController: NSWindowController {
     /// The space whose history the palette suggests from
     /// (`QuickDetour.paletteHistorySpaceID`).
     let paletteHistorySpaceID: UUID
-    /// The space Open in names (TASK-193.3 makes it work).
-    private let openInSpaceID: UUID?
+    /// The space of the browser window it was opened from — what Open in
+    /// names while it is still there and the same profile's (TASK-193.3).
+    let sourceSpaceID: UUID?
 
     var store: TabStore { .shared }
 
@@ -87,9 +91,7 @@ final class QuickDetourWindowController: NSWindowController {
         self.tabID = UUID()
         self.profile = profile
         self.paletteHistorySpaceID = QuickDetour.paletteHistorySpaceID(profile: profile, sourceSpace: sourceSpace)
-        let profileSpaces = TabStore.shared.spaces.filter { $0.profileID == profile.id && !$0.isIncognito }
-        self.openInSpaceID = profile.isIncognito ? nil
-            : (sourceSpace.flatMap { space in profileSpaces.first { $0.id == space.id } } ?? profileSpaces.first)?.id
+        self.sourceSpaceID = sourceSpace?.id
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultContentSize),
@@ -167,7 +169,9 @@ final class QuickDetourWindowController: NSWindowController {
         contentView.wantsLayer = true
 
         titleBar.setProfile(name: profile.name, isPrivate: profile.isIncognito)
-        titleBar.setOpenInSpace(name: openInSpaceID.flatMap { store.space(withID: $0)?.name })
+        titleBar.onOpenIn = { [weak self] in self?.openInDefaultSpace(nil) }
+        titleBar.onOpenInMenu = { [weak self] anchor in self?.showOpenInMenu(from: anchor) }
+        updateOpenIn()
         titleBar.setHost(nil, isSecure: false)
         titleBar.onHostClick = { [weak self] in self?.showPalette(prefill: self?.tab?.url?.absoluteString) }
         titleBar.onCopyLink = { [weak self] in self?.copyCurrentURL(nil) }
@@ -479,6 +483,194 @@ final class QuickDetourWindowController: NSWindowController {
         performExtensionAction(id, anchor: titleBar.extensionButton(for: id) ?? titleBar.extensionsMenuButton)
     }
 
+    // MARK: - Open in (TASK-193.3)
+
+    /// Carries out a placement for Open in: the Air Traffic Control rule
+    /// (`AppDelegate.placeTab`), handing `makeTab` the receiving space,
+    /// running `didSelect` once the window has selected the tab, and
+    /// returning that window.
+    static func placeTab(_ decision: LinkRouteDecision, makeTab: (Space) -> BrowserTab?,
+                         didSelect: ((BrowserWindowController, BrowserTab) -> Void)? = nil) -> BrowserWindowController? {
+        (NSApp.delegate as? AppDelegate)?.placeTab(routedTo: decision, makeTab: makeTab, didSelect: didSelect)
+    }
+
+    /// The button and its dropdown, from the store as it is now: the source
+    /// space can have been deleted, and another space used, since the window
+    /// opened.
+    var openInMenu: QuickDetourOpenInMenu {
+        store.quickDetourOpenInMenu(profile: profile, sourceSpaceID: sourceSpaceID)
+    }
+
+    func updateOpenIn() {
+        let menu = openInMenu
+        titleBar.setOpenIn(destination: menu.destinationName, reloads: menu.defaultReloads,
+                           hasDropdown: menu.hasDropdown)
+    }
+
+    /// Cmd+O and the button: the default target.
+    @objc func openInDefaultSpace(_ sender: Any?) {
+        guard let target = openInMenu.defaultTarget else { return }
+        open(in: target)
+    }
+
+    /// Moves the page to `target` and closes the window (TASK-193.3).
+    ///
+    /// - A space of this window's profile: the page itself is handed over
+    ///   (`handOver`), intact.
+    /// - Another profile's space: its address is opened there in a new tab
+    ///   (`reopen`) — that profile's data store, so its cookies and sign-ins,
+    ///   and no back/forward history — and this window closes with its page.
+    /// - `.privateWindow`, for a Private Quick Detour: handed over to the most
+    ///   recent Private window, else a new one; the same Private store.
+    ///
+    /// Placed by Air Traffic Control's rule (`AppDelegate.placeTab`). Refused,
+    /// leaving everything as it was, across the Private boundary, for a space
+    /// that is gone, with no page, or while a sheet is up: a script dialog,
+    /// file panel or permission prompt whose completion handler WebKit is
+    /// waiting on would close with the window unanswered.
+    func open(in target: QuickDetourOpenInTarget) {
+        guard window?.attachedSheet == nil else { return }
+        switch target {
+        case .privateWindow:
+            guard profile.isIncognito else { return }
+            handOver(routedTo: .privateWindow)
+        case .space(let spaceID):
+            guard !profile.isIncognito, let space = store.space(withID: spaceID), !space.isIncognito else { return }
+            if space.profileID == profile.id {
+                handOver(routedTo: .openInSpace(spaceID))
+            } else {
+                reopen(routedTo: .openInSpace(spaceID))
+            }
+        }
+    }
+
+    /// The same-profile move: the page leaves this window, the store moves
+    /// the tab into the receiving space as the placement opens or switches its
+    /// window (`TabStore.moveQuickDetourTab`), the browser window selects it
+    /// and takes the web view, and only then does this window close.
+    ///
+    /// The order is what keeps the page alive. This window lets go of the web
+    /// view first (`releasePage`): delegates, script handlers, and its
+    /// container out of the content view, so the browser window claims it at
+    /// once instead of showing a snapshot of a page still parented here. Once
+    /// moved, the tab no longer resolves as this window's (`tab` is nil), so
+    /// the close's `tearDown` closes nothing in the store and lists no tab to
+    /// WebKit's `didCloseWindow` — only the window goes.
+    private func handOver(routedTo decision: LinkRouteDecision) {
+        guard let page = tab, page.webView != nil else { return }
+        releasePage(page)
+        let receiving = Self.placeTab(decision, makeTab: { [store] space in
+            store.moveQuickDetourTab(page, into: space, announcingMove: false) ? page : nil
+        }, didSelect: { [weak self] _, moved in
+            // Selected in its new window: detached from this one, attached
+            // there, before the window announces it active.
+            ExtensionTabLifecycle.didMove(moved, fromIndex: 0, in: self)
+        })
+        guard receiving != nil, !store.isQuickDetourTab(page) else {
+            // Nothing took it (a window or space gone meanwhile): it stays.
+            host(page)
+            bind(page)
+            restoreWebContentFocus()
+            return
+        }
+        window?.close()
+    }
+
+    /// The cross-profile case: a new tab of the other profile's space on the
+    /// page's address; this window then closes, taking its page down.
+    private func reopen(routedTo decision: LinkRouteDecision) {
+        guard let url = tab?.url else { return }
+        let receiving = Self.placeTab(decision, makeTab: { [store] space in
+            // An internal page the user had opened here (typed) is opened
+            // the same way there; `addTab(in:url:)` refuses the scheme.
+            InternalPage(url: url).map { store.addTab(in: space, internalPage: $0) }
+                ?? store.addTab(in: space, url: url)
+        })
+        guard receiving != nil else { return }
+        window?.close()
+    }
+
+    /// Lets go of what this window holds of the page before it moves: the
+    /// palette, the find bar (its matches cleared), popovers and the link
+    /// status, the page's subscriptions here, the delegates and script
+    /// handlers on its web view, and its container in the content view.
+    private func releasePage(_ page: BrowserTab) {
+        letGo(of: page)
+        if !findBar.isHidden {
+            findSession.reset()
+            findBar.isHidden = true
+        }
+        linkStatusBar.hide()
+        page.webViewContainer?.removeFromSuperview()
+    }
+
+    /// What both a hand-over (`releasePage`) and the close (`tearDown`) drop:
+    /// the palette, popovers, the page's subscriptions here, and this
+    /// window's script handlers and delegates on its web view.
+    private func letGo(of page: BrowserTab?) {
+        dismissPalette()
+        for popover in extensionPopovers.values { popover.close() }
+        extensionPopovers.removeAll()
+        tabSubscriptions.removeAll()
+        if let webView = page?.webView {
+            let ucc = webView.configuration.userContentController
+            for name in Self.scriptHandlerNames { ucc.removeScriptMessageHandler(forName: name) }
+            if webView.navigationDelegate === self { webView.navigationDelegate = nil }
+            if webView.uiDelegate === self { webView.uiDelegate = nil }
+        }
+    }
+
+    /// The dropdown: the spaces grouped by profile, the window's own first
+    /// (`QuickDetour.openInMenu`). Another profile's spaces say they reload;
+    /// the default one carries Cmd+O.
+    func makeOpenInMenu() -> NSMenu {
+        let model = openInMenu
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for section in model.sections {
+            if model.showsSectionHeaders {
+                menu.addItem(NSMenuItem.sectionHeader(title: section.title))
+            }
+            for item in section.items {
+                let menuItem = NSMenuItem(title: "\(item.emoji) \(item.name)",
+                                          action: #selector(openInMenuItemChosen(_:)), keyEquivalent: "")
+                menuItem.target = self
+                menuItem.representedObject = item.spaceID
+                if item.reloads {
+                    menuItem.subtitle = "Reloads the page"
+                    menuItem.toolTip = "Opens this address in \(section.title)'s \(item.name): its cookies and "
+                        + "sign-ins, without this page's back and forward history"
+                }
+                if item.isDefault {
+                    menuItem.keyEquivalent = "o"
+                    menuItem.keyEquivalentModifierMask = .command
+                }
+                menu.addItem(menuItem)
+            }
+        }
+        return menu
+    }
+
+    static func resetOpenInMenuItemTitle() {
+        let selector = #selector(openInDefaultSpace(_:))
+        for top in NSApp.mainMenu?.items ?? [] {
+            for item in top.submenu?.items ?? [] where item.action == selector {
+                item.title = openInMenuItemTitle
+            }
+        }
+    }
+
+    private func showOpenInMenu(from anchor: NSView) {
+        let menu = makeOpenInMenu()
+        guard !menu.items.isEmpty else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.minY - 4), in: anchor)
+    }
+
+    @objc private func openInMenuItemChosen(_ sender: NSMenuItem) {
+        guard let spaceID = sender.representedObject as? UUID else { return }
+        open(in: .space(spaceID))
+    }
+
     // MARK: - Teardown
 
     /// Releases everything the window holds of its page, then the page itself:
@@ -489,16 +681,7 @@ final class QuickDetourWindowController: NSWindowController {
     private func tearDown() {
         guard !isTornDown else { return }
         isTornDown = true
-        dismissPalette()
-        for popover in extensionPopovers.values { popover.close() }
-        extensionPopovers.removeAll()
-        tabSubscriptions.removeAll()
-        if let webView = tab?.webView {
-            let ucc = webView.configuration.userContentController
-            for name in Self.scriptHandlerNames { ucc.removeScriptMessageHandler(forName: name) }
-            if webView.navigationDelegate === self { webView.navigationDelegate = nil }
-            if webView.uiDelegate === self { webView.uiDelegate = nil }
-        }
+        letGo(of: tab)
         store.removeObserver(self)
         let closing = tab
         if let closing { store.closeQuickDetourTab(closing) }
@@ -535,6 +718,15 @@ extension QuickDetourWindowController: NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) {
         announceExtensionActiveTabIfChanged()
+        // Another space may have been used since (the most recent one).
+        updateOpenIn()
+    }
+
+    /// The File menu's Cmd+O item named this window's target while it was
+    /// key (`validateMenuItem`); once it is not, the item is disabled and
+    /// goes back to its general title.
+    func windowDidResignKey(_ notification: Notification) {
+        Self.resetOpenInMenuItemTitle()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -550,6 +742,15 @@ extension QuickDetourWindowController: TabStoreObserver {
     func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) {
         guard tab.id == tabID, !isTornDown else { return }
         window?.close()
+    }
+
+    /// A space added, deleted or renamed: Open in may name another.
+    func tabStoreDidUpdateSpaces() {
+        updateOpenIn()
+    }
+
+    func tabStoreDidAddProfile(_ profile: Profile) {
+        updateOpenIn()
     }
 }
 
@@ -630,6 +831,12 @@ extension QuickDetourWindowController: NSMenuItemValidation {
         switch menuItem.action {
         case #selector(goBack(_:)): return tab?.canGoBack ?? false
         case #selector(goForward(_:)): return tab?.canGoForward ?? false
+        case #selector(openInDefaultSpace(_:)):
+            let menu = openInMenu
+            menuItem.title = menu.destinationName.map { "Open in \($0)" } ?? Self.openInMenuItemTitle
+            // Another profile's space reopens the address, so it needs one.
+            return menu.defaultTarget != nil && tab?.webView != nil && (!menu.defaultReloads || tab?.url != nil)
+                && window?.attachedSheet == nil
         case #selector(copyCurrentURL(_:)), #selector(reloadPage(_:)), #selector(showFindBar(_:)),
              #selector(findNext(_:)), #selector(findPrevious(_:)), #selector(zoomIn(_:)), #selector(zoomOut(_:)),
              #selector(zoomActualSize(_:)), #selector(showWebInspector(_:)):
