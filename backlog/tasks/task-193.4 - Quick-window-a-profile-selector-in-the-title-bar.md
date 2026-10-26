@@ -4,7 +4,7 @@ title: 'Quick Detour: a profile selector in the title bar'
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:11'
-updated_date: '2026-10-24 10:21'
+updated_date: '2026-10-26 15:05'
 labels:
   - window
   - profiles
@@ -27,3 +27,9 @@ Fourth part of TASK-193. The pill at the left of the title bar ("Default" in the
 - [ ] #1 The pill shows the profile; choosing another reloads the page in that profile's data store
 - [ ] #2 The default profile for a new quick window is decided and implemented
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decision (user, 2026-10-26): a new Quick Detour starts in the frontmost window's profile (Private from a Private window; from another app via the hotkey, the last Detour window used), as TASK-193.1 implemented. Rejected: last profile used in a Quick Detour; a fixed profile setting.
+<!-- SECTION:NOTES:END -->
