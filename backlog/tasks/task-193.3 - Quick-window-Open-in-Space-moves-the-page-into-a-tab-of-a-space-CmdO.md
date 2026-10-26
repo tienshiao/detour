@@ -4,7 +4,7 @@ title: 'Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+
 status: To Do
 assignee: []
 created_date: '2026-10-24 10:11'
-updated_date: '2026-10-24 10:21'
+updated_date: '2026-10-26 07:07'
 labels:
   - window
   - spaces
@@ -28,3 +28,12 @@ Third part of TASK-193. The Open in <Space> button (Cmd+O) moves the quick windo
 - [ ] #2 Same-profile moves keep the web view (back/forward history intact); cross-profile behaviour is decided and implemented
 - [ ] #3 TabStore insertion is test-first; checked at runtime
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decisions (user, 2026-10-26):
+1. Default space named on the button: the space that was in front when the Quick Detour was opened, if it uses the same profile; otherwise that profile's most recently used space.
+2. Dropdown lists all normal spaces grouped by profile. Same-profile spaces get the page moved intact (same web view: scroll, back/forward, form state). Another profile's space reloads the URL there (that profile's cookies/logins; back/forward history lost). Rejected: same-profile spaces only.
+3. Private Quick Detour: Open in Private Window moves the page intact into a new tab of the most recent Private window, else a new Private window (same throwaway store, no reload).
+<!-- SECTION:NOTES:END -->
