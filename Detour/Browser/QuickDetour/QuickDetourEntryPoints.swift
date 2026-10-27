@@ -1,7 +1,7 @@
 import AppKit
 
 // TASK-193.5: Quick Detour's other entry points (Opt-Cmd-click on a link or a
-// sidebar tab, links from other apps through Air Traffic Control), its idle
+// sidebar tab, links from other apps through Link Routes), its idle
 // auto-close and the settings behind them. The rules are pure, here; the
 // windows, the sidebar and the monitor act on them.
 
@@ -106,7 +106,7 @@ extension QuickDetour {
 
     // MARK: - Links from other apps
 
-    /// The profile a link from another app that Air Traffic Control sends to
+    /// The profile a link from another app that Link Routes send to
     /// Quick Detour opens on: the profile of the frontmost Detour window
     /// (`windowProfiles` front to back: a browser window's active space's, a
     /// Quick Detour's own), as a new Quick Detour's is (TASK-193.4) — but

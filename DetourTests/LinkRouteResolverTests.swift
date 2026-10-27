@@ -1,7 +1,7 @@
 import XCTest
 @testable import Detour
 
-/// TASK-191.1: Air Traffic Control's pure rules — which route a link matches,
+/// TASK-191.1: the Link Routes pure rules — which route a link matches,
 /// where it then opens from each origin, and what targets a space.
 final class LinkRouteResolverTests: XCTestCase {
 

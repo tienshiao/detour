@@ -130,7 +130,7 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .download
         }
 
-        // Air Traffic Control (TASK-191.4), then the Peek intercept. A plain
+        // Link Routes (TASK-191.4), then the Peek intercept. A plain
         // click to another host or a target=_blank link that a route sends to
         // another space (or a Private window) opens there; the tab stays on
         // its page. Which navigations may route at all — not redirects,

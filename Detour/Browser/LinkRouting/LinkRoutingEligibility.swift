@@ -89,7 +89,7 @@ enum LinkRoutingEligibility: Equatable {
     }
 }
 
-/// Whether a link leaving a page is routed by Air Traffic Control (user
+/// Whether a link leaving a page is routed by Link Routes (user
 /// decisions 2026-10-25, recorded in wiki/features/link-routing.md):
 ///
 /// - New-tab opens route: Cmd+click, a `target=_blank` link, a tab-style

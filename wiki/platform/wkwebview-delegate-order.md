@@ -4,7 +4,7 @@ title: WKWebView delegate call order
 description: Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
 tags: [webkit, navigation, delegates, peek, internal-pages]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-spike
@@ -151,7 +151,7 @@ user gesture (which a timer started inside it inherits), not because the
 flag is meaningless: measured 2026-10-25, a page's **own** timer or load
 script reports `_isUserInitiated` false for an `a.click()` (still
 `.linkActivated`) and for a `location.href` change, while a real click and
-a click handler's own script report true. Air Traffic Control uses it to tell
+a click handler's own script report true. Link Routes use it to tell
 a user's click from a page's scripted one; the full table is on
 [link routing](../features/link-routing.md#signals-from-webkit).
 
@@ -215,7 +215,7 @@ Verified 2026-09-19 while designing the `detour://` pages.[^notes-spike][^task-8
 
 | Rule in Detour | Depends on | Code |
 |---|---|---|
-| Air Traffic Control routes link clicks, never script navigations, a page's own `a.click()` or redirects | `.linkActivated`, `_isUserInitiated`, `_isRedirect` | `linkRoutingEligibility`, fed by `BrowserWindowController+LinkRouting.swift` |
+| Link Routes act on link clicks, never on script navigations, a page's own `a.click()` or redirects | `.linkActivated`, `_isUserInitiated`, `_isRedirect` | `linkRoutingEligibility`, fed by `BrowserWindowController+LinkRouting.swift` |
 | In a pinned tab or favourite, every user-activated `_blank` link opens a Peek | nil `targetFrame` arrives in `decidePolicyFor` before any new web view exists | Peek branch of `decidePolicyFor` passes `opensNewWindow: navigationAction.targetFrame == nil` to `PeekAnchor.shouldPeek` |
 | A tab-style `window.open` from an anchored tab also peeks; a popup-style one (OAuth, payment) keeps its own tab | `window.open` skips `decidePolicyFor`; `_wantsPopup` | `createWebViewWith` → `PeekAnchor.shouldPeekScriptedWindow(to:wantsPopup:)`, `wantsPopup(_:)` falls back to explicit x/y/width/height when the SPI is missing |
 | A page's new window is a tab whose web view WebKit asked for | the page gets a window only when the delegate returns a web view made from the supplied configuration; WebKit then does the navigation | `createWebViewWith` → `TabStore.addTab(in:openedWith:parentID:)`, which swaps in a user content controller of the space's own |

@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Quick Detour
-description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through Air Traffic Control's Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt; and TASK-213's popover layout: the host as its header, picture in picture and dev mode in a section of their own, left out of a Quick Detour's."
+description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through the Link Routes Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt; and TASK-213's popover layout: the host as its header, picture in picture and dev mode in a section of their own, left out of a Quick Detour's."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T06:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193
@@ -138,8 +138,8 @@ Open in's main part all drag the window. There is no sidebar.
 the window ([below](#open-in-space), TASK-193.3). The **profile pill** names
 the window's profile and switches it ([below](#the-profile-pill),
 TASK-193.4). TASK-193.5 added the other ways in — **Opt-Cmd-click** on a
-link or a sidebar tab, and **links from other apps** through Air Traffic
-Control ([below](#other-entry-points)) — and the **archive**: a closed
+link or a sidebar tab, and **links from other apps** through Link
+Routes ([below](#other-entry-points)) — and the **archive**: a closed
 Quick Detour goes to the sidebar's Archived Tabs page, labelled "Quick
 Detour", and so does every open one at quit and one left unused for the
 configured time, "auto-closed" ([below](#the-archive),
@@ -604,7 +604,7 @@ in flight and its extension registration all survive.
 | Step | Who | What |
 |---|---|---|
 | 1 | Quick Detour | `releasePage`: palette and find bar (matches cleared) closed, popovers closed, link status hidden, its subscriptions on the page dropped, its delegates and script handlers taken off the web view, the web view's container removed from its content view |
-| 2 | `AppDelegate.placeTab` | Air Traffic Control's placement (`linkPlacement`): a window showing the space, else the most recent normal window switched to it, else a new window on it |
+| 2 | `AppDelegate.placeTab` | The Link Routes placement (`linkPlacement`): a window showing the space, else the most recent normal window switched to it, else a new window on it |
 | 3 | `makeTab` → `TabStore.moveQuickDetourTab(_:into:announcingMove: false)` | out of `quickDetourTabs`, unsubscribed, `quickDetourProfile` cleared, `insertTab` at the new-tab position (no parent: the top of the list), subscribed as a space's tab (saved with the session from now on); observers get `tabStoreDidInsertTab` then `tabStoreDidMoveQuickDetour`, **never** `tabStoreDidCloseQuickDetour` |
 | 4 | the browser window | `selectTab`: the container has no superview, so it claims the web view at once (delegates, its own script handlers) rather than showing a snapshot |
 | 5 | `didSelect`, inside `holdingExtensionActivation` | `ExtensionTabLifecycle.didMove(tab, fromIndex: 0, in: quickDetour)`, then the window's own `didActivate` |
@@ -819,8 +819,8 @@ navigation policy before Cmd's, since Opt-Cmd contains Cmd:
 
 `inPageLinkClickBranch(_:target:quickDetourClickEnabled:)` is that table,
 pure; the policy and the routing rule (`linkRoutingEligibility`, which now
-answers `.notRouted(.quickDetourClick)`) both read it, so Air Traffic
-Control never moves an Opt-Cmd-click: the user chose where it opens.
+answers `.notRouted(.quickDetourClick)`) both read it, so Link
+Routes never move an Opt-Cmd-click: the user chose where it opens.
 Synthetic clicks carry no modifiers, so a page cannot fake one (as for
 Cmd+click). **Inside a Quick Detour** Cmd+click already opened another
 Quick Detour on the same profile; Opt-Cmd is a Cmd+click there, so it does
@@ -852,7 +852,7 @@ An internal page (the History page) opens as one (armed, as typed). The
 rule is `QuickDetour.sidebarCopyURL(liveURL:storedURL:)`; with the setting
 off the click is the table's (and the tile's) own.
 
-### Links from other apps: Air Traffic Control's Quick Detour target
+### Links from other apps: the Link Routes Quick Detour target
 
 No switch of its own (decision 1): **Quick Detour** is a visible Open in
 target in Settings > Links, for routes and the Default
@@ -1258,7 +1258,7 @@ Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 - [Command palette](./command-palette.md) — the palette the window opens with.
 - [App shell](../architecture/app-shell.md) — the menu item, and that not every window is a browser window.
 - [Closed tabs and the archive](../tabs/closed-tabs-and-archive.md) — the records closed Quick Detours share.
-- [Link routing](./link-routing.md) — the Quick Detour target, and Opt-Cmd's place in the click rule.
+- [Link Routes](./link-routing.md) — the Quick Detour target, and Opt-Cmd's place in the click rule.
 
 [^webkit-windows]: WebKit, WebExtensionContextAPIWindowsCocoa.mm (windowsGetAll reads the context's own window list)
 [^harness]: TASK-193.1 runtime harness and its results

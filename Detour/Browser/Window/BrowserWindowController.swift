@@ -3634,7 +3634,7 @@ extension BrowserWindowController: CommandPaletteDelegate {
         // it (TASK-86).
         let internalPage = InternalPage(url: url)
 
-        // Air Traffic Control (TASK-191.4): a URL (not a search) submitted in
+        // Link Routes (TASK-191.4): a URL (not a search) submitted in
         // new-tab mode that a route sends to another space, or a Private
         // window, opens there as a link from another app would. Navigating in
         // place (Cmd+L, the address bar) never routes: the user picked the tab

@@ -1,5 +1,5 @@
 TASK-191.4 runtime harness: typed URLs and links clicked in a page, routed by
-Air Traffic Control. Temporary code, never committed to Detour/. It logs to
+Link Routes. Temporary code, never committed to Detour/. It logs to
 $DETOUR_VERIFY_DIR/verify-<phase>.log every routing question the window asks
 (CLICK: window, space, entry, modifiers, gesture, Peek, page, target,
 eligibility, decision), every palette submission (TYPED / TYPED-DECISION),

@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// One Air Traffic Control route (TASK-191.1), `linkRoute` table. The target
+/// One link route (TASK-191.1), `linkRoute` table. The target
 /// is `targetKind` (`LinkRouteTarget.storageKind`) plus `targetSpaceID` for a
 /// space target. `targetSpaceID` has no foreign key: the session save deletes
 /// and re-inserts every space row, so a cascade would wipe the routes on each

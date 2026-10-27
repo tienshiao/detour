@@ -1,6 +1,6 @@
 import Foundation
 
-// Air Traffic Control (TASK-191): routes that send a link to a chosen space.
+// Link Routes (TASK-191): routes that send a link to a chosen space.
 // This file is the model; `LinkRouteResolver.swift` decides where a link goes,
 // `LinkRouteStore` keeps the routes in the session database.
 
@@ -80,7 +80,7 @@ enum LinkRouteTarget: Equatable, Hashable {
     }
 }
 
-/// One Air Traffic Control route: if a link matches the URL condition and/or
+/// One link route: if a link matches the URL condition and/or
 /// came from the source app, open it in `target`. Routes are tried in
 /// `sortOrder`; the first that applies wins.
 struct LinkRoute: Equatable, Identifiable {

@@ -47,7 +47,7 @@ sources:
     title: Session notes on screen capture for UI verification
   - id: task-191-4
     resource: backlog:TASK-191.4
-    title: "Air Traffic Control: route typed URLs and links clicked inside Detour"
+    title: "TASK-191.4: route typed URLs and links clicked inside Detour"
 ---
 
 Almost every interaction check can be done by the app on itself. What an
@@ -308,4 +308,4 @@ above.
 [^notes-capture]: Session notes on screen capture for UI verification
 [^harness-189]: TASK-189 survey harness (the Settings window; an alert answered from the modal run loop)
 [^harness-185]: TASK-185 harness (posted Option-click, the real link menu)
-[^task-191-4]: Air Traffic Control: route typed URLs and links clicked inside Detour
+[^task-191-4]: TASK-191.4: route typed URLs and links clicked inside Detour

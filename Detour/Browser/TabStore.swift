@@ -414,7 +414,7 @@ enum SpaceDeletionResult: Equatable {
     case deleted
     /// Nothing changed: no such space, or it is the last one.
     case notDeleted
-    /// Nothing changed: Air Traffic Control routes (or the Default) target
+    /// Nothing changed: link routes (or the Default) target
     /// the space, and must be changed or removed first.
     case blockedByLinkRoutes(LinkRouteReferences)
 }
@@ -461,7 +461,7 @@ class TabStore {
     /// no second record (TASK-193.5).
     var quickDetourTabIDsArchivedAtQuit: Set<UUID> = []
 
-    /// What Air Traffic Control's resolver needs to know about the spaces: the
+    /// What the Link Routes resolver needs to know about the spaces: the
     /// normal ones, the only ones a route may name.
     var linkRouteContext: LinkRouteContext {
         LinkRouteContext(spaceIDs: Set(nonIncognitoSpaces.map(\.id)),
@@ -517,7 +517,7 @@ class TabStore {
     /// in-memory site settings go with it (TASK-188). Only the shared store
     /// has one.
     var siteSettings: SiteSettingsStore?
-    /// Air Traffic Control's routes (TASK-191.1). A space they target cannot
+    /// The link routes (TASK-191.1). A space they target cannot
     /// be deleted. The shared store uses `LinkRouteStore.shared`; another
     /// store gets one over its own database, created on first use. Either
     /// way the route store checks targets against this store's spaces
@@ -557,7 +557,7 @@ class TabStore {
     // MARK: - Blocked space deletion through undo and redo
 
     /// Posted (object: the store) when the undo of Add Space or the redo of
-    /// Delete Space is refused because Air Traffic Control routes target the
+    /// Delete Space is refused because link routes target the
     /// space. TabStore is not UI: the frontmost browser window turns it into
     /// `SpaceDeletionBlockedAlert`. A direct `deleteSpace` call posts nothing;
     /// its caller reads the result.
@@ -2047,8 +2047,8 @@ class TabStore {
     }
 
     /// Deletes a space, with an undo. Refused (nothing changes) for an
-    /// unknown space, the last space, and a space Air Traffic Control routes
-    /// or the Default target (user decision 2026-10-25): the result carries
+    /// unknown space, the last space, and a space that a link route
+    /// or the Default targets (user decision 2026-10-25): the result carries
     /// those routes so the UI can say why.
     @discardableResult
     func deleteSpace(id: UUID) -> SpaceDeletionResult {

@@ -175,7 +175,7 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         switchToPane(vc, identifier: Self.spacesID)
     }
 
-    /// Shows the Links pane (Air Traffic Control, TASK-191.3). With a space,
+    /// Shows the Links pane (Link Routes, TASK-191.3). With a space,
     /// the routes and the Default that target it are highlighted and the
     /// first is scrolled into view: the blocked-deletion alert opens it so.
     func showLinksPane(highlightingSpaceID spaceID: UUID? = nil) {

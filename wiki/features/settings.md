@@ -5,7 +5,7 @@ description: "The Settings window and its seven panes (General, Spaces, Links, Q
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T06:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 sources:
   - id: task-211
     resource: backlog:TASK-211
@@ -60,7 +60,7 @@ sources:
     title: SpacesSettingsViewController.swift
   - id: links
     resource: ../../Detour/Browser/Settings/LinksSettingsViewController.swift
-    title: LinksSettingsViewController.swift (Air Traffic Control routes, TASK-191.3)
+    title: LinksSettingsViewController.swift (Link Routes, TASK-191.3)
   - id: profiles
     resource: ../../Detour/Browser/Settings/ProfilesSettingsViewController.swift
     title: ProfilesSettingsViewController.swift
@@ -280,7 +280,7 @@ rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
 
 ## Links
 
-Air Traffic Control's routes and Default: "Routes" with New Route beside
+The link routes and the Default: "Routes" with New Route beside
 it, one bordered list of three-line rows (URL, From app, Open in), then the
 Default and its caption. Not a master list with a detail column: every route
 is edited in place, as in Arc's sheet. Since TASK-211 the list fills the

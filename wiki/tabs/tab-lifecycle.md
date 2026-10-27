@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -166,15 +166,15 @@ tab ([history recording](../features/history-recording-and-search.md)).
 2. Opt-Cmd-click to a web URL (TASK-193.5): a new [Quick Detour](../features/quick-detour.md#opt-cmd-click-on-a-link)
    on the page's profile, never routed. With Settings' switch off, or to a
    non-web URL, Opt-Cmd falls to step 3 as before.
-3. Cmd+click: background tab, unless [Air Traffic Control](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
-   routes it to another space or a Private window (TASK-191.4).
+3. Cmd+click: background tab, unless a [link route](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
+   sends it to another space or a Private window (TASK-191.4).
 4. Shift+click: [Peek](./peek.md).
 5. Option+click: [split](./split-tabs-hosting.md). This must precede step 8,
    because WebKit sets `shouldPerformDownload` for Option-clicked links.
 6. Back/forward into an error page: reload the original URL instead.
 7. A non-web scheme: [external app](../features/external-apps.md) confirmation.
 8. `shouldPerformDownload`: download.
-9. Air Traffic Control: a `_blank` link or a plain click to another host
+9. Link Routes: a `_blank` link or a plain click to another host
    that a route sends elsewhere opens there and the tab stays
    (`linkRoutingEligibility`, TASK-191.4). It wins over step 10
    (`inPageLinkOutcome`).

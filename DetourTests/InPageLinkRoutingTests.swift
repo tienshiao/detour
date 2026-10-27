@@ -2,8 +2,8 @@ import XCTest
 import WebKit
 @testable import Detour
 
-/// TASK-191.4: typed URLs and links clicked in a page, routed by Air Traffic
-/// Control in real windows of the shared store. The rule itself is
+/// TASK-191.4: typed URLs and links clicked in a page, routed by Link
+/// Routes in real windows of the shared store. The rule itself is
 /// `LinkRoutingEligibilityTests`; this checks the wiring in the window's
 /// delegates and the command palette.
 ///

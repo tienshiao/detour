@@ -3,8 +3,8 @@ import WebKit
 @testable import Detour
 
 /// Open in <Space> (TASK-193.3) in real windows: the button and Cmd+O move a
-/// Quick Detour's page into a tab of a space, placed by Air Traffic Control's
-/// rule (a window showing the space comes forward, else the most recent
+/// Quick Detour's page into a tab of a space, placed by the Link Routes
+/// placement rule (a window showing the space comes forward, else the most recent
 /// normal window switches to it, else a new window), and close the Quick
 /// Detour window; the dropdown picks another space, reloading the address in
 /// another profile's; a Private one goes to a Private window. The teardown

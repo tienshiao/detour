@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// Settings > Links: Air Traffic Control's routes and the Default (TASK-191.3),
+/// Settings > Links: the link routes and the Default (TASK-191.3),
 /// after Arc's sheet (docs/air-traffic-control/). Each route is one row of
 /// three lines: `URL [kind] [pattern] ⊖`, `From app [app]`, `Open in [target]`,
 /// and, when the route is incomplete, refused or broken, a fourth: the whole
@@ -50,7 +50,7 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     private static let emptyListHeight: CGFloat = 56
 
     override var paneDescription: String? {
-        "Air Traffic Control opens links in the space you choose: links from other apps, addresses typed in a new tab, and links clicked to another site. Routes are tried from the top, and the first that matches decides. Drag routes to change their order."
+        "Link Routes open links in the space you choose: links from other apps, addresses typed in a new tab, and links clicked to another site. Routes are tried from the top, and the first that matches decides. Drag routes to change their order."
     }
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }

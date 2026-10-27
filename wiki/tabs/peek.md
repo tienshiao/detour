@@ -4,7 +4,7 @@ title: Peek
 description: The overlay that shows a linked page over the current tab; which links open in one, how it is anchored to its host tab, parked, restored and expanded, and how extensions see it.
 tags: [tabs, peek, overlay, navigation, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T22:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 sources:
   - id: anchor
     resource: ../../Detour/Browser/Window/PeekAnchor.swift
@@ -80,8 +80,8 @@ What does **not** peek:
 - Cmd+click (background tab) and Option+click (split) win over Shift and over
   the anchor rule. The order is Cmd, Shift, Option, then the anchor intercept
   ([tab lifecycle](./tab-lifecycle.md)).
-- A link an [Air Traffic Control](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
-  route sends to another space or a Private window: the route wins over the
+- A link a [link route](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
+  sends to another space or a Private window: the route wins over the
   anchor intercept (a cross-host click, a `_blank` link, a tab-style
   `window.open`). A route that keeps the link where it is, or no route,
   leaves the intercept as it was (TASK-191.4). Nothing inside a Peek is ever

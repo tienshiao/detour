@@ -1,5 +1,5 @@
-TASK-191.1 runtime harness: a space that Air Traffic Control routes (or the
-Default) target cannot be deleted, from the sidebar, the Settings pane, and
+TASK-191.1 runtime harness: a space that a link route (or the
+Default) targets cannot be deleted, from the sidebar, the Settings pane, and
 an undo or redo; routes persist; migration v20. Temporary code, never
 committed to Detour/. Steps:
 

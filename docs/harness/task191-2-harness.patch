@@ -1,5 +1,5 @@
-TASK-191.2 runtime harness: links from other apps routed by Air Traffic
-Control. Temporary code, never committed to Detour/. It logs, for every
+TASK-191.2 runtime harness: links from other apps routed by Link
+Routes. Temporary code, never committed to Detour/. It logs, for every
 application(_:open:), the raw sender attributes of the Apple Event being
 handled (spid, addr, from), what NSRunningApplication says about the sender,
 the resolved sender, the route decision, the placement and the windows

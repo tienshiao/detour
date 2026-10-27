@@ -577,7 +577,7 @@ final class QuickDetourWindowController: NSWindowController {
 
     // MARK: - Open in (TASK-193.3)
 
-    /// Carries out a placement for Open in: the Air Traffic Control rule
+    /// Carries out a placement for Open in: the Link Routes placement rule
     /// (`AppDelegate.placeTab`), handing `makeTab` the receiving space,
     /// running `didSelect` once the window has selected the tab, and
     /// returning that window.
@@ -615,7 +615,7 @@ final class QuickDetourWindowController: NSWindowController {
     /// - `.privateWindow`, for a Private Quick Detour: handed over to the most
     ///   recent Private window, else a new one; the same Private store.
     ///
-    /// Placed by Air Traffic Control's rule (`AppDelegate.placeTab`). Refused,
+    /// Placed by the Link Routes placement rule (`AppDelegate.placeTab`). Refused,
     /// leaving everything as it was, across the Private boundary, for a space
     /// that is gone, with no page, or while a sheet is up: a script dialog,
     /// file panel or permission prompt whose completion handler WebKit is

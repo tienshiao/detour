@@ -5,7 +5,7 @@ description: The tables of browser.db, what each is for, the foreign keys that s
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T10:20:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -39,7 +39,7 @@ sources:
     title: A session save that fails is handled, not only logged
   - id: task-191-1
     resource: backlog:TASK-191.1
-    title: "Air Traffic Control: route model, matching rule and storage"
+    title: "TASK-191.1: route model, matching rule and storage"
 ---
 
 `browser.db` is the session database: `AppDatabase.shared`, a struct around a
@@ -70,7 +70,7 @@ GRDB `DatabaseQueue`, opened at
 | `pendingProfileDataRemoval` | `profileID` | Deleted profiles whose on-disk WebKit data is not removed yet. | No FK: the profile row is already gone. |
 | `webKitStorageIdentifier` | `identifier` | WebKit storage identifiers an isolated data directory created. | The default data directory records nothing. |
 | `appState` | `key` | Key-value app state. | Keys in use: `lastActiveSpaceID`, `extensionUpdateLastCheckAt`. |
-| `linkRoute` | `id` | Air Traffic Control routes: URL condition, source app, target kind and space id, order ([link routing](../features/link-routing.md)). | App-wide. **No FK** on `targetSpaceID`: the session save deletes and re-inserts every space row. `TabStore.deleteSpace` refuses a space a route targets instead. |
+| `linkRoute` | `id` | The link routes: URL condition, source app, target kind and space id, order ([Link Routes](../features/link-routing.md)). | App-wide. **No FK** on `targetSpaceID`: the session save deletes and re-inserts every space row. `TabStore.deleteSpace` refuses a space a route targets instead. |
 | `linkRouteDefault` | `id` (always 1) | The Default target for links no route matches. | `CHECK (id = 1)`; no row means Most Recent Space. |
 
 Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),

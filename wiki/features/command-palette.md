@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -167,7 +167,7 @@ weigh double in inline-completion ranking and bypass the 30 s history dedup
 (see [history recording and search](./history-recording-and-search.md)).
 
 In new-tab mode a URL (not a search) is first offered to
-[Air Traffic Control](./link-routing.md#typed-urls-and-links-clicked-in-a-page)
+[Link Routes](./link-routing.md#typed-urls-and-links-clicked-in-a-page)
 (`typedURLIsRoutable`, TASK-191.4): a route that sends it to another space or
 a Private window opens it there, placed as a link from another app, and no
 tab is added here. In place (Cmd+L, the address bar) never routes. Cmd+L or

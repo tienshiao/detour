@@ -1,0 +1,155 @@
+TASK-212 runtime harness: the visible strings after the rename of Air
+Traffic Control to Link Routes. Temporary code, never committed to Detour/.
+Gated on DETOUR_VERIFY_DIR; DETOUR_VERIFY_APPEARANCE light or dark. Data dir
+DetourVerify2120; seeds two routes once (Domain is work.example, Contains
+docs, both to Home). Logs every main-menu item title, then waits for 12 s of
+HID idle, shows Settings and walks every toolbar pane, logging each pane's
+visible text fields, button titles, pop-up item titles and paneDescription,
+counting any that contain "air traffic" and echoing those that mention Link
+Routes or the Links pane. SHOOT lines for the Links and Quick Detour panes.
+run.sh is TASK-213's with the data dir changed and the fixture/extension
+variables dropped (SHOOT lines served with screencapture -l, only the
+launched PID killed).
+
+    git apply docs/harness/task212-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    run.sh light; run.sh dark
+
+Results (2026-10-27, light and dark identical apart from the idle wait):
+- Main menu: 95 item titles, 0 contain "air traffic".
+- Settings panes general, spaces, links, quickdetour, profiles, extensions,
+  contentblocker: 196 strings, 0 contain "air traffic".
+- Links description: "Link Routes open links in the space you choose: links
+  from other apps, addresses typed in a new tab, and links clicked to another
+  site. Routes are tried from the top, and the first that matches decides.
+  Drag routes to change their order." Pane still titled Links, "Routes" and
+  "New Route" unchanged.
+- Quick Detour caption unchanged: "... as a route's Open in, or as the
+  Default, on the Links pane."
+- Captures light-links, dark-links, light-quickdetour, dark-quickdetour:
+  the description wraps on two lines as before, nothing clipped.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 81cfbe7..9b65d1d 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask212HarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task212Harness.swift b/Detour/App/Task212Harness.swift
+new file mode 100644
+index 0000000..1f5446d
+--- /dev/null
++++ b/Detour/App/Task212Harness.swift
+@@ -0,0 +1,106 @@
++// TEMP TASK-212 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask212HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            window.displayIfNeeded()
++            await sleep(0.8)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        func texts(_ v: NSView) -> [String] {
++            var out: [String] = []
++            if let t = v as? NSTextField, !t.isHiddenOrHasHiddenAncestor, !t.stringValue.isEmpty { out.append(t.stringValue) }
++            if let b = v as? NSButton, !b.isHiddenOrHasHiddenAncestor, !b.title.isEmpty { out.append("[button] " + b.title) }
++            if let p = v as? NSPopUpButton { out += p.itemTitles.map { "[popup item] " + $0 } }
++            return out + v.subviews.flatMap(texts)
++        }
++        func menuTitles(_ menu: NSMenu, _ path: String) -> [String] {
++            menu.items.flatMap { item -> [String] in
++                let here = path + " > " + item.title
++                return [here] + (item.submenu.map { menuTitles($0, here) } ?? [])
++            }
++        }
++        func flag(_ strings: [String], _ what: String) {
++            let hits = strings.filter { $0.localizedCaseInsensitiveContains("air traffic") }
++            log("\(what): \(strings.count) strings, 'air traffic' hits=\(hits.count)\(hits.isEmpty ? "" : " " + hits.joined(separator: " | "))")
++            for s in strings where s.localizedCaseInsensitiveContains("link route") || s.localizedCaseInsensitiveContains("links pane") {
++                log("  mentions: \(s)")
++            }
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start \(ap)")
++            let routes = store.linkRoutes
++            if routes.routes.isEmpty {
++                let targets = store.nonIncognitoSpaces
++                _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "work.example"),
++                                         target: .space(targets[0].id), sortOrder: 0))
++                _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .contains, pattern: "docs"),
++                                         target: .space(targets[0].id), sortOrder: 1))
++            }
++            log("routes=\(store.linkRoutes.routes.count)")
++            flag(menuTitles(NSApp.mainMenu ?? NSMenu(), "Main"), "main menu")
++
++            await awaitIdle()
++            let swc = SettingsWindowController.shared
++            swc.showWindow(nil)
++            guard let sw = swc.window else { return log("no settings window") }
++            await sleep(1.5)
++            func showPane(_ id: String) async -> SettingsPaneViewController? {
++                guard let item = sw.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == id }),
++                      let action = item.action else { log("no toolbar item \(id)"); return nil }
++                NSApp.sendAction(action, to: item.target, from: item)
++                await sleep(1.2)
++                return sw.contentViewController as? SettingsPaneViewController
++            }
++            log("toolbar: \(sw.toolbar?.items.map { "\($0.itemIdentifier.rawValue)[\($0.label)]" }.joined(separator: " ") ?? "-")")
++            var all: [String] = []
++            for id in sw.toolbar?.items.map(\.itemIdentifier.rawValue) ?? [] {
++                guard let pane = await showPane(id) else { continue }
++                let strings = texts(pane.view) + [pane.paneDescription ?? ""].filter { !$0.isEmpty }
++                all += strings
++                flag(strings, "pane \(id)")
++                if id == "links" {
++                    log("links description: \(pane.paneDescription ?? "-")")
++                    await shoot("links", sw)
++                }
++                if id == "quickdetour" { await shoot("quickdetour", sw) }
++            }
++            flag(all, "all panes")
++            log("done")
++        }
++    }
++}
++#endif

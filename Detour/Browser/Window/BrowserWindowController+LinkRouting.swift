@@ -4,7 +4,7 @@ import os
 
 private let log = Logger(subsystem: "com.detourbrowser.mac", category: "link-routing")
 
-// Air Traffic Control for typed URLs and links clicked in a page (TASK-191.4).
+// Link Routes for typed URLs and links clicked in a page (TASK-191.4).
 // The window's WebKit delegates and the command palette describe what
 // happened; the pure `linkRoutingEligibility` / `typedURLIsRoutable` decide
 // whether it is routed, `resolveLinkRoute` where, and `AppDelegate.openLink`

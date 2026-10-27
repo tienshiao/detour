@@ -332,8 +332,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Links opened from another app (Get URL Apple Events). Air Traffic
-    /// Control picks where each goes (TASK-191.2); a route may name the
+    /// Links opened from another app (Get URL Apple Events). Link Routes
+    /// pick where each goes (TASK-191.2); a route may name the
     /// sending app, read from the event being handled. LaunchServices sends
     /// the event from the opening app's process, so its PID names the app; a
     /// shell's `open` has no bundle ID, and the URL that launches Detour comes
@@ -494,7 +494,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return wc
     }
 
-    /// A link Air Traffic Control sends to Quick Detour (TASK-193.5): a new
+    /// A link that Link Routes send to Quick Detour (TASK-193.5): a new
     /// Quick Detour window on the frontmost Detour window's profile — never
     /// Private (`QuickDetour.profileForRoutedLink`) — whose Open in names the
     /// most recent normal window's space when it is that profile's. In front

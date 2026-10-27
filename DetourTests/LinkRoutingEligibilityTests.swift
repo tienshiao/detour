@@ -1,7 +1,7 @@
 import XCTest
 @testable import Detour
 
-/// TASK-191.4: which links inside Detour Air Traffic Control routes at all
+/// TASK-191.4: which links inside Detour are routed by Link Routes at all
 /// (`linkRoutingEligibility`, `typedURLIsRoutable`), the precedence between a
 /// route and the pinned/favourite Peek intercept, and what the two layers give
 /// together with `resolveLinkRoute`.
@@ -47,7 +47,7 @@ final class LinkRoutingEligibilityTests: XCTestCase {
     // MARK: - Opt-Cmd-click: Quick Detour (TASK-193.5)
 
     func testOptionCommandIsTheQuickDetourClickAndIsNeverRouted() {
-        // The user chose Quick Detour: Air Traffic Control does not move it.
+        // The user chose Quick Detour: Link Routes do not move it.
         XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option]), .notRouted(.quickDetourClick))
         XCTAssertEqual(click("https://example.com/b", modifiers: [.command, .option]), .notRouted(.quickDetourClick))
         XCTAssertEqual(click("https://other.test/", modifiers: [.command, .option, .shift]),

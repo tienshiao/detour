@@ -4,7 +4,7 @@ title: Profiles and spaces
 description: "A profile owns website data, extensions and settings; a space is a tab group that points at one profile; the active space is per window."
 tags: [architecture, profiles, spaces, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T10:20:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -147,7 +147,7 @@ later stamp would miss the tab and it would never
 | Default | `ensureDefaultSpace()` | Only when there are no spaces; creates "Home" on the first non-incognito profile, minting a "Default" profile if needed. `profiles.first` can be the Private profile on a session-less launch, which is why it is skipped explicitly. |
 | Edit | `updateSpace(id:name:emoji:colorHex:profileID:)` | A profile change is a rebuild, see below. |
 | Reorder | `moveSpace(from:to:)` | |
-| Delete | `deleteSpace(id:)` | Returns `SpaceDeletionResult`. Refused while an Air Traffic Control route or the Default targets the space (`.blockedByLinkRoutes`, [link routing](../features/link-routing.md)). Refuses the last space, and the last **normal** space even while a Private window's space makes `spaces.count` larger (a review fix in TASK-191.1: before it, deleting the last persistent space with a Private window open left the next launch no saved session, and it made a new "Home" space). An undo of Add Space or redo of Delete Space that routes refuse posts `spaceDeletionBlockedNotification` and keeps its entry. |
+| Delete | `deleteSpace(id:)` | Returns `SpaceDeletionResult`. Refused while a link route or the Default targets the space (`.blockedByLinkRoutes`, [Link Routes](../features/link-routing.md)). Refuses the last space, and the last **normal** space even while a Private window's space makes `spaces.count` larger (a review fix in TASK-191.1: before it, deleting the last persistent space with a Private window open left the next launch no saved session, and it made a new "Home" space). An undo of Add Space or redo of Delete Space that routes refuse posts `spaceDeletionBlockedNotification` and keeps its entry. |
 | Move a tab between spaces | `moveTab(id:from:to:)`, `movePinnedEntry(id:from:to:)` | See below. |
 
 ### Changing a space's profile

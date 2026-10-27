@@ -1,6 +1,6 @@
 import Foundation
 
-/// Air Traffic Control's routes and Default target (TASK-191.1), kept in the
+/// The link routes and the Default target (TASK-191.1), kept in the
 /// session database's `linkRoute` and `linkRouteDefault` tables and cached
 /// here. App-wide, not per profile: spaces are global. Loaded once at
 /// creation; every change writes through.

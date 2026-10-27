@@ -2,7 +2,7 @@ import XCTest
 import GRDB
 @testable import Detour
 
-/// TASK-191.1: Air Traffic Control's routes and Default target, kept in the
+/// TASK-191.1: the link routes and the Default target, kept in the
 /// session database (`linkRoute`, `linkRouteDefault`, migration v20), and the
 /// rule that a space they target cannot be deleted.
 final class LinkRouteStoreTests: XCTestCase {

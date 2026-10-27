@@ -1,6 +1,6 @@
 import Foundation
 
-// The Air Traffic Control rules (TASK-191.1), as pure functions. The entry
+// The Link Routes rules (TASK-191.1), as pure functions. The entry
 // points (TASK-191.2 links from other apps, TASK-191.4 typed URLs and clicks)
 // call `resolveLinkRoute` and act on its decision; nothing here touches a
 // window or the store.
