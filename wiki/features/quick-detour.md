@@ -871,8 +871,8 @@ a Quick Detour's own; front to back, then windows not in the window list),
 as the launcher's rule (TASK-193.4) — **but never Private**: a Private
 window in front is passed over for the next window's profile, else the
 first normal profile. A link from another app enters Private only through
-a Private Window target (or Quarantine, TASK-194, whose whole point is a
-Private Quick Detour); a Quick Detour route that sometimes opened Private
+a Private Window target (or Quarantine, TASK-194: a Quick Detour on the
+Private profile with a store of its own, [Quarantine](./quarantine.md)); a Quick Detour route that sometimes opened Private
 would overlap it by accident of which window was in front. Its Open in
 names the most recent normal window's space when it is the same profile's.
 The window is ordered front of Detour's windows, as a placed tab's window
@@ -1259,6 +1259,7 @@ Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 - [App shell](../architecture/app-shell.md) — the menu item, and that not every window is a browser window.
 - [Closed tabs and the archive](../tabs/closed-tabs-and-archive.md) — the records closed Quick Detours share.
 - [Link Routes](./link-routing.md) — the Quick Detour target, and Opt-Cmd's place in the click rule.
+- [Quarantine](./quarantine.md) — a Quick Detour on the Private profile whose page has a throwaway store of its own (TASK-194): its badge, Open in as a fresh load, downloads asked, the privacy protections.
 
 [^webkit-windows]: WebKit, WebExtensionContextAPIWindowsCocoa.mm (windowsGetAll reads the context's own window list)
 [^harness]: TASK-193.1 runtime harness and its results

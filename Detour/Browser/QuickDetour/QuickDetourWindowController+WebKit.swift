@@ -21,6 +21,10 @@ extension QuickDetourWindowController: WKNavigationDelegate {
             ContentBlockerManager.shared.configure(preferences, forNavigationTo: navigationAction.request.url,
                                                    profile: profile)
         }
+        // WebKit's fingerprinting and link decoration protections, for every
+        // navigation of a quarantine page (SPI, guarded: without it the page
+        // still has its own store, Safari's user agent and the parameter rule).
+        if isQuarantine { Quarantine.applyPrivacyProtections(to: preferences) }
         return (policy, preferences)
     }
 
@@ -32,14 +36,35 @@ extension QuickDetourWindowController: WKNavigationDelegate {
 
         // Cmd+click: another Quick Detour on the same profile, as a browser
         // window's opens a background tab. It names the same space in Open in
-        // as this one (TASK-193.3).
+        // as this one (TASK-193.3). In a quarantine, another quarantine with a
+        // store of its own (TASK-194: one store per window; only a window the
+        // page opens itself shares, to keep its opener).
         if action.navigationType == .linkActivated, action.modifierFlags.contains(.command),
            let url = action.request.url {
-            DispatchQueue.main.async { [profile, store, sourceSpaceID] in
-                QuickDetourWindowController.open(profile: profile,
-                                                 sourceSpace: sourceSpaceID.flatMap { store.space(withID: $0) },
-                                                 url: url)
+            DispatchQueue.main.async { [profile, store, sourceSpaceID, isQuarantine] in
+                let source = sourceSpaceID.flatMap { store.space(withID: $0) }
+                if isQuarantine {
+                    QuickDetourWindowController.openQuarantine(url: url, privateProfile: profile, sourceSpace: source)
+                } else {
+                    QuickDetourWindowController.open(profile: profile, sourceSpace: source, url: url)
+                }
             }
+            return .cancel
+        }
+
+        // A quarantine page goes nowhere with link-tracking parameters: the
+        // same address is loaded again without them (TASK-194). WebKit's own
+        // link decoration filtering has already taken the click IDs on its
+        // list; this takes the rest (`utm_*`). A server that redirects the
+        // clean address straight back to the parameters is let through the
+        // second time, or the two would loop forever.
+        if isQuarantine, action.targetFrame?.isMainFrame == true,
+           let clean = Quarantine.trackingFreeURL(for: action.request.url, httpMethod: action.request.httpMethod,
+                                                  isBackForwardOrReload: action.navigationType == .backForward
+                                                      || action.navigationType == .reload),
+           !(BrowserWindowController.isRedirect(action) && clean == lastTrackingFreeLoad) {
+            lastTrackingFreeLoad = clean
+            DispatchQueue.main.async { page?.load(clean) }
             return .cancel
         }
 
@@ -66,8 +91,10 @@ extension QuickDetourWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-        // An extension package is offered for install, as in a browser window.
-        if BrowserWindowController.isCRXResponse(navigationResponse) {
+        // An extension package is offered for install, as in a browser window
+        // (in a quarantine it is a download like any other, and asked about:
+        // installing would fetch it again outside the quarantine).
+        if !isQuarantine, BrowserWindowController.isCRXResponse(navigationResponse) {
             let url = navigationResponse.response.url
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -102,14 +129,59 @@ extension QuickDetourWindowController: WKNavigationDelegate {
     }
 
     private func startDownload(_ download: WKDownload, from url: URL?) {
+        if isQuarantine {
+            // Asked each time (TASK-194), once WebKit knows the file's name.
+            let gate = QuarantineDownloadGate(controller: self, sourceURL: url)
+            download.delegate = gate
+            return
+        }
         download.delegate = DownloadManager.shared
         _ = DownloadManager.shared.handleNewDownload(download, sourceURL: url, scope: downloadScope)
         // There is no downloads button in this window.
         toastManager.show(message: "Downloading \(url?.lastPathComponent ?? "file")")
     }
 
+    /// The download question for a quarantine page (TASK-194), on this
+    /// window: `answer` gets true for Download. Answered "no" if the window
+    /// closes first.
+    func askToDownload(_ question: QuarantineDownloadQuestion, answer: @escaping (Bool) -> Void) {
+        guard !isTornDown else { return answer(false) }
+        let id = UUID()
+        var answered = false
+        let once: (Bool) -> Void = { [weak self] yes in
+            guard !answered else { return }
+            answered = true
+            self?.pendingDownloadAnswers.removeValue(forKey: id)
+            answer(yes)
+        }
+        pendingDownloadAnswers[id] = once
+        Self.askQuarantineDownload(question, window, once)
+    }
+
+    /// A quarantine download the user allowed: listed and saved as a Private
+    /// window's are (scoped to this window's page, cancelled with it after
+    /// asking), with the toast this window shows for every download.
+    func admitQuarantineDownload(_ download: WKDownload, sourceURL: URL?, filename: String) {
+        download.delegate = DownloadManager.shared
+        _ = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
+        toastManager.show(message: "Downloading \(filename)")
+    }
+
+    /// The production question: a sheet naming the file and the site.
+    static func runQuarantineDownloadAlert(_ question: QuarantineDownloadQuestion, on window: NSWindow?,
+                                           answer: @escaping (Bool) -> Void) {
+        guard let window else { return answer(false) }
+        let alert = NSAlert()
+        alert.messageText = "Download “\(question.filename)”?"
+        alert.informativeText = Quarantine.downloadQuestionDetail(question)
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { answer($0 == .alertFirstButtonReturn) }
+    }
+
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let page = tab, page.webView === webView else { return }
+        lastTrackingFreeLoad = nil
         page.nowPlayingDocumentDidCommit()
         if webView.url?.scheme == ErrorPage.scheme { return }
         page.didCommitNavigation()
@@ -173,9 +245,11 @@ extension QuickDetourWindowController: WKUIDelegate {
         guard let url = navigationAction.request.url, !InternalPage.isInternal(url) else { return nil }
         // A page may not open a `data:` URL in a window of its own (TASK-159).
         if url.scheme?.lowercased() == "data" { return nil }
+        // A quarantine's child shares its quarantine: WebKit's copy of the
+        // configuration carries the opener's store (TASK-194).
         let child = QuickDetourWindowController(profile: profile,
                                                 sourceSpace: sourceSpaceID.flatMap { store.space(withID: $0) },
-                                                openedWith: configuration)
+                                                openedWith: configuration, quarantine: quarantine)
         child.showWindow(nil)
         return child.tab?.webView
     }

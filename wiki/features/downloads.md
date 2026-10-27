@@ -158,7 +158,11 @@ and closing it drops them (`tabStoreDidCloseQuickDetour`); so does switching
 it to another profile with its pill (`tabStoreDidReplaceQuickDetour`, after
 asking about any still running, TASK-193.4). A normal Quick
 Detour's are `.normal` (TASK-193.1). The Quick Detour window has no
-downloads button: it says "Downloading …" in a toast. Three small functions on the scope hold the rules (TASK-148):
+downloads button: it says "Downloading …" in a toast. A
+[quarantine](./quarantine.md)'s download (TASK-194) is asked about first, on
+a sheet naming the file and the site, once WebKit asks where to save it
+(`QuarantineDownloadGate`); only a yes creates the item, Private-scoped to
+the quarantine's tab, and a no cancels it before anything is written. Three small functions on the scope hold the rules (TASK-148):
 
 | Rule | Function | Result |
 |---|---|---|

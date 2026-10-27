@@ -89,9 +89,11 @@ final class LinkPlacementTests: XCTestCase {
         XCTAssertEqual(place(.mostRecentSpace, []), .mostRecentSpace)
     }
 
-    func testQuarantineIsTodaysBehaviourUntilItExists() {
-        // TASK-194 (Quarantine) is not built.
-        XCTAssertEqual(place(.quarantine, [normal("a", work)]), .mostRecentSpace)
+    func testQuarantineOpensAQuarantineWindowWhateverTheWindows() {
+        // TASK-194: never a tab in a space, never the Most Recent Space fallback.
+        XCTAssertEqual(place(.quarantine, [normal("a", work)]), .openInQuarantine)
+        XCTAssertEqual(place(.quarantine, [privateWindow("p"), normal("a", work)]), .openInQuarantine)
+        XCTAssertEqual(place(.quarantine, []), .openInQuarantine)
     }
 
     func testQuickDetourOpensAQuickDetourWhateverTheWindows() {

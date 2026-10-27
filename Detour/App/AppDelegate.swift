@@ -302,8 +302,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showQuickDetourLauncher() {
+        // A quarantine names no profile to browse with (TASK-194): the window
+        // behind it decides.
         let frontmost = NSApp.orderedWindows.lazy.compactMap { $0.windowController }.first {
-            $0 is BrowserWindowController || $0 is QuickDetourWindowController
+            $0 is BrowserWindowController || ($0 as? QuickDetourWindowController)?.isQuarantine == false
         }
         let sourceSpace = (frontmost as? BrowserWindowController)?.activeSpace
         let frontmostProfile = sourceSpace?.profile ?? (frontmost as? QuickDetourWindowController)?.profile
@@ -367,12 +369,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// link from another app (TASK-191.2), and a typed URL or clicked link a
     /// route moves out of its window's space (TASK-191.4), which never get here
     /// with `.stay`. `typed` marks the visit as typed in history, as a URL
-    /// submitted in the palette is when it opens here.
-    func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false) {
+    /// submitted in the palette is when it opens here. `sourceSpace` is the
+    /// space a routed click came from, which a quarantine's Open in names.
+    func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false, from sourceSpace: Space? = nil) {
         // Not a tab in a space, so not the placement's windows (TASK-193.5).
         // The resolver sends only links from other apps here.
         if decision == .quickDetour {
             openInQuickDetour(url, typed: typed)
+            return
+        }
+        // Nor a quarantine (TASK-194): links from other apps and routed
+        // clicks, never typed URLs (the resolver's rule).
+        if decision == .quarantine {
+            openInQuarantine(url, from: sourceSpace)
             return
         }
         let placed = placeTab(routedTo: decision) { space in
@@ -450,8 +459,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return placeInNewPrivateWindow(makeTab, didSelect: didSelect)
         case .mostRecentSpace:
             return nil
-        case .openInQuickDetour:
-            // Not a tab in a space: `openLink` opens the Quick Detour itself.
+        case .openInQuickDetour, .openInQuarantine:
+            // Not a tab in a space: `openLink` opens the window itself.
             return nil
         }
     }
@@ -504,7 +513,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var windowProfiles: [Profile] = NSApp.orderedWindows.compactMap { window in
             switch window.windowController {
             case let browser as BrowserWindowController: return browser.activeSpace?.profile
-            case let quick as QuickDetourWindowController: return quick.profile
+            case let quick as QuickDetourWindowController: return quick.isQuarantine ? nil : quick.profile
             default: return nil
             }
         }
@@ -517,6 +526,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .first { $0.profileID == profile.id }
         log.info("Link routed to Quick Detour on profile \(profile.id.uuidString, privacy: .public)")
         QuickDetourWindowController.open(profile: profile, sourceSpace: sourceSpace, url: url, typed: typed)
+    }
+
+    /// A link that Link Routes send to Quarantine (TASK-194): a new quarantine
+    /// window on the Private profile with a store of its own, in front of
+    /// Detour's windows. Its Open in names the space the link was clicked in,
+    /// else the most recent normal window's space.
+    private func openInQuarantine(_ url: URL, from clickedIn: Space?) {
+        let store = TabStore.shared
+        let sourceSpace = clickedIn ?? browserWindowsByRecency.lazy.compactMap { $0.isIncognito ? nil : $0.activeSpace }.first
+        log.info("Link routed to Quarantine")
+        QuickDetourWindowController.openQuarantine(url: url, privateProfile: store.ensureIncognitoProfile(),
+                                                   sourceSpace: sourceSpace)
     }
 
     /// What a link from another app did before routes, kept exactly (the Most

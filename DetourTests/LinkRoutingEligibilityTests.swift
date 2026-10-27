@@ -325,9 +325,12 @@ final class LinkRoutingEligibilityTests: XCTestCase {
         XCTAssertNil(routedClick("https://other.test/secret", in: UUID(), isPrivate: true))
     }
 
-    func testQuarantineNeverAppliesToAClick() {
-        XCTAssertNil(routedClick("https://later.test/", in: personal))
-        XCTAssertNil(routedClick("https://later.test/", in: personal, defaultTarget: .quarantine))
+    func testAQuarantineRouteAppliesToARoutableClickButTheDefaultDoesNot() {
+        // TASK-194, the user's decision of 2026-10-26.
+        XCTAssertEqual(routedClick("https://later.test/", in: personal), .quarantine)
+        XCTAssertNil(routedClick("https://later.test/", in: UUID(), isPrivate: true),
+                     "never out of a Private window: its Open in reaches normal spaces")
+        XCTAssertNil(routedClick("https://unrouted.test/", in: personal, defaultTarget: .quarantine))
     }
 
     func testTheDefaultAppliesToAClick() {

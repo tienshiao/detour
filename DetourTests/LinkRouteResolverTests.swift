@@ -255,6 +255,9 @@ final class LinkRouteResolverTests: XCTestCase {
                                default: .privateWindow), .stay)
     }
 
+    /// The Default naming Quarantine takes unmatched links from other apps
+    /// only; a click no route matches stays (TASK-194: only a route set to
+    /// Quarantine catches clicks).
     func testQuarantineAndQuickDetourDefaultsApplyOnlyToExternalLinks() {
         for defaultTarget: LinkRouteTarget in [.quarantine, .quickDetour] {
             XCTAssertEqual(resolve("https://other.test/", from: typedFromPersonal, [], default: defaultTarget), .stay,
@@ -277,7 +280,7 @@ final class LinkRouteResolverTests: XCTestCase {
     func testATypedURLWhoseRouteIsSkippedFallsThroughToTheDefault() {
         let r = [route(.domainIs, "a.test", to: .quarantine), route(.domainIs, "a.test", to: .space(UUID()), order: 1)]
         XCTAssertEqual(resolve("https://a.test/", from: typedFromPersonal, r, default: .space(work)), .openInSpace(work),
-                       "Quarantine and a missing space are skipped; the Default decides")
+                       "Quarantine (never for a typed URL) and a missing space are skipped; the Default decides")
     }
 
     func testAMostRecentSpaceRouteLeavesATypedOrClickedLinkWhereItIs() {
@@ -286,18 +289,49 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), r), .stay)
     }
 
-    // MARK: - Quarantine and Quick Detour: links from other apps only
+    // MARK: - Quick Detour: links from other apps only
 
-    func testQuarantineAndQuickDetourRoutesApplyOnlyToExternalLinks() {
-        for target: LinkRouteTarget in [.quarantine, .quickDetour] {
-            let r = [route(.domainIs, "a.test", to: target), route(.domainIs, "a.test", to: .space(work), order: 1)]
-            XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r),
-                           .openInSpace(work), "\(target) is skipped for a typed URL; the next route applies")
-            XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), r),
-                           .openInSpace(work), "\(target) is skipped for a click")
-            XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [r[0]]),
-                           .stay)
-        }
+    func testQuickDetourRoutesApplyOnlyToExternalLinks() {
+        let r = [route(.domainIs, "a.test", to: .quickDetour), route(.domainIs, "a.test", to: .space(work), order: 1)]
+        XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r),
+                       .openInSpace(work), "skipped for a typed URL; the next route applies")
+        XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), r),
+                       .openInSpace(work), "skipped for a click")
+        XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [r[0]]),
+                       .stay)
+    }
+
+    // MARK: - Quarantine (TASK-194): links from other apps and clicks, never typed
+
+    func testAQuarantineRouteCatchesAMatchingClick() {
+        let r = [route(.domainIs, "a.test", to: .quarantine), route(.domainIs, "a.test", to: .space(work), order: 1)]
+        XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), r),
+                       .quarantine, "the user's decision of 2026-10-26: a route set to Quarantine catches clicks too")
+        XCTAssertEqual(resolve("https://a.test/", from: .external(sourceApp: nil), r), .quarantine)
+    }
+
+    func testAQuarantineRouteNeverTakesATypedURL() {
+        let r = [route(.domainIs, "a.test", to: .quarantine), route(.domainIs, "a.test", to: .space(work), order: 1)]
+        XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r),
+                       .openInSpace(work), "skipped for a typed URL; the next route applies")
+        XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), [r[0]]),
+                       .stay)
+    }
+
+    func testAQuarantineRouteNeverTakesAClickOutOfAPrivateWindow() {
+        // A quarantine's Open in reaches normal spaces, so a Private page's
+        // link quarantined would be one Cmd+O from a normal profile (and its
+        // history): nothing leaves a Private window (code review, TASK-194).
+        let r = [route(.domainIs, "a.test", to: .quarantine)]
+        XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: privateSpace, isPrivateWindow: true), r), .stay)
+        XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: privateSpace, isPrivateWindow: true), r), .stay)
+    }
+
+    func testAQuarantineDefaultNeverTakesAClick() {
+        XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [],
+                               default: .quarantine), .stay)
+        XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: privateSpace, isPrivateWindow: true), [],
+                               default: .quarantine), .stay)
     }
 
     // MARK: - Private windows

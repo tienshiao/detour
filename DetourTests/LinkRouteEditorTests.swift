@@ -24,26 +24,30 @@ final class LinkRouteEditorTests: XCTestCase {
 
     // MARK: - Target pop-up
 
-    func testTheTargetMenuListsTheSpacesThenMostRecentSpacePrivateWindowAndQuickDetour() {
+    func testTheTargetMenuListsTheSpacesThenMostRecentSpacePrivateWindowQuickDetourAndQuarantine() {
         XCTAssertEqual(linkRouteTargetMenu(spaces: [work, home], current: .mostRecentSpace),
-                       [.space(work), .space(home), .separator, .mostRecentSpace, .privateWindow, .quickDetour])
+                       [.space(work), .space(home), .separator, .mostRecentSpace, .privateWindow, .quickDetour,
+                        .quarantine])
         XCTAssertEqual(linkRouteTargetMenu(spaces: [], current: .privateWindow),
-                       [.mostRecentSpace, .privateWindow, .quickDetour], "no spaces, no separator")
+                       [.mostRecentSpace, .privateWindow, .quickDetour, .quarantine], "no spaces, no separator")
         XCTAssertEqual(work.title, "💼 Work")
         XCTAssertEqual(LinkRouteSpaceOption(id: UUID(), name: "Bare", emoji: "").title, "Bare")
     }
 
-    func testQuarantineShowsOnlyWhenAlreadyChosen() {
-        XCTAssertEqual(linkRouteTargetMenu(spaces: [work], current: .quarantine),
-                       [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour, .quarantine])
-        XCTAssertEqual(linkRouteTargetMenu(spaces: [work], current: nil),
-                       [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour])
+    func testQuarantineIsAlwaysOfferedOnce() {
+        // TASK-194: a visible target, for routes and the Default.
+        for current: LinkRouteTarget? in [.quarantine, nil, .quickDetour] {
+            XCTAssertEqual(linkRouteTargetMenu(spaces: [work], current: current),
+                           [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour, .quarantine],
+                           "\(String(describing: current))")
+        }
+        XCTAssertEqual(LinkRouteTargetMenuItem.quarantine.target, .quarantine)
     }
 
     func testQuickDetourIsAlwaysOfferedOnceAndChoosingItIsSaved() throws {
         // TASK-193.5: a visible target, for routes and the Default.
         let menu = linkRouteTargetMenu(spaces: [work], current: .quickDetour)
-        XCTAssertEqual(menu, [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour])
+        XCTAssertEqual(menu, [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour, .quarantine])
         XCTAssertEqual(menu.filter { $0 == .quickDetour }.count, 1, "listed once when it is the current target")
         XCTAssertEqual(LinkRouteTargetMenuItem.quickDetour.target, .quickDetour)
 
@@ -60,9 +64,9 @@ final class LinkRouteEditorTests: XCTestCase {
         let gone = UUID()
         XCTAssertEqual(linkRouteTargetMenu(spaces: [work], current: .space(gone)),
                        [.unavailableSpace(gone), .separator, .space(work), .separator, .mostRecentSpace, .privateWindow,
-                        .quickDetour])
+                        .quickDetour, .quarantine])
         XCTAssertEqual(linkRouteTargetMenu(spaces: [work], current: .space(work.id)),
-                       [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour])
+                       [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour, .quarantine])
         XCTAssertEqual(LinkRouteTargetMenuItem.unavailableSpace(gone).target, .space(gone))
         XCTAssertNil(LinkRouteTargetMenuItem.separator.target)
     }

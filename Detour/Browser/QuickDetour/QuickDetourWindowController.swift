@@ -65,6 +65,46 @@ final class QuickDetourWindowController: NSWindowController {
         return controller
     }
 
+    /// Opens a quarantine window (TASK-194) loading `url`, in front and key:
+    /// a Quick Detour on `privateProfile` (the Private profile: its
+    /// extensions, no history, no archive) whose page has a fresh
+    /// non-persistent store of its own. The link loads without its tracking
+    /// parameters; the window keeps it as it came (`QuarantineSession.originalURL`).
+    /// `sourceSpace` is what Open in names first: the space the link was
+    /// clicked in, or the most recent normal window's; a Private one is no
+    /// target and is dropped.
+    @discardableResult
+    static func openQuarantine(url: URL, privateProfile: Profile, sourceSpace: Space? = nil) -> QuickDetourWindowController {
+        let session = QuarantineSession(originalURL: url)
+        let source = sourceSpace.flatMap { $0.isIncognito ? nil : $0 }
+        let controller = QuickDetourWindowController(profile: privateProfile, sourceSpace: source, quarantine: session)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.load(Quarantine.removingTrackingParameters(from: url), typed: false)
+        return controller
+    }
+
+    /// Asks whether a quarantine page may download a file (TASK-194: ask
+    /// each time), on `window`; `answer` gets true for Download. A test
+    /// answers it.
+    static var askQuarantineDownload: (QuarantineDownloadQuestion, NSWindow?, @escaping (Bool) -> Void) -> Void =
+        runQuarantineDownloadAlert
+
+    /// The quarantine this window shows (TASK-194): its page's own store,
+    /// shared only with windows that page opens. Nil for a Quick Detour.
+    let quarantine: QuarantineSession?
+    var isQuarantine: Bool { quarantine != nil }
+
+    /// Download questions still waiting for an answer (TASK-194), answered
+    /// "no" if the window goes first.
+    var pendingDownloadAnswers: [UUID: (Bool) -> Void] = [:]
+
+    /// The address a quarantine page was last sent to without its tracking
+    /// parameters (TASK-194), until a page commits: a server that redirects
+    /// it back to the parameters is then let through rather than stripped
+    /// again forever.
+    var lastTrackingFreeLoad: URL?
+
     // MARK: - State
 
     /// What closing the window does with its page (TASK-193.5): archived as
@@ -141,7 +181,7 @@ final class QuickDetourWindowController: NSWindowController {
     private let extensionActiveTabTracker = ExtensionActiveTabTracker()
     private var extensionPopovers: [String: ExtensionPopoverController] = [:]
     private weak var pageSettingsPopover: NSPopover?
-    private var isTornDown = false
+    private(set) var isTornDown = false
     /// The pasteboard Copy Link writes to; a test swaps it.
     var urlPasteboard: NSPasteboard = .general
 
@@ -155,9 +195,10 @@ final class QuickDetourWindowController: NSWindowController {
     ///   - restoring: a closed Quick Detour from the archive (TASK-193.5): its
     ///     page comes back with its address, title, favicon and back/forward list.
     init(profile: Profile, sourceSpace: Space?, openedWith configuration: WKWebViewConfiguration? = nil,
-         restoring archived: QuickDetourArchivedPage? = nil) {
+         restoring archived: QuickDetourArchivedPage? = nil, quarantine: QuarantineSession? = nil) {
         self.tabID = UUID()
         self.profile = profile
+        self.quarantine = quarantine
         self.paletteHistorySpaceID = QuickDetour.paletteHistorySpaceID(profile: profile, sourceSpace: sourceSpace)
         self.sourceSpaceID = sourceSpace?.id
 
@@ -171,8 +212,10 @@ final class QuickDetourWindowController: NSWindowController {
         window.titlebarAppearsTransparent = true
         window.tabbingMode = .disallowed
         window.isReleasedWhenClosed = false
-        window.title = QuickDetour.displayName
-        if profile.isIncognito {
+        window.title = quarantine == nil ? QuickDetour.displayName : Quarantine.displayName
+        // A quarantine has a look of its own (the bar's tint and badge), not a
+        // Private window's dark.
+        if profile.isIncognito, quarantine == nil {
             window.appearance = NSAppearance(named: .darkAqua)
         }
         super.init(window: window)
@@ -201,7 +244,8 @@ final class QuickDetourWindowController: NSWindowController {
         for context in profile.extensionContexts.values {
             context.didOpenWindow(self)
         }
-        let tab = store.openQuickDetourTab(profile: profile, id: tabID, openedWith: configuration, restoring: archived)
+        let tab = store.openQuickDetourTab(profile: profile, id: tabID, openedWith: configuration, restoring: archived,
+                                           quarantine: quarantine)
         host(tab)
         bind(tab)
         announceExtensionActiveTabIfChanged()
@@ -242,7 +286,11 @@ final class QuickDetourWindowController: NSWindowController {
         guard let contentView = window.contentView else { return }
         contentView.wantsLayer = true
 
-        titleBar.setProfile(name: profile.name, isPrivate: profile.isIncognito)
+        if let quarantine {
+            titleBar.setQuarantine(openedFrom: Self.displayHost(of: quarantine.originalURL))
+        } else {
+            titleBar.setProfile(name: profile.name, isPrivate: profile.isIncognito)
+        }
         titleBar.onProfileClick = { [weak self] anchor in self?.showProfileMenu(from: anchor) }
         titleBar.onOpenIn = { [weak self] in self?.openInDefaultSpace(nil) }
         titleBar.onOpenInMenu = { [weak self] anchor in self?.showOpenInMenu(from: anchor) }
@@ -335,7 +383,8 @@ final class QuickDetourWindowController: NSWindowController {
             .sink { [weak self] title in
                 guard let self else { return }
                 let hasPage = self.tab?.url != nil
-                self.window?.title = hasPage && !title.isEmpty ? title : QuickDetour.displayName
+                let name = self.isQuarantine ? Quarantine.displayName : QuickDetour.displayName
+                self.window?.title = hasPage && !title.isEmpty ? title : name
             }
             .store(in: &tabSubscriptions)
     }
@@ -590,7 +639,8 @@ final class QuickDetourWindowController: NSWindowController {
     /// space can have been deleted, and another space used, since the window
     /// opened.
     var openInMenu: QuickDetourOpenInMenu {
-        store.quickDetourOpenInMenu(profile: profile, sourceSpaceID: sourceSpaceID)
+        if isQuarantine { return store.quarantineOpenInMenu(sourceSpaceID: sourceSpaceID) }
+        return store.quickDetourOpenInMenu(profile: profile, sourceSpaceID: sourceSpaceID)
     }
 
     func updateOpenIn() {
@@ -622,6 +672,18 @@ final class QuickDetourWindowController: NSWindowController {
     /// waiting on would close with the window unanswered.
     func open(in target: QuickDetourOpenInTarget) {
         guard window?.attachedSheet == nil else { return }
+        if isQuarantine {
+            // A quarantine's page never moves (TASK-194): its address is opened
+            // fresh in a normal space, on that space's profile and store, so
+            // nothing it gathered here comes along.
+            guard case .space(let spaceID) = target, let space = store.space(withID: spaceID),
+                  !space.isIncognito else { return }
+            // Its downloads are a Private window's and go with it: asked
+            // about first, as closing the window would.
+            guard confirmClosingWithPrivateDownloads() else { return }
+            reopen(routedTo: .openInSpace(spaceID))
+            return
+        }
         switch target {
         case .privateWindow:
             guard profile.isIncognito else { return }
@@ -669,7 +731,9 @@ final class QuickDetourWindowController: NSWindowController {
     }
 
     /// The cross-profile case: a new tab of the other profile's space on the
-    /// page's address; this window then closes, taking its page down.
+    /// page's address; this window then closes, taking its page down. Every
+    /// Open in from a quarantine (TASK-194): a fresh load on the space's
+    /// store, no referrer, nothing of the quarantine's store.
     private func reopen(routedTo decision: LinkRouteDecision) {
         guard let url = tab?.url else { return }
         let receiving = Self.placeTab(decision, makeTab: { [store] space in
@@ -731,7 +795,10 @@ final class QuickDetourWindowController: NSWindowController {
                                           action: #selector(openInMenuItemChosen(_:)), keyEquivalent: "")
                 menuItem.target = self
                 menuItem.representedObject = item.spaceID
-                if item.reloads {
+                if isQuarantine {
+                    menuItem.toolTip = "Opens this address fresh in \(section.title)'s \(item.name): its cookies "
+                        + "and sign-ins, nothing from this window"
+                } else if item.reloads {
                     menuItem.toolTip = "Opens this address in \(section.title)'s \(item.name): its cookies and "
                         + "sign-ins, without this page's back and forward history"
                 }
@@ -772,6 +839,11 @@ final class QuickDetourWindowController: NSWindowController {
     static var runProfileSwitchAlert: (PrivateDownloadClosePolicy.Prompt) -> Bool =
         BrowserWindowController.runPrivateDownloadCloseAlert
 
+    /// The question asked before closing the window (or a quarantine's Open
+    /// in, TASK-194) would cancel Private downloads; a test answers it.
+    static var runPrivateDownloadCloseAlert: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+        BrowserWindowController.runPrivateDownloadCloseAlert
+
     /// The pill's menu model, from the store's profiles as they are now.
     var profileMenu: QuickDetourProfileMenu {
         store.quickDetourProfileMenu(windowProfile: profile)
@@ -802,9 +874,30 @@ final class QuickDetourWindowController: NSWindowController {
 
     private func showProfileMenu(from anchor: NSView) {
         guard window?.attachedSheet == nil else { return }
-        let menu = makeProfileMenu()
+        let menu = isQuarantine ? makeQuarantineMenu() : makeProfileMenu()
         guard !menu.items.isEmpty else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.minY - 4), in: anchor)
+    }
+
+    /// The quarantine badge's menu (TASK-194): what quarantine means, where
+    /// the link came from and where the page is now. It switches nothing:
+    /// leaving quarantine is Open in, a fresh load in a space.
+    func makeQuarantineMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(NSMenuItem.sectionHeader(title: Quarantine.displayName))
+        var lines = ["Cookies and site data of its own, gone when it closes",
+                     "Not in history; extensions allowed in Private run"]
+        let from = Self.displayHost(of: quarantine?.originalURL)
+        let now = Self.displayHost(of: tab?.url)
+        if let from { lines.append("Opened from \(from)") }
+        if let now, now != from { lines.append("Now at \(now)") }
+        for line in lines {
+            let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        return menu
     }
 
     @objc private func profileMenuItemChosen(_ sender: NSMenuItem) {
@@ -841,7 +934,8 @@ final class QuickDetourWindowController: NSWindowController {
     /// would be left with its web view gone.
     @discardableResult
     func switchProfile(to target: Profile) -> Bool {
-        guard !isTornDown, window?.attachedSheet == nil, let page = tab else { return false }
+        // A quarantine is left only by Open in (TASK-194).
+        guard !isQuarantine, !isTornDown, window?.attachedSheet == nil, let page = tab else { return false }
         let manager = DownloadManager.shared
         let closing = PrivateDownloadClosePolicy.Closing.window(downloadScope)
         let inFlight = profile.isIncognito ? manager.privateDownloadsInFlight(closing: closing).count : 0
@@ -920,6 +1014,10 @@ final class QuickDetourWindowController: NSWindowController {
     private func tearDown() {
         guard !isTornDown else { return }
         isTornDown = true
+        // A download question still up goes unanswered with the window: no.
+        let unanswered = Array(pendingDownloadAnswers.values)
+        pendingDownloadAnswers.removeAll()
+        for answer in unanswered { answer(false) }
         letGo(of: tab)
         store.removeObserver(self)
         let closing = tab
@@ -942,6 +1040,12 @@ extension QuickDetourWindowController: NSWindowDelegate {
     /// (`PrivateDownloadClosePolicy`, TASK-156). A normal one's are listed by
     /// every browser window and never cancelled here.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        confirmClosingWithPrivateDownloads()
+    }
+
+    /// Whether the window may close as far as its Private downloads go: true
+    /// with none in flight, else the question's answer (a yes cancels them).
+    func confirmClosingWithPrivateDownloads() -> Bool {
         let manager = DownloadManager.shared
         let closing = PrivateDownloadClosePolicy.Closing.window(downloadScope)
         let inFlight = manager.privateDownloadsInFlight(closing: closing).count
@@ -949,7 +1053,7 @@ extension QuickDetourWindowController: NSWindowDelegate {
         case .close:
             return true
         case .confirm(let prompt):
-            guard BrowserWindowController.runPrivateDownloadCloseAlert(prompt) else { return false }
+            guard Self.runPrivateDownloadCloseAlert(prompt) else { return false }
             manager.cancelPrivateDownloads(closing: closing)
             return true
         }

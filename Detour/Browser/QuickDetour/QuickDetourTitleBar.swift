@@ -234,12 +234,35 @@ final class QuickDetourTitleBar: NSView {
     /// The name the pill shows.
     var profileName: String { pillLabel.stringValue }
 
+    /// Whether the bar is marked as a quarantine's (TASK-194).
+    private(set) var isQuarantine = false
+
     /// The profile pill: its name, and a symbol saying whether it is Private.
     func setProfile(name: String, isPrivate: Bool) {
+        guard !isQuarantine else { return }
         pillLabel.stringValue = name
         pillIcon.image = Self.profileSymbol(isPrivate: isPrivate)
         pill.setAccessibilityLabel("Profile: \(name)")
     }
+
+    /// Marks the bar as a quarantine's (TASK-194): the pill becomes a
+    /// "Quarantine" badge in the quarantine colour (its menu says what that
+    /// means and where the link came from), and the bar takes a tint of the
+    /// same colour, so the window never passes for a Quick Detour on a
+    /// profile. `openedFrom` is the link's host as it arrived; the host in the
+    /// middle is where the page is now.
+    func setQuarantine(openedFrom host: String?) {
+        isQuarantine = true
+        pillLabel.stringValue = Quarantine.displayName
+        pillIcon.image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: nil)
+        pill.setAccessibilityLabel(Quarantine.displayName)
+        pill.toolTip = host.map { "Quarantined: opened from \($0) with no cookies of yours. Open in moves it to a space." }
+            ?? "Quarantined: no cookies of yours. Open in moves it to a space."
+        updateColors()
+    }
+
+    /// The quarantine colour: the badge's text and symbol, the bar's tint.
+    static let quarantineColor = NSColor.systemOrange
 
     /// The symbol for a profile, in the pill and in its menu: profiles have
     /// no icon or colour of their own.
@@ -331,12 +354,22 @@ final class QuickDetourTitleBar: NSView {
 
     private func updateColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             capsule.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
-            pill.layer?.backgroundColor = NSColor.labelColor
-                .withAlphaComponent(pill.isHighlighted ? 0.16 : 0.08).cgColor
             openInControl.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
             openInDivider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+            if isQuarantine {
+                let tint = Self.quarantineColor
+                layer?.backgroundColor = (NSColor.windowBackgroundColor.blended(withFraction: 0.14, of: tint)
+                    ?? NSColor.windowBackgroundColor).cgColor
+                pill.layer?.backgroundColor = tint.withAlphaComponent(pill.isHighlighted ? 0.34 : 0.22).cgColor
+                pillIcon.contentTintColor = tint
+                pillLabel.textColor = tint
+                pillChevron.contentTintColor = tint.withAlphaComponent(0.7)
+            } else {
+                layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+                pill.layer?.backgroundColor = NSColor.labelColor
+                    .withAlphaComponent(pill.isHighlighted ? 0.16 : 0.08).cgColor
+            }
         }
     }
 

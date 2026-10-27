@@ -145,6 +145,17 @@ page) and, with Private downloads still running, the switch first asks
 Downloading, as closing the window would. Tests:
 `QuickDetourProfileSwitchTests`, `QuickDetourProfileSwitchWindowTests`.
 
+## A quarantine
+
+A [quarantine](../features/quarantine.md) window (TASK-194) is a Private
+Quick Detour with one difference: its page does **not** use the Private
+profile's store but a fresh non-persistent one of its own, shared only with
+windows that page opens. Everything else above holds — the Private
+profile's extension controller (extensions allowed in Private run), no
+history, never saved or archived, downloads scoped to its tab id — and it
+counts as a user of the Private session (`hasLivePrivateSession`), so the
+Private site settings live while it is open.
+
 ## Downloads
 
 A download started in a Private window carries

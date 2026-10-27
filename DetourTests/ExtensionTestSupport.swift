@@ -869,15 +869,30 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let stalled: [String: String]
     private let truncated: [String: String]
     private let redirects: [String: String]
+    private let setCookies: [String: String]
     private var port: UInt16 = 0
     private let lock = NSLock()
     private var _requestedPaths: [String] = []
+    private var _requests: [Request] = []
     private var _held: [String: [NWConnection]] = [:]
 
     /// The request paths seen so far, in arrival order.
     var requestedPaths: [String] {
         lock.lock(); defer { lock.unlock() }
         return _requestedPaths
+    }
+
+    /// One request as it arrived: its path and its `Cookie` header, if any.
+    struct Request: Equatable {
+        var path: String
+        var cookie: String?
+    }
+
+    /// The requests seen so far, in arrival order (TASK-194: which cookies a
+    /// page sent).
+    var requests: [Request] {
+        lock.lock(); defer { lock.unlock() }
+        return _requests
     }
 
     struct StartTimedOut: Error, CustomStringConvertible {
@@ -900,10 +915,13 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     ///     renders what arrived and then *fails* (TASK-178).
     ///   - redirects: routes answered with a `302 Found` to the value, in
     ///     which `{port}` stands for the server's port (TASK-191.4).
+    ///   - setCookies: routes whose (200) response carries a `Set-Cookie`
+    ///     header with the value (TASK-194).
     init(routes: [String: String], pending: [String: String] = [:],
          stalled: [String: String] = [:], truncated: [String: String] = [:],
-         redirects: [String: String] = [:]) throws {
+         redirects: [String: String] = [:], setCookies: [String: String] = [:]) throws {
         self.routes = routes
+        self.setCookies = setCookies
         self.pending = pending
         self.stalled = stalled
         self.truncated = truncated
@@ -1007,8 +1025,12 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private func respond(_ connection: NWConnection, head: Data) {
         let request = String(decoding: head, as: UTF8.self)
         let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+        let cookie = request.components(separatedBy: "\r\n").lazy
+            .first { $0.lowercased().hasPrefix("cookie:") }
+            .map { String($0.dropFirst("cookie:".count)).trimmingCharacters(in: .whitespaces) }
         lock.lock()
         _requestedPaths.append(path)
+        _requests.append(Request(path: path, cookie: cookie))
         lock.unlock()
 
         if pending[path] != nil || stalled[path] != nil || truncated[path] != nil {
@@ -1041,7 +1063,8 @@ final class LoopbackHTTPServer: @unchecked Sendable {
 
         let body = Data((routes[path] ?? "<html><body>not found</body></html>").utf8)
         let status = routes[path] == nil ? "404 Not Found" : "200 OK"
-        var response = Data(Self.head(status: status, contentLength: body.count).utf8)
+        var response = Data(Self.head(status: status, contentLength: body.count,
+                                      setCookie: routes[path] == nil ? nil : setCookies[path]).utf8)
         response.append(body)
         connection.send(content: response, completion: .contentProcessed { _ in
             connection.cancel()
@@ -1050,9 +1073,10 @@ final class LoopbackHTTPServer: @unchecked Sendable {
 
     /// The head of an HTML response whose connection closes after it. Without
     /// a `contentLength` the close is what ends the body.
-    private static func head(status: String = "200 OK", contentLength: Int?) -> String {
+    private static func head(status: String = "200 OK", contentLength: Int?, setCookie: String? = nil) -> String {
         "HTTP/1.1 \(status)\r\n"
             + "Content-Type: text/html; charset=utf-8\r\n"
+            + (setCookie.map { "Set-Cookie: \($0)\r\n" } ?? "")
             + (contentLength.map { "Content-Length: \($0)\r\n" } ?? "")
             + "Connection: close\r\n\r\n"
     }

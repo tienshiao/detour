@@ -477,6 +477,77 @@ final class QuickDetourExtensionTests: XCTestCase {
         XCTAssertEqual(tabs(of: popup).first?["incognito"] as? Bool, true)
     }
 
+    // MARK: - Quarantine (TASK-194)
+
+    /// A quarantine window on `privateProfile` with `url` loaded: the Private
+    /// profile's contexts, a store of its own.
+    private func openQuarantine(on privateProfile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
+        let controller = QuickDetourWindowController(profile: privateProfile, sourceSpace: nil,
+                                                     quarantine: QuarantineSession(originalURL: url))
+        windows.append(controller)
+        controller.showWindow(nil)
+        controller.load(url, typed: false)
+        let tab = try XCTUnwrap(controller.tab)
+        try await waitUntil("the quarantine page to load") {
+            tab.url == url && !tab.isLoading && tab.title == "Looked Up"
+        }
+        return controller
+    }
+
+    /// Extensions allowed in Private run in a quarantine (the user's decision
+    /// of 2026-10-26): it is an incognito popup to them, and their content
+    /// script runs in its page and reaches the worker with its tab — although
+    /// the page's store is its own, not the Private profile's.
+    func testAQuarantineIsAnIncognitoPopupWhereAPrivateExtensionRuns() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: true)
+        let privateProfile = Profile(name: "Quarantine Ext Private", isIncognito: true)
+        createdProfiles.append(privateProfile)
+        let (_, page) = try await loadPage(ext, in: privateProfile)
+        let url = try await serve()
+        let controller = try await openQuarantine(on: privateProfile, loading: url)
+        let webView = try XCTUnwrap(controller.tab?.webView)
+        XCTAssertFalse(webView.configuration.websiteDataStore === privateProfile.dataStore)
+
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
+        let popup = try XCTUnwrap(popupWindows(in: all["value"]).first, "\(all)")
+        XCTAssertEqual(popup["incognito"] as? Bool, true)
+        XCTAssertEqual(tabs(of: popup).first?["url"] as? String, url.absoluteString)
+
+        try await waitUntil("the content script to hear back from the worker", timeout: 15) {
+            let mark = try await webView.callAsyncJavaScript(
+                "return document.documentElement.getAttribute('data-quick-detour-hello');",
+                arguments: [:], contentWorld: .page) as? String
+            return mark != nil
+        }
+        let mark = try await webView.callAsyncJavaScript(
+            "return document.documentElement.getAttribute('data-quick-detour-hello');",
+            arguments: [:], contentWorld: .page) as? String
+        XCTAssertEqual(mark, "ok")
+        let seen = try await worker("seen", via: page)
+        let hello = try XCTUnwrap((seen["hellos"] as? [[String: Any]])?.last, "\(seen)")
+        XCTAssertEqual(hello["url"] as? String, url.absoluteString)
+        XCTAssertEqual(hello["windowId"] as? Int, popup["id"] as? Int, "sender.tab is the quarantine's tab")
+    }
+
+    /// A normal profile's extension never sees a quarantine, even with every
+    /// permission.
+    func testANormalProfilesExtensionDoesNotSeeAQuarantine() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let privateProfile = Profile(name: "Quarantine Ext Private Owner", isIncognito: true)
+        createdProfiles.append(privateProfile)
+        let normal = makeProfile("Quarantine Ext Normal")
+        let (_, normalPage) = try await loadPage(ext, in: normal)
+        let url = try await serve()
+        _ = try await openQuarantine(on: privateProfile, loading: url)
+
+        let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: normalPage)
+        XCTAssertEqual(all["settled"] as? String, "resolved", "\(all)")
+        XCTAssertTrue(popupWindows(in: all["value"]).isEmpty, "\(all)")
+        let queried = try await pagePromise("chrome.tabs.query({})", in: normalPage)
+        let urls = (queried["value"] as? [[String: Any]] ?? []).compactMap { $0["url"] as? String }
+        XCTAssertFalse(urls.contains(url.absoluteString), "\(queried)")
+    }
+
     // MARK: - Open in (TASK-193.3)
 
     /// A normal window on a new space of `profile`, in front, registered with

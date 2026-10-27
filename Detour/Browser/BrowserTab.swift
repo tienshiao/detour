@@ -319,6 +319,14 @@ class BrowserTab: NSObject {
     /// Weak: `TabStore.profiles` owns profiles, and deleting one closes its
     /// Quick Detours first.
     weak var quickDetourProfile: Profile?
+    /// The quarantine this tab is the page of (TASK-194): its own throwaway
+    /// website data store, which its web view uses instead of any profile's.
+    /// Set with `quickDetourProfile` (the Private profile) by
+    /// `TabStore.openQuickDetourTab(quarantine:)`; nil for every other tab.
+    /// Held strongly: the session's store lives as long as a page uses it.
+    var quarantine: QuarantineSession?
+    /// Whether this tab is a quarantine's page.
+    var isQuarantined: Bool { quarantine != nil }
     /// The history scope this tab's visits are filed under (`historyVisit.spaceID`):
     /// its space, or a Quick Detour's per-profile scope
     /// (`QuickDetour.historySpaceID(forProfileID:)`). Nil for a tab that records
@@ -636,6 +644,12 @@ class BrowserTab: NSObject {
     /// and a tab that never calls `load` (a window a page opened) is given it
     /// by the store once placed.
     func applyUserAgent() {
+        // A quarantine's page is one of many Safari users (TASK-194), whatever
+        // the Private profile's setting says.
+        if isQuarantined {
+            webView?.customUserAgent = Quarantine.userAgent
+            return
+        }
         // Its space's profile, or a Quick Detour's (TASK-193.1), which has no space.
         if let profile = spaceID.flatMap({ TabStore.shared.space(withID: $0)?.profile }) ?? quickDetourProfile {
             webView?.customUserAgent = profile.resolvedUserAgent()
@@ -916,6 +930,9 @@ class BrowserTab: NSObject {
     }
 
     private func downloadFavicon(from url: URL, generation: Int, optimistic: Bool = false) {
+        // Fetched with the app's own URL session, outside the page's store:
+        // a quarantine's page fetches none (TASK-194).
+        guard !isQuarantined else { return }
         FaviconLoader.shared.load(from: url) { [weak self] image in
             guard let self, self.faviconGeneration == generation, let image else { return }
             if optimistic {
@@ -1179,8 +1196,13 @@ class BrowserTab: NSObject {
             return extensionConfig
         }
         if let space { return space.makeWebViewConfiguration() }
-        // A Quick Detour's page belongs to a profile and no space (TASK-193.1).
-        if let quickDetourProfile { return Space.makeWebViewConfiguration(for: quickDetourProfile) }
+        // A Quick Detour's page belongs to a profile and no space (TASK-193.1);
+        // a quarantine's keeps its own store (TASK-194).
+        if let quickDetourProfile {
+            let configuration = Space.makeWebViewConfiguration(for: quickDetourProfile)
+            if let quarantine { configuration.websiteDataStore = quarantine.dataStore }
+            return configuration
+        }
         return WKWebViewConfiguration()
     }
 

@@ -16,15 +16,19 @@ enum UserAgentMode: Int {
     static var safariUserAgent: String {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         let osString = "\(os.majorVersion)_\(os.minorVersion)_\(os.patchVersion)"
-        let safariVersion: String
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X \(osString)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(installedSafariVersion) Safari/605.1.15"
+    }
+
+    /// The installed Safari's version (`CFBundleShortVersionString`), "18.0"
+    /// when it cannot be read. Read once: a quarantine page asks on every
+    /// navigation (`Quarantine.userAgent`).
+    static let installedSafariVersion: String = {
         if let bundle = Bundle(path: "/Applications/Safari.app"),
            let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String {
-            safariVersion = version
-        } else {
-            safariVersion = "18.0"
+            return version
         }
-        return "Mozilla/5.0 (Macintosh; Intel Mac OS X \(osString)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(safariVersion) Safari/605.1.15"
-    }
+        return "18.0"
+    }()
 
     static var detourAppName: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1"

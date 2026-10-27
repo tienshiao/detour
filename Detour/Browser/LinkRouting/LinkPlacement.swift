@@ -30,6 +30,9 @@ enum LinkPlacement<ID: Hashable>: Equatable {
     /// Open a new Quick Detour window with the link (TASK-193.5), on the
     /// profile `QuickDetour.profileForRoutedLink` picks.
     case openInQuickDetour
+    /// Open a new quarantine window with the link (TASK-194): a Quick Detour
+    /// on a throwaway store of its own.
+    case openInQuarantine
     /// What a link from another app did before routes existed: a tab in the
     /// key window's active space, else a new window.
     case mostRecentSpace
@@ -45,6 +48,7 @@ enum LinkPlacement<ID: Hashable>: Equatable {
 ///   space opens in one.
 /// - Private window: the most recent Private window, else a new one.
 /// - Quick Detour: a new Quick Detour window (TASK-193.5).
+/// - Quarantine: a new quarantine window (TASK-194).
 /// - Most Recent Space: exactly what a link from another app did before routes.
 func linkPlacement<ID: Hashable>(for decision: LinkRouteDecision,
                                  windows: [LinkPlacementWindow<ID>]) -> LinkPlacement<ID> {
@@ -69,10 +73,8 @@ func linkPlacement<ID: Hashable>(for decision: LinkRouteDecision,
         // A new Quick Detour window, whatever windows are open (TASK-193.5).
         return .openInQuickDetour
     case .quarantine:
-        // Quarantine (TASK-194) does not exist yet, and the Links pane hides
-        // it; until it does, a route or Default naming it behaves as Most
-        // Recent Space.
-        return .mostRecentSpace
+        // A new quarantine window, whatever windows are open (TASK-194).
+        return .openInQuarantine
     case .stay:
         // The resolver never keeps a link from another app where it is (it is
         // in no window yet); should it, the link still has to open somewhere.

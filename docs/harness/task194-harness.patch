@@ -1,0 +1,467 @@
+TASK-194 runtime harness: Quarantine end to end in the Debug build, data dir
+DetourVerify1940, 2026-10-26/27, macOS 26.7, light and dark. Temporary code,
+never committed to Detour/. Gated on DETOUR_VERIFY_DIR; DETOUR_VERIFY_APPEARANCE
+light or dark; DETOUR_VERIFY_PORT the fixture server's port;
+DETOUR_VERIFY_SERVER_LOG its request log (every request's Host, path and Cookie
+header); DETOUR_VERIFY_DOWNLOADS a scratch folder the DownloadManager saves to
+(never ~/Downloads); DETOUR_VERIFY_DIRECT=1 calls actions directly and renders
+views in-process instead of posting input and capturing (for a locked screen;
+in-process layer rendering crashed AppKit there, so it was not used for the
+results below). Real input: NSApp.postEvent clicks and keys (Cmd-click with the
+modifier flag) after 12 s of HID idle; captures by window number
+(screencapture -l) only.
+
+    git apply docs/harness/task194-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    python3 -I server.py 8794 out/server.log &      # below
+    run.sh light; run.sh dark                        # below
+    git apply -R docs/harness/task194-harness.patch && xcodegen generate
+
+Steps and results (both appearances; light shown, dark the same):
+1. A link from "com.example.mail" to 127.0.0.1/redirect?utm_source=mail&gclid=abc,
+   delivered through openExternalURLs, matched a Quarantine route: a quarantine
+   window (Private profile, non-persistent store that is not the Private
+   store, Safari UA "… Mac OS X 10_15_7 … Version/27.0 Safari/605.1.15", no
+   Detour token, Open in naming Home, system appearance, orange badge and
+   tint). The server got /redirect with no query (both parameters removed
+   before the load), then the 302 to localhost/set. Badge menu: "Opened from
+   127.0.0.1", "Now at localhost".
+2. /set (Set-Cookie qd=quarantined, localStorage) then /probe in the
+   quarantine: "cookie:yes storage:yes"; the request carried qd=quarantined.
+3. A posted click on Open in: the window closed, a tab in Home on the Home
+   profile's store, selected, titled "cookie:no storage:no"; the server's
+   request from it carried no Cookie header; the Home profile's cookie store
+   stayed empty.
+4. A posted click in a Home page on a link to localhost (a Quarantine route):
+   a quarantine window with the link, Open in naming Home, the clicked tab
+   left on /links.
+5. A posted Cmd-click inside it: another quarantine, a different session and
+   store.
+6. A posted click on a link with utm_source/utm_medium: the page landed on
+   /probe?id=1 and the server never saw the utm parameters.
+7. A posted click on a download link: the sheet "Download “report.txt”?" /
+   "From localhost, to your Downloads folder. …" with Cancel and Download;
+   Escape: nothing listed, no file; Return: report.txt saved, listed as a
+   Private-scoped (incognito, the quarantine tab's id) completed download.
+8. The same canvas/screen page: quarantine canvas hash differed from a normal
+   tab's, screen 900x600 (the window) against 5120x1440, Safari UA against
+   Detour's.
+9. Settings > Links showed both routes with "Quarantine" in Open in and the
+   new caption.
+10. After closing: no history visit for the quarantined pages (only the Home
+    tab's), the archive unchanged.
+Not checked at runtime: a real app's link (Mail, Slack), an extension running
+in a quarantine (unit tests only), the badge's menu drawn (its items logged),
+several displays, VoiceOver.
+
+--- server.py (scratch fixture) ---
+    # TASK-194 harness fixture: sets a cookie, reports what a page sees, logs the
+    # Cookie header of every request. Usage: python3 -I server.py PORT LOGFILE
+    import sys
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    PORT = int(sys.argv[1])
+    LOG = sys.argv[2]
+    
+    PROBE = """<html><head><script>
+    let stored = null; try { stored = localStorage.getItem('qd'); } catch (e) {}
+    document.title = 'cookie:' + (document.cookie.includes('qd=') ? 'yes' : 'no') + ' storage:' + (stored ? 'yes' : 'no');
+    </script></head><body style="font: 15px -apple-system; padding: 24px">
+    <h2>Cookie probe</h2><p id="r"></p><script>document.getElementById('r').textContent = document.title + ' / ' + location.href;</script>
+    <p><a id="dl" href="/report.txt" download="report.txt">Download report.txt</a></p>
+    <p><a id="tracked" href="/probe?id=1&utm_source=newsletter&utm_medium=email">A tracked link</a></p>
+    <p><a id="other" href="http://localhost:%d/probe?other=1">Another site</a></p>
+    </body></html>"""
+    
+    SET = """<html><head><script>
+    try { localStorage.setItem('qd', 'quarantined'); } catch (e) {}
+    document.title = 'Set';
+    </script></head><body style="font: 15px -apple-system; padding: 24px"><h2>Signed in (quarantined)</h2>
+    <p>This page set the cookie qd=quarantined and wrote localStorage.</p></body></html>"""
+    
+    LINKS = """<html><head><title>Links</title></head><body style="font: 15px -apple-system; padding: 24px">
+    <h2>Links</h2><p><a id="quarantine-click" href="http://localhost:%d/probe?clicked=1">Open the other site (routed to Quarantine)</a></p>
+    </body></html>"""
+    
+    FP = """<html><head><title>Fingerprint</title><script>
+    window.fingerprint = async () => {
+      const c = document.createElement('canvas'); c.width = 200; c.height = 50;
+      const g = c.getContext('2d'); g.fillStyle = '#f60'; g.fillRect(10,10,100,30);
+      g.fillStyle = '#069'; g.font = '14px Helvetica'; g.fillText('quarantine', 2, 15);
+      const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(c.toDataURL()));
+      const hex = Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2,'0')).join('').slice(0,16);
+      return JSON.stringify({canvas: hex, screen: [screen.width, screen.height], ua: navigator.userAgent});
+    };
+    </script></head><body>fingerprint</body></html>"""
+    
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            with open(LOG, 'a') as f:
+                f.write("%s %s cookie=%s\n" % (self.headers.get('Host'), self.path, self.headers.get('Cookie')))
+            path = self.path.split('?')[0]
+            headers = {'Content-Type': 'text/html; charset=utf-8'}
+            status = 200
+            if path == '/set':
+                body = SET; headers['Set-Cookie'] = 'qd=quarantined; Path=/; Max-Age=3600'
+            elif path == '/probe': body = PROBE % PORT
+            elif path == '/links': body = LINKS % PORT
+            elif path == '/fp': body = FP
+            elif path == '/report.txt': body = 'quarantined report\n'; headers['Content-Type'] = 'text/plain'
+            elif path == '/redirect':
+                status = 302; body = ''; headers['Location'] = 'http://localhost:%d/set' % PORT
+            else: status = 404; body = 'not found'
+            data = body.encode()
+            self.send_response(status)
+            for k, v in headers.items(): self.send_header(k, v)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+    
+    ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
+
+--- run.sh ---
+    #!/bin/zsh
+    # run.sh <light|dark>: launches the harness build, serves SHOOT lines from the
+    # log with screencapture -l (Detour's own windows only), kills only the
+    # launched PID.
+    SP=/private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/953f551f-71df-4025-b208-16f0ecfa685a/scratchpad/task194/harness
+    AP=$1
+    APP=/Users/tma/Projects/browser/MyBrowser/.derived/Build/Products/Debug/Detour.app
+    LOG=$SP/out/verify-$AP.log
+    rm -f -- $LOG
+    DETOUR_DATA_DIR=DetourVerify1940 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_APPEARANCE=$AP \
+      DETOUR_VERIFY_DIRECT=${DIRECT:-0} DETOUR_VERIFY_PORT=8794 DETOUR_VERIFY_SERVER_LOG=$SP/out/server.log DETOUR_VERIFY_DOWNLOADS=$SP/downloads \
+      "$APP/Contents/MacOS/Detour" > $SP/out/stderr-$AP.log 2>&1 &
+    PID=$!
+    echo "launched $PID"
+    seen=0
+    for i in $(seq 1 1200); do
+      sleep 0.5
+      [ -f $LOG ] || continue
+      total=$(wc -l < $LOG)
+      if [ $total -gt $seen ]; then
+        sed -n "$((seen+1)),${total}p" $LOG | while read -r line; do
+          case "$line" in
+            *"SHOOT "*) set -- ${=line#*SHOOT }; screencapture -x -o -l $2 $SP/out/$1.png && echo "shot $1";;
+          esac
+        done
+        seen=$total
+      fi
+      if grep -q "^\[.*\] done" $LOG; then break; fi
+      kill -0 $PID 2>/dev/null || { echo "app exited"; break; }
+    done
+    sleep 1
+    kill $PID 2>/dev/null; echo "killed $PID"
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask194HarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task194Harness.swift b/Detour/App/Task194Harness.swift
+new file mode 100644
+--- /dev/null
++++ b/Detour/App/Task194Harness.swift
+@@ -0,0 +1,295 @@
++// TEMP TASK-194 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import GRDB
++import WebKit
++
++extension AppDelegate {
++    func runTask194HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let port = env["DETOUR_VERIFY_PORT"] ?? "8794"
++        let base = "http://127.0.0.1:\(port)"
++        let other = "http://localhost:\(port)"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let serverLog = env["DETOUR_VERIFY_SERVER_LOG"] ?? ""
++        // The screen locked: no posted input lands and nothing paints, so
++        // actions are called directly and nothing is captured.
++        let direct = env["DETOUR_VERIFY_DIRECT"] == "1"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++        // Never the real ~/Downloads.
++        if let dir = env["DETOUR_VERIFY_DOWNLOADS"] {
++            DownloadManager.shared.downloadsDirectory = URL(fileURLWithPath: dir)
++        }
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            if direct { return }
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            if direct { window?.makeKeyAndOrderFront(nil); return }
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        /// The view's layer tree drawn into a PNG in-process: works with the
++        /// screen locked (no window server capture), web content excluded.
++        func render(_ name: String, _ view: NSView?) {
++            guard let view else { return log("render \(name): no view") }
++            view.layoutSubtreeIfNeeded()
++            view.wantsLayer = true
++            let scale: CGFloat = 2
++            let size = view.bounds.size
++            guard let layer = view.layer, size.width > 0, size.height > 0,
++                  let ctx = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
++                                      bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
++                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return log("render \(name): no context") }
++            ctx.scaleBy(x: scale, y: scale)
++            view.effectiveAppearance.performAsCurrentDrawingAppearance {
++                if let bg = view.window?.backgroundColor?.cgColor { ctx.setFillColor(bg); ctx.fill(CGRect(origin: .zero, size: size)) }
++                layer.render(in: ctx)
++            }
++            guard let image = ctx.makeImage() else { return log("render \(name): no image") }
++            let rep = NSBitmapImageRep(cgImage: image)
++            let url = URL(fileURLWithPath: outDir).appendingPathComponent("render-\(ap)-\(name).png")
++            try? rep.representation(using: .png, properties: [:])?.write(to: url)
++            log("rendered \(url.lastPathComponent) \(Int(size.width))x\(Int(size.height))")
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            if direct { render(name, window?.contentView); return }
++            guard let window else { return log("no window for \(name)") }
++            await sleep(0.8)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        var eventNumber = 9400
++        func post(_ e: NSEvent?) { if let e { NSApp.postEvent(e, atStart: false) } }
++        func click(_ view: NSView, mods: NSEvent.ModifierFlags = []) {
++            if direct, let button = view as? NSButton, let action = button.action {
++                NSApp.sendAction(action, to: button.target, from: button)
++                return
++            }
++            guard let w = view.window else { return log("click: no window") }
++            if humanIdle() < 1 { return log("ABORT human input before a click: not posted") }
++            let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                post(NSEvent.mouseEvent(with: type, location: p, modifierFlags: mods,
++                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                        context: nil, eventNumber: eventNumber, clickCount: 1,
++                                        pressure: type == .leftMouseDown ? 1 : 0))
++            }
++        }
++        func clickLink(_ id: String, in webView: WKWebView?, mods: NSEvent.ModifierFlags = []) async {
++            guard let webView, let window = webView.window else { return log("clickLink \(id): no web view") }
++            if direct {
++                if !mods.isEmpty { return log("clickLink \(id): modifiers need real input, skipped (screen locked)") }
++                _ = try? await webView.evaluateJavaScript("document.getElementById('\(id)').click(); true")
++                return
++            }
++            let js = "(() => { const e = document.getElementById('\(id)'); if (!e) return null; const b = e.getBoundingClientRect(); return [b.x + Math.min(20, b.width / 2), b.y + b.height / 2]; })()"
++            guard let r = try? await webView.evaluateJavaScript(js) as? [Double] else { return log("clickLink \(id): no element") }
++            if humanIdle() < 1 { return log("ABORT human input before a click: not posted") }
++            let p = webView.convert(NSPoint(x: r[0], y: r[1]), to: nil)
++            for type in [NSEvent.EventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                post(NSEvent.mouseEvent(with: type, location: p, modifierFlags: mods,
++                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                        context: nil, eventNumber: eventNumber, clickCount: type == .mouseMoved ? 0 : 1,
++                                        pressure: type == .leftMouseDown ? 1 : 0))
++            }
++        }
++        func key(_ chars: String, keyCode: UInt16, to window: NSWindow) {
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                post(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
++                                      windowNumber: window.windowNumber, context: nil, characters: chars,
++                                      charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode))
++            }
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func quarantines() -> [QuickDetourWindowController] { QuickDetourWindowController.openControllers.filter(\.isQuarantine) }
++        func serverLines(_ needle: String) -> [String] {
++            ((try? String(contentsOfFile: serverLog, encoding: .utf8)) ?? "").split(separator: "\n")
++                .map(String.init).filter { $0.contains(needle) }
++        }
++        func describe(_ q: QuickDetourWindowController) -> String {
++            let ds = q.tab?.webView?.configuration.websiteDataStore
++            return "quarantine=\(q.isQuarantine) profile=\(q.profile.name) url=\(q.tab?.url?.absoluteString ?? "nil") "
++                + "original=\(q.quarantine?.originalURL?.absoluteString ?? "nil") persistent=\(ds?.isPersistent ?? true) "
++                + "privateStore=\(ds === q.profile.dataStore) source=\(q.sourceSpaceID.flatMap { store.space(withID: $0)?.name } ?? "nil") "
++                + "openIn=\(q.openInMenu.destinationName ?? "nil") reloads=\(q.openInMenu.defaultReloads) "
++                + "badge=\(q.titleBar.profileName) appearance=\(q.window?.appearance?.name.rawValue ?? "system") "
++                + "ua=\(q.tab?.webView?.customUserAgent ?? "nil")"
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start \(ap)")
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let routes = store.linkRoutes
++            for route in routes.routes { routes.removeRoute(id: route.id) }
++            let mailRoute = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "127.0.0.1"),
++                                                 sourceApp: "com.example.mail", target: .quarantine))
++            let clickRoute = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "localhost"),
++                                                  target: .quarantine))
++            log("routes: \(routes.routes.map { "\($0.match?.pattern ?? "any") app=\($0.sourceApp ?? "any") -> \($0.target)" }) default=\(routes.defaultTarget)")
++            let historyBefore = (try? await HistoryDatabase.shared.dbQueue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM historyVisit") }) ?? -1
++            let archiveBefore = store.archiveEntries().count
++
++            // 1. A link from another app, matching the mail route, through a
++            // redirect to another host: a quarantine window.
++            await ensureFront(wc.window)
++            appDelegateOpen([URL(string: base + "/redirect?utm_source=mail&gclid=abc")!], app: "com.example.mail")
++            _ = await waitFor("a quarantine window") { quarantines().count == 1 }
++            guard let q1 = quarantines().first else { return log("1 no quarantine") }
++            _ = await waitFor("the redirect to land") { q1.tab?.title == "Set" && q1.tab?.isLoading == false }
++            log("1 external link: \(describe(q1))")
++            log("1 badge menu: \(q1.makeQuarantineMenu().items.map(\.title))")
++            log("1 server: \(serverLines("/redirect") + serverLines("/set"))")
++            await ensureFront(q1.window)
++            await shoot("01-quarantine-from-mail", q1.window)
++
++            // 2. In the quarantine the site sees its own cookie.
++            q1.load(URL(string: other + "/probe")!, typed: false)
++            _ = await waitFor("the probe") { q1.tab?.title.hasPrefix("cookie:") == true && q1.tab?.isLoading == false }
++            log("2 probe in quarantine: \(q1.tab?.title ?? "nil") server=\(serverLines("/probe").last ?? "nil")")
++            await shoot("02-probe-quarantined", q1.window)
++
++            // 3. Open in (a posted click on the button): a fresh load in Home.
++            await ensureFront(q1.window)
++            click(q1.titleBar.openInButton)
++            _ = await waitFor("the quarantine to close") { !QuickDetourWindowController.openControllers.contains { $0 === q1 } }
++            let moved = home.tabs.first { $0.url?.path == "/probe" && $0.url?.host == "localhost" }
++            _ = await waitFor("the probe in Home") { moved?.title.hasPrefix("cookie:") == true && moved?.isLoading == false }
++            log("3 open in: closed=\(!QuickDetourWindowController.openControllers.contains { $0 === q1 }) tab in \(home.name)=\(moved != nil) title=\(moved?.title ?? "nil") store=profile:\(moved?.webView?.configuration.websiteDataStore === home.profile?.dataStore) selected=\(wc.selectedTabID == moved?.id)")
++            log("3 server: \(serverLines("/probe").suffix(2))")
++            await shoot("03-opened-in-home", wc.window)
++
++            // 4. A routed click in Home: a link to localhost.
++            let linksTab = store.addTab(in: home, url: URL(string: base + "/links")!)
++            wc.selectTab(id: linksTab.id)
++            _ = await waitFor("the links page") { linksTab.title == "Links" && linksTab.isLoading == false }
++            await ensureFront(wc.window)
++            await clickLink("quarantine-click", in: linksTab.webView)
++            _ = await waitFor("a quarantine from the click") { quarantines().count == 1 }
++            guard let q2 = quarantines().first else { return log("4 no quarantine from the click") }
++            _ = await waitFor("its page") { q2.tab?.title.hasPrefix("cookie:") == true && q2.tab?.isLoading == false }
++            log("4 routed click: \(describe(q2)) linksTab stays=\(linksTab.url?.path ?? "nil") title=\(q2.tab?.title ?? "nil")")
++            await shoot("04-quarantine-from-click", q2.window)
++
++            // 5. Cmd+click inside it: another quarantine, a store of its own.
++            await ensureFront(q2.window)
++            await clickLink("other", in: q2.tab?.webView, mods: .command)
++            _ = await waitFor("a second quarantine") { quarantines().count == 2 }
++            if let q3 = quarantines().first(where: { $0 !== q2 }) {
++                _ = await waitFor("its page") { q3.tab?.isLoading == false }
++                log("5 cmd+click: \(describe(q3)) sameSession=\(q3.quarantine === q2.quarantine) sameStore=\(q3.tab?.webView?.configuration.websiteDataStore === q2.tab?.webView?.configuration.websiteDataStore)")
++                q3.closeDisposition = .discard
++                q3.close()
++            }
++
++            // 6. A tracked link: the parameters go.
++            await ensureFront(q2.window)
++            await clickLink("tracked", in: q2.tab?.webView)
++            _ = await waitFor("the tracked link") { q2.tab?.url?.query?.contains("id=1") == true && q2.tab?.isLoading == false }
++            log("6 tracked link: url=\(q2.tab?.url?.absoluteString ?? "nil") server=\(serverLines("/probe?id").suffix(2))")
++
++            // 7. A download: asked; Escape cancels, Return downloads.
++            for (answer, chars, code) in [("cancel", "\u{1b}", UInt16(53)), ("download", "\r", UInt16(36))] {
++                await ensureFront(q2.window)
++                await clickLink("dl", in: q2.tab?.webView)
++                _ = await waitFor("the download question") { q2.window?.attachedSheet != nil }
++                guard let sheet = q2.window?.attachedSheet else { log("7 no question"); continue }
++                let texts = (sheet.contentView.map(allTexts) ?? []).joined(separator: " | ")
++                log("7 question: \(texts)")
++                if answer == "cancel" {
++                    await shoot("05-download-question", sheet)
++                    await shoot("05b-download-question-window", q2.window)
++                }
++                await awaitIdle(3)
++                if direct {
++                    let title = answer == "cancel" ? "Cancel" : "Download"
++                    func buttons(_ v: NSView) -> [NSButton] { ((v as? NSButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons) }
++                    buttons(sheet.contentView!).first { $0.title == title }?.performClick(nil)
++                } else {
++                    key(chars, keyCode: code, to: sheet)
++                }
++                _ = await waitFor("the question to go") { q2.window?.attachedSheet == nil }
++                await sleep(1.5)
++                let files = (try? FileManager.default.contentsOfDirectory(atPath: DownloadManager.shared.downloadsDirectory.path)) ?? []
++                let listed = DownloadManager.shared.items.filter { $0.filename == "report.txt" }.map { "\($0.state) scope=\($0.scope)" }
++                log("7 \(answer): files=\(files) listed=\(listed)")
++            }
++
++            // 8. Fingerprinting: the same page in a quarantine and in Home.
++            q2.load(URL(string: base + "/fp")!, typed: false)
++            let fpTab = store.addTab(in: home, url: URL(string: base + "/fp")!)
++            wc.selectTab(id: fpTab.id)
++            _ = await waitFor("fp pages") { q2.tab?.title == "Fingerprint" && fpTab.title == "Fingerprint" && fpTab.isLoading == false && q2.tab?.isLoading == false }
++            let qfp = try? await q2.tab?.webView?.callAsyncJavaScript("return await window.fingerprint()", contentWorld: .page)
++            let nfp = try? await fpTab.webView?.callAsyncJavaScript("return await window.fingerprint()", contentWorld: .page)
++            log("8 fingerprint quarantine=\(String(describing: qfp)) normal=\(String(describing: nfp))")
++
++            // 9. Settings > Links: Quarantine offered and chosen.
++            SettingsWindowController.shared.showLinksPane()
++            await sleep(1.5)
++            await shoot("06-links-pane", SettingsWindowController.shared.window)
++            SettingsWindowController.shared.window?.close()
++
++            // 10. Close: nothing archived, nothing in history.
++            q2.window?.performClose(nil)
++            _ = await waitFor("all quarantines closed") { quarantines().isEmpty }
++            let historyAfter = (try? await HistoryDatabase.shared.dbQueue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM historyVisit v JOIN historyURL u ON u.id = v.urlID WHERE u.url LIKE '%localhost%'") }) ?? -1
++            log("10 history localhost visits=\(historyAfter) (all before \(historyBefore)) archive \(archiveBefore)->\(store.archiveEntries().count)")
++            let homeCookies = await home.profile!.dataStore.httpCookieStore.allCookies().map(\.name)
++            log("10 Home profile cookies: \(homeCookies)")
++            for id in [mailRoute?.id, clickRoute?.id].compactMap({ $0 }) { routes.removeRoute(id: id) }
++            log("done")
++        }
++    }
++
++    private func appDelegateOpen(_ urls: [URL], app: String) {
++        openExternalURLs(urls, sourceApp: app)
++    }
++}
++
++private func allTexts(_ view: NSView) -> [String] {
++    var out: [String] = []
++    if let field = view as? NSTextField, !field.stringValue.isEmpty { out.append(field.stringValue) }
++    if let button = view as? NSButton, !button.title.isEmpty { out.append("[\(button.title)]") }
++    for sub in view.subviews { out += allTexts(sub) }
++    return out
++}
++#endif

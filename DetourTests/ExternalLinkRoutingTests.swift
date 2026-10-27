@@ -289,12 +289,65 @@ final class ExternalLinkRoutingTests: XCTestCase {
         try expectation.verify(link, in: self)
     }
 
-    func testAQuarantineRouteBehavesAsBeforeUntilQuarantineExists() throws {
-        makeWindow(showing: work)
-        let link = url("https://later.test/")
-        let expectation = todaysBehaviour()
+    // MARK: - Quarantine (TASK-194)
+
+    func testAQuarantineRouteOpensAQuarantineWindow() throws {
+        let workWindow = makeWindow(showing: work)
+        let link = url("https://app.later.test/look")
+
         appDelegate.application(NSApp, open: [link])
-        try expectation.verify(link, in: self)
+
+        let quarantine = try XCTUnwrap(newQuickDetours().first, "a new quarantine window")
+        XCTAssertEqual(newQuickDetours().count, 1)
+        XCTAssertTrue(quarantine.isQuarantine)
+        XCTAssertEqual(quarantine.tab?.url, link)
+        XCTAssertTrue(quarantine.profile.isIncognito, "on the Private profile's rules and extensions")
+        XCTAssertFalse(quarantine.tab?.webView?.configuration.websiteDataStore === quarantine.profile.dataStore,
+                       "with a store of its own")
+        XCTAssertEqual(quarantine.sourceSpaceID, work.id, "Open in names the space in front")
+        XCTAssertNil(tabAnywhere(link), "no tab in any space")
+        XCTAssertTrue(newBrowserWindows().allSatisfy { $0 === workWindow })
+    }
+
+    func testAQuarantineDefaultTakesUnmatchedLinks() throws {
+        makeWindow(showing: work)
+        XCTAssertTrue(routes.setDefaultTarget(.quarantine))
+        let link = url("https://unrouted.test/default")
+
+        appDelegate.application(NSApp, open: [link])
+
+        let quarantine = try XCTUnwrap(newQuickDetours().first)
+        XCTAssertTrue(quarantine.isQuarantine)
+        XCTAssertEqual(quarantine.tab?.url, link)
+        XCTAssertNil(tabAnywhere(link))
+
+        appDelegate.application(NSApp, open: [url("https://work.test/still-routed")])
+        XCTAssertNotNil(tab(url("https://work.test/still-routed"), in: work), "routes still send trusted sites to their space")
+        XCTAssertEqual(newQuickDetours().count, 1)
+    }
+
+    func testAQuarantinedLinkLosesItsTrackingParameters() throws {
+        makeWindow(showing: work)
+        let link = url("https://later.test/article?id=7&utm_source=newsletter&gclid=abc")
+
+        appDelegate.application(NSApp, open: [link])
+
+        let quarantine = try XCTUnwrap(newQuickDetours().first)
+        XCTAssertEqual(quarantine.tab?.url, url("https://later.test/article?id=7"))
+        XCTAssertEqual(quarantine.quarantine?.originalURL, link, "the window still knows the link as it came")
+    }
+
+    func testEachQuarantinedLinkGetsItsOwnWindowAndStore() throws {
+        makeWindow(showing: work)
+        appDelegate.application(NSApp, open: [url("https://later.test/1"), url("https://later.test/2")])
+
+        let opened = newQuickDetours()
+        XCTAssertEqual(opened.count, 2)
+        // No subscripts: a failure here must not crash the test host.
+        let first = try XCTUnwrap(opened.first)
+        let last = try XCTUnwrap(opened.last)
+        XCTAssertFalse(first.tab?.webView?.configuration.websiteDataStore
+                       === last.tab?.webView?.configuration.websiteDataStore)
     }
 
     // MARK: - Quick Detour (TASK-193.5)

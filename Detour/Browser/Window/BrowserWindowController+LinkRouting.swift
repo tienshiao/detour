@@ -100,9 +100,11 @@ extension BrowserWindowController {
     /// Opens a clicked link where its route sends it, one main-queue turn
     /// later, so the policy decision (or `createWebViewWith`) returns before
     /// windows switch spaces or come forward. The page's tab is left alone.
+    /// A quarantine (TASK-194) names this window's space in its Open in.
     func openRoutedLink(_ url: URL, _ decision: LinkRouteDecision) {
+        let clickedIn = isIncognito ? nil : activeSpace
         DispatchQueue.main.async {
-            (NSApp.delegate as? AppDelegate)?.openLink(url, routedTo: decision)
+            (NSApp.delegate as? AppDelegate)?.openLink(url, routedTo: decision, from: clickedIn)
         }
     }
 
@@ -139,7 +141,7 @@ extension BrowserWindowController {
     /// activation and user gesture of the click it interrupts; only
     /// `_isRedirect` (SPI) tells it apart. Without the SPI nothing counts as
     /// a redirect.
-    private static func isRedirect(_ navigationAction: WKNavigationAction) -> Bool {
+    static func isRedirect(_ navigationAction: WKNavigationAction) -> Bool {
         let key = "_isRedirect"
         guard navigationAction.responds(to: NSSelectorFromString(key)) else { return false }
         return (navigationAction.value(forKey: key) as? Bool) ?? false

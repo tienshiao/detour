@@ -135,7 +135,7 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         for view in [defaultLabel, defaultPopUp!, defaultWarningIcon!, defaultWarningLabel!] { defaultRow.addSubview(view) }
 
         let caption = SettingsWrappingLabel(
-            wrapping: "For every link no route matches: links from other apps, addresses typed in a new tab, and links clicked to another site. Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is.",
+            wrapping: "For every link no route matches: links from other apps, addresses typed in a new tab, and links clicked to another site. Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. Quick Detour and Quarantine take links from other apps; a route to Quarantine also takes the clicked links it matches. Quarantine opens the link in a throwaway window with no cookies of yours: Open in moves it to a space.",
             estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
         container.addSubview(caption)
 
@@ -426,6 +426,10 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             }
             let menuItem = NSMenuItem(title: Self.title(for: item, problem: problem), action: nil, keyEquivalent: "")
             menuItem.representedObject = LinkRouteTargetBox(target)
+            if item == .quarantine {
+                menuItem.toolTip = "A throwaway window with a store of its own: the site sees none of your cookies, "
+                    + "nothing is kept in history. Open in moves the page to a space."
+            }
             if case .unavailableSpace = item {
                 menuItem.image = LinkRouteCellView.warningImage()
             }

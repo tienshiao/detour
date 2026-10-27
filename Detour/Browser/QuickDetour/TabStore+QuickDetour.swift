@@ -18,10 +18,19 @@ extension TabStore {
     /// under the profile's Quick Detour scope — and its late titles corrected;
     /// and it is reported open to the extension contexts by entering
     /// `quickDetourTabs`, which a Quick Detour window lists.
+    ///
+    /// `quarantine` (TASK-194; `profile` is then the Private profile): the web
+    /// view uses the quarantine's own store instead of the profile's — the
+    /// profile's configuration otherwise (its extension controller, so
+    /// extensions allowed in Private run; its content rules). A window the
+    /// page opened keeps the store WebKit copied from its opener, which is
+    /// the same quarantine's. Private, it records no history and is never
+    /// archived; its user agent is Safari's (`Quarantine.userAgent`).
     @discardableResult
     func openQuickDetourTab(profile: Profile, id: UUID = UUID(), adopting webView: WKWebView? = nil,
                             openedWith configuration: WKWebViewConfiguration? = nil,
-                            restoring archived: QuickDetourArchivedPage? = nil) -> BrowserTab {
+                            restoring archived: QuickDetourArchivedPage? = nil,
+                            quarantine: QuarantineSession? = nil) -> BrowserTab {
         let tab: BrowserTab
         if let webView {
             tab = BrowserTab(id: id, webView: webView)
@@ -30,10 +39,18 @@ extension TabStore {
             // the opener's configuration, with a user content controller of its
             // own, as `addTab(in:openedWith:)` gives a space's.
             configuration.userContentController = Space.makeUserContentController(for: profile)
+            if let quarantine, configuration.websiteDataStore !== quarantine.dataStore {
+                // Never the case for a real opener (the copy carries its
+                // store); should it be, the page still gets no other store.
+                configuration.websiteDataStore = quarantine.dataStore
+            }
             tab = BrowserTab(id: id, configuration: configuration)
         } else {
-            tab = BrowserTab(id: id, configuration: Space.makeWebViewConfiguration(for: profile))
+            let configuration = Space.makeWebViewConfiguration(for: profile)
+            if let quarantine { configuration.websiteDataStore = quarantine.dataStore }
+            tab = BrowserTab(id: id, configuration: configuration)
         }
+        tab.quarantine = quarantine
         tab.quickDetourProfile = profile
         tab.applyUserAgent()
         if let archived {
@@ -85,6 +102,9 @@ extension TabStore {
         let tab = quickDetourTabs.remove(at: index)
         unsubscribeFromTab(tab)
         tab.teardown()
+        // Its web view is gone; the quarantine's store goes with its last
+        // page (TASK-194), whoever still holds the tab object.
+        tab.quarantine = nil
     }
 
     // MARK: - The profile pill (TASK-193.4)
@@ -191,6 +211,13 @@ extension TabStore {
         QuickDetour.openInMenu(windowProfile: Self.openInSnapshot(of: profile), sourceSpaceID: sourceSpaceID,
                                spaces: spaces.map(Self.openInSnapshot(of:)),
                                profiles: profiles.map(Self.openInSnapshot(of:)), useOrder: spaceUseOrder)
+    }
+
+    /// The Open in button and dropdown for a quarantine window (TASK-194)
+    /// opened from `sourceSpaceID` (`QuickDetour.quarantineOpenInMenu`).
+    func quarantineOpenInMenu(sourceSpaceID: UUID?) -> QuickDetourOpenInMenu {
+        QuickDetour.quarantineOpenInMenu(sourceSpaceID: sourceSpaceID, spaces: spaces.map(Self.openInSnapshot(of:)),
+                                         profiles: profiles.map(Self.openInSnapshot(of:)), useOrder: spaceUseOrder)
     }
 
     /// The profile pill's menu for a Quick Detour on `windowProfile`, from

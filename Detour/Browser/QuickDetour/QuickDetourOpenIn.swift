@@ -75,6 +75,40 @@ struct QuickDetourOpenInMenu: Equatable {
 }
 
 extension QuickDetour {
+    /// The button and the dropdown for a quarantine window (TASK-194).
+    ///
+    /// A quarantine belongs to no profile the user browses with, so every
+    /// normal space of every live profile is listed, one section per profile
+    /// in `profiles` order, and every one **reloads**: the address is opened
+    /// fresh on that profile's store, never the quarantined page itself. The
+    /// button names `sourceSpaceID` (the space the link was clicked in, or the
+    /// most recent normal window's for a link from another app) while it is
+    /// listed, else the most recently used listed space, else the first.
+    static func quarantineOpenInMenu(sourceSpaceID: UUID?, spaces: [QuickDetourSpaceSnapshot],
+                                     profiles: [QuickDetourProfileSnapshot], useOrder: [UUID]) -> QuickDetourOpenInMenu {
+        let liveProfiles = profiles.filter { !$0.isPrivate && !$0.isDeleted }
+        let liveProfileIDs = Set(liveProfiles.map(\.id))
+        let listed = spaces.filter { !$0.isPrivate && liveProfileIDs.contains($0.profileID) }
+        let listedIDs = Set(listed.map(\.id))
+        let defaultID = sourceSpaceID.flatMap { listedIDs.contains($0) ? $0 : nil }
+            ?? useOrder.first(where: listedIDs.contains)
+            ?? listed.first?.id
+        let sections: [QuickDetourOpenInMenu.Section] = liveProfiles.compactMap { profile in
+            let items = listed.filter { $0.profileID == profile.id }.map { space in
+                QuickDetourOpenInMenu.Item(spaceID: space.id, emoji: space.emoji, name: space.name, reloads: true,
+                                           isDefault: space.id == defaultID)
+            }
+            return items.isEmpty ? nil : QuickDetourOpenInMenu.Section(profileID: profile.id, title: profile.name,
+                                                                       items: items)
+        }
+        guard let defaultID, let target = listed.first(where: { $0.id == defaultID }) else {
+            return QuickDetourOpenInMenu(defaultTarget: nil, destinationName: nil, defaultReloads: false,
+                                         sections: sections)
+        }
+        return QuickDetourOpenInMenu(defaultTarget: .space(target.id), destinationName: "\(target.emoji) \(target.name)",
+                                     defaultReloads: true, sections: sections)
+    }
+
     /// The button's label for a Private Quick Detour.
     static let privateWindowDestinationName = "Private Window"
 

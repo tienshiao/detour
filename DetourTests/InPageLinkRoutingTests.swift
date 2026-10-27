@@ -22,6 +22,7 @@ final class InPageLinkRoutingTests: XCTestCase {
     private var routes: LinkRouteStore { TabStore.shared.linkRoutes }
 
     private var windowsBefore: Set<ObjectIdentifier> = []
+    private var quickDetoursBefore: Set<ObjectIdentifier> = []
     private var createdSpaceIDs: [UUID] = []
     private var addedRouteIDs: [UUID] = []
     private var previousDefault: LinkRouteTarget = .mostRecentSpace
@@ -38,6 +39,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         try super.setUpWithError()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         windowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
+        quickDetoursBefore = Set(QuickDetourWindowController.openControllers.map(ObjectIdentifier.init))
         previousDefault = routes.defaultTarget
         routes.setDefaultTarget(.mostRecentSpace)
         previousLastActiveSpaceID = store.lastActiveSpaceID
@@ -56,6 +58,10 @@ final class InPageLinkRoutingTests: XCTestCase {
     }
 
     override func tearDown() {
+        for controller in newQuickDetours() {
+            controller.closeDisposition = .discard
+            controller.close()
+        }
         for wc in browserWindows() where !windowsBefore.contains(ObjectIdentifier(wc)) {
             wc.sidebarSplitView.autosaveName = nil
             wc.window?.close()
@@ -89,13 +95,14 @@ final class InPageLinkRoutingTests: XCTestCase {
     private static let linksPage = """
         <html><head><title>Links</title></head><body>
         <a id="cross">cross</a> <a id="same" href="/target">same</a> <a id="blank" target="_blank">blank</a>
-        <a id="secret">secret</a> <a id="redirect" href="/redirect">redirect</a>
+        <a id="secret">secret</a> <a id="redirect" href="/redirect">redirect</a> <a id="quarantined">quarantined</a>
         <button id="scriptnav">script navigation</button>
         <script>
         const other = 'http://localhost:' + location.port;
         document.getElementById('cross').href = other + '/target?cross';
         document.getElementById('blank').href = other + '/target?blank';
         document.getElementById('secret').href = other + '/target?secret';
+        document.getElementById('quarantined').href = other + '/target?quarantined';
         document.getElementById('scriptnav').onclick = () => { location.href = other + '/target?scriptnav'; };
         window.openTab = () => window.open(other + '/target?open');
         window.openPopup = () => window.open(other + '/popup', 'p', 'popup,width=320,height=240');
@@ -111,7 +118,7 @@ final class InPageLinkRoutingTests: XCTestCase {
     private func makeServer() async throws -> String {
         var routes = ["/links": Self.linksPage, "/links?auto": Self.linksPage, "/popup": Self.popupPage]
         for path in ["/target", "/target?cross", "/target?blank", "/target?secret", "/target?scriptnav",
-                     "/target?open", "/target?redirected"] {
+                     "/target?open", "/target?redirected", "/target?quarantined"] {
             routes[path] = Self.targetPage
         }
         let server = try LoopbackHTTPServer(routes: routes,
@@ -151,6 +158,17 @@ final class InPageLinkRoutingTests: XCTestCase {
         wc.showWindow(nil)
         appDelegate.registerWindowController(wc)
         return wc
+    }
+
+    private func newQuickDetours() -> [QuickDetourWindowController] {
+        QuickDetourWindowController.openControllers.filter { !quickDetoursBefore.contains(ObjectIdentifier($0)) }
+    }
+
+    /// A route sending links that contain "quarantined" to Quarantine, tried
+    /// before the others.
+    private func routeQuarantinedLinksFirst() throws {
+        let id = try XCTUnwrap(route(.contains, "quarantined", to: .quarantine))
+        routes.moveRoute(id: id, to: 0)
     }
 
     private func makePrivateWindow() -> BrowserWindowController {
@@ -255,6 +273,53 @@ final class InPageLinkRoutingTests: XCTestCase {
         }
         XCTAssertEqual(tab.webView?.url?.path, "/links")
         XCTAssertEqual(personal.tabs.count, 1)
+    }
+
+    // MARK: - Quarantine (TASK-194)
+
+    func testAClickMatchingAQuarantineRouteOpensAQuarantineWindowAndTheTabStays() async throws {
+        let base = try await makeServer()
+        try routeQuarantinedLinksFirst()
+        makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await run("document.getElementById('quarantined').click()", in: tab.webView)
+        try await waitUntil("a quarantine window with the link") {
+            self.newQuickDetours().contains { $0.isQuarantine && $0.tab?.url?.query == "quarantined" }
+        }
+        try await settle()
+
+        let quarantine = try XCTUnwrap(newQuickDetours().first)
+        XCTAssertEqual(newQuickDetours().count, 1)
+        XCTAssertEqual(quarantine.sourceSpaceID, personal.id, "Open in names the space it was clicked in")
+        XCTAssertEqual(tab.webView?.url?.path, "/links", "the clicked tab stays on its page")
+        XCTAssertEqual(personal.tabs.count, 1)
+        XCTAssertTrue(tabs(in: work, query: "quarantined").isEmpty, "the route below it is not reached")
+    }
+
+    func testAClickInAPrivateWindowIsNeverQuarantined() async throws {
+        // A quarantine's Open in reaches normal spaces: nothing leaves a
+        // Private window, so the link navigates there as before.
+        let base = try await makeServer()
+        try routeQuarantinedLinksFirst()
+        let wc = makePrivateWindow()
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await run("document.getElementById('quarantined').click()", in: tab.webView)
+        try await waitUntil("the link to load in place") { tab.webView?.url?.query == "quarantined" }
+        try await settle()
+        XCTAssertTrue(newQuickDetours().isEmpty)
+    }
+
+    func testATypedURLMatchingAQuarantineRouteIsNeverQuarantined() throws {
+        try routeQuarantinedLinksFirst()
+        let wc = makeWindow(showing: personal)
+
+        submit("https://quarantined.test/typed", in: wc, inPlace: false)
+
+        XCTAssertEqual(personal.tabs.first?.url?.host, "quarantined.test", "opens here, as with no route")
+        XCTAssertTrue(newQuickDetours().isEmpty)
     }
 
     // MARK: - Links that do not route

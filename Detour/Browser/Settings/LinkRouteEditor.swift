@@ -43,11 +43,11 @@ enum LinkRouteTargetMenuItem: Equatable {
 
 /// The items of a target pop-up whose current target is `current`.
 ///
-/// The normal spaces in order, then Most Recent Space, Private Window and
-/// Quick Detour (TASK-193.5; it takes links from other apps only, as the
-/// resolver rules). Quarantine is hidden until TASK-194 lands, but a target
-/// already holding it shows it rather than changing silently; a space that is
-/// not offered (deleted) is listed first for the same reason.
+/// The normal spaces in order, then Most Recent Space, Private Window, Quick
+/// Detour (TASK-193.5; it takes links from other apps only, as the resolver
+/// rules) and Quarantine (TASK-194; links from other apps, and the clicks a
+/// route to it matches). A space that is not offered (deleted) is listed
+/// first when it is the current target, rather than changing silently.
 func linkRouteTargetMenu(spaces: [LinkRouteSpaceOption], current: LinkRouteTarget?) -> [LinkRouteTargetMenuItem] {
     var items: [LinkRouteTargetMenuItem] = []
     if case .space(let id) = current, !spaces.contains(where: { $0.id == id }) {
@@ -55,8 +55,7 @@ func linkRouteTargetMenu(spaces: [LinkRouteSpaceOption], current: LinkRouteTarge
     }
     items += spaces.map(LinkRouteTargetMenuItem.space)
     if !spaces.isEmpty { items.append(.separator) }
-    items += [.mostRecentSpace, .privateWindow, .quickDetour]
-    if current == .quarantine { items.append(.quarantine) }
+    items += [.mostRecentSpace, .privateWindow, .quickDetour, .quarantine]
     return items
 }
 

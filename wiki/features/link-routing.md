@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Link Routes
-description: "The Link Routes model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quarantine and Quick Detour external-only, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
+description: "The Link Routes model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quick Detour external-only, Quarantine for links from other apps and the clicks a route to it matches but never typed URLs, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private; Quarantine a visible target since TASK-194, opening a quarantine window), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
@@ -115,6 +115,9 @@ sources:
   - id: task-193-5
     resource: backlog:TASK-193.5
     title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
+  - id: task-194
+    resource: backlog:TASK-194
+    title: "Quarantine: links in a throwaway Quick Detour window, then moved to a profile and space on purpose"
 ---
 
 Link Routes send a link to a chosen space by rule: links opened from other
@@ -183,13 +186,14 @@ on the case states the precondition.
 | From a Private window, routes to a space or to Most Recent Space (and Quick Detour) are skipped. | Nothing routes out of Private. |
 | A route to the space the link is already in is `.stay`, and stops the search. | First match wins; it already is where the route sends it. |
 | `.mostRecentSpace` is `.mostRecentSpace` for an external link and `.stay` for a typed URL or click. | A typed URL or click is in the key window, whose space is the most recent one. |
-| `.quarantine` and `.quickDetour` apply to external links only; elsewhere they are skipped. | Quarantine is defined for links from other apps (TASK-194). Quick Detour likewise, decided in TASK-193.5 (2026-10-26): links from other apps reach Quick Detour through this target; inside Detour, Opt-Cmd-click opens one. Widening it is one line. |
+| `.quickDetour` applies to external links only; elsewhere it is skipped. | Decided in TASK-193.5 (2026-10-26): links from other apps reach Quick Detour through this target; inside Detour, Opt-Cmd-click opens one. Widening it is one line. |
+| `.quarantine`: external links, and a click **a route** to it matches (never from a Private window); never a typed URL. The Default naming it takes external links only. | The user's decision of 2026-10-26 (TASK-194), replacing the 2026-10-24 "links from other apps only". A Default of Quarantine taking clicks would quarantine every link clicked to another site; a quarantine's Open in reaches normal spaces, so a Private window's click stays (nothing routes out of Private). See [Quarantine](./quarantine.md). |
 | A route to a space not in the context is skipped. | Deletion is blocked (below), but a space removed some other way must not route into nothing. A Private window's space is never in the context, so no route can name one. |
 | No route: the **Default applies from every origin**, with the same rules as a route's target (below). | User decision 2026-10-25. |
 | Default = a normal space: a typed URL or click from another normal space opens there; from that space it is `.stay`. | As a route to that space. |
 | Default = Most Recent Space: a typed URL or click is `.stay`; an external link goes to the most recent space. | The key window's space is the most recent one. |
 | Default = Private window: `.privateWindow` from every normal origin, `.stay` from a Private window. | As a Private route. |
-| Default = Quarantine or Quick Detour: external links only; a typed URL or click is `.stay`. | The user is already in a space, so it stays rather than going to the most recent space. |
+| Default = Quarantine or Quick Detour: external links only; a typed URL or click is `.stay` (a click to Quarantine only by a route). | The user is already in a space, so it stays rather than going to the most recent space. |
 | From a Private window, a Default naming a normal space (or Most Recent Space) is ignored: `.stay`. | The one-way Private rule. |
 | A Default that cannot be used (a deleted space): an external link goes to `.mostRecentSpace`, a typed URL or click is `.stay`. | An external link needs a window; a typed URL or click already has one. |
 
@@ -313,7 +317,7 @@ the placement out.[^task-191-2]
 | Private window | `.openInPrivateWindow`: a tab in the most recent Private window; none open: `.openInNewPrivateWindow` (`createNewWindowWithURL(_:incognito: true)`). | Decided 2026-10-24. |
 | Most Recent Space (and the resolver's fallbacks to it) | `.mostRecentSpace`: exactly the code from before routes, a tab in the key browser window's active space, else `createNewWindowWithURL`. | Kept as it was. With Detour in the background there is no key window, so that is a new window every time (seen at runtime); unchanged on purpose. |
 | Quick Detour | `.openInQuickDetour`: `AppDelegate.openLink` opens a new Quick Detour window with the link (no tab in any space), on `QuickDetour.profileForRoutedLink` — the frontmost Detour window's profile, but never Private (a Private window in front is passed over for the next window's; none: the first normal profile) — its Open in naming the most recent normal window's space of that profile. | TASK-193.5. Never Private: only a Private Window (or Quarantine) target takes a link from another app into Private; see [Quick Detour](./quick-detour.md#links-from-other-apps-the-link-routes-quick-detour-target). The Most Recent Space fallback TASK-191.2 left for it is gone. |
-| Quarantine | `.mostRecentSpace` | TASK-194 does not exist yet and the Links pane hides it. |
+| Quarantine | `.openInQuarantine`: `AppDelegate.openLink` opens a new quarantine window (`openInQuarantine`): a Quick Detour on the Private profile with a fresh store of its own, whose Open in names the space a routed click came from, else the most recent normal window's space. | TASK-194; see [Quarantine](./quarantine.md). |
 | `.stay` | `.mostRecentSpace` | The resolver never says stay for an external link; if it did, the link still needs a window. |
 
 A routed placement whose window or space has gone by the time it runs falls
@@ -399,8 +403,8 @@ the space, brought forward, with the tab selected; else the most recent
 normal window (normally the one clicked in) switches to the space; Private
 into the most recent Private window, else a new one. A decision of `.stay`
 (no route, Most Recent Space, a route to the current space, anything out of a
-Private window, Quarantine or Quick Detour) changes nothing: the code from
-before routes runs.
+Private window, Quick Detour, a Default of Quarantine) changes nothing: the code from before routes runs. A click a
+Quarantine route matches opens a quarantine window instead (TASK-194).
 
 ## Entry points
 
@@ -667,9 +671,10 @@ TASK-211; see [Settings](./settings.md#quick-detour).
   stored (an app without one beeps and changes nothing).
 - **Target pop-up** (`linkRouteTargetMenu`): the normal spaces in order
   (emoji and name), Most Recent Space, Private Window, Quick Detour
-  (TASK-193.5; links from other apps only, as the resolver rules).
-  Quarantine is hidden until TASK-194, but a route (or Default) that
-  already holds it shows it rather than changing it silently. A space
+  (TASK-193.5; links from other apps only, as the resolver rules) and
+  Quarantine (TASK-194, with a tooltip saying what it is; the Default's
+  caption says Quick Detour and Quarantine take links from other apps and
+  a Quarantine route also the clicked links it matches). A space
   that is not offered (deleted, or a Private window's) is listed first as
   "Space deleted" (or "Private space") with the warning image.
 - Fixed widths (kind 120, the pop-ups 220) so the controls line up from row to
@@ -828,7 +833,7 @@ Open Links Settings… tinted that row.
 
 # Tests
 
-`LinkRouteEditorTests` (TASK-191.3: the target menu with hidden Quarantine,
+`LinkRouteEditorTests` (TASK-191.3: the target menu (Quarantine offered since TASK-194),
 Quick Detour offered (TASK-193.5) and an unavailable space, the drag destination, the warnings,
 drafts saved once complete, an app-only draft, a refused edit kept on its
 row while the store keeps the saved route, previews, a broken saved route
@@ -862,8 +867,9 @@ Detour itself, no PID or bundle ID), `ExternalLinkRoutingTests` (real
 windows in the test host driven through `application(_:open:)` and
 `openExternalURLs(_:sourceApp:)`: the routed window comes forward, an
 unshown space switches the most recent normal window, never a Private one,
-Private reuse, source-app routes, the Default, Most Recent Space and
-Quarantine as before, multi-URL opens, non-web URLs ignored).
+Private reuse, source-app routes, the Default, Most Recent Space, a
+Quarantine route and Default opening a quarantine (TASK-194), multi-URL
+opens, non-web URLs ignored).
 `LinkRouteResolverTests` (every rule above, each match kind, `www.`, ports,
 IDN, IP literals, the Default from each origin), `LinkRouteStoreTests` (store
 operations, unknown rows, notifications, migration v20 on a v19 database,
@@ -878,6 +884,7 @@ text).
 - [Profiles and spaces](../architecture/profiles-and-spaces.md): space deletion.
 - [Incognito](../architecture/incognito.md): the one-way Private boundary.
 - [Site settings](../architecture/site-settings.md): the host-or-parent rule `domainIs` shares in spirit.
+- [Quarantine](./quarantine.md): the Quarantine target's window, isolation and Open in.
 
 [^task-191]: TASK-191: rules that route links and typed URLs to a chosen space
 [^task-191-1]: TASK-191.1: route model, matching rule and storage

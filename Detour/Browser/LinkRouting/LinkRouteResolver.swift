@@ -84,6 +84,9 @@ enum LinkRouteDecision: Equatable {
 ///   normal space from a Private window, Quarantine or Quick Detour for a typed
 ///   URL or click), a link from another app goes to the most recent space and
 ///   a typed URL or click stays where it is.
+/// - Quarantine (TASK-194): links from other apps, and clicks a Quarantine
+///   route matches (never from a Private window); never a typed URL, and the
+///   Default never takes a click there.
 /// - Only http and https URLs match a route.
 ///
 /// The caller has already decided the link is routed (see the top of this
@@ -94,21 +97,24 @@ func resolveLinkRoute(url: URL, origin: LinkOrigin, routes: [LinkRoute],
         .sorted { ($0.element.sortOrder, $0.offset) < ($1.element.sortOrder, $1.offset) }
         .map(\.element)
     for route in ordered where linkRoute(route, matches: url, origin: origin) {
-        if let decision = decision(for: route.target, origin: origin, context: context) { return decision }
+        if let decision = decision(for: route.target, origin: origin, context: context, isDefault: false) {
+            return decision
+        }
     }
     // The Default, for every origin: a Default of "Work" takes an unmatched
     // typed URL or click from another space into Work. Unusable, a link from
     // another app still needs a window (the most recent space); a typed URL or
     // click is already in one, so it stays.
-    return decision(for: defaultTarget, origin: origin, context: context)
+    return decision(for: defaultTarget, origin: origin, context: context, isDefault: true)
         ?? (origin.isExternal ? .mostRecentSpace : .stay)
 }
 
 /// What `target` means for a link from `origin`; nil when it cannot be used
 /// from there, so the next route (or the Default's fallback) is tried. The
-/// same rules hold for a route's target and for the Default.
+/// same rules hold for a route's target and for the Default, but one:
+/// Quarantine takes a click only from a route (`isDefault` false).
 private func decision(for target: LinkRouteTarget, origin: LinkOrigin,
-                      context: LinkRouteContext) -> LinkRouteDecision? {
+                      context: LinkRouteContext, isDefault: Bool) -> LinkRouteDecision? {
     switch target {
     case .privateWindow:
         // Into Private from anywhere; already in one, the link stays.
@@ -124,7 +130,17 @@ private func decision(for target: LinkRouteTarget, origin: LinkOrigin,
         // the most recent one: nothing to move.
         return origin.isExternal ? .mostRecentSpace : .stay
     case .quarantine:
-        return origin.isExternal ? .quarantine : nil
+        // Links from other apps, by a route or the Default; a click only by a
+        // route that matches it (the user's decision of 2026-10-26: a Default
+        // of Quarantine would quarantine every link clicked to another site).
+        // Never out of a Private window: a quarantine's Open in reaches normal
+        // spaces, so a Private page's link would be one Cmd+O from a normal
+        // profile and its history (code review). Never a typed URL.
+        switch origin {
+        case .external: return .quarantine
+        case .clicked: return isDefault || origin.isFromPrivateWindow ? nil : .quarantine
+        case .typed: return nil
+        }
     case .quickDetour:
         return origin.isExternal ? .quickDetour : nil
     }
