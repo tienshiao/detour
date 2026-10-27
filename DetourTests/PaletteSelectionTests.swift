@@ -186,7 +186,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         // Recorded in order; a tie on the visit time is broken by the newer row.
         db.recordVisit(url: olderURL, title: "Older", faviconURL: nil, spaceID: spaceID.uuidString)
         db.recordVisit(url: newestURL, title: "Newest", faviconURL: nil, spaceID: spaceID.uuidString)
-        XCTAssertEqual(db.recentHistory(spaceID: spaceID.uuidString).map(\.url), [newestURL, olderURL])
+        XCTAssertEqual(db.recentHistory(spaceIDs: [spaceID.uuidString]).map(\.url), [newestURL, olderURL])
         for url in alsoVisited {
             db.recordVisit(url: url, title: "", faviconURL: nil, spaceID: spaceID.uuidString)
         }
@@ -198,7 +198,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
         let palette = CommandPaletteView()
         palette.suggestionProvider = SuggestionProvider(db: db)
-        palette.activeSpaceID = spaceID
+        palette.historySpaceIDs = [spaceID.uuidString]
         palette.delegate = spy
         self.palette = palette
         palette.show(in: try XCTUnwrap(window.contentView), initialText: initialText)

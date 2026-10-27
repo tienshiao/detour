@@ -4,7 +4,7 @@ title: History recording and search
 description: When a visit is recorded, how its title is stored and corrected, how in-page navigations become visits, and which query serves which consumer under which scope.
 tags: [history, tabs, search, privacy, sqlite]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T04:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -48,6 +48,9 @@ sources:
   - id: quick-detour
     resource: ./quick-detour.md
     title: Quick Detour
+  - id: task-209
+    resource: backlog:TASK-209
+    title: "Command palette: scope suggestions to the palette's profile"
 ---
 
 # Summary
@@ -100,9 +103,11 @@ mask, so derived, stable across launches, and never any space's id.
 the same-document recorder and the title correction read.
 
 - **Readers.** `HistoryPageBridge.scope(forProfile:)` adds the scope to the
-  profile's space ids, so the History page and `chrome.history.search` find
-  these visits like any other; a space-scoped reader (the palette of a
-  browser window) never sees them, and no space's rows are written.
+  profile's space ids, so the History page, `chrome.history.search` and,
+  since TASK-209, the command palette find these visits like any other; no
+  space's rows are written. Until TASK-209 the palette of a browser window
+  read one space and never saw them, and a Quick Detour's palette read either
+  its source space or this scope.
 - **Sweep.** `sweepHistoryOfDeletedSpaces` keeps each live non-Private
   profile's scope; a deleted profile's Quick Detour visits are swept with
   its spaces'. The scopes go in as a keep-list
@@ -225,19 +230,21 @@ so that column runs ahead of the visit rows. Delete reconciliation therefore
 sets it to `max(visitCount - deletedHere, remaining rows)` instead of a plain
 count, which would silently demote the URL for every other profile.
 
-# Search: one database, two scopes
+# Search: one database, one scope
 
 The history database has no notion of profiles. A profile's history is the
-visits of the spaces that use it, plus its Quick Detour scope, and callers
-pass those IDs in. Every
-reader is scoped, to one space or to a profile's spaces; the unscoped query
-`chrome.history.search` used to run was removed by TASK-138.
+visits of the spaces that use it, plus its Quick Detour scope
+(`HistoryPageBridge.scope(forProfile:)`), and callers pass those IDs in. Every
+reader is scoped to a profile; the unscoped query `chrome.history.search` used
+to run was removed by TASK-138, and the palette's single-space scope (TASK-94)
+was widened to the profile by TASK-209 (the user's decision of
+2026-10-26).[^task-209] The Private profile has no scope at all.
 
 | Consumer | Function | Scope | A row is | Title shown |
 |---|---|---|---|---|
-| Palette, empty query | `recentHistory` | one space | a URL | the space's own latest titled visit (`scopedTitleExpression`) |
-| Palette, typed | `searchHistory` | one space | a URL | same |
-| Palette inline completion | `bestURLCompletion` | one space | a URL | same |
+| Palette, empty query | `recentHistory` | the palette's profile's spaces and Quick Detour scope | a URL | the profile's own latest titled visit (`scopedTitleExpression`); the shared title for a title-less visit only while no space outside the profile has visited the URL |
+| Palette, typed | `searchHistory` | same | a URL | same |
+| Palette inline completion and host rows | `bestURLCompletion`, `bestHostCompletions` | same | a URL | same |
 | History page list | `visits` | the profile's spaces | a visit | `COALESCE(v.title, h.title)` |
 | History page search | `searchVisits` | the profile's spaces | a URL, stood for by its latest in-scope, in-range visit that itself matches | same |
 | `chrome.history.search` | `searchURLs` | the calling extension context's profile's spaces | a URL, chosen like a History page search row, with its count and last-visit time aggregated from the profile's own visits | `v.title`; the shared title for a title-less visit only while no space outside the profile has visited the URL |
@@ -308,7 +315,7 @@ derive every time and count from in-scope `historyVisit` rows
 - [History database](../architecture/history-database.md) - schema, triggers, migrations.
 - [History own-title matching](../decisions/history-own-title-matching.md) - the isolation rule and the designs rejected on the way.
 - [History page](./history-page.md) - the profile-scoped reader and the only caller of the delete APIs.
-- [Suggestion pipeline](./suggestion-pipeline.md) - the space-scoped reader.
+- [Suggestion pipeline](./suggestion-pipeline.md) - the palette's reader, profile-scoped since TASK-209.
 - [Polyfill layer](../extensions/polyfill-layer.md) - `chrome.history.search`, the other profile-scoped reader.
 - [Tab lifecycle](../tabs/tab-lifecycle.md) - where loads start and end.
 - [Incognito](../architecture/incognito.md) - why nothing is recorded there.
@@ -316,3 +323,4 @@ derive every time and count from in-scope `historyVisit` rows
 [^task-87]: Delete entries and clear history from the History page
 [^task-88]: A visit recorded during an in-page navigation keeps the previous page's title
 [^task-91]: Store the page title per visit and record in-page pushState navigations
+[^task-209]: Command palette: scope suggestions to the palette's profile

@@ -233,13 +233,15 @@ final class HistoryBenchmarkTests: XCTestCase {
         let ownToken = nonASCII ? Self.nonASCIIOwnTitleToken : Self.asciiOwnTitleToken
         let titleWord = nonASCII ? "Привет" : "dashboard"
 
-        // Palette: one space, main thread, per keystroke.
-        measure("\(tag)/palette/broad-a") { _ = db.searchHistory(query: "a", spaceID: "P1") }
-        measure("\(tag)/palette/url-token") { _ = db.searchHistory(query: "site137", spaceID: "P1") }
-        measure("\(tag)/palette/title-token") { _ = db.searchHistory(query: titleWord, spaceID: "P1") }
-        measure("\(tag)/palette/own-title-token") { _ = db.searchHistory(query: ownToken, spaceID: "P1") }
-        measure("\(tag)/palette/miss") { _ = db.searchHistory(query: "qqzzxnothing", spaceID: "P1") }
-        measure("\(tag)/palette/heavy-url") { _ = db.searchHistory(query: Self.heavyToken, spaceID: "P1") }
+        // Palette: the profile (TASK-209), on the palette's history queue per keystroke.
+        measure("\(tag)/palette/broad-a") { _ = db.searchHistory(query: "a", spaceIDs: Self.profileSpaces) }
+        measure("\(tag)/palette/url-token") { _ = db.searchHistory(query: "site137", spaceIDs: Self.profileSpaces) }
+        measure("\(tag)/palette/title-token") { _ = db.searchHistory(query: titleWord, spaceIDs: Self.profileSpaces) }
+        measure("\(tag)/palette/own-title-token") { _ = db.searchHistory(query: ownToken, spaceIDs: Self.profileSpaces) }
+        measure("\(tag)/palette/miss") { _ = db.searchHistory(query: "qqzzxnothing", spaceIDs: Self.profileSpaces) }
+        measure("\(tag)/palette/heavy-url") { _ = db.searchHistory(query: Self.heavyToken, spaceIDs: Self.profileSpaces) }
+        // The empty-field list: still read on the main thread.
+        measure("\(tag)/palette/recent") { _ = db.recentHistory(spaceIDs: Self.profileSpaces) }
 
         // History page: a whole profile, first page.
         measure("\(tag)/page/title-token") {
@@ -265,13 +267,13 @@ final class HistoryBenchmarkTests: XCTestCase {
             try conn.execute(sql: "UPDATE historyVisit SET visitTime = visitTime + ?",
                              arguments: [Date().timeIntervalSince1970 - latest])
         }
-        measure("\(tag)/palette/url-completion-broad-s") { _ = db.bestURLCompletion(prefix: "s", spaceID: "P1") }
+        measure("\(tag)/palette/url-completion-broad-s") { _ = db.bestURLCompletion(prefix: "s", spaceIDs: Self.profileSpaces) }
         measure("\(tag)/palette/host-completion-broad-s") {
-            _ = db.bestHostCompletions(prefix: "s", spaceID: "P1", limit: 3)
+            _ = db.bestHostCompletions(prefix: "s", spaceIDs: Self.profileSpaces, limit: 3)
         }
-        measure("\(tag)/palette/url-completion-site13") { _ = db.bestURLCompletion(prefix: "site13", spaceID: "P1") }
+        measure("\(tag)/palette/url-completion-site13") { _ = db.bestURLCompletion(prefix: "site13", spaceIDs: Self.profileSpaces) }
         measure("\(tag)/palette/host-completion-site13") {
-            _ = db.bestHostCompletions(prefix: "site13", spaceID: "P1", limit: 3)
+            _ = db.bestHostCompletions(prefix: "site13", spaceIDs: Self.profileSpaces, limit: 3)
         }
 
         print("BENCH \(tag)/db-bytes \(fileSize(fixture))")

@@ -91,15 +91,4 @@ enum QuickDetour {
                y: (visibleFrame.midY - size.height / 2).rounded(),
                width: size.width, height: size.height)
     }
-
-    /// The space whose history the window's palette suggests from: the space
-    /// the window was opened from, when it is the window's own profile's and
-    /// not Private, so the first lookup already has the profile's places to
-    /// complete from; otherwise the Quick Detour scope of the profile. Only
-    /// read, never written: the visits themselves always go to the Quick
-    /// Detour scope.
-    static func paletteHistorySpaceID(profile: Profile, sourceSpace: Space?) -> UUID {
-        if let sourceSpace, sourceSpace.profileID == profile.id, !profile.isIncognito { return sourceSpace.id }
-        return historySpaceID(forProfileID: profile.id)
-    }
 }

@@ -140,32 +140,6 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertTrue(QuickDetour.profileForNewWindow(frontmostSpaceProfile: gone, profiles: [gone, first]) === first)
     }
 
-    func testThePaletteSuggestsFromTheSourceSpaceOfTheSameProfile() {
-        let work = Profile(name: "Work")
-        let space = Space(name: "Work", emoji: "W", colorHex: "007AFF", profileID: work.id)
-        space.profile = work
-        XCTAssertEqual(QuickDetour.paletteHistorySpaceID(profile: work, sourceSpace: space), space.id)
-    }
-
-    func testThePaletteFallsBackToTheQuickDetourScope() {
-        let work = Profile(name: "Work")
-        let other = Profile(name: "Other")
-        let otherSpace = Space(name: "Other", emoji: "O", colorHex: "007AFF", profileID: other.id)
-        otherSpace.profile = other
-        XCTAssertEqual(QuickDetour.paletteHistorySpaceID(profile: work, sourceSpace: otherSpace),
-                       QuickDetour.historySpaceID(forProfileID: work.id),
-                       "another profile's space must not be read")
-        XCTAssertEqual(QuickDetour.paletteHistorySpaceID(profile: work, sourceSpace: nil),
-                       QuickDetour.historySpaceID(forProfileID: work.id))
-
-        let privateProfile = Profile(id: TabStore.incognitoProfileID, name: "Private", isIncognito: true)
-        let privateSpace = Space(name: "Private", emoji: "P", colorHex: "2C2C2E", profileID: privateProfile.id)
-        privateSpace.profile = privateProfile
-        XCTAssertEqual(QuickDetour.paletteHistorySpaceID(profile: privateProfile, sourceSpace: privateSpace),
-                       QuickDetour.historySpaceID(forProfileID: privateProfile.id),
-                       "a Private window's space has no history to offer")
-    }
-
     // MARK: - The tab in no space
 
     func testOpeningPlacesTheTabInNoSpace() throws {

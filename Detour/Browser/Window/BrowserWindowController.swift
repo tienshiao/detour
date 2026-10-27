@@ -568,6 +568,14 @@ class BrowserWindowController: NSWindowController {
             deselectAllTabs()
         }
 
+        // A palette still open here (selecting a tab dismisses it; a space
+        // with none to select does not, e.g. Next Space into an empty one)
+        // must stop offering the old space's profile (TASK-209).
+        if let palette = commandPaletteView {
+            scopeCommandPalette(palette)
+            palette.reloadSuggestions()
+        }
+
         // Update pinned extension icons for the new profile
         updatePinnedExtensionIcons()
 
@@ -2507,14 +2515,22 @@ class BrowserWindowController: NSWindowController {
         showCommandPalette(initialText: displayTab?.url?.absoluteString)
     }
 
+    /// Points the palette at the window's active space: the tab it navigates
+    /// from, and the profile whose open tabs and history it offers (TASK-209).
+    private func scopeCommandPalette(_ palette: CommandPaletteView) {
+        palette.activeSpaceID = activeSpaceID
+        palette.currentTabID = selectedTab?.id
+        palette.profile = activeSpace?.profile
+        // The window's profile's history, every space of it (TASK-209).
+        palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: activeSpace?.profile, in: store)
+    }
+
     func showCommandPalette(initialText: String? = nil, anchorFrame: NSRect? = nil) {
         guard commandPaletteView == nil else { return }
         let palette = CommandPaletteView()
         palette.delegate = self
         palette.tabStore = store
-        palette.activeSpaceID = activeSpaceID
-        palette.currentTabID = selectedTab?.id
-        palette.profile = activeSpace?.profile
+        scopeCommandPalette(palette)
         commandPaletteView = palette
 
         // Two scrims: the liquid glass sidebar is partially transparent, so we need

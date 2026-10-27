@@ -5,7 +5,7 @@ description: "history.db — one shared row per URL, one row per visit scoped to
 resource: ../../Detour/Storage/HistoryDatabase.swift
 tags: [architecture, storage, history, fts5, search]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
   - id: history-database
     resource: ../../Detour/Storage/HistoryDatabase.swift
@@ -99,7 +99,7 @@ profile-scoped view must therefore take its values from in-scope
   you@work" became the title another profile saw. A visit recorded before
   `h4` has a NULL title and falls back to the URL-level one.
 - **A title from another profile may neither label a result nor produce
-  one** (TASK-93, TASK-94). The reasoning and the rejected designs are on
+  one** (TASK-93, TASK-94; every reader is a profile since TASK-209). The reasoning and the rejected designs are on
   [history own-title matching](../decisions/history-own-title-matching.md).
 - In the palette, `visitCount` and the FTS `rank` still cross profiles. They
   only order results. `faviconURL` is displayed and is shared; that is a
@@ -180,18 +180,19 @@ entry.
 
 | Method | Caller | Scope | Notes |
 |---|---|---|---|
-| `recentHistory(spaceID:)` | Palette, empty query | One space | One row per URL, newest in-scope visit first. |
-| `searchHistory(query:spaceID:)` | Palette | One space | Runs **synchronously on the main thread per keystroke**, so every candidate comes from an index: URL text, this space's own titles, and legacy title-less visits no other space has visited. |
-| `bestURLCompletion(prefix:spaceID:)` | Palette inline completion | One space | Frecency: each visit adds a recency weight (100 within 4 days, 70 within 14, 50 within 31, 30 within 90), doubled for typed visits; visits older than 90 days are ignored. |
+| `recentHistory(spaceIDs:)` | Palette, empty query (main thread) | The palette's profile: its spaces and Quick Detour scope (TASK-209; one space before) | One row per URL, newest in-scope visit first; a newest-first walk per space that stops at the limit (`newestVisitPerURL`). |
+| `searchHistory(query:spaceIDs:)` | Palette | Same | Runs per keystroke (on the palette's history queue, behind the one connection), so every candidate comes from an index: URL text, the profile's own titles, and legacy title-less visits no space outside the profile has visited. |
+| `bestURLCompletion(prefix:spaceIDs:)`, `bestHostCompletions(prefix:spaceIDs:limit:)` | Palette inline completion and host rows | Same | Frecency: each visit adds a recency weight (100 within 4 days, 70 within 14, 50 within 31, 30 within 90), doubled for typed visits; visits older than 90 days are ignored. Driven from `historyURL`, so only the matching URLs' visits are read. |
 | `visits(spaceIDs:from:until:before:limit:)` | History page | A profile's spaces | Keyset paging on (`visitTime`, `id`), not OFFSET. Page size capped at 500. |
 | `searchVisits(query:spaceIDs:…)` | History page search | A profile's spaces | One row per URL, represented by its newest in-range visit that matched. Candidate gate, then LIKE/GLOB prefilter, then the matcher. |
 | `searchURLs(query:spaceIDs:from:until:limit:)` | `chrome.history.search` | A profile's spaces | One row per URL (`HistoryURLEntry`), newest in-scope visit first. Empty text lists everything in the window. Not for the main thread. |
 | `faviconURL(for:visitedInSpaces:)` | Extension favicons (`detour-favicon://`) | A profile's spaces | Exact URL when the scope visited it, else the same-host page the scope visited most recently. Nil for a page or host only other profiles visited. |
 | `faviconURLInAnyProfile(for:)` | The History page's `favicon` route | All spaces | Exact URL, then same host. Only for rows the caller already listed from its own scope. |
 
-The palette labels each row with the space's own latest non-empty title
+The palette labels each row with the profile's own latest non-empty title
 (`scopedTitleExpression`), and only falls back to the shared title when no
-other space has visited the URL. The label subqueries run in an outer select
+space outside the profile has visited the URL. The scope is a `scope` CTE
+whose space IDs are bound first. The label subqueries run in an outer select
 over the rows that survived `LIMIT`, never over every candidate.
 
 ## One select for both profile-scoped searches
@@ -462,7 +463,7 @@ test against the windowed select and the step-count test described above;
 
 - [History recording and search](../features/history-recording-and-search.md) — when a visit is recorded and corrected.
 - [History page](../features/history-page.md) — the profile-scoped reader.
-- [Suggestion pipeline](../features/suggestion-pipeline.md) — the space-scoped reader.
+- [Suggestion pipeline](../features/suggestion-pipeline.md) — the palette's reader, profile-scoped since TASK-209.
 - [History own-title matching](../decisions/history-own-title-matching.md) — the isolation decision.
 - [Two databases](../decisions/two-databases.md) — why this is a separate file.
 - [Persistence](./persistence.md) — the session side.

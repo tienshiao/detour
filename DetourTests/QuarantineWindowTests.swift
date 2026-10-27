@@ -208,6 +208,19 @@ final class QuarantineWindowTests: XCTestCase {
         XCTAssertTrue(controller.isQuarantine)
     }
 
+    /// TASK-209: a quarantine records no history and reads none, not even the
+    /// profile of the space it was opened from.
+    func testItsPaletteOffersNoHistoryAndNoTabs() throws {
+        let controller = openQuarantine("https://quarantine-palette.invalid/", sourceSpace: desk)
+
+        controller.titleBar.hostButton.performClick(nil)
+
+        let palette = try XCTUnwrap(controller.commandPaletteView)
+        XCTAssertEqual(palette.historySpaceIDs, [])
+        XCTAssertEqual(palette.gatherTabInfos().count, 0)
+        controller.dismissPalette()
+    }
+
     func testItNeverClosesForIdleness() throws {
         let controller = openQuarantine("https://quarantine-idle.invalid/")
         var state = controller.idleState

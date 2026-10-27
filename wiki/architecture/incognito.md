@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -199,8 +199,13 @@ spaces those tabs may come from:
 
 | Palette's window | Spaces whose tabs it is handed |
 |---|---|
-| Normal | every non-incognito space |
+| Normal | the non-incognito spaces of its profile (TASK-209; every non-incognito space before) |
 | Private | its own space and no other, not even another Private window's |
+
+A Private window's palette has no history scope either: the Private profile
+records nothing and `PaletteTabScope.historySpaceIDs` gives it none, so no
+profile's history can show there; and no normal palette's scope ever names a
+Private space.
 
 A window counts as Private when its profile says so **or** when the space it
 is showing is incognito, so a missing profile cannot widen the list.

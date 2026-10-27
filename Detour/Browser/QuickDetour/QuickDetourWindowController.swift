@@ -156,9 +156,6 @@ final class QuickDetourWindowController: NSWindowController {
     private(set) var tabID: UUID
     /// The page's profile; the pill switches it (`switchProfile(to:)`).
     private(set) var profile: Profile
-    /// The space whose history the palette suggests from
-    /// (`QuickDetour.paletteHistorySpaceID`), for the current profile.
-    private(set) var paletteHistorySpaceID: UUID
     /// The space of the browser window it was opened from — what Open in
     /// names while it is still there and the same profile's (TASK-193.3).
     let sourceSpaceID: UUID?
@@ -198,7 +195,6 @@ final class QuickDetourWindowController: NSWindowController {
         self.tabID = UUID()
         self.profile = profile
         self.quarantine = quarantine
-        self.paletteHistorySpaceID = QuickDetour.paletteHistorySpaceID(profile: profile, sourceSpace: sourceSpace)
         self.sourceSpaceID = sourceSpace?.id
 
         let window = QuickDetourWindow(
@@ -437,9 +433,11 @@ final class QuickDetourWindowController: NSWindowController {
         // No open tabs to offer: switching to a tab is another window's
         // business, and this window has one page.
         palette.tabStore = nil
-        palette.activeSpaceID = paletteHistorySpaceID
         palette.currentTabID = tabID
         palette.profile = profile
+        // The profile's history, its Quick Detours' included (TASK-209);
+        // none in a quarantine, which runs on the Private profile.
+        palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: profile, in: store)
         // No browser around it to say where the page goes (TASK-210).
         palette.placeholder = "Search or enter a URL"
         commandPaletteView = palette
@@ -986,8 +984,6 @@ final class QuickDetourWindowController: NSWindowController {
             }
             profile = target
             tabID = newTabID
-            paletteHistorySpaceID = QuickDetour.paletteHistorySpaceID(
-                profile: target, sourceSpace: sourceSpaceID.flatMap { store.space(withID: $0) })
             for context in target.extensionContexts.values {
                 context.didOpenWindow(self)
             }

@@ -93,7 +93,7 @@ final class QuickDetourWindowTests: XCTestCase {
     }
 
     /// The host's palette, as the launcher's: no open tabs, the profile's
-    /// Quick Detour history (opened from no space).
+    /// history (TASK-209).
     func testTheHostPaletteIsTheProfiles() throws {
         let profile = makeProfile()
         let controller = open(profile)
@@ -103,7 +103,9 @@ final class QuickDetourWindowTests: XCTestCase {
         let palette = try XCTUnwrap(controller.commandPaletteView)
         XCTAssertTrue(palette.profile === profile)
         XCTAssertNil(palette.tabStore, "no other window's tabs are offered")
-        XCTAssertEqual(palette.activeSpaceID, QuickDetour.historySpaceID(forProfileID: profile.id))
+        XCTAssertEqual(palette.historySpaceIDs, PaletteTabScope.historySpaceIDs(profile: profile, in: .shared),
+                       "the profile's history, its Quick Detours' included (TASK-209)")
+        XCTAssertTrue(palette.historySpaceIDs.contains(QuickDetour.historySpaceIDString(forProfileID: profile.id)))
     }
 
     func testDismissingTheHostPaletteKeepsTheWindow() async throws {

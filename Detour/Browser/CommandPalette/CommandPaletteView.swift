@@ -25,10 +25,20 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     static let width: CGFloat = 500
 
     weak var delegate: CommandPaletteDelegate?
+    /// The store whose tabs the palette offers; nil offers none (a Quick
+    /// Detour's palette, whose window has one page).
     var tabStore: TabStore?
+    /// The space the palette's window shows: which profile's open tabs it
+    /// offers (`PaletteTabScope.offeredSpaceIDs`).
     var activeSpaceID: UUID?
     var currentTabID: UUID?
     var profile: Profile?
+    /// The history the palette suggests from — every history row, the top
+    /// hit, inline completion, the empty-field list and the filler under a
+    /// typed query: its profile's (`PaletteTabScope.historySpaceIDs`,
+    /// TASK-209), set by whoever shows it. Empty, the default, is no history:
+    /// a Private window's palette, a quarantine's.
+    var historySpaceIDs: [String] = []
     /// A tint for the palette's glass, for a palette with no window content
     /// behind it (the Quick Detour launcher panel, TASK-193.1).
     var glassTint: NSColor? {
@@ -286,6 +296,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         loadDefaultSuggestions()
     }
 
+    /// Rebuilds the list for what the field holds, after whoever shows the
+    /// palette changed its scope under it (its window switched to a space of
+    /// another profile with the palette open, TASK-209). Leaves the field
+    /// alone: no inline completion is applied.
+    func reloadSuggestions() {
+        refreshLocalSuggestions(allowAutocomplete: false)
+    }
+
     func dismiss() {
         currentTask?.cancel()
         debounceWorkItem?.cancel()
@@ -305,11 +323,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     // MARK: - Suggestions
 
     private func loadDefaultSuggestions() {
-        guard let spaceID = activeSpaceID else { return }
         // Invalidate any in-flight background history read so its result can't
         // overwrite the default list when it lands.
         localSuggestionGeneration &+= 1
-        let items = suggestionProvider.defaultSuggestions(spaceID: spaceID.uuidString, tabs: gatherTabInfos())
+        let items = suggestionProvider.defaultSuggestions(historySpaceIDs: historySpaceIDs, tabs: gatherTabInfos())
         suggestionsQuery = nil
         defaultRows = items
         matchRows = []
@@ -320,11 +337,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     /// The open tabs this palette may offer. Every tab the suggestion pipeline
     /// sees (default list, typed query, top hit) comes from here, so the
-    /// Private-window boundary is `PaletteTabScope`'s rule and nothing else.
+    /// profile and Private-window boundaries are `PaletteTabScope`'s rule and
+    /// nothing else.
     func gatherTabInfos() -> [SuggestionProvider.TabInfo] {
         let allSpaces = tabStore?.spaces ?? []
         let offered = PaletteTabScope.offeredSpaceIDs(
-            spaces: allSpaces.map { .init(id: $0.id, isIncognito: $0.isIncognito) },
+            spaces: allSpaces.map { .init(id: $0.id, isIncognito: $0.isIncognito, profileID: $0.profileID) },
             windowIsPrivate: profile?.isIncognito ?? false,
             activeSpaceID: activeSpaceID)
         let spaces = allSpaces.filter { offered.contains($0.id) }
@@ -609,7 +627,6 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             loadDefaultSuggestions()
             return
         }
-        guard let spaceID = activeSpaceID else { return }
         let tabs = gatherTabInfos()
 
         // --- Instant synchronous pass: open tabs only ---
@@ -644,14 +661,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         localSuggestionGeneration &+= 1
         let generation = localSuggestionGeneration
         let provider = suggestionProvider
-        let spaceIDString = spaceID.uuidString
+        let historySpaceIDs = historySpaceIDs
         let capturedTabID = currentTabID
         historyQueryQueue.async { [weak self] in
             // localSuggestions recomputes the open-tab matches too, but its two
             // SQLite reads are what we moved off the main thread. It touches no
             // shared mutable state, so it's safe to run here.
             let local = provider.localSuggestions(
-                for: query, spaceID: spaceIDString, tabs: tabs,
+                for: query, historySpaceIDs: historySpaceIDs, tabs: tabs,
                 allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID)
             DispatchQueue.main.async {
                 guard let self else { return }

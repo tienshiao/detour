@@ -634,13 +634,11 @@ struct HistoryDatabase {
     ///
     /// The expression handed in is one of the two profile-scoped ones
     /// (`scopedVisitsSelect`). `searchVisits` passes the unguarded
-    /// `COALESCE(v.title, h.title)`: its scope is a *profile*, i.e. several
-    /// space IDs, so the palette's argument-free cross-space guard
-    /// (`o.spaceID <> v.spaceID`) would read a sibling space of the same
-    /// profile as foreign, and falling back to the URL-level title for a
-    /// legacy visit is the TASK-91 decision for the History page.
+    /// `COALESCE(v.title, h.title)`: falling back to the URL-level title for
+    /// a legacy visit is the TASK-91 decision for the History page.
     /// `searchURLs` passes `extensionTitleExpression`, which guards that
-    /// fallback against the statement's `scope` CTE (TASK-138). Since TASK-96
+    /// fallback against the statement's `scope` CTE (TASK-138), as the
+    /// palette's label does (`scopedTitleExpression`). Since TASK-96
     /// the palette answers its title half from the `historyTitle` index instead
     /// and has no caller here.
     private func titleMatchCondition(_ titleExpression: String, tokens: [String],
@@ -658,69 +656,88 @@ struct HistoryDatabase {
             """
     }
 
-    // MARK: - Command palette (space-scoped)
+    // MARK: - Command palette (profile-scoped)
 
-    /// The title a palette suggestion displays: the title *this space's* own
-    /// latest visit gave the URL (TASK-94).
+    /// The `scope` CTE a profile-scoped lookup names its history scope
+    /// through: the palette's (TASK-209: the profile's spaces and its Quick
+    /// Detour scope, `PaletteTabScope.historySpaceIDs`) and
+    /// `chrome.history.search`'s (`urlEntriesSelect`). Its `count` space IDs
+    /// are bound first, ahead of everything else the statement binds, so the
+    /// label and the candidate sources can name the scope as often as they
+    /// need to without binding it again.
+    private static func scopeCTE(count: Int) -> String {
+        "scope(spaceID) AS (VALUES \(Array(repeating: "(?)", count: count).joined(separator: ", ")))"
+    }
+
+    /// The title a palette suggestion displays: the title *the palette's
+    /// profile's* own latest visit gave the URL (TASK-94, widened from one
+    /// space to the profile by TASK-209).
     ///
     /// `historyURL.title` is one row per URL shared by every profile, overwritten
     /// by the newest visit anywhere, so a suggestion in the personal profile was
     /// labelled with whatever the work profile last called the page ("(3) Inbox -
-    /// you@work"). This space's own latest *titled* visit answers instead —
+    /// you@work"). The scope's own latest *titled* visit answers instead —
     /// `IS NOT NULL AND <> ''`, so a visit recorded with no usable title does not
-    /// hide an older one that has it.
+    /// hide an older one that has it — whichever of the profile's spaces made it.
     ///
-    /// When this space has no titled visit of the URL at all — only visits from
+    /// When the scope has no titled visit of the URL at all — only visits from
     /// before per-visit titles existed (TASK-91) — the URL-level title stands in
-    /// **only if no other space has visited the URL either**. Otherwise that
+    /// **only if no space outside the scope has visited the URL**. Otherwise that
     /// title is, or may since have become, another profile's, which is the leak
     /// itself; the row is labelled with the empty string and
     /// `SuggestionProvider.displayTitle` shows the URL. Losing a legitimate
-    /// legacy title on a shared URL is the cheap half of that trade.
+    /// legacy title on a shared URL is the cheap half of that trade. Under the
+    /// TASK-94 space scope a sibling space of the same profile counted as
+    /// outside; it no longer does (`extensionTitleExpression` is the same rule).
     ///
     /// Known hole, not worth code: the guard reads the *present*. If another
-    /// space's pre-TASK-91 visits are what gave `historyURL.title` its value
+    /// profile's pre-TASK-91 visits are what gave `historyURL.title` its value
     /// and those visits are later deleted, nothing recomputes it —
     /// `reconcileStagedURLs` only revisits the title when a deleted visit
     /// carried one of its own — so the shared title outlives its source and
-    /// this space adopts it as a fallback. Confined to title-less visits still
+    /// this profile adopts it as a fallback. Confined to title-less visits still
     /// inside the 90-day window.
     ///
-    /// Written against `h.id` / `h.title`, with two bound `?` — the space ID
-    /// twice — so each of the three lookups can name its already-narrowed rows
-    /// `h` and drop this into the *outer* select (`labelledSelect`): the
-    /// correlated subqueries then run only for the handful of rows that survived
-    /// LIMIT, never for every candidate.
+    /// Written against `h.id` / `h.title` and the statement's `scope` CTE, and
+    /// binds nothing, so each lookup can name its already-narrowed rows `h` and
+    /// drop this into the *outer* select (`labelledSelect`): the correlated
+    /// subqueries then run only for the handful of rows that survived LIMIT,
+    /// never for every candidate. `+v2.spaceID` keeps the planner on the
+    /// URL's own visits (`historyVisit_urlID`) rather than walking the scope's
+    /// visits through the (`spaceID`, `visitTime`) index for the ORDER BY.
     private static let scopedTitleExpression = """
         COALESCE(
                        (SELECT v2.title FROM historyVisit v2
-                        WHERE v2.urlID = h.id AND v2.spaceID = ?
+                        WHERE v2.urlID = h.id AND +v2.spaceID IN (SELECT spaceID FROM scope)
                           AND v2.title IS NOT NULL AND v2.title <> ''
                         ORDER BY v2.visitTime DESC, v2.id DESC LIMIT 1),
                        CASE WHEN NOT EXISTS (SELECT 1 FROM historyVisit o
-                                             WHERE o.urlID = h.id AND o.spaceID <> ?)
+                                             WHERE o.urlID = h.id
+                                               AND o.spaceID NOT IN (SELECT spaceID FROM scope))
                             THEN h.title ELSE '' END)
         """
 
-    /// The `HistoryURL` columns as a space-scoped inner select must expose them.
+    /// The `HistoryURL` columns as a scoped inner select must expose them.
     private static let historyURLProjection = """
         h.id AS id, h.url AS url, h.title AS title,
                                h.faviconURL AS faviconURL, h.visitCount AS visitCount,
                                h.lastVisitTime AS lastVisitTime
         """
 
-    /// Wraps a space-scoped `inner` select in the outer select that labels its
-    /// rows (TASK-94). `inner` exposes `historyURLProjection`, is aliased `h`, and
-    /// has already applied its own WHERE / GROUP BY / ORDER BY / LIMIT — so the
-    /// label's correlated subqueries see only the rows that survived.
+    /// Wraps a scoped `inner` select in the outer select that labels its rows
+    /// (TASK-94), behind the `scope` CTE of `scopeCount` space IDs. `inner`
+    /// exposes `historyURLProjection`, is aliased `h`, and has already applied
+    /// its own WHERE / GROUP BY / ORDER BY / LIMIT — so the label's correlated
+    /// subqueries see only the rows that survived.
     ///
     /// `order` restates the inner ORDER BY over the carried-out columns: an outer
     /// select over a subquery inherits no order. Empty for a single-row lookup.
     ///
-    /// The label's two binds lead the statement, so every caller's arguments
-    /// start with `labelArguments(spaceID)`; this is the one place that knows it.
-    private static func labelledSelect(inner: String, orderedBy order: String) -> String {
+    /// The scope's binds lead the statement, so every caller's arguments start
+    /// with the space IDs; the label itself binds nothing.
+    private static func labelledSelect(scopeCount: Int, inner: String, orderedBy order: String) -> String {
         """
+        WITH \(scopeCTE(count: scopeCount))
         SELECT h.id AS id, h.url AS url,
                \(scopedTitleExpression) AS title,
                h.faviconURL AS faviconURL, h.visitCount AS visitCount,
@@ -732,34 +749,33 @@ struct HistoryDatabase {
         """
     }
 
-    /// What `scopedTitleExpression` binds: the space ID, twice.
-    private static func labelArguments(_ spaceID: String) -> [DatabaseValueConvertible] {
-        [spaceID, spaceID]
-    }
-
-    /// The most recently visited URLs of one space, newest first.
+    /// The most recently visited URLs of the scope, newest first: one row per
+    /// URL, ordered by its newest visit in any space of the scope.
     ///
-    /// The inner select picks the rows (unchanged: one per URL, ordered by the
-    /// space's own latest visit); the outer one labels them (TASK-94) — with an
-    /// `id` tiebreak in both, so which rows the LIMIT keeps and the order they
-    /// come back in are the same decision.
-    func recentHistory(spaceID: String, limit: Int = 12) -> [HistoryURL] {
-        let sql = Self.labelledSelect(inner: """
-            SELECT \(Self.historyURLProjection),
-                               MAX(v.visitTime) AS inScopeVisitTime
-                        FROM historyURL h
-                        JOIN historyVisit v ON v.urlID = h.id
-                        WHERE v.spaceID = ?
-                        GROUP BY h.url
-                        ORDER BY inScopeVisitTime DESC, id DESC
-                        LIMIT ?
-            """, orderedBy: "h.inScopeVisitTime DESC, h.id DESC")
-        var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
-        args.append(spaceID)
-        args.append(limit)
+    /// The rows are picked by the same newest-first walk `chrome.history.search`
+    /// lists with (`newestVisitPerURL`): one cursor per space over the
+    /// (`spaceID`, `visitTime`) index, stopping at `limit` distinct URLs. The
+    /// statement it replaces grouped *every* visit of the scope per URL before
+    /// taking the newest twelve — 33 ms for one space of the 50,000-visit
+    /// benchmark, on the main thread (TASK-97) — and a profile is wider than a
+    /// space. The outer select then labels the rows (TASK-94). Ties on the
+    /// visit time go to the newer visit, as in the walk.
+    func recentHistory(spaceIDs: [String], limit: Int = 12) -> [HistoryURL] {
+        guard !spaceIDs.isEmpty, limit > 0 else { return [] }
         do {
             return try dbQueue.read { db in
-                try HistoryURL.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+                let visitIDs = try newestVisitPerURL(db, spaceIDs: spaceIDs, from: nil, until: nil, limit: limit)
+                guard !visitIDs.isEmpty else { return [] }
+                let sql = Self.labelledSelect(scopeCount: spaceIDs.count, inner: """
+                    SELECT \(Self.historyURLProjection),
+                                       v.visitTime AS inScopeVisitTime, v.id AS visitID
+                                FROM historyVisit v
+                                JOIN historyURL h ON h.id = v.urlID
+                                WHERE v.id IN (\(databaseQuestionMarks(count: visitIDs.count)))
+                    """, orderedBy: "h.inScopeVisitTime DESC, h.visitID DESC")
+                var args: [DatabaseValueConvertible] = spaceIDs
+                args.append(contentsOf: visitIDs)
+                return try HistoryURL.fetchAll(db, sql: sql, arguments: StatementArguments(args))
             }
         } catch {
             log.error("Failed to fetch recent history: \(error.localizedDescription)")
@@ -767,32 +783,34 @@ struct HistoryDatabase {
         }
     }
 
-    /// History suggestions for the command palette, scoped to one space.
+    /// History suggestions for the command palette, scoped to the palette's
+    /// profile (TASK-209; one space before it).
     ///
     /// Like `searchVisits`, a title from another profile must neither label a
-    /// suggestion nor produce one (TASK-94) — but this runs synchronously on the
-    /// main thread on every keystroke, so nothing here may scan the scope's
-    /// visits. Every candidate therefore comes out of an index, and the three
-    /// ways a URL can qualify are three indexed sources, UNION'd:
+    /// suggestion nor produce one (TASK-94) — and this runs on every keystroke
+    /// (on the palette's history queue, but a `DatabaseQueue` is one connection
+    /// that every reader and writer waits behind), so nothing here may scan the
+    /// scope's visits. Every candidate therefore comes out of an index, and the
+    /// three ways a URL can qualify are three indexed sources, UNION'd:
     ///
     /// - **A, the URL text.** `historySearch`'s `url` column. A URL is the same
     ///   text whoever visited it, so an FTS hit there qualifies the row as soon
-    ///   as this space has visited it at all (the EXISTS).
-    /// - **B, this space's own titles.** `historyTitleSearch` over the
-    ///   `historyTitle` rows of *this* `spaceID` (TASK-96). No per-visit check
+    ///   as the scope has visited it at all (the EXISTS).
+    /// - **B, the scope's own titles.** `historyTitleSearch` over the
+    ///   `historyTitle` rows of the scope's spaces (TASK-96). No per-visit check
     ///   is needed or possible: a row exists only while `n > 0`, i.e. while an
     ///   in-scope visit still carries that exact title.
     /// - **C, legacy title-less visits.** `historySearch`'s `title` column —
-    ///   the shared, latest-known URL title — but only for a URL this space
-    ///   visited *without* a title of its own and that no other space has
-    ///   visited at all. That is `scopedTitleExpression`'s fallback rule
-    ///   (TASK-94) spelled as a filter: exactly the case where the shared title
-    ///   is the only record of what this space saw and cannot be anyone else's.
-    ///   The FTS hit *is* the match on `h.title`, so no `history_title_matches`
-    ///   call is needed behind it.
+    ///   the shared, latest-known URL title — but only for a URL the scope
+    ///   visited *without* a title of its own and that no space outside the
+    ///   scope has visited at all. That is `scopedTitleExpression`'s fallback
+    ///   rule (TASK-94) spelled as a filter: exactly the case where the shared
+    ///   title is the only record of what this profile saw and cannot be anyone
+    ///   else's. The FTS hit *is* the match on `h.title`, so no
+    ///   `history_title_matches` call is needed behind it.
     ///
     /// TASK-96 lifted what used to be an accepted limitation here: `historySearch`
-    /// was the sole candidate gate, so a word that appears only in this space's
+    /// was the sole candidate gate, so a word that appears only in this scope's
     /// own visit title and nowhere in the shared URL title produced no candidate
     /// to test — personal saw "Budget 2026", work later retitled the URL
     /// "Dashboard", and typing "budget" in personal found nothing. Source B is
@@ -800,9 +818,9 @@ struct HistoryDatabase {
     ///
     /// **Accepted, and different from `searchVisits`**: a row here is a URL,
     /// not a visit, so the visit that earned the match and the visit that
-    /// supplies the label need not be the same one — "inbox" can match this
-    /// space's older visit while the row is labelled by its newer one. Both are
-    /// this space's own, so nothing crosses a profile; it is only the
+    /// supplies the label need not be the same one — "inbox" can match the
+    /// profile's older visit while the row is labelled by its newer one. Both
+    /// are this profile's own, so nothing crosses a profile; it is only the
     /// searchVisits guarantee ("a row that matched on a title displays a title
     /// that matched") that a one-row-per-URL list cannot keep.
     ///
@@ -812,31 +830,32 @@ struct HistoryDatabase {
     /// (`-visitCount`, then `id`) settle everything a tie leaves open.
     ///
     /// Not changed, and deliberately: `rank`, `h.visitCount` and `h.faviconURL`
-    /// are cross-space values. The first two order the results and nothing else.
-    /// `faviconURL` *is* displayed — one icon per URL, whoever fetched it last —
-    /// which is a separate question from the title and not TASK-94's.
-    func searchHistory(query: String, spaceID: String, limit: Int = 10) -> [HistoryURL] {
+    /// are cross-profile values. The first two order the results and nothing
+    /// else. `faviconURL` *is* displayed — one icon per URL, whoever fetched it
+    /// last — which is a separate question from the title and not TASK-94's.
+    ///
+    /// The scope tests in A and C are written `+v.spaceID`, so each EXISTS
+    /// probes the candidate URL's own visits (`historyVisit_urlID`) instead of
+    /// the scope's through the (`spaceID`, `visitTime`) index.
+    func searchHistory(query: String, spaceIDs: [String], limit: Int = 10) -> [HistoryURL] {
+        guard !spaceIDs.isEmpty else { return [] }
         let tokens = query.components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
         guard !tokens.isEmpty else { return [] }
 
-        // Arguments in statement order: the label's two, then each candidate
-        // source's FTS query followed by the space IDs it tests, then the limit.
-        var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
+        // Arguments in statement order: the scope, then each candidate
+        // source's FTS query, then the limit.
+        var args: [DatabaseValueConvertible] = spaceIDs
         args.append(Self.ftsPrefixQuery(tokens, column: "url"))
-        args.append(spaceID)
         args.append(Self.titleIndexQuery(tokens, folded: Self.searchTokens(query)))
-        args.append(spaceID)
         args.append(Self.ftsPrefixQuery(tokens, column: "title"))
-        args.append(spaceID)
-        args.append(spaceID)
         args.append(limit)
 
         // `UNION ALL` and not `UNION`: the duplicates are wanted — `MIN(c.rank)`
         // is how a URL that matched several ways keeps its best score — and
         // de-duplicating rows only to group them immediately afterwards is work
         // for nothing.
-        let sql = Self.labelledSelect(inner: """
+        let sql = Self.labelledSelect(scopeCount: spaceIDs.count, inner: """
             SELECT \(Self.historyURLProjection), MIN(c.rank) AS rank
                         FROM (
                             SELECT s.rowid AS urlID, s.rank AS rank
@@ -844,25 +863,25 @@ struct HistoryDatabase {
                             WHERE historySearch MATCH ?
                               AND EXISTS (
                                   SELECT 1 FROM historyVisit v
-                                  WHERE v.urlID = s.rowid AND v.spaceID = ?
+                                  WHERE v.urlID = s.rowid AND +v.spaceID IN (SELECT spaceID FROM scope)
                               )
                             UNION ALL
                             SELECT t.urlID AS urlID, ts.rank AS rank
                             FROM historyTitleSearch ts
                             JOIN historyTitle t ON t.id = ts.rowid
-                            WHERE historyTitleSearch MATCH ? AND t.spaceID = ?
+                            WHERE historyTitleSearch MATCH ? AND t.spaceID IN (SELECT spaceID FROM scope)
                             UNION ALL
                             SELECT s.rowid AS urlID, s.rank AS rank
                             FROM historySearch s
                             WHERE historySearch MATCH ?
                               AND EXISTS (
                                   SELECT 1 FROM historyVisit v
-                                  WHERE v.urlID = s.rowid AND v.spaceID = ?
+                                  WHERE v.urlID = s.rowid AND +v.spaceID IN (SELECT spaceID FROM scope)
                                     AND (v.title IS NULL OR v.title = '')
                               )
                               AND NOT EXISTS (
                                   SELECT 1 FROM historyVisit o
-                                  WHERE o.urlID = s.rowid AND o.spaceID <> ?
+                                  WHERE o.urlID = s.rowid AND o.spaceID NOT IN (SELECT spaceID FROM scope)
                               )
                         ) c
                         JOIN historyURL h ON h.id = c.urlID
@@ -896,8 +915,8 @@ struct HistoryDatabase {
     /// while **no space outside the scope** has visited the URL. Otherwise
     /// that title is, or may since have become, another profile's — the row
     /// then has no title (NULL), cannot match through one, and the caller
-    /// shows the URL. It is the palette's rule (`scopedTitleExpression`)
-    /// widened from one space to a profile's spaces, and it is stricter than
+    /// shows the URL. It is the palette's rule (`scopedTitleExpression`; the
+    /// palette's scope is a profile too since TASK-209), and it is stricter than
     /// the History page's on purpose: what this returns leaves the browser, to
     /// extension code, rather than being shown to the user who made the visit.
     ///
@@ -1254,9 +1273,8 @@ struct HistoryDatabase {
     /// index looks cheaper than it is (the same trap as the deletes' scope
     /// filter, `pinnedSpaceScope`). `c` is reached through `historyVisit_urlID`.
     private static func urlEntriesSelect(scopeCount: Int, representatives: String) -> String {
-        let scopeRows = Array(repeating: "(?)", count: scopeCount).joined(separator: ", ")
-        return """
-            WITH scope(spaceID) AS (VALUES \(scopeRows))
+        """
+            WITH \(scopeCTE(count: scopeCount))
             SELECT p.urlID AS urlID, p.url AS url, COALESCE(p.title, '') AS title,
                    COUNT(*) AS visitCount, COALESCE(SUM(c.isTyped), 0) AS typedCount,
                    MAX(c.visitTime) AS lastVisitTime
@@ -1453,19 +1471,31 @@ struct HistoryDatabase {
     /// the user deliberately navigates to daily beats one they clicked into many
     /// times weeks ago. Visits older than 90 days (the expiry window) are ignored.
     ///
-    /// Only in-scope visits ever produced the match; since TASK-94 the title the
-    /// top hit displays is in-scope too — the inner select finds the row, the
-    /// outer one labels it (`scopedTitleExpression`). One row, so the outer
-    /// select needs no order of its own.
-    func bestURLCompletion(prefix: String, spaceID: String) -> HistoryURL? {
-        guard !prefix.isEmpty else { return nil }
-        let sql = Self.labelledSelect(inner: """
+    /// The scope is the palette's profile (TASK-209): frecency sums the
+    /// visits of every space of it, and of no other profile. Only in-scope
+    /// visits ever produced the match; since TASK-94 the title the top hit
+    /// displays is in-scope too — the inner select finds the row, the outer
+    /// one labels it (`scopedTitleExpression`). One row, so the outer select
+    /// needs no order of its own.
+    ///
+    /// The URLs drive (`CROSS JOIN`, with `+` on the visit terms so no
+    /// `historyVisit` index but `historyVisit_urlID` can serve them): the
+    /// prefix filter runs over `historyURL`, and only the matching URLs' visits
+    /// are read. Driving from the scope's visits through the (`spaceID`,
+    /// `visitTime`) index, as the space-scoped statement did, reads every visit
+    /// of the profile in the 90 days on every keystroke, however few URLs the
+    /// prefix matches: 24 ms for `site13` on the 50,000-visit benchmark with
+    /// the profile's scope, against 3 ms this way (TASK-209). A prefix that
+    /// matches every URL costs about the same either way.
+    func bestURLCompletion(prefix: String, spaceIDs: [String]) -> HistoryURL? {
+        guard !prefix.isEmpty, !spaceIDs.isEmpty else { return nil }
+        let sql = Self.labelledSelect(scopeCount: spaceIDs.count, inner: """
             SELECT \(Self.historyURLProjection)
                         FROM historyURL h
-                        JOIN historyVisit v ON v.urlID = h.id
-                        WHERE v.spaceID = ?
+                        CROSS JOIN historyVisit v ON v.urlID = h.id
+                        WHERE +v.spaceID IN (SELECT spaceID FROM scope)
                           AND \(Self.urlPrefixCondition)
-                          AND v.visitTime >= ?
+                          AND +v.visitTime >= ?
                         GROUP BY h.url
                         ORDER BY SUM(\(Self.visitFrecencyWeight)) DESC,
                             MAX(v.visitTime) DESC
@@ -1473,8 +1503,7 @@ struct HistoryDatabase {
             """, orderedBy: "")
         // Appended one at a time: a single heterogeneous literal of strings and
         // computed Doubles is more than the type checker will sit through.
-        var args: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
-        args.append(spaceID)
+        var args: [DatabaseValueConvertible] = spaceIDs
         args.append(contentsOf: Self.urlPrefixPatterns(prefix))
         args.append(contentsOf: Self.frecencyArguments(now: Date().timeIntervalSince1970))
         do {
@@ -1538,11 +1567,11 @@ struct HistoryDatabase {
     struct HostCompletion: Equatable {
         /// The host as the field shows it: `SuggestionProvider.displayHost`.
         let host: String
-        /// The site root to open: the space's own visit of it when there is
+        /// The site root to open: the scope's own visit of it when there is
         /// one, else built from the scheme and `www.` the host's best page uses.
         let url: String
-        /// The root's title in this space; empty when the space never visited
-        /// the root itself.
+        /// The root's title in the scope (the palette's profile); empty when
+        /// the scope never visited the root itself.
         let title: String
         let faviconURL: String?
     }
@@ -1552,27 +1581,30 @@ struct HistoryDatabase {
     /// their pages together, so a site visited across many pages (videos, mail
     /// threads) beats one page visited a little more than each of them.
     ///
-    /// Space-scoped like `bestURLCompletion`; the root's title is labelled the
-    /// same way (`labelledSelect`), so no other profile's title shows.
-    func bestHostCompletions(prefix: String, spaceID: String, limit: Int) -> [HostCompletion] {
+    /// Profile-scoped like `bestURLCompletion` (TASK-209); the root's title is
+    /// labelled the same way (`labelledSelect`), so no other profile's title
+    /// shows.
+    func bestHostCompletions(prefix: String, spaceIDs: [String], limit: Int) -> [HostCompletion] {
         let prefix = prefix.lowercased()
-        guard !prefix.isEmpty, limit > 0 else { return [] }
+        guard !prefix.isEmpty, limit > 0, !spaceIDs.isEmpty else { return [] }
         // MATERIALIZED: both correlated subqueries read `perURL`, which must be
         // computed once rather than per host. `topHosts` ranks and LIMITs first
         // (also MATERIALIZED, so it is not flattened back into the outer
         // select): the correlated subqueries then run only for the hosts that
         // survived LIMIT, not for every host a broad prefix like `s` matches.
+        // `perURL` is driven from the URLs, as `bestURLCompletion` is.
         let hostsSQL = """
-            WITH perURL AS MATERIALIZED (
+            WITH \(Self.scopeCTE(count: spaceIDs.count)),
+            perURL AS MATERIALIZED (
                 SELECT h.url AS url, h.faviconURL AS faviconURL,
                        history_display_host(h.url) AS host,
                        SUM(\(Self.visitFrecencyWeight)) AS score,
                        MAX(v.visitTime) AS lastVisit
                 FROM historyURL h
-                JOIN historyVisit v ON v.urlID = h.id
-                WHERE v.spaceID = ?
+                CROSS JOIN historyVisit v ON v.urlID = h.id
+                WHERE +v.spaceID IN (SELECT spaceID FROM scope)
                   AND \(Self.urlPrefixCondition)
-                  AND v.visitTime >= ?
+                  AND +v.visitTime >= ?
                 GROUP BY h.id
             ),
             topHosts AS MATERIALIZED (
@@ -1591,21 +1623,23 @@ struct HistoryDatabase {
             FROM topHosts t
             ORDER BY t.total DESC, t.lastVisit DESC
             """
-        // The weight's four binds come before the patterns in the statement,
-        // so they cannot reuse `frecencyArguments`' order.
+        // The scope first; the weight's four binds come before the patterns
+        // in the statement, so they cannot reuse `frecencyArguments`' order.
         let frecency = Self.frecencyArguments(now: Date().timeIntervalSince1970)
-        var hostArgs: [DatabaseValueConvertible] = Array(frecency[1...])
-        hostArgs.append(spaceID)
+        var hostArgs: [DatabaseValueConvertible] = spaceIDs
+        hostArgs.append(contentsOf: frecency[1...])
         hostArgs.append(contentsOf: Self.urlPrefixPatterns(prefix))
         hostArgs.append(frecency[0])
         hostArgs.append("\(Self.likeEscaped(prefix))%")
         hostArgs.append(limit)
 
-        let rootSQL = Self.labelledSelect(inner: """
+        // `+v.spaceID`: the four root URLs drive, through the unique index on
+        // `url`, and only their own visits are tested against the scope.
+        let rootSQL = Self.labelledSelect(scopeCount: spaceIDs.count, inner: """
             SELECT \(Self.historyURLProjection)
                         FROM historyURL h
                         JOIN historyVisit v ON v.urlID = h.id
-                        WHERE v.spaceID = ? AND h.url IN (?, ?, ?, ?)
+                        WHERE +v.spaceID IN (SELECT spaceID FROM scope) AND h.url IN (?, ?, ?, ?)
                         GROUP BY h.url
                         ORDER BY MAX(v.visitTime) DESC
                         LIMIT 1
@@ -1614,8 +1648,7 @@ struct HistoryDatabase {
             return try dbQueue.read { db in
                 try Row.fetchAll(db, sql: hostsSQL, arguments: StatementArguments(hostArgs)).compactMap { row in
                     guard let host: String = row["host"], let sampleURL: String = row["sampleURL"] else { return nil }
-                    var rootArgs: [DatabaseValueConvertible] = Self.labelArguments(spaceID)
-                    rootArgs.append(spaceID)
+                    var rootArgs: [DatabaseValueConvertible] = spaceIDs
                     rootArgs.append(contentsOf: ["https://", "https://www.", "http://", "http://www."].map {
                         "\($0)\(host)/"
                     })

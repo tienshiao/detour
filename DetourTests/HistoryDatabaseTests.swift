@@ -158,7 +158,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
 
-        let match = db.bestURLCompletion(prefix: "youtu", spaceID: "space1")
+        let match = db.bestURLCompletion(prefix: "youtu", spaceIDs: ["space1"])
 
         XCTAssertEqual(match?.url, "https://www.youtube.com/")
     }
@@ -174,7 +174,7 @@ final class HistoryDatabaseTests: XCTestCase {
             db.recordVisit(url: "https://appfigures.com", title: "Appfigures", faviconURL: nil, spaceID: "space1", typed: true)
         }
 
-        let match = db.bestURLCompletion(prefix: "ap", spaceID: "space1")
+        let match = db.bestURLCompletion(prefix: "ap", spaceIDs: ["space1"])
 
         XCTAssertEqual(match?.url, "https://appfigures.com")
     }
@@ -197,7 +197,7 @@ final class HistoryDatabaseTests: XCTestCase {
                 """, arguments: [sixtyDaysAgo])
         }
 
-        let match = db.bestURLCompletion(prefix: "ap", spaceID: "space1")
+        let match = db.bestURLCompletion(prefix: "ap", spaceIDs: ["space1"])
 
         XCTAssertEqual(match?.url, "https://appfigures.com")
     }
@@ -213,7 +213,7 @@ final class HistoryDatabaseTests: XCTestCase {
                 """, arguments: [hundredDaysAgo])
         }
 
-        let match = db.bestURLCompletion(prefix: "ap", spaceID: "space1")
+        let match = db.bestURLCompletion(prefix: "ap", spaceIDs: ["space1"])
 
         XCTAssertNil(match, "Visits older than 90 days must not produce a completion")
     }
@@ -374,9 +374,9 @@ final class HistoryDatabaseTests: XCTestCase {
 
         db.updateTitle(visitID: visit, url: "https://www.youtube.com/", title: "YouTube homepage")
 
-        XCTAssertEqual(db.searchHistory(query: "homepage", spaceID: "space1").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "homepage", spaceIDs: ["space1"]).map(\.title),
                        ["YouTube homepage"], "the new title is searchable")
-        XCTAssertEqual(db.searchHistory(query: "neighbourly", spaceID: "space1").count, 0,
+        XCTAssertEqual(db.searchHistory(query: "neighbourly", spaceIDs: ["space1"]).count, 0,
                        "the old title no longer matches")
     }
 
@@ -518,7 +518,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
         XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://news.example/"))["title"] as String,
                        "Morning Edition")
-        XCTAssertEqual(db.searchHistory(query: "morning", spaceID: "A").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "morning", spaceIDs: ["A"]).map(\.title),
                        ["Morning Edition"], "and the FTS index followed")
     }
 
@@ -554,7 +554,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
         XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://old.example/"))["title"] as String, "",
                        "the deleted page's title stops naming the URL")
-        XCTAssertTrue(db.searchHistory(query: "secret", spaceID: "A").isEmpty,
+        XCTAssertTrue(db.searchHistory(query: "secret", spaceIDs: ["A"]).isEmpty,
                       "and stops being searchable")
         XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.title), [""],
                        "the surviving legacy visit has no title of its own either")
@@ -621,7 +621,7 @@ final class HistoryDatabaseTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.01)
         db.recordVisit(url: "https://c.com", title: "C", faviconURL: nil, spaceID: "space1")
 
-        let results = db.recentHistory(spaceID: "space1")
+        let results = db.recentHistory(spaceIDs: ["space1"])
         XCTAssertEqual(results.map(\.url), ["https://c.com", "https://b.com", "https://a.com"])
     }
 
@@ -631,7 +631,7 @@ final class HistoryDatabaseTests: XCTestCase {
             db.recordVisit(url: "https://\(i).com", title: "\(i)", faviconURL: nil, spaceID: "space1")
         }
 
-        let results = db.recentHistory(spaceID: "space1", limit: 3)
+        let results = db.recentHistory(spaceIDs: ["space1"], limit: 3)
         XCTAssertEqual(results.count, 3)
     }
 
@@ -640,7 +640,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://b.com", title: "B", faviconURL: nil, spaceID: "space2")
 
-        let results = db.recentHistory(spaceID: "space1")
+        let results = db.recentHistory(spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results.first?.url, "https://a.com")
     }
@@ -650,7 +650,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
 
-        let results = db.recentHistory(spaceID: "space1")
+        let results = db.recentHistory(spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 1)
     }
 
@@ -658,7 +658,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
 
-        let results = db.recentHistory(spaceID: "space-nonexistent")
+        let results = db.recentHistory(spaceIDs: ["space-nonexistent"])
         XCTAssertTrue(results.isEmpty)
     }
 
@@ -669,7 +669,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://example.com", title: "Swift Programming", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://other.com", title: "Cooking Recipes", faviconURL: nil, spaceID: "space1")
 
-        let results = db.searchHistory(query: "swift", spaceID: "space1")
+        let results = db.searchHistory(query: "swift", spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results.first?.url, "https://example.com")
     }
@@ -678,7 +678,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://github.com/swift", title: "GitHub", faviconURL: nil, spaceID: "space1")
 
-        let results = db.searchHistory(query: "github", spaceID: "space1")
+        let results = db.searchHistory(query: "github", spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 1)
     }
 
@@ -686,7 +686,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Programming Guide", faviconURL: nil, spaceID: "space1")
 
-        let results = db.searchHistory(query: "prog", spaceID: "space1")
+        let results = db.searchHistory(query: "prog", spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 1)
     }
 
@@ -696,7 +696,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://b.com", title: "Swift Reference", faviconURL: nil, spaceID: "space1")
 
         // OR matching: both entries match "swift", but the one with both tokens ranks first
-        let results = db.searchHistory(query: "swift guide", spaceID: "space1")
+        let results = db.searchHistory(query: "swift guide", spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 2)
         XCTAssertEqual(results.first?.url, "https://a.com")
     }
@@ -706,7 +706,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://a.com", title: "Swift", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://b.com", title: "Swift", faviconURL: nil, spaceID: "space2")
 
-        let results = db.searchHistory(query: "swift", spaceID: "space1")
+        let results = db.searchHistory(query: "swift", spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results.first?.url, "https://a.com")
     }
@@ -717,7 +717,7 @@ final class HistoryDatabaseTests: XCTestCase {
             db.recordVisit(url: "https://swift\(i).com", title: "Swift \(i)", faviconURL: nil, spaceID: "space1")
         }
 
-        let results = db.searchHistory(query: "swift", spaceID: "space1", limit: 3)
+        let results = db.searchHistory(query: "swift", spaceIDs: ["space1"], limit: 3)
         XCTAssertEqual(results.count, 3)
     }
 
@@ -725,7 +725,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
 
-        let results = db.searchHistory(query: "", spaceID: "space1")
+        let results = db.searchHistory(query: "", spaceIDs: ["space1"])
         XCTAssertTrue(results.isEmpty)
     }
 
@@ -733,7 +733,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
 
-        let results = db.searchHistory(query: "   ", spaceID: "space1")
+        let results = db.searchHistory(query: "   ", spaceIDs: ["space1"])
         XCTAssertTrue(results.isEmpty)
     }
 
@@ -742,7 +742,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://a.com", title: "Test", faviconURL: nil, spaceID: "space1")
 
         // Should not crash with FTS5 special characters
-        let results = db.searchHistory(query: "test\"*'()", spaceID: "space1")
+        let results = db.searchHistory(query: "test\"*'()", spaceIDs: ["space1"])
         XCTAssertEqual(results.count, 1)
     }
 
@@ -751,7 +751,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://github.com", title: "GitHub", faviconURL: nil, spaceID: "space1")
 
         // Dots caused the original FTS5 syntax error bug — splits into ["github", "com"]
-        let results = db.searchHistory(query: "github.com", spaceID: "space1")
+        let results = db.searchHistory(query: "github.com", spaceIDs: ["space1"])
         XCTAssertFalse(results.isEmpty)
         XCTAssertEqual(results.first?.url, "https://github.com")
     }
@@ -761,7 +761,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://example.com/page", title: "Example Page", faviconURL: nil, spaceID: "space1")
 
         // Splits into ["https", "example"] — both are valid tokens
-        let results = db.searchHistory(query: "https://example", spaceID: "space1")
+        let results = db.searchHistory(query: "https://example", spaceIDs: ["space1"])
         XCTAssertFalse(results.isEmpty)
     }
 
@@ -769,7 +769,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://stackoverflow.com", title: "Stack Overflow", faviconURL: nil, spaceID: "space1")
 
-        let results = db.searchHistory(query: "stack-overflow", spaceID: "space1")
+        let results = db.searchHistory(query: "stack-overflow", spaceIDs: ["space1"])
         XCTAssertFalse(results.isEmpty, "Should match on 'stack' and 'overflow' tokens")
     }
 
@@ -778,7 +778,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://cplusplus.com", title: "C++ Reference test", faviconURL: nil, spaceID: "space1")
 
         // +, ~, ^, {, } are FTS5 operators that must be stripped
-        let results = db.searchHistory(query: "C++ {test}", spaceID: "space1")
+        let results = db.searchHistory(query: "C++ {test}", spaceIDs: ["space1"])
         XCTAssertFalse(results.isEmpty, "Should match on 'C' and 'test' tokens")
     }
 
@@ -787,7 +787,7 @@ final class HistoryDatabaseTests: XCTestCase {
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
 
         // No alphanumeric tokens remain — should return empty, not crash
-        let results = db.searchHistory(query: "...", spaceID: "space1")
+        let results = db.searchHistory(query: "...", spaceIDs: ["space1"])
         XCTAssertTrue(results.isEmpty)
     }
 
@@ -797,7 +797,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
         // Splits into ["site", "github", "com", "repo"] — OR matching means
         // "site" doesn't block results; "github", "com", "repo" all match
-        let results = db.searchHistory(query: "site:github.com/repo", spaceID: "space1")
+        let results = db.searchHistory(query: "site:github.com/repo", spaceIDs: ["space1"])
         XCTAssertFalse(results.isEmpty, "Should match on 'github', 'com', 'repo' tokens")
     }
 
@@ -805,7 +805,7 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "Test", faviconURL: "https://a.com/favicon.ico", spaceID: "space1")
 
-        let results = db.searchHistory(query: "test", spaceID: "space1")
+        let results = db.searchHistory(query: "test", spaceIDs: ["space1"])
         XCTAssertEqual(results.first?.faviconURL, "https://a.com/favicon.ico")
     }
 
@@ -830,17 +830,17 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Alpha page"],
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"]).map(\.title), ["Alpha page"],
                        "the other profile's title must not label this profile's suggestion")
-        XCTAssertEqual(db.recentHistory(spaceID: "B").map(\.title), ["Secret budget"])
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["B"]).map(\.title), ["Secret budget"])
     }
 
     func testBestURLCompletionShowsTheSpacesOwnTitle() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
-        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceID: "A")?.title, "Alpha page")
-        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceID: "B")?.title, "Secret budget")
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceIDs: ["A"])?.title, "Alpha page")
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceIDs: ["B"])?.title, "Secret budget")
     }
 
     func testSearchHistoryShowsTheSpacesOwnTitle() throws {
@@ -848,8 +848,8 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
         // A URL token: both profiles match, each under its own title.
-        XCTAssertEqual(db.searchHistory(query: "mail", spaceID: "A").map(\.title), ["Alpha page"])
-        XCTAssertEqual(db.searchHistory(query: "mail", spaceID: "B").map(\.title), ["Secret budget"])
+        XCTAssertEqual(db.searchHistory(query: "mail", spaceIDs: ["A"]).map(\.title), ["Alpha page"])
+        XCTAssertEqual(db.searchHistory(query: "mail", spaceIDs: ["B"]).map(\.title), ["Secret budget"])
     }
 
     /// The leak proper: a word only the *other* profile's title has must not
@@ -858,9 +858,9 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
-        XCTAssertTrue(db.searchHistory(query: "budget", spaceID: "A").isEmpty,
+        XCTAssertTrue(db.searchHistory(query: "budget", spaceIDs: ["A"]).isEmpty,
                       "this profile never saw a page called that")
-        XCTAssertEqual(db.searchHistory(query: "budget", spaceID: "B").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "budget", spaceIDs: ["B"]).map(\.title),
                        ["Secret budget"])
     }
 
@@ -871,10 +871,10 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Inbox", otherTitle: "(3) Inbox - you@work")
 
-        XCTAssertEqual(db.searchHistory(query: "inbox", spaceID: "A").map(\.title), ["Inbox"])
-        XCTAssertTrue(db.searchHistory(query: "work", spaceID: "A").isEmpty,
+        XCTAssertEqual(db.searchHistory(query: "inbox", spaceIDs: ["A"]).map(\.title), ["Inbox"])
+        XCTAssertTrue(db.searchHistory(query: "work", spaceIDs: ["A"]).isEmpty,
                       "the personal profile never saw a page called that")
-        XCTAssertEqual(db.searchHistory(query: "work", spaceID: "B").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "work", spaceIDs: ["B"]).map(\.title),
                        ["(3) Inbox - you@work"])
     }
 
@@ -890,10 +890,10 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://news.example/", title: "Night Edition",
                       visitTitle: "Night Edition", spaceID: "B", visitTime: now - 100)
 
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Evening Edition"])
-        XCTAssertEqual(db.searchHistory(query: "news", spaceID: "A").map(\.title),
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"]).map(\.title), ["Evening Edition"])
+        XCTAssertEqual(db.searchHistory(query: "news", spaceIDs: ["A"]).map(\.title),
                        ["Evening Edition"])
-        XCTAssertEqual(db.bestURLCompletion(prefix: "news", spaceID: "A")?.title,
+        XCTAssertEqual(db.bestURLCompletion(prefix: "news", spaceIDs: ["A"])?.title,
                        "Evening Edition")
     }
 
@@ -908,9 +908,9 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://old.example/", title: "Legacy Title",
                       spaceID: "A", visitTime: now - 100)
 
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Legacy Title"])
-        XCTAssertEqual(db.searchHistory(query: "old", spaceID: "A").map(\.title), ["Legacy Title"])
-        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceID: "A")?.title, "Legacy Title")
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"]).map(\.title), ["Legacy Title"])
+        XCTAssertEqual(db.searchHistory(query: "old", spaceIDs: ["A"]).map(\.title), ["Legacy Title"])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceIDs: ["A"])?.title, "Legacy Title")
     }
 
     /// The label is this space's latest *usable* title, not its latest visit: a
@@ -929,9 +929,9 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://old.example/", title: "Own Title",
                       visitTitle: "", spaceID: "A", visitTime: now - 100)
 
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Own Title"])
-        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceID: "A")?.title, "Own Title")
-        XCTAssertEqual(db.searchHistory(query: "own", spaceID: "A").map(\.title), ["Own Title"])
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"]).map(\.title), ["Own Title"])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceIDs: ["A"])?.title, "Own Title")
+        XCTAssertEqual(db.searchHistory(query: "own", spaceIDs: ["A"]).map(\.title), ["Own Title"])
     }
 
     /// Accepted for the palette: a row is a **URL**, so the visit that earned
@@ -950,7 +950,7 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://mail.example/", title: "(3) Inbox - you@work",
                       visitTitle: "(3) Inbox - you@work", spaceID: "work", visitTime: now - 100)
 
-        XCTAssertEqual(db.searchHistory(query: "inbox", spaceID: "personal").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "inbox", spaceIDs: ["personal"]).map(\.title),
                        ["Sign in"],
                        "matched through the older own visit, labelled by the newer one")
     }
@@ -968,13 +968,13 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://mail.example/", title: "(3) Inbox - you@work",
                       visitTitle: "(3) Inbox - you@work", spaceID: "work", visitTime: now - 100)
 
-        XCTAssertEqual(db.recentHistory(spaceID: "personal").map(\.title), [""],
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["personal"]).map(\.title), [""],
                        "no own title and a shared one that may be the work profile's")
-        XCTAssertEqual(db.searchHistory(query: "mail", spaceID: "personal").map(\.title), [""])
-        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceID: "personal")?.title, "")
-        XCTAssertTrue(db.searchHistory(query: "work", spaceID: "personal").isEmpty,
+        XCTAssertEqual(db.searchHistory(query: "mail", spaceIDs: ["personal"]).map(\.title), [""])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceIDs: ["personal"])?.title, "")
+        XCTAssertTrue(db.searchHistory(query: "work", spaceIDs: ["personal"]).isEmpty,
                       "and the same guard keeps the work title out of the matcher")
-        XCTAssertEqual(db.recentHistory(spaceID: "work").map(\.title), ["(3) Inbox - you@work"],
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["work"]).map(\.title), ["(3) Inbox - you@work"],
                        "the profile the title belongs to still sees it")
     }
 
@@ -989,12 +989,12 @@ final class HistoryDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
-        XCTAssertEqual(db.searchHistory(query: "alpha", spaceID: "A").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "alpha", spaceIDs: ["A"]).map(\.title),
                        ["Alpha page"],
                        "found through this space's own title, and labelled with it")
-        XCTAssertTrue(db.searchHistory(query: "alpha", spaceID: "B").isEmpty,
+        XCTAssertTrue(db.searchHistory(query: "alpha", spaceIDs: ["B"]).isEmpty,
                       "B never saw a page called that — the index is per space")
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.title), ["Alpha page"])
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"]).map(\.title), ["Alpha page"])
     }
 
     /// FTS5 reserves AND / OR / NOT as query operators, so the unquoted
@@ -1007,7 +1007,7 @@ final class HistoryDatabaseTests: XCTestCase {
                        faviconURL: nil, spaceID: "A")
 
         for query in ["NOT found", "OR found", "AND found", "NEAR found", "not FOUND"] {
-            XCTAssertEqual(db.searchHistory(query: query, spaceID: "A").map(\.url),
+            XCTAssertEqual(db.searchHistory(query: query, spaceIDs: ["A"]).map(\.url),
                            ["https://found.example/page"], "searchHistory(\(query))")
             XCTAssertEqual(db.searchVisits(query: query, spaceIDs: ["A"], limit: 10).map(\.url),
                            ["https://found.example/page"], "searchVisits(\(query))")
@@ -1023,10 +1023,10 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://swiftshop.example/", title: "Swiftshop",
                       visitTitle: "Swiftshop", spaceID: "B", visitTime: now - 100)
 
-        XCTAssertTrue(db.recentHistory(spaceID: "A").isEmpty)
-        XCTAssertTrue(db.searchHistory(query: "swiftshop", spaceID: "A").isEmpty,
+        XCTAssertTrue(db.recentHistory(spaceIDs: ["A"]).isEmpty)
+        XCTAssertTrue(db.searchHistory(query: "swiftshop", spaceIDs: ["A"]).isEmpty,
                       "matching by URL text is not a licence to cross profiles")
-        XCTAssertNil(db.bestURLCompletion(prefix: "swiftshop", spaceID: "A"))
+        XCTAssertNil(db.bestURLCompletion(prefix: "swiftshop", spaceIDs: ["A"]))
     }
 
     /// Nothing about ordering or limiting moved: the rows are still picked and
@@ -1040,10 +1040,10 @@ final class HistoryDatabaseTests: XCTestCase {
                           visitTime: now - Double(100 - index))
         }
 
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.url),
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"]).map(\.url),
                        ["https://e.example/", "https://d.example/", "https://c.example/",
                         "https://b.example/", "https://a.example/"])
-        XCTAssertEqual(db.recentHistory(spaceID: "A", limit: 3).map(\.url),
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"], limit: 3).map(\.url),
                        ["https://e.example/", "https://d.example/", "https://c.example/"])
     }
 
@@ -1066,10 +1066,10 @@ final class HistoryDatabaseTests: XCTestCase {
 
         let expected = ["https://zzz.example/swift", "https://mmm.example/swift",
                         "https://aaa.example/swift"]
-        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A").map(\.url), expected)
-        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A", limit: 2).map(\.url),
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceIDs: ["A"]).map(\.url), expected)
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceIDs: ["A"], limit: 2).map(\.url),
                        ["https://zzz.example/swift", "https://mmm.example/swift"])
-        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A", limit: 1).map(\.url),
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceIDs: ["A"], limit: 1).map(\.url),
                        ["https://zzz.example/swift"])
     }
 
@@ -1084,9 +1084,9 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://second.example/", title: "Second",
                       visitTitle: "Second", spaceID: "A", visitTime: now - 100)
 
-        XCTAssertEqual(db.recentHistory(spaceID: "A").map(\.url),
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"]).map(\.url),
                        ["https://second.example/", "https://first.example/"])
-        XCTAssertEqual(db.recentHistory(spaceID: "A", limit: 1).map(\.url),
+        XCTAssertEqual(db.recentHistory(spaceIDs: ["A"], limit: 1).map(\.url),
                        ["https://second.example/"])
     }
 
@@ -1101,7 +1101,7 @@ final class HistoryDatabaseTests: XCTestCase {
         try seedVisit(db, url: "https://other.example/swift", title: "Cooking",
                       visitTitle: "Cooking", spaceID: "A", visitTime: now - 100)
 
-        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A").map(\.url),
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceIDs: ["A"]).map(\.url),
                        ["https://swift.example/", "https://other.example/swift"])
     }
 
@@ -1117,7 +1117,7 @@ final class HistoryDatabaseTests: XCTestCase {
                           visitTitle: "Swift bravo", spaceID: "A", visitTime: now - Double(300 - i))
         }
 
-        XCTAssertEqual(db.searchHistory(query: "swift", spaceID: "A").map(\.url),
+        XCTAssertEqual(db.searchHistory(query: "swift", spaceIDs: ["A"]).map(\.url),
                        ["https://two.example/", "https://one.example/"],
                        "5 visits outranks 1 once the FTS rank ties")
     }
@@ -1140,11 +1140,158 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(try sharedIndexURLs(db, matching: "zebra"),
                        ["https://two.example/", "https://one.example/"],
                        "premise: the shorter, B-titled row is the better-ranked candidate")
-        XCTAssertEqual(db.searchHistory(query: "zebra", spaceID: "A", limit: 1).map(\.url),
+        XCTAssertEqual(db.searchHistory(query: "zebra", spaceIDs: ["A"], limit: 1).map(\.url),
                        ["https://one.example/"],
                        "the better-ranked candidate is dropped before LIMIT, not after")
-        XCTAssertEqual(db.searchHistory(query: "zebra", spaceID: "A").map(\.url),
+        XCTAssertEqual(db.searchHistory(query: "zebra", spaceIDs: ["A"]).map(\.url),
                        ["https://one.example/"])
+    }
+
+    // MARK: - Palette profile scope (TASK-209)
+
+    /// Two profiles over the same URLs: work is the spaces `W1`, `W2` and its
+    /// Quick Detour scope `WQ`; home is `H1`. The palette's lookups take the
+    /// profile's scope, as the History page does.
+    private let workScope = ["W1", "W2", "WQ"]
+    private let homeScope = ["H1"]
+
+    func testThePaletteLookupsReadEverySpaceOfTheProfile() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://mail.example/", title: "Acme mail", visitTitle: "Acme mail",
+                      spaceID: "W2", visitTime: now - 300)
+        try seedVisit(db, url: "https://specs.example/", title: "Quarterly spec", visitTitle: "Quarterly spec",
+                      spaceID: "WQ", visitTime: now - 200)
+        try seedVisit(db, url: "https://garden.example/", title: "Garden club", visitTitle: "Garden club",
+                      spaceID: "H1", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceIDs: workScope).map(\.url),
+                       ["https://specs.example/", "https://mail.example/"],
+                       "another space's and the Quick Detour's visits, newest first; never home's")
+        XCTAssertEqual(db.searchHistory(query: "acme", spaceIDs: workScope).map(\.title), ["Acme mail"])
+        XCTAssertEqual(db.searchHistory(query: "quarterly", spaceIDs: workScope).map(\.url),
+                       ["https://specs.example/"], "through the Quick Detour visit's own title")
+        XCTAssertEqual(db.bestURLCompletion(prefix: "specs", spaceIDs: workScope)?.url, "https://specs.example/")
+        XCTAssertEqual(db.bestHostCompletions(prefix: "mai", spaceIDs: workScope, limit: 3).map(\.title),
+                       ["Acme mail"])
+
+        XCTAssertTrue(db.searchHistory(query: "garden", spaceIDs: workScope).isEmpty)
+        XCTAssertNil(db.bestURLCompletion(prefix: "garden", spaceIDs: workScope))
+        XCTAssertTrue(db.bestHostCompletions(prefix: "gar", spaceIDs: workScope, limit: 3).isEmpty)
+        XCTAssertEqual(db.recentHistory(spaceIDs: homeScope).map(\.url), ["https://garden.example/"])
+        XCTAssertTrue(db.searchHistory(query: "acme", spaceIDs: homeScope).isEmpty)
+    }
+
+    /// The same URL in both profiles, the home visit last, so the shared row
+    /// and its FTS entry carry the home title. Each profile is labelled and
+    /// matched by its own latest titled visit, whichever of its spaces made it.
+    func testTwoProfilesOverTheSameURLEachSeeOnlyTheirOwnTitles() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        let url = "https://mail.example/"
+        try seedVisit(db, url: url, title: "Acme inbox", visitTitle: "Acme inbox",
+                      spaceID: "W1", visitTime: now - 400)
+        try seedVisit(db, url: url, title: "Acme mail (2)", visitTitle: "Acme mail (2)",
+                      spaceID: "W2", visitTime: now - 300)
+        try seedVisit(db, url: url, title: "Family mail", visitTitle: "Family mail",
+                      spaceID: "H1", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceIDs: workScope).map(\.title), ["Acme mail (2)"],
+                       "the profile's latest titled visit, from its other space")
+        XCTAssertEqual(db.recentHistory(spaceIDs: homeScope).map(\.title), ["Family mail"])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceIDs: workScope)?.title, "Acme mail (2)")
+        XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceIDs: homeScope)?.title, "Family mail")
+        XCTAssertEqual(db.bestHostCompletions(prefix: "mail", spaceIDs: workScope, limit: 3).map(\.title),
+                       ["Acme mail (2)"])
+        XCTAssertEqual(db.bestHostCompletions(prefix: "mail", spaceIDs: homeScope, limit: 3).map(\.title),
+                       ["Family mail"])
+
+        XCTAssertEqual(db.searchHistory(query: "inbox", spaceIDs: workScope).map(\.title), ["Acme mail (2)"],
+                       "W1's older title matches, the profile's latest labels")
+        XCTAssertTrue(db.searchHistory(query: "family", spaceIDs: workScope).isEmpty,
+                      "the home title is the shared one, and still never matches in work")
+        XCTAssertTrue(db.searchHistory(query: "acme", spaceIDs: homeScope).isEmpty,
+                      "nor a work title in home")
+        XCTAssertEqual(db.searchHistory(query: "mail", spaceIDs: homeScope).map(\.title), ["Family mail"])
+    }
+
+    /// The legacy fallback asks whether anyone *outside the scope* visited the
+    /// URL. A sibling space of the same profile is not outside it: under the
+    /// TASK-94 space scope it was, and the profile's own legacy title was lost.
+    func testALegacyTitleSharedOnlyWithinTheProfileStillLabelsAndMatches() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://old.example/", title: "Legacy ledger", spaceID: "W1", visitTime: now - 200)
+        try seedVisit(db, url: "https://old.example/", title: "Legacy ledger", spaceID: "W2", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceIDs: workScope).map(\.title), ["Legacy ledger"])
+        XCTAssertEqual(db.searchHistory(query: "ledger", spaceIDs: workScope).map(\.title), ["Legacy ledger"])
+        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceIDs: workScope)?.title, "Legacy ledger")
+
+        // Once another profile has visited it, the shared title may be theirs.
+        try seedVisit(db, url: "https://old.example/", title: "Someone else's", visitTitle: "Someone else's",
+                      spaceID: "H1", visitTime: now - 50)
+        XCTAssertEqual(db.recentHistory(spaceIDs: workScope).map(\.title), [""])
+        XCTAssertTrue(db.searchHistory(query: "ledger", spaceIDs: workScope).isEmpty)
+        XCTAssertTrue(db.searchHistory(query: "someone", spaceIDs: workScope).isEmpty)
+        XCTAssertEqual(db.bestURLCompletion(prefix: "old", spaceIDs: workScope)?.title, "")
+    }
+
+    /// Frecency sums over the profile's visits, whichever space made them, and
+    /// never over another profile's.
+    func testCompletionFrecencySumsTheProfilesVisitsOnly() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        for i in 0..<2 {
+            try seedVisit(db, url: "https://site.example/one", visitTitle: "One", spaceID: "W1",
+                          visitTime: now - Double(500 + i))
+        }
+        for space in ["W1", "W2", "WQ"] {
+            try seedVisit(db, url: "https://site.example/two", visitTitle: "Two", spaceID: space,
+                          visitTime: now - 600)
+        }
+        for i in 0..<10 {
+            try seedVisit(db, url: "https://site.example/one", visitTitle: "One", spaceID: "H1",
+                          visitTime: now - Double(700 + i))
+        }
+
+        XCTAssertEqual(db.bestURLCompletion(prefix: "site.example/", spaceIDs: ["W1"])?.url,
+                       "https://site.example/one", "premise: within one space, /one leads")
+        XCTAssertEqual(db.bestURLCompletion(prefix: "site.example/", spaceIDs: workScope)?.url,
+                       "https://site.example/two", "three visits across the profile beat two")
+        XCTAssertEqual(db.bestURLCompletion(prefix: "site.example/", spaceIDs: homeScope)?.url,
+                       "https://site.example/one")
+    }
+
+    /// One row per URL across the profile, ordered by its newest visit in any
+    /// of the profile's spaces, and the limit cuts that order.
+    func testRecentHistoryMergesTheProfilesSpacesNewestFirst() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://a.example/", visitTitle: "A", spaceID: "W1", visitTime: now - 500)
+        try seedVisit(db, url: "https://b.example/", visitTitle: "B", spaceID: "W2", visitTime: now - 400)
+        try seedVisit(db, url: "https://a.example/", visitTitle: "A again", spaceID: "W2", visitTime: now - 300)
+        try seedVisit(db, url: "https://c.example/", visitTitle: "C", spaceID: "H1", visitTime: now - 250)
+        try seedVisit(db, url: "https://d.example/", visitTitle: "D", spaceID: "WQ", visitTime: now - 200)
+        try seedVisit(db, url: "https://b.example/", visitTitle: "B", spaceID: "H1", visitTime: now - 100)
+
+        XCTAssertEqual(db.recentHistory(spaceIDs: workScope).map(\.url),
+                       ["https://d.example/", "https://a.example/", "https://b.example/"],
+                       "b's newest visit is home's and does not move it up")
+        XCTAssertEqual(db.recentHistory(spaceIDs: workScope).map(\.title), ["D", "A again", "B"])
+        XCTAssertEqual(db.recentHistory(spaceIDs: workScope, limit: 2).map(\.url),
+                       ["https://d.example/", "https://a.example/"])
+    }
+
+    func testAnEmptyScopeFindsNothing() throws {
+        let db = try makeDatabase()
+        let now = Date().timeIntervalSince1970
+        try seedVisit(db, url: "https://mail.example/", visitTitle: "Mail", spaceID: "W1", visitTime: now - 100)
+
+        XCTAssertTrue(db.recentHistory(spaceIDs: []).isEmpty)
+        XCTAssertTrue(db.searchHistory(query: "mail", spaceIDs: []).isEmpty)
+        XCTAssertNil(db.bestURLCompletion(prefix: "mail", spaceIDs: []))
+        XCTAssertTrue(db.bestHostCompletions(prefix: "mail", spaceIDs: [], limit: 3).isEmpty)
     }
 
     // MARK: - faviconURL(for:)
@@ -1984,7 +2131,7 @@ final class HistoryDatabaseTests: XCTestCase {
         // Preconditions: everything below finds it before the delete.
         XCTAssertEqual(try sharedIndexURLs(db, matching: "vanishing").sorted(),
                        ["https://gone.com", "https://stays.com"])
-        XCTAssertNotNil(db.bestURLCompletion(prefix: "gone", spaceID: "A"))
+        XCTAssertNotNil(db.bestURLCompletion(prefix: "gone", spaceIDs: ["A"]))
         XCTAssertNotNil(db.faviconURLInAnyProfile(for: "https://gone.com"))
 
         let result = awaitDeletion { db.deleteVisits(ids: [visit], spaceIDs: ["A"], completion: $0) }
@@ -1998,7 +2145,7 @@ final class HistoryDatabaseTests: XCTestCase {
                        "FTS follows the synchronized historyURL delete")
         XCTAssertTrue(db.searchVisits(query: "vanishing", spaceIDs: ["A"], limit: 10)
             .contains { $0.url == "https://gone.com" } == false)
-        XCTAssertNil(db.bestURLCompletion(prefix: "gone", spaceID: "A"))
+        XCTAssertNil(db.bestURLCompletion(prefix: "gone", spaceIDs: ["A"]))
         XCTAssertNil(db.faviconURLInAnyProfile(for: "https://gone.com"))
         try db.dbQueue.read { conn in
             XCTAssertEqual(try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historySearch"), 1,

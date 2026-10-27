@@ -23,7 +23,7 @@ final class SuggestionProviderTests: XCTestCase {
         db.recordVisit(url: "https://b.com", title: "B", faviconURL: nil, spaceID: "space1")
 
         // Use the database directly since SuggestionProvider uses the shared singleton
-        let results = db.recentHistory(spaceID: "space1")
+        let results = db.recentHistory(spaceIDs: ["space1"])
         let items = results.map { SuggestionItem.historyResult(url: $0.url, title: $0.title, faviconURL: $0.faviconURL) }
 
         XCTAssertEqual(items.count, 2)
@@ -129,7 +129,7 @@ final class SuggestionProviderTests: XCTestCase {
         db.recordVisit(url: "https://b.com", title: "B", faviconURL: nil, spaceID: "space1")
 
         let tabURLs: Set<String> = ["https://a.com"]
-        let history = db.searchHistory(query: "com", spaceID: "space1")
+        let history = db.searchHistory(query: "com", spaceIDs: ["space1"])
         let filtered = history.filter { !tabURLs.contains($0.url) }
 
         // a.com should be filtered out because it's an open tab
@@ -149,7 +149,7 @@ final class SuggestionProviderTests: XCTestCase {
             SuggestionProvider.TabInfo(tabID: UUID(), spaceID: UUID(), url: "https://tab.com/page", title: "Tab Page", favicon: nil),
         ]
         // "page" is not a URL prefix of either entry, so there is no top hit
-        let local = provider.localSuggestions(for: "page", spaceID: "space1", tabs: tabs, allowAutocomplete: true)
+        let local = provider.localSuggestions(for: "page", historySpaceIDs: ["space1"], tabs: tabs, allowAutocomplete: true)
         let items = local.items
 
         XCTAssertNil(local.inlineCompletion)
@@ -175,7 +175,7 @@ final class SuggestionProviderTests: XCTestCase {
         let db = try makeDatabase()
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "nomatch", spaceID: "space1", tabs: [], allowAutocomplete: true)
+        let local = provider.localSuggestions(for: "nomatch", historySpaceIDs: ["space1"], tabs: [], allowAutocomplete: true)
 
         XCTAssertEqual(local.items.count, 1)
         XCTAssertNil(local.inlineCompletion)
@@ -191,7 +191,7 @@ final class SuggestionProviderTests: XCTestCase {
         db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: [], allowAutocomplete: true)
+        let local = provider.localSuggestions(for: "youtu", historySpaceIDs: ["space1"], tabs: [], allowAutocomplete: true)
         let items = local.items
 
         XCTAssertEqual(local.inlineCompletion, "youtube.com")
@@ -220,7 +220,7 @@ final class SuggestionProviderTests: XCTestCase {
         ]
         // A path in the query: URL-level completion (a bare host prefix
         // completes to the host instead, see the TASK-182 tests).
-        let local = provider.localSuggestions(for: "github.com/f", spaceID: "space1", tabs: tabs, allowAutocomplete: true)
+        let local = provider.localSuggestions(for: "github.com/f", historySpaceIDs: ["space1"], tabs: tabs, allowAutocomplete: true)
         let items = local.items
 
         XCTAssertEqual(local.inlineCompletion, "github.com/foo")
@@ -242,7 +242,7 @@ final class SuggestionProviderTests: XCTestCase {
         db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: [], allowAutocomplete: false)
+        let local = provider.localSuggestions(for: "youtu", historySpaceIDs: ["space1"], tabs: [], allowAutocomplete: false)
 
         XCTAssertNil(local.inlineCompletion)
         guard case .searchInput = local.items[0] else {
@@ -265,7 +265,7 @@ final class SuggestionProviderTests: XCTestCase {
         ]
         // The only prefix match is the current tab, so it must not become the top hit.
         let local = provider.localSuggestions(
-            for: "github.com/f", spaceID: "space1", tabs: tabs,
+            for: "github.com/f", historySpaceIDs: ["space1"], tabs: tabs,
             allowAutocomplete: true, currentTabID: tabID)
         let items = local.items
 
@@ -302,7 +302,7 @@ final class SuggestionProviderTests: XCTestCase {
         seedTwoProfileVisit(db)
         let provider = makeProvider(db: db)
 
-        let items = provider.defaultSuggestions(spaceID: "personal", tabs: [])
+        let items = provider.defaultSuggestions(historySpaceIDs: ["personal"], tabs: [])
 
         guard case .historyResult(_, let title, _) = items.first else {
             return XCTFail("Expected a history suggestion")
@@ -315,7 +315,7 @@ final class SuggestionProviderTests: XCTestCase {
         seedTwoProfileVisit(db)
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "mail", spaceID: "personal", tabs: [],
+        let local = provider.localSuggestions(for: "mail", historySpaceIDs: ["personal"], tabs: [],
                                               allowAutocomplete: true)
 
         XCTAssertEqual(local.inlineCompletion, "mail.example")
@@ -331,7 +331,7 @@ final class SuggestionProviderTests: XCTestCase {
         seedTwoProfileVisit(db)
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "budget", spaceID: "personal", tabs: [],
+        let local = provider.localSuggestions(for: "budget", historySpaceIDs: ["personal"], tabs: [],
                                               allowAutocomplete: true)
 
         XCTAssertFalse(local.items.contains {
@@ -339,12 +339,107 @@ final class SuggestionProviderTests: XCTestCase {
             return false
         }, "a word only the work profile's title has must not surface the page here")
         // The work profile does find it, under its own title.
-        let work = provider.localSuggestions(for: "budget", spaceID: "work", tabs: [],
+        let work = provider.localSuggestions(for: "budget", historySpaceIDs: ["work"], tabs: [],
                                              allowAutocomplete: true)
         XCTAssertTrue(work.items.contains {
             if case .historyResult(_, let title, _) = $0 { return title == "Secret budget" }
             return false
         })
+    }
+
+    // MARK: - Profile scope (TASK-209)
+
+    /// Two profiles over overlapping URLs, recorded through `recordVisit` in
+    /// order: work is `W1`, `W2` and its Quick Detour scope `WQ`, home is `H1`,
+    /// and home visits the shared root last, so the shared title is home's.
+    private let workScope = ["W1", "W2", "WQ"]
+    private let homeScope = ["H1"]
+
+    private func seedTwoProfiles(_ db: HistoryDatabase) {
+        let visits = [
+            ("W1", "https://mail.example/inbox", "Acme inbox"),
+            ("WQ", "https://mail.example/spec", "Acme spec"),
+            ("W2", "https://mail.example/", "Acme mail"),
+            ("H1", "https://mail.example/family", "Family photos"),
+            ("H1", "https://mail.example/", "Family mail"),
+        ]
+        for (spaceID, url, title) in visits {
+            let done = expectation(description: "record \(url) in \(spaceID)")
+            db.recordVisit(url: url, title: title, faviconURL: nil, spaceID: spaceID) { _ in done.fulfill() }
+            wait(for: [done], timeout: 10)
+        }
+    }
+
+    private func historyRows(_ items: [SuggestionItem]) -> [(url: String, title: String)] {
+        items.compactMap {
+            if case .historyResult(let url, let title, _) = $0 { return (url, title) }
+            return nil
+        }
+    }
+
+    func testEveryHistoryRowComesFromThePalettesProfile() throws {
+        let db = try makeDatabase()
+        seedTwoProfiles(db)
+        let provider = makeProvider(db: db)
+
+        let work = provider.localSuggestions(for: "mail", historySpaceIDs: workScope, tabs: [],
+                                             allowAutocomplete: true)
+        XCTAssertEqual(work.inlineCompletion, "mail.example")
+        let workRows = historyRows(work.items)
+        XCTAssertEqual(workRows.first?.url, "https://mail.example/")
+        XCTAssertEqual(workRows.first?.title, "Acme mail", "the top hit wears the work title, not the shared one")
+        XCTAssertEqual(Set(workRows.map(\.url)),
+                       ["https://mail.example/", "https://mail.example/inbox", "https://mail.example/spec"],
+                       "every space of the profile and its Quick Detours; never home's page")
+        XCTAssertFalse(workRows.contains { $0.title.contains("Family") })
+
+        let home = provider.localSuggestions(for: "mail", historySpaceIDs: homeScope, tabs: [],
+                                             allowAutocomplete: true)
+        let homeRows = historyRows(home.items)
+        XCTAssertEqual(homeRows.first?.title, "Family mail")
+        XCTAssertEqual(Set(homeRows.map(\.url)), ["https://mail.example/", "https://mail.example/family"])
+        XCTAssertFalse(homeRows.contains { $0.title.contains("Acme") })
+    }
+
+    func testATitleWordFromAnotherSpaceOfTheProfileIsFound() throws {
+        let db = try makeDatabase()
+        seedTwoProfiles(db)
+        let provider = makeProvider(db: db)
+
+        let work = provider.localSuggestions(for: "acme", historySpaceIDs: workScope, tabs: [],
+                                             allowAutocomplete: true)
+        XCTAssertEqual(Set(historyRows(work.items).map(\.url)),
+                       ["https://mail.example/", "https://mail.example/inbox", "https://mail.example/spec"])
+        XCTAssertTrue(historyRows(provider.localSuggestions(for: "acme", historySpaceIDs: homeScope, tabs: [],
+                                                            allowAutocomplete: true).items).isEmpty)
+        XCTAssertTrue(historyRows(provider.localSuggestions(for: "family", historySpaceIDs: workScope, tabs: [],
+                                                            allowAutocomplete: true).items).isEmpty,
+                      "the shared title is home's, and it still finds nothing in work")
+    }
+
+    func testTheEmptyFieldListIsTheProfilesRecentHistory() throws {
+        let db = try makeDatabase()
+        seedTwoProfiles(db)
+        let provider = makeProvider(db: db)
+
+        XCTAssertEqual(historyRows(provider.defaultSuggestions(historySpaceIDs: workScope, tabs: [])).map(\.url),
+                       ["https://mail.example/", "https://mail.example/spec", "https://mail.example/inbox"])
+        XCTAssertEqual(historyRows(provider.defaultSuggestions(historySpaceIDs: workScope, tabs: [])).first?.title,
+                       "Acme mail")
+        XCTAssertEqual(historyRows(provider.defaultSuggestions(historySpaceIDs: homeScope, tabs: [])).map(\.url),
+                       ["https://mail.example/", "https://mail.example/family"])
+    }
+
+    /// A Private window's palette (and a quarantine's) has no history scope.
+    func testAnEmptyHistoryScopeOffersNoHistory() throws {
+        let db = try makeDatabase()
+        seedTwoProfiles(db)
+        let provider = makeProvider(db: db)
+
+        let local = provider.localSuggestions(for: "mail", historySpaceIDs: [], tabs: [], allowAutocomplete: true)
+        XCTAssertEqual(local.items, [.searchInput(text: "mail")])
+        XCTAssertNil(local.inlineCompletion)
+        XCTAssertEqual(provider.defaultSuggestions(historySpaceIDs: [], tabs: []), [])
     }
 
     // MARK: - Merge ordering
@@ -399,7 +494,7 @@ final class SuggestionProviderTests: XCTestCase {
         let provider = makeProvider(db: try makeDatabase())
         let tabs = videoTabs.map { tab($0) }
 
-        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: tabs,
+        let local = provider.localSuggestions(for: "youtu", historySpaceIDs: ["space1"], tabs: tabs,
                                               allowAutocomplete: true)
 
         XCTAssertEqual(local.inlineCompletion, "youtube.com")
@@ -420,7 +515,7 @@ final class SuggestionProviderTests: XCTestCase {
         let root = tab("https://www.youtube.com/", title: "YouTube")
         let tabs = videoTabs.map { tab($0) } + [root]
 
-        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: tabs,
+        let local = provider.localSuggestions(for: "you", historySpaceIDs: ["space1"], tabs: tabs,
                                               allowAutocomplete: true)
 
         XCTAssertEqual(local.inlineCompletion, "youtube.com")
@@ -436,7 +531,7 @@ final class SuggestionProviderTests: XCTestCase {
         let provider = makeProvider(db: try makeDatabase())
         let current = tab("https://www.youtube.com/watch?v=1")
 
-        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [current],
+        let local = provider.localSuggestions(for: "you", historySpaceIDs: ["space1"], tabs: [current],
                                               allowAutocomplete: true, currentTabID: current.tabID)
 
         XCTAssertEqual(local.inlineCompletion, "youtube.com")
@@ -456,7 +551,7 @@ final class SuggestionProviderTests: XCTestCase {
                        spaceID: "space1", typed: true)
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+        let local = provider.localSuggestions(for: "you", historySpaceIDs: ["space1"], tabs: [],
                                               allowAutocomplete: true)
 
         XCTAssertEqual(local.inlineCompletion, "youtube.com")
@@ -480,7 +575,7 @@ final class SuggestionProviderTests: XCTestCase {
         db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+        let local = provider.localSuggestions(for: "you", historySpaceIDs: ["space1"], tabs: [],
                                               allowAutocomplete: true)
 
         XCTAssertEqual(local.items[0],
@@ -496,7 +591,7 @@ final class SuggestionProviderTests: XCTestCase {
         db.recordVisit(url: "https://yourstore.com/", title: "Your Store", faviconURL: nil, spaceID: "other")
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+        let local = provider.localSuggestions(for: "you", historySpaceIDs: ["space1"], tabs: [],
                                               allowAutocomplete: true)
 
         XCTAssertNil(local.inlineCompletion)
@@ -512,7 +607,7 @@ final class SuggestionProviderTests: XCTestCase {
         }
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "you", spaceID: "space1", tabs: [],
+        let local = provider.localSuggestions(for: "you", historySpaceIDs: ["space1"], tabs: [],
                                               allowAutocomplete: false)
 
         XCTAssertNil(local.inlineCompletion)
@@ -529,7 +624,7 @@ final class SuggestionProviderTests: XCTestCase {
         }
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "g", spaceID: "space1", tabs: [],
+        let local = provider.localSuggestions(for: "g", historySpaceIDs: ["space1"], tabs: [],
                                               allowAutocomplete: true)
 
         let hostRows = local.items.filter {
@@ -557,7 +652,7 @@ final class SuggestionProviderTests: XCTestCase {
         db.recordVisit(url: "https://www.youtube.com/watch?v=1", title: "Video", faviconURL: nil, spaceID: "space1")
         let provider = makeProvider(db: db)
 
-        let local = provider.localSuggestions(for: "youtube.com/w", spaceID: "space1", tabs: [],
+        let local = provider.localSuggestions(for: "youtube.com/w", historySpaceIDs: ["space1"], tabs: [],
                                               allowAutocomplete: true)
 
         XCTAssertEqual(local.inlineCompletion, "youtube.com/watch?v=1")
@@ -570,7 +665,7 @@ final class SuggestionProviderTests: XCTestCase {
         let tabs = videoTabs.map { tab($0) }
 
         let instant = SuggestionProvider.tabTopHit(for: "youtu", tabs: tabs, currentTabID: nil)
-        let local = provider.localSuggestions(for: "youtu", spaceID: "space1", tabs: tabs,
+        let local = provider.localSuggestions(for: "youtu", historySpaceIDs: ["space1"], tabs: tabs,
                                               allowAutocomplete: true)
 
         XCTAssertEqual(instant?.inlineCompletion, local.inlineCompletion)

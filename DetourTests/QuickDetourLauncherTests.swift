@@ -63,20 +63,43 @@ final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertTrue(palette.isDescendant(of: try XCTUnwrap(panel.contentView)))
         XCTAssertTrue(palette.profile === profile)
         XCTAssertNil(palette.tabStore, "no open tabs: switching to one would open no Quick Detour")
-        XCTAssertEqual(palette.activeSpaceID, QuickDetour.historySpaceID(forProfileID: profile.id))
+        XCTAssertEqual(palette.historySpaceIDs, PaletteTabScope.historySpaceIDs(profile: profile, in: .shared),
+                       "the profile's history, as its History page has it (TASK-209)")
         XCTAssertEqual(QuickDetourWindowController.openControllers.count, windowsBefore, "no window yet")
         XCTAssertEqual(TabStore.shared.quickDetourTabs.count, tabsBefore, "no page yet")
     }
 
-    func testThePaletteSuggestsFromTheSourceSpaceOfTheSameProfile() throws {
+    /// TASK-209: the whole profile's history, whichever window it was asked
+    /// from; never the source window's profile's when that is another one.
+    func testThePaletteSuggestsFromTheWholeProfile() throws {
         let profile = makeProfile()
+        let other = makeProfile()
         let space = TabStore.shared.addSpace(name: "Launcher Source", emoji: "L", colorHex: "007AFF",
                                              profileID: profile.id)
-        defer { TabStore.shared.forceRemoveSpace(id: space.id) }
+        let sibling = TabStore.shared.addSpace(name: "Launcher Sibling", emoji: "S", colorHex: "007AFF",
+                                               profileID: profile.id)
+        let otherSpace = TabStore.shared.addSpace(name: "Launcher Other", emoji: "O", colorHex: "007AFF",
+                                                  profileID: other.id)
+        defer {
+            for id in [space.id, sibling.id, otherSpace.id] { TabStore.shared.forceRemoveSpace(id: id) }
+        }
 
         launcher.show(profile: profile, sourceSpace: space)
+        XCTAssertEqual(Set(launcher.palette?.historySpaceIDs ?? []),
+                       [space.id.uuidString, sibling.id.uuidString,
+                        QuickDetour.historySpaceIDString(forProfileID: profile.id)])
+        launcher.close()
 
-        XCTAssertEqual(launcher.palette?.activeSpaceID, space.id)
+        launcher.show(profile: profile, sourceSpace: otherSpace)
+        XCTAssertEqual(Set(launcher.palette?.historySpaceIDs ?? []),
+                       [space.id.uuidString, sibling.id.uuidString,
+                        QuickDetour.historySpaceIDString(forProfileID: profile.id)],
+                       "asked from another profile's window: still this profile's history only")
+    }
+
+    func testAPrivateLauncherHasNoHistory() throws {
+        launcher.show(profile: TabStore.shared.ensureIncognitoProfile(), sourceSpace: nil)
+        XCTAssertEqual(launcher.palette?.historySpaceIDs, [])
     }
 
     func testSubmittingAURLClosesThePanelAndOpensTheWindowLoadingIt() throws {

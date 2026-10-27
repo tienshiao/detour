@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -84,17 +84,23 @@ into a new tab, like Cmd+T.
 nothing), and over a Quick Detour window's page on Cmd+L or a click on the
 host in its title bar, navigating that page in place. Both hand the palette
 no `tabStore` (no open tab of any window is offered), the Quick Detour's
-profile, and as `activeSpaceID` the space it was asked from when that is
-the same profile's, else the profile's Quick Detour history scope
-(`QuickDetour.paletteHistorySpaceID`).
+profile, and that profile's history scope (`historySpaceIDs`). Every
+palette's history is its profile's: the spaces of the profile and its Quick
+Detour scope, none for the Private profile (TASK-209; see
+[suggestion pipeline](./suggestion-pipeline.md#history-is-profile-scoped)).
 
 Cmd+T while a palette is already showing: an anchored palette switches to the
 centred new-tab mode (`switchToCentered`, which clears the field), a centred
 one is dismissed.
 
 A palette is created per showing (`showCommandPalette` builds a new
-`CommandPaletteView`) and given `tabStore`, `activeSpaceID`, `currentTabID`
-and `profile` at that moment. Two scrims go up with it: one behind the sidebar
+`CommandPaletteView`) and given `tabStore`, then `activeSpaceID`,
+`currentTabID`, `profile` and `historySpaceIDs` (`scopeCommandPalette`). The
+window scopes it again when it switches spaces with the palette still open
+(selecting a tab dismisses it, but Next Space into an empty space does not),
+and `reloadSuggestions` rebuilds the list for what the field holds without an
+inline completion, so a palette never goes on offering the previous space's
+profile (found in TASK-209's code review). Two scrims go up with it: one behind the sidebar
 on the split view (the glass sidebar is partly transparent) and one above the
 content.
 
@@ -262,9 +268,10 @@ whatever was under it.
 
 # Edge cases
 
-- **Incognito**: a Private window's palette lists only its own space's open
-  tabs; a normal window's palette lists the tabs of every non-incognito space
-  (pinned entries included) and never a Private window's. The rule is
+- **Profiles and Incognito**: a Private window's palette lists only its own
+  space's open tabs and no history; a normal window's palette lists the tabs
+  of every space of its profile (pinned entries included), never another
+  profile's and never a Private window's (TASK-209, TASK-137). The rule is
   `PaletteTabScope`, see [suggestion pipeline](./suggestion-pipeline.md).
 - **`currentTabID` is never switched to by the top hit**, so Cmd+L on a page
   does not autocomplete to that same tab. Its host can still complete: Cmd+L

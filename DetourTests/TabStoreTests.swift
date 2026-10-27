@@ -336,7 +336,7 @@ final class TabStoreTests: XCTestCase {
         store.recordHistoryVisit(tab: tab, spaceID: space.id)
 
         // Verify nothing was recorded
-        let results = historyDB.searchHistory(query: "secret", spaceID: space.id.uuidString)
+        let results = historyDB.searchHistory(query: "secret", spaceIDs: [space.id.uuidString])
         XCTAssertTrue(results.isEmpty,
                       "History must not be recorded for incognito spaces")
     }
@@ -364,7 +364,7 @@ final class TabStoreTests: XCTestCase {
 
         store2.recordHistoryVisit(tab: tab, spaceID: space.id)
 
-        let results = historyDB.searchHistory(query: "private", spaceID: space.id.uuidString)
+        let results = historyDB.searchHistory(query: "private", spaceIDs: [space.id.uuidString])
         XCTAssertTrue(results.isEmpty,
                       "History must not be recorded for incognito spaces after DB round-trip")
     }

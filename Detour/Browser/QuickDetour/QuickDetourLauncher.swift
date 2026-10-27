@@ -46,9 +46,9 @@ final class QuickDetourLauncher: NSObject {
     var palette: CommandPaletteView? { panel?.palette }
     var isShowing: Bool { panel?.isVisible ?? false }
 
-    /// Shows the palette for a Quick Detour on `profile`. `sourceSpace` is the
-    /// space of the window it was asked from, whose history the palette
-    /// suggests from when it is the same profile's.
+    /// Shows the palette for a Quick Detour on `profile`, suggesting from the
+    /// profile's history. `sourceSpace` is the space of the window it was
+    /// asked from, which Open in names (TASK-193.3).
     func show(profile: Profile, sourceSpace: Space?) {
         if let panel, panel.isVisible, self.profile === profile {
             panel.makeKeyAndOrderFront(nil)
@@ -65,7 +65,8 @@ final class QuickDetourLauncher: NSObject {
         // instead of opening a Quick Detour.
         palette.tabStore = nil
         palette.profile = profile
-        palette.activeSpaceID = QuickDetour.paletteHistorySpaceID(profile: profile, sourceSpace: sourceSpace)
+        // The profile's whole history (TASK-209), whichever window asked.
+        palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: profile, in: .shared)
         palette.glassTint = QuickDetourPalettePanel.glassTint
         panel.palette = palette
         panel.setFrame(QuickDetour.panelFrame(size: panel.frame.size, in: Self.targetScreen().visibleFrame),

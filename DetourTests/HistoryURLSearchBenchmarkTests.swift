@@ -307,25 +307,26 @@ final class HistoryURLSearchBenchmarkTests: XCTestCase {
         measure("text/every-url/all/C-sliver") { db.searchURLs(query: "example", spaceIDs: c, limit: 100).count }
 
         // The palette's reads, alone: what Cmd+T and a keystroke cost with
-        // nothing else on the queue.
-        measure("palette/recent/alone") { db.recentHistory(spaceID: "A1").count }
-        measure("palette/search-a/alone") { db.searchHistory(query: "a", spaceID: "A1").count }
+        // nothing else on the queue. Over the whole profile, as the palette
+        // reads it since TASK-209.
+        measure("palette/recent/alone") { db.recentHistory(spaceIDs: a).count }
+        measure("palette/search-a/alone") { db.searchHistory(query: "a", spaceIDs: a).count }
 
         // The same reads issued while an extension's search holds the queue.
         measureWait("palette/recent/behind-empty-all-limit100") {
             _ = db.searchURLs(query: "", spaceIDs: a, limit: 100)
-        } read: { _ = db.recentHistory(spaceID: "A1") }
+        } read: { _ = db.recentHistory(spaceIDs: a) }
         measureWait("palette/recent/behind-empty-24h-limit100") {
             _ = db.searchURLs(query: "", spaceIDs: a, from: dayAgo, limit: 100)
-        } read: { _ = db.recentHistory(spaceID: "A1") }
+        } read: { _ = db.recentHistory(spaceIDs: a) }
         measureWait("palette/recent/behind-empty-all-unlimited", runs: 3) {
             _ = db.searchURLs(query: "", spaceIDs: a, limit: everything)
-        } read: { _ = db.recentHistory(spaceID: "A1") }
+        } read: { _ = db.recentHistory(spaceIDs: a) }
         measureWait("palette/search-a/behind-empty-all-limit100") {
             _ = db.searchURLs(query: "", spaceIDs: a, limit: 100)
-        } read: { _ = db.searchHistory(query: "a", spaceID: "A1") }
+        } read: { _ = db.searchHistory(query: "a", spaceIDs: a) }
         measureWait("palette/recent/behind-text-every-url-all") {
             _ = db.searchURLs(query: "example", spaceIDs: a, limit: 100)
-        } read: { _ = db.recentHistory(spaceID: "A1") }
+        } read: { _ = db.recentHistory(spaceIDs: a) }
     }
 }

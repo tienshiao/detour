@@ -82,8 +82,10 @@ enum HistoryPageBridge {
 
     /// The same rule for a caller that holds the profile rather than a tab of
     /// it: the `chrome.history` extension API, whose handler belongs to one
-    /// profile (TASK-138). One definition, so "this profile's history" cannot
-    /// mean one thing on the History page and another to an extension. Nil for
+    /// profile (TASK-138), and the command palette (TASK-209,
+    /// `PaletteTabScope.historySpaceIDs`). One definition, so "this profile's
+    /// history" cannot mean one thing on the History page, another in the
+    /// palette and a third to an extension. Nil for
     /// no profile, the Private profile and a deleted one. Never empty
     /// otherwise: the profile's Quick Detour scope is always in it
     /// (TASK-193.1), so a profile no space uses still reads those visits.

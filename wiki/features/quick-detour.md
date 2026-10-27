@@ -4,7 +4,7 @@ title: Quick Detour
 description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through the Link Routes Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt; and TASK-213's popover layout: the host as its header, picture in picture and dev mode in a section of their own, left out of a Quick Detour's."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193
@@ -443,9 +443,13 @@ visit, where a sentinel id rides them unchanged. Also rejected in the task:
 filing under the profile's first space (it would touch a space's history),
 and recording nothing.
 
-The launcher's palette and the window's suggest from the space the Quick
-Detour was asked from when that is the same profile's, else from the Quick
-Detour scope; they only read there.
+The launcher's palette and the window's suggest from the profile's whole
+history, its spaces and this scope (`PaletteTabScope.historySpaceIDs`, the
+History page's scope), whichever window they were asked from; nothing for the
+Private profile, so nothing in a Private Quick Detour or a quarantine
+(TASK-209). Until then they read the space they were asked from when it was
+the same profile's, else only the Quick Detour scope
+(`QuickDetour.paletteHistorySpaceID`, removed).
 
 ## Session restore
 
@@ -737,7 +741,7 @@ full-screen or zoomed state and its source space; only the page changes.
 | 1 | Quick Detour | refused while a sheet is up, for the same profile or a deleted one; leaving Private with Private downloads running asks first (below) |
 | 2 | Quick Detour | `releasePage`: palette, find bar, popovers and link status closed, its subscriptions and delegates on the old web view dropped, the container out of the content view |
 | 3 | `replaceQuickDetourTab` | the old tab out of `quickDetourTabs`, unsubscribed and torn down: `tabs.onRemoved` for the old profile's contexts |
-| 4 | the hook, between the pages | `didCloseWindow` to the old profile's contexts (`windows.onRemoved`; the window lists no tab now), the window takes the new profile, a new tab id and the palette's history scope for it, `didOpenWindow` to the new profile's contexts (`windows.onCreated`, a `popup`) |
+| 4 | the hook, between the pages | `didCloseWindow` to the old profile's contexts (`windows.onRemoved`; the window lists no tab now), the window takes the new profile and a new tab id (the palette reads the profile's history when it is next shown), `didOpenWindow` to the new profile's contexts (`windows.onCreated`, a `popup`) |
 | 5 | `replaceQuickDetourTab` | a new tab on the new profile's configuration enters `quickDetourTabs` (`tabs.onCreated` in that popup); the Private session ends if the old page was its last user; observers hear `tabStoreDidReplaceQuickDetour`, **never** `tabStoreDidCloseQuickDetour` (which would close the window) |
 | 6 | Quick Detour | the pill, the window's appearance (dark for Private), Open in and the extension buttons follow the profile; the new web view is hosted and loads the address (`loadRecordedURL`) |
 
@@ -1040,8 +1044,8 @@ closes the profile's Quick Detours before it releases the profile.
 
 | Suite | Covers |
 |---|---|
-| `QuickDetourTests` (28) | the rules (history scope, which profile, palette scope); the tab in no space: creation from the profile's store and controller, adoption, close and its idempotence, observers, several at once, every space-walking lookup, never slept/archived/saved, profile deletion; history: recorded under the scope (real load), Private records nothing, the profile scope, the launch sweep, the page payload, `spaceID` on listed and searched rows; the Private session both ways; Private downloads |
-| `QuickDetourLauncherTests` (11) | the panel (non-activating, borderless, floating, can become key, the palette's profile, history scope and no tabs), no window or tab before submit; submit (URL, search, suggestion) closing it and opening the window; Escape and clicking away opening nothing; one panel; the centring rule; the real window opening on its page |
+| `QuickDetourTests` (26) | the rules (history scope, which profile); the tab in no space: creation from the profile's store and controller, adoption, close and its idempotence, observers, several at once, every space-walking lookup, never slept/archived/saved, profile deletion; history: recorded under the scope (real load), Private records nothing, the profile scope, the launch sweep, the page payload, `spaceID` on listed and searched rows; the Private session both ways; Private downloads |
+| `QuickDetourLauncherTests` (12) | the panel (non-activating, borderless, floating, can become key, the palette's profile, the profile's whole history whichever window asked (TASK-209), none for Private, and no tabs), no window or tab before submit; submit (URL, search, suggestion) closing it and opening the window; Escape and clicking away opening nothing; one panel; the centring rule; the real window opening on its page |
 | `QuickDetourWindowTests` (15) | opening on its page with no palette, loading in the one web view, the host palette (profile, no tabs, history scope), dismissing it keeping the window, a search from it, navigating in place, back/forward/zoom/find, Cmd+Z not undoing a browser action, Copy Link, Cmd+W, two windows, closing from the store, a page-opened window, the extension window lookups, no leaks |
 | `HotKeyShortcutTests` (27) | the shortcut (default, narrowing, equality), Carbon modifier bits both ways for all 16 combinations, state bits ignored, key equivalents (letters, F-keys, arrows, Space, Return, Forward Delete, a layout's character), the label and key names, the defaults round trip and malformed values; validation (a modifier needed, an unnamed key, Detour's menu items by path including submenus, function-key items and an uppercase key equivalent meaning Shift, the Quick Detour item excepted, Control-Tab, macOS shortcuts with and without the Fn bit, the real main menu), the messages; recording (Escape, Delete, with a modifier, refused) |
 | `HotKeyRegistrationTests` (20) | the state machine against a fake registrar: off, on, idempotent, off unregisters, a change unregisters first, cleared, refused keeps the choice and holds nothing, changing away from a refusal, retry, suspend and resume, `isConflict`; the settings (defaults per data directory, persistence and notification, cleared stays cleared, malformed) |

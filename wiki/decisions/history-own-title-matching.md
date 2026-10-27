@@ -4,7 +4,7 @@ title: History search matches titles only through the scope's own visits
 description: Why a page title may match or label a history result only through visits made in the asking scope, how the title index makes that cheap, and the designs that were tried and dropped on the way.
 tags: [history, privacy, profiles, search, sqlite]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
   - id: history-db
     resource: ../../Detour/Storage/HistoryDatabase.swift
@@ -24,6 +24,9 @@ sources:
   - id: task-138
     resource: backlog:TASK-138
     title: chrome.history.search returns history from every profile
+  - id: task-209
+    resource: backlog:TASK-209
+    title: "Command palette: scope suggestions to the palette's profile"
   - id: title-index-tests
     resource: ../../DetourTests/HistoryTitleIndexTests.swift
     title: HistoryTitleIndexTests.swift
@@ -57,13 +60,23 @@ gets written when is in
 # Decision
 
 1. **A title may match or label a result only through a visit made in the
-   asking scope.** The scope is the profile's spaces on the
-   [History page](../features/history-page.md) and for the
-   `chrome.history.search` extension API (the calling context's profile,
-   TASK-138), and a single space in the
-   [command palette](../features/suggestion-pipeline.md). Keeping the palette
-   space-scoped rather than widening it to the profile was a product decision
-   made in TASK-94.
+   asking scope.** The scope is a profile everywhere: its spaces and its
+   Quick Detour scope on the [History page](../features/history-page.md), for
+   the `chrome.history.search` extension API (the calling context's profile,
+   TASK-138) and in the
+   [command palette](../features/suggestion-pipeline.md) (the palette's
+   profile, TASK-209).
+
+   *Superseded: the palette's single-space scope (TASK-94).* TASK-94 kept the
+   palette scoped to the window's active space rather than widening it to the
+   profile, a product decision at the time: a space's palette suggested what
+   was done in that space. On 2026-10-26 the user decided the palette reads
+   the whole profile, like the History page and including its Quick Detour
+   visits (TASK-209).[^task-209] What the space scope cost: pages visited in
+   a sibling space of the same profile, with the same cookies, could not be
+   completed to, and the legacy fallback below treated a sibling space as
+   foreign. Nothing about matching or labelling changed with the scope: the
+   rule is still "only the asking scope's own visits", with a wider scope.
 2. **URL text is not protected.** A URL is the same text whoever visited it,
    so an FTS hit on the `url` column qualifies a row as soon as the scope has
    visited that URL at all.
@@ -92,17 +105,19 @@ purpose:
 | Surface | Fallback for a title-less visit |
 |---|---|
 | History page (`visits`, `searchVisits`) | `COALESCE(v.title, h.title)`, unguarded. A profile-aware guard was considered and not filed: the case only affects pre-h4 visits and ages out with the 90-day expiry.[^task-94] |
-| Palette (`scopedTitleExpression`, source C of `searchHistory`) | The shared title only when **no other space** has visited the URL; otherwise the empty string, and `SuggestionProvider.displayTitle` shows the URL instead. |
+| Palette (`scopedTitleExpression`, source C of `searchHistory`) | The shared title only when **no space outside the palette's profile** has visited the URL (until TASK-209: no other space at all); otherwise the empty string, and `SuggestionProvider.displayTitle` shows the URL instead. |
 | Extension API (`extensionTitleExpression` in `searchURLs`) | The shared title only when **no space outside the profile** has visited the URL; otherwise none: the visit cannot match through a title, and the item's `title` is the URL.[^task-138] |
 
-The History page cannot reuse the palette's guard: its scope is several space
-IDs, so `o.spaceID <> v.spaceID` would read a sibling space of the same profile
-as foreign. The extension API has the profile-aware form of it, written
-against a `scope` CTE of the profile's space IDs (`o.spaceID NOT IN (SELECT
-spaceID FROM scope)`). It was added there and not on the History page because
-the reader is different: the History page shows a title to the person who made
-the visit, the extension API hands it to third-party code. The same guard
-would fit the History page; that was left as it is.
+The palette's guard used to be `o.spaceID <> v.spaceID`, which the History
+page could not reuse: its scope is several space IDs, so that form would read
+a sibling space of the same profile as foreign. The extension API has the
+profile-aware form of it, written against a `scope` CTE of the profile's space
+IDs (`o.spaceID NOT IN (SELECT spaceID FROM scope)`), and since TASK-209 the
+palette uses the same form over its own `scope` CTE. It was added there and
+not on the History page because the reader is different: the History page
+shows a title to the person who made the visit, the extension API hands it to
+third-party code. The same guard would fit the History page; that was left as
+it is.
 
 # Alternatives rejected
 
@@ -130,7 +145,8 @@ would fit the History page; that was left as it is.
 - No title from another profile can produce a result or hide one.
 - Own-title, URL and miss searches on the History page went from 36–348 ms to
   about 10 ms per 50,000 visits; a palette lookup for a word only this space's
-  title has went from finding nothing to 7.2 ms.[^task-96]
+  title has went from finding nothing to 7.2 ms.[^task-96] (With the
+  profile's scope and the `+v.spaceID` probes of TASK-209, 1.0 ms.)
 
 **What it costs**[^task-96]
 
@@ -152,26 +168,30 @@ All figures are medians of five runs on a synthetic fixture (50,000 visits,
 **Accepted and pinned by tests**
 
 - *Match and label can come from different visits in the palette.* A palette
-  row is a URL, not a visit: "inbox" can match this space's older visit while
-  the row is labelled by its newer one. Both are the space's own.
+  row is a URL, not a visit: "inbox" can match the profile's older visit while
+  the row is labelled by its newer one, possibly from another of its spaces.
+  Both are the profile's own.
 - *Legacy visits keep the unfolded behaviour.* A title-less visit reaches the
   gate only through `historySearch`, which indexes the raw shared title, so
   "strasse" does not find a pre-h4 visit whose shared title is "Straße"
   (`testALegacyVisitKeepsTheUnfoldedBehaviourOfTheSharedIndex`).
 - *Known hole in the palette's legacy guard.* The guard reads the present. If
-  another space's title-less visits gave `historyURL.title` its value and are
-  later deleted, nothing recomputes the shared title (`reconcileStagedURLs`
-  only revisits it when a deleted visit carried a title of its own), and this
-  space adopts it as a fallback. Confined to title-less visits inside the
-  90-day window.
+  another profile's title-less visits gave `historyURL.title` its value and
+  are later deleted, nothing recomputes the shared title
+  (`reconcileStagedURLs` only revisits it when a deleted visit carried a title
+  of its own), and this profile adopts it as a fallback. Confined to
+  title-less visits inside the 90-day window.
 
 **Not covered, deliberately**
 
 - `historyURL.faviconURL`, `visitCount` and the bm25 `rank` are still
-  cross-space in the palette. The last two only order results; the favicon is
+  cross-profile in the palette. The last two only order results; the favicon is
   displayed.
 
 **Overturned**
+
+- The palette's single-space scope (TASK-94), replaced by the palette's
+  profile in TASK-209 (rule 1 above).
 
 - `chrome.history.search` was listed here as global by design: it read
   `historyURL` through `searchHistoryGlobal` and returned the shared title,
@@ -207,3 +227,4 @@ All figures are medians of five runs on a synthetic fixture (50,000 visits,
 [^task-94]: Command palette history suggestions show and match another profile's page title
 [^task-96]: Index every title a URL has had
 [^task-138]: chrome.history.search returns history from every profile
+[^task-209]: Command palette: scope suggestions to the palette's profile

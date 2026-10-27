@@ -207,15 +207,15 @@ final class HistoryTitleIndexTests: XCTestCase {
         // And the searches built on it answer identically.
         for query in ["budget", "dashboard", "morning", "evening", "legacy", "mail", "news"] {
             for space in ["personal", "work"] {
-                XCTAssertEqual(migrated.searchHistory(query: query, spaceID: space).map(\.url),
-                               fresh.searchHistory(query: query, spaceID: space).map(\.url),
+                XCTAssertEqual(migrated.searchHistory(query: query, spaceIDs: [space]).map(\.url),
+                               fresh.searchHistory(query: query, spaceIDs: [space]).map(\.url),
                                "searchHistory(\(query), \(space))")
             }
             XCTAssertEqual(migrated.searchVisits(query: query, spaceIDs: ["personal"], limit: 50).map(\.visitID),
                            fresh.searchVisits(query: query, spaceIDs: ["personal"], limit: 50).map(\.visitID),
                            "searchVisits(\(query))")
         }
-        XCTAssertEqual(migrated.searchHistory(query: "budget", spaceID: "personal").map(\.title),
+        XCTAssertEqual(migrated.searchHistory(query: "budget", spaceIDs: ["personal"]).map(\.title),
                        ["Budget 2026"],
                        "and the migrated database can find a title only that space ever gave the URL")
     }
@@ -397,14 +397,14 @@ final class HistoryTitleIndexTests: XCTestCase {
         let db = try makeDatabase()
         try seedRetitledAcrossProfiles(db)
 
-        XCTAssertEqual(db.searchHistory(query: "budget", spaceID: "personal").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "budget", spaceIDs: ["personal"]).map(\.title),
                        ["Budget 2026"],
                        "the palette finds it through personal's own title, and labels it with that")
-        XCTAssertTrue(db.searchHistory(query: "budget", spaceID: "work").isEmpty,
+        XCTAssertTrue(db.searchHistory(query: "budget", spaceIDs: ["work"]).isEmpty,
                       "work never saw a page called that")
-        XCTAssertEqual(db.searchHistory(query: "dashboard", spaceID: "work").map(\.title),
+        XCTAssertEqual(db.searchHistory(query: "dashboard", spaceIDs: ["work"]).map(\.title),
                        ["Dashboard"])
-        XCTAssertTrue(db.searchHistory(query: "dashboard", spaceID: "personal").isEmpty,
+        XCTAssertTrue(db.searchHistory(query: "dashboard", spaceIDs: ["personal"]).isEmpty,
                       "and the shared title stays the other profile's")
     }
 
@@ -435,7 +435,7 @@ final class HistoryTitleIndexTests: XCTestCase {
         let alone = try makeDatabase()
         try seedVisit(alone, url: "https://old.example/", title: "Legacy fallback title",
                       spaceID: "A", visitTime: 1000)
-        XCTAssertEqual(alone.searchHistory(query: "fallback", spaceID: "A").map(\.title),
+        XCTAssertEqual(alone.searchHistory(query: "fallback", spaceIDs: ["A"]).map(\.title),
                        ["Legacy fallback title"],
                        "nobody else has visited it, so the shared title is this space's own")
 
@@ -444,9 +444,9 @@ final class HistoryTitleIndexTests: XCTestCase {
                       spaceID: "A", visitTime: 1000)
         try seedVisit(shared, url: "https://old.example/", title: "Work quarterly numbers",
                       visitTitle: "Work quarterly numbers", spaceID: "B", visitTime: 2000)
-        XCTAssertTrue(shared.searchHistory(query: "quarterly", spaceID: "A").isEmpty,
+        XCTAssertTrue(shared.searchHistory(query: "quarterly", spaceIDs: ["A"]).isEmpty,
                       "another space has visited it, so the shared title is no longer A's to use")
-        XCTAssertTrue(shared.searchHistory(query: "fallback", spaceID: "A").isEmpty,
+        XCTAssertTrue(shared.searchHistory(query: "fallback", spaceIDs: ["A"]).isEmpty,
                       "and the same guard withdraws the old shared title from A")
     }
 
@@ -467,13 +467,13 @@ final class HistoryTitleIndexTests: XCTestCase {
         for query in ["strasse", "straße", "STRASSE", "STRASSE nach", "koln", "köln", "KÖLN"] {
             XCTAssertEqual(db.searchVisits(query: query, spaceIDs: ["A"], limit: 10).map(\.title),
                            ["Straße nach Köln"], "searchVisits(\(query.debugDescription))")
-            XCTAssertEqual(db.searchHistory(query: query, spaceID: "A").map(\.title),
+            XCTAssertEqual(db.searchHistory(query: query, spaceIDs: ["A"]).map(\.title),
                            ["Straße nach Köln"], "searchHistory(\(query.debugDescription))")
         }
         for query in ["file", "ﬁle", "FILE", "ligature"] {
             XCTAssertEqual(db.searchVisits(query: query, spaceIDs: ["A"], limit: 10).map(\.title),
                            ["ﬁle ligature guide"], "searchVisits(\(query.debugDescription))")
-            XCTAssertEqual(db.searchHistory(query: query, spaceID: "A").map(\.title),
+            XCTAssertEqual(db.searchHistory(query: query, spaceIDs: ["A"]).map(\.title),
                            ["ﬁle ligature guide"], "searchHistory(\(query.debugDescription))")
         }
         // The raw title is still the row's identity and still what is displayed.
