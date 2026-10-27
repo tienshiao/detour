@@ -78,10 +78,40 @@ final class QuickDetourTitleBarTests: XCTestCase {
         XCTAssertEqual(settings.host, "127.0.0.1")
         XCTAssertTrue(settings.isBlockingEnabled)
         XCTAssertNotNil(settings.onBlockingToggle)
-        XCTAssertNotNil(settings.onPictureInPictureToggle)
-        XCTAssertNotNil(settings.onDevModeToggle)
         XCTAssertNotNil(settings.onPinToggle)
         XCTAssertNotNil(settings.onOpenExtensionSettings)
+    }
+
+    private func switchLabels(in view: NSView) -> [String] {
+        if let control = view as? NSSwitch { return [control.accessibilityLabel() ?? ""] }
+        return view.subviews.flatMap(switchLabels(in:))
+    }
+
+    /// TASK-213: picture in picture acts on tab switching and dev mode on the
+    /// sidebar; a Quick Detour has neither, so it offers only content blocking.
+    func testThePageSettingsHaveNoTabSwitches() async throws {
+        let profile = makeProfile("Title Bar Switches")
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+
+        let settings = controller.makePageSettings()
+
+        XCTAssertFalse(settings.showsTabSwitches)
+        XCTAssertEqual(switchLabels(in: settings.view), ["Block content on this site"])
+        XCTAssertNil(settings.onPictureInPictureToggle)
+        XCTAssertNil(settings.onDevModeToggle)
+    }
+
+    func testTheMainWindowsPageSettingsKeepTheTabSwitches() {
+        let profile = makeProfile("Title Bar Main Switches")
+        let settings = SettingsPopoverViewController.forPage(
+            url: URL(string: "https://example.com/"), blockedCount: 0, profileID: profile.id,
+            pages: { [] }, openExtension: { _ in })
+
+        XCTAssertEqual(switchLabels(in: settings.view),
+                       ["Block content on this site", "Picture in picture on tab switch", "Dev mode for this site"])
+        XCTAssertNotNil(settings.onPictureInPictureToggle)
+        XCTAssertNotNil(settings.onDevModeToggle)
     }
 
     /// AC #1, #2: the switch whitelists the site in the Quick Detour's profile

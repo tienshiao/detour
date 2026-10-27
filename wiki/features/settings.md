@@ -73,8 +73,10 @@ happens in those owners. The only app-wide setting, the default browser, is
 not stored by Detour at all.
 
 There is a second, unrelated "settings" surface: the sidebar's settings
-**popover** (`SettingsPopoverViewController`), which holds the per-site
-content-blocking switch and the extension list for the current page. See
+**popover** (`SettingsPopoverViewController`), which holds, under the
+page's host, the per-site content-blocking switch, the picture in picture
+and dev mode switches (not in a Quick Detour) and the extension list for
+the current page. See
 [content blocking](./content-blocking.md) and
 [popup and options UI](../extensions/popup-and-options-ui.md).
 

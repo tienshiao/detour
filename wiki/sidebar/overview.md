@@ -65,7 +65,7 @@ a dispatcher.
 | `FavoritesBarView` | [FavoritesBarView.swift](../../Detour/Browser/Sidebar/FavoritesBarView.swift) | The tile grid above the list; see [favorites](../tabs/favorites.md) |
 | Bottom bar | controller | Downloads button with activity badge, the space buttons strip, Add Space |
 | `FocusGatedTableView`, `DraggableTableView`, `DraggableScrollView`, `DraggableClipView`, `DraggableBarView`, `FadeShadowView` | [SidebarComponents.swift](../../Detour/Browser/Sidebar/SidebarComponents.swift) | Small AppKit subclasses: focus gating, drag bookkeeping, window dragging from empty areas, the swipe hook |
-| `SettingsPopoverViewController` | [SettingsPopoverViewController.swift](../../Detour/Browser/Sidebar/SettingsPopoverViewController.swift) | The per-site popover (content blocking switch, extensions list) the address bar's button opens |
+| `SettingsPopoverViewController` | [SettingsPopoverViewController.swift](../../Detour/Browser/Sidebar/SettingsPopoverViewController.swift) | The per-site popover (the host as header; content blocking; picture in picture and dev mode, left out of a Quick Detour's; extensions) the address bar's button and a Quick Detour's bar open |
 
 ## Pure rule files
 

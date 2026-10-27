@@ -246,8 +246,10 @@ off for a local one.
 ## The switch
 
 "Dev mode for this site" is the third per-site switch in the address bar's
-popover (`SettingsPopoverViewController`), under content blocking and
-picture in picture. It shows the effective state for the tab the popover
+popover (`SettingsPopoverViewController`): below the host header and the
+content blocking section, it shares a section of its own with picture in
+picture (TASK-213), which a Quick Detour's popover leaves out — it has no
+sidebar rows or dev toolbar to change. It shows the effective state for the tab the popover
 opened on, and is disabled when the page has no site key. The button that
 opens the popover is `slider.horizontal.3`, labelled "Site Settings" (it was
 `puzzlepiece.extension` while the popover was mostly extensions).

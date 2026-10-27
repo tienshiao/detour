@@ -548,12 +548,14 @@ final class QuickDetourWindowController: NSWindowController {
     // MARK: - Page settings (TASK-210)
 
     /// The main window's site settings, for this window's page and profile:
-    /// content blocking with the count, picture in picture, dev mode, and the
-    /// profile's extensions with their pins.
+    /// content blocking with the count and the profile's extensions with
+    /// their pins. No picture in picture or dev mode: a Quick Detour has no
+    /// tab switching or sidebar for them to act on (TASK-213).
     func makePageSettings() -> SettingsPopoverViewController {
         let page = tab
         return SettingsPopoverViewController.forPage(
             url: page?.url, blockedCount: page?.blockedCount ?? 0, profileID: profile.id,
+            showsTabSwitches: false,
             pages: { [weak self] in self?.tab.map { [$0] } ?? [] },
             openExtension: { [weak self] extensionID in
                 guard let self else { return }
