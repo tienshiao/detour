@@ -400,7 +400,27 @@ final class QuickDetourExtensionTests: XCTestCase {
         let url = try await serve()
         let controller = try await openQuickDetour(on: profile, loading: url)
 
-        controller.performExtensionAction(ext.id, anchor: controller.titleBar.extensionsMenuButton)
+        controller.performExtensionAction(ext.id, anchor: controller.titleBar.pageSettingsButton)
+
+        try await waitUntil("action.onClicked to reach the worker", timeout: 10) {
+            let seen = try await self.worker("seen", via: page)
+            return !((seen["clicks"] as? [Any]) ?? []).isEmpty
+        }
+        let seen = try await worker("seen", via: page)
+        let click = try XCTUnwrap((seen["clicks"] as? [[String: Any]])?.first)
+        XCTAssertEqual(click["url"] as? String, url.absoluteString)
+    }
+
+    /// An extension chosen in the page settings (TASK-210) acts on the Quick
+    /// Detour's page too, not on a browser window's tab.
+    func testAnExtensionChosenInThePageSettingsActsOnThePage() async throws {
+        let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
+        let profile = makeProfile("Quick Detour Ext Settings")
+        let (_, page) = try await loadPage(ext, in: profile)
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+
+        controller.makePageSettings().onExtensionClick?(ext.id)
 
         try await waitUntil("action.onClicked to reach the worker", timeout: 10) {
             let seen = try await self.worker("seen", via: page)

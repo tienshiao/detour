@@ -103,6 +103,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var anchorLeadingConstraint: NSLayoutConstraint?
     private var anchorTopConstraint: NSLayoutConstraint?
 
+    /// The prompt in the empty field.
+    var placeholder: String {
+        get { textField.placeholderString ?? "" }
+        set { textField.placeholderString = newValue }
+    }
+
     private let rowHeight: CGFloat = 36
     private var listHeight: CGFloat { CGFloat(PaletteRows.visibleRows) * rowHeight }
 

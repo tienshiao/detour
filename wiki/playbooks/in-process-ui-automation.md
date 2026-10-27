@@ -220,6 +220,24 @@ edges ([UI probes](./ui-probes.md)).
   pop-up menus no longer opened for posted clicks afterwards. Drive drops
   with a stub `NSDraggingInfo` ([debug harness](./debug-harness.md)), and
   put any posted-drag probe last in a run.
+- **A window drag needs the real pointer: post it at the HID tap.**
+  Posted `NSEvent`s reach a view's tracking loop, so they show a drag
+  *begins* (`performDrag(with:)` is called), but the window server follows
+  the hardware pointer, so do not count on them to move the window (not
+  measured). From the in-process harness, `CGEvent(mouseEventSource:
+  mouseType:mouseCursorPosition:mouseButton:)` posted at `.cghidEventTap`
+  — a move, a down, a dozen dragged steps 30 ms apart, an up, then
+  `CGWarpMouseCursorPosition` back — moved a Quick Detour by the dragged
+  distance, and the same with no movement was a click (TASK-210,
+  2026-10-26). Global coordinates are top-left: flip `y` against the first
+  screen's `maxY`. These are HID input, so the idle gate sees them: the
+  next wait for 12 s of idle is the harness's own doing.
+- **Posted mouse events in a unit test come back moved.** In the test host,
+  an `NSEvent.mouseEvent(... windowNumber:)` through `NSApp.postEvent` and
+  `nextEvent` returned with its location scaled and flipped (the round trip
+  through screen coordinates), ordered window or not. A view's own tracking
+  loop is testable by injecting its event source instead (TASK-210,
+  `QuickDetourBarButton.nextPressEvent`).
 - **A pop-up's item, through its real menu**: a posted mouse-down alone
   opens an `NSPopUpButton`'s menu; on `NSMenu.didBeginTrackingNotification`
   schedule a `.common`-mode timer that calls `menu.performActionForItem(at:)`

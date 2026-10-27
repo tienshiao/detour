@@ -324,3 +324,88 @@ class SettingsPopoverViewController: NSViewController {
         onOpenExtensionSettings?()
     }
 }
+
+extension SettingsPopoverViewController {
+    /// The page settings for a page at `url` in the profile `profileID`: the
+    /// main window's address bar and a Quick Detour's bar build the same one
+    /// (TASK-210). Every switch acts on the profile the popover was built for,
+    /// not on whatever the window shows when it is clicked.
+    ///
+    /// - Parameters:
+    ///   - pages: what the window has on screen; toggling content blocking
+    ///     reloads the ones on the switched site.
+    ///   - openExtension: an extension's name was clicked: its action.
+    static func forPage(url: URL?, blockedCount: Int, profileID: UUID?,
+                        pages: @escaping () -> [BrowserTab],
+                        openExtension: @escaping (String) -> Void) -> SettingsPopoverViewController {
+        let host = url?.host ?? ""
+        let vc = SettingsPopoverViewController()
+        vc.host = host
+        if let profileID {
+            vc.isBlockingEnabled = host.isEmpty
+                || !ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
+            vc.isPictureInPictureEnabled = host.isEmpty ? true
+                : SiteSettingsStore.shared.override(.pictureInPicture, forSite: host, profileID: profileID) ?? true
+        }
+        // With no profile there is no override, but the local-development
+        // default still applies.
+        vc.isDevModeEnabled = DevMode.isActive(for: url, profileID: profileID)
+        vc.isDevModeAvailable = devModeSiteKey(for: url) != nil
+        vc.blockedCount = blockedCount
+
+        // The pinned IDs are fetched once, not per extension.
+        if let profileID {
+            let pinnedIDs = Set(AppDatabase.shared.pinnedExtensionIDs(for: profileID.uuidString))
+            vc.extensions = ExtensionManager.shared.enabledExtensions(for: profileID)
+                .filter { $0.manifest.action != nil }
+                .map { ext in
+                    ExtensionItem(id: ext.id, name: ExtensionManager.shared.displayName(for: ext.id),
+                                  icon: ExtensionManager.iconImage(for: ext.id, ext: ext),
+                                  isPinned: pinnedIDs.contains(ext.id))
+                }
+        }
+
+        vc.onBlockingToggle = {
+            guard let profileID, !host.isEmpty else { return }
+            ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profileID)
+            // The switch takes effect per navigation (the page's
+            // `WKWebpagePreferences`), so the page has to load again — the way
+            // Safari's per-site switch reloads the tab (TASK-69).
+            for page in pages()
+            where page.url?.host.map({ ContentBlockerWhitelist.covers(host: $0, whitelistedHosts: [host]) }) == true {
+                page.reload()
+            }
+        }
+
+        vc.onPictureInPictureToggle = { isOn in
+            guard let profileID, !host.isEmpty else { return }
+            // Off stores this host; on clears every row covering it, since a
+            // parent site's row would keep it off. Takes effect at the next
+            // tab switch, so nothing reloads.
+            if isOn {
+                SiteSettingsStore.shared.resetToDefault(.pictureInPicture, forSite: host, profileID: profileID)
+            } else {
+                SiteSettingsStore.shared.set(.pictureInPicture, site: host, to: false, profileID: profileID)
+            }
+        }
+
+        vc.onDevModeToggle = { isOn in
+            guard let profileID else { return }
+            // The store's change notification re-marks every sidebar row on
+            // this site in every window; nothing reloads.
+            DevMode.setEnabled(isOn, for: url, profileID: profileID)
+        }
+
+        vc.onPinToggle = { extensionID in
+            guard let profileID else { return }
+            ExtensionManager.shared.toggleExtensionPinned(extensionID, profileID: profileID)
+        }
+
+        vc.onExtensionClick = openExtension
+
+        vc.onOpenExtensionSettings = {
+            SettingsWindowController.shared.showExtensionsPane()
+        }
+        return vc
+    }
+}

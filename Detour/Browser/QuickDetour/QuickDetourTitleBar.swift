@@ -3,13 +3,17 @@ import AppKit
 /// The title bar of a Quick Detour window (TASK-193.1), after Arc's Little
 /// Arc (docs/little-window/arc-little-arc.png): past the traffic lights an
 /// address capsule holding the profile pill, the page's host in the centre
-/// (click: the palette, navigating in place), the extension buttons and the
-/// copy-link button; then Open in <Space> at the trailing edge: a capsule
-/// like the address one, whose main part moves the page (TASK-193.3, Cmd+O)
-/// and whose chevron lists the spaces to move it to.
+/// (click: the palette, navigating in place), the pinned extensions' buttons,
+/// the page settings button (the main window's site settings popover,
+/// TASK-210) and the copy-link button; then Open in <Space> at the trailing
+/// edge: a capsule like the address one, whose main part moves the page
+/// (TASK-193.3, Cmd+O) and whose chevron lists the spaces to move it to.
 ///
 /// The pill names the window's profile; a click opens its menu of profiles,
 /// which switches the page to another (TASK-193.4).
+///
+/// The host and Open in's main part are handles as well as buttons: a press
+/// that moves drags the window (TASK-210).
 final class QuickDetourTitleBar: NSView {
     /// The profile pill was pressed: its menu, anchored on the pill.
     var onProfileClick: ((NSView) -> Void)?
@@ -21,8 +25,8 @@ final class QuickDetourTitleBar: NSView {
     var onOpenInMenu: ((NSView) -> Void)?
     /// An extension's button was clicked: its id and the button to anchor on.
     var onExtensionClick: ((String, NSView) -> Void)?
-    /// The extensions button (all of the profile's extensions) was clicked.
-    var onExtensionsMenuClick: ((NSView) -> Void)?
+    /// The page settings button was clicked: the popover, anchored on it.
+    var onPageSettingsClick: ((NSView) -> Void)?
 
     /// Where the capsule starts: clear of the traffic lights.
     static let leadingInset: CGFloat = 78
@@ -32,14 +36,14 @@ final class QuickDetourTitleBar: NSView {
     private let pillIcon = NSImageView()
     private let pillLabel = NSTextField(labelWithString: "")
     private let pillChevron = NSImageView()
-    let hostButton = NSButton(title: "", target: nil, action: nil)
+    let hostButton = QuickDetourBarButton(title: "", target: nil, action: nil)
     private let lockIcon = NSImageView()
     let extensionStack = NSStackView()
-    let extensionsMenuButton = HoverButton()
+    let pageSettingsButton = HoverButton()
     let copyButton = HoverButton()
     /// Open in's capsule: `openInButton`, a divider, `openInMenuButton`.
     let openInControl = NSView()
-    let openInButton = NSButton(title: "", target: nil, action: nil)
+    let openInButton = QuickDetourBarButton(title: "", target: nil, action: nil)
     let openInMenuButton = HoverButton()
     private let openInDivider = NSView()
     private let separator = NSBox()
@@ -111,9 +115,9 @@ final class QuickDetourTitleBar: NSView {
         extensionStack.setContentCompressionResistancePriority(.required, for: .horizontal)
         capsule.addSubview(extensionStack)
 
-        configureIconButton(extensionsMenuButton, symbol: "puzzlepiece.extension", label: "Extensions",
-                            action: #selector(extensionsMenuClicked))
-        capsule.addSubview(extensionsMenuButton)
+        configureIconButton(pageSettingsButton, symbol: "slider.horizontal.3", label: "Site Settings",
+                            action: #selector(pageSettingsClicked))
+        capsule.addSubview(pageSettingsButton)
         configureIconButton(copyButton, symbol: "link", label: "Copy Link", action: #selector(copyClicked))
         capsule.addSubview(copyButton)
 
@@ -182,9 +186,9 @@ final class QuickDetourTitleBar: NSView {
 
             copyButton.trailingAnchor.constraint(equalTo: capsule.trailingAnchor, constant: -6),
             copyButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
-            extensionsMenuButton.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -2),
-            extensionsMenuButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
-            extensionStack.trailingAnchor.constraint(equalTo: extensionsMenuButton.leadingAnchor, constant: -2),
+            pageSettingsButton.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -2),
+            pageSettingsButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+            extensionStack.trailingAnchor.constraint(equalTo: pageSettingsButton.leadingAnchor, constant: -2),
             extensionStack.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
 
             openInControl.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
@@ -340,13 +344,61 @@ final class QuickDetourTitleBar: NSView {
 
     @objc private func hostClicked() { onHostClick?() }
     @objc private func copyClicked() { onCopyLink?() }
-    @objc private func extensionsMenuClicked() { onExtensionsMenuClick?(extensionsMenuButton) }
+    @objc private func pageSettingsClicked() { onPageSettingsClick?(pageSettingsButton) }
     @objc private func openInClicked() { onOpenIn?() }
     @objc private func openInMenuClicked() { onOpenInMenu?(openInControl) }
 
     @objc private func extensionClicked(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
         onExtensionClick?(id, sender)
+    }
+}
+
+/// A button in the title bar that is also a handle on the window (TASK-210):
+/// a press that moves past `dragThreshold` drags the window, as the bar
+/// around it does; one released before that, over the button, is a click.
+/// The same rule as `WindowDragView`'s, for a control rather than a strip.
+///
+/// A window in the background takes the press too, so it can be dragged
+/// from here; but such a press that does not move only brings the window
+/// forward — clicking Open in to reach the window must not move its page.
+final class QuickDetourBarButton: NSButton {
+    /// How far a press moves, in points, before it drags the window.
+    static let dragThreshold: CGFloat = 3
+    /// Hands the press over to the window server; a test replaces it.
+    var beginWindowDrag: (NSWindow, NSEvent) -> Void = { window, press in window.performDrag(with: press) }
+    /// The press's next drag or release; a test hands its own.
+    var nextPressEvent: (NSWindow) -> NSEvent? = { $0.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) }
+
+    /// When the last press on a window in the background happened: the one
+    /// `mouseDown` gets with that timestamp is that press.
+    private var activatingPressTimestamp: TimeInterval?
+
+    /// Asked only for a press on a window that is not key.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        activatingPressTimestamp = event?.timestamp
+        return true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let activates = activatingPressTimestamp == event.timestamp
+        activatingPressTimestamp = nil
+        guard isEnabled, let window else { return super.mouseDown(with: event) }
+        let start = event.locationInWindow
+        highlight(true)
+        defer { highlight(false) }
+        while let next = nextPressEvent(window) {
+            let point = next.locationInWindow
+            if next.type == .leftMouseUp {
+                if !activates, bounds.contains(convert(point, from: nil)) { sendAction(action, to: target) }
+                return
+            }
+            if hypot(point.x - start.x, point.y - start.y) >= Self.dragThreshold {
+                highlight(false)
+                beginWindowDrag(window, event)
+                return
+            }
+        }
     }
 }
 

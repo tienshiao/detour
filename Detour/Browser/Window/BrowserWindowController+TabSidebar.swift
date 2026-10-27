@@ -185,87 +185,25 @@ extension BrowserWindowController: TabSidebarDelegate {
     /// address bar's slider button, or a dev toolbar's info button
     /// (TASK-186.2), which leaves the address bar's hover buttons alone.
     func showSiteSettingsPopover(relativeTo sourceButton: NSView, fromAddressBar: Bool) {
-        let host = displayTab?.url?.host ?? ""
-        let profileID = activeSpace?.profile?.id ?? UUID()
-        let isWhitelisted = host.isEmpty ? false : ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
-
-        let vc = SettingsPopoverViewController()
-        vc.host = host
-        vc.isBlockingEnabled = !isWhitelisted
-        vc.isPictureInPictureEnabled = host.isEmpty ? true
-            : SiteSettingsStore.shared.override(.pictureInPicture, forSite: host, profileID: profileID) ?? true
-        let pageURL = displayTab?.url
-        vc.isDevModeAvailable = devModeSiteKey(for: pageURL) != nil
-        vc.isDevModeEnabled = DevMode.isActive(for: pageURL, profileID: profileID)
-        vc.blockedCount = displayTab?.blockedCount ?? 0
-
-        // Populate extensions list (fetch pinned IDs once to avoid per-extension DB queries)
-        let enabledExts = ExtensionManager.shared.enabledExtensions(for: profileID)
-            .filter { $0.manifest.action != nil }
-        let pinnedIDs = Set(AppDatabase.shared.pinnedExtensionIDs(for: profileID.uuidString))
-        vc.extensions = enabledExts.map { ext in
-            SettingsPopoverViewController.ExtensionItem(
-                id: ext.id,
-                name: ExtensionManager.shared.displayName(for: ext.id),
-                icon: ExtensionManager.iconImage(for: ext.id, ext: ext),
-                isPinned: pinnedIDs.contains(ext.id)
-            )
-        }
-
-        vc.onBlockingToggle = { [weak self] in
-            guard let self, let profile = self.activeSpace?.profile, !host.isEmpty else { return }
-            ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id)
-            // The switch takes effect per navigation (the page's
-            // `WKWebpagePreferences`), so the page has to load again — the way
-            // Safari's per-site switch reloads the tab (TASK-69). Every pane this
-            // window has on screen for that host, not just `displayTab`: the
-            // other pane of a split would otherwise keep the old blocking state
-            // while its popover, reading the same whitelist, reports the new.
-            var panes = self.selectedTab.map { self.splitMembers(of: $0) } ?? []
-            if let peek = self.selectedTab?.peekTab { panes.append(peek) }
-            for pane in panes
-            where pane.url?.host.map({ ContentBlockerWhitelist.covers(host: $0, whitelistedHosts: [host]) }) == true {
-                pane.reload()
-            }
-        }
-
-        vc.onPictureInPictureToggle = { [weak self] isOn in
-            guard let profile = self?.activeSpace?.profile, !host.isEmpty else { return }
-            // Off stores this host; on clears every row covering it, since a
-            // parent site's row would keep it off. Takes effect at the next
-            // tab switch, so nothing reloads.
-            if isOn {
-                SiteSettingsStore.shared.resetToDefault(.pictureInPicture, forSite: host, profileID: profile.id)
-            } else {
-                SiteSettingsStore.shared.set(.pictureInPicture, site: host, to: false, profileID: profile.id)
-            }
-        }
-
-        // The profile the switch's state was read from, not whichever space is
-        // active when it is clicked.
-        let devModeProfileID = activeSpace?.profile?.id
-        vc.onDevModeToggle = { isOn in
-            guard let devModeProfileID else { return }
-            // The store's change notification re-marks every sidebar row on
-            // this site in every window; nothing reloads.
-            DevMode.setEnabled(isOn, for: pageURL, profileID: devModeProfileID)
-        }
-
-        vc.onPinToggle = { [weak self] extensionID in
-            guard let profile = self?.activeSpace?.profile else { return }
-            ExtensionManager.shared.toggleExtensionPinned(extensionID, profileID: profile.id)
-        }
-
-        vc.onExtensionClick = { [weak self] extensionID in
-            guard let self else { return }
-            let popover = ExtensionPopoverController(extensionID: extensionID)
-            popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
-            objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
-        }
-
-        vc.onOpenExtensionSettings = {
-            SettingsWindowController.shared.showExtensionsPane()
-        }
+        // Every pane this window has on screen for the switched host, not just
+        // `displayTab`: the other pane of a split would otherwise keep the old
+        // blocking state while its popover, reading the same whitelist,
+        // reports the new.
+        let vc = SettingsPopoverViewController.forPage(
+            url: displayTab?.url, blockedCount: displayTab?.blockedCount ?? 0,
+            profileID: activeSpace?.profile?.id,
+            pages: { [weak self] in
+                guard let self, let selected = self.selectedTab else { return [] }
+                var panes = self.splitMembers(of: selected)
+                if let peek = selected.peekTab { panes.append(peek) }
+                return panes
+            },
+            openExtension: { [weak self] extensionID in
+                guard let self else { return }
+                let popover = ExtensionPopoverController(extensionID: extensionID)
+                popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
+                objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
+            })
 
         let popover = NSPopover()
         popover.behavior = .transient

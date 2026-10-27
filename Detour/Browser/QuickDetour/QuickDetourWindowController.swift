@@ -140,6 +140,7 @@ final class QuickDetourWindowController: NSWindowController {
     private var tabSubscriptions = Set<AnyCancellable>()
     private let extensionActiveTabTracker = ExtensionActiveTabTracker()
     private var extensionPopovers: [String: ExtensionPopoverController] = [:]
+    private weak var pageSettingsPopover: NSPopover?
     private var isTornDown = false
     /// The pasteboard Copy Link writes to; a test swaps it.
     var urlPasteboard: NSPasteboard = .general
@@ -250,7 +251,7 @@ final class QuickDetourWindowController: NSWindowController {
         titleBar.onHostClick = { [weak self] in self?.showPalette(prefill: self?.tab?.url?.absoluteString) }
         titleBar.onCopyLink = { [weak self] in self?.copyCurrentURL(nil) }
         titleBar.onExtensionClick = { [weak self] id, anchor in self?.performExtensionAction(id, anchor: anchor) }
-        titleBar.onExtensionsMenuClick = { [weak self] anchor in self?.showExtensionsMenu(from: anchor) }
+        titleBar.onPageSettingsClick = { [weak self] anchor in self?.showPageSettings(from: anchor) }
         contentView.addSubview(titleBar)
 
         contentContainerView.wantsLayer = true
@@ -387,6 +388,8 @@ final class QuickDetourWindowController: NSWindowController {
         palette.activeSpaceID = paletteHistorySpaceID
         palette.currentTabID = tabID
         palette.profile = profile
+        // No browser around it to say where the page goes (TASK-210).
+        palette.placeholder = "Search or enter a URL"
         commandPaletteView = palette
 
         do {
@@ -513,7 +516,6 @@ final class QuickDetourWindowController: NSWindowController {
     private func updateExtensionButtons() {
         let pinned = ExtensionManager.shared.pinnedExtensions(for: profile.id)
         titleBar.setExtensions(pinned.map { (id: $0.id, image: ExtensionManager.iconImage(for: $0.id, ext: $0)) })
-        titleBar.extensionsMenuButton.isHidden = ExtensionManager.shared.enabledExtensions(for: profile.id).isEmpty
     }
 
     @objc private func extensionsDidChange() {
@@ -539,30 +541,36 @@ final class QuickDetourWindowController: NSWindowController {
             self.extensionPopovers.removeValue(forKey: extensionID)
         }
         extensionPopovers[extensionID] = popover
-        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        // Below the button: a button is flipped, so that is its maxY edge.
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 
-    /// Every extension of the profile, for the ones not pinned.
-    private func showExtensionsMenu(from anchor: NSView) {
-        let menu = NSMenu()
-        for ext in ExtensionManager.shared.enabledExtensions(for: profile.id)
-        where profile.extensionContext(for: ext.id) != nil {
-            let item = NSMenuItem(title: ExtensionManager.shared.displayName(for: ext.id),
-                                  action: #selector(extensionMenuItemChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = ext.id
-            let icon = ExtensionManager.iconImage(for: ext.id, ext: ext)
-            icon.size = NSSize(width: 16, height: 16)
-            item.image = icon
-            menu.addItem(item)
-        }
-        guard !menu.items.isEmpty else { return }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.minY - 4), in: anchor)
+    // MARK: - Page settings (TASK-210)
+
+    /// The main window's site settings, for this window's page and profile:
+    /// content blocking with the count, picture in picture, dev mode, and the
+    /// profile's extensions with their pins.
+    func makePageSettings() -> SettingsPopoverViewController {
+        let page = tab
+        return SettingsPopoverViewController.forPage(
+            url: page?.url, blockedCount: page?.blockedCount ?? 0, profileID: profile.id,
+            pages: { [weak self] in self?.tab.map { [$0] } ?? [] },
+            openExtension: { [weak self] extensionID in
+                guard let self else { return }
+                // The popup takes the settings' place on the button.
+                self.pageSettingsPopover?.close()
+                self.performExtensionAction(extensionID, anchor: self.titleBar.extensionButton(for: extensionID)
+                                            ?? self.titleBar.pageSettingsButton)
+            })
     }
 
-    @objc private func extensionMenuItemChosen(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        performExtensionAction(id, anchor: titleBar.extensionButton(for: id) ?? titleBar.extensionsMenuButton)
+    private func showPageSettings(from anchor: NSView) {
+        pageSettingsPopover?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = makePageSettings()
+        pageSettingsPopover = popover
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 
     // MARK: - Open in (TASK-193.3)
@@ -695,6 +703,7 @@ final class QuickDetourWindowController: NSWindowController {
         dismissPalette()
         for popover in extensionPopovers.values { popover.close() }
         extensionPopovers.removeAll()
+        pageSettingsPopover?.close()
         tabSubscriptions.removeAll()
         if let webView = page?.webView {
             let ucc = webView.configuration.userContentController
@@ -705,8 +714,8 @@ final class QuickDetourWindowController: NSWindowController {
     }
 
     /// The dropdown: the spaces grouped by profile, the window's own first
-    /// (`QuickDetour.openInMenu`). Another profile's spaces say they reload;
-    /// the default one carries Cmd+O.
+    /// (`QuickDetour.openInMenu`). Another profile's spaces say in their
+    /// tooltip that they reload; the default one carries Cmd+O.
     func makeOpenInMenu() -> NSMenu {
         let model = openInMenu
         let menu = NSMenu()
@@ -721,7 +730,6 @@ final class QuickDetourWindowController: NSWindowController {
                 menuItem.target = self
                 menuItem.representedObject = item.spaceID
                 if item.reloads {
-                    menuItem.subtitle = "Reloads the page"
                     menuItem.toolTip = "Opens this address in \(section.title)'s \(item.name): its cookies and "
                         + "sign-ins, without this page's back and forward history"
                 }

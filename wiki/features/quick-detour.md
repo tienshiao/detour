@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Quick Detour
-description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through Air Traffic Control's Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls."
+description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through Air Traffic Control's Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
@@ -79,6 +79,15 @@ sources:
   - id: harness-5
     resource: ../../docs/harness/task193-5-harness.patch
     title: TASK-193.5 runtime harness and its results
+  - id: task-210
+    resource: backlog:TASK-210
+    title: "Quick Detour: page settings menu, draggable bar, Open In and palette text"
+  - id: site-settings
+    resource: ../../Detour/Browser/Sidebar/SettingsPopoverViewController.swift
+    title: SettingsPopoverViewController.swift (forPage, the builder both windows use)
+  - id: harness-210
+    resource: ../../docs/harness/task210-harness.patch
+    title: TASK-210 runtime harness and its results
   - id: reference
     resource: ../../docs/little-window/arc-little-arc.png
     title: Arc's Little Arc, the visual reference
@@ -114,9 +123,10 @@ The window is a normal-level window, 900 × 640 points by default (minimum
 480 × 320), centred, each later one cascading 22 points down and right of the
 last. Its title bar, after the reference image, holds the traffic lights, an
 address capsule with the **profile pill**, the page's host in the centre, the
-extension buttons (pinned ones, and a puzzle button listing every extension
-of the profile) and Copy Link, then **Open in <Space> ⌘O** at the right.
-There is no sidebar.
+pinned extensions' buttons, the **site settings** button (the main window's
+popover, [below](#the-bar-site-settings-and-handles)) and Copy Link, then
+**Open in <Space> ⌘O** at the right. The bar's background, the host and
+Open in's main part all drag the window. There is no sidebar.
 
 **Open in <Space> ⌘O** moves the page into a tab of a space and closes
 the window ([below](#open-in-space), TASK-193.3). The **profile pill** names
@@ -474,14 +484,57 @@ Decision 4: visible. The window is an `ExtensionListedWindow`:
   profile's loaded contexts before its tab is placed, and `didCloseWindow`
   after the tab is closed; a context that loads later learns of it through
   `openWindowsFor` and `notifyExistingTabs`.[^webkit-windows]
-- The title bar's extension buttons go through `ExtensionPopoverController`
-  with the window's profile and page, so `action.onClicked` or the popup
-  acts on the Quick Detour, not on the last active space.
+- The title bar's extension buttons, and an extension chosen in its site
+  settings, go through `ExtensionPopoverController` with the window's
+  profile and page, so `action.onClicked` or the popup acts on the Quick
+  Detour, not on the last active space.
 - `tabs.remove` on the page closes the window; `tabs.update({active})`
   (`activate`) brings it forward.
 
 API output kept its shape (`popup` is an existing window type), so the API
 Explorer extension needed no change.
+
+## The bar: site settings and handles
+
+TASK-210, the user's feedback on TASK-193.
+
+**Site settings.** The puzzle button that listed the profile's extensions
+in a menu is gone; in its place the slider button opens the main window's
+site settings popover, `SettingsPopoverViewController`, built by the same
+`forPage(url:blockedCount:profileID:pages:openExtension:)` the address bar
+uses:[^site-settings] content blocking with the page's blocked count, picture
+in picture, dev mode, and the profile's extensions with their pin toggles
+and Extension Settings…. Every switch acts on the profile the popover was
+built for — the Quick Detour's (the main window's `activeSpace` profile
+there, also now captured at build rather than read at click). Content
+blocking takes effect per navigation, so toggling it reloads the pages
+`pages` names that are on the switched site: the Quick Detour's one page;
+the selected tab's split panes and Peek in the main window. The PiP and dev
+mode switches store the site's setting for the profile as in the main
+window, but a Quick Detour has no tab switch and no dev toolbar, so in the
+window itself they change nothing (kept: the task asked for the main
+window's menu as is). An extension's name closes the popover and opens the
+extension's popup on its pinned button, or on the settings button when it
+is not pinned. Popovers on the bar use `preferredEdge: .maxY`: an `NSButton`
+is flipped, so that is its bottom; TASK-193.1's `.minY` opened the pinned
+extensions' popups above the button, out of the window (the settings
+popover only came out below when there was no room above).
+
+**Handles.** `QuickDetourBarButton` (the host and Open in's main part)
+tracks a press itself: past 3 points of movement it hands the press to
+`window.performDrag(with:)`, the original mouse-down, as `WindowDragView`
+does; released on the button before that, it is a click. It accepts the
+first mouse, so a background window can be dragged from it, but a first
+press that does not move only brings the window forward: AppKit asks
+`acceptsFirstMouse` only for a press on a window that is not key, and the
+button remembers that press's timestamp, so a click on Open in to reach the
+window never moves its page. The chevron, the pill and the icon buttons keep
+their own clicks.
+
+**Text.** The dropdown's other-profile items lost their "Reloads the page"
+subtitle (the tooltip stays). The palette's prompt is "Search or enter a
+URL" (`CommandPaletteView.placeholder`): there is no browser around it; the
+main window keeps "Where do you want to go?".
 
 ## Open in <Space>
 
@@ -526,9 +579,10 @@ profile, one section per profile with spaces, **the window's own profile
 first** (its spaces keep the page) and the others in profile order, spaces
 in sidebar order, each "emoji name". Section headers
 (`NSMenuItem.sectionHeader`, the profile's name) only when more than one
-profile has spaces. Another profile's spaces carry the subtitle **"Reloads
-the page"** and a tooltip naming what changes (that profile's cookies and
-sign-ins, no back/forward history): the subtle mark the decision asked for.
+profile has spaces. Another profile's spaces carry a tooltip naming what
+changes (that profile's cookies and sign-ins, no back/forward history): the
+subtle mark the decision asked for. A "Reloads the page" subtitle under
+their names was dropped at the user's request (TASK-210).
 The default item shows ⌘O as its key equivalent. Private and deleted
 profiles' spaces never appear.
 
@@ -648,8 +702,8 @@ window's own profile checked. With only one profile it lists that one and
 Private. Each other profile's item has a tooltip saying what a switch does:
 "Reload this page in Work: its cookies and sign-ins, without this page's
 back and forward history" — the subtle mark of the reload (decided: a
-tooltip only; a subtitle on every item, as Open in's "Reloads the page",
-would mark every row the same).
+tooltip only; a subtitle on every item, as Open in's "Reloads the page"
+was until TASK-210, would mark every row the same).
 
 ### Switching: a new page in the same window
 
@@ -982,10 +1036,11 @@ closes the profile's Quick Detours before it releases the profile.
 | `HotKeyRegistrationTests` (20) | the state machine against a fake registrar: off, on, idempotent, off unregisters, a change unregisters first, cleared, refused keeps the choice and holds nothing, changing away from a refusal, retry, suspend and resume, `isConflict`; the settings (defaults per data directory, persistence and notification, cleared stays cleared, malformed) |
 | `QuickDetourHotKeyTests` (22) | the wiring with a fake registrar: never started in the test host, the press callback handed to the registrar, settings followed at once, the menu item mirroring the shortcut also when off and cleared, recording, a refusal reported and retried (also on becoming active), the messages; the hotkey toggling the launcher, the menu item not toggling it, the real File item attached; the recorder (records, a Cmd key taken before the menus, refused and still recording, Escape, Delete, stops when its window resigns key, saves before it stops); where it may register (the test host never, Debug only with the opt-in, Release yes, the Settings line); the menu item following the setting where nothing registers; a mouse-down outside the recorder ending it (the pure rule, and a real event through `nextEvent`/`sendEvent` reaching the monitor) |
 | `UserDefaultsScopeTests` | the preferences suite per data directory |
-| `QuickDetourExtensionTests` (11) | real contexts: a `popup` window from an extension page and the worker (promise and callback forms), another profile seeing nothing (also for a context loaded after the window opened), no URL without `tabs`, a content script's `sender.tab`, the toolbar button's `onClicked`, by-id lookups refused after close, a Private Quick Detour as an incognito popup |
+| `QuickDetourTitleBarTests` (7) | TASK-210: the site settings for the page and its profile; content blocking off in its profile only, the page reloading; the palette's prompt and the main window's; the bar button — a press released in place clicks, one moving 3 points drags from the press and does not click, one released off the button does nothing, a first press on a background window does not click but drags (events handed to the tracking loop directly: posted mouse events come back with their locations moved through screen coordinates) |
+| `QuickDetourExtensionTests` (11) | real contexts: a `popup` window from an extension page and the worker (promise and callback forms), another profile seeing nothing (also for a context loaded after the window opened), no URL without `tabs`, a content script's `sender.tab`, the toolbar button's `onClicked` (and an extension chosen in the site settings, TASK-210), by-id lookups refused after close, a Private Quick Detour as an incognito popup |
 | `InternalPageIntegrationTests` | the History page's "Quick Detour" label |
 | `QuickDetourOpenInTests` (30) | Open in's rules: the most recently used space (use order, other profiles, deleted and Private spaces skipped, the first space with none used), the default target (the source space, another profile's or deleted source falling back, Private never, a profile with no space), the menu (grouped by profile with the window's first, sidebar order, reload marks, the default item, headers only for several profiles, Private and deleted profiles left out, no target at all), Private (Private Window, no dropdown); `noteSpaceUsed`; the store's move (the same tab and web view at the new-tab position, observers told of a move not a close, saved with the session, refused for another profile, the Private boundary, a non-Quick-Detour tab and a gone space; Private into a Private space), the extension seam (one move from the popup window, no close; none when the caller announces), the history scope switching at the move (real loads), a Private download moving with the page and a normal one untouched |
-| `QuickDetourOpenInWindowTests` (17) | in real windows: a sheet and a page `alert()` blocking Cmd+O until they end, the button naming the source space and following a deletion, the File menu's ⌘O item, Cmd+O and the button moving the page into the window showing the space (front, selected, same web view hosted with the window's delegates, back list and typed form text kept), the most recent window switching, the dropdown, the palette and find bar closed, the controller released while the web view lives on, another profile's space reloading (its store, the Quick Detour and its web view released), the dropdown's headers, subtitles and ⌘O item, Private into the most recent Private window and into a new one holding only the page, both boundaries refused, a space switch noting its use |
+| `QuickDetourOpenInWindowTests` (17) | in real windows: a sheet and a page `alert()` blocking Cmd+O until they end, the button naming the source space and following a deletion, the File menu's ⌘O item, Cmd+O and the button moving the page into the window showing the space (front, selected, same web view hosted with the window's delegates, back list and typed form text kept), the most recent window switching, the dropdown, the palette and find bar closed, the controller released while the web view lives on, another profile's space reloading (its store, the Quick Detour and its web view released), the dropdown's headers, tooltips (no subtitles) and ⌘O item, Private into the most recent Private window and into a new one holding only the page, both boundaries refused, a space switch noting its use |
 | `QuickDetourProfileSwitchTests` (23) | the pill's rules: the menu (normal profiles in order, Private last after a separator, the window's own checked, one profile plus Private, deleted left out, no separator without Private), the decision (same profile and a gone or deleted one stay; another or Private switches at once; leaving Private asks with one or more downloads running, never otherwise; a normal page never asks); the store's replacement (a new tab on the other profile's store with the given id, the old torn down, the hook between the pages with neither listed, observers told of a replacement not a close, refusals, deleting the new profile closing it), Private (into it: its store, the session live, its download scope; out of it: the session ending, or kept for a Private window; its downloads dropped), history (visits after the switch under the new profile's scope, real loads; Private records nothing) |
 | `QuickDetourProfileSwitchWindowTests` (17) | in real windows: the pill names the profile; the menu (order, Private last after a separator, the checkmark) and its item switching; the address reloading under the other profile's cookies (a loopback page titled by a cookie the other profile set; the same window, a new tab and web view hosted with the window's delegates, no back history, the old web view released) and back; the same profile a no-op; a sheet refusing; a page mid-load reloading its address; the History page reopened as an internal page; palette and find bar closed; Open in following the profile both ways; into Private (store, dark, Open in Private Window, scope) and out (appearance, scope, Open in); the download question (no keeps everything, yes cancels and drops it; a target deleted, or a sheet put up, while it is asked refuses the switch and keeps the download); the window closing cleanly after a switch |
 | `QuickDetourExtensionTests` (+4) | the pill in real contexts: a close for the old profile (`tabs.onRemoved`, `windows.onRemoved`, both refused by id, promise and callback) and an open for the new (`windows.onCreated` popup, `tabs.onCreated` in it, `windows.getAll` from the page, `tabs.get` from the worker); switching back a new window and tab id; a third profile hearing nothing; into Private an incognito popup |
@@ -1148,6 +1203,21 @@ restarted its time and it closed 15.1 s later as "auto-closed", while the
 frontmost and a Private one stayed. Not checked: a person's own clicks, a
 real app's link, sleep and wake, sound keeping one open, several displays.
 
+TASK-210, light and dark, 2026-10-26
+([harness](../../docs/harness/task210-harness.patch)):[^harness-210] the
+bar's site settings opened below the button with the page's host, the
+switches and a pinned probe extension; its blocking switch whitelisted the
+site in Default only and reloaded the page, and again back; the probe's
+name opened its popup below its pinned button; the palette showed "Search
+or enter a URL" (the main window's "Where do you want to go?"); the
+dropdown had no subtitles. Real HID drags of 80 × 40 points from the host
+and from Open in moved the window without opening the palette or moving the
+page; a HID click on the host opened the palette; with the main window key,
+a first click on Open in only brought the Quick Detour forward and a first
+drag moved it. The main window's popover, now from the shared builder,
+listed the same and its switch reloaded the tab. Not checked: a page with
+blocked resources, several displays.
+
 Not checked at runtime (TASK-193.1): Cmd+click and page-opened windows, a normal
 Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 `.crx` installing, 1Password itself.
@@ -1166,6 +1236,8 @@ Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 
 [^webkit-windows]: WebKit, WebExtensionContextAPIWindowsCocoa.mm (windowsGetAll reads the context's own window list)
 [^harness]: TASK-193.1 runtime harness and its results
+[^site-settings]: SettingsPopoverViewController.swift (forPage, the builder both windows use)
+[^harness-210]: TASK-210 runtime harness and its results
 [^harness-2]: TASK-193.2 runtime harness, its scratch tools and results
 [^harness-3]: TASK-193.3 runtime harness and its results
 [^harness-4]: TASK-193.4 runtime harness and its results
