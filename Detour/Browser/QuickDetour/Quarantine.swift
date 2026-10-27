@@ -156,13 +156,34 @@ enum Quarantine {
 
     /// Where a main-frame navigation in a quarantine window should go instead,
     /// nil to let it through: a GET to an http(s) URL carrying tracking
-    /// parameters is loaded again without them. Back/forward and reloads are
-    /// left alone (the entry is already what it is), and so is anything that
-    /// is not a GET (a form post cannot be replayed).
-    static func trackingFreeURL(for url: URL?, httpMethod: String?, isBackForwardOrReload: Bool) -> URL? {
-        guard let url, !isBackForwardOrReload, (httpMethod ?? "GET").uppercased() == "GET" else { return nil }
+    /// parameters is loaded again without them. Left alone: back/forward and
+    /// reloads (the entry is already what it is), anything that is not a GET
+    /// (a form post cannot be replayed), a download (loading it again would
+    /// drop the link's `download` attribute and its Referer: the file would
+    /// show as a page), and a jump to an anchor of `currentURL`, the page
+    /// shown (a same-document navigation would become a full reload).
+    ///
+    /// Whether the rewrite may happen at all is `QuarantineTrackingRewrites`'
+    /// call: it keeps a page that insists on its parameters from looping.
+    static func trackingFreeURL(for url: URL?, httpMethod: String?, isBackForwardOrReload: Bool,
+                                shouldPerformDownload: Bool = false, currentURL: URL? = nil) -> URL? {
+        guard let url, !isBackForwardOrReload, !shouldPerformDownload,
+              (httpMethod ?? "GET").uppercased() == "GET",
+              !isSameDocument(url, as: currentURL) else { return nil }
         let stripped = removingTrackingParameters(from: url)
         return stripped == url ? nil : stripped
+    }
+
+    /// Whether going to `url` from `current` only moves to an anchor of the
+    /// same document: it names a fragment and is otherwise the same address,
+    /// as WebKit decides a same-document navigation for a GET.
+    private static func isSameDocument(_ url: URL, as current: URL?) -> Bool {
+        guard let current, url.fragment != nil else { return false }
+        func withoutFragment(_ url: URL) -> String {
+            let text = url.absoluteString
+            return text.firstIndex(of: "#").map { String(text[..<$0]) } ?? text
+        }
+        return withoutFragment(url) == withoutFragment(current)
     }
 
     // MARK: - User agent
@@ -228,5 +249,35 @@ enum Quarantine {
         unsafeBitCast(preferences.method(for: policySetter), to: Setter.self)(
             preferences, policySetter, current | privacyProtectionPolicy)
         return true
+    }
+}
+
+/// Keeps a quarantine page's tracking-parameter rewrite from looping (code
+/// review, TASK-194 follow-up). A rewrite cancels the navigation and loads the
+/// clean address, so a server redirect or a page script (`location.replace`)
+/// that sends the clean address straight back to its parameters would loop
+/// forever; WebKit's `_isRedirect` SPI tells only the first apart, and only
+/// while it exists.
+///
+/// So each clean address is rewritten to once, and at most `limit` are,
+/// between two navigations the user starts (`userNavigated`: an address the
+/// window loads, a link the user clicks). The navigation that brings the
+/// parameters back the second time is let through, and the page settles
+/// where it would have without quarantine.
+struct QuarantineTrackingRewrites {
+    /// Rewrites allowed between two navigations the user starts: a page that
+    /// keeps inventing new addresses is let through after this many.
+    static let limit = 8
+    private var rewritten: Set<URL> = []
+
+    /// Whether a navigation may be rewritten to `clean`; recorded when it may.
+    mutating func allows(_ clean: URL) -> Bool {
+        guard rewritten.count < Self.limit, rewritten.insert(clean).inserted else { return false }
+        return true
+    }
+
+    /// The user started a navigation: the page gets a fresh budget.
+    mutating func userNavigated() {
+        rewritten.removeAll()
     }
 }

@@ -4,7 +4,7 @@ title: Quarantine
 description: "A link opened in a throwaway Quick Detour window whose page has a non-persistent website data store of its own (TASK-194): how it is chosen (a Link Routes target, the Default for links from other apps, a route also for matching clicks, never a typed URL), the window (a Private-profile Quick Detour with its own store, its badge and tint, popups sharing the opener's store, Cmd+click a fresh one), Open in as a fresh load in any profile's space, history (none), archive (never), idle close (never), extensions (those allowed in Private), downloads (asked each time), the tracking-parameter rule, Safari's user agent, WebKit's fingerprinting protections, and the limits."
 tags: [links, privacy, window, incognito, extensions, downloads]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T06:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-194
@@ -37,6 +37,9 @@ sources:
   - id: privacy
     resource: ../platform/webkit-privacy-protections.md
     title: WebKit privacy protections
+  - id: followup-harness
+    resource: ../../docs/harness/task194-followup-harness.patch
+    title: TASK-194 follow-up runtime harness (review fixes) and its results
 ---
 
 # What it does
@@ -56,6 +59,15 @@ The user's decisions of 2026-10-26: a fresh non-persistent store per window
 to Quarantine also catches matching links clicked inside Detour, and links
 from other apps are covered; typed URLs are never quarantined; extensions
 allowed in Private run.
+
+Confirmed by the user on 2026-10-27 (after the second review), with the
+defaults chosen while building it: clicks stay quarantinable by routes;
+pages the quarantined page opens share its store; a Default of Quarantine
+takes links from other apps only; clicks in Private windows are never
+quarantined; Open in always reloads (no Private Window target, typed form
+text lost without a warning); quarantine shares the Private profile's
+per-site settings; the launcher ignores a quarantine in front; a `.crx`
+downloads like any file.
 
 # How it is chosen
 
@@ -99,7 +111,7 @@ Private-profile Quick Detour gives the rest:
 | Idle auto-close | never (the rule's Private exception) | nothing would be archived, so the timer would only lose a page the user may be reading; a quarantine holds only memory |
 | Extensions | the Private profile's contexts: those allowed in Private run (content scripts, the toolbar buttons, `sender.tab`); it is an incognito `popup` window to them; a normal profile's extensions never see it | the user's decision; the Private gate ([private profile extensions](../extensions/private-profile-extensions.md)) applies unchanged |
 | Session restore | never | as every Quick Detour |
-| The Private session (`hasLivePrivateSession`) | counts as a user: the Private site settings (content blocking's per-site switch) are shared with Private windows | a quarantine has no settings of its own; the switch affects blocking, not identity |
+| The Private session (`hasLivePrivateSession`) | counts as a user: the Private site settings (content blocking's per-site switch) are shared with Private windows, and live as long as any Private window or quarantine does | a quarantine has no settings of its own; the switch affects blocking, not identity (confirmed by the user, 2026-10-27: a site switched off in a Private window is off in a quarantine and the other way round; the review's note that `hasLivePrivateSession` counts quarantines is this, on purpose) |
 | Window look | the system appearance, an orange tint on the bar and the badge; not a Private window's dark | a look of its own |
 | Launcher (Opt-Cmd-N) | a quarantine in front names no profile: the window behind it decides | a quarantine is not a profile to browse with |
 | Routed Quick Detour profile | passed over, as a Private window is | |
@@ -115,7 +127,13 @@ opener's quarantine: WebKit hands `createWebViewWith` a copy of the opener's
 configuration, store included, and the page keeps its `window.opener` (a
 sign-in popup). **Cmd+click** (and Opt-Cmd) inside a quarantine opens
 another quarantine with a store of its own: one store per window, the
-decision.
+decision. Only the user's: a link activation without WebKit's user gesture
+(`_isUserInitiated`, `QuickDetour.linkClickOpensWindow`) is refused, as Link
+Routes never route one, so a page cannot open windows and stores (review,
+2026-10-27). WebKit is the first line here: a scripted click carries no
+modifiers into the policy, and one real Cmd-click whose handler clicks a
+link five times opened no window at all (the page followed the link once,
+in place; measured in the follow-up harness).
 
 ## The badge and its menu
 
@@ -137,7 +155,14 @@ Private window's space is never a target.
 
 `open(in:)` in a quarantine is always `reopen`: a new tab of the chosen space
 on `tab.url` (already free of tracking parameters), placed by the Link
-Routes placement, then the window closes. The load is a fresh GET on the
+Routes placement, then the window closes. Its running downloads are asked
+about first (`askToEndPrivateDownloads`) but cancelled only once the tab is
+placed (`cancelPrivateDownloads`, just before the close): when nothing
+takes the page (a window or space gone meanwhile) the window and its
+downloads stay (review, 2026-10-27; the first version cancelled them before
+placing). The question runs a modal session, so after it Open in checks
+again that the window is still there and has no sheet (a script dialog
+WebKit waits on), as the profile switch does. The load is a fresh GET on the
 space's profile's store: no cookie, no storage, no referrer from the
 quarantine. Lost, as decided for a quick look: the back/forward list, text
 typed into a form (no warning: the page is one the user has not trusted
@@ -157,8 +182,8 @@ window's are: cancelled with the window, after the close question); **Cancel**
 (Escape) refuses a destination, which cancels it before a byte is written.
 A window closing while the question is up answers it "no"; a download that
 fails while it is up is never handed on. Open in closes the window, so with
-an allowed download still running it asks first, as closing does
-(`confirmClosingWithPrivateDownloads`). An extension
+an allowed download still running it asks first, as closing does, and
+cancels it once the page has its tab. An extension
 package (`.crx`) is a download like any other here, not offered for install.
 
 ## Link tracking parameters
@@ -171,9 +196,27 @@ package (`.crx`) is a download like any other here, not offered for install.
 after percent-decoding, other parameters kept in order with their spelling.
 Applied to the link before the window loads it, and to every main-frame
 navigation of the page (`trackingFreeURL`: a GET carrying any is cancelled
-and loaded again without them; back/forward, reloads and form posts go
-through; a server redirect landing back on the address just cleaned is let
-through once, so a server that insists cannot loop the page). WebKit's own link decoration filtering, on in quarantine, removes
+and loaded again without them). Left alone: back/forward, reloads, form
+posts, **downloads** (a reload would drop the link's `download` attribute,
+showing the file as a page, and its Referer; the download's request keeps
+its parameters) and **a jump to an anchor** of the page shown (a
+same-document navigation would become a full reload).
+
+**It always settles** (`QuarantineTrackingRewrites`, review 2026-10-27).
+A rewrite is a cancel plus a fresh load, so a server redirect or a page
+script (`location.replace`) that sends the clean address straight back to
+its parameters would loop: the first fix only caught a server redirect, and
+only with WebKit's `_isRedirect` SPI, and was reset on every commit, so a
+client redirect reloaded without end (582 requests in 10 s in the test).
+Now each clean address is rewritten to once, and at most 8 are, between two
+navigations the user starts: an address the window loads (the link, the
+palette) or a link the user clicks (`_isUserInitiated` and not
+`_isRedirect`; without the SPI no click counts, so a page's scripted clicks
+cannot renew the budget). The second trip back to the parameters is let
+through and the page lands where it would have without quarantine, with
+them. Limit: after the user's click the budget is fresh, so a tracked link
+the user clicks again on the page it cleaned is cleaned again; without the
+SPI, it is let through. WebKit's own link decoration filtering, on in quarantine, removes
 the click IDs on Apple's list before the policy even sees them; this rule
 covers the rest (`utm_*`).
 
@@ -205,7 +248,12 @@ fingerprint reads, it does not make you anonymous.
 | No normal space at all | Open in is hidden |
 | A Private window's link matching a Quarantine route | not quarantined: it stays in the Private window |
 | Open in while a download the user allowed is running | asked first, as closing the window is (Continue Downloading keeps everything; a yes cancels it and opens) |
-| A server redirecting the cleaned address back to one with tracking parameters | let through the second time (`lastTrackingFreeLoad`, cleared on commit) rather than looping; without WebKit's `_isRedirect` SPI the loop guard cannot tell a redirect |
+| A server redirect or a script (`location.replace`) sending the cleaned address back to one with tracking parameters | let through the second time (`QuarantineTrackingRewrites`), with or without WebKit's SPI; the page keeps the parameters |
+| A page that keeps inventing new tracked addresses | at most 8 rewrites between two navigations the user starts, then let through |
+| A download link carrying tracking parameters | a download (asked), its request unchanged |
+| A jump to an anchor of a page whose address kept its parameters | a same-document navigation, not rewritten |
+| A page's own scripted Cmd+click | refused: no window, no store |
+| Open in when nothing takes the page | the window stays, its downloads too (asked, not cancelled) |
 | A download that fails while its question is up | a later yes hands nothing on (the gate remembers the failure) |
 | The window closed while a download question is up | answered "no" |
 
@@ -213,8 +261,10 @@ fingerprint reads, it does not make you anonymous.
 
 | Suite | Covers |
 |---|---|
-| `QuarantineTests` (27) | the parameter rule (lists, order and spelling kept, case, lookalikes, repeated and valueless, fragment, non-web URLs), which navigations are reloaded without them, Safari's user agent, the SPI applied and OR-ed (skipped without it), the Open in rule (every profile, all reloading, the source, most recent, Private and deleted left out, none); the store: a fresh store per quarantine, never the Private or a profile's, a popup sharing it, the Private profile's extension controller, the user agent on the web view, the session released with its last page, no history (real load), no archive, no favicon fetch |
-| `QuarantineWindowTests` (15) | in real windows: the badge and the appearance, the pill switching nothing, never idle-closed, no archive; two quarantines sharing nothing and no Private window's or profile's cookie reaching one (a loopback server recording each request's `Cookie` header); a page's window sharing the quarantine; a clicked link losing its tracking parameters before the request; canvas noise and `screen` (skipped without the SPI); Open in listing every profile's spaces and **AC #3**: a quarantined page that got a `Set-Cookie` and wrote `localStorage`, moved by Open in, loads fresh in the space's store with no `Cookie` header and no storage, and the profile's cookie store has none; downloads asked, cancelled on no (nothing listed, no file) and saved on yes (scoped to the window); Open in asking before cancelling a running download; a redirect back to tracking parameters not looping |
+| `QuarantineTests` (31) | the parameter rule (lists, order and spelling kept, case, lookalikes, repeated and valueless, fragment, non-web URLs), which navigations are reloaded without them (not a download, not an anchor jump), the rewrite budget (once per address, 8 per user navigation), Safari's user agent, the SPI applied and OR-ed (skipped without it), the Open in rule (every profile, all reloading, the source, most recent, Private and deleted left out, none); the store: a fresh store per quarantine, never the Private or a profile's, a popup sharing it, the Private profile's extension controller, the user agent on the web view, the session released with its last page, no history (real load), no archive, no favicon fetch |
+| `QuarantineWindowTests` (21) | in real windows: the badge and the appearance, the pill switching nothing, never idle-closed, no archive; two quarantines sharing nothing and no Private window's or profile's cookie reaching one (a loopback server recording each request's `Cookie` header); a page's window sharing the quarantine; a clicked link losing its tracking parameters before the request; canvas noise and `screen` (skipped without the SPI); Open in listing every profile's spaces and **AC #3**: a quarantined page that got a `Set-Cookie` and wrote `localStorage`, moved by Open in, loads fresh in the space's store with no `Cookie` header and no storage, and the profile's cookie store has none; downloads asked, cancelled on no (nothing listed, no file) and saved on yes (scoped to the window); Open in asking before cancelling a running download, and cancelling nothing when no tab is placed (a placement seam) or when the page put up a sheet while the question ran; a server redirect and a `location.replace` back to tracking parameters settling; an anchor jump not reloaded; a tracked download link still asked about; a page's timer Cmd+click opening no window |
+| `QuickDetourTests` (+1) | `linkClickOpensWindow`: only a link activation with Command and the user's gesture |
+| `LinkRouteResolverTests` (+1) | a Quarantine route skipped in a Private window falls through to the next route (Private Window, a space), all ending in `.stay`, whatever the Default |
 | `LinkRouteResolverTests`, `LinkRoutingEligibilityTests`, `LinkPlacementTests`, `LinkRouteEditorTests` | the rules above, `.openInQuarantine`, the target offered |
 | `ExternalLinkRoutingTests` (+4) | a route and the Default opening a quarantine with its own store and the front window's space in Open in; parameters stripped with the original kept; two links, two stores |
 | `InPageLinkRoutingTests` (+3) | a routed click quarantined while the tab stays; never from a Private window; a typed URL never |
@@ -259,6 +309,17 @@ which lists every step and result):[^harness]
 Not checked at runtime: a real app's link, an extension in a quarantine
 (unit tests), the badge's menu drawn, several displays, VoiceOver.
 
+The review fixes, 2026-10-27 ([follow-up harness](../../docs/harness/task194-followup-harness.patch)),[^followup-harness]
+light and dark: a page `location.replace`-ing its clean address back to
+`?utm_source=loop` settled after three requests; a click on its anchor
+added `#section` with no request and no reload; the user's posted
+Cmd-click opened a quarantine with its own store, a page timer's Cmd-click
+and a burst of five scripted clicks from one real Cmd-click opened none; a
+`download` link with `?utm_source=x` put up the question, its request
+unchanged; the Links caption wrapped in both appearances. Not at runtime:
+Open in failing to place (no way to make it fail in the app; a unit test
+with a seam).
+
 # Related
 
 - [Quick Detour](./quick-detour.md) — the window a quarantine is.
@@ -270,3 +331,4 @@ Not checked at runtime: a real app's link, an extension in a quarantine
 [^task-194]: Quarantine: links in a throwaway Quick Detour window, then moved to a profile and space on purpose
 [^privacy]: WebKit privacy protections
 [^harness]: TASK-194 runtime harness and its results
+[^followup-harness]: TASK-194 follow-up runtime harness (review fixes) and its results

@@ -4,7 +4,7 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
 sources:
   - id: task-169
     resource: backlog:TASK-169
@@ -48,6 +48,9 @@ sources:
   - id: task-191-4
     resource: backlog:TASK-191.4
     title: "TASK-191.4: route typed URLs and links clicked inside Detour"
+  - id: task-194-followup
+    resource: ../../docs/harness/task194-followup-harness.patch
+    title: TASK-194 follow-up runtime harness (inactive app, occluded window, clicks handed to the web view)
 ---
 
 Almost every interaction check can be done by the app on itself. What an
@@ -212,6 +215,18 @@ edges ([UI probes](./ui-probes.md)).
   out, and log both; even then an occasional first click after the window
   became key did not land and had to be re-posted, so confirm each click by
   its effect (the policy log line), not by having posted it.[^task-191-4]
+  When activation is refused outright (macOS 26's cooperative activation:
+  `NSApp.isActive` stays false while the person's app is in front), the
+  new window also opens *behind* their windows, occluded, and WebKit paints
+  nothing (a blank page in the capture). What worked (TASK-194 follow-up,
+  2026-10-27): `window.orderFrontRegardless()` (no activation) to
+  un-occlude it, Cmd-clicks posted as usual, and plain clicks handed to the
+  web view itself — `webView.mouseDown(with:)`, a 0.1 s pause,
+  `webView.mouseUp(with:)`, real `NSEvent`s at the element's point — which
+  WebKit took as a user's click (an anchor jump, a `download` link). Do not
+  set `window.level = .floating` from the harness `Task`: it trapped in
+  `-[NSWMWindowCoordinator performTransactionUsingBlock:]` (SIGTRAP, exit
+  133).[^task-194-followup]
 - **A posted drag starts a real drag session that cannot be aimed.** Posted
   `leftMouseDown` and `leftMouseDragged` events on an `NSTableView` row begin
   a drag session, but the session tracks the real pointer, not the posted
@@ -309,3 +324,4 @@ above.
 [^harness-189]: TASK-189 survey harness (the Settings window; an alert answered from the modal run loop)
 [^harness-185]: TASK-185 harness (posted Option-click, the real link menu)
 [^task-191-4]: TASK-191.4: route typed URLs and links clicked inside Detour
+[^task-194-followup]: TASK-194 follow-up runtime harness (inactive app, occluded window, clicks handed to the web view)

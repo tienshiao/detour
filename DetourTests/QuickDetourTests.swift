@@ -91,6 +91,23 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertFalse(QuickDetour.isHistorySpaceID("not a uuid", ofProfileID: a))
     }
 
+    // MARK: - Cmd+click
+
+    /// A Cmd+click opens another window (in a quarantine, another quarantine
+    /// with a store of its own) only from the user: a link activation the
+    /// page's own script makes never opens windows (code review, TASK-194
+    /// follow-up), as Link Routes treat a click without a gesture.
+    func testOnlyTheUsersCmdClickOpensAWindow() {
+        XCTAssertTrue(QuickDetour.linkClickOpensWindow(isLinkActivation: true, modifiers: .command, isUserGesture: true))
+        XCTAssertTrue(QuickDetour.linkClickOpensWindow(isLinkActivation: true, modifiers: [.command, .shift],
+                                                       isUserGesture: true))
+        XCTAssertFalse(QuickDetour.linkClickOpensWindow(isLinkActivation: true, modifiers: .command, isUserGesture: false),
+                       "a page's scripted click")
+        XCTAssertFalse(QuickDetour.linkClickOpensWindow(isLinkActivation: true, modifiers: [], isUserGesture: true))
+        XCTAssertFalse(QuickDetour.linkClickOpensWindow(isLinkActivation: false, modifiers: .command, isUserGesture: true),
+                       "a script navigation")
+    }
+
     // MARK: - Which profile a new window uses
 
     func testANewWindowUsesTheFrontmostWindowsProfile() {

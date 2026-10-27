@@ -99,11 +99,10 @@ final class QuickDetourWindowController: NSWindowController {
     /// "no" if the window goes first.
     var pendingDownloadAnswers: [UUID: (Bool) -> Void] = [:]
 
-    /// The address a quarantine page was last sent to without its tracking
-    /// parameters (TASK-194), until a page commits: a server that redirects
-    /// it back to the parameters is then let through rather than stripped
-    /// again forever.
-    var lastTrackingFreeLoad: URL?
+    /// The addresses a quarantine page was sent to without its tracking
+    /// parameters since the user last navigated (TASK-194): what keeps the
+    /// rewrite from looping.
+    var trackingRewrites = QuarantineTrackingRewrites()
 
     // MARK: - State
 
@@ -403,6 +402,10 @@ final class QuickDetourWindowController: NSWindowController {
     /// user asked for, as a browser window's palette does.
     func load(_ url: URL, typed: Bool) {
         guard let tab else { return }
+        // An address the window loads is the user's (the link it opened
+        // with, the palette): a fresh tracking-parameter budget, before the
+        // load asks the policy.
+        trackingRewrites.userNavigated()
         if let page = InternalPage(url: url), typed {
             tab.loadInternalPage(page)
         } else {
@@ -632,7 +635,14 @@ final class QuickDetourWindowController: NSWindowController {
     /// returning that window.
     static func placeTab(_ decision: LinkRouteDecision, makeTab: (Space) -> BrowserTab?,
                          didSelect: ((BrowserWindowController, BrowserTab) -> Void)? = nil) -> BrowserWindowController? {
-        (NSApp.delegate as? AppDelegate)?.placeTab(routedTo: decision, makeTab: makeTab, didSelect: didSelect)
+        placement(decision, makeTab, didSelect)
+    }
+
+    /// The placement `placeTab` carries out; a test makes it fail (nothing
+    /// takes the tab: a window or space gone meanwhile).
+    static var placement: (LinkRouteDecision, (Space) -> BrowserTab?,
+                           ((BrowserWindowController, BrowserTab) -> Void)?) -> BrowserWindowController? = {
+        (NSApp.delegate as? AppDelegate)?.placeTab(routedTo: $0, makeTab: $1, didSelect: $2)
     }
 
     /// The button and its dropdown, from the store as it is now: the source
@@ -679,9 +689,16 @@ final class QuickDetourWindowController: NSWindowController {
             guard case .space(let spaceID) = target, let space = store.space(withID: spaceID),
                   !space.isIncognito else { return }
             // Its downloads are a Private window's and go with it: asked
-            // about first, as closing the window would.
-            guard confirmClosingWithPrivateDownloads() else { return }
-            reopen(routedTo: .openInSpace(spaceID))
+            // about first, as closing the window would, but cancelled only
+            // once the address has its tab; when nothing takes it, the window
+            // and its downloads stay (code review, TASK-194 follow-up).
+            guard askToEndPrivateDownloads() else { return }
+            // The question may have run a modal session: the window can have
+            // gone, or the page put up a sheet WebKit waits on, meanwhile.
+            guard !isTornDown, window?.attachedSheet == nil else { return }
+            reopen(routedTo: .openInSpace(spaceID), beforeClosing: { [weak self] in
+                self?.cancelPrivateDownloads()
+            })
             return
         }
         switch target {
@@ -734,7 +751,7 @@ final class QuickDetourWindowController: NSWindowController {
     /// page's address; this window then closes, taking its page down. Every
     /// Open in from a quarantine (TASK-194): a fresh load on the space's
     /// store, no referrer, nothing of the quarantine's store.
-    private func reopen(routedTo decision: LinkRouteDecision) {
+    private func reopen(routedTo decision: LinkRouteDecision, beforeClosing: () -> Void = {}) {
         guard let url = tab?.url else { return }
         let receiving = Self.placeTab(decision, makeTab: { [store] space in
             // An internal page the user had opened here (typed) is opened
@@ -743,6 +760,7 @@ final class QuickDetourWindowController: NSWindowController {
                 ?? store.addTab(in: space, url: url)
         })
         guard receiving != nil else { return }
+        beforeClosing()
         // The page lives on in the space: not a close for the archive.
         closeDisposition = .discard
         window?.close()
@@ -936,9 +954,8 @@ final class QuickDetourWindowController: NSWindowController {
     func switchProfile(to target: Profile) -> Bool {
         // A quarantine is left only by Open in (TASK-194).
         guard !isQuarantine, !isTornDown, window?.attachedSheet == nil, let page = tab else { return false }
-        let manager = DownloadManager.shared
-        let closing = PrivateDownloadClosePolicy.Closing.window(downloadScope)
-        let inFlight = profile.isIncognito ? manager.privateDownloadsInFlight(closing: closing).count : 0
+        let inFlight = profile.isIncognito
+            ? DownloadManager.shared.privateDownloadsInFlight(closing: privateDownloadClosing).count : 0
         switch QuickDetour.profileSwitchDecision(from: TabStore.openInSnapshot(of: profile),
                                                  to: TabStore.openInSnapshot(of: target),
                                                  privateDownloadsInFlight: inFlight) {
@@ -952,7 +969,7 @@ final class QuickDetourWindowController: NSWindowController {
             // have gone meanwhile, and the page can have put up a sheet (WebKit
             // keeps delivering its messages while the alert runs).
             guard !isTornDown, tab === page, !target.isDeleted, window?.attachedSheet == nil else { return false }
-            manager.cancelPrivateDownloads(closing: closing)
+            cancelPrivateDownloads()
         }
 
         let address = page.url
@@ -1046,18 +1063,28 @@ extension QuickDetourWindowController: NSWindowDelegate {
     /// Whether the window may close as far as its Private downloads go: true
     /// with none in flight, else the question's answer (a yes cancels them).
     func confirmClosingWithPrivateDownloads() -> Bool {
-        let manager = DownloadManager.shared
-        let closing = PrivateDownloadClosePolicy.Closing.window(downloadScope)
-        let inFlight = manager.privateDownloadsInFlight(closing: closing).count
+        guard askToEndPrivateDownloads() else { return false }
+        cancelPrivateDownloads()
+        return true
+    }
+
+    /// The close question alone: true with no Private download in flight,
+    /// else the answer. Cancels nothing (`cancelPrivateDownloads` does).
+    func askToEndPrivateDownloads() -> Bool {
+        let inFlight = DownloadManager.shared.privateDownloadsInFlight(closing: privateDownloadClosing).count
         switch PrivateDownloadClosePolicy.decision(inFlightCount: inFlight) {
-        case .close:
-            return true
-        case .confirm(let prompt):
-            guard Self.runPrivateDownloadCloseAlert(prompt) else { return false }
-            manager.cancelPrivateDownloads(closing: closing)
-            return true
+        case .close: return true
+        case .confirm(let prompt): return Self.runPrivateDownloadCloseAlert(prompt)
         }
     }
+
+    /// Cancels this window's Private downloads (none for a normal Quick
+    /// Detour, whose downloads are the normal list's).
+    func cancelPrivateDownloads() {
+        DownloadManager.shared.cancelPrivateDownloads(closing: privateDownloadClosing)
+    }
+
+    private var privateDownloadClosing: PrivateDownloadClosePolicy.Closing { .window(downloadScope) }
 
     func windowDidBecomeKey(_ notification: Notification) {
         noteUse()

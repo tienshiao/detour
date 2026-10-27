@@ -106,6 +106,62 @@ final class QuarantineTests: XCTestCase {
         XCTAssertNil(Quarantine.trackingFreeURL(for: nil, httpMethod: "GET", isBackForwardOrReload: false))
     }
 
+    /// A download keeps its request: loading it again would drop the link's
+    /// `download` attribute (the file would show as a page) and its Referer
+    /// (code review, TASK-194 follow-up).
+    func testADownloadGoesThrough() {
+        let tracked = URL(string: "https://a.test/report.pdf?utm_source=x")!
+        XCTAssertNil(Quarantine.trackingFreeURL(for: tracked, httpMethod: "GET", isBackForwardOrReload: false,
+                                                shouldPerformDownload: true))
+    }
+
+    /// A jump to an anchor of the page shown is not a load: removing the
+    /// parameters would turn it into one (code review, TASK-194 follow-up).
+    func testASameDocumentNavigationGoesThrough() {
+        let page = URL(string: "https://a.test/p?utm_source=x")!
+        XCTAssertNil(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/p?utm_source=x#section")!,
+                                                httpMethod: "GET", isBackForwardOrReload: false, currentURL: page))
+        XCTAssertNil(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/p?utm_source=x#b")!,
+                                                httpMethod: "GET", isBackForwardOrReload: false,
+                                                currentURL: URL(string: "https://a.test/p?utm_source=x#a")!),
+                     "from one anchor to another")
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/p?utm_source=x")!,
+                                                  httpMethod: "GET", isBackForwardOrReload: false, currentURL: page),
+                       URL(string: "https://a.test/p")!, "the same address without an anchor is a load")
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/q?utm_source=x#s")!,
+                                                  httpMethod: "GET", isBackForwardOrReload: false, currentURL: page),
+                       URL(string: "https://a.test/q#s")!, "another page's anchor is a load")
+    }
+
+    // MARK: - The rewrite always settles
+
+    /// A page or server that sends the clean address straight back to its
+    /// parameters (a redirect, `location.replace`) is let through the second
+    /// time; it cannot loop the page (code review, TASK-194 follow-up).
+    func testTheSameCleanAddressIsRewrittenOnceUntilTheUserNavigates() {
+        var rewrites = QuarantineTrackingRewrites()
+        let clean = URL(string: "https://a.test/p")!
+        XCTAssertTrue(rewrites.allows(clean))
+        XCTAssertFalse(rewrites.allows(clean), "back to the parameters: let through")
+        XCTAssertFalse(rewrites.allows(clean), "and every time after, until the user navigates")
+        XCTAssertTrue(rewrites.allows(URL(string: "https://a.test/other")!), "another address is rewritten")
+
+        rewrites.userNavigated()
+        XCTAssertTrue(rewrites.allows(clean), "a click of the user's starts afresh")
+    }
+
+    /// A page that keeps inventing new addresses is let through after a
+    /// fixed number of rewrites, whatever WebKit tells the policy.
+    func testRewritesHaveABudgetPerUserNavigation() {
+        var rewrites = QuarantineTrackingRewrites()
+        for n in 0..<QuarantineTrackingRewrites.limit {
+            XCTAssertTrue(rewrites.allows(URL(string: "https://a.test/p?n=\(n)")!), "rewrite \(n)")
+        }
+        XCTAssertFalse(rewrites.allows(URL(string: "https://a.test/p?n=new")!), "over budget: let through")
+        rewrites.userNavigated()
+        XCTAssertTrue(rewrites.allows(URL(string: "https://a.test/p?n=new")!))
+    }
+
     // MARK: - User agent
 
     func testTheUserAgentIsSafarisWithTheFrozenOSVersionAndNoDetourToken() {

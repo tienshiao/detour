@@ -1,0 +1,376 @@
+TASK-194 follow-up runtime harness (review fixes F2, F3, F6): Debug build, data
+dir DetourVerify1941, 2026-10-27, macOS 26.7, light and dark. Temporary code,
+never committed to Detour/. Gated on DETOUR_VERIFY_DIR; DETOUR_VERIFY_APPEARANCE
+light or dark; DETOUR_VERIFY_PORT the fixture server's port;
+DETOUR_VERIFY_SERVER_LOG its request log (Host, path, Referer);
+DETOUR_VERIFY_DOWNLOADS a scratch folder (never ~/Downloads). Input after 12 s
+of HID idle; captures by window number (screencapture -l) only.
+
+Environment quirk met here: another app was active and cooperative activation
+refused NSApp.activate, so the quarantine windows opened behind it, occluded,
+and WebKit painted nothing. The harness orders the window in front with
+orderFrontRegardless() (no activation). Setting window.level = .floating from
+the harness Task trapped in AppKit (-[NSWMWindowCoordinator
+performTransactionUsingBlock:], SIGTRAP), so it is not used. In an inactive
+app's window a posted plain click is an activation click the page never sees;
+a Cmd-click goes through. Plain clicks are therefore handed to the web view
+(webView.mouseDown/mouseUp with real NSEvents) while the app is inactive.
+
+    git apply docs/harness/task194-followup-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    python3 -I server.py 8795 out/server.log &      # below
+    run.sh light; run.sh dark                        # below
+    git apply -R docs/harness/task194-followup-harness.patch && xcodegen generate
+
+Results (light and dark the same):
+1. F3, a page that location.replace()s its clean address back to
+   ?utm_source=loop: the server saw /replace, /replace (the rewrite),
+   /replace?utm_source=loop (let through the second time), then nothing for
+   3 s; the page settled, titled, painted. Before the fix the same page
+   reloaded without end (582 requests in 10 s in the unit test).
+1b. F6, a click on an anchor (#section) of that page: the URL gained
+   #section, window.marker survived, no request reached the server (no
+   reload without the parameters).
+2a. F2, the user's Cmd-click (posted, .command) on a link: a second
+   quarantine with its own store; the page stayed.
+2b. The page's timer dispatching a Cmd-click (MouseEvent metaKey, no user
+   gesture): no window. WebKit hands the policy no modifiers for a synthetic
+   click, so the page followed it in place (/probe?n=timer).
+2c. One real Cmd-click on a link whose click handler preventDefault()s and
+   clicks another link five times: no window at all; the page navigated once
+   to the other link in place. Scripted clicks inherit the gesture but not
+   the modifiers, so a page cannot multiply the user's Cmd-click into windows.
+3. F6, <a download href="/report.txt?utm_source=x">: the download question
+   ("Download “report.txt”?" / "From 127.0.0.1, …", Cancel / Download); the
+   request kept its parameters and its Referer (the download is not
+   rewritten); Escape: no file, nothing listed.
+4. Settings > Links: the Default caption with "except in Private windows",
+   wrapping in four lines, light and dark.
+Not verified at runtime: F5 (Open in when nothing takes the page: no way to
+make the placement fail in the running app; unit test with a seam), F7/F8/F9
+(pure rule and a one-line filter; unit tests), the loop without WebKit's
+_isRedirect SPI (pure rule tests).
+
+--- server.py (scratch fixture) ---
+    # TASK-194 follow-up harness fixture. Usage: python3 -I server.py PORT LOGFILE
+    import sys
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    PORT = int(sys.argv[1])
+    LOG = sys.argv[2]
+    STYLE = 'style="font: 15px -apple-system; padding: 24px"'
+    
+    REPLACE = """<html><head><script>location.replace('/replace?utm_source=loop');</script></head><body>replacing</body></html>"""
+    REPLACED = """<html><head><title>Replaced</title><script>window.marker = 'kept';</script></head><body %s>
+    <h2>Landed with its parameters</h2><p id="u"></p><script>document.getElementById('u').textContent = location.href;</script>
+    <p><a id="anchor" href="#section">Jump to the section</a></p><div style="height: 900px"></div><h3 id="section">Section</h3></body></html>""" % STYLE
+    CMD = """<html><head><title>Cmd</title></head><body %s><h2>Cmd+click</h2>
+    <p><a id="plain" href="/probe?n=plain">A link (the user's Cmd+click)</a></p>
+    <p><a id="burst" href="/probe?n=burst">A link whose click handler clicks another link five times</a></p>
+    <p><a id="target" href="/probe?n=target">target</a></p>
+    <p><a id="timer" href="/probe?n=timer">target of the page's timer</a></p>
+    <script>
+    document.getElementById('burst').addEventListener('click', (e) => {
+      e.preventDefault();
+      for (let i = 0; i < 5; i++) document.getElementById('target').click();
+    });
+    window.timerCmdClick = () => setTimeout(() => document.getElementById('timer').dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true })), 1500);
+    </script></body></html>""" % STYLE
+    PROBE = """<html><head><title>Probe</title></head><body %s><h2>Probe</h2><p id="u"></p>
+    <script>document.getElementById('u').textContent = location.href;</script></body></html>""" % STYLE
+    DL = """<html><head><title>Download</title></head><body %s><h2>Download</h2>
+    <p><a id="dl" href="/report.txt?utm_source=x" download="report.txt">Download report.txt (tracked link)</a></p></body></html>""" % STYLE
+    
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            with open(LOG, 'a') as f:
+                f.write("%s %s referer=%s\n" % (self.headers.get('Host'), self.path, self.headers.get('Referer')))
+            path, _, query = self.path.partition('?')
+            headers = {'Content-Type': 'text/html; charset=utf-8'}
+            status = 200
+            if path == '/replace': body = REPLACED if query else REPLACE
+            elif path == '/cmd': body = CMD
+            elif path == '/probe': body = PROBE
+            elif path == '/dl': body = DL
+            elif path == '/report.txt': body = 'quarantined report\n'; headers['Content-Type'] = 'text/plain'
+            else: status = 404; body = 'not found'
+            data = body.encode()
+            self.send_response(status)
+            for k, v in headers.items(): self.send_header(k, v)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+    
+    ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
+
+--- run.sh ---
+    #!/bin/zsh
+    # run.sh <light|dark>: launches the harness build, serves SHOOT/SHOOTRECT
+    # lines from the log with screencapture, kills only the launched PID.
+    SP=/private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/953f551f-71df-4025-b208-16f0ecfa685a/scratchpad/task194f
+    AP=$1
+    APP=/Users/tma/Projects/browser/MyBrowser/.derived/Build/Products/Debug/Detour.app
+    LOG=$SP/out/verify-$AP.log
+    rm -f -- $LOG
+    DETOUR_DATA_DIR=DetourVerify1941 DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_APPEARANCE=$AP \
+      DETOUR_VERIFY_PORT=8795 DETOUR_VERIFY_SERVER_LOG=$SP/out/server.log DETOUR_VERIFY_DOWNLOADS=$SP/downloads \
+      "$APP/Contents/MacOS/Detour" > $SP/out/stderr-$AP.log 2>&1 &
+    PID=$!
+    echo "launched $PID"
+    seen=0
+    for i in $(seq 1 900); do
+      sleep 0.5
+      [ -f $LOG ] || continue
+      total=$(wc -l < $LOG)
+      if [ $total -gt $seen ]; then
+        sed -n "$((seen+1)),${total}p" $LOG | while read -r line; do
+          case "$line" in
+            *"SHOOT "*) set -- ${=line#*SHOOT }; screencapture -x -o -l $2 $SP/out/$1.png && echo "shot $1";;
+            *"SHOOTRECT "*) set -- ${=line#*SHOOTRECT }; screencapture -x -R $2 $SP/out/$1.png && echo "shot $1";;
+          esac
+        done
+        seen=$total
+      fi
+      if grep -q "^\[.*\] done" $LOG; then break; fi
+      kill -0 $PID 2>/dev/null || { wait $PID; echo "app exited status $?"; break; }
+    done
+    kill $PID 2>/dev/null; echo "killed $PID"
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 64c96ee..ee5bd2a 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask194FollowupHarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task194FollowupHarness.swift b/Detour/App/Task194FollowupHarness.swift
+new file mode 100644
+index 0000000..5d5ba9b
+--- /dev/null
++++ b/Detour/App/Task194FollowupHarness.swift
+@@ -0,0 +1,218 @@
++// TEMP TASK-194 follow-up verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask194FollowupHarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let port = env["DETOUR_VERIFY_PORT"] ?? "8795"
++        let base = "http://127.0.0.1:\(port)"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let serverLog = env["DETOUR_VERIFY_SERVER_LOG"] ?? ""
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++        // Never the real ~/Downloads.
++        if let dir = env["DETOUR_VERIFY_DOWNLOADS"] {
++            DownloadManager.shared.downloadsDirectory = URL(fileURLWithPath: dir)
++        }
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            // Cooperative activation keeps another app in front: order the
++            // window above it anyway (no activation; setting a floating level
++            // here traps in AppKit), so it is not occluded and WebKit renders it.
++            window?.orderFrontRegardless()
++            await sleep(0.5)
++            log("not frontmost (active=\(NSApp.isActive)): floated; occluded=\(window.map { !$0.occlusionState.contains(.visible) } ?? true)")
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(0.8)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        var eventNumber = 9500
++        func post(_ e: NSEvent?) { if let e { NSApp.postEvent(e, atStart: false) } }
++        func clickLink(_ id: String, in webView: WKWebView?, mods: NSEvent.ModifierFlags = []) async {
++            guard let webView, let window = webView.window else { return log("clickLink \(id): no web view") }
++            let js = "(() => { const e = document.getElementById('\(id)'); if (!e) return null; e.scrollIntoView({block: 'center'}); const b = e.getBoundingClientRect(); return [b.x + Math.min(20, b.width / 2), b.y + b.height / 2]; })()"
++            guard let r = try? await webView.evaluateJavaScript(js) as? [Double] else { return log("clickLink \(id): no element") }
++            if humanIdle() < 1 { return log("ABORT human input before a click: not posted") }
++            let p = webView.convert(NSPoint(x: r[0], y: r[1]), to: nil)
++            if mods.isEmpty && !NSApp.isActive {
++                // An inactive app's window takes a plain first click as an
++                // activation click (refused: another app is active), so the
++                // page never sees it. Handed to the web view itself, as the
++                // window would once active: real AppKit events to WebKit.
++                func make(_ type: NSEvent.EventType) -> NSEvent? {
++                    eventNumber += 1
++                    return NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                              context: nil, eventNumber: eventNumber, clickCount: 1,
++                                              pressure: type == .leftMouseDown ? 1 : 0)
++                }
++                if let down = make(.leftMouseDown), let up = make(.leftMouseUp) {
++                    webView.mouseDown(with: down)
++                    await sleep(0.1)
++                    webView.mouseUp(with: up)
++                }
++                log("clickLink \(id): handed to the web view (app inactive)")
++                return
++            }
++            for type in [NSEvent.EventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                post(NSEvent.mouseEvent(with: type, location: p, modifierFlags: mods,
++                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                        context: nil, eventNumber: eventNumber, clickCount: type == .mouseMoved ? 0 : 1,
++                                        pressure: type == .leftMouseDown ? 1 : 0))
++            }
++        }
++        func key(_ chars: String, keyCode: UInt16, to window: NSWindow) {
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                post(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
++                                      windowNumber: window.windowNumber, context: nil, characters: chars,
++                                      charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode))
++            }
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func quarantines() -> [QuickDetourWindowController] { QuickDetourWindowController.openControllers.filter(\.isQuarantine) }
++        func serverLines(_ needle: String) -> [String] {
++            ((try? String(contentsOfFile: serverLog, encoding: .utf8)) ?? "").split(separator: "\n")
++                .map(String.init).filter { $0.contains(needle) }
++        }
++        func closeAll() {
++            for q in quarantines() { q.closeDisposition = .discard; q.close() }
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start \(ap)")
++            let privateProfile = store.ensureIncognitoProfile()
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++
++            // 1. A client redirect back to utm_*: the page settles.
++            let before1 = serverLines("/replace").count
++            let q1 = QuickDetourWindowController.openQuarantine(url: URL(string: base + "/replace")!,
++                                                               privateProfile: privateProfile, sourceSpace: home)
++            _ = await waitFor("the replace page to settle") { q1.tab?.title == "Replaced" && q1.tab?.isLoading == false }
++            await sleep(3)
++            let loads = serverLines("/replace").dropFirst(before1)
++            log("1 loop: url=\(q1.tab?.url?.absoluteString ?? "nil") title=\(q1.tab?.title ?? "nil") loading=\(q1.tab?.isLoading ?? true) requests(\(loads.count))=\(Array(loads))")
++            await ensureFront(q1.window)
++            await shoot("01-replace-settled", q1.window)
++
++            // 1b. A real click on an anchor of that page: no reload.
++            let before1b = serverLines("/replace").count
++            await clickLink("anchor", in: q1.tab?.webView)
++            _ = await waitFor("the anchor") { q1.tab?.webView?.url?.fragment == "section" }
++            await sleep(1.5)
++            let marker = try? await q1.tab?.webView?.evaluateJavaScript("window.marker") as? String
++            log("1b anchor: url=\(q1.tab?.webView?.url?.absoluteString ?? "nil") marker=\(marker ?? "nil") newRequests=\(serverLines("/replace").count - before1b)")
++            closeAll()
++
++            // 2. Cmd+click in a quarantine: the user's opens one; a page timer's
++            // synthetic Cmd+click opens none; a burst handler from one real
++            // Cmd+click is counted.
++            let q2 = QuickDetourWindowController.openQuarantine(url: URL(string: base + "/cmd")!,
++                                                               privateProfile: privateProfile, sourceSpace: home)
++            _ = await waitFor("the cmd page") { q2.tab?.title == "Cmd" && q2.tab?.isLoading == false }
++            await ensureFront(q2.window)
++            await clickLink("plain", in: q2.tab?.webView, mods: .command)
++            _ = await waitFor("the user's Cmd+click quarantine") { quarantines().count == 2 }
++            await sleep(1)
++            let others = quarantines().filter { $0 !== q2 }
++            log("2a user's Cmd+click: quarantines=\(quarantines().count) newURL=\(others.first?.tab?.url?.absoluteString ?? "nil") ownStore=\(others.first?.quarantine !== q2.quarantine) cmdPageStays=\(q2.tab?.url?.path ?? "nil")")
++            for q in others { q.closeDisposition = .discard; q.close() }
++
++            _ = try? await q2.tab?.webView?.evaluateJavaScript("window.timerCmdClick(); true")
++            await sleep(4)
++            log("2b page timer's Cmd+click: quarantines=\(quarantines().count) cmdPage=\(q2.tab?.url?.absoluteString ?? "nil") server=\(serverLines("n=timer"))")
++            if q2.tab?.url?.path != "/cmd" {
++                q2.load(URL(string: base + "/cmd")!, typed: false)
++                _ = await waitFor("the cmd page again") { q2.tab?.title == "Cmd" && q2.tab?.isLoading == false }
++            }
++
++            await ensureFront(q2.window)
++            await clickLink("burst", in: q2.tab?.webView, mods: .command)
++            await sleep(4)
++            log("2c one real Cmd+click whose handler clicks a link 5 times: quarantines=\(quarantines().count) cmdPage=\(q2.tab?.url?.absoluteString ?? "nil") server=\(serverLines("n=target").count)x target, \(serverLines("n=burst").count)x burst")
++            await shoot("02-cmd-after-burst", q2.window)
++            closeAll()
++
++            // 3. A tracked download link: the download question.
++            let q3 = QuickDetourWindowController.openQuarantine(url: URL(string: base + "/dl")!,
++                                                               privateProfile: privateProfile, sourceSpace: home)
++            _ = await waitFor("the download page") { q3.tab?.title == "Download" && q3.tab?.isLoading == false }
++            await ensureFront(q3.window)
++            await clickLink("dl", in: q3.tab?.webView)
++            _ = await waitFor("the download question") { q3.window?.attachedSheet != nil }
++            if let sheet = q3.window?.attachedSheet {
++                let texts = (sheet.contentView.map(allTexts) ?? []).joined(separator: " | ")
++                log("3 question: \(texts) page=\(q3.tab?.url?.absoluteString ?? "nil") server=\(serverLines("/report.txt"))")
++                await shoot("03-download-question", q3.window)
++                await awaitIdle(3)
++                key("\u{1b}", keyCode: 53, to: sheet)
++                _ = await waitFor("the question to go") { q3.window?.attachedSheet == nil }
++                await sleep(1)
++                let files = (try? FileManager.default.contentsOfDirectory(atPath: DownloadManager.shared.downloadsDirectory.path)) ?? []
++                log("3 escape: files=\(files) listed=\(DownloadManager.shared.items.filter { $0.filename == "report.txt" }.count)")
++            } else {
++                log("3 NO QUESTION: page=\(q3.tab?.url?.absoluteString ?? "nil") server=\(serverLines("/report.txt"))")
++            }
++            closeAll()
++
++            // 4. Settings > Links: the caption.
++            SettingsWindowController.shared.showLinksPane()
++            await sleep(1.5)
++            await shoot("04-links-pane", SettingsWindowController.shared.window)
++            SettingsWindowController.shared.window?.close()
++            log("done")
++        }
++    }
++}
++
++private func allTexts(_ view: NSView) -> [String] {
++    var out: [String] = []
++    if let field = view as? NSTextField, !field.stringValue.isEmpty { out.append(field.stringValue) }
++    if let button = view as? NSButton, !button.title.isEmpty { out.append("[\(button.title)]") }
++    for sub in view.subviews { out += allTexts(sub) }
++    return out
++}
++#endif

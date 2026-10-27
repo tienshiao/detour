@@ -46,7 +46,7 @@ enum LinkRouteTargetMenuItem: Equatable {
 /// The normal spaces in order, then Most Recent Space, Private Window, Quick
 /// Detour (TASK-193.5; it takes links from other apps only, as the resolver
 /// rules) and Quarantine (TASK-194; links from other apps, and the clicks a
-/// route to it matches). A space that is not offered (deleted) is listed
+/// route to it matches, never in a Private window). A space that is not offered (deleted) is listed
 /// first when it is the current target, rather than changing silently.
 func linkRouteTargetMenu(spaces: [LinkRouteSpaceOption], current: LinkRouteTarget?) -> [LinkRouteTargetMenuItem] {
     var items: [LinkRouteTargetMenuItem] = []

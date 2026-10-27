@@ -327,6 +327,33 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: privateSpace, isPrivateWindow: true), r), .stay)
     }
 
+    /// A Quarantine route skipped for a Private window's link lets the next
+    /// matching route decide, which keeps the link in the Private window too
+    /// (code review, TASK-194 follow-up).
+    func testAPrivateSkippedQuarantineRouteFallsThroughToTheNextRoute() {
+        let privateClick = LinkOrigin.clicked(inSpace: privateSpace, isPrivateWindow: true)
+        let privateTyped = LinkOrigin.typed(fromSpace: privateSpace, isPrivateWindow: true)
+        let toPrivate = [route(.domainIs, "a.test", to: .quarantine),
+                         route(.domainIs, "a.test", to: .privateWindow, order: 1)]
+        let toSpace = [route(.domainIs, "a.test", to: .quarantine),
+                       route(.domainIs, "a.test", to: .space(work), order: 1)]
+        for origin in [privateClick, privateTyped] {
+            for defaultTarget in [LinkRouteTarget.mostRecentSpace, .quarantine, .space(work), .privateWindow] {
+                XCTAssertEqual(resolve("https://a.test/", from: origin, toPrivate, default: defaultTarget), .stay,
+                               "\(origin), Default \(defaultTarget): the Private route keeps it here")
+                XCTAssertEqual(resolve("https://a.test/", from: origin, toSpace, default: defaultTarget), .stay,
+                               "\(origin), Default \(defaultTarget): the space route is skipped too")
+            }
+        }
+        // The same routes from a normal window: Quarantine takes the click,
+        // and a typed URL falls through to the next route.
+        let normalClick = LinkOrigin.clicked(inSpace: personal, isPrivateWindow: false)
+        let normalTyped = LinkOrigin.typed(fromSpace: personal, isPrivateWindow: false)
+        XCTAssertEqual(resolve("https://a.test/", from: normalClick, toPrivate), .quarantine)
+        XCTAssertEqual(resolve("https://a.test/", from: normalTyped, toPrivate), .privateWindow)
+        XCTAssertEqual(resolve("https://a.test/", from: normalTyped, toSpace), .openInSpace(work))
+    }
+
     func testAQuarantineDefaultNeverTakesAClick() {
         XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [],
                                default: .quarantine), .stay)

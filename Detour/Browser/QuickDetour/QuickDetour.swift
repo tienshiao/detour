@@ -69,6 +69,19 @@ enum QuickDetour {
         return profiles.first { !$0.isIncognito && !$0.isDeleted }
     }
 
+    // MARK: - Cmd+click
+
+    /// Whether a link click in a Quick Detour's page opens another window
+    /// (Cmd+click, TASK-193.1; in a quarantine another quarantine with a
+    /// store of its own, TASK-194): a link activation with Command, and the
+    /// user's gesture behind it (`BrowserWindowController.isUserGesture`).
+    /// A page's own scripted click never opens windows, as Link Routes never
+    /// route one (code review, TASK-194 follow-up); it is refused.
+    static func linkClickOpensWindow(isLinkActivation: Bool, modifiers: LinkClickModifiers,
+                                     isUserGesture: Bool) -> Bool {
+        isLinkActivation && modifiers.contains(.command) && isUserGesture
+    }
+
     // MARK: - The launcher panel
 
     /// Where the launcher panel goes: centred on the screen's visible frame,

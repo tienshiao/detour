@@ -115,17 +115,23 @@ func resolveLinkRoute(url: URL, origin: LinkOrigin, routes: [LinkRoute],
 /// Quarantine takes a click only from a route (`isDefault` false).
 private func decision(for target: LinkRouteTarget, origin: LinkOrigin,
                       context: LinkRouteContext, isDefault: Bool) -> LinkRouteDecision? {
+    // Nothing leaves a Private window. A Private Window target keeps the link
+    // where it is, already in one; every other target is skipped: a normal
+    // space or the most recent one, and Quarantine, whose Open in reaches
+    // normal spaces, so a Private page's link quarantined would be one Cmd+O
+    // from a normal profile and its history (code review, TASK-194).
+    if origin.isFromPrivateWindow {
+        return target == .privateWindow ? .stay : nil
+    }
     switch target {
     case .privateWindow:
-        // Into Private from anywhere; already in one, the link stays.
-        return origin.isFromPrivateWindow ? .stay : .privateWindow
+        return .privateWindow
     case .space(let id):
         // A space that is gone (or a Private window's, which no route may
-        // name) never takes a link; nothing leaves a Private window.
-        guard context.spaceIDs.contains(id), !origin.isFromPrivateWindow else { return nil }
+        // name) never takes a link.
+        guard context.spaceIDs.contains(id) else { return nil }
         return id == origin.currentSpaceID ? .stay : .openInSpace(id)
     case .mostRecentSpace:
-        guard !origin.isFromPrivateWindow else { return nil }
         // Typed or clicked, the link is in the key window's space, which is
         // the most recent one: nothing to move.
         return origin.isExternal ? .mostRecentSpace : .stay
@@ -133,12 +139,10 @@ private func decision(for target: LinkRouteTarget, origin: LinkOrigin,
         // Links from other apps, by a route or the Default; a click only by a
         // route that matches it (the user's decision of 2026-10-26: a Default
         // of Quarantine would quarantine every link clicked to another site).
-        // Never out of a Private window: a quarantine's Open in reaches normal
-        // spaces, so a Private page's link would be one Cmd+O from a normal
-        // profile and its history (code review). Never a typed URL.
+        // Never a typed URL.
         switch origin {
         case .external: return .quarantine
-        case .clicked: return isDefault || origin.isFromPrivateWindow ? nil : .quarantine
+        case .clicked: return isDefault ? nil : .quarantine
         case .typed: return nil
         }
     case .quickDetour:

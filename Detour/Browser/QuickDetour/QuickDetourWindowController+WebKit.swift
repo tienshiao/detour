@@ -38,9 +38,14 @@ extension QuickDetourWindowController: WKNavigationDelegate {
         // window's opens a background tab. It names the same space in Open in
         // as this one (TASK-193.3). In a quarantine, another quarantine with a
         // store of its own (TASK-194: one store per window; only a window the
-        // page opens itself shares, to keep its opener).
-        if action.navigationType == .linkActivated, action.modifierFlags.contains(.command),
-           let url = action.request.url {
+        // page opens itself shares, to keep its opener). Only the user's: a
+        // page's own scripted Cmd+click is refused, so a page cannot open
+        // windows and stores (code review, TASK-194 follow-up).
+        if action.navigationType == .linkActivated, action.modifierFlags.contains(.command) {
+            guard QuickDetour.linkClickOpensWindow(
+                isLinkActivation: true, modifiers: BrowserWindowController.linkClickModifiers(action.modifierFlags),
+                isUserGesture: BrowserWindowController.isUserGesture(action)),
+                let url = action.request.url else { return .cancel }
             DispatchQueue.main.async { [profile, store, sourceSpaceID, isQuarantine] in
                 let source = sourceSpaceID.flatMap { store.space(withID: $0) }
                 if isQuarantine {
@@ -55,17 +60,20 @@ extension QuickDetourWindowController: WKNavigationDelegate {
         // A quarantine page goes nowhere with link-tracking parameters: the
         // same address is loaded again without them (TASK-194). WebKit's own
         // link decoration filtering has already taken the click IDs on its
-        // list; this takes the rest (`utm_*`). A server that redirects the
-        // clean address straight back to the parameters is let through the
-        // second time, or the two would loop forever.
-        if isQuarantine, action.targetFrame?.isMainFrame == true,
-           let clean = Quarantine.trackingFreeURL(for: action.request.url, httpMethod: action.request.httpMethod,
-                                                  isBackForwardOrReload: action.navigationType == .backForward
-                                                      || action.navigationType == .reload),
-           !(BrowserWindowController.isRedirect(action) && clean == lastTrackingFreeLoad) {
-            lastTrackingFreeLoad = clean
-            DispatchQueue.main.async { page?.load(clean) }
-            return .cancel
+        // list; this takes the rest (`utm_*`). Not a download or a jump to
+        // an anchor (`trackingFreeURL`), and never in a loop: a page or server
+        // that sends the clean address back to its parameters is let through
+        // the second time (`trackingRewrites`).
+        if isQuarantine, action.targetFrame?.isMainFrame == true {
+            if Self.isUsersOwnNavigation(action) { trackingRewrites.userNavigated() }
+            if let clean = Quarantine.trackingFreeURL(
+                for: action.request.url, httpMethod: action.request.httpMethod,
+                isBackForwardOrReload: action.navigationType == .backForward || action.navigationType == .reload,
+                shouldPerformDownload: action.shouldPerformDownload, currentURL: webView.url),
+               trackingRewrites.allows(clean) {
+                DispatchQueue.main.async { page?.load(clean) }
+                return .cancel
+            }
         }
 
         if action.navigationType == .backForward, let url = action.request.url,
@@ -87,6 +95,17 @@ extension QuickDetourWindowController: WKNavigationDelegate {
 
         if let url = action.request.url { page?.applySpoofedUserAgent(for: url) }
         return .allow
+    }
+
+    /// A link the user clicked (WebKit's `_isUserInitiated`, and not a
+    /// server redirect of it), for the tracking-parameter budget. Without the
+    /// SPI nothing counts: a page's own scripted clicks would otherwise renew
+    /// the budget forever (`BrowserWindowController.isUserGesture` counts
+    /// every action as a gesture then); the window's own loads still do.
+    private static func isUsersOwnNavigation(_ action: WKNavigationAction) -> Bool {
+        action.navigationType == .linkActivated
+            && BrowserWindowController.isUserGesture(action, withoutSPI: false)
+            && !BrowserWindowController.isRedirect(action)
     }
 
     func webView(_ webView: WKWebView,
@@ -181,7 +200,6 @@ extension QuickDetourWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let page = tab, page.webView === webView else { return }
-        lastTrackingFreeLoad = nil
         page.nowPlayingDocumentDidCommit()
         if webView.url?.scheme == ErrorPage.scheme { return }
         page.didCommitNavigation()

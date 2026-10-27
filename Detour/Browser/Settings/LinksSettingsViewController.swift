@@ -135,7 +135,7 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         for view in [defaultLabel, defaultPopUp!, defaultWarningIcon!, defaultWarningLabel!] { defaultRow.addSubview(view) }
 
         let caption = SettingsWrappingLabel(
-            wrapping: "For every link no route matches: links from other apps, addresses typed in a new tab, and links clicked to another site. Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. Quick Detour and Quarantine take links from other apps; a route to Quarantine also takes the clicked links it matches. Quarantine opens the link in a throwaway window with no cookies of yours: Open in moves it to a space.",
+            wrapping: "For every link no route matches: links from other apps, addresses typed in a new tab, and links clicked to another site. Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. Quick Detour and Quarantine take links from other apps; a route to Quarantine also takes the clicked links it matches, except in Private windows. Quarantine opens the link in a throwaway window with no cookies of yours: Open in moves it to a space.",
             estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
         container.addSubview(caption)
 

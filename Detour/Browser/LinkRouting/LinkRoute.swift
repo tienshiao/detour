@@ -35,8 +35,9 @@ enum LinkRouteTarget: Equatable, Hashable {
     /// at the Private boundary: into Private only.
     case privateWindow
     /// A throwaway Quick Detour window on its own ephemeral store (TASK-194):
-    /// links from other apps, and the clicks a route to it matches; never a
-    /// typed URL.
+    /// links from other apps, and the clicks a route to it matches outside
+    /// Private windows (a click in a Private window is never quarantined);
+    /// never a typed URL.
     case quarantine
     /// A Quick Detour window (TASK-193.5). Links from other apps only until
     /// TASK-193.5 decides otherwise.

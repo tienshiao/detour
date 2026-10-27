@@ -4,7 +4,7 @@ title: Link Routes
 description: "The Link Routes model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quick Detour external-only, Quarantine for links from other apps and the clicks a route to it matches but never typed URLs, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private; Quarantine a visible target since TASK-194, opening a quarantine window), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: model
@@ -183,7 +183,7 @@ on the case states the precondition.
 | Only `http`/`https` URLs match any route. | A `detour://` page, a file or `data:` URL belongs where it was opened. |
 | A source-app route matches only `.external` with that bundle ID (compared without case). An external link with no known sender matches no source-app route. | The sender only exists for an Apple Event; `open` from a shell names none. |
 | `.privateWindow` matches from every origin. From a Private window it is `.stay`. | Routing into Private is allowed, from anywhere (user, 2026-10-24). |
-| From a Private window, routes to a space or to Most Recent Space (and Quick Detour) are skipped. | Nothing routes out of Private. |
+| From a Private window, routes to a space or to Most Recent Space (and Quick Detour and Quarantine) are skipped; the next matching route, then the Default, decides, and every one of them ends in `.stay`. | Nothing routes out of Private: one early rule in the resolver's `decision(for:)` (TASK-194 follow-up), ahead of the per-target cases. |
 | A route to the space the link is already in is `.stay`, and stops the search. | First match wins; it already is where the route sends it. |
 | `.mostRecentSpace` is `.mostRecentSpace` for an external link and `.stay` for a typed URL or click. | A typed URL or click is in the key window, whose space is the most recent one. |
 | `.quickDetour` applies to external links only; elsewhere it is skipped. | Decided in TASK-193.5 (2026-10-26): links from other apps reach Quick Detour through this target; inside Detour, Opt-Cmd-click opens one. Widening it is one line. |
@@ -674,7 +674,8 @@ TASK-211; see [Settings](./settings.md#quick-detour).
   (TASK-193.5; links from other apps only, as the resolver rules) and
   Quarantine (TASK-194, with a tooltip saying what it is; the Default's
   caption says Quick Detour and Quarantine take links from other apps and
-  a Quarantine route also the clicked links it matches). A space
+  a Quarantine route also the clicked links it matches, except in Private
+  windows). A space
   that is not offered (deleted, or a Private window's) is listed first as
   "Space deleted" (or "Private space") with the warning image.
 - Fixed widths (kind 120, the pop-ups 220) so the controls line up from row to

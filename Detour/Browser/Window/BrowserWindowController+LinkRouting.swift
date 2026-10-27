@@ -100,9 +100,10 @@ extension BrowserWindowController {
     /// Opens a clicked link where its route sends it, one main-queue turn
     /// later, so the policy decision (or `createWebViewWith`) returns before
     /// windows switch spaces or come forward. The page's tab is left alone.
-    /// A quarantine (TASK-194) names this window's space in its Open in.
+    /// A quarantine (TASK-194) names this window's space in its Open in
+    /// (`openQuarantine` drops a Private one).
     func openRoutedLink(_ url: URL, _ decision: LinkRouteDecision) {
-        let clickedIn = isIncognito ? nil : activeSpace
+        let clickedIn = activeSpace
         DispatchQueue.main.async {
             (NSApp.delegate as? AppDelegate)?.openLink(url, routedTo: decision, from: clickedIn)
         }
@@ -130,11 +131,12 @@ extension BrowserWindowController {
     /// or load script (and for a client redirect); true as well for anything
     /// the app runs with `evaluateJavaScript`. Without the SPI every action
     /// counts as a gesture, so routing keeps working and the other exclusions
-    /// still hold.
-    static func isUserGesture(_ navigationAction: WKNavigationAction) -> Bool {
+    /// still hold; a caller for whom that would be unsafe passes
+    /// `withoutSPI: false`.
+    static func isUserGesture(_ navigationAction: WKNavigationAction, withoutSPI: Bool = true) -> Bool {
         let key = "_isUserInitiated"
-        guard navigationAction.responds(to: NSSelectorFromString(key)) else { return true }
-        return (navigationAction.value(forKey: key) as? Bool) ?? true
+        guard navigationAction.responds(to: NSSelectorFromString(key)) else { return withoutSPI }
+        return (navigationAction.value(forKey: key) as? Bool) ?? withoutSPI
     }
 
     /// WebKit asks the policy again for a server redirect, with the link

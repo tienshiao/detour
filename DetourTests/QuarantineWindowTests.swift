@@ -135,6 +135,26 @@ final class QuarantineWindowTests: XCTestCase {
             """,
             "/probe?id=1": "<html><head>\(Self.probeTitleScript)</head><body>probe</body></html>",
             "/bounce?utm_source=loop": "<html><head><title>Bounced</title></head><body>bounced</body></html>",
+            // A client-side redirect back to the parameters (TASK-194 follow-up).
+            "/replace": "<html><head><script>location.replace('/replace?utm_source=loop');</script></head></html>",
+            "/replace?utm_source=loop": """
+            <html><head><title>Replaced</title><script>window.marker = 'kept';</script></head><body>
+            <a id="anchor" href="#section">section</a><p id="section">section</p></body></html>
+            """,
+            // A tracked download link (TASK-194 follow-up).
+            "/tracked-download": """
+            <html><head><title>Tracked download</title></head><body>
+            <a id="file" href="/report.txt?utm_source=x" download="report.txt">report</a></body></html>
+            """,
+            "/report.txt?utm_source=x": "quarantined report",
+            // A Cmd+click of the page's own, from a timer (no user gesture).
+            "/cmdclick?auto": """
+            <html><head><title>Cmd-click</title></head><body><a id="link" href="/probe">probe</a><script>
+            window.cmdClick = () => document.getElementById('link').dispatchEvent(
+                new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true }));
+            setTimeout(() => window.cmdClick(), 300);
+            </script></body></html>
+            """,
         ], redirects: ["/bounce": "http://127.0.0.1:{port}/bounce?utm_source=loop"],
            setCookies: ["/set": "qd=quarantined; Path=/; Max-Age=3600"])
         servers.append(server)
@@ -270,6 +290,58 @@ final class QuarantineWindowTests: XCTestCase {
                                  "\(server.requestedPaths)")
     }
 
+    /// A page that sends the clean address straight back to its parameters
+    /// with `location.replace` (no redirect to WebKit, no user gesture) is let
+    /// through the second time; the page settles (code review, TASK-194
+    /// follow-up).
+    func testAClientRedirectBackToTrackingParametersSettles() async throws {
+        let (server, base) = try await serve()
+        let controller = openQuarantine(base + "/replace")
+        try await waitForTitle("Replaced") { controller.tab }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let loads = server.requestedPaths.filter { $0.hasPrefix("/replace") }
+        XCTAssertLessThanOrEqual(loads.count, 3, "\(loads)")
+        XCTAssertEqual(controller.tab?.title, "Replaced")
+    }
+
+    /// A jump to an anchor of a page whose address kept its parameters is
+    /// not turned into a load of the page without them (code review, TASK-194
+    /// follow-up).
+    func testAnAnchorJumpIsNotReloaded() async throws {
+        let (server, base) = try await serve()
+        let controller = openQuarantine(base + "/replace")
+        try await waitForTitle("Replaced") { controller.tab }
+        let webView = try XCTUnwrap(controller.tab?.webView)
+        let requests = server.requestedPaths.count
+
+        _ = try await webView.evaluateJavaScript("document.getElementById('anchor').click()")
+        try await waitUntil("the anchor") { webView.url?.fragment == "section" }
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(webView.url?.query, "utm_source=loop", "the same document")
+        let marker = try await webView.evaluateJavaScript("window.marker") as? String
+        XCTAssertEqual(marker, "kept", "not reloaded")
+        XCTAssertEqual(server.requestedPaths.count, requests, "\(server.requestedPaths)")
+    }
+
+    // MARK: - Cmd+click
+
+    /// Only the user's Cmd+click opens another quarantine: a page's script
+    /// clicking with Command from a timer (no user gesture) opens no window
+    /// and no store (code review, TASK-194 follow-up). WebKit also hands the
+    /// policy no modifiers for a synthetic click (measured 2026-10-25), so
+    /// the click is an ordinary one: the page follows it in place.
+    func testAScriptsCmdClickOpensNoQuarantine() async throws {
+        let (_, base) = try await serve()
+        let controller = openQuarantine(base + "/cmdclick?auto")
+        try await waitUntil("the timer's click to land") {
+            controller.tab?.url?.path == "/probe" && controller.tab?.isLoading == false
+        }
+        try await Task.sleep(nanoseconds: 700_000_000)
+
+        XCTAssertEqual(newQuickDetours().count, 1, "no window from the page's timer")
+    }
+
     // MARK: - Fingerprinting protections (WebKit SPI, when present)
 
     private static let fingerprintPage = """
@@ -381,7 +453,77 @@ final class QuarantineWindowTests: XCTestCase {
         XCTAssertEqual(desk.tabs.first?.url?.host, "quarantine-open-in-download.invalid")
     }
 
+    /// Open in asks about a running download, but cancels it only once the
+    /// address has a tab: when nothing takes it, the window and its download
+    /// stay (code review, TASK-194 follow-up).
+    func testOpenInThatPlacesNothingKeepsTheWindowAndItsDownload() throws {
+        let controller = openQuarantine("https://quarantine-open-in-fails.invalid/page")
+        let tabID = try XCTUnwrap(controller.tab?.id)
+        let item = DownloadManager.shared.addManualItem(filename: "kept.zip", sourceURL: nil,
+                                                        scope: .incognito(spaceID: tabID))
+        defer { DownloadManager.shared.removeDownload(item) }
+        let previousAlert = QuickDetourWindowController.runPrivateDownloadCloseAlert
+        defer { QuickDetourWindowController.runPrivateDownloadCloseAlert = previousAlert }
+        QuickDetourWindowController.runPrivateDownloadCloseAlert = { _ in true }
+        let previousPlacement = QuickDetourWindowController.placement
+        defer { QuickDetourWindowController.placement = previousPlacement }
+        QuickDetourWindowController.placement = { _, _, _ in nil }
+
+        controller.open(in: .space(desk.id))
+
+        XCTAssertTrue(isOpen(controller), "nothing took the page: the window stays")
+        XCTAssertEqual(item.state, .downloading, "and so does its download")
+    }
+
+    /// The download question runs a modal session, during which the page can
+    /// put up a sheet WebKit waits on: Open in then leaves everything as it
+    /// was rather than close the window under it (code review, TASK-194
+    /// follow-up).
+    func testOpenInRefusesWhenASheetCameUpDuringTheDownloadQuestion() throws {
+        let controller = openQuarantine("https://quarantine-open-in-sheet.invalid/page")
+        let window = try XCTUnwrap(controller.window)
+        let tabID = try XCTUnwrap(controller.tab?.id)
+        let item = DownloadManager.shared.addManualItem(filename: "sheet.zip", sourceURL: nil,
+                                                        scope: .incognito(spaceID: tabID))
+        defer { DownloadManager.shared.removeDownload(item) }
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled],
+                             backing: .buffered, defer: false)
+        defer { if let parent = sheet.sheetParent { parent.endSheet(sheet) } }
+        let previousAlert = QuickDetourWindowController.runPrivateDownloadCloseAlert
+        defer { QuickDetourWindowController.runPrivateDownloadCloseAlert = previousAlert }
+        QuickDetourWindowController.runPrivateDownloadCloseAlert = { _ in
+            window.beginSheet(sheet)
+            return true
+        }
+
+        controller.open(in: .space(desk.id))
+
+        XCTAssertTrue(isOpen(controller), "the page's sheet is still waiting for an answer")
+        XCTAssertEqual(item.state, .downloading)
+        XCTAssertTrue(desk.tabs.isEmpty)
+    }
+
     // MARK: - Downloads
+
+    /// A download link with tracking parameters is a download, asked about,
+    /// not a page loaded without them (code review, TASK-194 follow-up).
+    func testATrackedDownloadLinkIsStillADownload() async throws {
+        let (server, base) = try await serve()
+        var asked: [QuarantineDownloadQuestion] = []
+        QuickDetourWindowController.askQuarantineDownload = { question, _, answer in
+            asked.append(question)
+            answer(false)
+        }
+        let controller = openQuarantine(base + "/tracked-download")
+        try await waitForTitle("Tracked download") { controller.tab }
+
+        _ = try await XCTUnwrap(controller.tab?.webView).evaluateJavaScript("document.getElementById('file').click()")
+        try await waitUntil("the question") { !asked.isEmpty }
+
+        XCTAssertEqual(asked, [QuarantineDownloadQuestion(filename: "report.txt", host: "127.0.0.1")])
+        XCTAssertEqual(controller.tab?.url?.path, "/tracked-download", "the page stays")
+        XCTAssertFalse(server.requestedPaths.contains("/report.txt"), "\(server.requestedPaths)")
+    }
 
     func testADownloadIsAskedAboutAndCancelledOnNo() async throws {
         let (_, base) = try await serve()

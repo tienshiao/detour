@@ -4,7 +4,7 @@ title: WKWebView delegate call order
 description: Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
 tags: [webkit, navigation, delegates, peek, internal-pages]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-spike
@@ -160,7 +160,10 @@ A **server redirect** of a link click is asked about again in
 `_isRedirect` (SPI) is true only on that second call. A client redirect
 (`location.replace` on load) arrives as `.other` without a gesture. A
 synthetic `MouseEvent` with `metaKey` reaches the policy with no modifier
-flags (measured 2026-10-25).
+flags (measured 2026-10-25), and so do a click handler's scripted
+`a.click()` calls during a real Cmd-click: one posted Cmd-click whose
+handler clicked another link five times produced a single plain
+navigation in place, no Cmd+click (TASK-194 follow-up, 2026-10-27).
 
 ## Who asked for a navigation
 
